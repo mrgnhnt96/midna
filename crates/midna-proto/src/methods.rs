@@ -1,0 +1,1050 @@
+//! Params/result types for every RPC method. The catalog (`catalog.rs`) ties them to names.
+//! Every params struct tolerates an extra `caller` field (see [`Caller`]); the daemon strips it.
+use crate::types::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Optional identity hint attached to params by clients. `session` comes from `MIDNA_SESSION`;
+/// `role: "agent"` lets any client voluntarily downgrade itself (it can never upgrade to human).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Caller {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NoParams {}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct OkResult {
+    pub ok: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct IdParams {
+    pub id: Id,
+}
+
+// ------------------------------------------------------------------ daemon
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DaemonInfo {
+    pub version: String,
+    pub pid: u32,
+    pub uptime_secs: u64,
+    pub started_at: Timestamp,
+    pub home: String,
+    pub socket: String,
+    /// Your role as the daemon sees this connection: `human` or `agent`.
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// Absolute path of the running midnad executable (lets the app tell whether the daemon
+    /// runs the installed `bin/current` build).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UpgradeParams {
+    pub binary_path: String,
+}
+
+/// `daemon.upgrade` / `daemon.restart`: the new binary passed `--selftest` and the handoff
+/// (snapshot + execv) is scheduled. Watch for `daemon.upgraded` (or `daemon.upgrade_failed`).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UpgradeResult {
+    pub ok: bool,
+    /// The binary that will be exec'd.
+    pub binary: String,
+    /// Terminals that will be carried over.
+    pub sessions: u32,
+}
+
+// ------------------------------------------------------------------ projects
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectAddParams {
+    /// Absolute directory path.
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectUpdateParams {
+    pub id: Id,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub commands: Option<Vec<ProjectCommand>>,
+}
+
+// ------------------------------------------------------------------ sessions
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionListParams {
+    #[serde(default)]
+    pub project_id: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionOpenParams {
+    /// Project to open in. Defaults to the caller's project, else the project containing `cwd`
+    /// (a project is added for `cwd` if none contains it). With no project, no caller project
+    /// and no `cwd`, it opens at root (`project_id` "root", starting in `$HOME`).
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    pub kind: SessionKind,
+    /// Required when kind is `agent`.
+    #[serde(default)]
+    pub agent: Option<AgentKind>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Working directory; defaults to the project path.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// argv for shell/monitor sessions; defaults to the login shell.
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    /// Initial prompt passed to the agent.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionCloseParams {
+    pub id: Id,
+    /// Close even if the session is working (sends SIGKILL after SIGHUP).
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionRenameParams {
+    pub id: Id,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionInputParams {
+    pub id: Id,
+    /// Text to type. Use escape sequences for special keys (e.g. "\u0003" for ctrl-c).
+    pub text: String,
+    /// Press Enter (carriage return) after the text.
+    #[serde(default)]
+    pub enter: bool,
+    /// Absolute paths of images to attach before the text (PNG, JPEG, GIF, WebP; other formats
+    /// macOS can read are converted to PNG). Each is pasted as its path, which Claude Code and
+    /// Codex turn into an image attachment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionReadParams {
+    pub id: Id,
+    /// How many trailing lines of scrollback+screen to return (default 50). Ignored with `screen`.
+    #[serde(default)]
+    pub lines: Option<u32>,
+    /// Return exactly the visible screen instead.
+    #[serde(default)]
+    pub screen: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionReadResult {
+    pub text: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionResizeParams {
+    pub id: Id,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub cell_w: Option<u32>,
+    #[serde(default)]
+    pub cell_h: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionKeyParams {
+    pub id: Id,
+    /// A keystroke: modifiers then a key, joined by `-`, e.g. `enter`, `ctrl-c`, `shift-tab`,
+    /// `alt-b`, `ctrl-shift-up`, `f5`, `pageup`, `escape`, `a`. Modifiers: ctrl, alt (option),
+    /// shift, super (cmd). It is encoded the way the app in the terminal asked for (legacy,
+    /// modifyOtherKeys or the kitty keyboard protocol), exactly like a key typed in the GUI.
+    pub key: String,
+    /// press (default), repeat or release. Releases only produce bytes for apps that asked
+    /// for kitty event reporting.
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionScrollParams {
+    pub id: Id,
+    /// `top` or `bottom` (the live screen).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Scroll by this many rows (negative = up, into history).
+    #[serde(default)]
+    pub lines: Option<i32>,
+    /// Scroll by this many pages (negative = up).
+    #[serde(default)]
+    pub pages: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSelectionResult {
+    /// The selected text (soft-wrapped lines joined, trailing spaces trimmed), or null when
+    /// nothing is selected.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionLinkAtParams {
+    pub id: Id,
+    /// Viewport column and row (0-based), as on screen right now.
+    pub col: u16,
+    pub row: u16,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LinkAtResult {
+    /// `url` (OSC 8 hyperlink or a detected http(s) URL), `file` (an existing path), or `none`.
+    pub kind: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub column: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionFindParams {
+    pub id: Id,
+    /// Text to find in scrollback + screen (case-insensitive unless it contains capitals).
+    /// Empty clears the search.
+    pub query: String,
+    /// Go to the previous (older) match instead of the next one.
+    #[serde(default)]
+    pub backwards: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct FindResult {
+    /// Number of matches.
+    pub total: usize,
+    /// 1-based index of the current match, oldest first (0 = no match).
+    pub index: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StreamAttachParams {
+    pub session: Id,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub cell_w: u32,
+    #[serde(default)]
+    pub cell_h: u32,
+}
+
+// ------------------------------------------------------------------ events
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct EventFilter {
+    /// Kind prefixes, e.g. `["session.", "needs_you.raised"]`.
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+    #[serde(default)]
+    pub session_id: Option<Id>,
+    #[serde(default)]
+    pub project_id: Option<Id>,
+}
+
+impl EventFilter {
+    pub fn matches(&self, e: &Event) -> bool {
+        if let Some(k) = &self.kinds
+            && !k.iter().any(|p| e.kind.starts_with(p.as_str())) {
+                return false;
+            }
+        if self.session_id.is_some() && self.session_id != e.session_id {
+            return false;
+        }
+        if self.project_id.is_some() && self.project_id != e.project_id {
+            return false;
+        }
+        true
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct EventsListParams {
+    /// Return events with seq > since_seq.
+    #[serde(default)]
+    pub since_seq: Option<u64>,
+    /// Max events (default 200, newest kept).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub filter: Option<EventFilter>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct EventsSubscribeParams {
+    /// Replay events with seq > since_seq before streaming live ones. Omit for live only.
+    #[serde(default)]
+    pub since_seq: Option<u64>,
+    #[serde(default)]
+    pub filter: Option<EventFilter>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SubscribeResult {
+    pub ok: bool,
+    /// The latest seq at subscribe time.
+    pub seq: u64,
+}
+
+// ------------------------------------------------------------------ needs-you
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouListParams {
+    #[serde(default)]
+    pub session_id: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouRaiseParams {
+    /// `blocked` (you cannot continue without the human) or `note` (FYI).
+    pub kind: NeedsYouKind,
+    pub message: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouResolveParams {
+    pub id: Id,
+    pub resolution: Resolution,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ResolveResult {
+    pub ok: bool,
+    /// The rule created by an approval with scope minutes/session/always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Rule>,
+}
+
+// ------------------------------------------------------------------ policy / rules
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyCheckParams {
+    pub action: PolicyAction,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyRequestParams {
+    pub action: PolicyAction,
+    /// Max seconds to wait for a human (default: setting policy.request_timeout_secs).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Shown on the approval card.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyRequestResult {
+    pub decision: Effect,
+    pub source: DecisionSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Rule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RuleAddParams {
+    pub effect: Effect,
+    pub matcher: Matcher,
+    /// Defaults to global.
+    #[serde(default)]
+    pub scope: Option<RuleScope>,
+    #[serde(default)]
+    pub expires_in_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RuleRequestRemovalParams {
+    pub id: Id,
+    pub reason: String,
+}
+
+// ------------------------------------------------------------------ triggers / webhooks
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerAddParams {
+    pub name: String,
+    pub source: TriggerSource,
+    /// GitHub: `<X-GitHub-Event>[.<action>]`, e.g. `pull_request.opened`, `push`, `check_run.completed`.
+    /// Bitbucket: the X-Event-Key, e.g. `pullrequest:created`. Globs (`*`) allowed.
+    pub event: String,
+    #[serde(default)]
+    pub filter: TriggerFilter,
+    pub action: TriggerAction,
+    #[serde(default)]
+    pub github_hook_id: Option<u64>,
+    #[serde(default)]
+    pub session_name_template: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerUpdateParams {
+    pub id: Id,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub filter: Option<TriggerFilter>,
+    #[serde(default)]
+    pub action: Option<TriggerAction>,
+    #[serde(default)]
+    pub source: Option<TriggerSource>,
+    #[serde(default)]
+    pub event: Option<String>,
+    #[serde(default)]
+    pub github_hook_id: Option<u64>,
+    #[serde(default)]
+    pub session_name_template: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerSetEnabledParams {
+    pub id: Id,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerSetSecretParams {
+    pub id: Id,
+    pub secret: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerDeliveriesParams {
+    #[serde(default)]
+    pub trigger_id: Option<Id>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerReplayParams {
+    pub delivery_id: Id,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerTestParams {
+    pub trigger_id: Id,
+    /// A sample webhook body (the JSON GitHub/Bitbucket would POST).
+    pub payload: Value,
+    /// The event header value (X-GitHub-Event / X-Event-Key). Defaults to the trigger's event.
+    #[serde(default)]
+    pub event: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WebhooksConfigureParams {
+    /// `tailscale_funnel`, `self_relay`, `midna_relay` or `off`.
+    pub path: String,
+    /// Local receiver port (setting webhooks.port).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Relay URL for self_relay (setting webhooks.relay_url).
+    #[serde(default)]
+    pub relay_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WebhookReceiverStatus {
+    /// Listening on 127.0.0.1.
+    pub listening: bool,
+    /// The configured port (webhooks.port).
+    pub port: u16,
+    /// The port actually bound (differs from `port` only in tests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TailscaleStatus {
+    /// Path of the tailscale CLI, if found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_state: Option<String>,
+    /// MagicDNS name without the trailing dot, e.g. `morgans-macbook-pro.tail439d44.ts.net`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_name: Option<String>,
+    pub online: bool,
+    /// The tailnet allows Funnel for this node (node capability `funnel`).
+    pub funnel_allowed: bool,
+    /// Funnel serves :8443 and proxies it to this receiver.
+    pub funnel_on: bool,
+    /// Where :8443 currently proxies to, if anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funnel_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ReconcileStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<Timestamp>,
+    /// Why it last ran: `startup`, `wake` or `manual`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Deliveries found missing and redelivered as `recovered` on the last run.
+    pub recovered: u32,
+    /// Hooks checked on the last run.
+    pub hooks_checked: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Webhook delivery path health. `health` is `healthy`, `degraded`, `down` or `off`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WebhooksStatus {
+    /// Setting webhooks.path.
+    pub path: String,
+    /// Human name of the path, e.g. `Tailscale Funnel`.
+    pub path_name: String,
+    pub health: String,
+    /// One line explaining the health.
+    pub detail: String,
+    /// Public URL to paste into GitHub (`…/hooks/github`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    /// Public URL to paste into Bitbucket (`…/hooks/bitbucket`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitbucket_url: Option<String>,
+    /// Public host:port, e.g. `morgans-macbook-pro.tail439d44.ts.net:8443`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    pub receiver: WebhookReceiverStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale: Option<TailscaleStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delivery_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delivery: Option<Delivery>,
+    pub reconcile: ReconcileStatus,
+    /// `keychain` or `file` (MIDNA_SECRETS=file).
+    pub secret_store: String,
+    /// Suggested fix when not healthy, phrased as something to ask an agent or do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WebhooksConfigureResult {
+    pub ok: bool,
+    pub message: String,
+    /// Tailscale's "enable Funnel for your tailnet" URL, when Funnel isn't enabled yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_url: Option<String>,
+    pub status: WebhooksStatus,
+}
+
+// ------------------------------------------------------------------ settings
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SettingEntry {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub ty: crate::settings::SettingType,
+    pub value: Value,
+    pub default: Value,
+    pub description: String,
+    pub human_only: bool,
+    pub section: String,
+    /// The CLI command that changes this setting.
+    pub cli: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SettingKeyParams {
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SettingSetParams {
+    pub key: String,
+    /// JSON value; strings like "true" or "42" are coerced to the setting's type.
+    pub value: Value,
+}
+
+// ------------------------------------------------------------------ insights
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsRange {
+    Today,
+    Yesterday,
+    /// The last 7 local days, today included.
+    Week,
+    /// The last 30 local days, today included.
+    Month,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsBy {
+    Project,
+    Agent,
+    Terminal,
+    Day,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSummaryParams {
+    #[serde(default = "default_range")]
+    pub range: InsightsRange,
+    #[serde(default)]
+    pub by: Option<InsightsBy>,
+}
+
+fn default_range() -> InsightsRange {
+    InsightsRange::Today
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsTotals {
+    pub turns: i64,
+    /// Human prompt submits.
+    pub messages: i64,
+    pub spend_usd: f64,
+    pub working_secs: i64,
+    pub waiting_secs: i64,
+    pub approvals: i64,
+    pub triggers_fired: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsRow {
+    pub key: String,
+    pub label: String,
+    pub totals: InsightsTotals,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSummary {
+    pub range: InsightsRange,
+    pub from: Timestamp,
+    pub to: Timestamp,
+    pub totals: InsightsTotals,
+    #[serde(default)]
+    pub rows: Vec<InsightsRow>,
+    /// totals minus the previous period of the same length.
+    pub vs_previous: InsightsTotals,
+}
+
+/// What `insights.series` measures per bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsMetric {
+    /// Agent turns started (`agent.turn_started`).
+    Turns,
+    /// Human prompt submits (`agent.prompt_submitted`).
+    Messages,
+    /// USD spent (`agent.cost` deltas).
+    Spend,
+    /// Seconds terminals spent in `working`.
+    Working,
+    /// Seconds terminals spent in `needs_you` (waiting on the human).
+    Waiting,
+    /// Approvals granted (`needs_you.resolved` with approve).
+    Approvals,
+    /// Triggers fired (`trigger.fired`).
+    Triggers,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsBucketSize {
+    Hour,
+    Day,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSeriesParams {
+    #[serde(default = "default_range")]
+    pub range: InsightsRange,
+    pub metric: InsightsMetric,
+    /// Default: hour for today/yesterday, day for week/month.
+    #[serde(default)]
+    pub bucket: Option<InsightsBucketSize>,
+    /// Split each bucket by project, agent kind or terminal. Omit for one total per bucket.
+    #[serde(default)]
+    pub by: Option<InsightsBy>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSeriesBucket {
+    /// Bucket start (RFC 3339, local hour or local midnight).
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub total: f64,
+    /// Group key -> value in this bucket (only non-zero groups; empty without `by`).
+    #[serde(default)]
+    pub values: std::collections::BTreeMap<String, f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSeriesGroup {
+    pub key: String,
+    pub label: String,
+    pub total: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsSeries {
+    pub range: InsightsRange,
+    pub metric: InsightsMetric,
+    pub bucket: InsightsBucketSize,
+    /// `count`, `usd` or `secs`.
+    pub unit: String,
+    pub from: Timestamp,
+    pub to: Timestamp,
+    /// Every bucket in the range, oldest first, including empty and not-yet-reached ones.
+    pub buckets: Vec<InsightsSeriesBucket>,
+    /// Groups seen in the range, largest total first.
+    #[serde(default)]
+    pub groups: Vec<InsightsSeriesGroup>,
+    pub total: f64,
+    /// The same metric over the period of the same length immediately before.
+    pub previous_total: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsActivityParams {
+    /// RFC 3339 lower bound (default: 24h ago).
+    #[serde(default)]
+    pub since: Option<Timestamp>,
+    #[serde(default)]
+    pub filter: Option<EventFilter>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+// ------------------------------------------------------------------ window
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAction {
+    Front,
+    KeepOnTop,
+    PopOut,
+    Snap,
+    Close,
+    OpenScreen,
+    /// Show `target` (a session) in the main window's split pane: `value` = `side` (default)
+    /// or `stacked`; `close` folds the split (the session keeps running).
+    Split,
+}
+
+impl WindowAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WindowAction::Front => "front",
+            WindowAction::KeepOnTop => "keep_on_top",
+            WindowAction::PopOut => "pop_out",
+            WindowAction::Snap => "snap",
+            WindowAction::Close => "close",
+            WindowAction::OpenScreen => "open_screen",
+            WindowAction::Split => "split",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WindowCommandParams {
+    pub action: WindowAction,
+    /// Usually a session id; for open_screen a screen name (rules, triggers, insights, settings, needs_you).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Action-specific value, e.g. `true`/`false` for keep_on_top, `left`/`right` for snap.
+    #[serde(default)]
+    pub value: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WindowCommandResult {
+    pub ok: bool,
+    /// How many GUI connections received the command (0 = GUI not running).
+    pub delivered: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WindowList {
+    pub gui_connected: bool,
+    /// Sessions marked keep-on-top.
+    pub keep_on_top: Vec<Id>,
+}
+
+// ------------------------------------------------------------------ restart
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionRestartParams {
+    pub id: Id,
+    /// Agent terminals: reopen the same conversation (`claude --resume`, `codex resume`) with
+    /// the model and permission mode it had. Default: true when the conversation id is known.
+    #[serde(default)]
+    pub resume: Option<bool>,
+    /// `now` (default) or `idle`: queue it until the agent is idle with no background work,
+    /// subagents or scheduled wakeups in flight and nothing typed in its input box.
+    #[serde(default)]
+    pub when: Option<String>,
+    /// Restart now even though background work would be lost (`when: now` only).
+    #[serde(default)]
+    pub force: bool,
+    /// Shown with a queued restart.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+// ------------------------------------------------------------------ agent hooks
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentHookParams {
+    pub agent: AgentKind,
+    /// Hook event name, e.g. `PreToolUse`, `Stop`, `statusline`, `agent-turn-complete`.
+    pub event: String,
+    #[serde(default)]
+    pub payload: Value,
+    /// The midna session the hook ran in (defaults to the caller's session).
+    #[serde(default)]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentHookResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusState>,
+}
+
+// ------------------------------------------------------------------ scripts
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptSlot {
+    Header,
+    Row,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptRunParams {
+    pub session_id: Id,
+    pub slot: ScriptSlot,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptRunResult {
+    pub segments: Vec<Segment>,
+}
+
+// ------------------------------------------------------------------ rule.restore
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RuleRestoreParams {
+    /// The removed rule exactly as `rule.list` / the `rule.removed` event returned it. It comes
+    /// back with its original id, author, origin and fired count (removal_request is cleared).
+    pub rule: Rule,
+}
+
+// ------------------------------------------------------------------ daemon.reset
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DaemonResetParams {
+    /// Keep rules (default true). The event log is always kept.
+    #[serde(default)]
+    pub keep_rules: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct DaemonResetResult {
+    pub ok: bool,
+    pub sessions_closed: u32,
+    pub projects_removed: u32,
+    pub triggers_removed: u32,
+    pub needs_you_cleared: u32,
+    pub settings_reset: u32,
+    pub rules_removed: u32,
+}
+
+// ------------------------------------------------------------------ ui.commands
+
+/// What a palette user command does when the human runs it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UiCommandRun {
+    /// Call a daemon method as the human (a `session.open` result is selected afterwards).
+    /// Human-only methods are allowed but always get the "destructive" two-step confirm.
+    Rpc {
+        method: String,
+        #[serde(default)]
+        params: Value,
+    },
+    /// Select a terminal.
+    Focus { session: Id },
+    /// Select project N (sidebar order, 0-based).
+    Project { index: usize },
+    /// Show a screen: rules | triggers | insights | settings | needs_you.
+    Screen { screen: String },
+    /// Open a terminal in its own always-on-top window.
+    PopOut { session: Id },
+    /// Replace the palette's query with this text (e.g. a prompt for "Ask an agent").
+    Prefill { text: String },
+}
+
+/// One user command in the human's ⌘K palette (`$MIDNA_HOME/commands.json`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UiCommand {
+    /// Stable id. Defaults to `user:<slugified title>`.
+    #[serde(default)]
+    pub id: String,
+    pub title: String,
+    /// Second line (where/what).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sub: String,
+    /// Extra words matched by prefix ("ship" finds "Deploy staging").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub keywords: String,
+    /// Shortcut label shown on the row (display only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<String>,
+    /// CLI equivalent shown for discoverability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<String>,
+    /// Row icon: claude|codex|monitor|shell|project|run|screen|approve|deny|rule|pin|new|trigger|restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Show with an empty query under this heading (e.g. "Suggested").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub featured: Option<String>,
+    /// Why it is destructive; set = the human presses enter twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub danger: Option<String>,
+    /// Shown as "you only".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub human_only: bool,
+    pub run: Option<UiCommandRun>,
+    /// Filled by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UiCommandsList {
+    /// The backing file (`$MIDNA_HOME/commands.json`); scripts may edit it directly.
+    pub path: String,
+    pub commands: Vec<UiCommand>,
+    /// Entries in the file that failed validation (they are not shown in the palette).
+    #[serde(default)]
+    pub invalid: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UiCommandsAddParams {
+    pub command: UiCommand,
+    /// Replace an existing command with the same id instead of failing.
+    #[serde(default)]
+    pub replace: bool,
+}
+
+// ------------------------------------------------------------------ updates
+
+/// The app's updater state, as the GUI last reported it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdatesStatus {
+    /// Whether a GUI is connected (the GUI owns the updater; nothing happens without it).
+    #[serde(default)]
+    pub gui_connected: bool,
+    /// unknown (no GUI report yet) | disabled (dev build) | idle | checking | up_to_date |
+    /// downloading | ready (restart to apply) | error.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UpdatesReportParams {
+    pub status: UpdatesStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UpdatesCommandResult {
+    pub ok: bool,
+    /// GUI connections that received the request (0 = no GUI running; nothing happens).
+    pub delivered: u32,
+    pub status: UpdatesStatus,
+}
+
+// ------------------------------------------------------------------ permissions
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionEntry {
+    /// accessibility | notifications | login-items
+    pub name: String,
+    /// granted | not_granted | enabled | disabled | not_requested | unknown
+    pub state: String,
+    /// What the daemon can actually see (and what it can't).
+    pub detail: String,
+    /// The command that opens the right System Settings pane (only the human can grant).
+    pub open_cli: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionsStatus {
+    pub permissions: Vec<PermissionEntry>,
+}

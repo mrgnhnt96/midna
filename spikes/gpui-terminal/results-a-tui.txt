@@ -1,0 +1,14 @@
+transport=A gui_pid=58173 daemon_pid=0 child_pid=58178
+TUI [a] top -s 1
+  frames=21 fps=3.5 vsync_misses(@120Hz, while frames flowing)=637 gap_p50=324.19ms gap_p95=558.99ms gap_max=559.1ms
+  ui_frame_cpu(render+paint) p50=0.99ms p95=1.07ms max=1.07ms | engine_frame_build p50=0.13ms p95=0.19ms max=0.19ms
+  cpu: gui=1.0% daemon=0.0% (of one core, over 6.0s) rss: gui=78MB daemon=0MB (peak sampled)
+TUI [a] vim -u NONE -N data/big.txt
+  frames=374 fps=62.0 vsync_misses(@120Hz, while frames flowing)=344 gap_p50=8.65ms gap_p95=58.03ms gap_max=66.7ms
+  ui_frame_cpu(render+paint) p50=0.62ms p95=0.88ms max=1.76ms | engine_frame_build p50=0.28ms p95=0.50ms max=0.87ms
+  cpu: gui=10.1% daemon=0.0% (of one core, over 6.0s) rss: gui=77MB daemon=0MB (peak sampled)
+TUI [a] python3 data/rainbow.py 9
+  frames=333 fps=55.1 vsync_misses(@120Hz, while frames flowing)=390 gap_p50=9.18ms gap_p95=33.49ms gap_max=41.7ms
+  ui_frame_cpu(render+paint) p50=2.33ms p95=2.44ms max=2.59ms | engine_frame_build p50=0.39ms p95=0.62ms max=1.83ms
+  cpu: gui=36.9% daemon=0.0% (of one core, over 6.0s) rss: gui=104MB daemon=0MB (peak sampled)
+SHOT /Users/mrgnhnt96/Development/rust/midna/spikes/gpui-terminal/shots/a-big.png

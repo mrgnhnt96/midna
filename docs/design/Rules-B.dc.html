@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rules B: scopes and live feed</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+.t-dark{--err-soft:rgba(242,102,92,.12);--ok-soft:rgba(76,195,138,.12)}
+.t-light{--err-soft:rgba(174,34,25,.07);--ok-soft:rgba(27,115,70,.08)}
+code,.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+@keyframes mlive{0%{opacity:1}50%{opacity:.35}100%{opacity:1}}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+  <div style="flex: 1; display: flex; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">{{needCount}} need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative">
+      <header style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line)">
+        <span style="display: inline-flex; color: var(--accent)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg></span>
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">Rules</h1>
+        <span style="color: var(--dim)">by scope, broad to narrow · deny always wins, otherwise the narrowest scope wins</span>
+        <div style="flex: 1"></div>
+        <sc-if value="{{hasProposals}}" hint-placeholder-val="{{ true }}">
+          <span style="display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--need-soft); color: var(--need); font-weight: 700"><span style="width: 7px; height: 7px; border-radius: 50%; background: var(--need)"></span>{{proposalCount}}</span>
+        </sc-if>
+        <button type="button" onClick="{{noop}}" title="Open ⌘K with this prompt" style="display: inline-flex; align-items: center; gap: 10px; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--dim); cursor: pointer">
+          <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--fg)">⌘K</kbd><span>Ask: <span style="color: var(--fg)">only ask about window.raise while I'm dictating</span></span>
+        </button>
+      </header>
+
+      <sc-if value="{{hasProposals}}" hint-placeholder-val="{{ true }}">
+        <section aria-label="Rule removal requests" style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 12px; border-bottom: 1px solid var(--line); background: var(--need-soft)">
+          <div style="display: flex; align-items: baseline; gap: 8px; padding: 0 4px">
+            <h2 style="margin: 0; font-size: 13px; font-weight: 700; color: var(--need)">Removal requests</h2>
+            <span style="font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums">{{reqCountText}}</span>
+            <span style="font-size: 12px; color: var(--dim)">· agents can add rules, only you can remove one</span>
+          </div>
+          <sc-for list="{{requests}}" as="q" hint-placeholder-count="2">
+            <article id="{{q.anchor}}" aria-label="{{q.aria}}" style="display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 8px 10px 8px 12px; border-radius: 8px; background: var(--panel); {{q.rowStyle}}">
+              <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="{{q.pillStyle}}">{{q.effect}}</span>
+                  <code style="flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis" title="{{q.matcher}}">{{q.matcher}}</code>
+                </div>
+                <span style="font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{q.scopeLabel}}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+                <span style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); min-width: 0"><span role="img" aria-label="{{q.agentLabel}}" title="{{q.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+<sc-if value="{{q.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+<sc-if value="{{q.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+<sc-if value="{{q.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+<sc-if value="{{q.isShell}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+</span><span style="color: var(--fg); font-weight: 700; white-space: nowrap">{{q.who}}</span><span>asked {{q.when}}</span></span>
+                <span style="font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis" title="{{q.reason}}">“{{q.reason}}”</span>
+              </div>
+              <div style="display: flex; gap: 6px">
+                <button type="button" onClick="{{q.confirm}}" aria-label="Remove rule {{q.matcher}}" style="height: 28px; padding: 0 12px; border: 0; border-radius: 6px; background: var(--err); color: #fff; font-weight: 700; cursor: pointer">Remove</button>
+                <button type="button" onClick="{{q.keep}}" aria-label="Keep rule {{q.matcher}}" style="height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); cursor: pointer">Keep</button>
+              </div>
+            </article>
+          </sc-for>
+        </section>
+      </sc-if>
+
+      <div style="flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--bg)">
+        <sc-for list="{{lanes}}" as="lane" hint-placeholder-count="3">
+          <section aria-label="{{lane.title}} rules" style="display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line)">
+            <div style="display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 8px">
+              <h2 style="margin: 0; font-size: 13px; font-weight: 700">{{lane.title}}</h2>
+              <span style="font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums">{{lane.count}}</span>
+              <span style="flex: 1"></span>
+              <span style="font-size: 11.5px; color: var(--dim)">{{lane.hint}}</span>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow: auto; padding: 0 12px 14px; display: flex; flex-direction: column; gap: 6px">
+              <sc-for list="{{lane.groups}}" as="grp" hint-placeholder-count="2">
+                <sc-if value="{{grp.hasLabel}}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 6px; padding: 8px 4px 2px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">{{grp.label}}</div>
+                </sc-if>
+                <sc-for list="{{grp.cards}}" as="c" hint-placeholder-count="2">
+                  <article aria-label="{{c.effect}} {{c.matcher}}" style="display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 9px; background: var(--panel); {{c.cardStyle}}">
+                    <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                      <span style="{{c.pillStyle}}">{{c.effectLabel}}</span>
+                      <code style="flex: 1; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis" title="{{c.matcher}}">{{c.matcher}}</code>
+                      <sc-if value="{{c.hot}}" hint-placeholder-val="{{ false }}"><span title="Fired in the last 2 minutes" style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: mlive 1.6s infinite"></span></sc-if>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); flex-wrap: wrap">
+                      <span>{{c.kindLabel}}</span><span aria-hidden="true">·</span>
+                      <sc-if value="{{c.byAgent}}" hint-placeholder-val="{{ false }}"><span role="img" aria-label="{{c.agentLabel}}" title="{{c.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+<sc-if value="{{c.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+<sc-if value="{{c.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+<sc-if value="{{c.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+<sc-if value="{{c.isShell}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+</span></sc-if>
+                      <span>{{c.byShort}}</span><span aria-hidden="true">·</span>
+                      <span><b style="color: var(--fg); font-variant-numeric: tabular-nums">{{c.firedText}}</b>× · {{c.last}}</span>
+                    </div>
+                    <sc-if value="{{c.hasExpiry}}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px">
+                        <span aria-hidden="true" style="flex: 1; height: 3px; border-radius: 2px; background: var(--line)"><span style="display: block; height: 3px; border-radius: 2px; background: var(--accent); width: {{c.expPctW}}"></span></span>
+                        <span style="color: var(--fg)">{{c.expiryText}}</span>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{c.viaApproval}}" hint-placeholder-val="{{ false }}">
+                      <a href="#approval" style="font-size: 12px; text-decoration: none">↳ {{c.choice}} on {{c.approval}} · {{c.originTerm}}</a>
+                    </sc-if>
+                    <sc-if value="{{c.pending}}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; justify-content: flex-end; margin-top: -2px">
+                        <a href="#{{c.reqAnchor}}" onClick="{{c.goReq}}" title="Jump to the request at the top" style="font-size: 12px; color: var(--need); text-decoration: none">removal requested ↑</a>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{c.notPending}}" hint-placeholder-val="{{ true }}">
+                      <div style="display: flex; justify-content: flex-end; margin-top: -2px">
+                        <sc-if value="{{c.confirming}}" hint-placeholder-val="{{ false }}">
+                          <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px"><span style="color: var(--dim)">Remove for every terminal?</span>
+                            <button type="button" onClick="{{c.remove}}" style="height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: var(--err); color: #fff; font-weight: 700; cursor: pointer">Remove</button>
+                            <button type="button" onClick="{{c.cancel}}" style="height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer">Cancel</button>
+                          </span>
+                        </sc-if>
+                        <sc-if value="{{c.idle}}" hint-placeholder-val="{{ true }}">
+                          <button type="button" onClick="{{c.ask}}" aria-label="Remove rule {{c.matcher}}" style="height: 22px; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer">Remove</button>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </article>
+                </sc-for>
+              </sc-for>
+            </div>
+          </section>
+        </sc-for>
+      </div>
+
+      <section aria-label="Last fired" style="flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--term)">
+        <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--line)">
+          <span style="width: 7px; height: 7px; border-radius: 50%; {{liveDot}}"></span>
+          <h2 style="margin: 0; font-size: 12px; font-weight: 700">Last fired</h2>
+          <span style="font-size: 12px; color: var(--dim)">{{feedSub}}</span>
+          <span style="flex: 1"></span>
+          <sc-if value="{{hasHl}}" hint-placeholder-val="{{ false }}"><button type="button" onClick="{{clearHl}}" style="height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer">Clear highlight</button></sc-if>
+          <button type="button" onClick="{{togglePause}}" aria-pressed="{{pausedPressed}}" style="height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; font-size: 12px; cursor: pointer">{{pauseLabel}}</button>
+        </div>
+        <div role="list" style="height: {{feedHeight}}; overflow: auto; font-size: 12px">
+          <sc-for list="{{feed}}" as="f" hint-placeholder-count="6">
+            <button type="button" role="listitem" onClick="{{f.pick}}" aria-label="{{f.aria}}" style="display: grid; grid-template-columns: 70px 190px minmax(0, 1fr) 62px minmax(0, 300px) 170px; gap: 12px; align-items: center; width: 100%; padding: 6px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; {{f.rowStyle}}">
+              <span class="mono" style="color: var(--dim)">{{f.t}}</span>
+              <span style="display: flex; align-items: center; gap: 6px; min-width: 0"><span role="img" aria-label="{{f.agentLabel}}" title="{{f.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+<sc-if value="{{f.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+<sc-if value="{{f.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+<sc-if value="{{f.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+<sc-if value="{{f.isShell}}" hint-placeholder-val="{{ false }}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+</span><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{f.termName}}</span></span>
+              <code style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{f.input}}</code>
+              <span style="{{f.pillStyle}}">{{f.verdict}}</span>
+              <span style="display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--dim)"><span aria-hidden="true">→</span><code style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{f.ruleColor}}">{{f.ruleText}}</code></span>
+              <span style="color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{f.outcomeText}}</span>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · 8 terminals</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · {{footRules}}</span>
+    <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+    <span>2 triggers today</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"proposals":{"editor":"enum","options":["none","pending"],"default":"pending","section":"State"},"feed":{"editor":"enum","options":["live","paused","tall"],"default":"live","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  terminals() {
+    const L = (t) => ({ t, color: 'var(--fg)' });
+    return [
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'working', lines: [L('')] },
+      { id: 'pr231', project: 'midna', name: 'PR #231 review', agent: 'codex', status: 'needs', lines: [L('')] },
+      { id: 'watch', project: 'midna', name: 'cargo watch', agent: 'monitor', status: 'done', lines: [L('')] },
+      { id: 'dict', project: 'kass', name: 'dictation-fix', agent: 'claude', status: 'working', lines: [L('')] },
+      { id: 'kzsh', project: 'kass', name: 'zsh', agent: 'shell', status: 'idle', lines: [L('')] },
+      { id: 'cleanup', project: 'saggar', name: 'cleanup', agent: 'claude', status: 'done', lines: [L('')] },
+      { id: 'migrate', project: 'api', name: 'migrate', agent: 'codex', status: 'working', lines: [L('')] },
+      { id: 'dev', project: 'api', name: 'dev server', agent: 'shell', status: 'failed', lines: [L('')] }
+    ];
+  }
+
+  termName(id) {
+    const t = this.terminals().find((x) => x.id === id);
+    return t ? t.project + ' › ' + t.name : id;
+  }
+
+  termAgent(id) {
+    const t = this.terminals().find((x) => x.id === id);
+    return t ? t.agent : 'shell';
+  }
+
+  // Rules as midnad stores them. fired30/last come from the audit log.
+  rules() {
+    return [
+      { id: 'r1', effect: 'deny', kind: 'command', matcher: 'git push --force*', scope: 'global', by: 'you', added: '2 Sep', fired: 14, last: '12m ago', lastMin: 12 },
+      { id: 'r2', effect: 'deny', kind: 'path', matcher: '~/.ssh/**', note: 'write', scope: 'global', by: 'you', added: '2 Sep', fired: 3, last: '6d ago', lastMin: 8640 },
+      { id: 'r6', effect: 'deny', kind: 'command', matcher: 'npm publish*', scope: 'project', project: 'kass', by: 'agent', byTerm: 'dict', added: '1 Oct', fired: 0, last: 'never', lastMin: 99999, prompt: '“never publish kass from an agent”' },
+      { id: 'r13', effect: 'ask', kind: 'command', matcher: 'gh pr merge*', scope: 'global', by: 'you', added: '2 Sep', fired: 7, last: '2m ago', lastMin: 2 },
+      { id: 'r3', effect: 'ask', kind: 'command', matcher: 'pnpm db:migrate --env staging*', scope: 'project', project: 'api', by: 'you', added: '18 Sep', fired: 9, last: '11m ago', lastMin: 11 },
+      { id: 'r4', effect: 'ask', kind: 'cli', matcher: 'midna close --force', scope: 'global', by: 'you', added: '2 Sep', fired: 6, last: '41m ago', lastMin: 41 },
+      { id: 'r5', effect: 'ask', kind: 'window', matcher: 'window.raise', scope: 'global', by: 'you', added: '20 Sep', fired: 23, last: '4m ago', lastMin: 4 },
+      { id: 'r7', effect: 'allow', kind: 'command', matcher: 'cargo test*', scope: 'project', project: 'midna', by: 'approval', byTerm: 'spike', approval: 'A-1182', choice: 'Always approve', asked: 'cargo test -p midnad policy::', added: '28 Sep', fired: 212, last: '1m ago', lastMin: 1 },
+      { id: 'r9', effect: 'allow', kind: 'command', matcher: 'gh pr view*', scope: 'global', by: 'agent', byTerm: 'pr231', added: '30 Sep', fired: 41, last: '5m ago', lastMin: 5 },
+      { id: 'r8', effect: 'allow', kind: 'tool', matcher: 'Edit', scope: 'terminal', term: 'dict', by: 'agent', byTerm: 'dict', added: 'today 11:20', fired: 88, last: 'just now', lastMin: 0 },
+      { id: 'r10', effect: 'allow', kind: 'command', matcher: 'pnpm db:migrate --env staging', scope: 'terminal', term: 'migrate', by: 'approval', byTerm: 'migrate', approval: 'A-1207', choice: 'Approve for 15 minutes', asked: 'pnpm db:migrate --env staging', added: 'today 14:06', expires: '4 min left', expPct: 27, fired: 1, last: '11m ago', lastMin: 11 },
+      { id: 'r11', effect: 'allow', kind: 'command', matcher: 'rm -rf node_modules', scope: 'project', project: 'saggar', by: 'approval', byTerm: 'cleanup', approval: 'A-1211', choice: 'Approve for 1 hour', asked: 'rm -rf node_modules', added: 'today 13:55', expires: '38 min left', expPct: 63, fired: 2, last: '19m ago', lastMin: 19 },
+      { id: 'r12', effect: 'allow', kind: 'command', matcher: 'flutter test*', scope: 'terminal', term: 'dict', by: 'approval', byTerm: 'dict', approval: 'A-1199', choice: 'Approve for this session', asked: 'flutter test test/composer_test.dart', added: 'today 11:02', expires: 'until dictation-fix exits', expPct: 100, fired: 17, last: '7m ago', lastMin: 7 }
+    ];
+  }
+
+  // Agent-proposed removals, waiting for the human.
+  proposalData() {
+    return [
+      { id: 'p1', rule: 'r3', byTerm: 'migrate', when: '9m ago', reason: 'Staging migrations are already reviewed in the PR. This asks on every run.' },
+      { id: 'p2', rule: 'r4', byTerm: 'cleanup', when: '26m ago', reason: 'I close finished monitor terminals after a cleanup pass, so this prompt fires each time.' }
+    ];
+  }
+
+  // Recent decisions, straight from the audit log.
+  audit() {
+    return [
+      { t: '14:17:02', term: 'dict', input: 'Edit src/composer/mod.rs', verdict: 'allow', rule: 'r8' },
+      { t: '14:16:40', term: 'spike', input: 'cargo test -p midnad policy::', verdict: 'allow', rule: 'r7' },
+      { t: '14:15:11', term: 'pr231', input: 'gh pr merge 231 --squash', verdict: 'ask', rule: 'r13', outcome: 'waiting on you' },
+      { t: '14:13:05', term: 'dict', input: 'window.raise kass-composer', verdict: 'ask', rule: 'r5', outcome: 'you denied' },
+      { t: '14:12:44', term: 'pr231', input: 'gh pr view 231 --json files', verdict: 'allow', rule: 'r9' },
+      { t: '14:10:31', term: 'dict', input: 'flutter test test/composer_test.dart', verdict: 'allow', rule: 'r12' },
+      { t: '14:06:18', term: 'migrate', input: 'pnpm db:migrate --env staging', verdict: 'ask', rule: 'r3', outcome: 'you approved for 15 min · A-1207' },
+      { t: '14:05:02', term: 'cleanup', input: 'git push --force origin cleanup', verdict: 'deny', rule: 'r1' },
+      { t: '13:58:47', term: 'cleanup', input: 'rm -rf node_modules', verdict: 'allow', rule: 'r11' },
+      { t: '13:36:20', term: 'cleanup', input: 'midna close --force cargo-watch', verdict: 'ask', rule: 'r4', outcome: 'you approved once' },
+      { t: '13:31:09', term: 'spike', input: 'git status --short', verdict: 'allow', rule: null }
+    ];
+  }
+
+  pill(effect) {
+    const m = {
+      deny: 'color: var(--err); background: var(--err-soft); border: 1px solid var(--err)',
+      ask: 'color: var(--need); background: var(--need-soft); border: 1px solid var(--need)',
+      allow: 'color: var(--ok); background: var(--ok-soft); border: 1px solid var(--ok)'
+    }[effect];
+    return 'display: inline-flex; align-items: center; justify-content: center; min-width: 46px; height: 20px; padding: 0 7px; box-sizing: border-box; border-radius: 5px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; ' + m;
+  }
+
+  scopeText(r) {
+    if (r.scope === 'global') return 'Global';
+    if (r.scope === 'project') return 'Project · ' + r.project;
+    return 'Terminal · ' + this.termName(r.term);
+  }
+
+  byVals(r) {
+    if (r.by === 'you') return { ...this.agentBits('none'), byHuman: true, byAgent: false, byText: 'You', bySub: r.added, viaApproval: false };
+    const a = this.termAgent(r.byTerm);
+    if (r.by === 'approval') return { ...this.agentBits(a), byHuman: true, byAgent: false, byText: 'You', bySub: r.choice + ' · ' + r.approval, viaApproval: true };
+    return { ...this.agentBits(a), byHuman: false, byAgent: true, byText: this.termName(r.byTerm), bySub: r.added, viaApproval: false };
+  }
+
+  ruleVals(r) {
+    return {
+      approval: '', asked: '', choice: '', note: '', prompt: '', expires: '',
+      ...r,
+      ...this.byVals(r),
+      effectLabel: r.effect,
+      pillStyle: this.pill(r.effect),
+      scopeLabel: this.scopeText(r),
+      kindLabel: r.kind + (r.note ? ' · ' + r.note : ''),
+      hasExpiry: !!r.expires,
+      noExpiry: !r.expires,
+      expiryText: r.expires || 'never',
+      expPctW: (r.expPct || 0) + '%',
+      firedText: String(r.fired),
+      hot: r.lastMin <= 2
+    };
+  }
+
+  commonVals() {
+    const terms = this.terminals();
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(terms, { id: null }),
+      needCount: terms.filter((t) => t.status === 'needs').length,
+      jumpNext: () => {}
+    };
+  }
+
+
+/*SHARED*/
+  extra(id) {
+    const X = {
+      pr231: { sub: 'Approve gh pr merge 231?', since: '2m' },
+      dev: { sub: 'exit 1', since: '9m' }
+    };
+    return X[id] || {};
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+  renderVals() {
+    const st = this.state;
+    const removed = st.removed || {};
+    const kept = st.kept || {};
+    const propsOn = (this.props.proposals ?? 'pending') === 'pending';
+    const paused = st.paused ?? ((this.props.feed ?? 'live') === 'paused');
+    const all = this.rules().filter((r) => !removed[r.id]);
+    const pend = propsOn ? this.proposalData().filter((p) => !kept[p.id] && all.some((r) => r.id === p.rule)) : [];
+    const hl = st.hl || null;
+
+    const card = (r) => {
+      const v = this.ruleVals(r);
+      const p = pend.find((x) => x.rule === r.id);
+      const confirming = st.confirm === r.id;
+      const style = r.id === hl
+        ? 'border: 1px solid var(--accent); box-shadow: 0 0 0 3px var(--accent-soft)'
+        : 'border: 1px solid var(--line)';
+      return {
+        ...v,
+        byShort: r.by === 'you' ? 'you · ' + r.added : r.by === 'approval' ? 'you via approval' : this.termName(r.byTerm),
+        originTerm: r.byTerm ? this.termName(r.byTerm) : '',
+        cardStyle: style + (hl && r.id !== hl ? '; opacity: .55' : ''),
+        pending: !!p, notPending: !p,
+        reqAnchor: p ? 'req-' + p.id : '',
+        goReq: () => { if (p) this.setState({ flash: p.id }); },
+        confirming, idle: !confirming,
+        ask: () => this.setState({ confirm: r.id }),
+        cancel: () => this.setState({ confirm: null }),
+        remove: () => this.setState({ removed: { ...removed, [r.id]: true }, confirm: null, hl: null })
+      };
+    };
+    const order = { deny: 0, ask: 1, allow: 2 };
+    const sortR = (a, b) => order[a.effect] - order[b.effect] || a.lastMin - b.lastMin;
+
+    const g = all.filter((r) => r.scope === 'global').sort(sortR);
+    const projNames = ['midna', 'kass', 'saggar', 'api'];
+    const pr = all.filter((r) => r.scope === 'project');
+    const tm = all.filter((r) => r.scope === 'terminal');
+    const termIds = [...new Set(tm.map((r) => r.term))];
+    const lanes = [
+      { title: 'Global', hint: 'every terminal', count: String(g.length), groups: [{ hasLabel: false, label: '', cards: g.map(card) }] },
+      { title: 'Project', hint: 'one project’s terminals', count: String(pr.length),
+        groups: projNames.filter((n) => pr.some((r) => r.project === n)).map((n) => ({ hasLabel: true, label: n, cards: pr.filter((r) => r.project === n).sort(sortR).map(card) })) },
+      { title: 'Terminal', hint: 'one terminal, often time-boxed', count: String(tm.length),
+        groups: termIds.map((id) => ({ hasLabel: true, label: this.termName(id), cards: tm.filter((r) => r.term === id).sort(sortR).map(card) })) }
+    ];
+
+    const flash = st.flash || null;
+    const requests = pend.map((p) => {
+      const r = all.find((x) => x.id === p.rule);
+      return {
+        ...this.agentBits(this.termAgent(p.byTerm)),
+        anchor: 'req-' + p.id,
+        effect: r.effect, matcher: r.matcher,
+        pillStyle: this.pill(r.effect),
+        scopeLabel: this.scopeText(r),
+        who: this.termName(p.byTerm), when: p.when, reason: p.reason,
+        aria: this.termName(p.byTerm) + ' asks to remove ' + r.effect + ' ' + r.matcher,
+        rowStyle: p.id === flash ? 'border: 1px solid var(--accent); box-shadow: 0 0 0 3px var(--accent-soft)' : 'border: 1px solid var(--need)',
+        confirm: () => this.setState({ removed: { ...removed, [r.id]: true }, hl: null, flash: null }),
+        keep: () => this.setState({ kept: { ...kept, [p.id]: true }, flash: null })
+      };
+    });
+
+    const byId = {};
+    this.rules().forEach((r) => { byId[r.id] = r; });
+    const log = paused ? this.audit().slice(2) : this.audit();
+    const feed = log.map((a) => {
+      const r = a.rule ? byId[a.rule] : null;
+      const gone = r && removed[r.id];
+      const on = a.rule && a.rule === hl;
+      return {
+        ...a,
+        ...this.agentBits(this.termAgent(a.term)),
+        termName: this.termName(a.term),
+        pillStyle: this.pill(a.verdict),
+        ruleText: r ? r.effect + ' · ' + r.matcher + (gone ? ' (removed)' : '') : 'no rule · unsupervised default',
+        ruleColor: r ? 'var(--fg)' : 'var(--dim)',
+        outcomeText: a.outcome || (a.verdict === 'deny' ? 'blocked' : a.verdict === 'allow' ? 'ran' : 'asked'),
+        aria: a.t + ', ' + this.termName(a.term) + ', ' + a.input + ', ' + a.verdict,
+        rowStyle: on ? 'background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent)' : '',
+        pick: () => this.setState({ hl: a.rule && a.rule !== hl && !gone ? a.rule : null })
+      };
+    });
+
+    return {
+      ...this.commonVals(),
+      footRules: all.length + ' rules',
+      hasProposals: pend.length > 0,
+      proposalCount: pend.length === 1 ? '1 removal proposed' : pend.length + ' removals proposed',
+      requests,
+      reqCountText: String(pend.length),
+      lanes,
+      feed,
+      feedHeight: (this.props.feed ?? 'live') === 'tall' ? '300px' : '196px',
+      feedSub: paused ? 'paused · 2 new since 14:15' : 'live from the audit log · click a row to find its rule',
+      liveDot: paused ? 'background: var(--dim)' : 'background: var(--ok); animation: mlive 1.6s infinite',
+      pauseLabel: paused ? 'Resume' : 'Pause',
+      pausedPressed: paused ? 'true' : 'false',
+      togglePause: () => this.setState({ paused: !paused }),
+      hasHl: !!hl,
+      clearHl: () => this.setState({ hl: null }),
+      noop: () => {}
+    };
+  }
+
+}
+</script>
+</body>
+</html>

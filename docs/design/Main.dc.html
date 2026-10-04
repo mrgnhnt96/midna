@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Midna main screen</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="min-height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+  <div style="flex: 1; display: flex; flex-wrap: wrap; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">{{needCount}} need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<!--HEAD-->
+      <header style="display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap">
+        <span style="width: 9px; height: 9px; border-radius: 50%; {{current.dotStyle}}"></span>
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">{{current.name}}</h1>
+        <span role="img" aria-label="{{current.agentLabel}}" title="{{current.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{current.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{current.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{current.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{current.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+        <sc-if value="{{current.showGit}}" hint-placeholder-val="{{ true }}">
+        <span aria-hidden="true" style="width: 1px; height: 18px; background: var(--line)"></span>
+        <span title="Branch" style="display: inline-flex; align-items: center; gap: 6px; color: var(--dim)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8"></circle><circle cx="4.5" cy="12.5" r="1.8"></circle><circle cx="11.5" cy="5.5" r="1.8"></circle><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 3.4"></path></svg>{{current.branch}}
+        </span>
+        <sc-if value="{{current.hasStats}}" hint-placeholder-val="{{ false }}">
+          <span title="Uncommitted changes" style="font-family: 'JetBrains Mono', monospace; font-size: 12px"><span style="color: var(--ok)">{{current.plus}}</span> <span style="color: var(--err)">{{current.minus}}</span> <span style="color: var(--dim)">{{current.files}}</span></span>
+        </sc-if>
+        </sc-if>
+        <sc-if value="{{current.hasPr}}" hint-placeholder-val="{{ false }}">
+          <a href="https://github.com" title="Pull request and checks" style="display: inline-flex; align-items: center; gap: 6px; color: var(--fg); text-decoration: none">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"></circle><circle cx="4" cy="12.5" r="1.8"></circle><circle cx="12" cy="12.5" r="1.8"></circle><path d="M4 5.3v5.4M12 10.7V6.5a2 2 0 0 0-2-2H7.5M9 3 7.5 4.5 9 6"></path></svg>{{current.pr}}
+            <span style="display: inline-flex; align-items: center; gap: 5px; color: {{current.checksColor}}"><span style="width: 7px; height: 7px; border-radius: 50%; background: {{current.checksColor}}"></span>{{current.checks}}</span>
+          </a>
+        </sc-if>
+        <sc-if value="{{current.showAgentInfo}}" hint-placeholder-val="{{ false }}">
+          <span title="Spend this session" style="color: var(--dim)">{{current.cost}}</span>
+          <span title="Model" style="color: var(--dim)">{{current.model}}</span>
+        </sc-if>
+        <div style="flex: 1"></div>
+        <div role="toolbar" aria-label="Terminal actions" style="display: flex; gap: 2px">
+          <button type="button" aria-label="Split right (⌘D)" title="Split right ⌘D" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"></rect><path d="M8 2.5v11"></path></svg></button>
+          <button type="button" aria-label="Pop out and keep on top" title="Pop out, keep on top" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"></rect><path d="M9 1.5h5.5V7M14.5 1.5 8 8"></path></svg></button>
+          <button type="button" aria-label="Restart" title="Restart" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3"></path></svg></button>
+          <button type="button" aria-label="More actions" title="More" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg></button>
+        </div>
+      </header>
+<!--/HEAD-->
+
+      <section aria-label="Terminal" style="flex: 1; display: flex; flex-direction: column; background: var(--term); min-height: 0">
+        <div style="flex: 1; padding: 14px 20px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.6; overflow: hidden">
+          <sc-for list="{{current.lines}}" as="ln" hint-placeholder-count="8"><div style="white-space: pre; color: {{ln.color}}">{{ln.t}}</div></sc-for>
+        </div>
+        <sc-if value="{{showAsk}}" hint-placeholder-val="{{ false }}">
+          <div role="group" aria-label="Approval needed" style="display: flex; align-items: center; gap: 12px; margin: 0 16px 16px; padding: 12px 14px; border: 1.5px solid var(--need); border-radius: 10px; background: var(--panel); flex-wrap: wrap; animation: mpulse 2.4s ease-in-out infinite; position: relative">
+            <div style="display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 260px">
+              <b>Codex wants to run this on staging</b>
+              <code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--dim)">pnpm db:migrate --env staging · asked by your rule “ask when env = staging”</code>
+            </div>
+            <div style="position: relative; display: inline-flex">
+              <button type="button" onClick="{{approve}}" style="height: 32px; padding: 0 12px; border: 0; border-radius: 7px 0 0 7px; background: var(--accent); color: var(--accent-fg); font-weight: 700; cursor: pointer">Approve ⌘↩</button>
+              <button type="button" onClick="{{toggleApproveMenu}}" aria-label="More ways to approve" aria-haspopup="menu" aria-expanded="{{approveMenuExpanded}}" style="width: 30px; height: 32px; border: 0; border-left: 1px solid rgba(0,0,0,.25); border-radius: 0 7px 7px 0; background: var(--accent); color: var(--accent-fg); cursor: pointer">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"></path></svg>
+              </button>
+              <sc-if value="{{approveMenuOpen}}" hint-placeholder-val="{{ false }}">
+                <div role="menu" aria-label="Approve" style="position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 260px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35)">
+                  <sc-for list="{{approveOptions}}" as="o" hint-placeholder-count="5">
+                    <button type="button" role="menuitem" onClick="{{approve}}" style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer">
+                      <span style="flex: 1">{{o.label}}</span>
+                      <span style="font-size: 11.5px; color: var(--dim)">{{o.hint}}</span>
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+            <button type="button" onClick="{{deny}}" style="height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; background: transparent; cursor: pointer">Deny ⌘⌫</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{dictating}}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 16px 16px">
+            <span style="display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); font-size: 12px">
+              <span aria-hidden="true" style="display: inline-flex; align-items: center; gap: 2px; height: 12px"><span style="width: 2px; height: 5px; background: var(--accent)"></span><span style="width: 2px; height: 11px; background: var(--accent)"></span><span style="width: 2px; height: 7px; background: var(--accent)"></span><span style="width: 2px; height: 12px; background: var(--accent)"></span><span style="width: 2px; height: 4px; background: var(--accent)"></span></span>Kass · listening
+            </span>
+            <label style="width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1.5px solid var(--accent); border-radius: 9px; background: var(--panel)">
+              <span aria-hidden="true" style="font-family: 'JetBrains Mono', monospace; color: var(--accent)">❯</span>
+              <input type="text" aria-label="Message to {{current.name}}" value="apply them, but back up the sessions table first" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font-family: 'JetBrains Mono', monospace; font-size: 12.5px">
+              <span style="font-size: 11px; color: var(--dim); white-space: nowrap">↩ send · esc hide</span>
+            </label>
+          </div>
+        </sc-if>
+      </section>
+    </main>
+  </div>
+
+  <footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · 14 terminals</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · 1 approval rule</span>
+    <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+    <span>2 triggers today</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"headerScript":{"editor":"enum","options":["github","github + agent","none"],"default":"github","section":"Header scripts"},"rowScript":{"editor":"enum","options":["none","git-diff-stats"],"default":"none","section":"Sidebar scripts"},"density":{"editor":"enum","options":["comfortable","compact"],"default":"comfortable","section":"Look"},"mode":{"editor":"enum","options":["default","dictating"],"default":"default","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { selected: 'migrate', resolved: {} };
+  }
+
+  terminals() {
+    const dim = 'var(--dim)', fg = 'var(--fg)', acc = 'var(--accent)', ok = 'var(--ok)', err = 'var(--err)', need = 'var(--need)';
+    const L = (t, color) => ({ t: t || ' ', color: color || fg });
+    return [
+      { id: 'api', project: 'zonai', name: 'api', agent: 'claude', status: 'working', lines: [
+        L('❯ claude', dim), L(''), L('⏺ Reading src/auth/session.rs', acc), L('⏺ Update(src/auth/session.rs)', acc),
+        L('    + pub fn refresh(&mut self) -> Result<Token> {', ok), L('    +     let next = self.issuer.renew(&self.token)?;', ok),
+        L('    +     self.token = next.clone();', ok), L('    +     Ok(next)', ok), L('    + }', ok), L('    - pub fn refresh(&self) -> Token', err), L(''),
+        L('⏺ Bash(cargo test auth::)', acc), L('    test result: ok. 18 passed; 0 failed', ok), L(''), L('✻ Wiring refresh into the middleware… (4m 12s)', dim)] },
+      { id: 'migrate', project: 'zonai', name: 'migrate', agent: 'codex', status: 'needs', lines: [
+        L('Plan: apply 3 migrations', fg), L('  0042_add_tokens', dim), L('  0043_backfill_sessions', dim), L('  0044_drop_legacy_keys', dim), L(''),
+        L('Would you like to run the following command?', fg), L('  pnpm db:migrate --env staging', acc), L(''),
+        L('  1. Yes, proceed (y)', fg), L('  2. Yes, and don’t ask again for this command (p)', fg), L('  3. No, tell Codex what to do differently (esc)', fg)] },
+      { id: 'tests', project: 'zonai', name: 'tests', agent: 'monitor', status: 'done', lines: [L('cargo watch -x test', dim), L('   ok  auth::refresh', ok), L('412 passed; 0 failed', fg)] },
+      { id: 'zsh', project: 'zonai', name: 'zsh', agent: 'shell', status: 'idle', lines: [L('~/Development/zonai on feat/auth', dim), L('❯ ', fg)] },
+      { id: 'golden', project: 'drops-app', name: 'golden', agent: 'claude', status: 'needs', lines: [
+        L('⏺ I found three ways to structure the golden tests:', acc), L(''), L('  A. One golden per widget', fg), L('  B. One golden per screen', fg), L('  C. Per screen, with widget goldens for shared parts', fg), L(''), L('Which should I take?', need)] },
+      { id: 'build', project: 'drops-app', name: 'flutter build', agent: 'shell', status: 'failed', lines: [
+        L('❯ flutter build ios', dim), L('error: No signing certificate "Apple Development" found', err), L('exit 1', err)] },
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'working', lines: [
+        L('⏺ Bash(cargo build --release)', acc), L('   Compiling gpui-pre v0.3.7', dim), L('   [812/1190]', dim)] }
+    ];
+  }
+
+/*SHARED*/
+  extra(id) {
+    const X = {
+      api: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 48, minus: 12, files: 6, ctx: 42, cost: '$0.82', model: 'opus', since: '4m' },
+      migrate: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 96, minus: 0, files: 3, ctx: 18, cost: '$0.11', model: 'gpt-5', sub: 'Approve db:migrate on staging?', since: '4m' },
+      tests: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      zsh: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      golden: { branch: 'main', ctx: 61, cost: '$1.40', model: 'sonnet', sub: 'Asked a question', since: '12m' },
+      build: { branch: 'main', sub: 'exit 1', since: '9m' },
+      review: { branch: 'main', pr: '#2231', checks: '2 failing', checksKind: 'fail', plus: 14, minus: 3, files: 2, ctx: 27, cost: '$0.33', model: 'gpt-5' },
+      spike: { branch: 'main', plus: 210, minus: 41, files: 9, ctx: 9, cost: '$0.04', model: 'opus' },
+      docs: { branch: 'main' }
+    };
+    return X[id] || {};
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+  renderVals() {
+    const r = this.state.resolved;
+    const terms = this.terminals().map((t) => r[t.id] ? { ...t, status: r[t.id] === 'approved' ? 'working' : 'idle' } : t);
+    const sel = terms.find((t) => t.id === this.state.selected) || terms[0];
+    const needs = terms.filter((t) => t.status === 'needs');
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(terms, sel),
+      needCount: needs.length,
+      current: this.headVals(sel),
+      showAsk: sel.id === 'migrate' && sel.status === 'needs',
+      dictating: (this.props.mode ?? 'default') === 'dictating',
+      approve: () => this.setState({ resolved: { ...r, migrate: 'approved' }, menu: false }),
+      approveMenuOpen: !!this.state.menu,
+      approveMenuExpanded: this.state.menu ? 'true' : 'false',
+      toggleApproveMenu: () => this.setState({ menu: !this.state.menu }),
+      approveOptions: [
+        { label: 'Approve once', hint: '⌘↩' },
+        { label: 'Approve for 15 minutes', hint: 'this command' },
+        { label: 'Approve for 1 hour', hint: 'this command' },
+        { label: 'Approve for this session', hint: 'until migrate exits' },
+        { label: 'Always approve', hint: 'adds a rule' }
+      ],
+
+      deny: () => this.setState({ resolved: { ...r, migrate: 'denied' } }),
+      jumpNext: () => {
+        const ids = needs.map((t) => t.id);
+        if (!ids.length) return;
+        const i = ids.indexOf(this.state.selected);
+        this.setState({ selected: ids[(i + 1) % ids.length] });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

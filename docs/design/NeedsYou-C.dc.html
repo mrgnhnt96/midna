@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Needs you: one at a time</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+.ny-row:hover{background:var(--raised)}
+.ny-ghost:hover{background:var(--raised);color:var(--fg)}
+.ny-chip:hover{border-color:var(--dim)}
+kbd{font-family:'JetBrains Mono',monospace;font-size:11px}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="min-height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+  <div style="flex: 1; display: flex; flex-wrap: wrap; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" aria-haspopup="{{needHaspopup}}" aria-expanded="{{needExpanded}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border-radius: 8px; font-weight: 700; cursor: pointer; {{needBtnStyle}}">
+        <span style="width: 8px; height: 8px; border-radius: 50%; {{needDot}}"></span><span style="flex: 1; text-align: left">{{needLabel}}</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; max-height: 872px">
+      <sc-if value="{{flowOff}}" hint-placeholder-val="{{ false }}">
+<!--HEAD-->
+      <header style="display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap">
+        <span style="width: 9px; height: 9px; border-radius: 50%; {{current.dotStyle}}"></span>
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">{{current.name}}</h1>
+        <span role="img" aria-label="{{current.agentLabel}}" title="{{current.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{current.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{current.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{current.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{current.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+        <sc-if value="{{current.showGit}}" hint-placeholder-val="{{ true }}">
+        <span aria-hidden="true" style="width: 1px; height: 18px; background: var(--line)"></span>
+        <span title="Branch" style="display: inline-flex; align-items: center; gap: 6px; color: var(--dim)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8"></circle><circle cx="4.5" cy="12.5" r="1.8"></circle><circle cx="11.5" cy="5.5" r="1.8"></circle><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 3.4"></path></svg>{{current.branch}}
+        </span>
+        <sc-if value="{{current.hasStats}}" hint-placeholder-val="{{ false }}">
+          <span title="Uncommitted changes" style="font-family: 'JetBrains Mono', monospace; font-size: 12px"><span style="color: var(--ok)">{{current.plus}}</span> <span style="color: var(--err)">{{current.minus}}</span> <span style="color: var(--dim)">{{current.files}}</span></span>
+        </sc-if>
+        </sc-if>
+        <sc-if value="{{current.hasPr}}" hint-placeholder-val="{{ false }}">
+          <a href="https://github.com" title="Pull request and checks" style="display: inline-flex; align-items: center; gap: 6px; color: var(--fg); text-decoration: none">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"></circle><circle cx="4" cy="12.5" r="1.8"></circle><circle cx="12" cy="12.5" r="1.8"></circle><path d="M4 5.3v5.4M12 10.7V6.5a2 2 0 0 0-2-2H7.5M9 3 7.5 4.5 9 6"></path></svg>{{current.pr}}
+            <span style="display: inline-flex; align-items: center; gap: 5px; color: {{current.checksColor}}"><span style="width: 7px; height: 7px; border-radius: 50%; background: {{current.checksColor}}"></span>{{current.checks}}</span>
+          </a>
+        </sc-if>
+        <sc-if value="{{current.showAgentInfo}}" hint-placeholder-val="{{ false }}">
+          <span title="Spend this session" style="color: var(--dim)">{{current.cost}}</span>
+          <span title="Model" style="color: var(--dim)">{{current.model}}</span>
+        </sc-if>
+        <div style="flex: 1"></div>
+        <div role="toolbar" aria-label="Terminal actions" style="display: flex; gap: 2px">
+          <button type="button" aria-label="Split right (⌘D)" title="Split right ⌘D" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"></rect><path d="M8 2.5v11"></path></svg></button>
+          <button type="button" aria-label="Pop out and keep on top" title="Pop out, keep on top" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"></rect><path d="M9 1.5h5.5V7M14.5 1.5 8 8"></path></svg></button>
+          <button type="button" aria-label="Restart" title="Restart" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3"></path></svg></button>
+          <button type="button" aria-label="More actions" title="More" style="width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg></button>
+        </div>
+      </header>
+<!--/HEAD-->
+        <section aria-label="Terminal" style="flex: 1; display: flex; flex-direction: column; background: var(--term); min-height: 0">
+          <div style="flex: 1; padding: 14px 20px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.6; overflow: hidden">
+            <sc-for list="{{current.lines}}" as="ln" hint-placeholder-count="8"><div style="white-space: pre; color: {{ln.color}}">{{ln.t}}</div></sc-for>
+          </div>
+        </section>
+      </sc-if>
+
+      <sc-if value="{{flowOn}}" hint-placeholder-val="{{ true }}">
+        <section aria-label="Needs you, one at a time" tabindex="0" onKeyDown="{{onKey}}" style="flex: 1; display: flex; flex-direction: column; min-height: 0; outline: none; background: radial-gradient(ellipse at 50% 0%, var(--accent-soft), transparent 60%), var(--bg)">
+          <header style="display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line)">
+            <h1 style="margin: 0; font-size: 15px; font-weight: 700">Needs you</h1>
+            <sc-if value="{{hasItems}}" hint-placeholder-val="{{ true }}">
+              <span style="color: var(--dim); font-variant-numeric: tabular-nums">{{leftText}}</span>
+              <div role="img" aria-label="{{progressLabel}}" style="display: flex; gap: 3px; width: 280px">
+                <sc-for list="{{segments}}" as="sg" hint-placeholder-count="8"><span title="{{sg.title}}" style="flex: 1; height: 5px; border-radius: 3px; background: {{sg.color}}"></span></sc-for>
+              </div>
+            </sc-if>
+            <span style="flex: 1"></span>
+            <button type="button" onClick="{{exitFlow}}" class="ny-ghost" aria-label="Exit to {{backName}} (Esc)" style="display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer">Back to {{backName}} <kbd>esc</kbd></button>
+          </header>
+
+          <sc-if value="{{hasItems}}" hint-placeholder-val="{{ true }}">
+            <div style="flex: 1; display: flex; flex-direction: column; align-items: center; padding: 34px 24px 16px; min-height: 0; overflow: auto">
+              <div style="position: relative; width: 100%; max-width: 760px; margin-top: 14px">
+                <sc-if value="{{hasBehind2}}" hint-placeholder-val="{{ true }}"><span aria-hidden="true" style="position: absolute; left: 36px; right: 36px; top: -20px; height: 60px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); opacity: .45"></span></sc-if>
+                <sc-if value="{{hasBehind1}}" hint-placeholder-val="{{ true }}"><span aria-hidden="true" style="position: absolute; left: 18px; right: 18px; top: -10px; height: 60px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); opacity: .75"></span></sc-if>
+
+                <article aria-label="{{cur.kindLabel}}: {{cur.title}}" style="position: relative; display: flex; flex-direction: column; gap: 14px; padding: 20px 22px; border: 1px solid var(--line); border-top: 3px solid {{cur.color}}; border-radius: 14px; background: var(--panel); box-shadow: 0 18px 50px rgba(0,0,0,.30)">
+                  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+                    <span style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; background: {{cur.chipBg}}; color: {{cur.color}}; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase">{{cur.kindLabel}}</span>
+                    <span style="color: var(--dim)">{{cur.since}} ago</span>
+                    <span style="flex: 1"></span>
+                    <span style="display: inline-flex; align-items: center; gap: 7px; color: var(--dim)"><span role="img" aria-label="{{cur.agentLabel}}" title="{{cur.agentLabel}}" style="display: inline-flex; color: var(--dim)"><sc-if value="{{cur.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if><sc-if value="{{cur.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if><sc-if value="{{cur.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if><sc-if value="{{cur.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if><sc-if value="{{cur.isTrigger}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg></sc-if></span><span>{{cur.whoLine}}</span></span>
+                  </div>
+                  <h2 style="margin: 0; font-size: 24px; line-height: 1.2">{{cur.title}}</h2>
+                  <div style="display: grid; grid-template-columns: 74px minmax(0, 1fr); row-gap: 6px; column-gap: 12px; font-size: 13px">
+                    <span style="color: var(--dim)">Asked by</span><span>{{cur.who}}</span>
+                    <span style="color: var(--dim)">Why</span><span>{{cur.reason}}</span>
+                    <span style="color: var(--dim)">Request</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{cur.cmd}}</code>
+                  </div>
+<div style="border: 1px solid var(--line); border-radius: 8px; background: var(--term); overflow: hidden">
+  <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{cur.peekTitle}}</span>
+    <button type="button" onClick="{{cur.open}}" class="ny-ghost" aria-label="Open terminal {{cur.where}}" style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font-size: 11.5px; cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"></rect><path d="M9 1.5h5.5V7M14.5 1.5 8 8"></path></svg>Open terminal <kbd>⌘O</kbd></button>
+  </div>
+  <div style="padding: 8px 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.6; overflow: hidden">
+    <sc-for list="{{cur.peek}}" as="ln" hint-placeholder-count="5"><div style="white-space: pre; overflow: hidden; text-overflow: ellipsis; color: {{ln.color}}">{{ln.t}}</div></sc-for>
+  </div>
+</div>
+                  <sc-if value="{{cur.hasSame}}" hint-placeholder-val="{{ false }}">
+                    <div style="display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px dashed var(--accent); border-radius: 9px; background: var(--accent-soft); flex-wrap: wrap">
+                      <span style="flex: 1; min-width: 240px">{{cur.sameText}}</span>
+                      <button type="button" onClick="{{cur.approveSame}}" style="height: 28px; padding: 0 11px; border: 1px solid var(--accent); border-radius: 7px; background: transparent; color: var(--fg); font-weight: 700; cursor: pointer">Approve all {{cur.sameCount}} once <kbd>⌘⇧↩</kbd></button>
+                    </div>
+                  </sc-if>
+                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                    <sc-if value="{{cur.isApprove}}" hint-placeholder-val="{{ true }}"><div style="position: relative; display: inline-flex">
+  <button type="button" onClick="{{cur.approve}}" aria-label="Approve once: {{cur.title}}" style="height: 38px; padding: 0 16px; border: 0; border-radius: 7px 0 0 7px; background: var(--accent); color: var(--accent-fg); font-weight: 700; font-size: 14px; white-space: nowrap; cursor: pointer">{{cur.approveText}}</button>
+  <button type="button" onClick="{{cur.toggleMenu}}" aria-label="More ways to approve" aria-haspopup="menu" aria-expanded="{{cur.menuExpanded}}" style="width: 32px; height: 38px; border: 0; border-left: 1px solid rgba(0,0,0,.25); border-radius: 0 7px 7px 0; background: var(--accent); color: var(--accent-fg); cursor: pointer"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"></path></svg></button>
+  <sc-if value="{{cur.menuOpen}}" hint-placeholder-val="{{ false }}">
+    <div role="menu" aria-label="Approve" style="position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30; min-width: 270px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35)">
+      <sc-for list="{{cur.options}}" as="o" hint-placeholder-count="5">
+        <button type="button" role="menuitem" onClick="{{o.pick}}" class="ny-row" style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; font-size: 13px; cursor: pointer"><span style="flex: 1">{{o.label}}</span><span style="font-size: 11.5px; color: var(--dim)">{{o.hint}}</span></button>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+<button type="button" onClick="{{cur.deny}}" aria-label="Deny: {{cur.title}}" class="ny-ghost" style="height: 38px; padding: 0 16px; border: 1px solid var(--line); border-radius: 7px; background: transparent; font-size: 14px; white-space: nowrap; cursor: pointer">{{cur.denyText}}</button></sc-if>
+                    <sc-if value="{{cur.isOther}}" hint-placeholder-val="{{ false }}"><button type="button" onClick="{{cur.primary}}" aria-label="{{cur.primaryLabel}}: {{cur.title}}" style="height: 38px; padding: 0 16px; border: 1px solid var(--accent); border-radius: 7px; background: var(--accent-soft); color: var(--fg); font-weight: 700; font-size: 14px; white-space: nowrap; cursor: pointer">{{cur.primaryLabel}}</button>
+<sc-if value="{{cur.hasSecondary}}" hint-placeholder-val="{{ false }}"><button type="button" onClick="{{cur.secondary}}" aria-label="{{cur.secondaryLabel}}: {{cur.title}}" class="ny-ghost" style="height: 38px; padding: 0 16px; border: 1px solid var(--line); border-radius: 7px; background: transparent; font-size: 14px; white-space: nowrap; cursor: pointer">{{cur.secondaryLabel}}</button></sc-if></sc-if>
+                    <span style="flex: 1"></span>
+                    <button type="button" onClick="{{cur.open}}" class="ny-ghost" style="height: 38px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer">Open terminal <kbd>⌘O</kbd></button>
+                    <button type="button" onClick="{{skip}}" class="ny-ghost" style="height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; background: transparent; cursor: pointer">Skip <kbd>⌘J</kbd></button>
+                  </div>
+                </article>
+              </div>
+
+              <sc-if value="{{hasNext}}" hint-placeholder-val="{{ true }}">
+                <div style="width: 100%; max-width: 760px; margin-top: 22px">
+                  <div style="padding: 0 4px 6px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">Up next</div>
+                  <sc-for list="{{upNext}}" as="u" hint-placeholder-count="3">
+                    <button type="button" onClick="{{u.go}}" class="ny-row" style="display: grid; grid-template-columns: 10px 130px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; width: 100%; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer">
+                      <span style="width: 7px; height: 7px; border-radius: 50%; background: {{u.color}}"></span>
+                      <span style="font-size: 12px; color: var(--dim)">{{u.kindLabel}}</span>
+                      <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{u.title}}</span>
+                      <span style="font-size: 12px; color: var(--dim)">{{u.where}}</span>
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+            <div style="display: flex; justify-content: center; gap: 18px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); flex-wrap: wrap">
+              <span><kbd>⌘↩</kbd> approve once</span><span><kbd>⌘⌫</kbd> deny</span><span><kbd>⌘J</kbd> skip</span><span><kbd>⌘O</kbd> open terminal</span><span><kbd>esc</kbd> back</span>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{isEmptyC}}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px; text-align: center">
+              <span aria-hidden="true" style="display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ok)"><svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"></path></svg></span>
+              <h2 style="margin: 0; font-size: 24px">{{emptyTitle}}</h2>
+              <span style="max-width: 480px; color: var(--dim)">{{emptySub}}</span>
+              <div style="display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 440px; margin-top: 8px">
+                <sc-for list="{{suggestions}}" as="s" hint-placeholder-count="3">
+                  <button type="button" class="ny-chip" style="padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); text-align: left; font-size: 12.5px; cursor: pointer">{{s.t}}</button>
+                </sc-for>
+              </div>
+              <button type="button" onClick="{{exitFlow}}" style="margin-top: 8px; height: 34px; padding: 0 16px; border: 0; border-radius: 7px; background: var(--accent); color: var(--accent-fg); font-weight: 700; cursor: pointer">Back to {{backName}}</button>
+            </div>
+          </sc-if>
+        </section>
+      </sc-if>
+    </main>
+  </div>
+
+<footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · 14 terminals</span>
+    <span>Policy <span style="color: var(--fg)">ask on staging</span> · 3 approval rules</span>
+    <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+    <span>2 triggers today</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J needs you</span>
+  </footer>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"state":{"editor":"enum","options":["populated","empty"],"default":"populated","section":"State"},"order":{"editor":"enum","options":["oldest first","approvals first"],"default":"oldest first","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { selected: 'migrate', done: {}, log: [], cur: null, menu: null, flow: true };
+  }
+
+  terminals() {
+    const dim = 'var(--dim)', fg = 'var(--fg)', acc = 'var(--accent)', ok = 'var(--ok)';
+    const L = (t, color) => ({ t: t || ' ', color: color || fg });
+    const peek = (id) => { const it = this.items().find((i) => i.term === id); return it ? it.peek : []; };
+    return [
+      { id: 'pr231', project: 'midna', name: 'PR #231 review', agent: 'claude', status: 'needs', lines: peek('pr231') },
+      { id: 'pr233', project: 'midna', name: 'PR #233 review', agent: 'claude', status: 'needs', lines: peek('pr233') },
+      { id: 'devserver', project: 'midna', name: 'dev server', agent: 'shell', status: 'failed', lines: peek('devserver') },
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'working', lines: [L('⏺ Bash(cargo build --release)', acc), L('   Compiling gpui v0.3.7', dim), L('   [812/1190]', dim)] },
+      { id: 'accessibility', project: 'kass', name: 'accessibility', agent: 'claude', status: 'needs', lines: peek('accessibility') },
+      { id: 'docs', project: 'kass', name: 'docs', agent: 'claude', status: 'needs', lines: peek('docs') },
+      { id: 'port', project: 'saggar', name: 'port settings', agent: 'codex', status: 'needs', lines: peek('port') },
+      { id: 'zsh', project: 'saggar', name: 'zsh', agent: 'shell', status: 'idle', lines: [L('~/Development/saggar on main', dim), L('❯ ', fg)] },
+      { id: 'migrate', project: 'api', name: 'migrate', agent: 'codex', status: 'needs', lines: peek('migrate') },
+      { id: 'deps', project: 'api', name: 'deps bump', agent: 'claude', status: 'needs', lines: peek('deps') },
+      { id: 'tests', project: 'api', name: 'tests', agent: 'monitor', status: 'done', lines: [L('cargo watch -x test', dim), L('   ok  db::migrate', ok)] }
+    ];
+  }
+
+  items() {
+    const dim = 'var(--dim)', fg = 'var(--fg)', acc = 'var(--accent)', ok = 'var(--ok)', err = 'var(--err)', need = 'var(--need)';
+    const L = (t, color) => ({ t: t || ' ', color: color || fg });
+    const list = [
+      { id: 'q-port', term: 'port', kind: 'note', age: 1080, since: '18m',
+        title: '2 TODOs left in settings.rs', cmd: 'src/settings.rs:88 · src/settings.rs:141',
+        reason: 'Raised with midna attention --note', bulk: true, bulkNote: '',
+        peek: [L('• Ported 14 settings from saggar.toml', fg), L('• Left 2 TODOs in src/settings.rs (lines 88, 141):', fg), L('    font fallback order, bell behaviour', dim), L('$ midna attention --note "2 TODOs left in settings.rs"', acc), L('• Moving on to keybindings.', dim)] },
+      { id: 'q-access', term: 'accessibility', kind: 'blocked', age: 720, since: '12m',
+        title: 'Grant Accessibility to Kass', cmd: 'System Settings › Privacy & Security › Accessibility',
+        reason: 'Raised with midna attention --blocked · agents can’t grant OS permissions', bulk: false, bulkNote: 'Needs you to act first',
+        peek: [L('⏺ Bash(./target/debug/kass-probe --ax)', acc), L('    AXIsProcessTrusted() = false', err), L('⏺ Kass can’t read or edit terminal input until it has', fg), L('  Accessibility access. I can’t grant that myself.', fg), L('⏺ Bash(midna attention --blocked "Grant Accessibility to Kass")', acc), L('✻ Waiting for you…', need)] },
+      { id: 'q-dev', term: 'devserver', kind: 'failed', age: 540, since: '9m',
+        title: 'dev server exited 101', cmd: 'cargo run -p midnad',
+        reason: 'Non-zero exit code', bulk: true, bulkNote: '',
+        peek: [L('❯ cargo run -p midnad', dim), L('     Running target/debug/midnad', dim), L('thread \'pty-reader\' panicked at crates/midnad/src/pty.rs:212:9:', err), L('called Result::unwrap() on an Err value: Os { code: 5, message: "Input/output error" }', err), L('note: run with RUST_BACKTRACE=1 to display a backtrace', dim), L('exit 101', err)] },
+      { id: 'q-docs', term: 'docs', kind: 'permission', age: 360, since: '6m', same: 'webfetch:docs.rs',
+        title: 'Fetch from docs.rs', cmd: 'WebFetch(https://docs.rs/objc2-application-services)',
+        reason: 'Claude Code permission prompt · docs.rs isn’t allowed yet', bulk: true, bulkNote: '',
+        peek: [L('⏺ Checking the AXUIElement bindings before I wire them in', acc), L('⏺ Fetch(https://docs.rs/objc2-application-services)', acc), L(''), L('Do you want to allow Claude to fetch this content?', fg), L('❯ 1. Yes', fg), L('  2. Yes, and don’t ask again for docs.rs', fg), L('  3. No, and tell Claude what to do differently (esc)', fg)] },
+      { id: 'q-migrate', term: 'migrate', kind: 'policy', age: 240, since: '4m',
+        title: 'db:migrate on staging', cmd: 'pnpm db:migrate --env staging',
+        reason: 'Your rule “ask when env = staging”', bulk: false, bulkNote: 'Policy gates go one at a time',
+        peek: [L('Plan: apply 3 migrations', fg), L('  0042_add_tokens', dim), L('  0043_backfill_sessions', dim), L('  0044_drop_legacy_keys', dim), L(''), L('Would you like to run the following command?', fg), L('  pnpm db:migrate --env staging', acc), L('  ⏸ held by midna policy · ask when env = staging', need)] },
+      { id: 'q-pr233', term: 'pr233', kind: 'webhook', age: 180, since: '3m', who: 'Trigger review-prs',
+        title: 'Start a review of PR #233', cmd: 'claude "Review PR #233 and leave inline comments"',
+        reason: 'GitHub pull_request.opened on mrgnhnt96/midna · your gate: ask before starting', bulk: false, bulkNote: 'Starts an agent session: one at a time',
+        peek: [L('webhook  github · pull_request.opened · via Tailscale Funnel', dim), L('repo     mrgnhnt96/midna  #233', fg), L('title    Daemon: reattach PTYs after in-place upgrade', fg), L('branch   feat/reattach → main', fg), L('trigger  review-prs → new Claude Code tab in midna', acc), L('gate     ask before starting (set by you)', need)] },
+      { id: 'q-pr231', term: 'pr231', kind: 'permission', age: 120, since: '2m',
+        title: 'Post a review on PR #231', cmd: 'gh pr review 231 --request-changes --body-file review.md',
+        reason: 'Claude Code permission prompt · gh pr review isn’t allowed yet', bulk: true, bulkNote: '',
+        peek: [L('⏺ Review drafted: 3 blocking comments, 2 nits', acc), L('⏺ Bash(gh pr review 231 --request-changes --body-file review.md)', acc), L(''), L('Do you want to proceed?', fg), L('❯ 1. Yes', fg), L('  2. Yes, and don’t ask again for gh pr review commands', fg), L('  3. No, and tell Claude what to do differently (esc)', fg)] },
+      { id: 'q-deps', term: 'deps', kind: 'permission', age: 60, since: '1m', same: 'webfetch:docs.rs',
+        title: 'Fetch from docs.rs', cmd: 'WebFetch(https://docs.rs/axum/0.8.0)',
+        reason: 'Claude Code permission prompt · docs.rs isn’t allowed yet', bulk: true, bulkNote: '',
+        peek: [L('⏺ Bumping axum 0.7 → 0.8; checking the Router changes', acc), L('⏺ Fetch(https://docs.rs/axum/0.8.0)', acc), L(''), L('Do you want to allow Claude to fetch this content?', fg), L('❯ 1. Yes', fg), L('  2. Yes, and don’t ask again for docs.rs', fg), L('  3. No, and tell Claude what to do differently (esc)', fg)] }
+    ];
+    return list;
+  }
+
+  kindMeta(k) {
+    return {
+      policy: { label: 'Policy approval', group: 'Approvals', color: 'var(--need)', approve: true },
+      permission: { label: 'Permission prompt', group: 'Approvals', color: 'var(--need)', approve: true },
+      webhook: { label: 'Webhook session', group: 'Approvals', color: 'var(--accent)', approve: true },
+      blocked: { label: 'Blocked', group: 'Blocked', color: 'var(--need)', approve: false, primary: 'I’ve done it', primaryResult: 'approved', secondary: 'Dismiss' },
+      note: { label: 'Note', group: 'FYI', color: 'var(--work)', approve: false, primary: 'Got it', primaryResult: 'dismissed', secondary: '' },
+      failed: { label: 'Failed exit', group: 'FYI', color: 'var(--err)', approve: false, primary: 'Restart', primaryResult: 'approved', secondary: 'Dismiss' }
+    }[k];
+  }
+
+  isEmpty() { return (this.props.state ?? 'populated') === 'empty'; }
+
+  live() {
+    if (this.isEmpty()) return [];
+    const d = this.state.done || {};
+    return this.items().filter((i) => !d[i.id]);
+  }
+
+  termsNow() {
+    const d = this.state.done || {};
+    const empty = this.isEmpty();
+    return this.terminals().map((t) => {
+      const it = this.items().find((i) => i.term === t.id);
+      if (!it) return t;
+      if (empty) return { ...t, status: t.status === 'failed' ? 'idle' : 'working' };
+      if (d[it.id]) return { ...t, status: d[it.id] === 'approved' ? 'working' : 'idle' };
+      return t;
+    });
+  }
+
+  resolve(ids, how, extra) {
+    const d = { ...(this.state.done || {}) };
+    ids.forEach((id) => { d[id] = how; });
+    const log = (this.state.log || []).concat(ids.map((id) => ({ id, how })));
+    this.setState({ done: d, menu: null, log, ...(extra || {}) });
+  }
+
+  resolveSafe(list, extra) {
+    const d = { ...(this.state.done || {}) };
+    const add = list.map((i) => ({ id: i.id, how: this.kindMeta(i.kind).approve ? 'approved' : 'dismissed' }));
+    add.forEach((a) => { d[a.id] = a.how; });
+    this.setState({ done: d, menu: null, log: (this.state.log || []).concat(add), ...(extra || {}) });
+  }
+
+  vm(i) {
+    const st = this.state;
+    const t = this.terminals().find((x) => x.id === i.term);
+    const k = this.kindMeta(i.kind);
+    const isW = i.kind === 'webhook';
+    const bits = isW
+      ? { agentLabel: 'Trigger', isClaude: false, isCodex: false, isMonitor: false, isShell: false, isTrigger: true }
+      : { ...this.agentBits(t.agent), isTrigger: false };
+    const same = i.same ? this.live().filter((x) => x.same === i.same && x.id !== i.id) : [];
+    const scope = isW ? 'this trigger' : 'this command';
+    const pick = (how) => () => this.resolve([i.id], how);
+    return {
+      ...i, ...bits,
+      kindLabel: k.label, group: k.group, color: k.color,
+      isApprove: !!k.approve, isOther: !k.approve,
+      primaryLabel: k.primary || '', secondaryLabel: k.secondary || '', hasSecondary: !!k.secondary,
+      where: t.project + ' › ' + t.name, project: t.project, termName: t.name,
+      who: isW ? i.who : bits.agentLabel,
+      whoLine: (isW ? i.who : bits.agentLabel) + ' · ' + t.project + ' › ' + t.name,
+      menuOpen: st.menu === i.id, menuExpanded: st.menu === i.id ? 'true' : 'false',
+      toggleMenu: () => this.setState({ menu: st.menu === i.id ? null : i.id, sel: i.id }),
+      open: () => this.setState({ selected: i.term, menu: null }),
+      approve: pick('approved'), deny: pick('denied'),
+      primary: pick(k.primaryResult || 'dismissed'), secondary: pick('dismissed'),
+      options: [
+        { label: 'Approve once', hint: '⌘↩', pick: pick('approved') },
+        { label: 'Approve for 15 minutes', hint: scope, pick: pick('approved') },
+        { label: 'Approve for 1 hour', hint: scope, pick: pick('approved') },
+        { label: 'Approve for this session', hint: 'until ' + t.name + ' exits', pick: pick('approved') },
+        { label: 'Always approve', hint: 'adds a rule', pick: pick('approved') }
+      ],
+      hasSame: same.length > 0, sameCount: String(same.length + 1),
+      sameText: same.length ? 'Same request from ' + same.map((s) => { const st2 = this.terminals().find((x) => x.id === s.term); return st2.project + ' › ' + st2.name; }).join(', ') : '',
+      approveSame: () => this.resolve([i.id].concat(same.map((s) => s.id)), 'approved'),
+      peekTitle: t.project + ' › ' + t.name + ' · last ' + i.peek.length + ' lines',
+      hasBulkNote: !i.bulk && !!i.bulkNote
+    };
+  }
+
+  baseVals(sel) {
+    const terms = this.termsNow();
+    const live = this.live();
+    const n = live.length;
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(terms, sel || terms[0]),
+      needCount: n,
+      needLabel: n ? n + ' need you' : 'Nothing needs you',
+      needBtnStyle: n ? 'border: 1px solid var(--need); background: var(--need-soft); color: var(--need)' : 'border: 1px solid var(--line); background: transparent; color: var(--dim)',
+      needDot: n ? 'background: var(--need)' : 'background: var(--ok)',
+      suggestions: [
+        { t: 'Ask: start Claude on every PR opened in midna' },
+        { t: 'Ask: flag me only when a staging or prod rule asks' },
+        { t: 'Ask: restart dev server automatically if it exits 101' }
+      ]
+    };
+  }
+
+
+/*SHARED*/
+  extra(id) {
+    const X = {
+      pr231: { branch: 'review/231', pr: '#231', checks: 'checks passing', checksKind: 'pass', cost: '$0.38', model: 'opus', sub: 'Permission: gh pr review', since: '2m' },
+      pr233: { branch: 'feat/reattach', pr: '#233', checks: 'checks running', checksKind: 'run', sub: 'Webhook: waiting to start', since: '3m' },
+      devserver: { branch: 'main', sub: 'exit 101', since: '9m' },
+      spike: { branch: 'main', plus: 210, minus: 41, files: 9, cost: '$0.04', model: 'opus' },
+      accessibility: { branch: 'feat/ax', cost: '$0.61', model: 'sonnet', sub: 'Blocked: grant Accessibility', since: '12m' },
+      docs: { branch: 'main', sub: 'Permission: fetch docs.rs', since: '6m' },
+      port: { branch: 'port/settings', sub: 'Note: 2 TODOs left', since: '18m' },
+      zsh: { branch: 'main' },
+      migrate: { branch: 'feat/tokens', pr: '#88', checks: 'checks running', checksKind: 'run', plus: 96, minus: 0, files: 3, cost: '$0.11', model: 'gpt-5', sub: 'Approve db:migrate on staging?', since: '4m' },
+      deps: { branch: 'chore/axum-0.8', sub: 'Permission: fetch docs.rs', since: '1m' },
+      tests: { branch: 'feat/tokens' }
+    };
+    return X[id] || {};
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+
+  ordered() {
+    const all = this.items().slice();
+    if ((this.props.order ?? 'oldest first') === 'approvals first') {
+      const rank = (i) => (this.kindMeta(i.kind).approve ? 0 : 1);
+      return all.sort((a, b) => rank(a) - rank(b) || b.age - a.age);
+    }
+    return all.sort((a, b) => b.age - a.age);
+  }
+
+  renderVals() {
+    const st = this.state;
+    const terms = this.termsNow();
+    const back = terms.find((t) => t.id === st.selected) || terms[0];
+    const base = this.baseVals(st.flow ? { id: '__flow' } : back);
+    base.groups = base.groups.map((g) => ({ ...g, rows: g.rows.map((r) => ({ ...r, pick: () => { r.pick(); this.setState({ flow: false }); } })) }));
+    const order = this.ordered();
+    const liveIds = this.live().map((i) => i.id);
+    const isLive = (id) => liveIds.includes(id);
+    const start = Math.max(0, order.findIndex((i) => i.id === st.cur));
+    const rot = order.slice(start).concat(order.slice(0, start)).filter((i) => isLive(i.id));
+    const curItem = rot[0] || null;
+    const after = rot.slice(1);
+    const d = st.done || {};
+
+    let cur = { ...this.vm(this.items()[0]), approveText: '', denyText: '', chipBg: '' };
+    if (curItem) {
+      const v = this.vm(curItem);
+      const go = (how) => () => this.resolve([curItem.id], how, { cur: curItem.id });
+      cur = {
+        ...v,
+        approveText: 'Approve ⌘↩', denyText: 'Deny ⌘⌫',
+        chipBg: 'color-mix(in srgb, ' + v.color + ' 14%, transparent)',
+        approve: go('approved'), deny: go('denied'),
+        primary: go(this.kindMeta(curItem.kind).primaryResult || 'dismissed'), secondary: go('dismissed'),
+        options: v.options.map((o) => ({ ...o, pick: go('approved') })),
+        approveSame: () => this.resolve([curItem.id].concat(this.live().filter((x) => x.same && x.same === curItem.same).map((x) => x.id)), 'approved', { cur: curItem.id }),
+        open: () => this.setState({ selected: curItem.term, flow: false, menu: null, cur: curItem.id })
+      };
+    }
+
+    const empty = this.isEmpty();
+    const log = st.log || [];
+    const tally = (h) => log.filter((x) => x.how === h).length;
+    const parts = [];
+    if (tally('approved')) parts.push(tally('approved') + ' approved');
+    if (tally('denied')) parts.push(tally('denied') + ' denied');
+    if (tally('dismissed')) parts.push(tally('dismissed') + ' dismissed');
+
+    const doneN = order.filter((i) => d[i.id]).length;
+    const skip = () => { if (after[0]) this.setState({ cur: after[0].id, menu: null }); };
+
+    return {
+      ...base,
+      current: this.headVals(back),
+      flowOn: !!st.flow, flowOff: !st.flow,
+      backName: back.name,
+      exitFlow: () => this.setState({ flow: false, menu: null }),
+      hasItems: !!curItem,
+      isEmptyC: !curItem,
+      cur,
+      leftText: rot.length + ' left',
+      progressLabel: doneN + ' of ' + order.length + ' handled',
+      segments: order.map((i) => ({
+        title: i.title,
+        color: d[i.id] ? (d[i.id] === 'denied' ? 'var(--err)' : 'var(--ok)') : (curItem && i.id === curItem.id ? 'var(--accent)' : 'var(--line)')
+      })),
+      hasBehind1: after.length > 0, hasBehind2: after.length > 1,
+      hasNext: after.length > 0,
+      upNext: after.slice(0, 3).map((i) => {
+        const v = this.vm(i);
+        return { color: v.color, kindLabel: v.kindLabel, title: v.title, where: v.where, go: () => this.setState({ cur: i.id, menu: null }) };
+      }),
+      skip,
+      emptyTitle: empty || !log.length ? 'Nothing needs you' : 'All clear',
+      emptySub: empty || !log.length
+        ? 'When a rule asks, an agent hits a permission prompt or raises a flag, a terminal exits non-zero, or a webhook waits on your gate, it shows up here one card at a time.'
+        : 'This pass: ' + parts.join(' · ') + '. Nothing else needs you right now.',
+      needHaspopup: 'false',
+      needExpanded: st.flow ? 'true' : 'false',
+      jumpNext: () => { if (!st.flow) { this.setState({ flow: true }); return; } skip(); },
+      onKey: (e) => {
+        if (!e || !curItem) return;
+        const k = (e.key || '').toLowerCase();
+        if (k === 'escape') { this.setState({ flow: false, menu: null }); return; }
+        if (!e.metaKey) return;
+        if (k === 'enter' && e.shiftKey && cur.hasSame) { e.preventDefault(); cur.approveSame(); }
+        else if (k === 'enter') { e.preventDefault(); (cur.isApprove ? cur.approve : cur.primary)(); }
+        else if (k === 'backspace') { e.preventDefault(); (cur.isApprove ? cur.deny : cur.secondary)(); }
+        else if (k === 'j') { e.preventDefault(); skip(); }
+        else if (k === 'o') { e.preventDefault(); cur.open(); }
+      }
+    };
+  }
+
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+transport=BRaw gui_pid=62314 daemon_pid=62328 child_pid=62329
+TUI [braw] top -s 1
+  frames=22 fps=3.6 vsync_misses(@120Hz, while frames flowing)=636 gap_p50=250.21ms gap_p95=550.01ms gap_max=558.5ms
+  ui_frame_cpu(render+paint) p50=0.99ms p95=1.19ms max=1.27ms | engine_frame_build p50=0.15ms p95=0.43ms max=0.43ms
+  cpu: gui=1.3% daemon=0.0% (of one core, over 6.0s) rss: gui=78MB daemon=12MB (peak sampled)
+TUI [braw] vim -u NONE -N data/big.txt
+  frames=369 fps=61.2 vsync_misses(@120Hz, while frames flowing)=350 gap_p50=8.64ms gap_p95=58.03ms gap_max=67.2ms
+  ui_frame_cpu(render+paint) p50=0.65ms p95=1.40ms max=1.91ms | engine_frame_build p50=0.28ms p95=0.55ms max=0.76ms
+  cpu: gui=10.6% daemon=0.9% (of one core, over 6.0s) rss: gui=79MB daemon=12MB (peak sampled)
+TUI [braw] python3 data/rainbow.py 9
+  frames=400 fps=66.1 vsync_misses(@120Hz, while frames flowing)=323 gap_p50=8.37ms gap_p95=33.31ms gap_max=34.2ms
+  ui_frame_cpu(render+paint) p50=2.27ms p95=2.59ms max=2.80ms | engine_frame_build p50=0.23ms p95=0.65ms max=1.25ms
+  cpu: gui=41.8% daemon=13.7% (of one core, over 6.0s) rss: gui=102MB daemon=14MB (peak sampled)
+SHOT /Users/mrgnhnt96/Development/rust/midna/spikes/gpui-terminal/shots/braw-big.png

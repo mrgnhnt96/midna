@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Midna onboarding B: Live Checklist</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.btn{height:32px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:transparent;cursor:pointer;white-space:nowrap}
+.btn-p{height:32px;padding:0 14px;border:0;border-radius:7px;background:var(--accent);color:var(--accent-fg);font-weight:700;cursor:pointer;white-space:nowrap}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--raised);cursor:pointer;white-space:nowrap}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45; overflow: hidden">
+  <div style="flex: 1; display: flex; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--dim); font-weight: 700; cursor: default">
+        <span style="width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--dim); box-sizing: border-box"></span><span style="flex: 1; text-align: left">0 need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="2">
+          <div style="margin-bottom: 8px">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="1">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; align-items: center; width: 100%; padding: 8px 14px; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                <span role="img" aria-label="Shell" title="Shell" style="display: inline-flex; color: var(--dim)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></span>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+        <sc-if value="{{noProject}}" hint-placeholder-val="{{ true }}">
+          <div style="margin: 6px 10px; padding: 14px 12px; border: 1.5px dashed var(--line); border-radius: 9px; color: var(--dim); font-size: 12px; text-align: center">Drop a project folder here</div>
+        </sc-if>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <section aria-label="Setup checklist" style="display: flex; flex-direction: column; gap: 6px; padding: 10px 8px 6px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised)">
+          <span style="display: flex; align-items: baseline; gap: 8px; padding: 0 4px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Setup</span>
+            <span style="font-size: 11px; color: var(--dim)">{{doneCount}} of 7</span>
+          </span>
+          <span aria-hidden="true" style="display: block; height: 3px; margin: 0 4px 2px; border-radius: 2px; background: var(--line); overflow: hidden"><span style="display: block; height: 100%; width: {{progress}}; background: var(--accent)"></span></span>
+          <sc-for list="{{checklist}}" as="c" hint-placeholder-count="7">
+            <button type="button" onClick="{{c.pick}}" aria-current="{{c.current}}" aria-label="{{c.aria}}" style="display: flex; align-items: center; gap: 9px; width: 100%; height: 26px; padding: 0 6px; border: 0; border-radius: 6px; text-align: left; cursor: pointer; font-size: 12.5px; {{c.rowStyle}}">
+              <span style="width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; flex: none; {{c.markStyle}}">
+                <sc-if value="{{c.isDone}}" hint-placeholder-val="{{ false }}"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.2 5 8.6 9.5 3.6"></path></svg></sc-if>
+              </span>
+              <span style="flex: 1; {{c.textStyle}}">{{c.name}}</span>
+              <span style="font-size: 11px; color: var(--dim)">{{c.tag}}</span>
+            </button>
+          </sc-for>
+        </section>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+      <header style="display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--line)">
+        <span style="width: 9px; height: 9px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--dim)"></span>
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">zsh</h1>
+        <span role="img" aria-label="Shell" style="display: inline-flex; color: var(--dim)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></span>
+        <span aria-hidden="true" style="width: 1px; height: 18px; background: var(--line)"></span>
+        <span class="mono" style="color: var(--dim); font-size: 12px">{{cwd}}</span>
+        <sc-if value="{{showBranch}}" hint-placeholder-val="{{ false }}">
+          <span title="Branch" style="display: inline-flex; align-items: center; gap: 6px; color: var(--dim)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8"></circle><circle cx="4.5" cy="12.5" r="1.8"></circle><circle cx="11.5" cy="5.5" r="1.8"></circle><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 3.4"></path></svg>main</span>
+        </sc-if>
+        <div style="flex: 1"></div>
+        <sc-if value="{{cardHidden}}" hint-placeholder-val="{{ false }}">
+          <button type="button" class="btn" onClick="{{showCard}}" style="height: 28px">Continue setup · {{doneCount}}/7</button>
+        </sc-if>
+      </header>
+
+      <section aria-label="Terminal" style="flex: 1; display: flex; flex-direction: column; background: var(--term); min-height: 0">
+        <div class="mono" style="flex: 1; padding: 14px 20px; font-size: 12.5px; line-height: 1.6; overflow: hidden">
+          <sc-for list="{{lines}}" as="ln" hint-placeholder-count="3"><div style="white-space: pre; color: {{ln.color}}">{{ln.t}}</div></sc-for>
+          <div style="white-space: pre"><span style="color: var(--dim)">{{prompt}}</span> <span style="color: var(--accent)">❯</span> <span aria-hidden="true" style="display: inline-block; width: 8px; height: 15px; vertical-align: -3px; background: var(--fg)"></span></div>
+        </div>
+
+        <sc-if value="{{cardShown}}" hint-placeholder-val="{{ true }}">
+          <div role="group" aria-label="Setup step: {{title}}" style="margin: 0 16px 16px; border: 1.5px solid var(--accent); border-radius: 10px; background: var(--panel); overflow: hidden">
+            <div style="display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; flex-wrap: wrap">
+              <div style="display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 300px">
+                <span style="display: flex; align-items: center; gap: 8px"><b>{{title}}</b><span style="font-size: 11px; color: var(--dim)">{{stepLabel}}</span></span>
+                <span style="color: var(--dim)">{{body}}</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px">
+                <button type="button" class="btn-p" onClick="{{primary}}">{{primaryLabel}}</button>
+                <sc-if value="{{optional}}" hint-placeholder-val="{{ true }}"><button type="button" class="btn" onClick="{{later}}">Later</button></sc-if>
+                <button type="button" aria-label="Hide setup" title="Hide setup" onClick="{{hideCard}}" style="width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"></path></svg></button>
+              </div>
+            </div>
+
+            <sc-if value="{{hasStatus}}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 10px; margin: 0 14px 12px; padding: 8px 12px; border-radius: 8px; background: {{statusBg}}; color: {{statusColor}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: {{statusColor}}"></span><span style="flex: 1">{{statusText}}</span>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{isProject}}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 8px; margin: 0 14px 12px; padding: 10px 12px; border: 1.5px dashed var(--line); border-radius: 8px; flex-wrap: wrap">
+                <span style="color: var(--dim); margin-right: 4px">Drop a folder anywhere, or add a repo from ~/Development:</span>
+                <sc-for list="{{repos}}" as="r" hint-placeholder-count="4"><button type="button" class="chip" onClick="{{r.add}}" title="{{r.path}}">+ {{r.name}}</button></sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{isHooks}}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 8px; margin: 0 14px 12px">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap">
+                  <button type="button" class="chip" role="switch" aria-checked="{{claudeOn}}" onClick="{{toggleClaude}}" style="border-color: {{claudeBorder}}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg>Claude Code <span class="mono" style="font-size: 11px; color: var(--dim)">~/.claude/settings.json</span></button>
+                  <button type="button" class="chip" role="switch" aria-checked="{{codexOn}}" onClick="{{toggleCodex}}" style="border-color: {{codexBorder}}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg>Codex <span class="mono" style="font-size: 11px; color: var(--dim)">~/.codex/config.toml + trust midna</span></button>
+                  <button type="button" class="chip" onClick="{{toggleDiff}}" aria-expanded="{{diffExpanded}}" style="background: transparent; color: var(--accent)">{{diffLabel}}</button>
+                </div>
+                <sc-if value="{{diffOpen}}" hint-placeholder-val="{{ false }}">
+                  <div class="mono" style="padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--term); font-size: 12px; line-height: 1.6; white-space: pre">
+                    <sc-for list="{{diff}}" as="d" hint-placeholder-count="6"><div style="color: {{d.c}}">{{d.t}}</div></sc-for>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{isWebhooks}}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; gap: 18px; margin: 0 14px 12px; flex-wrap: wrap">
+                <sc-for list="{{tsChecks}}" as="k" hint-placeholder-count="3">
+                  <span style="display: inline-flex; align-items: center; gap: 7px"><span style="width: 8px; height: 8px; border-radius: 50%; background: {{k.color}}"></span>{{k.label}} <span class="mono" style="font-size: 12px; color: var(--dim)">{{k.value}}</span></span>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{isTheme}}" hint-placeholder-val="{{ false }}">
+              <div role="radiogroup" aria-label="Theme" style="display: flex; gap: 8px; margin: 0 14px 12px">
+                <sc-for list="{{themes}}" as="t" hint-placeholder-count="3">
+                  <button type="button" class="chip" role="radio" aria-checked="{{t.checked}}" onClick="{{t.pick}}" style="border-color: {{t.border}}"><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line); background: {{t.swatch}}"></span>{{t.name}}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim)">
+              <sc-if value="{{osOnly}}" hint-placeholder-val="{{ true }}">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>
+                <span>Only you can do this one: macOS asks a person, not an agent.</span>
+              </sc-if>
+              <sc-if value="{{askable}}" hint-placeholder-val="{{ false }}">
+                <span>Or press <kbd class="mono" style="color: var(--fg)">⌘K</kbd> and ask:</span><span style="color: var(--fg)">“{{askPrompt}}”</span>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+      </section>
+    </main>
+  </div>
+
+  <footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: {{daemonColor}}">●</span> {{daemonText}}</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · 0 approval rules</span>
+    <span><span style="color: {{hookColor}}">●</span> {{hookText}}</span>
+    <span><span style="color: {{whColor}}">●</span> {{whText}}</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"step":{"editor":"enum","options":["daemon","accessibility","notifications","project","hooks","webhooks","theme"],"default":"daemon","section":"State"},"card":{"editor":"enum","options":["shown","hidden"],"default":"shown","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {};
+  }
+
+  steps() {
+    return [
+      { id: 'daemon', name: 'Background daemon', optional: false, os: true,
+        title: 'Keep shells alive when midna quits',
+        body: 'This zsh lives inside the window for now. Install midnad and terminals survive quitting and updates. macOS then asks you to allow it under Login Items.',
+        primary: ['Install daemon', 'Open Login Items', 'Next'],
+        status: ['', 'Waiting for you to switch on midna in System Settings ▸ Login Items', 'midnad is running. This zsh moved into it without restarting.'] },
+      { id: 'accessibility', name: 'Accessibility', optional: true, os: true,
+        title: 'Let Kass read and edit what you type',
+        body: 'Switch on midna under Privacy & Security ▸ Accessibility. macOS only applies it to a new process, so midna relaunches. Shells keep running in midnad.',
+        primary: ['Open Accessibility', 'Relaunch midna', 'Next'],
+        status: ['', 'Switched it on? Relaunch so midna can see the grant.', 'Granted. midna relaunched; 1 shell kept running.'] },
+      { id: 'notifications', name: 'Notifications', optional: true, os: true,
+        title: 'Get a ping when a terminal needs you',
+        body: 'Approvals, questions and failures. Clicking one jumps to that terminal.',
+        primary: ['Allow notifications', 'Waiting for macOS…', 'Next'],
+        status: ['', 'macOS is asking you in the top-right corner.', 'Allowed.'] },
+      { id: 'project', name: 'First project', optional: false, os: false, ask: 'add ~/Development/rust/midna as a project',
+        title: 'Add your first project',
+        body: 'A project is a folder. It gets ⌘1, a shell, and git status in the header.',
+        primary: ['Choose folder…', 'Choose folder…', 'Next'],
+        status: ['', '', 'Added midna · ~/Development/rust/midna · main'] },
+      { id: 'hooks', name: 'Agent hooks', optional: true, os: false, ask: 'install midna hooks for Claude Code and Codex',
+        title: 'Connect Claude Code and Codex',
+        body: 'Hooks report turns, questions and approvals, so status in the sidebar is real. midna edits two config files, and only with your OK.',
+        primary: ['Install hooks', 'Install hooks', 'Next'],
+        status: ['', '', 'Hooks installed. New Claude Code and Codex sessions report to midna.'] },
+      { id: 'webhooks', name: 'Webhooks', optional: true, os: false, ask: 'start Claude on every PR opened in mrgnhnt96/midna',
+        title: 'Receive GitHub webhooks through Tailscale',
+        body: 'Funnel gives midnad a public HTTPS URL on your tailnet. Free, nothing to host. Triggers come later, by prompting.',
+        primary: ['Turn on Funnel', 'Turning on…', 'Next'],
+        status: ['', '', 'https://morgans-macbook-pro.tail439d44.ts.net/hooks/github is live'] },
+      { id: 'theme', name: 'Theme', optional: true, os: false, ask: 'use the light theme',
+        title: 'Pick a theme',
+        body: 'It applies right away.',
+        primary: ['Done', 'Done', 'Finish setup'],
+        status: ['', '', ''] }
+    ];
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  renderVals() {
+    const steps = this.steps();
+    const propStep = this.props.step ?? 'daemon';
+    const key = propStep + '|' + (this.props.card ?? 'shown') + '|' + (this.props.theme ?? 'dark');
+    const s = this.state.key === key ? this.state : { key };
+    const set = (patch) => this.setState({ ...s, key, ...patch });
+    const stepId = s.step || propStep;
+    const idx = Math.max(0, steps.findIndex((x) => x.id === stepId));
+    const cur = steps[idx];
+    const phase = s.phase || 0;
+    const skipped = s.skipped || {};
+    const done = (i) => (i < idx && !skipped[steps[i].id]) || (i === idx && phase === 2);
+    const theme = s.themePick || (this.props.theme ?? 'dark');
+    const hidden = s.hidden ?? ((this.props.card ?? 'shown') === 'hidden');
+    const go = (i) => set({ step: steps[Math.min(Math.max(i, 0), steps.length - 1)].id, phase: 0, hidden: false });
+
+    const projIdx = 3, hookIdx = 4, whIdx = 5, daemonIdx = 0;
+    const hasProject = done(projIdx);
+    const sel = s.sel || (hasProject ? 'midna' : 'home');
+
+    const groups = [{ name: 'home', rows: [{ id: 'home', name: 'zsh' }] }];
+    if (hasProject) groups.push({ name: 'midna', rows: [{ id: 'midna', name: 'zsh' }] });
+    groups.forEach((g) => { g.rows = g.rows.map((r) => ({
+      name: r.name, label: g.name + ' ' + r.name + ', idle', dotStyle: this.dot('idle'),
+      pressed: sel === r.id ? 'true' : 'false',
+      rowStyle: sel === r.id ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+      pick: () => set({ sel: r.id })
+    })); });
+
+    const doneCount = steps.filter((_, i) => done(i)).length;
+    const checklist = steps.map((st, i) => {
+      const d = done(i), isCur = i === idx, later = skipped[st.id] && i !== idx;
+      return {
+        name: st.name, isDone: d, current: isCur ? 'step' : 'false',
+        aria: st.name + (d ? ', done' : later ? ', later' : isCur ? ', current' : ', to do'),
+        tag: later ? 'later' : (!d && !isCur && st.optional ? 'optional' : ''),
+        rowStyle: isCur ? 'background: var(--accent-soft); color: var(--fg)' : 'background: transparent',
+        textStyle: d ? 'color: var(--dim); text-decoration: line-through' : isCur ? 'font-weight: 700' : '',
+        markStyle: d ? 'background: var(--ok); color: var(--bg)' : isCur ? 'border: 2px solid var(--accent)' : 'border: 1.5px solid var(--dim)',
+        pick: () => go(i)
+      };
+    });
+
+    const hookClaude = s.hookClaude ?? true, hookCodex = s.hookCodex ?? true;
+    const C = { add: 'var(--ok)', ctx: 'var(--dim)', file: 'var(--accent)' };
+    let diff = [];
+    if (hookClaude) diff = diff.concat([
+      { t: '~/.claude/settings.json', c: C.file },
+      { t: '+ "hooks": { "PreToolUse" | "Notification" | "Stop": [{ "type": "command", "command": "midna hook claude" }] }', c: C.add }
+    ]);
+    if (hookCodex) diff = diff.concat([
+      { t: '~/.codex/config.toml', c: C.file },
+      { t: '+ notify = ["midna", "hook", "codex"]', c: C.add },
+      { t: '+ [projects."/Users/mrgnhnt96/Development/rust/midna"] trust_level = "trusted"', c: C.add }
+    ]);
+    if (!diff.length) diff = [{ t: 'Nothing selected.', c: C.ctx }];
+
+    const wPhase = cur.id === 'webhooks' ? phase : (done(whIdx) ? 2 : 0);
+    const tsChecks = [
+      { label: 'Tailscale', value: 'installed 1.84.0', color: 'var(--ok)' },
+      { label: 'Logged in', value: 'morgans-macbook-pro.tail439d44.ts.net', color: 'var(--ok)' },
+      { label: 'Funnel', value: wPhase === 2 ? 'on' : wPhase === 1 ? 'starting…' : 'off', color: wPhase === 2 ? 'var(--ok)' : wPhase === 1 ? 'var(--work)' : 'var(--dim)' }
+    ];
+
+    const repos = [
+      { name: 'midna', path: '~/Development/rust/midna' }, { name: 'kass', path: '~/Development/swift/kass' },
+      { name: 'saggar', path: '~/Development/dart/saggar' }, { name: 'api', path: '~/Development/api' }
+    ].map((r) => ({ ...r, add: () => set({ phase: 2, sel: 'midna' }) }));
+
+    const themes = [
+      { id: 'dark', name: 'Dark', swatch: '#0F1117' }, { id: 'light', name: 'Light', swatch: '#F5F6F8' },
+      { id: 'system', name: 'Match macOS', swatch: 'linear-gradient(90deg,#0F1117 50%,#F5F6F8 50%)' }
+    ].map((t) => {
+      const on = (s.themeChoice || theme) === t.id;
+      return { ...t, checked: on ? 'true' : 'false', border: on ? 'var(--accent)' : 'var(--line)',
+        pick: () => set({ themeChoice: t.id, themePick: t.id === 'system' ? 'dark' : t.id }) };
+    });
+
+    const primary = () => {
+      if (phase === 2) return idx < steps.length - 1 ? go(idx + 1) : set({ hidden: true });
+      if (cur.os && phase === 0) return set({ phase: 1 });
+      if (cur.id === 'webhooks' && phase === 0) return set({ phase: 1 });
+      return set({ phase: 2, sel: cur.id === 'project' ? 'midna' : s.sel });
+    };
+
+    const statusText = cur.status[phase] || '';
+    const inMidna = sel === 'midna';
+    const daemonOn = done(daemonIdx);
+    const lines = [{ t: 'Last login: Sat Oct  3 09:12:40 on console', color: 'var(--dim)' }];
+    if (daemonOn && !inMidna) lines.push({ t: '[midna] this shell moved into midnad', color: 'var(--dim)' });
+    lines.push({ t: ' ', color: 'var(--fg)' });
+
+    return {
+      themeClass: theme === 'light' ? 't-light' : 't-dark',
+      groups, noProject: !hasProject,
+      checklist, doneCount: String(doneCount), progress: Math.round(doneCount / 7 * 100) + '%',
+      cwd: inMidna ? '~/Development/rust/midna' : '~', showBranch: inMidna,
+      prompt: inMidna ? '~/Development/rust/midna on main' : '~',
+      lines,
+      cardShown: !hidden, cardHidden: hidden,
+      hideCard: () => set({ hidden: true }), showCard: () => set({ hidden: false }),
+      title: cur.title, body: cur.body, stepLabel: 'Step ' + (idx + 1) + ' of 7' + (cur.optional ? ' · optional' : ''),
+      optional: cur.optional && phase !== 2,
+      primaryLabel: cur.primary[phase], primary,
+      later: () => set({ skipped: { ...skipped, [cur.id]: true }, step: steps[Math.min(idx + 1, steps.length - 1)].id, phase: 0 }),
+      hasStatus: !!statusText, statusText,
+      statusColor: phase === 2 ? 'var(--ok)' : 'var(--need)',
+      statusBg: phase === 2 ? 'transparent' : 'var(--need-soft)',
+      isProject: cur.id === 'project' && phase !== 2, repos,
+      isHooks: cur.id === 'hooks' && phase !== 2,
+      claudeOn: hookClaude ? 'true' : 'false', codexOn: hookCodex ? 'true' : 'false',
+      claudeBorder: hookClaude ? 'var(--accent)' : 'var(--line)', codexBorder: hookCodex ? 'var(--accent)' : 'var(--line)',
+      toggleClaude: () => set({ hookClaude: !hookClaude }), toggleCodex: () => set({ hookCodex: !hookCodex }),
+      diffOpen: !!s.diff, diffExpanded: s.diff ? 'true' : 'false', diffLabel: s.diff ? 'Hide exact edits' : 'Show exact edits',
+      toggleDiff: () => set({ diff: !s.diff }), diff,
+      isWebhooks: cur.id === 'webhooks', tsChecks,
+      isTheme: cur.id === 'theme', themes,
+      osOnly: cur.os, askable: !cur.os, askPrompt: cur.ask || '',
+      daemonColor: daemonOn ? 'var(--ok)' : 'var(--need)',
+      daemonText: daemonOn ? 'midnad · ' + (hasProject ? 2 : 1) + ' terminals' : 'midnad not installed · shells live in this window',
+      hookColor: done(hookIdx) ? 'var(--ok)' : 'var(--dim)',
+      hookText: done(hookIdx) ? 'Hooks: Claude Code, Codex' : 'No agent hooks',
+      whColor: done(whIdx) ? 'var(--ok)' : 'var(--dim)',
+      whText: done(whIdx) ? 'Webhooks via Tailscale Funnel' : 'Webhooks off'
+    };
+  }
+}
+</script>
+</body>
+</html>

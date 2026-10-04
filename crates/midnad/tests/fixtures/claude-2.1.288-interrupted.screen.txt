@@ -1,0 +1,14 @@
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/midna-fixture/proj
+
+❯ Use the Bash tool to run exactly touch c.txt && ls, then reply with just the number of entries.
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Baked for 1s · done 2:50 PM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5 · $0.02
+  ⏸ manual mode on · ← 1 agent

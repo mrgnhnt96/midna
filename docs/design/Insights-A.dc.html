@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Insights · daily report</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45; overflow: hidden">
+  <div style="flex: 1; display: flex; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">{{needCount}} need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-current="page" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent-soft); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0">
+      <header style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 14px 0 20px; border-bottom: 1px solid var(--line)">
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">Insights</h1>
+        <span style="color: var(--dim)">Report</span>
+        <div style="flex: 1"></div>
+        <div role="group" aria-label="Report period" style="display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel)">
+          <sc-for list="{{ranges}}" as="rg" hint-placeholder-count="3">
+            <button type="button" aria-pressed="{{rg.sel}}" onClick="{{rg.pick}}" style="height: 26px; padding: 0 12px; border: 0; border-radius: 6px; cursor: pointer; font-size: 12.5px; {{rg.style}}">{{rg.label}}</button>
+          </sc-for>
+        </div>
+        <button type="button" onClick="{{copy}}" style="height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--fg); cursor: pointer; font-size: 12.5px">{{copyLabel}}</button>
+      </header>
+
+      <div style="flex: 1; min-height: 0; overflow: auto">
+        <article aria-label="{{reportTitle}}" style="max-width: 760px; margin: 0 auto; padding: 30px 32px 10px">
+          <p style="margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">{{eyebrow}}</p>
+          <sc-for list="{{paras}}" as="p" hint-placeholder-count="6">
+            <div style="margin: 0 0 {{p.gap}}">
+              <p style="margin: 0; font-size: {{p.size}}; line-height: {{p.lh}}; font-weight: {{p.weight}}; color: {{p.color}}; text-wrap: pretty"><sc-for list="{{p.parts}}" as="x" hint-placeholder-count="5"><sc-if value="{{x.isText}}" hint-placeholder-val="{{ true }}">{{x.text}}</sc-if><sc-if value="{{x.isLink}}" hint-placeholder-val="{{ false }}"><button type="button" onClick="{{x.pick}}" aria-expanded="{{x.expanded}}" aria-label="{{x.aria}}" style="padding: 0 3px; margin: 0 -1px; border: 0; border-radius: 4px; font: inherit; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 1.5px; text-underline-offset: 3px; {{x.style}}">{{x.text}}</button></sc-if></sc-for></p>
+              <sc-if value="{{p.hasEvidence}}" hint-placeholder-val="{{ false }}">
+                <div role="region" aria-label="{{p.evTitle}}" style="margin: 12px 0 4px; padding: 4px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel)">
+                  <div style="display: flex; align-items: baseline; gap: 10px; padding: 8px 14px 6px">
+                    <b style="font-size: 12.5px">{{p.evTitle}}</b>
+                    <span style="flex: 1; font-size: 12px; color: var(--dim)">{{p.evNote}}</span>
+                    <button type="button" onClick="{{closeEv}}" aria-label="Close" style="width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg></button>
+                  </div>
+                  <sc-for list="{{p.evRows}}" as="r" hint-placeholder-count="4">
+                    <div style="display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; column-gap: 12px; align-items: baseline; padding: 7px 14px; border-top: 1px solid var(--line); font-size: 12.5px">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--dim)">{{r.left}}</span>
+                      <span style="min-width: 0"><span style="font-weight: 700">{{r.who}}</span> <span>{{r.text}}</span><sc-if value="{{r.hasCode}}" hint-placeholder-val="{{ false }}"> <code style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--dim)">{{r.code}}</code></sc-if></span>
+                      <span style="white-space: nowrap; font-size: 12px; color: {{r.rightColor}}">{{r.right}}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+
+          <section aria-label="Activity" style="margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line)">
+            <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap">
+              <h2 style="margin: 0; font-size: 15px; font-weight: 700">Everything that happened</h2>
+              <span style="color: var(--dim); font-size: 12.5px">{{logNote}}</span>
+            </div>
+            <div role="group" aria-label="Show" style="display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 8px; font-size: 12.5px">
+              <sc-for list="{{kindLinks}}" as="k" hint-placeholder-count="7">
+                <button type="button" aria-pressed="{{k.sel}}" onClick="{{k.pick}}" style="padding: 2px 0; border: 0; background: transparent; cursor: pointer; font-size: 12.5px; {{k.style}}">{{k.label}} <span style="color: var(--dim); font-weight: 400">{{k.count}}</span></button>
+              </sc-for>
+            </div>
+            <ol aria-label="Activity log" style="list-style: none; margin: 0; padding: 0">
+              <sc-for list="{{log}}" as="r" hint-placeholder-count="10">
+                <sc-if value="{{r.isHead}}" hint-placeholder-val="{{ false }}">
+                  <li style="padding: 14px 0 4px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">{{r.head}}</li>
+                </sc-if>
+                <sc-if value="{{r.isPresence}}" hint-placeholder-val="{{ false }}">
+                  <li style="padding: 6px 0; font-size: 12.5px; color: var(--dim); font-style: italic">{{r.t}} · {{r.text}}</li>
+                </sc-if>
+                <sc-if value="{{r.isRow}}" hint-placeholder-val="{{ true }}">
+                  <li style="display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; column-gap: 12px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: 12.5px">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--dim)">{{r.t}}</span>
+                    <span style="min-width: 0"><b>{{r.who}}</b> {{r.text}}<span style="color: var(--dim)"> · {{r.where}}</span></span>
+                    <span style="white-space: nowrap; font-size: 12px; font-weight: 700; color: {{r.toneColor}}">{{r.badge}}</span>
+                  </li>
+                </sc-if>
+              </sc-for>
+            </ol>
+            <p style="margin: 22px 0 26px; color: var(--dim); font-size: 12.5px">Ask <kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px">⌘K</kbd> <span style="color: var(--fg)">“send me this report every evening at 6”</span> or <span style="color: var(--fg)">“why did kass cost more on Friday?”</span></p>
+          </section>
+        </article>
+      </div>
+    </main>
+
+  </div>
+
+  <footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · 14 terminals</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · 1 approval rule</span>
+    <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+    <span>2 triggers today</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme": {"editor": "enum", "options": ["dark", "light"], "default": "dark", "section": "Look"}, "range": {"editor": "enum", "options": ["today", "yesterday", "week"], "default": "today", "section": "State"}, "open": {"editor": "enum", "options": ["none", "pending", "away", "waited"], "default": "pending", "section": "State"}, "$preview": {"width": 1440, "height": 900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = this.initState();
+  }
+
+  terminals() {
+    return [
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'working' },
+      { id: 'pr231', project: 'midna', name: 'PR #231 review', agent: 'claude', status: 'needs' },
+      { id: 'devsrv', project: 'midna', name: 'dev server', agent: 'monitor', status: 'working' },
+      { id: 'migrate', project: 'kass', name: 'migrate', agent: 'codex', status: 'needs' },
+      { id: 'ktests', project: 'kass', name: 'tests', agent: 'monitor', status: 'done' },
+      { id: 'port', project: 'saggar', name: 'port sidebar', agent: 'claude', status: 'idle' },
+      { id: 'auth', project: 'api', name: 'auth refresh', agent: 'codex', status: 'working' },
+      { id: 'zsh', project: 'api', name: 'zsh', agent: 'shell', status: 'idle' }
+    ];
+  }
+
+  extra(id) {
+    const X = {
+      pr231: { sub: 'Confirm a rule removal', since: '1h 09m' },
+      migrate: { sub: 'Approve db:migrate on staging?', since: '2m' }
+    };
+    return X[id] || {};
+  }
+
+  /* prop that a click can override until the tweak itself changes */
+  pv(key, def) {
+    const p = this.props[key] ?? def;
+    const s = this.state['_' + key];
+    return s && s.p === p ? s.v : p;
+  }
+  setPv(key, def, v, more) { this.setState({ ['_' + key]: { v, p: this.props[key] ?? def }, ...(more || {}) }); }
+
+  fmtMin(m) {
+    const h = Math.floor(m / 60), r = m % 60;
+    return h ? h + 'h ' + String(r).padStart(2, '0') + 'm' : r + 'm';
+  }
+  money(n) { return '$' + n.toFixed(2); }
+  clock(min) {
+    const t = 8 * 60 + min, h = Math.floor(t / 60), m = t % 60;
+    return ((h + 11) % 12 + 1) + ':' + String(m).padStart(2, '0') + (h >= 12 ? ' PM' : ' AM');
+  }
+  plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+  /* minutes since 8:00 AM. Now is 3:40 PM. Away = no human input anywhere in midna. */
+  nowMin() { return 460; }
+  awayWin() { return [292, 407]; }
+  awayInfo() { return { from: '12:52 PM', to: '2:47 PM', len: '1h 55m', turns: 6, spend: 0.79, worked: 71, waited: 36 }; }
+
+  /* per agent terminal, from hooks + the event log.
+     w = minutes the agent was working, n = minutes it waited on you, a = approval requests, tr = triggers fired */
+  termStats(day) {
+    if (day === 'yesterday') {
+      return [
+        { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', turns: 8, msgs: 12, spend: 0.98, w: 220, n: 25, a: 4, tr: 0 },
+        { id: 'notes', project: 'midna', name: 'release notes', agent: 'claude', turns: 4, msgs: 5, spend: 0.42, w: 80, n: 15, a: 1, tr: 0 },
+        { id: 'migrate', project: 'kass', name: 'migrate', agent: 'codex', turns: 10, msgs: 14, spend: 1.20, w: 180, n: 35, a: 4, tr: 0 },
+        { id: 'auth', project: 'api', name: 'auth refresh', agent: 'codex', turns: 6, msgs: 8, spend: 0.62, w: 110, n: 15, a: 3, tr: 0 },
+        { id: 'pr88', project: 'api', name: 'PR #88 review', agent: 'codex', turns: 3, msgs: 4, spend: 0.34, w: 60, n: 10, a: 1, tr: 1 },
+        { id: 'oldside', project: 'saggar', name: 'old sidebar', agent: 'claude', turns: 5, msgs: 6, spend: 0.40, w: 67, n: 15, a: 1, tr: 0 }
+      ];
+    }
+    return [
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', turns: 9, msgs: 15, spend: 1.12, w: 175, n: 16, a: 5, tr: 0 },
+      { id: 'pr231', project: 'midna', name: 'PR #231 review', agent: 'claude', turns: 3, msgs: 4, spend: 0.41, w: 13, n: 69, a: 1, tr: 1 },
+      { id: 'docs', project: 'midna', name: 'rebuild docs', agent: 'claude', turns: 2, msgs: 0, spend: 0.09, w: 2, n: 0, a: 0, tr: 1 },
+      { id: 'migrate', project: 'kass', name: 'migrate', agent: 'codex', turns: 11, msgs: 15, spend: 1.08, w: 210, n: 20, a: 6, tr: 0 },
+      { id: 'auth', project: 'api', name: 'auth refresh', agent: 'codex', turns: 9, msgs: 12, spend: 1.14, w: 158, n: 12, a: 4, tr: 0 },
+      { id: 'port', project: 'saggar', name: 'port sidebar', agent: 'claude', turns: 4, msgs: 6, spend: 0.28, w: 48, n: 20, a: 3, tr: 0 }
+    ];
+  }
+
+  sumRows(rows, keyFn, nameFn) {
+    const out = {};
+    rows.forEach((r) => {
+      const k = keyFn(r);
+      const o = out[k] || (out[k] = { key: k, name: nameFn ? nameFn(r) : k, agent: r.agent, turns: 0, msgs: 0, spend: 0, w: 0, n: 0, a: 0, tr: 0, terms: 0 });
+      o.turns += r.turns; o.msgs += r.msgs; o.spend += r.spend; o.w += r.w; o.n += r.n; o.a += r.a; o.tr += r.tr; o.terms += 1;
+    });
+    return Object.values(out);
+  }
+
+  weekDays() {
+    const lbl = ['Sun Sep 27', 'Mon Sep 28', 'Tue Sep 29', 'Wed Sep 30', 'Thu Oct 1', 'Fri Oct 2', 'Today'];
+    const turns = [8, 44, 51, 39, 47, 36, 38], msgs = [11, 63, 70, 58, 64, 49, 52];
+    const spend = [0.62, 5.10, 6.24, 4.81, 5.55, 3.96, 4.12];
+    const w = [70, 720, 790, 590, 700, 717, 606], n = [15, 120, 160, 95, 150, 115, 137];
+    const a = [2, 18, 22, 15, 17, 14, 19], tr = [0, 3, 2, 1, 2, 1, 2];
+    return lbl.map((name, i) => ({ key: 'd' + i, name, turns: turns[i], msgs: msgs[i], spend: spend[i], w: w[i], n: n[i], a: a[i], tr: tr[i], terms: 0 }));
+  }
+
+  /* range: today | yesterday | week ; by: project | agent | terminal | day */
+  statRows(range, by) {
+    if (range === 'week') {
+      if (by === 'day') return this.weekDays().slice().reverse();
+      if (by === 'agent') return [
+        { key: 'claude', name: 'Claude Code', agent: 'claude', turns: 181, msgs: 252, spend: 22.10, w: 2700, n: 470, a: 70, tr: 8, terms: 9 },
+        { key: 'codex', name: 'Codex', agent: 'codex', turns: 82, msgs: 115, spend: 8.30, w: 1493, n: 322, a: 37, tr: 3, terms: 5 }
+      ];
+      return [
+        { key: 'midna', name: 'midna', turns: 102, msgs: 141, spend: 11.80, w: 1840, n: 310, a: 42, tr: 8, terms: 6 },
+        { key: 'kass', name: 'kass', turns: 71, msgs: 99, spend: 8.22, w: 1110, n: 262, a: 27, tr: 0, terms: 3 },
+        { key: 'api', name: 'api', turns: 64, msgs: 88, spend: 7.66, w: 980, n: 150, a: 27, tr: 3, terms: 3 },
+        { key: 'saggar', name: 'saggar', turns: 26, msgs: 39, spend: 2.72, w: 263, n: 70, a: 11, tr: 0, terms: 2 }
+      ];
+    }
+    const rows = this.termStats(range);
+    if (by === 'terminal' || by === 'day') return rows.map((r) => ({ ...r, key: r.id, terms: 1 }));
+    if (by === 'agent') return this.sumRows(rows, (r) => r.agent, (r) => r.agent === 'claude' ? 'Claude Code' : 'Codex');
+    return this.sumRows(rows, (r) => r.project);
+  }
+
+  totals(range) {
+    if (range === 'week') return { turns: 263, msgs: 367, spend: 30.40, w: 4193, n: 792, a: 107, tr: 11, terms: 14,
+      ap: { you: 41, rules: 55, denied: 9, pending: 2 }, cliDenied: 9, rulesAdded: 4 };
+    const s = this.sumRows(this.termStats(range), () => 'all')[0];
+    const extra = range === 'yesterday'
+      ? { ap: { you: 7, rules: 6, denied: 1, pending: 0 }, cliDenied: 1, rulesAdded: 1 }
+      : { ap: { you: 9, rules: 7, denied: 1, pending: 2 }, cliDenied: 2, rulesAdded: 1 };
+    return { ...s, ...extra };
+  }
+
+  /* what the totals are compared against: yesterday, Thu, or last week */
+  prevTotals(range) {
+    if (range === 'week') return { turns: 241, msgs: 350, spend: 27.95, w: 3980, n: 860, a: 96, tr: 9 };
+    if (range === 'yesterday') return { turns: 47, msgs: 64, spend: 5.55, w: 700, n: 150, a: 17, tr: 2 };
+    return this.totals('yesterday');
+  }
+  prevLabel(range) { return range === 'week' ? 'last week' : range === 'yesterday' ? 'Thursday' : 'yesterday'; }
+
+  /* text deltas, no arrows or bars */
+  dNum(cur, prev) { const d = cur - prev; return d === 0 ? 'same' : (d > 0 ? '+' : '−') + Math.abs(d); }
+  dMoney(cur, prev) { const d = Math.round((cur - prev) * 100) / 100; return d === 0 ? 'same' : (d > 0 ? '+' : '−') + '$' + Math.abs(d).toFixed(2); }
+  dMin(cur, prev) { const d = cur - prev; return d === 0 ? 'same' : (d > 0 ? '+' : '−') + this.fmtMin(Math.abs(d)); }
+
+  /* the midnad event log, newest first. min = minutes since 8:00 AM today */
+  events(range) {
+    const T = 'Today';
+    const today = [
+      { id: 'e1', day: T, min: 458, kind: 'approval', actor: 'codex', project: 'kass', term: 'migrate', text: 'Asked to run a command on staging', code: 'pnpm db:migrate --env staging', badge: 'Needs you', tone: 'need' },
+      { id: 'e2', day: T, min: 451, kind: 'terminal', actor: 'claude', project: 'midna', term: 'spike', text: 'Renamed “cargo run” to “dev server”', code: 'midna term rename t9 "dev server"' },
+      { id: 'e3', day: T, min: 432, kind: 'window', actor: 'you', project: 'midna', term: 'dev server', text: 'Moved “dev server” to display 2', code: 'kept on top' },
+      { id: 'e4', day: T, min: 415, kind: 'approval', actor: 'you', project: 'saggar', term: 'port sidebar', text: 'Approved for 1 hour', code: 'git push origin feat/sidebar', badge: 'Approved', tone: 'ok' },
+      { id: 'p1', day: T, min: 407, kind: 'presence', actor: 'you', text: 'You came back' },
+      { id: 'e5', day: T, min: 391, kind: 'cli', actor: 'claude', project: 'midna', term: 'PR #231 review', text: 'Tried to remove rule “allow git push --force on feat/*”. Denied: only you can remove rules, so it drafted the removal for you', code: 'midna rule remove r12', badge: 'Needs you', tone: 'need' },
+      { id: 'e6', day: T, min: 378, kind: 'trigger', actor: 'webhook', actorName: 'GitHub', project: 'midna', term: 'PR #231 review', text: 'pull_request.opened on mrgnhnt96/midna #231 started Claude Code', code: 'trigger “review every PR” · via Tailscale Funnel', badge: 'Fired', tone: 'ok' },
+      { id: 'e7', day: T, min: 378, kind: 'terminal', actor: 'webhook', actorName: 'GitHub', project: 'midna', term: 'PR #231 review', text: 'Opened “PR #231 review”', code: 'claude · feat/insights' },
+      { id: 'e8', day: T, min: 357, kind: 'rule', actor: 'codex', project: 'kass', term: 'migrate', text: 'Added rule “ask when env = staging”', code: 'ask  command ~ "--env staging"' },
+      { id: 'e9', day: T, min: 340, kind: 'approval', actor: 'rule', actorName: 'allow cargo test', project: 'midna', term: 'spike', text: 'Approved automatically', code: 'cargo test -p midnad', badge: 'Approved', tone: 'ok' },
+      { id: 'e10', day: T, min: 322, kind: 'terminal', actor: 'codex', project: 'kass', term: 'lint watch', text: 'Closed “lint watch”', code: 'exit 0' },
+      { id: 'e11', day: T, min: 309, kind: 'trigger', actor: 'webhook', actorName: 'GitHub', project: 'midna', term: 'rebuild docs', text: 'push to main on mrgnhnt96/midna ran workflow “rebuild docs”', code: 'exit 0 · 2m 04s', badge: 'Fired', tone: 'ok' },
+      { id: 'p0', day: T, min: 292, kind: 'presence', actor: 'you', text: 'You stepped away' },
+      { id: 'e12', day: T, min: 280, kind: 'approval', actor: 'you', project: 'midna', term: 'spike', text: 'Approved once', code: 'rm -rf target/', badge: 'Approved', tone: 'ok' },
+      { id: 'e13', day: T, min: 242, kind: 'terminal', actor: 'you', project: 'api', term: 'auth refresh', text: 'Opened “auth refresh” with Codex', code: 'gpt-5 · feat/auth' },
+      { id: 'e18', day: T, min: 201, kind: 'cli', actor: 'claude', project: 'midna', term: 'spike', text: 'Opened “cargo run” as a monitor', code: 'midna term open --monitor "cargo run"', badge: 'Allowed', tone: 'ok' },
+      { id: 'e14', day: T, min: 195, kind: 'window', actor: 'claude', project: 'midna', term: 'dev server', text: 'Popped out “cargo run” and kept it on top', code: 'midna window pop t9 --on-top' },
+      { id: 'e15', day: T, min: 168, kind: 'cli', actor: 'codex', project: 'kass', term: 'migrate', text: 'CLI call denied by rule “deny rm outside project”', code: 'midna term send t3 "rm -rf ~/.kass"', badge: 'Denied', tone: 'err' },
+      { id: 'e16', day: T, min: 80, kind: 'approval', actor: 'you', project: 'kass', term: 'migrate', text: 'Denied', code: 'curl -X DELETE https://api.kass.app/v1/users/test', badge: 'Denied', tone: 'err' },
+      { id: 'e17', day: T, min: 60, kind: 'terminal', actor: 'you', project: 'midna', term: 'spike', text: 'Opened “spike” with Claude Code', code: 'opus · main' },
+      { id: 'e19', day: T, min: 30, kind: 'terminal', actor: 'you', project: 'kass', term: 'migrate', text: 'Opened “migrate” with Codex', code: 'gpt-5 · feat/tokens' }
+    ];
+    const fri = 'Fri Oct 2';
+    const yest = [
+      { id: 'y1', day: fri, t: '6:14 PM', kind: 'terminal', actor: 'you', project: 'saggar', term: 'old sidebar', text: 'Closed “old sidebar”', code: 'exit 130' },
+      { id: 'y2', day: fri, t: '4:30 PM', kind: 'rule', actor: 'you', project: 'midna', term: 'spike', text: 'Removed rule “allow npm publish” (proposed by Claude Code)', code: 'r9 · confirmed by you' },
+      { id: 'y3', day: fri, t: '4:12 PM', kind: 'cli', actor: 'claude', project: 'midna', term: 'spike', text: 'Tried to remove rule “allow npm publish”. Denied, drafted for you', code: 'midna rule remove r9', badge: 'Denied', tone: 'err' },
+      { id: 'y4', day: fri, t: '2:40 PM', kind: 'approval', actor: 'you', project: 'kass', term: 'migrate', text: 'Denied', code: 'pnpm db:reset --env staging', badge: 'Denied', tone: 'err' },
+      { id: 'y5', day: fri, t: '1:15 PM', kind: 'rule', actor: 'codex', project: 'api', term: 'auth refresh', text: 'Added rule “allow cargo sqlx prepare”', code: 'allow  command = "cargo sqlx prepare"' },
+      { id: 'y6', day: fri, t: '11:05 AM', kind: 'trigger', actor: 'webhook', actorName: 'Bitbucket', project: 'api', term: 'PR #88 review', text: 'pr:opened on api #88 started Codex', code: 'trigger “review api PRs” · via Tailscale Funnel', badge: 'Fired', tone: 'ok' },
+      { id: 'y7', day: fri, t: '9:02 AM', kind: 'terminal', actor: 'you', project: 'midna', term: 'release notes', text: 'Opened “release notes” with Claude Code', code: 'sonnet · main' }
+    ];
+    const older = [
+      { id: 'w4', day: 'Thu Oct 1', t: '3:12 PM', kind: 'cli', actor: 'claude', project: 'midna', term: 'spike', text: 'Tried to remove a rule. Denied, drafted for you', code: 'midna rule remove r4', badge: 'Denied', tone: 'err' },
+      { id: 'w5', day: 'Thu Oct 1', t: '9:40 AM', kind: 'window', actor: 'you', project: 'kass', term: 'migrate', text: 'Moved “migrate” to display 2', code: '' },
+      { id: 'w6', day: 'Wed Sep 30', t: '2:02 PM', kind: 'approval', actor: 'you', project: 'api', term: 'zsh', text: 'Always approve (added a rule)', code: 'cargo sqlx prepare', badge: 'Approved', tone: 'ok' },
+      { id: 'w7', day: 'Tue Sep 29', t: '10:18 AM', kind: 'trigger', actor: 'webhook', actorName: 'GitHub', project: 'midna', term: 'PR #224 review', text: 'pull_request.opened on mrgnhnt96/midna #224 started Claude Code', code: 'trigger “review every PR” · via Tailscale Funnel', badge: 'Fired', tone: 'ok' }
+    ];
+    if (range === 'yesterday') return yest;
+    if (range === 'week') return today.concat(yest, older);
+    return today;
+  }
+
+  isAway(e) { const [a, b] = this.awayWin(); return e.day === 'Today' && e.min > a && e.min < b; }
+
+  kinds() {
+    return [
+      { id: 'all', label: 'Everything' }, { id: 'approval', label: 'Approvals' }, { id: 'cli', label: 'CLI calls' },
+      { id: 'terminal', label: 'Terminals' }, { id: 'rule', label: 'Rules' }, { id: 'window', label: 'Windows' }, { id: 'trigger', label: 'Triggers' }
+    ];
+  }
+
+  evView(e) {
+    const names = { you: 'You', claude: 'Claude Code', codex: 'Codex', rule: 'Rule', webhook: 'Webhook' };
+    const kl = { approval: 'Approval', cli: 'CLI call', terminal: 'Terminal', rule: 'Rule', window: 'Window', trigger: 'Trigger', presence: 'Presence' };
+    const tone = e.tone || '';
+    return {
+      ...e,
+      t: e.t || this.clock(e.min),
+      away: this.isAway(e),
+      kindLabel: kl[e.kind],
+      k_approval: e.kind === 'approval', k_cli: e.kind === 'cli', k_terminal: e.kind === 'terminal', k_rule: e.kind === 'rule',
+      k_window: e.kind === 'window', k_trigger: e.kind === 'trigger', k_presence: e.kind === 'presence',
+      a_you: e.actor === 'you', a_claude: e.actor === 'claude', a_codex: e.actor === 'codex', a_rule: e.actor === 'rule', a_webhook: e.actor === 'webhook',
+      who: e.actor === 'rule' ? 'Rule “' + e.actorName + '”' : e.actorName || names[e.actor],
+      toneColor: tone === 'err' ? 'var(--err)' : tone === 'need' ? 'var(--need)' : tone === 'ok' ? 'var(--ok)' : 'var(--dim)',
+      hasCode: !!e.code, code: e.code || '',
+      badge: e.badge || '',
+      hasBadge: !!e.badge,
+      where: e.project ? e.project + ' › ' + e.term : '',
+      isPresence: e.kind === 'presence', isEvent: e.kind !== 'presence'
+    };
+  }
+
+/*SHARED*/
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+  initState() { return { kind: 'all', copied: false }; }
+
+  /* rows behind a number: per-terminal (a day) or per-project (a week) */
+  breakdown(range, field, fmt, filter) {
+    const rows = (range === 'week' ? this.statRows('week', 'project') : this.termStats(range)).filter(filter || (() => true));
+    return rows.slice().sort((a, b) => b[field] - a[field]).map((r) => ({
+      left: r.project || 'project', who: r.name, text: '', code: '', hasCode: false,
+      right: fmt(r[field]), rightColor: 'var(--fg)'
+    }));
+  }
+
+  evRows(list) {
+    return list.map((e) => {
+      const v = this.evView(e);
+      return { left: v.t, who: v.who, text: v.text.charAt(0).toLowerCase() + v.text.slice(1) + (v.where ? ' · ' + v.where : ''), code: v.code, hasCode: v.hasCode, right: v.badge, rightColor: v.toneColor };
+    });
+  }
+
+  evidence(range, key) {
+    const evs = this.events(range).filter((e) => e.kind !== 'presence');
+    const num = (n) => String(n), fm = (m) => this.fmtMin(m), mo = (n) => this.money(n);
+    const per = range === 'week' ? 'By project' : 'By terminal';
+    const of = (list, all) => list.length < all ? 'latest ' + list.length + ' of ' + all + ' in the log' : '';
+    const T = this.totals(range);
+    switch (key) {
+      case 'turns': return { title: per + ', agent turns', note: 'from agent hooks', rows: this.breakdown(range, 'turns', (n) => this.plural(n, 'turn')) };
+      case 'spend': return { title: per + ', spend', note: 'as reported by Claude Code and Codex', rows: this.breakdown(range, 'spend', mo) };
+      case 'msgs': return { title: per + ', messages you sent', note: 'typed, pasted, or dictated with Kass', rows: this.breakdown(range, 'msgs', (n) => this.plural(n, 'message')) };
+      case 'terms': return { title: 'Agent terminals', note: '', rows: this.breakdown(range, 'turns', (n) => this.plural(n, 'turn')) };
+      case 'worked': return { title: per + ', time agents worked', note: 'hook start to stop', rows: this.breakdown(range, 'w', fm) };
+      case 'waited': return { title: per + ', time agents waited on you', note: 'from a question or approval until you answered', rows: this.breakdown(range, 'n', fm) };
+      case 'approvals': { const l = evs.filter((e) => e.kind === 'approval'); return { title: 'Approval requests', note: of(l, T.a), rows: this.evRows(l) }; }
+      case 'pending': { const l = evs.filter((e) => e.badge === 'Needs you'); return { title: 'Still waiting on you', note: '⌘J jumps to the next one', rows: this.evRows(l) }; }
+      case 'rules': { const l = evs.filter((e) => e.kind === 'rule'); return { title: 'Rules', note: 'agents can add rules; only you can remove them', rows: this.evRows(l) }; }
+      case 'denied': { const l = evs.filter((e) => e.kind === 'cli' && (e.tone === 'err' || e.badge === 'Needs you')); return { title: 'CLI calls denied', note: of(l, T.cliDenied), rows: this.evRows(l) }; }
+      case 'triggers': { const l = evs.filter((e) => e.kind === 'trigger'); return { title: 'Triggers fired', note: of(l, T.tr), rows: this.evRows(l) }; }
+      case 'away': { const l = evs.filter((e) => this.isAway(e)); return { title: 'While you were away', note: '12:52 to 2:47 PM', rows: this.evRows(l) }; }
+      case 'pr231': { const l = evs.filter((e) => e.term === 'PR #231 review'); return { title: 'PR #231 review', note: 'midna · Claude Code', rows: this.evRows(l) }; }
+      default: {
+        if (key.indexOf('p:') === 0) {
+          const p = key.slice(2);
+          const rows = range === 'week'
+            ? this.evRows(evs.filter((e) => e.project === p))
+            : this.breakdown(range, 'spend', (n) => mo(n), (r) => r.project === p).map((r) => {
+              const s = this.termStats(range).find((x) => x.name === r.who);
+              return { ...r, left: s.agent === 'claude' ? 'Claude' : 'Codex', right: this.plural(s.turns, 'turn') + ' · ' + mo(s.spend) + ' · waited ' + fm(s.n) };
+            });
+          return { title: p, note: range === 'week' ? 'events this week' : 'agent terminals', rows };
+        }
+        return { title: '', note: '', rows: [] };
+      }
+    }
+  }
+
+  report(range) {
+    const T = this.totals(range), P = this.prevTotals(range), pl = this.prevLabel(range);
+    const t = (text) => ({ isText: true, isLink: false, text });
+    const L = (text, key, aria) => ({ isText: false, isLink: true, text, key, aria: aria || text });
+    const mo = (n) => this.money(n), fm = (m) => this.fmtMin(m);
+    const more = (cur, prev, unit) => {
+      const d = cur - prev;
+      return d === 0 ? 'the same number of ' + unit : Math.abs(d) + ' ' + (d > 0 ? 'more ' : 'fewer ') + unit;
+    };
+    const moneyMore = (cur, prev) => { const d = Math.round((cur - prev) * 100) / 100; return d === 0 ? 'the same spend' : mo(Math.abs(d)) + (d > 0 ? ' more spent' : ' less spent'); };
+    const minMore = (cur, prev) => { const d = cur - prev; return d === 0 ? 'no change' : fm(Math.abs(d)) + (d > 0 ? ' more' : ' less'); };
+    const projects = this.statRows(range, 'project').slice().sort((a, b) => b.spend - a.spend);
+    const agents = this.statRows(range, 'agent').slice().sort((a, b) => b.turns - a.turns);
+    const ap = T.ap;
+    const when = range === 'week' ? 'This week' : range === 'yesterday' ? 'Yesterday' : 'Today';
+
+    const big = { size: '26px', lh: '1.35', weight: '400', color: 'var(--fg)', gap: '14px' };
+    const body = { size: '16px', lh: '1.65', weight: '400', color: 'var(--fg)', gap: '16px' };
+    const quiet = { size: '16px', lh: '1.65', weight: '400', color: 'var(--dim)', gap: '22px' };
+    const paras = [];
+    paras.push({ ...big, parts: [t(when + ', agents took '), L(this.plural(T.turns, 'turn'), 'turns', T.turns + ' agent turns. Show by ' + (range === 'week' ? 'project' : 'terminal')), t(' and spent '), L(mo(T.spend), 'spend', mo(T.spend) + ' spent. Show breakdown'), t('. You sent them '), L(this.plural(T.msgs, 'message'), 'msgs', T.msgs + ' messages sent. Show breakdown'), t('.')] });
+    paras.push({ ...quiet, parts: [t('That’s ' + more(T.turns, P.turns, 'turns') + ', ' + more(T.msgs, P.msgs, 'messages') + ', and ' + moneyMore(T.spend, P.spend) + ' than ' + pl + '.')] });
+
+    if (range === 'week') {
+      paras.push({ ...body, parts: [t('Agents worked for '), L(fm(T.w), 'worked'), t(' and waited on you for '), L(fm(T.n), 'waited'), t(', which is ' + minMore(T.n, P.n) + ' waiting than last week. The busiest day was Tuesday (51 turns, $6.24); the quietest was Sunday (8 turns, $0.62).')] });
+    } else {
+      const top = this.termStats(range).slice().sort((a, b) => b.n - a.n)[0];
+      const parts = [t('Across '), L(this.plural(T.terms, 'agent terminal'), 'terms'), t(' they worked for '), L(fm(T.w), 'worked'), t(' and waited on you for '), L(fm(T.n), 'waited'), t(' (' + minMore(T.n, P.n) + ' than ' + pl + '). ')];
+      if (range === 'today') parts.push(t('Most of the waiting was '), L('PR #231 review', 'pr231', 'PR #231 review events'), t(', which has needed you for 1h 09m to confirm a rule removal.'));
+      else parts.push(t('Most of the waiting was ' + top.name + ' in ' + top.project + ' (' + fm(top.n) + ').'));
+      paras.push({ ...body, parts });
+    }
+
+    const apParts = [t('There were '), L(this.plural(T.a, 'approval request'), 'approvals'), t('. You approved ' + ap.you + ', rules approved ' + ap.rules + ', and you denied ' + ap.denied)];
+    if (ap.pending) apParts.push(t('. '), L(ap.pending + ' are still waiting', 'pending', ap.pending + ' approvals still waiting on you'), t('.'));
+    else apParts.push(t('. Nothing was left waiting.'));
+    paras.push({ ...body, parts: apParts });
+
+    paras.push({ ...body, parts: [t('Agents added '), L(this.plural(T.rulesAdded, 'rule'), 'rules'), t(' and had '), L(this.plural(T.cliDenied, 'CLI call') + ' denied', 'denied'), t(' by policy. '), L(this.plural(T.tr, 'trigger'), 'triggers'), t(range === 'week' ? ' fired from GitHub and Bitbucket.' : range === 'yesterday' ? ' fired from Bitbucket.' : ' fired from GitHub.')] });
+
+    if (range === 'today') {
+      const A = this.awayInfo();
+      const n = this.events('today').filter((e) => e.kind !== 'presence' && this.isAway(e)).length;
+      paras.push({ ...body, parts: [t('While you were away from ' + A.from + ' to ' + A.to + ', agents took ' + A.turns + ' turns, spent ' + mo(A.spend) + ', and '), L(this.plural(n, 'thing') + ' happened', 'away', n + ' events while you were away'), t('. They waited on you for ' + fm(A.waited) + ' of that time.')] });
+    }
+
+    const pparts = [t(projects[0].name === 'midna' ? 'By project, ' : 'By project, ')];
+    projects.forEach((p, i) => {
+      if (i === projects.length - 1) pparts.push(t('and '));
+      pparts.push(L(p.name, 'p:' + p.name, p.name + ' details'));
+      pparts.push(t(' ' + (i === 0 ? 'cost the most at ' : 'cost ') + mo(p.spend) + ' (' + this.plural(p.turns, 'turn') + ')' + (i === projects.length - 1 ? '. ' : ', ')));
+    });
+    const a0 = agents[0], a1 = agents[1];
+    pparts.push(t(a0.name + ' did ' + a0.turns + ' turns for ' + mo(a0.spend) + '; ' + a1.name + ' did ' + a1.turns + ' for ' + mo(a1.spend) + '.'));
+    paras.push({ ...body, parts: pparts });
+    return paras;
+  }
+
+  renderVals() {
+    const range = this.pv('range', 'today');
+    const open = this.pv('open', 'none');
+    const setOpen = (k) => this.setPv('open', 'none', open === k ? 'none' : k);
+    const paras = this.report(range).map((p) => {
+      const keys = p.parts.filter((x) => x.isLink).map((x) => x.key);
+      const mine = keys.indexOf(open) >= 0;
+      const ev = mine ? this.evidence(range, open) : { title: '', note: '', rows: [] };
+      return {
+        ...p,
+        parts: p.parts.map((x) => x.isLink ? {
+          ...x,
+          expanded: open === x.key ? 'true' : 'false',
+          style: open === x.key ? 'background: var(--accent); color: var(--accent-fg); text-decoration-color: transparent' : 'background: transparent; color: var(--accent); text-decoration-color: var(--accent)',
+          pick: () => setOpen(x.key)
+        } : { ...x, expanded: 'false', style: '', aria: '', pick: null }),
+        hasEvidence: mine,
+        evTitle: ev.title, evNote: ev.note, evRows: ev.rows
+      };
+    });
+
+    const evs = this.events(range);
+    const real = evs.filter((e) => e.kind !== 'presence');
+    const kind = this.state.kind;
+    const kindLinks = this.kinds().map((k) => {
+      const n = k.id === 'all' ? real.length : real.filter((e) => e.kind === k.id).length;
+      const sel = kind === k.id;
+      return { label: k.label, count: String(n), sel: sel ? 'true' : 'false',
+        style: sel ? 'color: var(--fg); font-weight: 700; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--accent); text-decoration-thickness: 2px' : 'color: var(--dim)',
+        pick: () => this.setState({ kind: k.id }) };
+    });
+    const log = [];
+    let lastDay = null;
+    evs.forEach((e) => {
+      if (kind !== 'all' && (e.kind === 'presence' || e.kind !== kind)) return;
+      if (range === 'week' && e.day !== lastDay) { log.push({ isHead: true, isPresence: false, isRow: false, head: e.day === 'Today' ? 'Today · Sat Oct 3' : e.day }); lastDay = e.day; }
+      const v = this.evView(e);
+      log.push({ ...v, text: v.text.charAt(0).toLowerCase() + v.text.slice(1), isHead: false, head: '', isRow: v.isEvent, isPresence: v.isPresence });
+    });
+
+    const titles = { today: 'Saturday, October 3 · as of 3:40 PM', yesterday: 'Friday, October 2', week: 'Sunday, Sep 27 to today' };
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(this.terminals(), { id: null }),
+      needCount: this.terminals().filter((t) => t.status === 'needs').length,
+      jumpNext: () => {},
+      ranges: [['today', 'Today'], ['yesterday', 'Yesterday'], ['week', 'This week']].map(([id, label]) => ({
+        label, sel: range === id ? 'true' : 'false',
+        style: range === id ? 'background: var(--raised); color: var(--fg); font-weight: 700; box-shadow: 0 0 0 1px var(--line)' : 'background: transparent; color: var(--dim)',
+        pick: () => this.setPv('range', 'today', id, { kind: 'all', ['_open']: { v: 'none', p: this.props.open ?? 'none' } })
+      })),
+      copy: () => this.setState({ copied: true }),
+      copyLabel: this.state.copied ? 'Copied' : 'Copy as text',
+      eyebrow: titles[range],
+      reportTitle: 'Report, ' + titles[range],
+      paras,
+      closeEv: () => this.setPv('open', 'none', 'none'),
+      kindLinks,
+      log,
+      logNote: real.length + ' events from the midnad audit log' + (range === 'today' ? ', newest first' : '')
+    };
+  }
+
+}
+</script>
+</body>
+</html>

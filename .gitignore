@@ -1,0 +1,16 @@
+/target
+/.toolchain
+spikes/*/target
+/dist
+.DS_Store
+# packaging (docs/RELEASING.md): build output and release keys never go in the repo
+/packaging/release-tool/target
+/packaging/e2e/work
+*.key
+*.p8
+*.p12
+# spike build and run output
+spikes/**/*.app
+spikes/**/*.log
+spikes/daemon-reexec/run*/
+spikes/gpui-terminal/shots/*-big.png

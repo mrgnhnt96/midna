@@ -1,0 +1,303 @@
+//! CLI tests: the real `midna` binary against an in-process daemon on a temp MIDNA_HOME.
+//! The CLI is a different executable than the configured GUI, so it is an agent.
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static N: AtomicU32 = AtomicU32::new(0);
+
+struct D {
+    handle: Option<midnad::Handle>,
+    home: PathBuf,
+}
+
+impl D {
+    fn start() -> D {
+        D::start_with(|_| {})
+    }
+    fn start_with(tweak: impl FnOnce(&mut midnad::Config)) -> D {
+        let home = PathBuf::from(format!("/tmp/midna-c-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut cfg = midnad::Config::for_home(home.clone());
+        cfg.app_path = Some(std::env::current_exe().unwrap().to_string_lossy().into_owned());
+        cfg.cli_path = env!("CARGO_BIN_EXE_midna").into();
+        tweak(&mut cfg);
+        D { handle: Some(midnad::start(cfg).unwrap()), home }
+    }
+    fn sock(&self) -> String {
+        self.home.join("midnad.sock").to_string_lossy().into_owned()
+    }
+    fn human(&self) -> midna_proto::Client {
+        let mut c = midna_proto::Client::connect(self.sock()).unwrap();
+        c.set_caller(None);
+        c
+    }
+}
+
+impl Drop for D {
+    fn drop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+fn midna(sock: &str, args: &[&str], stdin: Option<&str>, session: Option<&str>) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_midna"));
+    cmd.args(args).env("MIDNA_SOCKET", sock).env_remove("MIDNA_SESSION").env_remove("MIDNA_HOME");
+    if let Some(s) = session {
+        cmd.env("MIDNA_SESSION", s);
+    }
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    if let Some(input) = stdin {
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    }
+    drop(child.stdin.take());
+    child.wait_with_output().unwrap()
+}
+
+fn code(o: &Output) -> i32 {
+    o.status.code().unwrap_or(-1)
+}
+
+fn stdout(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+#[test]
+fn exit_codes() {
+    let d = D::start();
+    let s = d.sock();
+    // 0: ok, and the CLI is an agent.
+    let o = midna(&s, &["info", "--json"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&o)).unwrap()["role"], "agent");
+    // 1: refused (human only).
+    let r = midna(&s, &["rules", "add", "deny", "command", "git push --force*", "--json"], None, None);
+    assert_eq!(code(&r), 0);
+    let rid = serde_json::from_str::<Value>(&stdout(&r)).unwrap()["id"].as_str().unwrap().to_string();
+    let o = midna(&s, &["rules", "remove", &rid], None, None);
+    assert_eq!(code(&o), 1, "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(err.contains(&format!("midna rules request-removal {rid} --reason")), "{err}");
+    let o = midna(&s, &["settings", "set", "approve.from_cli", "true"], None, None);
+    assert_eq!(code(&o), 1);
+    // 2: bad args (usage, unknown verb, unknown method, bad params).
+    assert_eq!(code(&midna(&s, &["read"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["frobnicate"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["call", "no.such.method"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["call", "session.get", "{\"nope\":1}"], None, None)), 2);
+    // 3: daemon unreachable.
+    let o = midna("/tmp/midna-no-such.sock", &["list"], None, None);
+    assert_eq!(code(&o), 3);
+    // `schema` works without a daemon.
+    let o = midna("/tmp/midna-no-such.sock", &["schema"], None, None);
+    assert_eq!(code(&o), 0);
+    assert!(stdout(&o).contains("\"rpc.discover\""));
+}
+
+#[test]
+fn verbs_drive_a_session() {
+    let d = D::start();
+    let s = d.sock();
+    let o = midna(&s, &["open", "--cwd", "/tmp", "--name", "t1", "--", "/bin/sh"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let id = stdout(&o).trim().to_string();
+    assert_eq!(code(&midna(&s, &["send", &id, "echo", "cli-$((1+1))"], None, None)), 0);
+    let t0 = std::time::Instant::now();
+    loop {
+        let o = midna(&s, &["read", &id, "--lines", "20"], None, None);
+        if stdout(&o).contains("cli-2") {
+            break;
+        }
+        assert!(t0.elapsed().as_secs() < 5, "output never appeared");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = midna(&s, &["list"], None, None);
+    assert!(stdout(&o).contains("t1"));
+    let o = midna(&s, &["attention", "need", "a", "decision", "--note"], None, Some(&id));
+    assert_eq!(code(&o), 0, "{o:?}");
+    let o = midna(&s, &["needs", "--json"], None, None);
+    let items: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(items[0]["kind"], "note");
+    assert_eq!(items[0]["session_id"], id.as_str());
+    let o = midna(&s, &["check", "cli", "close --force x"], None, None);
+    assert!(stdout(&o).starts_with("ask (default)"), "{}", stdout(&o));
+    let o = midna(&s, &["events", "--kind", "session.", "--json"], None, None);
+    assert!(stdout(&o).lines().count() >= 1);
+    assert_eq!(code(&midna(&s, &["insights"], None, None)), 0);
+    assert_eq!(code(&midna(&s, &["settings", "get", "theme"], None, None)), 0);
+    assert_eq!(code(&midna(&s, &["close", &id], None, None)), 0);
+}
+
+#[test]
+fn hook_bridge_prints_claude_decision() {
+    let d = D::start();
+    let s = d.sock();
+    let mut h = d.human();
+    let sess = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+    let sid = sess["id"].as_str().unwrap();
+    h.call_value("rule.add", json!({ "effect": "deny", "matcher": { "kind": "tool", "pattern": "Bash(rm -rf*)" } })).unwrap();
+    h.call_value("rule.add", json!({ "effect": "allow", "matcher": { "kind": "tool", "pattern": "Bash(ls*)" } })).unwrap();
+    let pre = |cmd: &str| json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": { "command": cmd } }).to_string();
+    let o = midna(&s, &["hook", "claude"], Some(&pre("rm -rf /")), Some(sid));
+    assert_eq!(code(&o), 0);
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    let o = midna(&s, &["hook", "claude"], Some(&pre("ls -la")), Some(sid));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "allow");
+    // No rule: no opinion, no output (Claude's own permission flow decides).
+    let o = midna(&s, &["hook", "claude"], Some(&pre("cargo build")), Some(sid));
+    assert_eq!((code(&o), stdout(&o).trim().to_string()), (0, String::new()));
+    // The PreToolUse drove status to working; Stop -> done.
+    let st = h.call_value("session.get", json!({ "id": sid })).unwrap();
+    assert_eq!(st["status"]["state"], "working");
+    midna(&s, &["hook", "claude"], Some(r#"{"hook_event_name":"Stop"}"#), Some(sid));
+    assert_eq!(h.call_value("session.get", json!({ "id": sid })).unwrap()["status"]["state"], "done");
+    // Codex notify (payload in argv).
+    let o = midna(&s, &["hook", "codex", "notify", r#"{"type":"agent-turn-complete","input-messages":["hi"]}"#], None, Some(sid));
+    assert_eq!(code(&o), 0);
+    // Statusline prints a line and records cost.
+    let o = midna(&s, &["hook", "claude", "statusline"], Some(r#"{"model":{"display_name":"Opus"},"cost":{"total_cost_usd":1.5}}"#), Some(sid));
+    assert_eq!(stdout(&o).trim(), "Opus · $1.50");
+    let ev = h.call_value("events.list", json!({ "filter": { "kinds": ["agent.cost"] } })).unwrap();
+    assert_eq!(ev[0]["data"]["delta_usd"], 1.5);
+    // Outside midna (no MIDNA_SESSION) or with the daemon down: silent success.
+    assert_eq!(code(&midna(&s, &["hook", "claude"], Some(&pre("rm -rf /")), None)), 0);
+    assert_eq!(code(&midna("/tmp/midna-no-such.sock", &["hook", "claude"], Some(&pre("x")), Some(sid))), 0);
+    // The hook settings file midna passes to `claude --settings` points at this CLI.
+    let settings: Value = serde_json::from_slice(&std::fs::read(d.home.join("hooks/claude-settings.json")).unwrap()).unwrap();
+    let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+    assert!(cmd.contains(env!("CARGO_BIN_EXE_midna")) && cmd.ends_with("hook claude"));
+}
+
+#[test]
+fn mcp_exposes_catalog_as_tools() {
+    let d = D::start();
+    let input = [
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "0" } } }),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "daemon_info", "arguments": {} } }),
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "rule_remove", "arguments": { "id": "r_x" } } }),
+    ]
+    .iter()
+    .map(|v| v.to_string() + "\n")
+    .collect::<String>();
+    let o = midna(&d.sock(), &["mcp"], Some(&input), None);
+    assert_eq!(code(&o), 0);
+    let replies: Vec<Value> = stdout(&o).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(replies.len(), 4, "notification gets no reply");
+    assert_eq!(replies[0]["result"]["serverInfo"]["name"], "midna");
+    let tools = replies[1]["result"]["tools"].as_array().unwrap();
+    // minus stream.attach and events.subscribe, plus capabilities, explain and guide
+    assert_eq!(tools.len(), midna_proto::catalog().len() - 2 + 3);
+    let open = tools.iter().find(|t| t["name"] == "session_open").unwrap();
+    assert_eq!(open["inputSchema"]["type"], "object");
+    assert!(open["description"].as_str().unwrap().contains("agent"));
+    assert_eq!(replies[2]["result"]["isError"], false);
+    assert_eq!(replies[2]["result"]["structuredContent"]["role"], "agent");
+    assert_eq!(replies[3]["result"]["isError"], true);
+}
+
+#[test]
+fn discoverability() {
+    let s = "/tmp/midna-no-such.sock";
+    // Every verb has complete `--help` (and `help <verb>`), offline, and never runs the verb.
+    let top = stdout(&midna(s, &["help"], None, None));
+    for v in ["capabilities", "skill", "explain", "schema", "projects", "open", "send", "key", "restart", "attention", "rules", "triggers", "settings", "window", "mcp"] {
+        assert!(top.contains(&format!("  {v}")), "help lacks {v}");
+        let o = midna(s, &[v, "--help"], None, None);
+        assert_eq!(code(&o), 0, "{v} --help: {o:?}");
+        assert!(stdout(&o).contains(&format!("usage: midna {v}")), "{v}: {}", stdout(&o));
+        assert_eq!(stdout(&midna(s, &["help", v], None, None)), stdout(&o));
+    }
+    let o = midna(s, &["rules", "--help"], None, None);
+    assert!(stdout(&o).contains("rule.remove [rule_remove]  human only"), "{}", stdout(&o));
+    assert_eq!(code(&midna(s, &["help", "frobnicate"], None, None)), 2);
+    // capabilities, skill and schema work without a daemon.
+    let caps = stdout(&midna(s, &["capabilities"], None, None));
+    assert!(caps.contains("HUMAN ONLY") && caps.contains("rule.remove") && caps.contains("approve.from_cli"), "{caps}");
+    assert!(stdout(&midna(s, &["skill"], None, None)).starts_with("---\nname: midna"));
+    let one: Value = serde_json::from_str(&stdout(&midna(s, &["schema", "rule_add"], None, None))).unwrap();
+    assert_eq!(one["method"], "rule.add");
+    assert!(one["params"]["properties"]["matcher"].is_object());
+    assert!(stdout(&midna(s, &["schema", "--list"], None, None)).lines().count() >= midna_proto::catalog().len());
+    assert_eq!(code(&midna(s, &["schema", "nope.nope"], None, None)), 2);
+    // explain: topics offline.
+    assert!(stdout(&midna(s, &["explain", "rules"], None, None)).contains("request-removal"));
+}
+
+#[test]
+fn explain_and_guidance_against_a_daemon() {
+    let d = D::start();
+    let s = d.sock();
+    let o = midna(&s, &["open", "--cwd", "/tmp", "--name", "x", "--", "/bin/sh"], None, None);
+    let id = stdout(&o).trim().to_string();
+    let o = midna(&s, &["explain", &id], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert!(stdout(&o).contains("status: idle") && stdout(&o).contains("why: reason"), "{}", stdout(&o));
+    let o = midna(&s, &["projects", "--json"], None, None);
+    let pid = serde_json::from_str::<Value>(&stdout(&o)).unwrap()[0]["id"].as_str().unwrap().to_string();
+    let o = midna(&s, &["projects", "add-command", &pid, "--name", "test", "--pinned", "--", "cargo", "test"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert!(stdout(&midna(&s, &["explain", &pid], None, None)).contains("cargo test (pinned)"));
+    // A human-only setting from an agent: refused, with the request already made and what to do.
+    let o = midna(&s, &["settings", "set", "agents.may_move_windows", "true"], None, Some(&id));
+    assert_eq!(code(&o), 1);
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(err.contains("Next:") && err.contains("midna explain n_"), "{err}");
+    let n = err.split("needs-you item ").nth(1).unwrap().split_whitespace().next().unwrap();
+    let o = midna(&s, &["explain", n], None, None);
+    assert!(stdout(&o).contains("only the human"), "{}", stdout(&o));
+    let o = midna(&s, &["key", &id, "ctrl-c"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert_eq!(code(&midna(&s, &["explain", "nothing-like-this"], None, None)), 1);
+}
+
+#[test]
+fn agents_get_mcp_skill_and_hint_without_global_config() {
+    // Never launch a real agent in tests: the agent binary is /bin/echo.
+    let d = D::start_with(|c| c.agent_bin = Some("/bin/echo".into()));
+    let mut h = d.human();
+    let home = d.home.clone();
+    let mcp: Value = serde_json::from_slice(&std::fs::read(home.join("hooks/mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["midna"]["command"], env!("CARGO_BIN_EXE_midna"));
+    assert_eq!(mcp["mcpServers"]["midna"]["args"], json!(["mcp"]));
+    assert!(std::fs::read_to_string(home.join("hooks/SKILL.md")).unwrap().contains("Never route around a denial"));
+    let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp", "prompt": "hi" })).unwrap();
+    let cmd: Vec<String> = serde_json::from_value(sess["command"].clone()).unwrap();
+    let pos = |f: &str| cmd.iter().position(|a| a == f).unwrap_or_else(|| panic!("{f} missing from {cmd:?}"));
+    assert_eq!(cmd[pos("--mcp-config") + 1], home.join("hooks/mcp.json").to_string_lossy());
+    // --mcp-config is variadic in Claude: --settings must follow it before the prompt.
+    assert_eq!(pos("--settings"), pos("--mcp-config") + 2);
+    assert!(cmd[pos("--append-system-prompt") + 1].contains("midna capabilities"));
+    assert_eq!(cmd.last().unwrap(), "hi");
+    let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "codex", "cwd": "/tmp" })).unwrap();
+    let cmd: Vec<String> = serde_json::from_value(sess["command"].clone()).unwrap();
+    let joined = cmd.join(" ");
+    assert!(joined.contains("mcp_servers.midna.command=") && joined.contains(r#"mcp_servers.midna.args=["mcp"]"#), "{joined}");
+    assert!(joined.contains(&format!("MIDNA_SESSION=\"{}\"", sess["id"].as_str().unwrap())), "{joined}");
+    assert!(joined.contains("developer_instructions="), "{joined}");
+    // Both settings off: none of it.
+    h.call_value("settings.set", json!({ "key": "agents.mcp", "value": false })).unwrap();
+    h.call_value("settings.set", json!({ "key": "agents.system_hint", "value": false })).unwrap();
+    let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" })).unwrap();
+    let joined = serde_json::from_value::<Vec<String>>(sess["command"].clone()).unwrap().join(" ");
+    assert!(!joined.contains("--mcp-config") && !joined.contains("--append-system-prompt") && joined.contains("--settings"), "{joined}");
+    // Every terminal knows where the guide is.
+    let sh = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+    let sid = sh["id"].as_str().unwrap();
+    h.call_value("session.input", json!({ "id": sid, "text": "echo skill=$MIDNA_SKILL", "enter": true })).unwrap();
+    let want = format!("skill={}", home.join("hooks/SKILL.md").display());
+    let t0 = std::time::Instant::now();
+    while !h.call_value("session.read", json!({ "id": sid })).unwrap()["text"].as_str().unwrap().contains(&want) {
+        assert!(t0.elapsed().as_secs() < 5, "MIDNA_SKILL not set");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Triggers: list and detail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+.sw{position:relative;flex:0 0 30px;width:30px;height:18px;padding:0;border:0;border-radius:9px;background:var(--line);cursor:pointer}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--dim);transition:left .15s}
+.sw[aria-checked="true"]{background:var(--ok)}
+.sw[aria-checked="true"]::after{left:14px;background:var(--panel)}
+.sw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:transparent;font-size:12px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--raised)}
+.btn-p{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:700}
+.btn-p:hover{background:var(--accent);filter:brightness(1.08)}
+.hov:hover{background:var(--raised)}
+.cap{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border:1px solid var(--line);border-radius:6px;font-size:11.5px;color:var(--dim);white-space:nowrap}
+kbd{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim)}
+input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@keyframes tflow{from{background-position:0 0}to{background-position:24px 0}}
+
+</style>
+</helmet>
+<div class="{{themeClass}}" style="position: relative; height: 900px; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45; overflow: hidden">
+  <div style="flex: 1; display: flex; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">{{needCount}} need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" aria-current="page" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0">
+      <header style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" style="color: var(--accent)"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>
+        <h1 style="margin: 0; font-size: 15px; font-weight: 700">Triggers</h1>
+        <span style="color: var(--dim)">{{headCount}}</span>
+        <div style="flex: 1"></div>
+        <button type="button" class="btn" onClick="{{askNew}}">New trigger: just ask <kbd>⌘K</kbd></button>
+      </header>
+
+      <section aria-label="Delivery path" style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel)">
+        <span class="cap">Delivery path</span>
+        <span style="display: inline-flex; align-items: center; gap: 7px"><span style="width: 8px; height: 8px; border-radius: 50%; background: {{path.dot}}"></span><b>{{path.name}}</b><span class="chip">{{path.cost}}</span></span>
+        <code class="mono" style="font-size: 12px; color: var(--fg)">{{path.host}}</code>
+        <span style="color: {{path.statusColor}}; font-weight: 700">{{path.status}}</span>
+        <span style="color: var(--dim); font-size: 12px">{{path.detail}}</span>
+        <div style="flex: 1"></div>
+        <div style="position: relative">
+          <button type="button" class="btn" onClick="{{togglePathMenu}}" aria-haspopup="menu" aria-expanded="{{pathMenuExpanded}}">Change path
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"></path></svg>
+          </button>
+          <sc-if value="{{pathMenuOpen}}" hint-placeholder-val="{{ false }}">
+            <div role="menu" aria-label="Delivery path" style="position: absolute; right: 0; top: calc(100% + 6px); z-index: 10; width: 360px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35)">
+              <sc-for list="{{pathOptions}}" as="o" hint-placeholder-count="3">
+                <button type="button" role="menuitemradio" aria-checked="{{o.checked}}" onClick="{{o.pick}}" class="hov" style="display: grid; grid-template-columns: 16px 1fr auto; gap: 2px 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer">
+                  <span style="color: var(--accent)">{{o.mark}}</span>
+                  <b>{{o.name}}</b>
+                  <span class="chip">{{o.cost}}</span>
+                  <span></span>
+                  <span style="grid-column: 2 / 4; font-size: 12px; color: var(--dim)">{{o.desc}}</span>
+                </button>
+              </sc-for>
+              <div style="padding: 8px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; font-size: 11.5px; color: var(--dim)">Picking one opens an agent tab that sets it up. Secrets carry over.</div>
+            </div>
+          </sc-if>
+        </div>
+      </section>
+
+      <sc-if value="{{path.down}}" hint-placeholder-val="{{ false }}">
+        <div role="alert" style="display: flex; align-items: center; gap: 12px; margin: 12px 18px 0; padding: 10px 14px; border: 1.5px solid var(--err); border-radius: 10px; background: var(--panel)">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--err)"></span>
+          <span style="flex: 1"><b>Webhooks can’t reach this Mac.</b> <span style="color: var(--dim)">{{path.detail}}</span></span>
+          <button type="button" class="btn btn-p" onClick="{{fixPath}}">Ask: {{path.fix}}</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{showRecon}}" hint-placeholder-val="{{ false }}">
+        <div role="status" style="display: flex; align-items: center; gap: 12px; margin: 12px 18px 0; padding: 9px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" style="color: {{path.reconColor}}"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3"></path></svg>
+          <b>{{path.reconTitle}}</b>
+          <span style="flex: 1; color: var(--dim); font-size: 12px">{{path.reconBody}}</span>
+          <button type="button" class="btn" onClick="{{hideRecon}}">Dismiss</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{empty}}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px">
+          <div style="width: 560px; display: flex; flex-direction: column; gap: 14px">
+            <svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true" style="color: var(--accent)"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>
+            <h2 style="margin: 0; font-size: 20px">No triggers yet</h2>
+            <p style="margin: 0; color: var(--dim)">A trigger turns a GitHub or Bitbucket event into an agent terminal, a workflow, or a ping. Describe one and an agent drafts it. You paste the secret and switch it on.</p>
+            <div role="list" style="display: flex; flex-direction: column; gap: 6px">
+              <sc-for list="{{suggestions}}" as="sg" hint-placeholder-count="4">
+                <button type="button" role="listitem" onClick="{{sg.ask}}" class="hov" style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); text-align: left; cursor: pointer">
+                  <span style="color: var(--accent); font-weight: 700">Ask</span><span style="flex: 1">{{sg.text}}</span><kbd>↩</kbd>
+                </button>
+              </sc-for>
+            </div>
+            <p style="margin: 0; font-size: 12px; color: var(--dim)">Webhooks will arrive via {{path.name}} at <span class="mono">{{path.host}}</span>.</p>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{populated}}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1; display: flex; min-height: 0; margin-top: 12px; border-top: 1px solid var(--line)">
+          <div aria-label="Triggers" style="flex: 0 0 360px; display: flex; flex-direction: column; border-right: 1px solid var(--line); overflow: auto">
+            <sc-if value="{{hasPending}}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 12px 16px 4px"><span class="cap" style="color: var(--need)">Waiting on you</span><span style="color: var(--need); font-size: 11.5px; font-weight: 700">{{pendingCount}}</span></div>
+              <sc-for list="{{pendingList}}" as="t" hint-placeholder-count="2">
+                <button type="button" onClick="{{t.pick}}" aria-pressed="{{t.pressed}}" class="hov" style="display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; width: 100%; padding: 9px 16px; border: 0; background: transparent; text-align: left; cursor: pointer; {{t.rowStyle}}">
+                  <span style="display: inline-flex; justify-content: center; color: var(--need)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg></span>
+                  <span style="font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.name}}</span>
+                  <span style="font-size: 11.5px; color: var(--need); font-weight: 700">{{t.stateText}}</span>
+                  <span></span>
+                  <span style="grid-column: 2 / 4; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.draftLine}}</span>
+                </button>
+              </sc-for>
+            </sc-if>
+            <div style="padding: 14px 16px 4px"><span class="cap">Triggers</span></div>
+            <sc-for list="{{activeList}}" as="t" hint-placeholder-count="4">
+              <div style="display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 10px; padding: 0 0 0 16px; {{t.rowStyle}}">
+                <button type="button" class="sw" role="switch" aria-checked="{{t.checked}}" aria-label="{{t.swLabel}}" onClick="{{t.toggle}}"></button>
+                <button type="button" onClick="{{t.pick}}" aria-pressed="{{t.pressed}}" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 9px 16px 9px 0; border: 0; background: transparent; text-align: left; cursor: pointer; opacity: {{t.opacity}}">
+                  <span style="font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.name}}</span>
+                  <span role="img" aria-label="{{t.actLabel}}" title="{{t.actLabel}}" style="display: inline-flex; color: var(--dim)"><sc-if value="{{t.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if><sc-if value="{{t.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if><sc-if value="{{t.isWorkflow}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="3.5" cy="4" r="1.8"></circle><circle cx="12.5" cy="4" r="1.8"></circle><circle cx="8" cy="12" r="1.8"></circle><path d="M5.3 4h5.4M4.4 5.6 7 10.4M11.6 5.6 9 10.4"></path></svg></sc-if><sc-if value="{{t.isAttention}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11zM6.5 14h3"></path></svg></sc-if></span>
+                  <span class="mono" style="font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.event}} · {{t.repo}}</span>
+                  <span style="font-size: 11.5px; color: var(--dim); white-space: nowrap">{{t.last}}</span>
+                </button>
+              </div>
+            </sc-for>
+            <div style="flex: 1"></div>
+            <div style="margin: 16px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 9px; font-size: 12px; color: var(--dim)">
+              Edit by asking. <span style="color: var(--fg)">“Skip dependabot PRs in Review new PRs”</span>
+            </div>
+          </div>
+
+          <section aria-label="Trigger detail" style="flex: 1; min-width: 0; overflow: auto; padding: 18px 24px 24px">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+              <h2 style="margin: 0; font-size: 18px">{{sel.name}}</h2>
+              <span class="chip">{{sel.project}}</span>
+              <span class="chip">{{sel.src}}</span>
+              <div style="flex: 1"></div>
+              <sc-if value="{{sel.notPending}}" hint-placeholder-val="{{ true }}">
+                <span style="font-size: 12px; color: var(--dim)">{{sel.lastText}}</span>
+                <button type="button" class="sw" role="switch" aria-checked="{{sel.checked}}" aria-label="{{sel.swLabel}}" onClick="{{sel.toggle}}"></button>
+                <span style="font-weight: 700; min-width: 22px">{{sel.stateText}}</span>
+              </sc-if>
+            </div>
+
+            <sc-if value="{{sel.needsSecret}}" hint-placeholder-val="{{ false }}">
+              <div role="group" aria-label="Secret needed" style="margin-top: 16px; padding: 14px 16px; border: 1.5px solid var(--need); border-radius: 10px; background: var(--need-soft); display: flex; flex-direction: column; gap: 10px">
+                <div><b>Paste the webhook secret to finish this draft.</b> <span style="color: var(--dim)">{{sel.draftLine}}. Agents can’t see or set secrets; it goes straight to Keychain.</span></div>
+                <div style="display: flex; gap: 8px; align-items: center">
+                  <input type="password" aria-label="Webhook secret for {{sel.name}}" placeholder="GitHub → mrgnhnt96/saggar → Settings → Webhooks → Secret" style="flex: 1; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); color: var(--fg); font-family: 'JetBrains Mono', monospace; font-size: 12px">
+                  <button type="button" class="btn btn-p" style="height: 32px" onClick="{{sel.pasteSecret}}">Save secret</button>
+                  <button type="button" class="btn" style="height: 32px" onClick="{{sel.discard}}">Discard draft</button>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{sel.needsEnable}}" hint-placeholder-val="{{ false }}">
+              <div role="group" aria-label="Ready to enable" style="margin-top: 16px; padding: 14px 16px; border: 1.5px solid var(--need); border-radius: 10px; background: var(--need-soft); display: flex; align-items: center; gap: 12px">
+                <div style="flex: 1"><b>Secret is set. Switch it on when it looks right.</b> <span style="color: var(--dim)">{{sel.draftLine}}. Agents can draft triggers but only you can enable them.</span></div>
+                <button type="button" class="btn btn-p" style="height: 32px" onClick="{{sel.enable}}">Enable trigger</button>
+                <button type="button" class="btn" style="height: 32px" onClick="{{sel.discard}}">Discard</button>
+              </div>
+            </sc-if>
+
+            <dl style="display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0; margin: 18px 0 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden">
+              <dt class="cap" style="padding: 12px 14px; border-bottom: 1px solid var(--line)">When</dt>
+              <dd style="margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line)"><code class="mono" style="font-size: 13px; color: var(--accent)">{{sel.event}}</code> <span style="color: var(--dim)">on</span> <span class="mono" style="font-size: 12.5px">{{sel.repo}}</span> <span style="color: var(--dim)">· {{sel.src}}</span></dd>
+              <dt class="cap" style="padding: 12px 14px; border-bottom: 1px solid var(--line)">Only if</dt>
+              <dd style="margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line)"><code class="mono" style="font-size: 12.5px">{{sel.filter}}</code></dd>
+              <dt class="cap" style="padding: 12px 14px; border-bottom: 1px solid var(--line)">Then</dt>
+              <dd style="margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px">
+                <span style="display: flex; align-items: center; gap: 8px"><span role="img" aria-label="{{sel.actLabel}}" title="{{sel.actLabel}}" style="display: inline-flex; color: var(--dim)"><sc-if value="{{sel.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if><sc-if value="{{sel.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if><sc-if value="{{sel.isWorkflow}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="3.5" cy="4" r="1.8"></circle><circle cx="12.5" cy="4" r="1.8"></circle><circle cx="8" cy="12" r="1.8"></circle><path d="M5.3 4h5.4M4.4 5.6 7 10.4M11.6 5.6 9 10.4"></path></svg></sc-if><sc-if value="{{sel.isAttention}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11zM6.5 14h3"></path></svg></sc-if></span><b>{{sel.action}}</b><sc-if value="{{sel.hasTerm}}" hint-placeholder-val="{{ true }}"><span style="color: var(--dim)">as</span> <span class="mono" style="font-size: 12px">{{sel.term}}</span></sc-if></span>
+                <pre class="mono" style="margin: 0; padding: 10px 12px; border-radius: 7px; background: var(--term); font-size: 12px; line-height: 1.55; white-space: pre-wrap; color: var(--fg)">{{sel.template}}</pre>
+              </dd>
+              <dt class="cap" style="padding: 12px 14px">Secret</dt>
+              <dd style="margin: 0; padding: 8px 14px; display: flex; align-items: center; gap: 10px">
+                <span class="mono" style="letter-spacing: .1em; color: var(--dim)">{{secretDots}}</span>
+                <span style="flex: 1; font-size: 12px; color: var(--dim)">{{sel.secretText}}</span>
+                <sc-if value="{{sel.notPending}}" hint-placeholder-val="{{ true }}"><button type="button" class="btn" onClick="{{replaceSecret}}">Replace…</button></sc-if>
+              </dd>
+            </dl>
+
+            <div style="display: flex; align-items: baseline; gap: 10px; margin: 22px 0 8px">
+              <h3 class="cap" style="margin: 0">Recent deliveries</h3>
+              <span style="font-size: 12px; color: var(--dim)">{{selDelCount}}</span>
+            </div>
+            <sc-if value="{{hasSelDel}}" hint-placeholder-val="{{ true }}">
+              <div role="table" aria-label="Deliveries for {{sel.name}}" style="border: 1px solid var(--line); border-radius: 10px; overflow: hidden">
+                <sc-for list="{{selDel}}" as="d" hint-placeholder-count="3">
+                  <div role="row" style="display: grid; grid-template-columns: 78px 112px minmax(0, 1fr) 88px; gap: 12px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line)">
+                    <span role="cell" class="mono" style="font-size: 12px; color: var(--dim)">{{d.time}}</span>
+                    <span role="cell"><span style="display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 6px; font-size: 11.5px; font-weight: 700; {{d.badgeStyle}}">{{d.statusLabel}}</span></span>
+                    <span role="cell" style="min-width: 0; display: flex; flex-direction: column">
+                      <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span class="mono" style="font-size: 12px">{{d.event}}</span> · {{d.ref}} <sc-if value="{{d.isRecovered}}" hint-placeholder-val="{{ false }}"><span class="chip" style="height: 17px; color: var(--ok); border-color: var(--ok)">{{d.recoveredTag}}</span></sc-if></span>
+                      <span style="font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{d.outcome}}</span>
+                    </span>
+                    <span role="cell" style="text-align: right"><button type="button" class="btn" onClick="{{d.replay}}" aria-label="{{d.replayLabel}}">Replay</button></span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{noSelDel}}" hint-placeholder-val="{{ false }}">
+              <p style="margin: 0; padding: 14px; border: 1px dashed var(--line); border-radius: 10px; color: var(--dim)">Nothing delivered yet. The first matching {{sel.event}} on {{sel.repo}} will show here.</p>
+            </sc-if>
+
+            <div style="display: flex; align-items: baseline; gap: 10px; margin: 22px 0 8px">
+              <h3 class="cap" style="margin: 0">Not matched by any trigger</h3>
+            </div>
+            <div style="border: 1px solid var(--line); border-radius: 10px; overflow: hidden">
+              <sc-for list="{{orphanDel}}" as="d" hint-placeholder-count="2">
+                <div style="display: grid; grid-template-columns: 78px 112px minmax(0, 1fr) 150px; gap: 12px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line)">
+                  <span class="mono" style="font-size: 12px; color: var(--dim)">{{d.time}}</span>
+                  <span><span style="display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 6px; font-size: 11.5px; font-weight: 700; {{d.badgeStyle}}">{{d.statusLabel}}</span></span>
+                  <span style="min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span class="mono" style="font-size: 12px">{{d.event}}</span> <span style="color: var(--dim)">· {{d.outcome}}</span></span>
+                  <span style="text-align: right">
+                    <sc-if value="{{d.canReplay}}" hint-placeholder-val="{{ true }}"><button type="button" class="btn" onClick="{{d.replay}}" aria-label="{{d.replayLabel}}">Replay</button></sc-if>
+                    <sc-if value="{{d.cantReplay}}" hint-placeholder-val="{{ false }}"><span style="font-size: 11.5px; color: var(--dim)">Unsigned, can’t replay</span></sc-if>
+                  </span>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </div>
+      </sc-if>
+    </main>
+  </div>
+  <footer style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · {{termCount}}</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · 1 approval rule</span>
+    <span><span style="color: {{path.dot}}">●</span> Webhooks via {{path.name}}</span>
+    <span>{{firedToday}}</span>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+  <sc-if value="{{hasToast}}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35); font-size: 12.5px">
+      <span>{{toast}}</span>
+      <button type="button" class="btn" onClick="{{closeToast}}" aria-label="Dismiss">OK</button>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"path":{"editor":"enum","options":["tailscale funnel","self-hosted relay","midna relay","funnel down"],"default":"tailscale funnel","section":"Delivery path"},"state":{"editor":"enum","options":["populated","empty"],"default":"populated","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: 'prs' };
+  }
+
+/*SHARED*/
+  extra(id) {
+    const X = {
+      api: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 48, minus: 12, files: 6, ctx: 42, cost: '$0.82', model: 'opus', since: '4m' },
+      migrate: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 96, minus: 0, files: 3, ctx: 18, cost: '$0.11', model: 'gpt-5', sub: 'Approve db:migrate on staging?', since: '4m' },
+      tests: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      zsh: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      golden: { branch: 'main', ctx: 61, cost: '$1.40', model: 'sonnet', sub: 'Asked a question', since: '12m' },
+      build: { branch: 'main', sub: 'exit 1', since: '9m' },
+      review: { branch: 'main', pr: '#2231', checks: '2 failing', checksKind: 'fail', plus: 14, minus: 3, files: 2, ctx: 27, cost: '$0.33', model: 'gpt-5' },
+      spike: { branch: 'main', plus: 210, minus: 41, files: 9, ctx: 9, cost: '$0.04', model: 'opus' },
+      docs: { branch: 'main' }
+    };
+    return X[id] || {};
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+/*TRIG*/
+  terminals() {
+    return [
+      { id: 'review', project: 'midna', name: 'PR #231 review', agent: 'claude', status: 'working' },
+      { id: 'tests', project: 'midna', name: 'fix cargo test', agent: 'codex', status: 'working' },
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'done' },
+      { id: 'migrate', project: 'kass', name: 'migrate', agent: 'codex', status: 'needs' },
+      { id: 'zsh', project: 'kass', name: 'zsh', agent: 'shell', status: 'idle' },
+      { id: 'golden', project: 'saggar', name: 'triage', agent: 'claude', status: 'needs' },
+      { id: 'build', project: 'api', name: 'dev server', agent: 'shell', status: 'failed' }
+    ];
+  }
+
+  baseTriggers() {
+    return [
+      { id: 'prs', name: 'Review new PRs', project: 'midna', on: true, src: 'GitHub', event: 'pull_request.opened', repo: 'mrgnhnt96/midna', filter: 'draft == false', kind: 'agent', agent: 'claude', action: 'Start Claude in midna', term: 'PR #{{pr.number}} review', template: 'Review PR #{{pr.number}} “{{pr.title}}”. Check out {{pr.head.ref}}, run cargo test, and leave review comments. Do not push.', last: '12m ago', lastWhat: 'PR #231', secret: 'Set Sep 14 by you · Keychain' },
+      { id: 'checks', name: 'Fix failing checks', project: 'midna', on: true, src: 'GitHub', event: 'check_run.completed', repo: 'mrgnhnt96/midna', filter: 'conclusion == "failure" && branch != "main"', kind: 'agent', agent: 'codex', action: 'Start Codex in midna', term: 'fix {{check_run.name}}', template: '{{check_run.name}} failed on {{branch}}. Read the log, fix the cause, and push to the same branch.', last: '13m ago', lastWhat: 'cargo test', secret: 'Shared with Review new PRs' },
+      { id: 'release', name: 'Release notes on tag', project: 'kass', on: true, src: 'GitHub', event: 'push', repo: 'mrgnhnt96/kass', filter: 'ref matches "refs/tags/v*"', kind: 'workflow', action: 'Run workflow release-notes', term: '', template: 'workflows/release-notes.ts --tag {{ref_name}}', last: '3d ago', lastWhat: 'v2.4.0', secret: 'Set Aug 30 by you · Keychain' },
+      { id: 'bb', name: 'Bitbucket review requests', project: 'api', on: false, src: 'Bitbucket', event: 'pullrequest:created', repo: 'mrgnhnt96/api', filter: 'reviewers contains "mrgnhnt96"', kind: 'attention', action: 'Raise attention in api', term: '', template: 'Review requested: {{pullrequest.title}} by {{actor.display_name}}', last: '6d ago', lastWhat: 'PR #57', secret: 'Set Sep 2 by you · Keychain' },
+      { id: 'issues', name: 'Triage new bugs', project: 'saggar', pending: 'secret', drafter: 'Claude in saggar › triage', drafted: '20m ago', src: 'GitHub', event: 'issues.opened', repo: 'mrgnhnt96/saggar', filter: 'labels contains "bug"', kind: 'agent', agent: 'claude', action: 'Start Claude in saggar', term: 'issue #{{issue.number}}', template: 'Triage issue #{{issue.number}}: reproduce it, find the cause, and comment with a plan. Do not push.', last: 'never', lastWhat: '', secret: '' },
+      { id: 'preview', name: 'Deploy preview on merge', project: 'api', pending: 'enable', drafter: 'Claude in midna › spike', drafted: '1h ago', src: 'GitHub', event: 'pull_request.closed', repo: 'mrgnhnt96/api', filter: 'merged == true', kind: 'workflow', action: 'Run workflow deploy-preview', term: '', template: 'workflows/deploy-preview.ts --sha {{pr.merge_commit_sha}}', last: 'never', lastWhat: '', secret: 'Pasted 1h ago by you · Keychain' }
+    ];
+  }
+
+  baseDeliveries() {
+    return [
+      { id: 'd1', time: '09:42:07', min: 582, guid: '7c1e04b2-9a1f', src: 'GitHub', event: 'pull_request.opened', repo: 'mrgnhnt96/midna', ref: '#231 Funnel health check', status: 'verified', trig: 'prs', outcome: 'Started Claude › PR #231 review', code: 202, eval: 'draft == false → true' },
+      { id: 'd2', time: '09:40:51', min: 580, guid: '51ad9e70-c33b', src: 'GitHub', event: 'check_run.completed', repo: 'mrgnhnt96/midna', ref: 'cargo test · failure · feat/funnel', status: 'verified', trig: 'checks', outcome: 'Started Codex › fix cargo test', code: 202, eval: 'conclusion == "failure" → true, branch != "main" → true' },
+      { id: 'd3', time: '09:31:12', min: 571, guid: 'e2f0b611-0d84', src: 'GitHub', event: 'push', repo: 'mrgnhnt96/midna', ref: 'main · 3 commits', status: 'filtered', trig: null, outcome: 'No trigger listens for push on midna', code: 202, eval: 'no trigger matched' },
+      { id: 'd4', time: '09:12:40', min: 552, guid: '0b93c7aa-5e21', src: 'GitHub', event: 'pull_request.opened', repo: 'mrgnhnt96/midna', ref: 'payload not trusted', status: 'rejected', trig: null, outcome: 'X-Hub-Signature-256 mismatch · dropped, nothing ran', code: 401, eval: 'not evaluated' },
+      { id: 'd5', time: '08:03:22', min: 483, guid: 'a4c8f203-77e9', src: 'GitHub', event: 'pull_request.synchronize', repo: 'mrgnhnt96/midna', ref: '#229 Policy engine', status: 'filtered', trig: 'prs', outcome: 'Review new PRs wants opened, got synchronize', code: 202, eval: 'action == "opened" → false' },
+      { id: 'd6', time: '07:58:10', min: 478, guid: '3fe61d0c-b812', src: 'GitHub', event: 'check_run.completed', repo: 'mrgnhnt96/midna', ref: 'clippy · failure · feat/funnel', status: 'replayed', trig: 'checks', outcome: 'Replayed by you · started Codex › fix clippy', code: 202, eval: 'conclusion == "failure" → true, branch != "main" → true' },
+      { id: 'd7', time: '06:12:03', min: 372, guid: '9d27e5b4-41c0', src: 'GitHub', event: 'check_run.completed', repo: 'mrgnhnt96/midna', ref: 'cargo test · success · main', status: 'filtered', trig: 'checks', recovered: true, outcome: 'conclusion was success', code: 202, eval: 'conclusion == "failure" → false' },
+      { id: 'd8', time: '03:47:55', min: 227, guid: 'c61b0f8e-2a95', src: 'GitHub', event: 'pull_request.opened', repo: 'mrgnhnt96/midna', ref: '#230 Bump gpui to 0.3.7', status: 'verified', trig: 'prs', recovered: true, outcome: 'Started Claude › PR #230 review on wake (exited 0)', code: 202, eval: 'draft == false → true' },
+      { id: 'd9', time: '01:30:18', min: 90, guid: '6e4a7d19-f3b6', src: 'GitHub', event: 'issues.opened', repo: 'mrgnhnt96/saggar', ref: '#88 Crash on window resize', status: 'filtered', trig: 'issues', recovered: true, outcome: 'Triage new bugs is still a draft', code: 202, eval: 'trigger not enabled' }
+    ];
+  }
+
+  pathKey() {
+    const m = { 'tailscale funnel': 'funnel', 'self-hosted relay': 'relay', 'midna relay': 'hosted', 'funnel down': 'down' };
+    return this.state.path || m[this.props.path ?? 'tailscale funnel'] || 'funnel';
+  }
+
+  pathInfo() {
+    const k = this.pathKey();
+    const P = {
+      funnel: { name: 'Tailscale Funnel', cost: 'free', host: 'morgans-macbook-pro.tail439d44.ts.net:8443', url: 'https://morgans-macbook-pro.tail439d44.ts.net:8443/hooks', status: 'Healthy', detail: 'funnel on :8443 · TLS cert valid to Dec 30 · last delivery 8m ago', note: 'Free. Only reachable while this Mac is awake; missed deliveries are reconciled from GitHub on wake.', reconTitle: '3 missed while asleep, recovered', reconBody: 'This Mac slept 01:12 – 06:58. On wake, midnad compared GitHub’s delivery log with its own and redelivered the 3 it never received.', recoveredTag: 'recovered', fix: '' },
+      relay: { name: 'Self-hosted relay', cost: 'free', host: 'hooks.mrgnhnt96.dev', url: 'https://hooks.mrgnhnt96.dev/midna', status: 'Connected', detail: 'midna-relay 0.4.2 on fly.io · websocket up 3h · last delivery 8m ago', note: 'Free. Your relay queues deliveries while this Mac sleeps and drains them on reconnect.', reconTitle: '3 queued while asleep, delivered on wake', reconBody: 'Your relay held 3 deliveries from 01:12 to 06:58 and drained them when midnad reconnected.', recoveredTag: 'queued', fix: '' },
+      hosted: { name: 'midna relay', cost: 'paid', host: 'in.midna.dev/h/8f3k2q', url: 'https://in.midna.dev/h/8f3k2q', status: 'Connected', detail: 'Pro plan · websocket up 3h · 7-day retention · last delivery 8m ago', note: 'Paid. Hosted by midna, queues while you sleep, keeps 7 days of deliveries for replay.', reconTitle: '3 queued while asleep, delivered on wake', reconBody: 'midna relay held 3 deliveries from 01:12 to 06:58 and drained them when midnad reconnected.', recoveredTag: 'queued', fix: '' },
+      down: { name: 'Tailscale Funnel', cost: 'free', host: 'morgans-macbook-pro.tail439d44.ts.net:8443', url: 'https://morgans-macbook-pro.tail439d44.ts.net:8443/hooks', status: 'Unreachable', detail: 'funnel is off for :8443 · GitHub got 502 at 09:44 and 09:47', note: 'Free. Only reachable while this Mac is awake.', reconTitle: '2 deliveries failed at GitHub since 09:44', reconBody: 'midnad will ask GitHub to redeliver them as soon as the path is healthy again.', recoveredTag: 'recovered', fix: 'Turn Tailscale Funnel back on for port 8443' }
+    };
+    const p = P[k];
+    const down = k === 'down';
+    return { ...p, key: k, down, healthy: !down, dot: down ? 'var(--err)' : 'var(--ok)', statusColor: down ? 'var(--err)' : 'var(--ok)', reconColor: down ? 'var(--err)' : 'var(--ok)', isFunnel: k === 'funnel' || k === 'down', isRelay: k === 'relay', isHosted: k === 'hosted' };
+  }
+
+  statusMeta(s) {
+    return {
+      verified: { label: 'Verified', color: 'var(--ok)' },
+      rejected: { label: 'Bad signature', color: 'var(--err)' },
+      filtered: { label: 'Filtered out', color: 'var(--dim)' },
+      replayed: { label: 'Replayed', color: 'var(--accent)' }
+    }[s];
+  }
+
+  kindBits(t) {
+    return { isAgentAction: t.kind === 'agent', isWorkflow: t.kind === 'workflow', isAttention: t.kind === 'attention', kindLabel: { agent: 'Agent terminal', workflow: 'Workflow', attention: 'Attention' }[t.kind] };
+  }
+
+  trigVals() {
+    const s = this.state;
+    const empty = (this.props.state ?? 'populated') === 'empty';
+    const on = s.on || {}, secrets = s.secrets || {}, enabled = s.enabled || {}, discarded = s.discarded || {};
+    const path = this.pathInfo();
+    const mapped = this.baseTriggers().filter((t) => !discarded[t.id]).map((t) => {
+      let pending = t.pending || null;
+      if (pending === 'secret' && secrets[t.id]) pending = 'enable';
+      if (pending === 'enable' && enabled[t.id]) pending = null;
+      const isOn = pending ? false : (on[t.id] !== undefined ? on[t.id] : (t.on !== undefined ? t.on : true));
+      const lastText = t.last === 'never' ? 'Never fired' : 'Fired ' + t.last + (t.lastWhat ? ' · ' + t.lastWhat : '');
+      return {
+        ...t, drafter: t.drafter || '', drafted: t.drafted || '', ...this.agentBits(t.agent || 'none'), ...this.kindBits(t),
+        actLabel: t.kind === 'agent' ? (t.agent === 'codex' ? 'Codex' : 'Claude Code') : ({ workflow: 'Workflow', attention: 'Attention' }[t.kind]),
+        pending, isPending: !!pending, notPending: !pending, needsSecret: pending === 'secret', needsEnable: pending === 'enable',
+        isOn, checked: isOn ? 'true' : 'false', stateText: pending ? (pending === 'secret' ? 'Needs secret' : 'Ready to enable') : (isOn ? 'On' : 'Off'),
+        swLabel: (isOn ? 'Turn off ' : 'Turn on ') + t.name,
+        lastText, hasTerm: !!t.term,
+        secretText: pending === 'secret' ? 'Not set' : (secrets[t.id] ? 'Pasted just now by you · Keychain' : t.secret),
+        sourceLine: t.src + ' · ' + t.repo,
+        draftLine: t.drafter ? 'Drafted by ' + t.drafter + ' · ' + t.drafted : '',
+        toggle: () => this.setState({ on: { ...on, [t.id]: !isOn } }),
+        pasteSecret: () => this.setState({ secrets: { ...secrets, [t.id]: true } }),
+        enable: () => this.setState({ enabled: { ...enabled, [t.id]: true } }),
+        discard: () => this.setState({ discarded: { ...discarded, [t.id]: true }, sel: s.sel === t.id ? 'prs' : s.sel })
+      };
+    });
+    const triggers = empty ? [] : mapped;
+    const byId = {};
+    triggers.forEach((t) => { byId[t.id] = t; });
+    const base = this.baseDeliveries();
+    const replays = (s.replays || []).map((id, i) => {
+      const d = base.find((x) => x.id === id);
+      const tr = d.trig ? this.baseTriggers().find((x) => x.id === d.trig) : null;
+      const did = d.status === 'filtered' ? 'filters still said no' : (tr && tr.kind === 'agent' ? 'started ' + (tr.agent === 'codex' ? 'Codex' : 'Claude') + ' again' : 'ran again');
+      return { ...d, id: 'r' + i + id, time: 'just now', min: 590, status: 'replayed', recovered: false, outcome: 'Replayed by you · ' + did, guid: d.guid + ' (replay)' };
+    }).reverse();
+    const mappedDel = replays.concat(base).map((d) => {
+      const m = this.statusMeta(d.status);
+      const tr = d.trig ? (byId[d.trig] || this.baseTriggers().find((x) => x.id === d.trig)) : null;
+      return {
+        ...d, statusLabel: m.label, statusColor: m.color,
+        badgeStyle: 'color: ' + m.color + '; border: 1px solid ' + m.color,
+        trigName: tr ? tr.name : 'No trigger',
+        canReplay: d.status !== 'rejected', cantReplay: d.status === 'rejected',
+        isRecovered: !!d.recovered, recoveredTag: path.recoveredTag,
+        replayLabel: 'Replay ' + d.event + ' from ' + d.time,
+        replay: () => this.setState({ replays: (s.replays || []).concat([d.id.replace(/^r\d+/, '')]), toast: 'Replayed ' + d.event + ' (' + d.time + ') through the same filters' })
+      };
+    });
+    const deliveries = empty ? [] : mappedDel;
+    const suggestions = [
+      'Start Claude on every PR opened in midna',
+      'When a check fails on a feature branch, start Codex to fix it',
+      'Raise attention when someone requests my review on Bitbucket',
+      'Run release-notes when I push a v* tag to kass'
+    ].map((p) => ({ text: p, ask: () => this.setState({ toast: 'Opened an agent tab in midna: “' + p + '”' }) }));
+    const pendingCount = triggers.filter((t) => t.isPending).length;
+    const terms = this.terminals();
+    const needs = terms.filter((t) => t.status === 'needs');
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(terms, { id: null }),
+      needCount: needs.length,
+      jumpNext: () => this.setState({ toast: '⌘J would open kass › migrate' }),
+      termCount: terms.length + ' terminals',
+      empty, populated: !empty, path, triggers, sampleTrigger: mapped[0], sampleDelivery: mappedDel[0], byId, deliveries, suggestions,
+      pendingCount, hasPending: pendingCount > 0,
+      firedToday: empty ? 'No triggers yet' : '3 fired today',
+      hasToast: !!s.toast, toast: s.toast || '', closeToast: () => this.setState({ toast: '' }),
+      showRecon: !empty && !s.reconHidden, hideRecon: () => this.setState({ reconHidden: true }),
+      fixPath: () => this.setState({ toast: 'Opened an agent tab in midna: “' + (path.fix || '') + '”' }),
+      askNew: () => this.setState({ toast: '⌘K: type what should happen, e.g. “start Claude on every PR opened in midna”' })
+    };
+  }
+/*/TRIG*/
+
+
+  renderVals() {
+    const v = this.trigVals();
+    const selId = this.state.sel || 'prs';
+    const all = v.triggers.map((t) => ({
+      ...t,
+      pick: () => this.setState({ sel: t.id }),
+      pressed: t.id === selId ? 'true' : 'false',
+      rowStyle: t.id === selId ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+      opacity: t.isOn ? '1' : '0.6'
+    }));
+    const sel = all.find((t) => t.id === selId) || all[0] || v.sampleTrigger;
+    const selDel = v.deliveries.filter((d) => d.trig === sel.id);
+    const pk = this.pathKey();
+    const opts = [
+      ['funnel', 'Tailscale Funnel', 'free', 'Through your tailnet on :8443. Misses deliveries while asleep; midnad reconciles from GitHub on wake.'],
+      ['relay', 'Self-hosted relay', 'free', 'midna-relay on a box you run. Queues while this Mac sleeps.'],
+      ['hosted', 'midna relay', 'paid', 'Hosted by midna. Queues while asleep and keeps 7 days for replay.']
+    ];
+    const pathOptions = opts.map(([k, n, c, d]) => {
+      const cur = pk === k || (k === 'funnel' && pk === 'down');
+      return {
+        name: n, cost: c, desc: d, checked: cur ? 'true' : 'false', mark: cur ? '✓' : '',
+        pick: () => this.setState({ pathMenu: false, path: k, toast: cur ? n + ' is already the delivery path' : 'Opened an agent tab in midna: “move webhooks to ' + n + '”' })
+      };
+    });
+    const active = v.triggers.filter((t) => !t.isPending).length;
+    return {
+      ...v,
+      headCount: v.empty ? '' : active + ' triggers' + (v.pendingCount ? ' · ' + v.pendingCount + ' drafts waiting on you' : ''),
+      pendingList: all.filter((t) => t.isPending),
+      activeList: all.filter((t) => !t.isPending),
+      sel,
+      selDel, hasSelDel: selDel.length > 0, noSelDel: selDel.length === 0,
+      selDelCount: selDel.length ? selDel.length + ' today' : '',
+      orphanDel: v.deliveries.filter((d) => !d.trig),
+      secretDots: sel.needsSecret ? '—' : '••••••••',
+      replaceSecret: () => this.setState({ toast: 'Paste a new secret here; agents can’t do this step' }),
+      pathOptions,
+      pathMenuOpen: !!this.state.pathMenu,
+      pathMenuExpanded: this.state.pathMenu ? 'true' : 'false',
+      togglePathMenu: () => this.setState({ pathMenu: !this.state.pathMenu })
+    };
+  }
+}
+</script>
+</body>
+</html>

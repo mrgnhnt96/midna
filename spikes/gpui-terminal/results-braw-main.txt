@@ -1,0 +1,22 @@
+transport=BRaw gui_pid=60448 daemon_pid=60452 child_pid=60454
+LATENCY [braw] samples=160/160
+  key->write               p50=  0.012ms p95=  0.017ms max=  0.020ms
+  write->echo_read         p50=  0.070ms p95=  0.115ms max=  0.230ms
+  echo_read->frame_built   p50=  0.035ms p95=  0.063ms max=  0.206ms
+  frame_built->ui_pull     p50=  5.323ms p95=  8.082ms max=  9.187ms
+  ui_pull->painted         p50=  0.052ms p95=  0.065ms max=  0.180ms
+  TOTAL key->painted       p50=  5.499ms p95=  8.256ms max=  9.380ms
+FLOOD [braw] cat data/big.txt
+  engine_done=0.630s painted_done=0.645s
+  frames=78 fps=121.0 vsync_misses(@120Hz, while frames flowing)=0 gap_p50=8.32ms gap_p95=9.32ms gap_max=9.5ms
+  ui_frame_cpu(render+paint) p50=0.29ms p95=0.39ms max=1.38ms | engine_frame_build p50=0.08ms p95=0.09ms max=0.10ms
+  cpu: gui=104.7% daemon=84.4% (of one core, over 0.7s) rss: gui=72MB daemon=12MB (peak sampled)
+FLOOD [braw] seq 1 5000000
+  engine_done=4.375s painted_done=4.386s
+  frames=527 fps=120.2 vsync_misses(@120Hz, while frames flowing)=0 gap_p50=8.33ms gap_p95=9.32ms gap_max=9.3ms
+  ui_frame_cpu(render+paint) p50=0.07ms p95=0.09ms max=0.58ms | engine_frame_build p50=0.07ms p95=0.15ms max=0.22ms
+  cpu: gui=122.8% daemon=95.3% (of one core, over 4.4s) rss: gui=73MB daemon=12MB (peak sampled)
+IDLE [braw] 
+  frames=8 fps=0.8 vsync_misses(@120Hz, while frames flowing)=349 gap_p50=533.31ms gap_p95=558.34ms gap_max=558.3ms
+  ui_frame_cpu(render+paint) p50=0.06ms p95=0.13ms max=0.13ms | engine_frame_build p50=NaNms p95=NaNms max=NaNms
+  cpu: gui=0.7% daemon=0.0% (of one core, over 10.0s) rss: gui=73MB daemon=12MB (peak sampled)

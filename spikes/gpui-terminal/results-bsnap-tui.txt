@@ -1,0 +1,14 @@
+transport=BSnap gui_pid=65496 daemon_pid=65499 child_pid=65500
+TUI [bsnap] top -s 1
+  frames=21 fps=3.5 vsync_misses(@120Hz, while frames flowing)=641 gap_p50=299.77ms gap_p95=558.33ms gap_max=558.4ms
+  ui_frame_cpu(render+paint) p50=0.97ms p95=1.24ms max=1.25ms | engine_frame_build p50=0.14ms p95=0.21ms max=0.21ms
+  cpu: gui=1.0% daemon=0.0% (of one core, over 6.0s) rss: gui=74MB daemon=14MB (peak sampled)
+TUI [bsnap] vim -u NONE -N data/big.txt
+  frames=365 fps=60.7 vsync_misses(@120Hz, while frames flowing)=350 gap_p50=8.65ms gap_p95=58.05ms gap_max=66.7ms
+  ui_frame_cpu(render+paint) p50=0.62ms p95=0.84ms max=1.00ms | engine_frame_build p50=0.26ms p95=0.31ms max=0.47ms
+  cpu: gui=7.5% daemon=2.9% (of one core, over 6.0s) rss: gui=75MB daemon=14MB (peak sampled)
+TUI [bsnap] python3 data/rainbow.py 9
+  frames=360 fps=59.8 vsync_misses(@120Hz, while frames flowing)=362 gap_p50=8.40ms gap_p95=33.46ms gap_max=34.1ms
+  ui_frame_cpu(render+paint) p50=2.25ms p95=2.58ms max=2.79ms | engine_frame_build p50=0.31ms p95=0.62ms max=1.77ms
+  cpu: gui=21.5% daemon=13.4% (of one core, over 6.0s) rss: gui=96MB daemon=17MB (peak sampled)
+SHOT /Users/mrgnhnt96/Development/rust/midna/spikes/gpui-terminal/shots/bsnap-big.png

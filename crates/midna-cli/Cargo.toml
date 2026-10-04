@@ -1,0 +1,17 @@
+[package]
+name = "midna-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "midna"
+path = "src/main.rs"
+
+[dependencies]
+midna-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+midnad.workspace = true

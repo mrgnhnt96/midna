@@ -1,0 +1,480 @@
+//! Help text: one entry per verb. `midna help` is generated from this table and
+//! `midna <verb> --help` prints the entry, so the two can't drift apart. Each entry names the
+//! RPC methods it calls, so `--help` also says which steps are human only.
+use midna_proto::catalog;
+
+pub struct Verb {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    /// Usage lines (first line is the short form shown in `midna help`).
+    pub usage: &'static str,
+    pub summary: &'static str,
+    pub details: &'static str,
+    /// Catalog methods this verb calls.
+    pub methods: &'static [&'static str],
+}
+
+pub static VERBS: &[Verb] = &[
+    // ---------------------------------------------------------------- orientation
+    Verb {
+        name: "capabilities",
+        aliases: &["caps"],
+        usage: "capabilities [--json]",
+        summary: "what midna can do for you, and what only the human can do",
+        details: "A short overview for agents: the verbs and MCP tools by area, the human-only boundary and\n\
+                  what to do instead. Works without a daemon. `--json` lists every method with its flags.",
+        methods: &[],
+    },
+    Verb {
+        name: "skill",
+        aliases: &["guide"],
+        usage: "skill [--path]",
+        summary: "print the bundled agent guide (SKILL.md)",
+        details: "Prints the guide: when to use which verb, attention etiquette, approvals, rules, triggers,\n\
+                  settings, windows, and never routing around a denial. In a midna terminal the same file\n\
+                  is at $MIDNA_SKILL. `--path` prints that path instead.",
+        methods: &[],
+    },
+    Verb {
+        name: "explain",
+        aliases: &["why"],
+        usage: "explain <id|method|setting|topic>\n       explain <command|tool|path|cli|window> <value...>",
+        summary: "explain a terminal's status, a rule, a trigger, a needs-you item, a method or a setting",
+        details: "Ids: terminal (8 hex) = why it has its status, recent status events, open needs-you items;\n\
+                  r_… rule = what it matches, who added it, when it fired, how to get it removed;\n\
+                  t_… trigger = what it does, what it is waiting for, recent deliveries;\n\
+                  n_… needs-you item = what it asks and who can answer it; p_… project; d_… delivery.\n\
+                  Also a method (`session.open` or `session_open`), a setting key (`theme`), or a topic:\n\
+                  status, rules, approvals, triggers, needs-you, settings, windows, human-only, mcp.\n\
+                  With a kind and a value it explains which rule decides that action and why\n\
+                  (e.g. `midna explain command -- git push --force`).",
+        methods: &["session.get", "rule.list", "trigger.list", "needs_you.list", "events.list", "policy.check", "settings.get"],
+    },
+    Verb {
+        name: "info",
+        aliases: &[],
+        usage: "info",
+        summary: "daemon info and your role (human or agent)",
+        details: "Version, pid, uptime, MIDNA_HOME, socket, and the role midnad gave this connection.",
+        methods: &["daemon.info"],
+    },
+    Verb {
+        name: "schema",
+        aliases: &[],
+        usage: "schema [method] | schema --list",
+        summary: "the API: the whole OpenRPC document, one method, or a list of methods",
+        details: "No argument prints the OpenRPC document for every method. With a method (dotted or the\n\
+                  MCP tool name, e.g. `rule.add` or `rule_add`) it prints that method's description, flags\n\
+                  and a self-contained JSON Schema for its params and result. `--list` prints one line per\n\
+                  method. Works without a daemon.",
+        methods: &["rpc.discover"],
+    },
+    Verb {
+        name: "daemon",
+        aliases: &[],
+        usage: "daemon info | restart | stop | upgrade <path> | reset [--drop-rules]",
+        summary: "manage midnad itself",
+        details: "restart  graceful restart; terminals keep running (anyone may)\n\
+                  stop     stop midnad and hang up every terminal (human only: asks the human)\n\
+                  upgrade  replace midnad in place with another binary (human only: asks the human)\n\
+                  reset    close every terminal, remove projects, triggers and needs-you items, reset settings;\n\
+                  \x20        keeps the event log and rules (--drop-rules removes rules too). Human only: asks the human",
+        methods: &["daemon.info", "daemon.restart", "daemon.stop", "daemon.upgrade", "daemon.reset"],
+    },
+    // ---------------------------------------------------------------- projects / terminals
+    Verb {
+        name: "projects",
+        aliases: &["project"],
+        usage: "projects [list]\n       projects discover\n       projects add <path> [--name N]\n       projects update <id> [--name N] [--icon I]\n       \
+                projects add-command <id> --name N [--pinned] -- <command line>\n       projects remove-command <id> <name>\n       \
+                projects remove <id>",
+        summary: "list and edit projects (directories that group terminals)",
+        details: "Saved commands show up in the human's command bar as \"Run <name>\" (pinned ones are\n\
+                  suggested). `discover` lists folders under the projects.roots setting\n\
+                  that can be opened. `remove` is human only: it asks the human.",
+        methods: &["project.list", "project.discover", "project.add", "project.update", "project.remove"],
+    },
+    Verb {
+        name: "list",
+        aliases: &["ls"],
+        usage: "list [--project P]",
+        summary: "list terminals with status",
+        details: "Status: idle, working, needs_you, done (finished, not seen yet), failed, exited.\n\
+                  `midna explain <id>` says why a terminal has its status.",
+        methods: &["session.list"],
+    },
+    Verb {
+        name: "open",
+        aliases: &["new"],
+        usage: "open [--agent claude|codex] [--prompt TEXT] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [-- argv...]",
+        summary: "open a terminal: a shell (default), a monitor, or an agent",
+        details: "Shell: the login shell, or `-- argv...`. Monitor: `--monitor CMD` runs a command the human\n\
+                  should watch; a failure raises a needs-you item. Agent: `--agent claude|codex` starts a\n\
+                  new agent with midna's hooks and MCP server, optionally with `--prompt`. Without\n\
+                  --project the terminal goes in the project containing --cwd (default: this directory).\n\
+                  Prints the new terminal's id.",
+        methods: &["session.open"],
+    },
+    Verb {
+        name: "close",
+        aliases: &[],
+        usage: "close <id> [--force]",
+        summary: "close a terminal and kill its process",
+        details: "A working terminal needs --force. Closing another terminal may ask the human\n\
+                  (setting agents.may_close_idle, rules on `close …`).",
+        methods: &["session.close"],
+    },
+    Verb {
+        name: "rename",
+        aliases: &[],
+        usage: "rename <id> <name...>",
+        summary: "rename a terminal",
+        details: "Changes the sidebar label.",
+        methods: &["session.rename"],
+    },
+    Verb {
+        name: "restart",
+        aliases: &[],
+        usage: "restart <id> [--idle] [--fresh] [--force] [--reason TEXT] | restart <id> --cancel",
+        summary: "restart a terminal's command in place (same id, same tab)",
+        details: "Agent terminals reopen the same conversation (claude --resume / codex resume) unless --fresh. \
+                  --idle queues it until the agent is idle with no background work, subagents or scheduled wakeups in flight; \
+                  without it, a restart that would kill background work is refused unless --force. --cancel drops a queued restart. \
+                  Policy-checked as `restart <id>`; the default policy asks the human.",
+        methods: &["session.restart", "session.restart_cancel"],
+    },
+    Verb {
+        name: "procs",
+        aliases: &["processes"],
+        usage: "procs <id>",
+        summary: "list the OS processes under a terminal, and what its agent has in flight",
+        details: "The terminal's process tree (pid, pgid, command), each process tagged with the agent's background task \
+                  it belongs to, then the agent's background tasks, subagents and scheduled wakeups as its hooks report them.",
+        methods: &["session.processes"],
+    },
+    Verb {
+        name: "read",
+        aliases: &[],
+        usage: "read <id> [--lines N] [--screen]",
+        summary: "read a terminal's text",
+        details: "The last N lines of scrollback + screen (default 50), or exactly the visible screen.",
+        methods: &["session.read"],
+    },
+    Verb {
+        name: "send",
+        aliases: &["type"],
+        usage: "send <id> [--image PATH]... <text...> [--no-enter]",
+        summary: "type text into a terminal (or message its agent), then Enter",
+        details: "Free text with flags goes after `--`: `midna send ab12cd34 -- ls --all`. Works for Claude Code\n\
+                  and Codex: multi-line text stays one message. --image (repeatable) attaches a PNG, JPEG, GIF or\n\
+                  WebP (other formats are converted) ahead of the text; the agent shows it as [Image #N].\n\
+                  Never answer another agent's permission prompt unless `midna read <id> --screen` shows it.",
+        methods: &["session.input"],
+    },
+    Verb {
+        name: "key",
+        aliases: &[],
+        usage: "key <id> <key>...",
+        summary: "press keys in a terminal (ctrl-c, escape, up, shift-tab, enter…)",
+        details: "Each key is encoded the way the app in the terminal expects (legacy, modifyOtherKeys or\n\
+                  kitty), like a real keypress. Several keys are pressed in order.",
+        methods: &["session.key"],
+    },
+    Verb {
+        name: "focus",
+        aliases: &[],
+        usage: "focus <id>",
+        summary: "bring a terminal to the front in the GUI",
+        details: "Always allowed. Prints a note when the GUI isn't running.",
+        methods: &["session.focus"],
+    },
+    // ---------------------------------------------------------------- the human
+    Verb {
+        name: "attention",
+        aliases: &[],
+        usage: "attention <message...> [--note] [--detail D]",
+        summary: "get the human's attention (blocked, or --note for FYI)",
+        details: "Default = blocked: you cannot continue without the human. --note = FYI. Keep the\n\
+                  message to one line; put more in --detail. Check `midna needs` first to avoid duplicates.",
+        methods: &["needs_you.raise"],
+    },
+    Verb {
+        name: "needs",
+        aliases: &["needs-you"],
+        usage: "needs",
+        summary: "list what is waiting on the human",
+        details: "Approvals, permission prompts, blocked agents, notes, failures, rule-removal requests,\n\
+                  missing webhook secrets. `midna explain <n_id>` explains one.",
+        methods: &["needs_you.list"],
+    },
+    Verb {
+        name: "approve",
+        aliases: &["resolve"],
+        usage: "approve <needs-you-id> [--scope once|session|always|<N>m] [--deny]\n       approve <needs-you-id> --done | --restart",
+        summary: "answer a needs-you item (usually the human's job)",
+        details: "Agents may approve only their own session's requests, and only when the human turned on\n\
+                  approve.from_cli. --done marks a blocked item handled; --restart restarts a failed terminal.\n\
+                  Approvals of human-only actions can only be answered by the human.",
+        methods: &["needs_you.resolve"],
+    },
+    // ---------------------------------------------------------------- policy
+    Verb {
+        name: "check",
+        aliases: &[],
+        usage: "check <command|tool|path|cli|window> <value...>",
+        summary: "test an action against the rules (no side effects)",
+        details: "Prints the decision, the winning rule and the trace. Use `--` for values with flags:\n\
+                  `midna check command -- git push --force`.",
+        methods: &["policy.check"],
+    },
+    Verb {
+        name: "rules",
+        aliases: &["rule"],
+        usage: "rules [list]\n       rules add <allow|ask|deny> <command|tool|path|cli|window> <pattern...>\n                 [--scope global|project:ID|session:ID] [--expires SECS]\n       \
+                rules request-removal <rule-id> --reason R\n       rules remove <rule-id>   (human only)\n       \
+                rules restore <rule-id>  (human only: undo a removal, same id)",
+        summary: "list, add, and request removal of policy rules",
+        details: "Agents may add rules; only the human removes them. To get one removed, run\n\
+                  `midna rules request-removal <id> --reason \"…\"`: the human sees it and decides.\n\
+                  Patterns are globs: `git push --force*`, `Bash(rm -rf*)`.",
+        methods: &["rule.list", "rule.add", "rule.request_removal", "rule.remove", "rule.restore"],
+    },
+    // ---------------------------------------------------------------- triggers / webhooks
+    Verb {
+        name: "triggers",
+        aliases: &["trigger"],
+        usage: "triggers list | show <id> | deliveries [--trigger ID] [--limit N] | replay <delivery-id>\n       \
+                triggers add --name N --event E [--source github|bitbucket] [--repo R] [--branch B] [--action A]\n            \
+                [--label L] (--agent claude|codex --prompt TEMPLATE | --run CMD | --attention MSG)\n            \
+                [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
+                triggers update <id> [same flags] | enable <id> | disable <id> | remove <id>\n       \
+                triggers set-secret <id>   (human only; reads stdin)\n       \
+                triggers test <id> [--payload FILE|-] [--event E]",
+        summary: "webhook triggers: GitHub/Bitbucket events that start agents, run commands, or raise attention",
+        details: "Agents draft triggers freely; they start as needs_secret. Only the human pastes the signing\n\
+                  secret and enables a trigger (`enable` from an agent asks the human). Anyone may pause.\n\
+                  Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} or any payload path.",
+        methods: &[
+            "trigger.list", "trigger.add", "trigger.update", "trigger.set_enabled", "trigger.set_secret", "trigger.remove",
+            "trigger.deliveries", "trigger.replay", "trigger.test",
+        ],
+    },
+    Verb {
+        name: "webhooks",
+        aliases: &["webhook"],
+        usage: "webhooks status | reconcile\n       webhooks configure <tailscale_funnel|self_relay|midna_relay|off> [--port N] [--relay-url U]   (human only)",
+        summary: "how webhooks reach this Mac",
+        details: "status shows the path, health and the public URL to paste into GitHub. reconcile asks GitHub\n\
+                  (via `gh`) for deliveries midnad missed. configure is human only: it asks the human.",
+        methods: &["webhooks.status", "webhooks.reconcile", "webhooks.configure"],
+    },
+    // ---------------------------------------------------------------- settings / windows / data
+    Verb {
+        name: "settings",
+        aliases: &["setting", "config"],
+        usage: "settings [list] | get <key> | set <key> <value> | reset <key>",
+        summary: "read and change settings",
+        details: "`list` marks human-only keys; agents can read them, and setting one asks the human.\n\
+                  Values are JSON or bare strings (`true`, `42`, `dark`).",
+        methods: &["settings.list", "settings.get", "settings.set", "settings.reset"],
+    },
+    Verb {
+        name: "window",
+        aliases: &[],
+        usage: "window <front|keep_on_top|pop_out|snap|close|open_screen> [target] [value]\n       \
+                window split <terminal-id> [side|stacked] | window split close\n       window list",
+        summary: "ask the GUI to act on a window",
+        details: "front, open_screen (rules|triggers|insights|settings|needs_you) and split (show a terminal\n\
+                  beside the selected one) are always allowed; the rest need the human-only setting\n\
+                  agents.may_move_windows. Rules can still deny `window` actions (e.g. `split*`).",
+        methods: &["window.list", "window.command"],
+    },
+    Verb {
+        name: "events",
+        aliases: &["log"],
+        usage: "events [--since N] [--limit N] [--kind PREFIX[,PREFIX]] [--follow]",
+        summary: "the event log (every state change and every acting call)",
+        details: "--follow streams live events. Kinds: session.*, needs_you.*, rule.*, trigger.*, settings.changed,\n\
+                  agent.*, window.command, daemon.*, audit.",
+        methods: &["events.list", "events.subscribe"],
+    },
+    Verb {
+        name: "insights",
+        aliases: &[],
+        usage: "insights [--range today|yesterday|week|month] [--by project|agent|terminal|day]\n       \
+                insights series <turns|messages|spend|working|waiting|approvals|triggers> [--range R] [--bucket hour|day] [--by B]\n       \
+                insights activity [--limit N]",
+        summary: "totals, time series and recent activity, computed from the event log",
+        details: "Turns, human messages, spend, working and waiting time, approvals and triggers fired.",
+        methods: &["insights.summary", "insights.series", "insights.activity"],
+    },
+    Verb {
+        name: "commands",
+        aliases: &["palette"],
+        usage: "commands [list]\n       \
+                commands add --title T (--rpc METHOD [--params JSON] | --screen S | --prefill TEXT | --focus ID)\n            \
+                [--keywords K] [--sub S] [--icon I] [--featured HEADING] [--danger WHY] [--id ID] [--replace]\n       \
+                commands remove <id>",
+        summary: "user commands in the human's ⌘K palette ($MIDNA_HOME/commands.json)",
+        details: "Add commands for workflows the human repeats; they show up in the palette at once. --rpc runs\n\
+                  a daemon method as the human when they pick it (human-only methods always ask twice).\n\
+                  Per-project scripts belong in `midna projects add-command` instead.",
+        methods: &["ui.commands.list", "ui.commands.add", "ui.commands.remove"],
+    },
+    Verb {
+        name: "updates",
+        aliases: &["update"],
+        usage: "updates [status] | check | install   (install: human only)",
+        summary: "the midna app's auto-updater",
+        details: "status shows the running and available version as the app reported it. check asks the app to\n\
+                  check its feed now (harmless). install applies a downloaded update and relaunches the app;\n\
+                  it is human only, so from an agent it asks the human. Terminals keep running either way.",
+        methods: &["updates.status", "updates.check", "updates.install"],
+    },
+    Verb {
+        name: "permissions",
+        aliases: &["permission"],
+        usage: "permissions [status] | open <accessibility|notifications|login-items>",
+        summary: "macOS permissions midna uses, and the System Settings pane for each",
+        details: "status says what midnad can see. open opens the pane in System Settings; only the human can\n\
+                  grant anything there (from an agent, raise `midna attention` to ask).",
+        methods: &["permissions.status"],
+    },
+    // ---------------------------------------------------------------- plumbing
+    Verb {
+        name: "mcp",
+        aliases: &[],
+        usage: "mcp",
+        summary: "stdio MCP server exposing every method as a tool",
+        details: "Speaks MCP (JSON-RPC over stdin/stdout). Tool names are method names with `.` → `_`\n\
+                  (session_open, rule_add…), plus capabilities, explain and guide. Agents midna launches get it\n\
+                  automatically (setting agents.mcp).",
+        methods: &[],
+    },
+    Verb {
+        name: "call",
+        aliases: &[],
+        usage: "call <method> [json-params]",
+        summary: "call any method directly",
+        details: "Example: `midna call session.scroll '{\"id\":\"ab12cd34\",\"to\":\"top\"}'`. `midna schema <method>`\n\
+                  shows the params.",
+        methods: &[],
+    },
+    Verb {
+        name: "hook",
+        aliases: &[],
+        usage: "hook <claude|codex> [event]",
+        summary: "agent hook bridge (used by midna's own agent wiring)",
+        details: "Reads Claude's hook JSON on stdin and reports it; for PreToolUse it asks midna's policy.\n\
+                  You don't need to call this yourself.",
+        methods: &["agent.hook", "policy.request"],
+    },
+    Verb {
+        name: "help",
+        aliases: &[],
+        usage: "help [verb]",
+        summary: "this list, or one verb's help (same as `midna <verb> --help`)",
+        details: "",
+        methods: &[],
+    },
+];
+
+pub fn verb(name: &str) -> Option<&'static Verb> {
+    VERBS.iter().find(|v| v.name == name || v.aliases.contains(&name))
+}
+
+/// `midna <verb> --help`.
+pub fn verb_help(v: &Verb) -> String {
+    // Usage lines: a new form starts at column 7 and gets `midna `; deeper lines continue one.
+    let usage: Vec<String> = v
+        .usage
+        .lines()
+        .enumerate()
+        .map(|(i, l)| match (i, l.strip_prefix("       ")) {
+            (0, _) => format!("usage: midna {l}"),
+            (_, Some(rest)) if !rest.starts_with(' ') => format!("       midna {rest}"),
+            _ => format!("      {l}"),
+        })
+        .collect();
+    let mut out = format!("midna {} — {}\n\n{}\n", v.name, v.summary, usage.join("\n"));
+    if !v.details.is_empty() {
+        out.push('\n');
+        out.push_str(v.details);
+        out.push('\n');
+    }
+    if !v.aliases.is_empty() {
+        out.push_str(&format!("\naliases: {}\n", v.aliases.join(", ")));
+    }
+    if !v.methods.is_empty() {
+        out.push_str("\nmethods (MCP tool in brackets):\n");
+        for m in v.methods {
+            let flag = match catalog::method(m) {
+                Some(s) if s.human_only => "  human only: an agent's call asks the human",
+                Some(s) if !s.mutating => "  read only",
+                _ => "",
+            };
+            out.push_str(&format!("  {m} [{}]{flag}\n", m.replace('.', "_")));
+        }
+    }
+    out.push_str("\nAdd --json for machine-readable output. Exit codes: 0 ok, 1 refused or failed, 2 bad arguments, 3 daemon unreachable.");
+    out
+}
+
+/// `midna help`.
+pub fn usage() -> String {
+    let mut out = String::from(
+        "midna — drive the midna terminal from the shell, agents, or MCP\n\n\
+         usage: midna <verb> [args] [--json]      midna <verb> --help for details\n\n",
+    );
+    let w = VERBS.iter().map(|v| v.usage.lines().next().unwrap_or("").len()).max().unwrap_or(0).min(46);
+    for v in VERBS {
+        let first = v.usage.lines().next().unwrap_or("");
+        if first.len() > w {
+            out.push_str(&format!("  {first}\n  {:w$}  {}\n", "", v.summary));
+        } else {
+            out.push_str(&format!("  {first:w$}  {}\n", v.summary));
+        }
+    }
+    out.push_str(
+        "\nNew here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
+         Free text with flags goes after `--`, e.g. `midna check command -- git push --force`.\n\
+         Exit codes: 0 ok, 1 refused or failed, 2 bad arguments, 3 daemon unreachable.\n\
+         Socket: $MIDNA_SOCKET, else $MIDNA_HOME/midnad.sock.",
+    );
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_method_in_help_exists_and_every_reachable_method_has_a_verb() {
+        let mut covered = std::collections::HashSet::new();
+        for v in VERBS {
+            for m in v.methods {
+                assert!(catalog::method(m).is_some(), "{} lists unknown method {m}", v.name);
+                covered.insert(*m);
+            }
+        }
+        // Reached only through `midna call` (or the GUI's frame stream); listed so a new
+        // method has to be placed deliberately.
+        let call_only = [
+            "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
+            "session.get", "stream.attach", "script.run", "updates.report", "session.clear",
+        ];
+        for m in catalog() {
+            assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);
+        }
+    }
+
+    #[test]
+    fn names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for v in VERBS {
+            for n in std::iter::once(&v.name).chain(v.aliases) {
+                assert!(seen.insert(*n), "duplicate verb name {n}");
+            }
+        }
+    }
+}

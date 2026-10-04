@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings window, as code</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--need-ring:rgba(242,169,59,.22);--need-soft:rgba(242,169,59,.10);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--need-ring:rgba(154,83,0,.20);--need-soft:rgba(154,83,0,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.t-dark{--desk:radial-gradient(120% 90% at 85% 10%,#3B2D5C 0%,#1C1B33 45%,#0A0C14 100%);--menubar:rgba(16,18,26,.72);--tl-off:#3A3F4B;--winshadow:0 28px 70px rgba(0,0,0,.62),0 0 0 1px rgba(255,255,255,.06)}
+.t-light{--desk:radial-gradient(120% 90% at 85% 10%,#D9CCF2 0%,#B9C4E0 50%,#9AA6C4 100%);--menubar:rgba(246,247,250,.72);--tl-off:#C3C7CF;--winshadow:0 28px 70px rgba(20,24,40,.32),0 0 0 1px rgba(0,0,0,.08)}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="position: relative; height: 900px; min-height: 900px; overflow: hidden; background: var(--desk); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+  <div aria-hidden="true" style="position: absolute; left: 0; top: 0; right: 0; height: 26px; display: flex; align-items: center; gap: 18px; padding: 0 16px; background: var(--menubar); backdrop-filter: blur(20px); font-size: 13px; color: var(--fg)">
+    <b>midna</b><span>File</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span>
+    <div style="flex: 1"></div>
+    <span>Sat Oct 3</span><span>9:41 AM</span>
+  </div>
+  <!-- Main midna window: inactive, behind the Settings window -->
+  <div aria-hidden="true" inert="" style="position: absolute; left: 28px; top: 46px; width: 1160px; height: 820px; display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; background: var(--bg); box-shadow: var(--winshadow); pointer-events: none; filter: saturate(.75)">
+  <div style="flex: 1; display: flex; min-height: 0">
+
+<!--NAV-->
+    <nav aria-label="Projects and terminals" style="flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+      <div style="display: flex; align-items: center; height: 44px; padding: 0 14px">
+        <span aria-hidden="true" style="display: flex; gap: 8px">
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: var(--tl-off)"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: var(--tl-off)"></span>
+          <span style="width: 12px; height: 12px; border-radius: 50%; background: var(--tl-off)"></span>
+        </span>
+      </div>
+      <button type="button" onClick="{{jumpNext}}" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 34px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">{{needCount}} need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+      </button>
+      <div style="flex: 1; padding: 4px 0; overflow: auto">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="margin-bottom: {{groupGap}}">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px 8px 2px 14px">
+              <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">{{g.name}}</span>
+              <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span title="Need you" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{g.needText}}</span></sc-if>
+              <button type="button" aria-label="Actions for {{g.name}}" style="width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg>
+              </button>
+            </div>
+            <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+              <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" aria-label="{{row.label}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: {{rowPad}}; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                <span style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <sc-if value="{{row.statsInline}}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                  </sc-if>
+                </span>
+                <span role="img" aria-label="{{row.agentLabel}}" title="{{row.agentLabel}}" style="display: inline-flex; color: var(--dim)">
+                  <sc-if value="{{row.isClaude}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg></sc-if>
+                  <sc-if value="{{row.isCodex}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5z"></path><circle cx="8" cy="8" r="2"></circle></svg></sc-if>
+                  <sc-if value="{{row.isMonitor}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l2-4.5 3 9 2-4.5h3"></path></svg></sc-if>
+                  <sc-if value="{{row.isShell}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5 6 8l-3.5 3.5M8 11.5h5.5"></path></svg></sc-if>
+                </span>
+                <sc-if value="{{row.hasLine2}}" hint-placeholder-val="{{ false }}">
+                  <span style="grid-column: 2 / 4; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px">
+                    <span style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                    <sc-if value="{{row.statsBelow}}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap"><span style="color: var(--ok)">{{row.plus}}</span> <span style="color: var(--err)">{{row.minus}}</span> <span style="color: var(--dim)">{{row.files}}</span></span>
+                    </sc-if>
+                  </span>
+                </sc-if>
+              </button>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--line)">
+        <a href="#insights" aria-label="Open Insights. Today: 38 agent turns, 52 messages sent, $4.12 spent" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--fg); text-decoration: none">
+          <span style="display: flex; align-items: baseline; gap: 8px">
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); flex: 1">Today</span>
+            <span style="font-size: 11px; color: var(--dim)">Insights ›</span>
+          </span>
+          <span style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">38</b><span style="font-size: 11.5px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">52</b><span style="font-size: 11.5px; color: var(--dim)">messages sent</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px; font-variant-numeric: tabular-nums">$4.12</b><span style="font-size: 11.5px; color: var(--dim)">spent</span></span>
+          </span>
+        </a>
+        <div role="toolbar" aria-label="Screens" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px">
+          <button type="button" title="Triggers and workflows" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"></path></svg>Triggers
+          </button>
+          <button type="button" title="Approval rules" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5 13.5 3.5v4c0 3.2-2.3 5.6-5.5 7-3.2-1.4-5.5-3.8-5.5-7v-4z"></path><path d="M5.8 8.2 7.4 9.8 10.4 6.6"></path></svg>Rules
+          </button>
+          <button type="button" title="Settings ⌘," aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 5px; border: 0; border-radius: 7px; background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); font-size: 10.5px; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"></path></svg>Settings
+          </button>
+        </div>
+      </div>
+    </nav>
+<!--/NAV-->
+
+    <main style="flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0">
+      <header style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 18px; border-bottom: 1px solid var(--line); color: var(--dim)">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--work)"></span>
+        <b style="color: var(--fg)">settings-ui</b>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2"></path></svg>
+        <span>working</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px">main</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px"><span style="color: var(--ok)">+210</span> <span style="color: var(--err)">−41</span> ×9</span>
+      </header>
+      <div style="flex: 1; min-height: 0; padding: 14px 18px; background: var(--term); font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.7; color: var(--dim)">
+        <div><span style="color: var(--accent)">~/Development/rust/midna</span> main</div>
+        <div><span style="color: var(--fg)">❯ claude</span></div>
+        <div style="color: var(--fg)">&gt; move Settings into its own window</div>
+        <div>✻ Read crates/midna-ui/src/settings/mod.rs</div>
+        <div>✻ Edit crates/midna-ui/src/settings/window.rs</div>
+        <div>✻ Edit crates/midna-ui/src/app.rs</div>
+        <div><span style="color: var(--work)">●</span> Running cargo check -p midna-ui</div>
+      </div>
+    </main>
+  </div>
+  <footer style="display: flex; align-items: center; gap: 18px; min-height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+    <span><span style="color: var(--ok)">●</span> midnad · 14 terminals</span>
+    <span>Policy <span style="color: var(--fg)">unsupervised</span> · 1 approval rule</span>
+    <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+    <sc-if value="{{hasMissing}}" hint-placeholder-val="{{ false }}"><span style="color: var(--need)">● {{missingText}}</span></sc-if>
+    <div style="flex: 1"></div>
+    <span>⌘K commands · ⌘J next</span>
+  </footer>
+  </div>
+
+  <!-- Settings window: separate, focused, floating over the main window -->
+  <section role="dialog" aria-label="Settings" style="position: absolute; display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; background: var(--bg); box-shadow: var(--winshadow); left: 500px; top: 74px; width: 900px; height: 796px">
+    <div style="position: relative; display: flex; align-items: center; height: 46px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel)">
+      <span style="display: flex; gap: 8px">
+        <button type="button" aria-label="Close Settings" style="width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; background: #FF5F57; cursor: pointer"></button>
+        <span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+        <span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+      </span>
+      <h1 style="position: absolute; left: 0; right: 0; margin: 0; text-align: center; font-size: 13px; font-weight: 700; pointer-events: none">Settings</h1>
+      <div style="flex: 1"></div>
+      <div role="tablist" aria-label="View" style="position: relative; display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg)">
+        <sc-for list="{{views}}" as="v" hint-placeholder-count="2"><button type="button" role="tab" aria-selected="{{v.sel}}" onClick="{{v.pick}}" style="height: 24px; padding: 0 12px; border: 0; border-radius: 5px; font-size: 12px; cursor: pointer; {{v.style}}">{{v.label}}</button></sc-for>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line)">
+      <label style="flex: 1; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 12px; border: 1.5px solid var(--accent); border-radius: 9px; background: var(--raised)">
+        <span aria-hidden="true" style="font-family: 'JetBrains Mono', monospace; color: var(--accent)">❯</span>
+        <input type="text" aria-label="Ask an agent to change a setting" placeholder="Ask: make ⌘T open Claude at the project root" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit">
+        <button type="button" onClick="{{ask}}" style="height: 24px; padding: 0 10px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 700; font-size: 12px; cursor: pointer">Ask ↩</button>
+      </label>
+    </div>
+
+      <sc-if value="{{isRows}}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1; min-height: 0; overflow: auto">
+          <div role="table" aria-label="Settings" style="min-width: 0">
+            <div role="row" style="position: sticky; top: 0; z-index: 1; display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 1.25fr) minmax(220px, 1.3fr) 92px; gap: 16px; padding: 8px 18px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">
+              <span role="columnheader">Setting</span><span role="columnheader">Value</span><span role="columnheader">Same thing, for agents</span><span role="columnheader">Who can set</span>
+            </div>
+            <sc-for list="{{groups2}}" as="grp" hint-placeholder-count="6">
+              <div role="rowgroup">
+                <div role="row" style="display: flex; align-items: center; gap: 8px; padding: 14px 18px 4px">
+                  <span role="rowheader" style="font-weight: 700; color: {{grp.color}}">{{grp.name}}</span>
+                  <sc-if value="{{grp.hasBadge}}" hint-placeholder-val="{{ false }}"><span style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: #15111C; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center">{{grp.badge}}</span></sc-if>
+                </div>
+                <sc-for list="{{grp.rows}}" as="r" hint-placeholder-count="3">
+                  <div role="row" style="display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 1.25fr) minmax(220px, 1.3fr) 92px; gap: 16px; align-items: center; min-height: 38px; padding: 4px 18px; border-bottom: 1px solid var(--line); {{r.rowStyle}}">
+                    <span role="cell" style="min-width: 0"><span style="display: block">{{r.label}}</span><sc-if value="{{r.hasNote}}" hint-placeholder-val="{{ false }}"><span style="display: block; font-size: 11.5px; color: {{r.noteColor}}">{{r.note}}</span></sc-if></span>
+                    <span role="cell" style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                      <sc-if value="{{r.isSeg}}" hint-placeholder-val="{{ false }}">
+                        <span role="radiogroup" aria-label="{{r.label}}" style="display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel)">
+                          <sc-for list="{{r.opts}}" as="o" hint-placeholder-count="2"><button type="button" role="radio" aria-checked="{{o.checked}}" onClick="{{o.pick}}" style="height: 24px; padding: 0 10px; border: 0; border-radius: 5px; font-size: 12px; cursor: pointer; {{o.style}}">{{o.label}}</button></sc-for>
+                        </span>
+                      </sc-if>
+                      <sc-if value="{{r.isSwitch}}" hint-placeholder-val="{{ false }}">
+                        <button type="button" role="switch" aria-checked="{{r.checked}}" aria-label="{{r.label}}" onClick="{{r.toggle}}" style="flex: 0 0 auto; position: relative; width: 36px; height: 20px; padding: 0; border: 0; border-radius: 10px; cursor: pointer; background: {{r.track}}"><span style="position: absolute; top: 2px; left: {{r.knob}}; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF"></span></button>
+                        <span style="color: var(--dim)">{{r.onText}}</span>
+                      </sc-if>
+                      <sc-if value="{{r.isText}}" hint-placeholder-val="{{ true }}">
+                        <span style="width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: {{r.dot}}"></span>
+                        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{r.textColor}}">{{r.text}}</span>
+                      </sc-if>
+                      <sc-if value="{{r.hasAction}}" hint-placeholder-val="{{ false }}">
+                        <button type="button" onClick="{{r.act}}" aria-label="{{r.actLabel}}" style="flex: 0 0 auto; height: 26px; padding: 0 10px; border: {{r.actBorder}}; border-radius: 7px; background: {{r.actBg}}; color: {{r.actFg}}; font-size: 12px; font-weight: 700; cursor: pointer">{{r.actText}}</button>
+                      </sc-if>
+                    </span>
+                    <span role="cell" style="display: flex; align-items: center; gap: 6px; min-width: 0">
+                      <code style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--dim)"><span style="color: var(--accent)">$</span> {{r.cli}}</code>
+                      <button type="button" aria-label="Copy command for {{r.label}}" title="Copy" style="flex: 0 0 auto; width: 24px; height: 24px; border: 0; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"></path></svg></button>
+                    </span>
+                    <span role="cell" style="display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: {{r.whoColor}}">
+                      <sc-if value="{{r.human}}" hint-placeholder-val="{{ false }}"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.5"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg></sc-if>
+                      {{r.who}}
+                    </span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+            <div style="height: 16px"></div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{isJson}}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; overflow: auto; background: var(--term); padding: 14px 20px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.65">
+          <div style="color: var(--dim)">// ~/.config/midna/settings.jsonc · what <span style="color: var(--fg)">midna settings get --json</span> returns · edits here are validated by midnad</div>
+          <sc-for list="{{json}}" as="ln" hint-placeholder-count="20">
+            <div style="display: flex; gap: 24px; white-space: pre; {{ln.rowStyle}}"><span style="flex: 0 0 auto"><span style="color: var(--dim)">{{ln.ind}}</span><span style="color: var(--accent)">{{ln.k}}</span><span style="color: {{ln.vc}}">{{ln.v}}</span></span><span style="color: {{ln.cc}}">{{ln.c}}</span></div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <div role="log" aria-label="Last settings command" style="display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 18px; border-top: 1px solid var(--line); background: var(--term); font-family: 'JetBrains Mono', monospace; font-size: 12px">
+        <span style="color: var(--accent)">$</span>
+        <span style="color: var(--fg)">{{lastCmd}}</span>
+        <span style="color: {{lastColor}}">{{lastResult}}</span>
+        <div style="flex: 1"></div>
+        <span style="font-family: 'Atkinson Hyperlegible Next', system-ui, sans-serif; color: var(--dim)">{{lastWho}}</span>
+      </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark","section":"Look"},"perms":{"editor":"enum","options":["granted","missing"],"default":"granted","section":"State"},"view":{"editor":"enum","options":["rows","json"],"default":"rows","section":"State"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { view: null, channel: 'stable', hook: 'funnel', look: 'dark', density: 'compact', allow: { move_windows: true, close_idle_terminals: false, install_updates: true }, trusted: false, fixed: {}, armed: null, last: null };
+  }
+
+/*SHARED*/
+  extra(id) {
+    const X = {
+      api: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 48, minus: 12, files: 6, ctx: 42, cost: '$0.82', model: 'opus', since: '4m' },
+      migrate: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run', plus: 96, minus: 0, files: 3, ctx: 18, cost: '$0.11', model: 'gpt-5', sub: 'Approve db:migrate on staging?', since: '4m' },
+      tests: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      zsh: { branch: 'feat/auth', pr: '#231', checks: 'checks running', checksKind: 'run' },
+      golden: { branch: 'main', ctx: 61, cost: '$1.40', model: 'sonnet', sub: 'Asked a question', since: '12m' },
+      build: { branch: 'main', sub: 'exit 1', since: '9m' },
+      review: { branch: 'main', pr: '#2231', checks: '2 failing', checksKind: 'fail', plus: 14, minus: 3, files: 2, ctx: 27, cost: '$0.33', model: 'gpt-5' },
+      spike: { branch: 'main', plus: 210, minus: 41, files: 9, ctx: 9, cost: '$0.04', model: 'opus' },
+      docs: { branch: 'main' }
+    };
+    return X[id] || {};
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  agentBits(agent) {
+    const labels = { claude: 'Claude Code', codex: 'Codex', monitor: 'Monitor', shell: 'Shell' };
+    return { agentLabel: labels[agent] || agent, isClaude: agent === 'claude', isCodex: agent === 'codex', isMonitor: agent === 'monitor', isShell: agent === 'shell' };
+  }
+
+  navVals(terms, sel) {
+    const compact = (this.props.density ?? 'comfortable') === 'compact';
+    const script = (this.props.rowScript ?? 'none') === 'git-diff-stats';
+    const names = [];
+    terms.forEach((t) => { if (!names.includes(t.project)) names.push(t.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((t) => t.project === name);
+      const n = own.filter((t) => t.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((t) => {
+          const x = this.extra(t.id);
+          const showSub = !compact && (t.status === 'needs' || t.status === 'failed') && !!x.sub;
+          const hasStats = script && (x.files || 0) > 0;
+          const on = t.id === sel.id;
+          return {
+            ...this.agentBits(t.agent),
+            name: t.name,
+            label: t.name + ', ' + t.status,
+            dotStyle: this.dot(t.status),
+            pressed: on ? 'true' : 'false',
+            rowStyle: on ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+            sub: showSub ? x.sub + ' · ' + x.since : '',
+            subColor: t.status === 'failed' ? 'var(--err)' : 'var(--need)',
+            hasLine2: showSub,
+            statsBelow: false,
+            statsInline: hasStats,
+            plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+            pick: () => this.setState({ selected: t.id })
+          };
+        })
+      };
+    });
+    return { groups, rowPad: compact ? '5px 14px' : '8px 14px', groupGap: compact ? '2px' : '8px' };
+  }
+
+  headVals(sel) {
+    const x = this.extra(sel.id);
+    const isAgent = sel.agent === 'claude' || sel.agent === 'codex';
+    const head = this.props.headerScript ?? 'github';
+    const st = {
+      working: ['working', 'var(--work)'], needs: ['waiting on you · ' + (x.since || ''), 'var(--need)'],
+      done: ['done', 'var(--ok)'], failed: ['failed · ' + (x.sub || ''), 'var(--err)'], idle: ['idle', 'var(--dim)']
+    }[sel.status];
+    return {
+      ...sel, ...this.agentBits(sel.agent),
+      dotStyle: this.dot(sel.status),
+      statusText: st[0], statusColor: st[1],
+      branch: x.branch || '',
+      hasStats: (x.files || 0) > 0,
+      plus: '+' + (x.plus || 0), minus: '−' + (x.minus || 0), files: '×' + (x.files || 0),
+      hasAgent: isAgent && x.ctx != null,
+      ctx: (x.ctx || 0) + '%', ctxWidth: (x.ctx || 0) + '%',
+      ctxColor: (x.ctx || 0) > 70 ? 'var(--need)' : 'var(--accent)',
+      cost: x.cost || '', model: x.model || '',
+      showGit: head !== 'none',
+      hasPr: head !== 'none' && !!x.pr,
+      pr: x.pr || '',
+      checks: x.checks || '',
+      checksColor: x.checksKind === 'fail' ? 'var(--err)' : x.checksKind === 'pass' ? 'var(--ok)' : 'var(--need)',
+      showAgentInfo: head === 'github + agent' && isAgent && !!x.cost
+    };
+  }
+/*/SHARED*/
+
+  terminals() {
+    return [
+      { id: 'spike', project: 'midna', name: 'settings-ui', agent: 'claude', status: 'working' },
+      { id: 'review', project: 'midna', name: 'PR #231 review', agent: 'codex', status: 'done' },
+      { id: 'zsh', project: 'midna', name: 'zsh', agent: 'shell', status: 'idle' },
+      { id: 'golden', project: 'kass', name: 'composer', agent: 'claude', status: 'needs' },
+      { id: 'tests', project: 'saggar', name: 'dev server', agent: 'monitor', status: 'working' },
+      { id: 'migrate', project: 'api', name: 'migrate', agent: 'codex', status: 'needs' },
+      { id: 'build', project: 'api', name: 'build', agent: 'shell', status: 'failed' }
+    ];
+  }
+
+  permList() {
+    const missing = (this.props.perms ?? 'granted') === 'missing';
+    const fixed = (this.state && this.state.fixed) || {};
+    const P = [
+      { id: 'ax', name: 'Accessibility', why: 'Lets Kass read and edit terminal input, and lets agents move windows.', key: 'permissions.accessibility', pane: 'Privacy & Security › Accessibility' },
+      { id: 'notif', name: 'Notifications', why: 'Alerts you when a terminal needs you or fails.', key: 'permissions.notifications', pane: 'Notifications › midna' },
+      { id: 'login', name: 'Login item', why: 'Starts midnad at login so shells survive a restart.', key: 'permissions.login_item', pane: 'General › Login Items' }
+    ];
+    return P.map((p) => {
+      const ok = fixed[p.id] || !(missing && (p.id === 'ax' || p.id === 'notif'));
+      return {
+        ...p, ok, bad: !ok,
+        stateText: ok ? 'Granted' : 'Missing',
+        stateColor: ok ? 'var(--ok)' : 'var(--need)',
+        dotStyle: ok ? 'background: var(--ok)' : 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring)',
+        fixLabel: 'Open System Settings for ' + p.name,
+        fix: () => this.setState({ fixed: { ...fixed, [p.id]: true } })
+      };
+    });
+  }
+
+  baseVals() {
+    const terms = this.terminals();
+    const sel = { id: null };
+    const needs = terms.filter((t) => t.status === 'needs');
+    const perms = this.permList();
+    const missing = perms.filter((p) => p.bad);
+    const axOk = perms[0].ok;
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      ...this.navVals(terms, sel),
+      needCount: needs.length,
+      jumpNext: () => {},
+      perms,
+      missingCount: missing.length,
+      hasMissing: missing.length > 0,
+      allGranted: missing.length === 0,
+      missingText: missing.length + (missing.length === 1 ? ' permission missing' : ' permissions missing'),
+      missingNames: missing.map((p) => p.name).join(' and '),
+      axOk, axBad: !axOk,
+      asked: !!this.state.asked,
+      ask: () => this.setState({ asked: true }),
+      askPrompt: 'make ⌘T open Claude at the project root'
+    };
+  }
+
+  keybindings() {
+    return [
+      { k: '⌘K', a: 'Commands, or ask an agent' },
+      { k: '⌘J', a: 'Next item that needs you' },
+      { k: '⌘1–9', a: 'Jump to project' },
+      { k: '⌘T', a: 'New shell in current project' },
+      { k: '⌘D', a: 'Split right' },
+      { k: '⌘↩', a: 'Approve once' },
+      { k: '⌘⌫', a: 'Deny' },
+      { k: '⌘,', a: 'Settings' }
+    ];
+  }
+
+
+  set(key, val, patch) {
+    this.setState({ ...patch, last: { cmd: 'midna settings set ' + key + ' ' + val, who: 'you, from this screen · just now' } });
+  }
+
+  seg(opts, cur, key, stateKey) {
+    return opts.map(([id, label]) => ({
+      label, checked: cur === id ? 'true' : 'false',
+      style: cur === id ? 'background: var(--raised); color: var(--fg); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.2)' : 'background: transparent; color: var(--dim)',
+      pick: () => this.set(key, id, { [stateKey]: id })
+    }));
+  }
+
+  renderVals() {
+    const b = this.baseVals();
+    const s = this.state;
+    const view = s.view || (this.props.view ?? 'rows');
+    const ok = 'var(--ok)', need = 'var(--need)', dim = 'var(--dim)', fg = 'var(--fg)', err = 'var(--err)';
+    const AG = { who: 'agents too', whoColor: dim, human: false };
+    const HU = { who: 'human only', whoColor: fg, human: true };
+    const RO = { who: 'read-only', whoColor: dim, human: false };
+    const base = { isSeg: false, isSwitch: false, isText: false, hasAction: false, hasNote: false, note: '', noteColor: dim, rowStyle: '', opts: [], checked: 'false', track: '', knob: '', onText: '', dot: ok, text: '', textColor: fg, act: () => {}, toggle: () => {}, actText: '', actLabel: '', actBg: 'transparent', actFg: fg, actBorder: '1px solid var(--line)' };
+    const seg = (label, key, opts, cur, stateKey, who, extra) => ({ ...base, ...who, ...extra, label, isSeg: true, opts: this.seg(opts, cur, key, stateKey), cli: 'midna settings set ' + key + ' ' + cur });
+    const text = (label, value, cli, who, extra) => ({ ...base, ...who, label, isText: true, text: value, cli, ...extra });
+    const primary = { actBg: 'var(--accent)', actFg: 'var(--accent-fg)', actBorder: '0' };
+
+    const permRows = b.perms.map((p) => text(p.name, p.stateText, 'midna doctor --check ' + p.key, HU, {
+      dot: p.ok ? ok : need, textColor: p.ok ? fg : need, hasNote: true, note: p.why,
+      rowStyle: p.bad ? 'background: var(--need-soft)' : '',
+      hasAction: p.bad, act: p.fix, actText: 'Fix', actLabel: p.fixLabel, ...primary
+    }));
+
+    const allowRow = (id, label, note) => {
+      const on = !!s.allow[id];
+      const blocked = id === 'move_windows' && b.axBad;
+      return { ...base, ...HU, label, isSwitch: true, checked: on ? 'true' : 'false', onText: on ? 'allowed' : 'ask first',
+        track: on ? 'var(--accent)' : 'var(--line)', knob: on ? '18px' : '2px',
+        hasNote: true, note: blocked ? 'No effect until Accessibility is granted' : note, noteColor: blocked ? need : dim,
+        cli: 'midna settings set allow.' + id + ' ' + (on ? 'true' : 'false'),
+        toggle: () => this.set('allow.' + id, on ? 'false' : 'true', { allow: { ...s.allow, [id]: !on } }) };
+    };
+
+    const dangerRow = (id, label, note, cli) => ({ ...base, ...HU, label, isText: true, dot: err, text: s.armed === id ? 'Kills 14 shells. Click again to confirm.' : '14 terminals running', textColor: s.armed === id ? err : dim,
+      hasNote: true, note, cli, hasAction: true, actText: s.armed === id ? 'Confirm' : (id === 'reset' ? 'Reset…' : 'Uninstall…'), actLabel: label,
+      actBg: s.armed === id ? 'var(--err)' : 'transparent', actFg: s.armed === id ? '#FFFFFF' : err, actBorder: '1px solid var(--err)',
+      act: () => this.setState({ armed: s.armed === id ? null : id }) });
+
+    const groups2 = [
+      { name: 'Updates', rows: [
+        seg('Channel', 'updates.channel', [['stable', 'Stable'], ['beta', 'Beta']], s.channel, 'channel', AG),
+        text('Version', 'midna 0.14.2 · midnad 0.14.2', 'midna version', RO),
+        text('Last daemon upgrade', 'In place 2h ago, 14 shells kept', 'midna events --kind daemon.upgrade -n 1', RO)
+      ] },
+      { name: 'Permissions', badge: String(b.missingCount), hasBadge: b.hasMissing, rows: permRows },
+      { name: 'Webhooks', rows: [
+        seg('Delivery path', 'webhooks.path', [['funnel', 'Funnel'], ['relay', 'Self-hosted'], ['hosted', 'midna · paid']], s.hook, 'hook', AG,
+          { hasNote: true, note: s.hook === 'funnel' ? 'Tailscale Funnel · morgans-macbook-pro.tail439d44.ts.net' : s.hook === 'relay' ? 'Relay secret: you paste it, agents can’t' : 'Requires a paid plan' }),
+      ] },
+      { name: 'Look', rows: [
+        seg('Theme', 'theme', [['dark', 'Dark'], ['light', 'Light'], ['system', 'System']], s.look, 'look', AG),
+        seg('Sidebar density', 'sidebar.density', [['comfortable', 'Comfortable'], ['compact', 'Compact']], s.density, 'density', AG),
+        text('Keybindings', '8 bindings · ask to change', 'midna keys list', RO, { dot: dim, hasNote: true, note: 'e.g. “make ⌘T open Claude at the project root”' })
+      ] },
+      { name: 'Agents', rows: [
+        text('Claude Code hook', 'Installed', 'midna hooks status claude', RO),
+        text('Codex hook', s.trusted ? 'Installed' : 'Needs trust', 'midna hooks trust codex', HU, s.trusted ? {} : { dot: need, textColor: need, hasAction: true, actText: 'Trust', actLabel: 'Trust the Codex hook', ...primary, act: () => this.setState({ trusted: true, last: { cmd: 'midna hooks trust codex', who: 'you, from this screen · just now' } }) }),
+        text('Kass', b.axBad ? 'Handshake detected · input blocked' : 'Handshake detected · 2.3.0', 'midna kass status', RO, b.axBad ? { dot: need, textColor: need, hasNote: true, note: 'Needs Accessibility to edit terminal input', noteColor: need } : {}),
+        allowRow('move_windows', 'Agents may move windows', 'Resize, tile and focus midna windows'),
+        allowRow('close_idle_terminals', 'Agents may close idle terminals', 'Shells with no process for 1h'),
+        allowRow('install_updates', 'Agents may install updates', 'Shells are kept either way')
+      ] },
+      { name: 'Danger zone', color: err, rows: [
+        dangerRow('reset', 'Reset daemon', 'Rules and the audit log are kept', 'midna daemon reset'),
+        dangerRow('uninstall', 'Uninstall midnad', 'Removes daemon, login item and hooks', 'midna daemon uninstall')
+      ] }
+    ].map((g) => ({ color: fg, badge: '', hasBadge: false, ...g }));
+
+    // JSON view
+    const J = [];
+    const line = (ind, k, v, c, opts) => J.push({ ind, k: k ? '"' + k + '": ' : '', v, vc: (opts && opts.vc) || 'var(--ok)', c: c || '', cc: (opts && opts.cc) || dim, rowStyle: (opts && opts.row) || '' });
+    const q = (x) => '"' + x + '",';
+    line('', '', '{', '', { vc: fg });
+    line('  ', 'updates', '{', '', { vc: fg });
+    line('    ', 'channel', q(s.channel), '// stable | beta');
+    line('  ', '', '},', '', { vc: fg });
+    line('  ', 'webhooks', '{', '', { vc: fg });
+    line('    ', 'path', q(s.hook), '// funnel | relay | hosted');
+    line('    ', 'relay_secret', 'null,', '// human only · pasted in the UI, never by an agent', { vc: 'var(--work)', cc: fg });
+    line('  ', '', '},', '', { vc: fg });
+    line('  ', 'theme', q(s.look), '');
+    line('  ', 'sidebar', '{ "density": "' + s.density + '" },', '');
+    line('  ', 'keys', '{ "cmd+t": "shell.new", "cmd+d": "split.right", … },', '// ask to change', { vc: fg });
+    line('  ', 'allow', '{', '// human only · agents get requires_human', { vc: fg, cc: fg });
+    Object.keys(s.allow).forEach((k) => line('    ', k, (s.allow[k] ? 'true' : 'false') + ',', '', { vc: 'var(--work)' }));
+    line('  ', '', '},', '', { vc: fg });
+    line('  ', 'status', '{', '// read-only · from midnad, not from this file', { vc: fg });
+    line('    ', 'version', '"0.14.2",', '');
+    line('    ', 'daemon', '{ "upgraded": "2h ago", "shells_kept": 14 },', '', { vc: fg });
+    b.perms.forEach((p) => line('    ', p.key, q(p.ok ? 'granted' : 'missing'), p.ok ? '' : '// fix in System Settings', { vc: p.ok ? 'var(--ok)' : need, cc: need, row: p.ok ? '' : 'background: var(--need-soft)' }));
+    line('    ', 'hooks', '{ "claude": "installed", "codex": "' + (s.trusted ? 'installed' : 'needs_trust') + '" },', '', { vc: fg });
+    line('    ', 'kass', '"handshake_detected"', '');
+    line('  ', '', '}', '', { vc: fg });
+    line('', '', '}', '', { vc: fg });
+
+    const last = s.last || (b.hasMissing
+      ? { cmd: 'midna doctor', res: '✗ ' + b.missingText, color: need, who: 'midnad at launch · 1m ago' }
+      : { cmd: 'midna settings set sidebar.density compact', res: '✓ applied', color: ok, who: 'Claude in midna › settings-ui, asked by you · 3m ago' });
+
+    return {
+      ...b,
+      isRows: view === 'rows', isJson: view === 'json',
+      views: [['rows', 'Rows'], ['json', 'settings.json']].map(([id, label]) => ({ label, sel: view === id ? 'true' : 'false',
+        style: view === id ? 'background: var(--raised); color: var(--fg); font-weight: 700' : 'background: transparent; color: var(--dim)',
+        pick: () => this.setState({ view: id }) })),
+      groups2, json: J,
+      lastCmd: last.cmd, lastResult: last.res || '✓ applied', lastColor: last.color || ok, lastWho: last.who
+    };
+  }
+}
+</script>
+</body>
+</html>

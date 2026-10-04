@@ -1,0 +1,11 @@
+[package]
+name = "composer-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = "0.7"
+raw-window-handle = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"

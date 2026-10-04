@@ -1,0 +1,542 @@
+
+## Foundation (midna-proto / midnad / midna-cli)
+
+- **midna-proto API for clients** (usable now):
+  - `midna_proto::Client::connect(paths::socket_path())`, then `call::<T>(method, params)` / `call_value`.
+  - `client.subscribe(Some(since_seq))` returns an iterator of `Event`. For `window.command` pushes, use `Subscription::next_notification()`, which returns `Notification::{Event, WindowCommand, Other}`.
+  - `Client::attach_stream(socket, session, cols, rows, cell_w, cell_h)` returns `AttachStream` with `want()`, `resize()`, `input()`, `next_frame()`. Use `writer()` for a cross-thread write half.
+  - `Frame`, `Cell`, `RowData` and the `F_*` flags live in `midna_proto::frame`. `Frame::decode` returns `Result`.
+- **Wire forms of tagged enums:**
+  - `RuleScope`: `{"kind":"global"}`, `{"kind":"project","id":"p_.."}`, `{"kind":"session","id":".."}`.
+  - `ApprovalScope`: `{"kind":"once"}`, `{"kind":"minutes","minutes":N}`, `{"kind":"session"}`, `{"kind":"always"}`.
+  - `Resolution`: `{"kind":"approve","scope":{...}}`, `{"kind":"deny"}`, `{"kind":"dismiss"}`, `{"kind":"done"}`, `{"kind":"restart"}`.
+  - `TriggerAction`: tagged by `kind`.
+  - `SettingType`: `{"kind":"enum","options":[..]}`.
+- **Caller hint.** Clients may add `caller: {session?, role?}` to any params object.
+  - `Client` fills `session` from `MIDNA_SESSION` automatically.
+  - `role:"agent"` lets a connection downgrade itself; nothing can upgrade to human. Human status comes only from the peer executable check.
+  - Any call carrying `caller.session` is treated as `agent`.
+- **Settings catalog** is in `midna_proto::settings::SETTINGS`, so the GUI can render it without a round trip. Extra keys added beyond the contract:
+  - `agents.claude.statusline`
+  - `policy.default`
+  - `policy.request_timeout_secs`
+  - `git.refresh_secs`
+- **Extra error code:** `5` = not implemented yet (trigger/webhook stubs, `daemon.upgrade`).
+- **Timestamps** are second-precision RFC 3339 UTC, produced by `midna_proto::time`, a hand-rolled module so we don't need a date crate.
+- **No async client yet.** The blocking client on a background thread is enough for GPUI.
+- **midnad concurrency.** midnad uses plain threads, not tokio:
+  - one reader thread and one writer thread per connection
+  - one engine thread per session, which owns the `!Send` libghostty Terminal
+  - a PTY reader thread and a reaper thread per session
+  - a 200ms saver/expiry loop and a git refresh loop
+
+  `Core` (state plus runtimes) sits behind one mutex. The lock order is core, then the event log. Nothing waits on an engine thread while holding core.
+- ~~**The event log lives fully in memory** for replay and insights, and is loaded from `events.jsonl` at startup. That's fine for now; it needs compaction or windowing later.~~ done: monthly files + a 62-day in-memory window (see "Closing the open TODOs").
+- **Sessions don't survive a daemon restart yet.** That's the re-exec phase. On startup, leftover sessions are marked `exited` with reason "daemon restarted".
+- **Human-only calls from agents:**
+  - They return error `2`.
+  - `rule.remove` points to `rule.request_removal`.
+  - Every other human-only call (for example `project.remove`, or `settings.set` on a `human_only` key) raises an `approval` needs-you item with a deferred call. If the human approves it, the daemon runs that call as the human. Agents can never approve deferred items.
+- **Approval scopes become rules:**
+  - The new rule is `allow` with an exact, glob-escaped matcher on the action's value, and `origin` is set.
+  - `once` creates no rule.
+  - `minutes(n)` creates a session-scoped rule (project, then global, if there's no session) that expires.
+  - `session` creates a session-scoped rule.
+  - `always` creates a project-scoped rule, or global if there's no project.
+- **`policy.request` for unmatched `tool` actions has no opinion.** It returns `source:"default"`, and `midna hook claude` prints nothing, so Claude's own permission flow decides. A rule that matches with `ask` raises a midna approval and blocks.
+  - On timeout it returns `ask`/`timeout`, withdraws the item, and `needs_you.resolved` carries `{"kind":"timeout"}`.
+  - The Claude PreToolUse hook entry gets `timeout: 600`.
+- **Policy defaults table** (`policy.default` = `auto`): `cli` values matching `close --force*`, `restart*`, `project remove*`, `rules remove*` or `settings reset*` ask; everything else is allowed.
+- **Agent verbs are policy-checked as `cli`/`window` actions:**
+  - `close <id>` and `close --force <id>`
+  - `restart <id>`
+  - `<action> <target>` for window commands
+  - Agents can't close a working session without `force` (error `4`).
+  - Closing another session's terminal while `agents.may_close_idle` is false turns a default allow into ask.
+  - `window.command` from agents needs `agents.may_move_windows` for everything except `front` and `open_screen`.
+- **Expired rules are deleted** and emit `rule.expired`.
+- **Extra event kind:** `session.git` (`{git}`), emitted when a terminal's GitInfo changes.
+- **Exit status:**
+  - Exit 0 gives `exited`.
+  - A non-zero exit or a signal gives `failed`, with `exit_code` set.
+  - A failed `monitor` or `agent` session also raises a `failed` needs-you item (bulk-safe, with a screen excerpt). Resolving it with `restart` restarts the session in place under the same id.
+- **Titles:**
+  - `Session.title` always tracks OSC 0/2.
+  - A `session.title` event is only emitted when the text *after* a leading spinner glyph changes, so the log isn't flooded.
+  - The glyph heuristic, for agent sessions only:
+    - `◐◑◒◓` or Braille spinners mean working.
+    - `✳`/`✻` mean stopped. Stopped while working, with no prompt on screen, gives `idle` and ends the turn. Stopped while needs-you, with no prompt on screen, gives `idle` and clears the prompt item.
+    - Working while needs-you gives `working` (the approval was answered).
+- **Hooks map to status** through the spike's state machine. `SessionEnd` gives `idle` (the process exit sets `exited` or `failed`).
+  - `Notification` permission_prompt raises a `permission_prompt` needs-you item, which is cleared automatically when the agent moves on.
+  - Approving or denying that item sends Enter or Esc, but only if the screen check sees a prompt.
+- **Cost.** Claude's status line is the only real cost signal, so midna registers `statusLine` (`midna hook claude statusline`, which prints `model · $cost`) in its own `claude-settings.json`. The setting `agents.claude.statusline` (default true) turns it off. `agent.cost` carries `delta_usd` and `total_usd`.
+- **Insights definitions:**
+  - turns = `agent.turn_started`
+  - messages = `agent.prompt_submitted`
+  - approvals = `needs_you.resolved` with `approve`
+  - working and waiting time = time spent in `working` and `needs_you` according to `session.status` events
+  - Ranges are local-day based. `vs_previous` is the period of the same length immediately before.
+- **Launching processes:**
+  - Absolute argv runs directly.
+  - Bare names and single-string commands run through `$SHELL -l -c`, so the user's PATH applies. Agents launch as `$SHELL -l -c 'exec "$0" "$@"' claude --settings …`.
+  - Terminals get `MIDNA_SESSION`, `MIDNA_PROJECT`, `MIDNA_SOCKET`, `MIDNA_HOME` and `TERM_PROGRAM=midna`, with the CLI dir prepended to `PATH`.
+  - `CLAUDECODE` and similar variables are scrubbed.
+- **The CLI is found via** `MIDNA_CLI_PATH`, else a `midna` next to the midnad executable (or one directory up), else `midna` on PATH.
+- **GUI fan-out.** Human connections that call `events.subscribe` also receive `window.command` notifications. `window.list.gui_connected` probes them with a blank line, which clients ignore.
+- **Frame streams:**
+  - A new attach gets one credit and a full frame.
+  - When several clients attach to the same session, each one accumulates merged dirty rows while it has no credit.
+  - Frames are built only when at least one client has credit.
+- **CLI exit codes:**
+  - `0` ok
+  - `1` for RPC errors `1`/`2`/`3`/`4`/`5` and internal errors
+  - `2` for usage errors, `-32602` and `-32601`
+  - `3` when the socket is unreachable
+- **CLI free text.** Free text that contains flags goes after `--`, e.g. `midna check command -- git push --force`.
+- **MCP.**
+  - Tool names are method names with `.` replaced by `_`.
+  - `stream.attach` and `events.subscribe` are left out, since streaming can't work as a one-shot tool.
+  - Results come back as both text and `structuredContent`.
+
+## GUI (midna-app)
+
+- **Lenient client model.** `midna-app/src/model.rs` mirrors the proto domain types with `#[serde(default)]` and `#[serde(other)]` fallbacks, so a newer daemon with extra fields or enum values doesn't blank the UI. A test round-trips proto's strict `Session` and `Segment` through it. `Resolution` and `ApprovalScope` are re-exported from proto, so resolve calls use the daemon's exact wire form.
+- **Backend seam.** The `backend::Backend` trait has `call`, `subscribe` and `attach`:
+  - `DaemonBackend` uses `midna_proto::Client` for calls and `events.subscribe`. It reconnects every 1s and shows "midnad not running" while the daemon is down.
+  - `stream.attach` uses a raw socket plus proto's frame codec. `StreamWriter` can't shut its socket down, so detaching would otherwise leak a blocked reader thread per terminal switch. Suggestion for proto: add `AttachStream::shutdown()`.
+  - `FakeBackend` (`MIDNA_BACKEND=fake`) serves the Main.dc.html sample data. It runs a real in-process PTY and libghostty engine per session (cargo feature `fake-engine`, on by default).
+- **GUI caller identity.** The GUI calls `set_caller(None)`, so an inherited `MIDNA_SESSION` never makes it look like an agent. Dev runs need `MIDNA_APP_PATH=<target>/debug/midna-app` on midnad to be treated as human.
+- **Refresh model.** Events only mark what's stale (projects, sessions, needs, settings, insights, rules, webhooks, header and row scripts). A 40ms coalesced refetch reloads the lists. Header and row scripts also refresh every 15s, because git changes don't always raise events.
+- **Needs-you outranks status.** A session with a pending needs-you item is drawn as "needs you" (dot, attention line) even when its own `status.state` is still idle. Example: a shell waiting in `policy.request`.
+- **Initial selection** is the first session with an approval item, then the first needs-you session, then the first session. `MIDNA_SELECT` overrides it.
+- **"At root" shortcuts** (`keys.new_*_root`) call `session.open` without `project_id`, and the daemon picks the root.
+- **Root.** `session.open` with no `project_id`, no `cwd` and no caller project opens at root: `project_id` `"root"` (`ROOT_PROJECT_ID`, never a real project) with cwd `$HOME`. So ⌘T, ⌘K asks, and the root shortcuts all work with zero projects. `"root"` can also be passed explicitly, and an agent in a root terminal opens its siblings at root.
+- **New agent** reuses the agent most recently started in that project, defaulting to Claude.
+- **⌘W** (`CloseWindow`, fixed binding) in the main window closes the selected terminal (`session.close`) and selects its sidebar neighbour; a busy one (working / needs you) needs a second ⌘W within 2 s; with nothing selected it closes the window. In Settings or a pop-out it closes that window. A menu, overlay (⌘K, needs-you) or screen (Rules, Triggers, Insights) in front is closed first, like esc. All three screens have "Back to terminal  esc" in their header (`screen_kit::back_btn`). The status bar's "Set up webhooks" opens Triggers with the delivery-path picker open; "Add a trigger" opens Triggers at the list.
+- **⌘Q is hold-to-quit** (`HoldToQuit`, `ui::quit_hold`): 2.5 s, with the window dimming and a ring filling around a ⌘Q badge (eased, glowing head). Releasing ⌘, a reported Q key-up, or the window losing focus cancels. macOS often drops Q's key-up while ⌘ is held, so releasing ⌘ is the reliable cancel. The hold also polls the live ⌘ state (`NSEvent.modifierFlags`) every tick, so a release that never reaches GPUI as an event still cancels, and a tap never quits. The menu's "Quit midna" quits at once, and so does ⌘Q in Settings or a pop-out (no overlay there). Terminals keep running in midnad.
+- **Switching terminals** reuses the pane's measured size for the new attach (no second PTY resize) and keeps the old screen up until the new one has its first frame (max 250 ms). Keys go nowhere during the swap.
+- **Rename**: double-click a terminal's name in the header or sidebar for an inline field; ↩ or blur saves (`session.rename`), esc cancels.
+- **Pop-out** is a normal window raised to `NSFloatingWindowLevel` (above other apps, like PiP), with a "Keep on top" pill to drop it to normal level. It was `WindowKind::PopUp`, which sat above everything with no way to send it back.
+- **Sidebar**: the needs-you pill only shows when something needs you. Root terminals (no project) are listed first, without a heading; ⌘1–9 count projects only.
+- **Closed projects.** A project with no terminals leaves the sidebar (`MainWindow::groups` drops it), but it isn't removed from the daemon, so its rules and commands stay. ⌘O, a typed path, or ⌘K "Go to project" (now `Run::OpenProject`, marked "closed, opens a terminal") reopens it with a new shell. ⌘1–9 follow the visible order. With nothing selected, ⌘T opens in the first visible project, else at root. The sidebar and empty pane show "Open project…" whenever no terminals are open.
+- **Quit.** A finished ⌘Q hold calls `cx.quit()` directly. Dispatching the `Quit` action did nothing in the installed bundle, though it worked unbundled.
+- **Status bar**: `midnad` (hover explains it's the background daemon; no terminal count) · Policy · webhooks · triggers. Webhooks shows "Set up webhooks" while off or until first clicked; triggers shows "Add a trigger" while there are none or until first clicked. Both open Triggers. Clicks are remembered app-side in `$MIDNA_HOME/app-state.json` (`{"seen": [...]}`), not in daemon settings, to keep Settings uncluttered.
+- **Open project.** `keys.open_project` (⌘O), the "Open project…" ⌘K row and an accent button (sidebar and empty pane, shown while there are no projects) open a folder picker, then `project.add`, then go to the project's first terminal or open a shell there. Typing a folder path into ⌘K (`~/…` or `/…`, must exist) offers "Open <path> as a project" as the first row. With no current project, ⌘K drops its duplicate "at root" rows and the ask scope is root only.
+- **Project folders (`projects.roots`).** A list setting (new `SettingKind::PathList`: a JSON array, or comma/newline-separated text on the CLI; entries must be absolute or start with `~/`; agents may set it). `project.discover` (`midna projects discover`, MCP `project_discover`, read-only) lists the direct subfolders of each root, most recently modified first, skipping hidden ones. A subfolder that isn't a git repo but holds repos is replaced by those repos (`~/Development/rust/midna`). The list is capped at 500 and flags the folders that already are projects. There is **no "Other projects" section in the sidebar**. The empty pane and ⌘K (before anything is typed) list up to 5 **recently opened** projects under "Recent": closed projects ordered by `last_opened_at`, which `session.open` stamps. Folders under the roots **never** appear in that list. ⌘K finds them only when searched for, as "Open project <name>", and picking one calls `project.add` and then opens a shell. The app fetches `project.discover` with every projects/settings refresh and whenever ⌘K opens. Root terminals still start in `$HOME`. **Adding a folder** never needs the CLI. "Add project folder…" (a link on the empty pane, and a ⌘K row) opens ⌘K in a path-search mode: the query starts with `commands::FOLDER_PREFIX` ("Project folder: ~/") and only folder rows show. The first row, "Add <dir> as a project folder", appends `<dir>` to `projects.roots` via `settings.set`. The rows after it are the folder's subfolders, or the ones that start with the typed name (case-insensitive). ↩ or ⇥ on a subfolder types it in, and there is no "Ask an agent" fallback in this mode. The empty pane has no title, the Recent list (max 5) and one hint line ("⌘T terminal at root · Add project folder…").
+- **Script segments.** The GUI accepts three optional hints on a segment, all ignored if absent:
+  - `icon`: `branch` | `pr` | `dot`
+  - `mono`: bool
+  - `join`: bool, which attaches the segment to the previous one with a single space
+  
+  The fake backend uses them to match the design (branch icon, mono diff stats, PR icon). Suggestion for the daemon's built-in `github` script: emit them so the real header matches the board exactly.
+- **Approval banner** shows for `approval` and `permission_prompt` items, or any item carrying `approval`. "Approve for 1 hour" is `minutes: 60`.
+- **Keybindings** are rebuilt from `keys.*` on every settings refresh; invalid strings are skipped with a log line. ⌘1–9 select projects, ⌘D is split (not built yet), and Escape closes overlays and screens.
+- **Terminal input.** Non-text keys (arrows with xterm modifier params, ctrl-*, alt-as-meta, F-keys, shift-enter → `ESC CR`) are handled in `on_key_down`. Printable text goes through GPUI's input handler, which makes IME composition work: marked text is drawn at the cursor and the candidate window is anchored there. ⌘V paste honors bracketed paste. Mouse-drag selection plus ⌘C/⌘A work on the visible grid.
+- **Theme mapping in the terminal.** Cells using the engine's default fg/bg take the theme's `--fg` / `--term`, so light mode reads correctly. Explicit ANSI colors are drawn as-is.
+- **Screenshots while the screen is locked.** Occluded windows stop drawing on macOS. The dev-only cargo feature `snapshot` (enables `gpui-kit/test-support`) plus `MIDNA_SNAPSHOT=out.png` draws the main window offscreen with `window.draw` + `render_to_image` and quits. These captures have no native traffic lights. `screencapture -l` only works while the screen is unlocked.
+
+## Triggers and webhooks (midnad `webhooks/`, `rpc/trigger.rs`, CLI `triggers.rs`)
+
+- **Trigger lifecycle.** `needs_secret` (created, no secret) → `draft` (secret set, never enabled; "ready to enable") → `active` ⇄ `paused`. Only `active` triggers fire.
+- **Human-only rules:**
+  - Agents can create triggers (always `needs_secret`); an agent-created trigger raises one `secret_needed` needs-you item (one per trigger; the item carries the new `NeedsYou.trigger_id`).
+  - `trigger.set_secret` stays `human_only` in the catalog, but an agent calling it does **not** go through the deferred-approval path, because the deferred call would persist the secret. Instead it raises (or reuses) the `secret_needed` item and the secret is dropped.
+  - `trigger.set_enabled` is no longer `human_only` in the catalog: anyone may pause. Enabling by an agent uses the deferred approval (`defer_to_human`); if there's no secret yet it raises `secret_needed` instead. A human enabling without a secret gets error `4`.
+  - An agent changing the `action` or `source` of an active or paused trigger sends it back to `draft` (a human re-enables). Name, event, filter, `github_hook_id` and `session_name_template` changes don't.
+  - Agents may remove triggers that aren't enabled; removing an enabled one is deferred to the human.
+  - Settings `webhooks.path` and `webhooks.relay_url` are now `human_only` (otherwise `settings.set` would bypass `webhooks.configure`). `webhooks.port` stays agent-writable (an existing test relies on it, and it's low risk).
+- **Secrets.** Keychain generic password, service `com.mrgnhnt.midna.webhook`, account = trigger id (`security-framework` 3). `MIDNA_SECRETS=file` → `$MIDNA_HOME/secrets/<id>`, 0600, dir 0700. Cached in memory after the first read. Never returned over RPC (Trigger has `secret_set`, `secret_set_at`, `secret_store` only); audit summaries already redact `secret`. Removing a trigger deletes its secret.
+- **Receiver.** `tiny_http` on `127.0.0.1:<webhooks.port>`, its own thread, one short thread per request. It runs only when `webhooks.path != off`, or when `MIDNA_WEBHOOKS_PORT` / `Config.webhooks.port_override` is set (tests use `0` = any free port; `webhooks.status.receiver.bound_port` reports it). A 1s manager loop rebinds when the path/port changes. Routes: `POST /hooks/github`, `POST /hooks/bitbucket`, `GET /hooks/health`.
+- **Pipeline.** Inline (before answering): headers → dedupe → candidate triggers (same source, secret set) → HMAC-SHA256 check against each candidate's secret (constant time via `hmac::verify_slice`) → event/filter evaluation over the *verified* triggers only. Answers 202 (401 bad/missing signature, 400 missing headers or non-JSON, 200 duplicate, 200 ping). Then, after answering on the same thread: run actions, record the Delivery, emit `trigger.fired` (per trigger) and `trigger.delivery`.
+  - Verdicts: `verified` (fired), `filtered` (a trigger listens to this event but a filter, the action, or its state said no; `trigger_id` points at it), `no_trigger` (nobody listens, or no trigger for that source has a secret yet), `bad_signature`, `replayed`, `recovered`.
+  - A `pull_request.opened` trigger "listens" to other `pull_request` actions, so `synchronize` is `filtered` ("wants pull_request.opened, got pull_request.synchronize"), matching the design.
+  - Event syntax: GitHub `event[.action]`, globs allowed (`pull_request`, `pull_request.*`); Bitbucket the event key (`pullrequest:created`, `pullrequest:*`). Filters (repo, branch, action, label) are case-insensitive globs.
+  - Dedupe by delivery GUID against recorded deliveries (except `bad_signature` ones and replays) plus an in-flight set. Duplicates get 200 and are **not** recorded again.
+  - Every non-duplicate request is recorded (cap 500 in state; oldest pruned). Payloads of authenticated deliveries are kept in `$MIDNA_HOME/deliveries/<d_id>.json` (0600) for replay.
+  - A verified GitHub `ping` sets `github_hook_id` on the triggers whose secret signed it (and whose repo filter matches), so recovery needs no extra setup.
+  - Delivery gained (additively) `action`, `repo`, `subject`, `http_status`, `eval` (one line per listening trigger), `triggers_fired`, `sessions_started`, `recovered`, `replay_of`. Trigger gained `last_fired_summary`, `enabled_at`, `secret_set_at`, `secret_store`, `github_hook_id`, `session_name_template`.
+- **Actions.** Run with a `Ctx` whose actor is `{kind: trigger, name: <trigger name>}` (new `Ctx.as_actor`, agent-level privileges), through `rpc::session::open`.
+  - `start_agent`: prompt = rendered template; terminal name = `session_name_template` or `<trigger name> #<pr>`.
+  - `run_command`: a `monitor` terminal; **every substituted value is shell-single-quoted** so PR titles can't inject shell.
+  - `attention`: a bulk-safe `note` needs-you with `trigger_id`.
+  - Templates: `{{pr.number}} {{pr.title}} {{pr.url}} {{repo}} {{branch}} {{sender}} {{url}} {{event}} {{action}} {{subject}}`, any payload path (`{{pull_request.head.ref}}`), and `{{pr.X}}` → `pull_request.X` / `pullrequest.X`. Unknown keys render empty.
+  - `MIDNA_AGENT_BIN` / `Config.agent_bin` replaces the agent executable (tests use `/bin/echo`).
+- **Replay** skips the signature check (it was verified on arrival), runs against all current triggers through the same filters, and always records verdict `replayed` with `replay_of`. `bad_signature` deliveries can't be replayed (error `4`).
+- **`trigger.test`** is a pure dry run of one trigger (verdict `verified` = would match), with the rendered prompt/command in `summary`; nothing is recorded.
+- **Tailscale Funnel.** CLI = `MIDNA_TAILSCALE`, else `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, else `tailscale` on PATH. `webhooks.status` reads `tailscale status --json` (DNS name, online, `funnel` node capability + funnel ports) and `tailscale funnel status --json` (is `<dns>:8443` proxied to our port with `AllowFunnel`), cached 15s. `public_url` = `https://<dns>:8443/hooks/github`. `webhooks.configure{path: tailscale_funnel}` runs `tailscale funnel --bg --https=8443 http://127.0.0.1:<port>` as a direct child (no shell) with a 20s timeout and returns `enable_url` if Tailscale prints a `https://login.tailscale.com/…` link. Leaving Funnel runs `tailscale funnel --https=8443 off` only if :8443 points at our receiver. `health` is `healthy|down|off` (the GUI treats `healthy` as ok).
+- **Relays.** `self_relay` / `midna_relay` can be selected but report `health: down`, "relay not available yet"; no client yet.
+- **Missed-delivery recovery** (`webhooks/reconcile.rs`, best effort): ~3s after startup, on wake (wall clock jumped > 60s past the monotonic clock), and via the new `webhooks.reconcile` method. For each active GitHub trigger with `github_hook_id` and an exact `owner/repo` filter: `gh auth status`, then `gh api repos/{repo}/hooks/{id}/deliveries?per_page=100`; for each GUID not seen, delivered within 3 days **and after the trigger's `enabled_at`** (so enabling doesn't replay history), fetch `…/deliveries/{id}` and process the request payload as `recovered` (no HMAC: the payload comes from GitHub over authenticated `gh`). `MIDNA_NO_GH` disables it. Filtered recovered deliveries keep `filtered` with `recovered: true`.
+- **New event kind** `trigger.removed`. New method `webhooks.reconcile`.
+
+## Real agents (Claude Code 2.1.288, Codex 0.160.0; see `docs/STATUS-agents.md`)
+
+- **Hooks registered in `claude-settings.json`:** SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PermissionDenied, Notification, Stop, StopFailure, SubagentStop, SessionEnd. Tool events use matcher `*`. `PermissionRequest` is required: 2.1.288 sends it the moment its permission dialog opens. `Notification`/`permission_prompt` arrives only ~6s later, and only if nobody answered. The prompt item's title is `permission <Tool(arg)>`.
+- **Keys the daemon injects follow the app's keyboard mode.**
+  - The engine mirrors libghostty's kitty keyboard flags into `RtHandle.kitty`.
+  - When the flags are non-zero, Enter is `CSI 13 u` and Esc is `CSI 27 u`. Otherwise they are `\r` and `\x1b`.
+  - Claude enables the protocol as soon as the terminal answers the query. After that a bare `\r` only inserts a newline.
+  - `session.input {enter:true}` writes the text, waits 150ms, then sends the encoded Enter. Text plus CR in one read is treated as a paste.
+  - Prompt answers (`needs_you.resolve` on a `permission_prompt`) use the same encoder.
+- **Messaging an agent is `session.input` (`midna send`); images ride along as pasted paths** (verified 2026-10-04 against Claude Code 2.1.289 and Codex 0.160.0):
+  - One-line and multi-line text both arrive as one message, and a message sent mid-turn is accepted (Claude queues it as the next turn; Codex folds it into the running one, as it does for typed input).
+  - `images` (CLI `--image PATH`, repeatable) are copied into `$MIDNA_HOME/images/` (ASCII name with no spaces; non-PNG/JPEG/GIF/WebP converted with `sips`; copies older than a week pruned). Each copy's path is then sent as its own bracketed paste, 250ms apart, before the text. Both agents turn a pasted image path into `[Image #N]` and read it.
+  - Every image is checked before anything is typed, so a bad path refuses the call and leaves the terminal untouched.
+  - The CLI makes paths absolute against its own cwd, since the daemon's differs.
+- **Env scrub widened.** The scrub list now covers the parent Claude session's markers (`CLAUDE_CODE_CHILD_SESSION`, which turns transcript saving off, and the session id, messaging socket/token, exec path, `CLAUDE_PID`, `AI_AGENT`, `CLAUDE_EFFORT`). It also covers `CLAUDE_HANDOFF_*`, Codex's thread/sandbox markers, and Saggar's `SAGGAR*`, so the user's global hooks can't attribute a midna agent to a Saggar terminal. User configuration variables are kept.
+- **Title heuristics are agent-aware** (`agent_title_hint`):
+  - Claude: `◐◑` working, `✳` stopped. It shows `✳` while its permission dialog is up.
+  - Codex: a Braille spinner while working, printed twice (`⠧ ⠧ | dir`). When the turn ends the spinner is simply dropped, so a non-empty Codex title without a spinner counts as stopped.
+  - `title_text` strips every glyph word, so spinner frames don't emit `session.title`.
+- **Stopped titles settle before they count.**
+  - A stopped title while `working`/`needs_you` starts one watcher thread (`settle_pending`). It waits 1.5s, then re-checks every 1s while a prompt is on screen.
+  - It acts only when the title is still stopped and the screen check finds no prompt: `working` becomes `idle` and the turn ends; `needs_you` becomes `idle` and the prompt item clears.
+  - Why: Claude flips to `✳` before it draws the dialog and before `PermissionRequest`. Esc on the dialog fires no hook and doesn't change the title, so only the screen can show the prompt is gone.
+- **Spinner while `needs_you` means "answered" only if no prompt is on screen and no midna `approval` is open for the session.** Claude keeps spinning while a PreToolUse hook blocks on midna.
+- **Codex turns start from the title.** Codex has no prompt hook without trusting hooks, so a spinner while `idle`/`done` starts a turn and sets `working`. This applies to Codex only; Claude's title keeps spinning for seconds after `Stop`.
+- **Codex `notify`:**
+  - The notify that belongs to Codex's internal task-title generation (separate thread; reply `{"title":…}`, input "Generate a concise, single-line task title…") is ignored.
+  - `agent.prompt_submitted` now carries the input text.
+  - If the title ended the turn less than 15s earlier, the notify doesn't open a second turn.
+- **midna approvals mark the agent `needs_you`** while `policy.request` blocks (reason `approval <value>`), and set `working` ("approval answered") afterwards. This applies to sessions launched as agents, and to terminals whose agent has sent hooks.
+- **Screen check tightened** to the bottom 25 non-empty lines:
+  - Claude matches `Do you want to …` together with a `1. Yes` option.
+  - Codex matches `Would you like to run the following command` / `…make the following edits`, `Yes, proceed`, or `Allow command?`.
+  - The bare `Approve` / `Do you want to` patterns are gone. Claude's folder-trust dialog and Codex's hooks-review dialog must never match, because Enter there means "No, exit" or "Review hooks".
+- **Exit by SIGINT/SIGHUP (or code 130) is `exited`, not `failed`.** Codex 0.160.0 quits on a double ctrl-c by re-raising SIGINT.
+- **`Stop` still maps to `done`** (finished, unseen), not `idle`. Every other route to "not working" (interrupts, dismissed prompts, `SessionEnd`) gives `idle`.
+- **CLI:** `--help` on any verb prints usage and never runs the verb. `midna open --help` used to open a terminal.
+
+## GUI: Rules and Triggers screens
+
+- **Own entities.** `ui/rules.rs` (`RulesView`) and `ui/triggers.rs` (`TriggersView`) are separate GPUI entities, created the first time the screen opens and kept in `MainWindow.{rules,triggers}_view`. `MainWindow::on_backend_event` forwards every backend event to them (two lines). Shared bits (pill, chip, buttons, switch, one-line input, local-time labels) live in `ui/screen_kit.rs`. Icons `Lock` and `Bell` were added to `icons.rs`.
+- **Rules subtitle follows the daemon, not the board.** Rules-B says "deny always wins, otherwise the narrowest scope wins"; `policy::evaluate` picks the narrowest scope first and only then deny > ask > allow. The header says that.
+- **Removal requests.** Remove = `needs_you.resolve{approve once}` on the request's item (the daemon removes the rule); Keep = `deny` (the daemon clears `removal_request`). `dismiss` would leave the request on the rule, so it's not used.
+- **Undo** re-adds the removed rule with `rule.add{effect, matcher, scope, expires_in_secs = time left}`. The re-added rule is a new id, added by the human, with `fired` reset and no `origin`. Offered for 10s after any removal (card or band).
+- **"Last fired" feed** = `rule.fired` events. History comes from `events.list{kinds:["rule.","needs_you."], limit:500}` replayed through the same handler as live events (deduped by `seq`). An `ask` row is tied to the approval it raised (`needs_you.raised` with `approval.matched_rule` for the same session) and shows its answer from `needs_you.resolved` ("you approved for 15 min", "you denied", "timed out"). Rows without a matching rule (the board's "no rule · unsupervised default") can't be shown: the daemon only emits `rule.fired` when a rule decided.
+- **Test a command** is a one-line strip under the band: kind chip (click cycles command/tool/path/cli/window), Enter runs `policy.check` with the selected terminal's session and project, and shows decision + winning rule + the matched trace lines; the winning rule is highlighted in its lane.
+- **"Ask: …" buttons** (Rules header, empty-state suggestions, Triggers suggestions, "Edit by asking", the path-down fix) open ⌘K prefilled ("Add a midna rule: …", "Draft a midna trigger: …"), so the palette's free-text fallback starts the agent and the human can edit first. "New trigger: just ask" opens ⌘K empty.
+- **Trigger "Waiting on you"** = not enabled and state is `draft`/`needs_secret`. No secret → "Needs secret" (paste box); secret set → "Ready to enable". Paused triggers stay in the main list with the switch off. Discard (`trigger.remove`) confirms inline.
+- **Secrets in the GUI.** The paste field draws bullets only, is cleared (and its buffer overwritten) right after `trigger.set_secret`, and is never logged. "Replace…" reopens the same field inline.
+- **Change path** calls `webhooks.configure{path}` directly (the GUI is human), shows the result message, and opens `enable_url` if Funnel needs enabling. The board's "picking one opens an agent tab" isn't done: configure is human-only and midnad does the setup itself.
+- **Not implemented (code 5)** from any trigger/webhook method shows "Not available yet" in the path strip or a note under the detail, and rechecks every 20s. With the current midnad all methods are implemented.
+- **Dev hooks for screenshots:** `MIDNA_DEBUG_RULES="test:…;hl:r_…;confirm:r_…;remove:r_…;keep:r_…;approve:r_…;flash:r_…;pause"` and `MIDNA_DEBUG_TRIGGERS="secret:t_…=value;type:…;enable:t_…;disable:t_…;select:t_…;replace:t_…;replay:d_…"`, plus `MIDNA_DEBUG_TRIGGER=t_…` (initial selection) and `MIDNA_DEBUG_PATH_MENU=1`. They run through the real RPC paths.
+- **Tests and gpui's `test` macro.** `use super::*` in a test module re-imports `gpui_kit::*`, whose `test` attribute shadows the built-in one and fails with "recursion limit reached while expanding `#[test]`". My test modules import names explicitly. `ui/charts.rs`, `ui/insights.rs`, `commands.rs` and `model.rs` still glob-import and break `cargo test -p midna-app`; adding `use ::core::prelude::v1::test;` (or explicit imports) in those modules fixes it (all 29 tests pass with that).
+
+### TODO for daemon
+- ~~`rule.fired` (or an `audit`-style `policy.decided` event) for decisions made by the default table, so the Rules feed can show "no rule · default" rows like Rules-B.~~ done (`policy.decided`, see "Closing the open TODOs")
+- ~~`needs_you.resolve{dismiss}` on a `rule_removal` item should clear the rule's `removal_request` too (today only `deny` does).~~ done
+- ~~Optional: `rule.restore{rule}` (human only) to undo a removal with the original id, author, `origin` and `fired` count.~~ done; the Rules Undo uses it
+
+## Insights (graphs) and the Settings window
+
+- **`insights.series{range, metric, bucket?, by?}`** (midnad `insights.rs`, catalog entry, `rpc/insights.rs` one handler). Ranges `today|yesterday|week|month`; `InsightsRange::Month` (last 30 local days) was added, so `insights.summary` takes it too. Metrics: `turns|messages|spend|working|waiting|approvals|triggers`. `bucket` defaults to hour for today/yesterday, day otherwise. `by: project|agent|terminal` (the existing `InsightsBy`). It returns *every* bucket in the range, oldest first, including empty and future ones (today always spans the whole day so the x axis is stable), plus `groups` (largest first, labelled), `total`, `previous_total` (same-length period before), and `unit: count|usd|secs`.
+  - It reuses the summary's event semantics through a new `walk()` that reports point events and working/waiting intervals; intervals are split at bucket boundaries. `summary()` is unchanged apart from Month and better labels.
+  - Labels: projects from state; closed terminals fall back to the name in their `session.opened`/`session.renamed` event (summary `by: terminal` too); agents are `Claude`/`Codex`/`Shell`; events with no project group under `none` ("No project").
+- **Seed history** lives in `crates/midnad/tests/seed_insights.rs`: a deterministic 30-day, 5-project history written straight into `events.jsonl` + `state.json` (live calls are stamped "now", so backdating needs the file). It contains exactly what `session.open`, `agent.hook` (prompt/turns/status/permission prompts/cost), `needs_you.*`, `trigger.fired` and `rule.added` emit. The test also drives a real `agent.hook` on a live terminal and checks it lands in today's hourly series. `MIDNA_SEED_HOME=/tmp/x cargo test -p midnad --test seed_insights -- --ignored seed_dev_home` seeds a dev home (refuses the real one).
+- **Charts are hand-drawn** in `ui/charts.rs`: marks via `canvas()` + `paint_quad`/`PathBuilder` (stacked columns, line+area, horizontal stacked bars), axes/legend/tooltips as elements. Hover is per chart (`ChartState`, bucket index from the plot bounds captured in prepaint); tooltips are `deferred(anchored())` cards with exact values. One y axis, nice ticks per unit (counts, $, durations), 2px surface gap between stacked segments, rounded data ends, recessive gridlines, text in text colors.
+- **Categorical palette**: the dataviz reference palette (8 slots, separately stepped for dark and light, adjacent-pair CVD-validated). Color follows the project's sidebar order, never its rank; projects past 8 fold to a neutral. Working/waiting use the theme's `work`/`need`, approvals `ok`, spend `accent`.
+- **Insights layout**: range switcher (Today/Week/Month) → 7 headline tiles with deltas (arrow colored by meaning: more waiting/spend is `need`) → agent turns stacked by project (click a segment or legend chip to filter the log) → spend line/area + working vs waiting per agent terminal (top 6; click filters the log by terminal) → approvals and triggers columns → activity log. Insights-A was not used (per ARCHITECTURE).
+- **Activity log** is `insights.activity{since: range start, limit: 1000}` filtered client-side by project / terminal / actor (You, Agents, Triggers, midnad) / kind (turns & messages, needs you, status, terminals, rules, triggers, settings). Names/projects of closed terminals come from `events.list{kinds:[session.opened, session.renamed]}`. Clicking a row of a live terminal selects it.
+- **"While you were away"** = non-human events between when the main window last lost focus and when it came back (`observe_window_activation`, tracked once Insights has been opened); before that, everything since your last human action in the log.
+- **Empty state**: if every total is zero for the range, a friendly card ("No agent activity today", buttons for the other ranges, the CLI) replaces the charts; the log still shows below when there is activity. Charts with no data say so inside the plot.
+- **Refresh**: `MainWindow::on_backend_event` forwards events to the view (3 lines); the view refetches (coalesced 1.5s) only while on screen, otherwise on next open.
+- **Settings window** (`settings_window.rs`; `ui/settings.rs` is now a forwarder) is a separate 900×640 window with a transparent titlebar so the 46px bar can hold the centered title and the Rows ↔ settings.json toggle next to the native traffic lights (the bar drags the window, double-click zooms). It subscribes to events itself and reloads on `settings.changed`; the footer shows the last change and who made it ("you, from this window", "Claude in terminal …", "an agent (CLI)").
+  - Rows come from `midna_proto::settings::SETTINGS` (types/options) + `settings.list` (values). Enums are segmented controls, bools are switches, ints/strings are read-only text (change by CLI or asking). Human-only settings are editable here (GUI = human).
+  - The CLI column must be real: settings rows show `midna settings set <key> <value>`; OS permission rows show `open "x-apple.systempreferences:…"` (nothing in midna can grant them); status rows show `midna info`.
+  - Permissions: Accessibility = `AXIsProcessTrusted()`. Notifications show "Not requested yet" (midna posts none yet; no fake status). Login item = whether `~/Library/LaunchAgents/com.mrgnhnt.midna.daemon.plist` exists (SMAppService install is a later phase). Fix/Open buttons open the System Settings pane.
+  - Agent hooks: Claude = `$MIDNA_HOME/hooks/claude-settings.json` exists (home from `daemon.info`); Codex = notify. Kass = "Handshake not detected".
+  - **Danger zone resets settings**, not the whole daemon: there is no `daemon.reset` method and this pass only touched the daemon's insights. Two-click confirm; it calls `settings.reset` for every changed key. ~~TODO for daemon: a human-only `daemon.reset` (keep rules + log) if the full reset is wanted.~~ done: Danger zone now has "Reset midna" (`daemon.reset`) next to "Reset settings".
+  - **Ask box** opens a Claude agent at the root (`session.open{kind: agent, prompt}`) with the request plus a hint about `midna settings`, then `window.command{front}` brings the main window to it.
+- **`keys.*` named punctuation**: the daemon's default for `keys.settings` is `cmd-comma`, which GPUI can't match, so ⌘, never fired against a real daemon. `actions::normalize_keys` maps `comma/period/slash/semicolon/…` to the characters before binding and in `pretty()`.
+- **Dev env** for screenshots: `MIDNA_INSIGHTS_RANGE=week|month`, `MIDNA_INSIGHTS_SCROLL=1` (scroll to the log), `MIDNA_INSIGHTS_AWAY=1`, `MIDNA_INSIGHTS_HOVER=<bucket>` / `_HOVER_SPEND` / `_HOVER_ROW`; `MIDNA_DEBUG_SETTINGS=1` opens Settings at launch, `MIDNA_SETTINGS_SNAPSHOT=out.png`, `MIDNA_SETTINGS_VIEW=json`, `MIDNA_SETTINGS_SCROLL=<px>`, `MIDNA_SETTINGS_W/H`.
+- **Concurrent builds overwrite `target/debug/midna-app`** (another agent's `cargo test` rebuilt it without `snapshot` mid-run). Screenshot runs used `CARGO_TARGET_DIR=target/snap-ins` with `MIDNA_APP_PATH` pointing there.
+- **Killing a dev midnad:** with the in-place upgrade work, a midnad whose binary is rebuilt re-execs itself (`--resume <home>/handoff/handoff.json`) under the same pid, so a recorded pid can look dead/alive unexpectedly; `pgrep -fl <home>` finds it.
+
+## GUI: ⌘K command bar (CommandBar-A) and needs-you card stack (NeedsYou-C)
+
+- **One registry, data only.** `crates/midna-app/src/commands.rs` holds `Command` (title, sub, keywords, shortcut label, CLI equivalent, icon, featured heading, badges: `pending` / `approval` / `danger` / `human_only` / `state`) and `Run`, a serde-tagged enum (`rpc{method, params}`, `focus`, `project`, `screen`, `pop_out`, `resolve`, `prefill`). `build(&Snapshot)` regenerates the list from live state on every keystroke. Pure logic, unit-tested (matcher, grouping, registry contents, user commands, ask params).
+- **Extending it.** (1) Add to `build`. (2) Project commands (`project.update{commands}`, which agents can call) become "Run <cmd>"; pinned ones in the current project are Suggested. (3) Scripts drop a JSON array of `Command` into `$MIDNA_HOME/commands.json` (read when the bar opens; home = the socket's directory). `command_bar::execute(m, &cmd, …)` runs any row, so other views can reuse it.
+- **Exposure to agents.** Every row maps to an existing RPC or to pure navigation, so runs are already in the audit log as `human` (`midna events --kind audit`). No new daemon methods. ~~**TODO for daemon:** a `ui.commands` method (list and run palette commands, plus `commands.json` contents) if agents should see the GUI-side registry itself.~~ done (`ui.commands.list|add|remove`)
+- **Matcher** is a port of the board's: every token must hit a title substring (scored higher at word starts and early positions), a keyword prefix, or a tight title subsequence (3+ chars, ≤2 gaps, ≤6 skipped chars). The subtitle's words count as keywords, so "dev api" finds "Go to dev server · api". Pending items get +8. Empty query shows only featured rows, grouped "Needs you", then "Suggested". A non-empty query shows the top 12, flat (as on the board).
+- **Badges are real signals only.** "waiting on you" = a needs-you item. "needs approval" = `policy.check` on the project command line returns `ask` from an explicit **rule** (`source: rule`); the defaults table is ignored. Note that rules gate agents (hooks), not the human's own run. "destructive" = close terminal, confirm rule removal, deny-ruled commands, and user commands with `danger`. "you only" = rule removal and secrets.
+- **Destructive = ↩ arms, ↩ again runs**; esc (the `Dismiss` action, overridden on the bar) disarms first, then closes. Moving the selection off the row disarms.
+- **Close from the bar uses `force: true`**, because the armed confirmation is the human's explicit OK.
+- **Project commands run as `monitor` sessions** (`session.open{kind: monitor, name, command:[run]}`), so a failure raises a `failed` needs-you item.
+- **"Keep on top" / "Pop out"** both open the existing always-floating pop-out window. The pop-out can't toggle its level yet, so there is no separate keep-on-top for the main window.
+- **Ask an agent**: ↩ when nothing matches, ⇧↩ always. It calls `session.open{kind: agent, agent, prompt, name: first 28 chars, project_id?}` (no `project_id` = root) and selects the new terminal. ⇥ toggles Claude/Codex, ⇧⇥ project/root. The default agent is the one most recently started in the current project. ~~**No settings key exists for the last choice**, so it is kept in memory for the app's lifetime. **TODO for daemon:** `ui.ask.agent` (claude|codex) and `ui.ask.scope` (project|root) settings; the GUI would read/write them with `settings.get/set`.~~ done: the toggles read and write `ui.ask.agent` / `ui.ask.scope`.
+- ~~**The bar's text input is hand-rolled** (append / backspace / ⌥⌫ / ⌘⌫ clears / ⌘V). No IME, no cursor movement. Same trade-off as `screen_kit::LineInput`; a shared IME-capable field is a later job.~~ done: `ui/text_input.rs`.
+- **Needs-you stack replaces the pane right of the sidebar** (as on the board), whatever screen is underneath; `Overlay::NeedsYou` still names it. ⌘J and the sidebar "N need you" button open it. Inside, ⌘J skips. The old "jump to the next needs-you terminal" behaviour of ⌘J is gone; ⌘O on a card does that.
+- **Order is oldest first** (`created_at`). The current card is tracked by id; when it goes away (resolved here or elsewhere) the card now at the same position takes over.
+- **Keys per kind** (⌘↩ primary / ⌘⌫ secondary): approval & permission_prompt = approve once / deny (split menu: 15 min, 1 h, session, always); trigger_waiting = Start / Deny; blocked = I've done it (`done`) / Dismiss; failed = Restart / Dismiss; note = Got it (`dismiss`); rule_removal = Remove rule (`approve once`) / Keep rule (`deny`); secret_needed = Open Triggers / Dismiss. ⌘⇧↩ = approve all once.
+- **"Approve all N once"** shows only for approvals that are all `bulk_safe` and ask for the same action (`approval.action.kind:value`, else kind+title+detail). The daemon marks policy approvals `bulk_safe: false`, so in practice this appears for permission prompts. That matches the board's "policy gates go one at a time".
+- **Screen excerpt**: the item's `screen_excerpt`, else the live tail of its terminal (`session.read{lines: 12}`, last 8 non-blank lines), fetched once per card.
+- **Stale-list race.** `MainWindow::resolve` hides an item optimistically, but a `needs_you.list` fetched before the resolve landed can bring it back. The stack also hides ids it resolved for 5s. The same race can briefly re-show an item in the sidebar/banner. **Suggestion:** `apply_refresh` could drop ids with an in-flight resolve.
+- **Debug env**: `MIDNA_DEBUG_SCREEN=commands|needs`; `MIDNA_DEBUG_APPROVE_MENU=1` also opens the stack's approve menu on the first approval card.
+- **Testing notes**: the shared scratchpad is used by several agents, so keep files in a private subdirectory. A rebuilt `midnad` re-execs itself, and a dev daemon can vanish mid-run; running a copy under another name in the temp home avoids both. Snapshot runs used a private copy of `midna-app` with `MIDNA_APP_PATH` pointing at it (otherwise resolves are refused with code 2, which the UI correctly shows as a toast).
+
+## Daemon upgrade, restart and stop (midnad `upgrade.rs`, `install.rs`, `server.rs`, `term.rs`)
+
+- **Same-PID execv, as in the spike.** `daemon.upgrade{binary_path}` (human only) runs `<new> --selftest` synchronously; failure = error `1`, nothing touched, `daemon.upgrade_failed` emitted. Success answers `{ok, binary, sessions}` and hands off ~150ms later on a thread (so the answer is flushed before the exec). Agents, `midna daemon upgrade <path>` and `midnad --upgrade-to <path>` all go through the existing human-only deferral, i.e. a needs-you approval; approving it runs the upgrade as the human.
+- **Selftest contract.** `midnad --selftest` round-trips a terminal snapshot in-process and prints `{"ok":true,"version",…,"handoff_versions":[1]}`. The old daemon refuses unless our `HANDOFF_VERSION` is listed. The handoff format is versioned so a future binary can keep resuming old handoffs.
+- **Handoff = `$MIDNA_HOME/handoff/`**: `handoff.json` (pid, from/to/fallback binary, home, socket, app_path, listener fd, event seq, watchdog secs, and per session: id, pid, alive, master fd, its `st_rdev`, title, cursor shape, cursors, scrollback rows, half-parsed tail, agent `in_turn`/`last_cost`) plus raw `<sid>.primary.vt` / `<sid>.alt.vt` (raw files, not hex-in-JSON). state.json is flushed just before. Removed after a successful resume; an unresumed one found by a plain start is moved to `handoff.stale-<ts>` (its PTYs died with the process).
+- **Pausing output.** PTY readers now `poll` (50ms) instead of blocking in `read`, so a global pause takes effect; an in-flight counter (SeqCst store/load pair) proves no reader holds bytes the engine hasn't been sent. The engine `Snapshot` message is FIFO behind those bytes. Unread output stays in the kernel buffer for the new image (the flood test checks nothing is lost or duplicated).
+- **Snapshots are non-destructive.** Exporting the primary screen needs `?1049l`; the engine then replays its own alt export in place, so the old image keeps running correctly if the exec fails.
+- **libghostty export workarounds** (`engine.rs`): `CSI H` before the export; CUP re-issued last from our own cursor reading (after title/DECSCUSR); NULs stripped (OSC 7); title replayed as OSC 2 and cursor shape as DECSCUSR from RenderState; the half-received trailing escape / UTF-8 sequence is tracked on every feed (`incomplete_suffix`, capped at 64 KiB) and replayed last. **New bug found:** the export drops trailing blank rows, so with scrollback the restored content sat one+ rows low and the next line overwrote the last one (the spike missed it). Fix: write the rows, then scroll (`\r\n`, still under the full-screen region) until the scrollback count matches the original, then the trailing state (CUP/DECSTBM/tabs), located as the last `SGR 0` followed only by escapes. Not carried: DECSC saved cursor, origin-mode-relative CUP.
+- **Exit tracking.** The reaper waits on the pid (`waitpid(pid)`), not a `std::process::Child`, so adopted sessions use the same code. Verified: after a same-PID execv the shells are still our children and exit codes still arrive. When waitpid says ECHILD (the watchdog fallback, below) it falls back to kqueue `EVFILT_PROC NOTE_EXIT`, with no exit code (macOS only gives statuses to the parent). The reaper also waits (≤500ms) for the PTY reader to drain before `on_exit`, so the failed-item screen excerpt has the last output.
+- **Watchdog.** Before the exec the daemon starts `<old binary> --upgrade-watchdog <handoff.json>`, which inherits the PTY masters and listener (CLOEXEC cleared for exactly this window, with PTY spawns locked). It exits when `handoff/resumed` appears. If the new image dies (its parent pid changes) or hasn't resumed within `MIDNA_UPGRADE_WATCHDOG_SECS` (default 10; then it SIGKILLs it), the watchdog execs the old binary with `--resume … --fallback`: terminals survive, the daemon pid changes, exits come from kqueue. Not covered: a new image that resumes and crashes later (the watchdog is gone by then; that's an unclean death). The "launchd restarts the stable symlink and resumes from the handoff" variant isn't possible on its own: once the last process holding the master fds dies, the PTYs are gone, so a plain start only sets the handoff aside.
+- **`daemon.restart`** (not human only: nothing is lost, and same-user `kill -TERM` could do it anyway) = the same handoff onto `MIDNA_HOME/bin/current/midnad` when we run from there, else our own executable (a rebuilt binary is picked up; the selftest guards it).
+- **Signals.** SIGTERM = graceful restart (falls back to a stop if the handoff fails). SIGINT = stop. `MIDNA_SIGTERM=stop` restores "kill ends it" for scripts. Handled on a thread via a self-pipe (a handoff can't run in a signal handler). **Tradeoff:** a crash/SIGKILL/OOM still loses every PTY (sessions are marked `exited`, "daemon restarted", as before); SIGTERM keeps them but means `kill <pid>` no longer stops midnad. launchd sends SIGTERM on bootout, so the SMAppService phase must stop the job with `daemon.stop` first (or set `MIDNA_SIGTERM=stop` in the plist) — TODO for that phase.
+- **Stop policy (the orphaned-monitor bug).** The old SIGTERM handler `_exit`ed without signalling anything, and `Handle::stop` sent SIGHUP/SIGKILL from a thread that died with the process. Now `daemon.stop` (human only), SIGINT and an in-process `Handle` drop all run `server::stop_daemon`: SIGHUP + SIGCONT to **every process group in each terminal's session** (found with `proc_listallpids` + `getsid`, plus the tty's foreground group), wait up to 1.5s, SIGKILL the groups still alive, then exit. Processes that left the session (setsid/daemonized) are left alone. An upgrade/restart never signals anything.
+- **During a handoff** every mutating method except `daemon.*` gets error `4` ("upgrading; retry"), so nothing lands after the snapshot. In-flight `policy.request` waiters lose their connection (the hook prints nothing, Claude's own prompt decides); their needs-you item survives in state.
+- **In-process daemons can't re-exec** (`Config.owns_process`, set only by the binary): `daemon.upgrade`/`restart` return error `4` in tests; the real path is covered by `tests/upgrade.rs`, which drives copies of the built binary.
+- **Stable location.** `midnad --install-self` copies the binary (and a sibling `midna`) to `MIDNA_HOME/bin/<version>-<sha256[..8]>/` and swaps `bin/current` atomically (symlink + rename). Upgrades don't install anything themselves; installing then `daemon.restart` is the intended flow for the SMAppService phase.
+- **CLI:** `midna daemon info|upgrade <path>|restart|stop`.
+- **New events:** `daemon.upgraded {from:{version,binary,pid}, to:{…}, sessions_kept, sessions_lost, reason: upgrade|restart|sigterm, fallback}`, `daemon.upgrade_failed {to, reason, error}`, `daemon.stopping {sessions}`. New methods `daemon.restart`, `daemon.stop`; `UpgradeResult` in proto.
+- **Finding (not changed):** libghostty's `max_scrollback` (10_000) behaves as a byte/page budget, not lines: about 800 rows survive at 100 columns. Probably worth raising for real use.
+- **App TODOs (not edited; app agents own it).** The app already survives an upgrade: the events thread reconnects (≤~1.75s), replays from its last seq, and `Conn::Connected` after a drop re-attaches the selected terminal. ~~Gaps: (1) the status bar flashes "midnad not running" during every upgrade — show "midnad restarting…" when the drop follows a `daemon.upgrade`/`restart` call, or for the first ~3s of any drop; (2) a frame stream that ends on its own (sink `end()`) while the events connection survives stays `Ended` — re-attach when the session is still running; (3) pop-out/satellite terminal windows need the same re-attach on reconnect; (4) one in-flight control `call` fails with a transport error at the exec — retry once on `Io` errors.~~ done (all four), see "Closing the open TODOs".
+
+## Kass composer and handshake (midna-app `composer.rs`, `kass.rs`)
+
+- **Protocol source.** The `~/Development/ts/kass-dictation-handshake` worktree doesn't exist; the handshake landed on Kass `origin/main` as e69d4f53 (`docs/DICTATION_HANDSHAKE.md`, read only). midna follows it: `dictationWillBegin {pid, mode: dictate|command}`, reply `dictationReady {pid}` within 150 ms, `dictationDidEnd {pid, outcome: inserted|cancelled|failed}`. Opt-in is either Info.plist `KassDictationHandshake = true` (bool) or posting `handshakeSupported {pid}`. midna isn't bundled yet, so it posts `handshakeSupported` at launch and every 3 s. **TODO for the bundling phase:** add `KassDictationHandshake = true` to Midna.app's Info.plist.
+- **Listener thread, and a finding.** Distributed notifications are *not* delivered to a background thread's own CFRunLoop. CFNotificationCenter and NSDistributedNotificationCenter's selector form both deliver on the **main** run loop whatever thread registered (verified with a Swift probe: a background thread running `CFRunLoopRun` got nothing until main ran its run loop). The block form with an `NSOperationQueue` is delivered off main. So `kass.rs` has its own thread (`midna-kass`) with its own CFRunLoop, which owns the re-advertise timer, and the observers run on a private serial `NSOperationQueue`. Unit test `delivers_off_main` proves delivery while no thread runs the main run loop. Showing the composer must still happen on main; events reach the window over a channel (WillBegin → Ready measured at 0.4–9 ms).
+- **When midna answers.** Only notifications with our pid. WillBegin is ignored (no reply, so Kass carries on as before) unless the main window is the active window and the terminal pane is showing with nothing over it (no ⌘K / needs-you / Rules / Triggers / Insights). Any WillBegin/DidEnd, even for another pid, sets "handshake detected" for Settings.
+- **Composer = native `NSTextView` in an `NSScrollView`**, a sibling above the GPUI view (as in the spike), positioned every paint onto a GPUI `canvas` inside the box drawn after Main.dc.html (`mode=dictating`): "Kass · listening" pill while dictating, accent box, `❯`, field, "↩ send to <terminal> · esc cancel". It grows with its text up to 8 lines, then scrolls. Subclass `MidnaComposerTextView` reports first-responder changes, edits, ↩ and Esc.
+- **Two focus layers.** GPUI's view receives `performKeyEquivalent:` for every key before the text view. If GPUI focus stayed on the terminal, its key handler would eat ↩/Esc. So while the text view is first responder, GPUI focus is on `Composer::focus` (context `MidnaComposer`), which binds ⌘V/⌘C/⌘X/⌘A/⌘Z/⇧⌘Z to the text view (the app has no Edit menu). Blurring that focus (⌘K, a click elsewhere, another screen) hands first responder back to the GPUI view.
+- **The GPUI view must hold AppKit's first responder whenever the composer is hidden.** Otherwise plain keys and modifier changes (⌘'s release, which cancels the ⌘Q hold) go to a hidden field or the bare window and are dropped, while ⌘-shortcuts still work. A user lost typing after dictating (2026-10-04). So focus is handed back before the field is hidden, the hidden field refuses first responder, and every render hands a stranded first responder (the field, the window or nothing) back to the GPUI view. The ⌘Q hold logs who held it.
+- **Send.** ↩ = `session.input{id, text, enter:true}` to the terminal that was selected when the composer opened. Multi-line text is one bracketed paste when the terminal enabled mode 2004 (otherwise newlines as CR, like a paste); trailing newlines are dropped. ⇧↩/⌥↩ insert a newline. **Esc cancels: clears and hides** (Kass keeps its own captures). An existing draft is kept when a new dictation starts.
+- **DidEnd.** Empty → hide and refocus the terminal. Text → stay open for review. `kass.auto_send` (new bool setting, default false) sends right away, but only when the outcome is `inserted` (or missing); `cancelled`/`failed` always stay for review.
+- **Manual open.** `keys.composer` (new keybinding setting, default `cmd-shift-d`) opens the composer over the selected terminal, or refocuses it. Settings additions are in `midna_proto::settings` (catalog), the fake backend, and Settings' Agents section (`kass.auto_send` row; the Kass row says "Handshake detected" once any Kass notification arrived; settings.json view `status.kass`).
+- **Not done:** pre-filling the composer with the shell's current line (needs shell integration); `command` mode gets no special handling beyond keeping the existing selection.
+- **Dev hooks.** `MIDNA_DEBUG=1` logs every Kass notification and the ready latency. `MIDNA_KASS_ANY_WINDOW=1` skips the active-window check (testing while the screen is locked). `MIDNA_DEBUG_COMPOSER=<text>` (`\n` for newlines) opens the composer 1.5 s after launch; `MIDNA_DEBUG_COMPOSER_LISTENING=1` adds the pill. In `--features snapshot` renders the field's text is drawn by GPUI, because offscreen renders can't see native views.
+
+## Packaging, install and auto-update (`packaging/`, midna-app `install.rs` / `updater.rs` / `lifecycle.rs`, `midnad --launchd`)
+
+- **LaunchAgent = bundle binary + trampoline (as the spike proved).** The plist in `Contents/Library/LaunchAgents/` uses `BundleProgram Contents/MacOS/midnad` with `--launchd`. In that mode midnad sends its output to `MIDNA_HOME/midnad.log` and execs `MIDNA_HOME/bin/current/midnad` (running `install_self` first if `bin/current` is missing). So launchd restarts and logins run the version the last install chose, never a bundle that's being replaced. `MIDNA_TRAMPOLINED` stops a loop and is removed before terminals inherit the environment.
+- **launchd policy.** `KeepAlive {SuccessfulExit: false}`: a crash restarts it, but `daemon.stop` (exit 0) stays stopped until the app kickstarts it. `MIDNA_SIGTERM=stop` is in the plist env, which resolves the upgrade phase's TODO: launchd's SIGTERM (unregister, logout) stops midnad cleanly instead of re-exec'ing. `ProcessType Interactive`, `ThrottleInterval 5`.
+- **One version for every binary.** `midna_proto::VERSION` = `MIDNA_BUILD_VERSION` (set by `build-app.sh --version`), else `CARGO_PKG_VERSION`. Every `env!("CARGO_PKG_VERSION")` in midnad, the CLI and the app now uses it, so a test build can be 0.1.1 without editing Cargo.toml.
+- **`daemon.info.binary`** (additive). It's the resolved path of the running midnad, captured once at startup (`install::running_binary`). `current_exe` reports `bin/current/midnad`, which resolves to the *new* target as soon as an install re-points the symlink. The first e2e run hit exactly that: the app thought the old daemon was current. The app upgrades when the binary **or** the version differs.
+- **First launch is idempotent and runs every launch** (in the lifecycle thread):
+  1. byte-compare the bundled midnad with `bin/current`; if they differ, `midnad --install-self`, then prune to current plus two
+  2. SMAppService register (macOS 13+), or a legacy `~/Library/LaunchAgents` plist plus `launchctl bootstrap` on 12
+  3. the CLI symlink
+  4. connect; `daemon.upgrade` to `bin/current/midnad` if needed; `launchctl kickstart` if the agent is enabled but silent after about 4s
+
+  The label comes from whichever plist is in the bundle, so test builds can use another label with no code change.
+- **CLI link.** `~/.local/bin/midna` → `MIDNA_HOME/bin/current/midna`, a stable path, so updates never touch the link. The link is made only if `~/.local/bin` is on the *login shell's* PATH (`$SHELL -l -i -c`, 5s timeout; the app's own launchd PATH is useless for this), and never over something that isn't our symlink. Otherwise Settings offers "Install to ~/.local/bin" plus the `export PATH` line to add yourself. midna never edits rc files. `MIDNA_CLI_LINK_DIR` overrides the directory (tests).
+- **Dev mode** = `MIDNA_DEV=1`, or an executable that isn't in `*.app/Contents/MacOS`. Nothing is registered and updates are off. If the socket is dead, the sibling `midnad` is started (it detaches itself; `MIDNA_NO_SPAWN=1` opts out). `MIDNA_BACKEND=fake` skips the lifecycle thread entirely.
+- **Our own update format instead of Kass/Tauri's minisign.** The brief asked for ed25519 with an embedded key. The feed is one JSON entry (`version, pub_date, notes, url, sha256, size, minimum_macos, arch, signature`). The signature covers `midna-update-v1\nversion=…\nsha256=…\nminimum_macos=…\narch=…\n`, so the version is bound to the bytes (no "sign 0.1.1, label it 9.9" replay) and `url`/`notes` can change freely (mirrors). The crypto is `ring`, already in the lock via rustls, so no new crypto crate. The HTTP client is `ureq` 2 (rustls), blocking, on the lifecycle thread.
+- **Defense in depth on the staged bundle:** sha256 check before extracting, then the same bundle id, the version equal to the feed's, `codesign --verify --deep --strict`, and the **same Team ID** as the running app when that one is Developer ID signed. Updates are newer-only by semver; there are no downgrades.
+- **`updates.feed_url` is human-only.** The signature makes the URL harmless for integrity, but it decides where midna phones home, so agents can't change it. `MIDNA_UPDATE_FEED_URL` overrides it for tests.
+- **Atomic swap = `renamex_np(RENAME_SWAP)`.** The staged app is moved next to the installed one (a `ditto` copy across volumes), swapped in one syscall, and the old one is deleted. On non-APFS volumes it falls back to two renames with rollback. The update downloads and stages under `MIDNA_HOME/updates/<v>/`, not next to the app, so `/Applications` holds no hidden staging directory while an update waits.
+- **When it applies.** The status bar item or Settings' "Restart to apply" swaps, starts a detached `sh` that waits for our pid and then runs `open Midna.app`, and quits. If the UI hasn't quit after 5s, the lifecycle thread `exit(0)`s (the swap is already done). Quitting with an update ready applies it without relaunching (`on_app_quit`). The *new* app upgrades the daemon on its normal launch path, so there's no "post-update" special case: an app that's newer than its daemon always upgrades it.
+- **Accessibility relaunch.** After the human presses Fix on Accessibility, the row offers "Relaunch", because a running process never sees a new grant (spike finding). Terminals live in midnad, so relaunching costs nothing.
+- **Headless subcommands of the bundle binary:** `midna-app --uninstall` (`daemon.stop`, SMAppService unregister, remove our CLI link; data is kept) and `--login-item-status`. The e2e cleanup uses them, and they're the documented uninstall.
+- **Signing.** Inside-out with `--options runtime --timestamp` and an intentionally empty entitlements file. midnad is signed with identifier `<bundle id>.daemon` and the CLI with `<bundle id>.cli`. The first "Developer ID Application" identity in the keychain is used, else ad-hoc. Notarization is a separate opt-in script that is never run automatically (it uploads to Apple).
+- **Test flavor instead of touching the real install.** `build-app.sh --bundle-id/--label/--env` produces `com.mrgnhnt.midna.test` with label `com.mrgnhnt.midna.test.daemon` and `MIDNA_HOME` in both `LSEnvironment` (app) and the plist's `EnvironmentVariables` (daemon). SMAppService accepted the test label with no approval prompt (status went straight to `Enabled`), and no TCC prompt appeared. `tccutil` was never needed.
+- **Icon** is a placeholder drawn by `packaging/make-icon.py` (stdlib-only PNG writer, then `sips`/`iconutil`): a lavender #B79AE8 crescent and a block cursor on dark plum. Replace it before a public release.
+- **Fonts** stay compiled into midna-app (`include_bytes!`); the TTFs and OFL texts are also copied to `Contents/Resources/Fonts` so the licenses ship with the binary.
+- **Not done:**
+  - universal (x86_64) builds
+  - the macOS 12 legacy LaunchAgent path is written but untested (no macOS 12 machine)
+  - the RequiresApproval flow isn't exercised, because registration was Enabled immediately
+  - ~~`midna update status|check|install` for agents (design notes) needs an RPC that reaches the app; not built~~ done (`updates.*`, `midna updates`)
+  - `daemon.upgraded.from.binary` (upgrade.rs) still logs the unresolved `bin/current` path; cosmetic
+
+## Terminal pane as a daily driver (keys, scrollback, selection, links, split, find)
+
+- **The daemon encodes input; the GUI sends structured events.** libghostty-vt 0.2.2 exposes key, mouse, focus and paste encoders, viewport scrolling, terminal-owned selections (with a click/drag *gesture* state machine) and grid refs with OSC 8 URIs, so all encoding happens in midnad against the live terminal modes (`engine_input.rs`, a child module of `engine.rs`). No Rust re-implementation of xterm/kitty encoding was needed.
+- **New stream tags** (client → daemon, `midna_proto::frame::ClientMsg`): `0x04` key (action, mods, GPUI key name, text), `0x05` scroll (wheel / lines / pages / top / bottom + pointer cell), `0x06` mouse (press/release/motion, button, mods, position in *cell units*), `0x07` focus, `0x08` paste. `0x03` stays raw bytes. Positions in cell units × the resize message's `cell_w/cell_h` give libghostty its pixels, so GUI scale never matters.
+- **Frame trailer.** Frames end with an optional extension (`0xE1` marker): mouse tracking, alt screen, kitty flags, scrollbar (total/offset/len) and per-row selection ranges. Old decoders ignore trailing bytes and old frames decode with defaults, so no stream version negotiation. Selection changes alone produce a frame (`meta_dirty`), with no rows.
+- **Routing in the GUI.** Every keystroke is a key event (with its `text`) except: ⌘ shortcuts, IME composition, and option-characters/dead keys when `terminal.option_as_meta` is off (those go through the IME input handler as raw text). Sending text keys as events too avoids a race: a kitty "report all keys" app gets CSI u even before the GUI has seen the frame that enabled it. Releases are sent only when the app asked for kitty event reporting.
+- **Shift-Enter in legacy mode stays `ESC CR`** (midna's existing agent newline); under kitty it is `CSI 13;2u` from the encoder.
+- **Wheel policy (daemon):** mouse reporting on and no shift → SGR/X10 wheel reports (≤20 per event); alternate screen without reporting → arrow keys (less, man); otherwise the viewport scrolls. Shift forces selection/scrollback over mouse reporting. Typing, pasting and raw input snap back to the bottom and clear the selection.
+- **Selection is the engine's**, set through libghostty's gesture (1 click cell, 2 word, 3 line; alt-drag rectangle; drag past an edge autoscrolls — the GUI repeats the last motion every 60ms while outside). It is tracked by libghostty, so it stays on its text as output scrolls. Copy is `session.selection` (unwrap + trim, wide chars correct). **Tradeoff:** selection and viewport are per terminal, not per client — a pop-out and the main window attached to the same session share them.
+- **Links:** ⌘-click → `session.link_at`: OSC 8 URI first, else a detected `http(s)://…` (trailing punctuation and unbalanced parens trimmed) or an existing path `path[:line[:col]]` resolved against the shell's OSC 7 directory, then the session cwd. Files open in `$VISUAL`/`$EDITOR` (read once from the user's login shell) as a new terminal in the same project (`+line`, or `-g path:line` for code/cursor/zed/subl), else `open`. No hover underline yet (would need a query per move).
+- **Find (⌘F)** is `session.find`: plain-text scan of scrollback+screen (case-insensitive unless the query has capitals), scrolls the match to mid-viewport and selects it; ↩ older, ⇧↩ newer, esc closes.
+- **New RPCs** (catalog + MCP): `session.key{id,key:"ctrl-c"}`, `session.scroll{to|lines|pages}`, `session.selection`, `session.select_all`, `session.link_at{col,row}`, `session.find{query,backwards}`. New setting `terminal.option_as_meta` (default true).
+- **Split panes** (`ui/split.rs`): `MainWindow.split` holds a second `TerminalView` (own stream). ⌘D / the header button opens a new shell in the current project beside the selected terminal, or closes the split. The pane strip toggles side-by-side ⇄ stacked, moves the session to the main pane, or closes the pane (the session keeps running). Header/banner/composer keep following the sidebar selection. Selecting the split's session in the sidebar folds the split.
+- **Fake backend** keeps its own engine: legacy key encoding, paste and viewport scroll only (no mouse reporting/selection/kitty).
+- **Dev driver** `MIDNA_DEBUG_TERM="run:ls;wheel:-200;drag:0,5,10,5;key:cmd-c;shot:x;quit"` dispatches real GPUI events (it draws first, so it works with a locked screen); in that mode links and copies are logged instead of opening apps or touching the pasteboard. `MIDNA_FPS=1` logs frames/renders per second.
+
+### TODO
+- Per-client viewport/selection if pop-outs of the same session should scroll independently.
+- ~~Hover underline for links; right-click menu (copy / open link).~~ done
+- ~~Re-attach the split pane after a daemon reconnect (the main pane already does).~~ done
+- ~~`midna-cli/tests/cli.rs::mcp_exposes_catalog_as_tools` expects `catalog - 2` tools~~ (fixed by the agents/discoverability pass: it now expects `catalog - 2 + 3`).
+
+## Agent discoverability: MCP, skill, CLI help, explain (midna-cli, midnad `hooks.rs` / `rpc/session.rs`)
+
+Goal: an agent dropped into a midna terminal with no instructions can find and use everything.
+
+- **Launch wiring is per-invocation only; no global config is touched.** It was verified against Claude Code 2.1.288 and Codex 0.160.0.
+  - Claude gets `claude --mcp-config <MIDNA_HOME/hooks/mcp.json> --settings <…/claude-settings.json> --append-system-prompt <hint> [prompt]`.
+    - `--mcp-config` is variadic (`<configs...>`), so it must come first and be followed by another flag. Otherwise it would swallow the prompt. A test pins the order.
+    - A real `claude -p` run (haiku, `--no-session-persistence`, about $0.03) confirmed the following. All three flags work together. The `midna` server shows `connected` (source `dynamic`). The MCP server inherits `MIDNA_SESSION`: `daemon_info` returned the terminal's session.
+  - Codex gets `-c mcp_servers.midna.command="…"`, `-c mcp_servers.midna.args=["mcp"]`, `-c mcp_servers.midna.env={MIDNA_SESSION=…,MIDNA_PROJECT=…,MIDNA_SOCKET=…,MIDNA_HOME=…}` and `-c developer_instructions="<hint>"`.
+    - Codex starts stdio MCP servers with a minimal environment, so the ids are passed as literals.
+    - Verified with a temp `CODEX_HOME`: `codex mcp get midna --json` shows the override, and `codex debug prompt-input` shows the hint as a developer message.
+    - A full Codex session using the tools was not run.
+  - New settings, both default true and both agent-writable:
+    - `agents.mcp` (MCP wiring)
+    - `agents.system_hint` (the 2–3 line pointer)
+    - They apply to agents launched afterwards. Rows were added to the Settings window's Agents section (two lines in `settings_window.rs`).
+  - midnad writes `hooks/mcp.json` and `hooks/SKILL.md` next to `claude-settings.json` at startup (`write_claude_settings`).
+  - Every terminal gets `MIDNA_SKILL=<MIDNA_HOME>/hooks/SKILL.md`.
+  - The skill's source is `crates/midna-cli/assets/SKILL.md`. midnad `include_str!`s it from there, so one file feeds `midna skill`, the MCP `guide` tool, the `midna://skill` resource and the file.
+  - `claude-settings.json` now also carries `permissions.allow` for the **read-only** midna MCP tools (`mcp__midna__session_list`, `…_read`, `…_explain`, …). Claude doesn't prompt for looking around, and in `-p` mode they work at all. Acting tools still go through Claude's own permission flow plus midna's policy.
+- **`midna mcp` audit (MCP 2025-06-18):**
+  - Protocol version negotiation: echo a supported version, else the latest. Resources capability: `resources/list` / `read` serve `midna://skill`.
+  - JSON-RPC errors:
+    - `-32700` bad JSON
+    - `-32600` no method, batch or non-object
+    - `-32601` unknown method
+    - `-32602` unknown tool, missing name, or non-object arguments
+    - `-32002` unknown resource
+    - Responses and notifications sent to us get no reply.
+  - **Daemon refusals are tool results with `isError: true`, not protocol errors**, so the model reads them. The text is `<message>\nNext: <what to do>`, and `structuredContent.error` holds the RpcError, including `data.needs_you_id` and `data.next`.
+  - Tool names stay `group_method` (`[a-zA-Z0-9_-]`, ≤64 chars, unique; unit-tested). Descriptions rewrite dotted method names to tool names, leaving event kinds like `session.input_by_agent` alone.
+  - Every human-only tool says "HUMAN ONLY: calling this does not do it… asks the human…". `rule_remove` points at `rule_request_removal`, and `trigger_set_secret` says never call it. A few tools carry usage notes (`needs_you_raise` etiquette, `policy_request` blocks, `agent_hook` internal).
+  - `inputSchema` is the schemars schema with `$schema`/`title` removed and `type: object` forced. Its `$defs` refs resolve (tested).
+  - Annotations: `readOnlyHint`, `idempotentHint`, `destructiveHint` (close/remove/stop/upgrade/restart/reset/set_secret), `openWorldHint:false`.
+  - **Three extra tools that aren't catalog methods:**
+    - `capabilities` (overview plus every method's flags)
+    - `explain {target, value?}`
+    - `guide` (SKILL.md)
+  - `initialize.instructions` points at them.
+- **Refusal guidance lives client-side** (`guide::next_step`, used by both the CLI's `call()` and MCP). The daemon's messages are unchanged.
+  - The hints depend on the error code, the method and `data.needs_you_id`:
+    - rule.remove: "use `midna rules request-removal <id> --reason …`" (MCP: the tool)
+    - deferred human-only call: "nothing was done; the human sees n_…; don't retry; `midna explain n_…`"
+    - set_secret: never put secrets in commands
+    - policy deny: `midna check` + request-removal
+    - window refused: the `agents.may_move_windows` request
+    - busy close: `--force`
+    - not found: the list verb
+    - bad params: `midna schema <method>`
+  - The CLI prints `Next: …` on stderr and in `--json` (`error.data.next`).
+- **CLI discoverability:**
+  - `midna help` is generated from a verb table (`help.rs`), and `midna <verb> --help` / `midna help <verb>` print the entry. An entry has its usage, details, aliases, and the methods it calls with "human only" / "read only".
+  - A unit test fails if a catalog method has neither a verb nor a place on the explicit `call`-only list (resize, scroll, selection, select_all, link_at, find, get, stream.attach, script.run).
+  - New verbs:
+    - `capabilities [--json]`
+    - `skill [--path]`
+    - `explain`
+    - `schema [method|--list]` (method by dotted or tool name, with self-contained params/result schemas)
+    - `projects list|add|update|add-command|remove-command|remove`
+    - `restart`
+    - `key <id> <key>...`
+    - `window list`
+    - `insights series|activity`
+    - `approve --done|--restart|--dismiss`
+  - New aliases: `caps`, `guide`, `why`, `new`, `type`, `config`, `log`, `resolve`.
+- **`midna explain`** (CLI and MCP share `guide::explain`; read-only RPCs only):
+  - Terminal id: state, its meaning, the reason and where it came from (hook / title glyph / screen check / approval / restart), open needs-you items, the last 8 status/needs-you/turn events, and the next step.
+  - Rule: what it matches and where, who added it and from which approval, fired count plus the last 5 `rule.fired` actions, the scope semantics, and the removal status or request path.
+  - `<kind> <value>`: `policy.check` with the trace in prose.
+  - Trigger: what it does in words, state and what it's waiting on, recent deliveries.
+  - Also needs-you items (open or resolved), projects, deliveries, methods, setting keys, and topics (status, rules, approvals, triggers, needs-you, settings, windows, human-only, mcp).
+- **Parity audit (GUI action → RPC/CLI).** Everything the GUI does is an RPC the agent can call, or a human-only one with a request path:
+  - rule.remove → request_removal
+  - set_secret / enable → secret_needed / deferred approval
+  - human-only settings, project.remove, daemon.stop/upgrade, webhooks.configure → deferred approval
+  - approvals → the human (or approve.from_cli)
+  - OS permissions → `midna attention`
+
+  Fixed cheaply here: the missing CLI verbs above (projects, restart, key, window list, insights series/activity, approve done/restart). **Remaining gaps (not cheap, need app work):**
+  1. ~~**Split pane** (⌘D) has no `window.command` action, so an agent can't open or close a split. Suggest `window.command{action: split, target, value: side|stacked|close}`.~~ done
+  2. ~~**Command-bar user commands** (`$MIDNA_HOME/commands.json`) are a file, not RPC. Agents can write it, but nothing lists or validates it (the `ui.commands` TODO). Project commands (`projects add-command`) are the RPC path.~~ done (`ui.commands.*`)
+  3. ~~**App updates**: "check / install update" is GUI-only. There's no RPC, and no request path beyond `midna attention`. Only `updates.channel` is a setting.~~ done (`updates.*`)
+  4. ~~**Ask-bar memory** (`ui.ask.agent` / `ui.ask.scope`) and **rule restore with the original id**: TODOs already noted above.~~ done
+  5. **Insights range / selected screen** are pure navigation (`window open_screen` covers screens; there's no range parameter).
+- **seed_insights** no longer assumes "midna" is the busiest project of the week. That depended on where weekends fell relative to today. It now checks that every group label is a state project name for its id.
+
+
+## Closing the open TODOs (rules feed, palette, updates, reset, permissions, reconnect, event log, terminal, text input)
+
+All items from the TODO sections above and the "Remaining gaps" list. New methods are in the catalog (so in `rpc.discover`, `midna schema` and MCP), with CLI verbs. Tests: `crates/midnad/tests/ui_updates_reset.rs` (10), `eventlog` unit tests (4), `rpc::ui` unit tests (2), app tests for `link_span` and the field's word moves.
+
+**Policy and rules (daemon).**
+- **`policy.decided`** (new event kind) is emitted whenever the defaults table decides a `policy.request` or an agent CLI/window gate: `{decision, source:"default", default:<policy.default>, passthrough, action}`. `passthrough: true` marks an unmatched `tool` call (midna has no opinion; the agent's own prompt decides). `policy.check` stays side-effect free. Rule decisions are still `rule.fired`, so the two never double count. It's one event per agent tool call; that's the price of "Only real signals" in the feed.
+- **Rules feed** reads `rule.fired` + `policy.decided` (history from `events.list{kinds:[rule., needs_you., policy.decided]}`): default rows say "no rule · default" (or "no rule · agent's own prompt decides", outcome "unsupervised"), have no rule to highlight, and a defaults-table `ask` is tied to its approval by the action value + session.
+- **Dismiss/Done on a `rule_removal`** item clears `removal_request` like Keep (deny) does; the agent can ask again.
+- **`rule.restore{rule}`** (human only; agents get the usual deferred approval): the removed rule object (from `rule.removed` or `rule.list`) comes back with its original id, author, origin and fired count; `removal_request` is cleared. Refused (4) if the id exists or it has expired; the scope's project/session must still exist. Emits `rule.restored`. The Rules Undo sends the rule it removed. CLI `midna rules restore <id>` finds the rule in the log.
+
+**Settings.** `ui.ask.agent` (claude|codex, default claude) and `ui.ask.scope` (project|root, default project), agent-writable, section general. The palette's toggles and ⇥/⇧⇥ write them (optimistic, then `settings.set`); with an older daemon that lacks them the old "last agent in this project" default is used. They also show in Settings → Agents.
+
+**`ui.commands`.** `ui.commands.list` → `{path, commands, invalid}`, `ui.commands.add{command, replace?}`, `ui.commands.remove{id}`; CLI `midna commands list|add|remove`. Backed by `$MIDNA_HOME/commands.json` (still the app's format, so scripts can edit it).
+- Validation: non-empty title ≤80 chars; `run` required (`rpc|focus|project|screen|pop_out|prefill`; `resolve` is not accepted from the file, so a command can't approve things); `rpc.method` must be in the catalog and not a streaming method; params must be an object; screen and icon from fixed lists; id defaults to `user:<slug>`; duplicate id = error 4 unless `replace`; max 200. `added_by`/`added_at` are stamped.
+- **Human-only methods are forced through the destructive two-step confirm** (`human_only: true`, `danger` set), because a palette row runs as the human: an agent could otherwise plant "Show status" that calls `daemon.stop`.
+- Anyone may remove a command (it isn't a safety control, unlike rules).
+- A file that isn't a JSON array is never overwritten (error 4). Hand edits are noticed by an mtime poll (1s) in the daemon's background loop.
+- `ui.commands_changed` is emitted on every change; the app reloads its registry from `ui.commands.list` on that event, on connect and when the bar opens (falling back to reading the file for the fake backend / old daemons).
+
+**`window.command{action: split}`** (`value: side|stacked|close`, `target` = session; close needs no target). **Decision: split is allowed by default** like `front` and `open_screen`: it only adds a view beside what the human is looking at (front replaces the view outright). It is still policy-checked as a `window` action `split <id>`, so a human can deny it with a rule. The app shows the session in the split pane (or toasts if it's already the main pane); `close` folds it. `open_screen` is now idempotent in the app (it used to toggle the screen off when already showing).
+
+**Updates over RPC: the GUI owns the updater, the daemon proxies.** The updater (feed, signature, staging, the bundle swap and relaunch) lives in midna-app's lifecycle thread and needs the app's bundle and process, so moving it into midnad would duplicate it. Instead:
+- `updates.report{status}` (human only, special-cased so an agent gets a plain refusal, not a deferred approval): the app reports its state on every change and on every (re)connect. The daemon keeps it in memory and emits `updates.status` when it changes.
+- `updates.status` returns that report (`state: unknown|disabled|idle|checking|up_to_date|downloading|ready|installing|error`, versions, notes, channel, last check, `gui_connected`).
+- `updates.check` (agents may: harmless) and `updates.install` (human only → needs-you approval; approving runs it) are forwarded to every GUI connection as an `updates.command{action, by}` notification, the `window.command` pattern; `updates.requested` is logged with `delivered`. The client's `Notification::Other` now reaches the app as `BackendEvent::Notification`. "install" with nothing ready, or in a dev build, toasts why.
+- CLI `midna updates [status]|check|install`. Settings' update rows show those commands.
+
+**`daemon.reset{keep_rules?}`** (human only): closes every terminal (SIGHUP, like close --force), resolves remaining needs-you items (blocked `policy.request` waiters get deny), clears deferred calls, removes triggers + their secrets, deliveries (+ stored payloads) and projects, resets every setting (via `settings.reset`, so `settings.changed` fires), optionally removes rules. Event log and `commands.json` are kept. Emits the usual per-item events plus one `daemon.reset {keep_rules, result}`. Settings → Danger zone has "Reset midna" (two-click confirm) next to "Reset settings". CLI `midna daemon reset [--drop-rules]`. Not undone: a Tailscale Funnel that `webhooks.configure` set up stays (resetting `webhooks.path` doesn't run `tailscale funnel off`).
+
+**Permissions.** `permissions.status` reports what midnad can actually see: `AXIsProcessTrusted()` for midnad itself (the grant that matters is Midna.app's, which only the app can check, and it says so), notifications `not_requested` (midna posts none), login item from launchd's `XPC_SERVICE_NAME` or the legacy LaunchAgent plist. CLI `midna permissions [status] | open accessibility|notifications|login-items` (`open` runs `/usr/bin/open <pane URL>` locally; opening a pane grants nothing). Settings' permission and login-item rows show those commands instead of raw `x-apple.systempreferences` URLs.
+
+**App reconnect.**
+- "midnad restarting…" (status bar and the disconnected card, need color) for the first 3s of any drop, and up to 30s when the log showed an accepted `daemon.restart`/`daemon.upgrade` audit just before; then "not running".
+- `TerminalView` re-attaches by itself: every 1.5s, if its stream ended or failed and `session.get` says the session still has a pid, it attaches again (same sink, reset). This covers the main pane, the split pane and pop-out windows with one mechanism; verified live across `midna daemon restart` with a stacked split.
+- `DaemonBackend::call` retries once after a transport (`Io`) error (reconnect + 300ms), and retries up to 6× (400ms apart) when midnad refuses with "upgrading; retry". Tradeoff: a call that was executed but whose answer was lost at the exec runs twice; all such calls from the GUI are idempotent or harmless (lists, resolves of an already-closed item fail cleanly).
+
+**Event log windowing.** `events.jsonl` holds the current UTC month; at a month change it moves to `events/YYYY-MM.jsonl`. Opening a log that still spans several months (the old single file) splits it into monthly archives first. Memory keeps the last **62 days** (not 30: insights' month range compares against the 30 days before it), capped at 200k events, trimmed every 1024 appends. `events.list`/`events.subscribe` with a `since_seq` older than the window read the archives (only when the window can't fill `limit`). Nothing is ever deleted. `seq` survives even when only archives exist.
+
+**`session.clear{id}`** (new, mutating): drops the scrollback (writes `CSI 3 J` into the engine on the primary screen, only when no half-received escape sequence is pending) and presses ctrl-l so the app redraws. On the alternate screen only ctrl-l. Agent use is logged as `session.input_by_agent`. It backs the terminal menu's Clear.
+
+**Terminal niceties.** ⌘-hover asks `session.link_at` once per cell and underlines the link (accent, 1px) with a pointing-hand cursor; the span is computed client-side from the visible row (the URL text when it appears there, else the whitespace word minus brackets/quotes/trailing punctuation). Releasing ⌘ or moving off clears it. Right-click (or ctrl-click; shift-right-click when the app has mouse reporting) opens a menu: Copy (disabled without a selection), Paste, Open link/Open file (enabled when `link_at` finds one at the clicked cell), Select All, Clear. When the app reports the mouse, a plain right-click still goes to the app. Dev driver steps `hover:col,row[,cmd]` and `rclick:col,row`.
+
+**Shared text field with IME** (`ui/text_input.rs`, `TextField` entity implementing `EntityInputHandler`, modeled on gpui's input example): typing/IME/dead keys through the input handler, marked text underlined, candidate window anchored at the cursor; ←/→ (⌥ word, ⌘ line, ⇧ select), home/end, ctrl-a/e/k, ⌫ (⌥ word, ⌘ to start), ⌦, ⌘A/C/X/V, click/drag/shift-click/double-click selection, horizontal scrolling to keep the cursor visible; secrets draw bullets, can't be copied out, and the buffer is overwritten on clear. Keys it doesn't take (↩, esc, ⇥, ↑/↓, ⌘-shortcuts) bubble to the parent. `screen_kit::LineInput` is now a handle on it (`text(cx)`, `set_text`, `clear`, `on_key` → Submit/Cancel), so the Rules test field, the Triggers secret field and the Settings Ask box use it; the palette uses it directly and mirrors its text into `query` through a `FieldChanged` subscription.
+
+**Screens.** `docs/screens/live-*.png`. Live `screencapture -l` of the app's own window while the screen was unlocked: `live-split-by-agent`, `live-midnad-restarting`, `live-split-reattached-after-restart`, `live-rules-dark-default-rows`, `live-rules-undo-restore`. The screen locked again mid-session, so the rest are offscreen renders of the same running app against the same temp daemon (`--features snapshot`, no native traffic lights): main, ⌘K (`live-cmdk-ime-field-codex` shows the cursor mid-word after ←←⌫), needs-you, Rules, Triggers, Insights, composer, split and Settings, each dark and light, plus terminal link hover and the context menu.
+
+## Final hardening pass (security + robustness; see `docs/SECURITY.md`)
+
+- **GUI identity** (`peer.rs`): signed builds require the peer to satisfy `identifier "<midnad's id minus .daemon>" and anchor apple generic and certificate leaf[subject.OU] = "<midnad's team>"`, checked by audit token. Unsigned builds keep the name rule; `MIDNA_APP_PATH` only in debug builds (and never from a release handoff file). Any peer inside one of our terminals is an agent.
+- **`caller.session` is verified** against process ancestry / POSIX session (`rpc::bind_caller`): inside terminal X the claim must be X (else error 1); daemon-spawned helpers outside terminals (scripts, in-process tests) are trusted; otherwise the claim is dropped.
+- **Dev drivers** in midna-app go through `dev.rs`, compiled in only with `debug_assertions` or feature `dev-drivers` (`build-app.sh --dev-drivers`, used by `packaging/e2e`).
+- **Deferred approvals** show the exact call and its target and store a fingerprint (trigger definition, binary sha256); a changed target makes approval fail with error 4.
+- **Agents can't answer permission prompts** by typing (`session.input`/`session.key` → error 2 while a prompt is pending/visible); agent `stream.attach` connections are view-only.
+- **Custom header/row script paths** are human-only (agents may pick built-ins).
+- **Policy precedence change:** within one scope, an `allow` the human created by approving "always" now beats `ask` (deny > approved allow > ask > allow). Before, "approve always" on a same-scope ask rule never took effect and the human was asked every time.
+- **Webhooks:** dedupe by GUID *and* verified body sha256 (claimed only after the signature check); ≤30 unauthenticated rejects recorded per minute; ≤16 requests in flight; Content-Length precheck.
+- **Trigger prompts:** payload values are wrapped in ⟦ ⟧ with a trailing untrusted-data note (`payload::render_prompt`); trigger-started agents run supervised (`triggers.agent_mode`, human-only, default `supervised`: Claude `--permission-mode default`, Codex `approval_policy="on-request"`, `sandbox_mode="workspace-write"`).
+- **Connections:** 32 MB line cap, parse errors keep the connection, panics caught, 64 MB per-connection outbound cap (cut off, not buffered), 30 s write timeout, 512 connections max; terminal grids clamped to 1000×500.
+- **Files:** `MIDNA_HOME` 0700, socket bound under umask 077 then 0600.
+- **Palette:** `commands.json` entries can't resolve needs-you items, can't fake needs-you rows, and sensitive methods always need ↩↩ with the exact call as the confirm text (daemon and app both enforce).
+
+## Image annotations (midna-app `annotate.rs`, `ui/annotate.rs`)
+
+Design: the "D · Sheet + image strip" and "Added, not sent yet" boards (canvas https://claude.ai/artifact/9Qmeaeq6tEEV4debitzHB8). Screens: `docs/screens/annotate-*.png`.
+
+- **Opening.** `keys.add_image` (new keybinding setting, default `cmd-i`), the header's image button, or ⌘V in a terminal when the clipboard holds an image and no text (a screenshot) opens the sheet for the selected terminal.
+- **One draft per terminal**, in memory: images, each with notes that are a pin (click) or an area (drag), stored as fractions of the image. Close / esc keeps the draft; ⌘I brings it back. Keys: P / B tools, ⌘− ⌘+ ⌘0 zoom (scroll pans), ⌘↑ ⌘↓ switch image, ↑↓ select a note, ↩ edit it, ⌫ remove it, ⌘V paste an image, `keys.approve` (⌘↩) Add to chat.
+- **Attach, don't type.** "Add to chat" puts the draft in the `Outbox` app global and shows a tray under the terminal (Edit ⌘E reopens the sheet, Remove drops it). Nothing reaches the PTY until the next plain ↩ in that terminal (any `TerminalView` of it: main pane, split or pop-out). That ↩ becomes: each image path as its own paste, then the notes as one paste, then ↩, 250 ms apart. Editing text already typed into a TUI's input isn't something midna can do reliably, so it holds the attachment instead.
+- **Claude Code attaches a pasted image path** as `[Image #N]` (verified against Claude Code 2.1.289). Codex wasn't checked.
+- **Format.** One image uses Saggar's wording (`Annotations (coordinates are percentages from the image's top-left):` then `1. [x=12, y=15] text`). Areas are `[x=34-54, y=69-78]`. With several images the notes are grouped as `Image N (name):` in paste order. Notes without text are left out.
+- **Files.** Images go to `$TMPDIR/midna-images/<fnv64>.<ext>`. PNG/JPEG/GIF/WebP are kept; other formats (HEIC, TIFF, …) are converted with `/usr/bin/sips`. Files older than a day are swept at app start. The `image` crate is now a regular dependency (format sniffing and dimensions).
+- **Dev driver:** `MIDNA_DEBUG_SCREEN=annotate|annotate-tray` with `MIDNA_DEBUG_IMAGES` (paths) and `MIDNA_DEBUG_NOTES` (`x,y,text` / `x0,y0,x1,y1,text`, `;`-separated).
+
+## Agent work tracking and restart-into-the-same-conversation (midnad `agent_work.rs`, `restart.rs`, `procs.rs`)
+
+Why: an agent update ("Update installed · Restart to update") or a midna settings change needs a fresh agent process, and restarting by hand means quitting Claude, finding the session id and resuming, without knowing what the restart would kill. Verified live against Claude Code 2.1.289; fixture `crates/midnad/tests/fixtures/claude-2.1.289-background.jsonl`.
+
+- **What Claude reports.** Every main-thread hook carries `session_id` (= the conversation; hooks inside a subagent also carry `agent_id`) and `permission_mode`; the status line carries `version` and `model.id`. `Stop` and `SubagentStop` carry a full snapshot, `background_tasks` (`{id, type: shell|subagent|…, status, description, command | agent_type | server/tool | name}`) and `session_crons` (`{id, schedule, recurring, prompt}`), always present, empty when nothing is in flight; a finished task just drops out. `SubagentStart` / `SubagentStop` bracket subagents. PostToolUse reports a backgrounded shell as `tool_response.backgroundTaskId` and a background agent as `{isAsync, agentId}`. A finished task wakes Claude with a `UserPromptSubmit` whose prompt is a `<task-notification>` block, then a new `Stop`. Codex reports only its `thread-id` (notify).
+- **Quirks handled.** Claude's internal prompt-suggestion agent fires a `SubagentStop` with an empty `agent_type` (no start) after most turns: ignored. A stopping subagent lists itself as still running in its own snapshot: dropped. A woken background agent fires `SubagentStart` again with the same id: deduped. A main-thread `Stop` clears the live subagent list (background agents are in the snapshot), so a `SubagentStop` lost to a crash can't block a restart forever.
+- **State.** `Session.agent_info: AgentInfo` (persisted in state.json, so it survives daemon upgrades) holds the conversation id, transcript path, running version, model, permission mode, `update_available`, `background`, `subagents`, `crons` and a `restart: QueuedRestart {reason, queued_at, by, waiting_for}`. `session.agent` events fire when something material changes (not on status-line churn); the app refreshes sessions on any `session.*` event.
+- **Processes.** `session.processes` (CLI `midna procs`) walks the OS process table under the terminal (libproc + `KERN_PROCARGS2`) and tags each process with the background shell task whose command it runs (Claude runs it as `zsh -c '…eval "<command>"'`). Subagents are not processes; they run inside Claude.
+- **Process facts (verified).** Claude's background shells are `setsid`'d (own session and process group, no tty), so a terminal's process-group SIGHUP doesn't reach them; Claude itself kills them when it exits on SIGHUP/SIGTERM (`SessionEnd` reason `other`). After SIGKILL they live on, re-parented to launchd. A restart therefore SIGHUPs Claude, waits for it to be reaped, then SIGHUPs any process tagged with a background task that ended up orphaned (`stop_orphans`). Untagged leftovers (a daemon the agent started on purpose) are left alone.
+- **Resume.** `claude --resume <id>` keeps the same `session_id` (`SessionStart.source = resume`), restores the conversation and its session crons (even `durable: false`), but not background shells or agents. So crons are shown but never block a restart; background work does. The resume command is rebuilt from the current midna launch command (current hooks/MCP/hint settings apply; supervised trigger agents keep `--permission-mode default`), without the initial prompt, plus `--model <current>` and `--permission-mode <current>` (unless `default`), then `--resume <id>`. Codex: `codex resume <flags> <thread-id>`. The old process is stopped and reaped before the new one starts, so two processes never write one conversation. Same session id, same tab; status `restarted (resumed)`, event `session.restarted {resume, conversation_id, reason, from_version}`.
+- **`session.restart`** takes `{id, resume?, when: now|idle, force, reason}` (old `{id}` calls still work). `resume` defaults to true when the conversation is known. `now` is refused while background work or subagents are in flight unless `force`. `idle` queues; `session.restart_cancel` drops it; the process exiting drops it too (an exit is not a cue to restart). The needs-you `restart` resolution queues for update notes and restarts at once for failed terminals.
+- **When a queued restart runs** (`restart::tick`, every 2s): not working / waiting on the human / mid-turn, no open approval or prompt, nothing in flight, the terminal quiet for `agents.restart_idle_secs` (default 60; output or a status change resets it), and Claude's input box on screen and empty (text between the last two `────` rules after `❯`). A dialog or menu covering the input box holds it. `waiting_for` lists what it's waiting for, in plain words.
+- **Updates** (`restart::check_updates`, ~10s after start then every minute): for each live Claude terminal, the status line's running version vs `claude --version` resolved through the login shell like a launch (`MIDNA_AGENT_BIN` in tests). Newer → `update_available`, then per `agents.restart_on_update`: `when_idle` (default) queues the restart, `ask` raises a bulk-safe needs-you note whose restart resolution queues it, `off` only records it. Codex has no running-version signal, so only manual/queued restarts apply to it.
+- **GUI.** ⌘K per terminal: "Restart X" (same conversation; hidden while work is in flight), "Restart X when idle" (sub-line says what it would wait for), "Restart X in a new conversation", "Cancel queued restart of X" (shows `waiting_for`). The sidebar row is unchanged (rows stay dot + name + icon + one attention line).
+
