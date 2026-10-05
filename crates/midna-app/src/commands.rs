@@ -49,6 +49,8 @@ pub enum Run {
     JumpPrompt { session: String, n: u32 },
     /// Open a terminal's queued messages (the pill's panel).
     Queue { session: String },
+    /// Open a folder in an installed IDE (`ide.rs`), remembered for its project.
+    OpenIde { ide: String, dir: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +71,7 @@ pub enum CmdIcon {
     New,
     Trigger,
     Restart,
+    Ide,
 }
 
 /// One palette row. Optional fields become badges: `pending` = "waiting on you",
@@ -912,6 +915,24 @@ pub fn recent_projects(projects: &[Project], open: &[&str]) -> Vec<RecentProject
         },
     })
     .collect()
+}
+
+/// "Open in <IDE>" rows for the selected terminal's folder: the one its rules pick first (with
+/// keys.open_ide), then the other installed ones (choosing one remembers it for the project).
+pub fn ide_commands(ides: &[crate::ide::Ide], current: Option<&str>, dir: &str, key: &dyn Fn(&str) -> String) -> Vec<Command> {
+    let mut ordered: Vec<&crate::ide::Ide> = ides.iter().collect();
+    ordered.sort_by_key(|i| Some(i.id.as_str()) != current);
+    ordered
+        .into_iter()
+        .map(|i| {
+            let is_default = Some(i.id.as_str()) == current;
+            let c = Command::new(format!("ide:{}", i.id), CmdIcon::Ide, format!("Open in {}", i.name), Run::OpenIde { ide: i.id.clone(), dir: dir.to_string() })
+                .sub(if is_default { tilde(dir) } else { format!("{} · remembered for this project", tilde(dir)) })
+                .kw("ide editor code open folder project vscode cursor zed xcode jetbrains")
+                .cli(format!("open -a {:?} {:?}", i.path.display().to_string(), dir));
+            if is_default { c.keys(key("keys.open_ide")) } else { c }
+        })
+        .collect()
 }
 
 /// `path` with `$HOME` shown as `~`.

@@ -1433,6 +1433,7 @@ impl SettingsWindow {
                     SettingKind::Keybinding => "keys".into(),
                     SettingKind::String => "string".into(),
                     SettingKind::PathList => "[paths]".into(),
+                    SettingKind::RuleList => "[\"match = value\"]".into(),
                 };
                 let (c, cc) = if s.human_only { (format!("// {opts} · human only: agents get a needs-you confirmation"), t.fg) } else { (format!("// {opts}"), t.dim) };
                 let k = s.key.split_once('.').map(|(_, r)| r).filter(|_| !p.is_empty()).unwrap_or(s.key);

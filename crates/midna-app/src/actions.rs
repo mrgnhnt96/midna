@@ -144,6 +144,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.split_to_main", SplitToMain, MAIN),
     shortcut!("keys.focus_pane", FocusOtherPane, MAIN),
     shortcut!("keys.pop_out", PopOut, MAIN),
+    shortcut!("keys.open_ide", crate::ide::OpenInIde, MAIN),
+    shortcut!("keys.choose_ide", crate::ide::ChooseIde, MAIN),
     shortcut!("keys.keep_on_top", ToggleKeepOnTop, MAIN),
     shortcut!("keys.close", CloseWindow, None),
     shortcut!("keys.quit", HoldToQuit, None),

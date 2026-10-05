@@ -14,6 +14,8 @@ pub enum SettingType {
     Enum(Vec<String>),
     /// A list of directory paths (JSON array of strings).
     PathList,
+    /// A list of `<match> = <value>` rules (JSON array of strings), first match wins.
+    RuleList,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +39,9 @@ pub enum SettingKind {
     Keybinding,
     /// JSON array of paths. A string is split on commas and newlines (`~` stays as typed).
     PathList,
+    /// JSON array of `<match> = <value>` strings, kept as `match = value`. A string is split on
+    /// commas and newlines.
+    RuleList,
     /// Enum options; `allow_other` accepts any string too (e.g. a custom script path).
     Enum { options: &'static [&'static str], allow_other: bool },
 }
@@ -68,6 +73,7 @@ impl SettingSpec {
             SettingKind::Int => SettingType::Int,
             SettingKind::Keybinding => SettingType::Keybinding,
             SettingKind::PathList => SettingType::PathList,
+            SettingKind::RuleList => SettingType::RuleList,
             SettingKind::Enum { options, .. } => SettingType::Enum(options.iter().map(|s| s.to_string()).collect()),
         }
     }
@@ -107,6 +113,25 @@ impl SettingSpec {
                     let i = if i.len() > 1 { i.trim_end_matches('/') } else { i };
                     if !out.iter().any(|o| o == i) {
                         out.push(i.to_string());
+                    }
+                }
+                Ok(json!(out))
+            }
+            SettingKind::RuleList => {
+                let items: Vec<String> = match v {
+                    Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| format!("{} expects a list of `match = value` rules", self.key))).collect::<Result<_, _>>()?,
+                    Value::String(t) => t.split([',', '\n']).map(str::to_string).collect(),
+                    _ => return Err(format!("{} expects a list of `match = value` rules", self.key)),
+                };
+                let mut out: Vec<String> = vec![];
+                for i in items.iter().map(|i| i.trim()).filter(|i| !i.is_empty()) {
+                    let Some((m, val)) = i.split_once('=').map(|(m, v)| (m.trim(), v.trim())).filter(|(m, v)| !m.is_empty() && !v.is_empty()) else {
+                        return Err(format!("{}: `{i}` must look like `match = value`", self.key));
+                    };
+                    let m = if m.len() > 1 { m.trim_end_matches('/') } else { m };
+                    let rule = format!("{m} = {val}");
+                    if !out.contains(&rule) {
+                        out.push(rule);
                     }
                 }
                 Ok(json!(out))
@@ -209,6 +234,11 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Option (alt) acts as Meta in terminals: option-b sends ESC b (word back in shells). Off = option types macOS characters (option-e e = é)."),
     s!("projects.roots", SettingKind::PathList, L(&[]), "general", false,
         "Folders your projects live in (e.g. ~/Development). Their subfolders show up in the command bar and on the empty screen, ready to open as projects; a subfolder that isn't a git repo but holds some is looked into one level deeper. Nothing is added to the sidebar until you open one. Comma-separated on the CLI."),
+    s!("ide.app", en_path(&["auto", "cursor", "vscode", "vscode-insiders", "windsurf", "kiro", "zed", "zed-preview", "sublime", "nova", "bbedit", "textmate", "intellij", "rustrover",
+        "webstorm", "pycharm", "goland", "clion", "phpstorm", "rider", "rubymine", "android-studio", "xcode"]), S("auto"), "general", false,
+        "Default IDE for “Open in IDE” (the header button, keys.open_ide) when no ide.rules entry matches: an editor id, an absolute path to an .app, or auto (the first one installed). ⌥-picking one in the button's menu saves it here."),
+    s!("ide.rules", SettingKind::RuleList, L(&[]), "general", false,
+        "Which IDE opens which folders, as `match = ide` rules (ide = an editor id or .app path, like ide.app). match is a project folder (`~/Development/app = cursor`, covers everything inside it) or a file in the folder (`pubspec.yaml = android-studio`, `*.xcodeproj = xcode`). Folder rules win (the longest), then file rules in order, then ide.app. Picking an IDE in the header menu saves a folder rule for that project. Comma-separated on the CLI."),
     s!("git.refresh_secs", SettingKind::Int, I(10), "general", false, "How often midnad refreshes git info for terminals."),
     s!("notify.enabled", SettingKind::Bool, B(true), "notifications", false,
         "Post macOS notifications at all. Each kind has its own notify.<kind> switch, and a terminal can override any of them (or mute itself) with `midna notify set`."),
@@ -293,6 +323,8 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.split_orientation", KB, S("cmd-alt-d"), "keys", false, "Flip the split between side by side and stacked."),
     s!("keys.split_to_main", KB, S("cmd-alt-enter"), "keys", false, "Show the split's terminal in the main pane."),
     s!("keys.focus_pane", KB, S("cmd-bracketright"), "keys", false, "Move focus to the other split pane."),
+    s!("keys.open_ide", KB, S("cmd-alt-e"), "keys", false, "Open the selected terminal's folder in your IDE (ide.app)."),
+    s!("keys.choose_ide", KB, S("cmd-alt-shift-e"), "keys", false, "Choose an IDE to open the selected terminal's folder in; the choice is remembered (ide.app)."),
     s!("keys.pop_out", KB, S("cmd-shift-o"), "keys", false, "Pop the selected terminal out into its own window (in a pop-out: back to the main window)."),
     s!("keys.keep_on_top", KB, S("cmd-alt-o"), "keys", false, "In a pop-out window, keep it on top of other windows (or stop)."),
     s!("keys.edit_attachment", KB, S("cmd-e"), "keys", false, "Edit the images added to the selected terminal but not sent yet."),
@@ -333,6 +365,16 @@ mod tests {
         }
         let SettingKind::Enum { options, .. } = setting("notify.sound.approval").unwrap().ty else { panic!() };
         assert_eq!(&options[1..], crate::notify::SYSTEM_SOUNDS);
+    }
+
+    #[test]
+    fn rule_lists_normalize_and_reject_half_rules() {
+        let s = setting("ide.rules").unwrap();
+        assert_eq!(s.coerce(&json!("~/Development/app/=cursor, pubspec.yaml = android-studio,~/Development/app = cursor")), Ok(json!(["~/Development/app = cursor", "pubspec.yaml = android-studio"])));
+        assert_eq!(s.coerce(&json!(["*.xcodeproj=xcode"])), Ok(json!(["*.xcodeproj = xcode"])));
+        assert_eq!(s.coerce(&json!("")), Ok(json!([])));
+        assert!(s.coerce(&json!("pubspec.yaml")).is_err());
+        assert!(s.coerce(&json!("= xcode")).is_err());
     }
 
     #[test]

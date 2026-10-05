@@ -178,6 +178,10 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         name_note: &name_note,
     };
     let mut cmds = commands::build(&snap);
+    if let Some(dir) = crate::ide::folder(m) {
+        let cur = crate::ide::current(m).map(|(i, _)| i.id);
+        cmds.extend(commands::ide_commands(&m.ide.list, cur.as_deref(), &dir, &key));
+    }
     cmds.extend(m.palette.user.iter().cloned());
     cmds
 }
@@ -399,6 +403,15 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
         }
         Run::OpenProject { path: Some(path) } => m.add_project(path, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
+        Run::OpenIde { ide, dir } => {
+            if let Some(ide) = m.ide.list.iter().find(|i| i.id == ide).cloned() {
+                if crate::ide::folder(m).as_deref() == Some(dir.as_str()) {
+                    crate::ide::open_and_remember(m, ide, false, cx);
+                } else {
+                    crate::ide::open_in(ide, dir, cx);
+                }
+            }
+        }
         Run::Resolve { need, resolution } => {
             m.resolve(need, resolution, cx);
             m.toast(format!("✓ {title}"), cx);
@@ -508,6 +521,7 @@ fn icon_of(i: CmdIcon) -> Icon {
         CmdIcon::New => Icon::Plus,
         CmdIcon::Trigger => Icon::Triggers,
         CmdIcon::Restart => Icon::Restart,
+        CmdIcon::Ide => Icon::Code,
     }
 }
 

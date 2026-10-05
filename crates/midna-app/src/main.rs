@@ -18,6 +18,7 @@ mod composer;
 mod dev;
 mod frame;
 mod icons;
+mod ide;
 mod install;
 mod kass;
 mod lifecycle;

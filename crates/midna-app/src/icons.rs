@@ -57,6 +57,8 @@ pub enum Icon {
     Sidebar,
     /// Subagents (a body with a small satellite).
     Orbit,
+    /// Open in IDE, when the editor's own icon is missing.
+    Code,
 }
 
 impl Icon {
@@ -104,6 +106,7 @@ impl Icon {
             Icon::Pause => "icons/pause.svg",
             Icon::Sidebar => "icons/sidebar.svg",
             Icon::Orbit => "icons/orbit.svg",
+            Icon::Code => "icons/code.svg",
         }
     }
 
@@ -216,6 +219,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/keyboard.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8"/><path d="M4.2 6.4h.1M6.7 6.4h.1M9.2 6.4h.1M11.7 6.4h.1M4.2 8.4h.1M11.7 8.4h.1M6.3 10h3.4"/></svg>"##
+        }
+        "icons/code.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5 1.5 8 5 11.5M11 4.5 14.5 8 11 11.5M9.2 2.5 6.8 13.5"/></svg>"##
         }
         "icons/chevron.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5 6 7.5 9 4.5"/></svg>"##

@@ -47,6 +47,8 @@ pub enum Menu {
     Links,
     /// The header's subagents popover (`ui/subagents.rs`).
     Subagents,
+    /// The header's Open in IDE menu (`ide.rs`).
+    Ide,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -135,6 +137,8 @@ pub struct MainWindow {
     pub subagents: crate::ui::subagents::SubagentsPanel,
     /// The queued-messages panel (⌘U).
     pub queue: Entity<crate::ui::queue::QueueView>,
+    /// Installed IDEs and the header's Open in IDE menu.
+    pub ide: crate::ide::IdePanel,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// The image sheet (`annotate.rs`); drafts are in the `Drafts` global.
@@ -204,6 +208,7 @@ impl MainWindow {
         }
         let annot = crate::annotate::new_for_main(window, cx);
         crate::ui::links::wire(&links, cx);
+        crate::ide::detect(cx);
         MainWindow {
             backend,
             conn: ConnState::Connecting,
@@ -254,6 +259,7 @@ impl MainWindow {
             composer: crate::composer::Composer::new(window, cx),
             annot,
             dropped_at: None,
+            ide: crate::ide::IdePanel::new(cx),
             restart_expected: false,
             pending_refresh: 0,
             refresh_scheduled: false,
@@ -1406,12 +1412,14 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &OpenRules, w, cx| m.set_screen(Screen::Rules, w, cx)))
+            .on_action(cx.listener(|m, _: &crate::ide::OpenInIde, _, cx| crate::ide::open_default(m, cx)))
+            .on_action(cx.listener(|m, _: &crate::ide::ChooseIde, w, cx| crate::ide::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenTriggers, w, cx| m.set_screen(Screen::Triggers, w, cx)))
             .on_action(cx.listener(|m, _: &OpenInsights, w, cx| m.set_screen(Screen::Insights, w, cx)))
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if matches!(m.menu, Menu::Links | Menu::Subagents) {
+                    if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide) {
                         m.focus_terminal(w, cx);
                     }
                     m.menu = Menu::None;
