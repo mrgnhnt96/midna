@@ -644,6 +644,7 @@ impl MainWindow {
                 self.apply_theme(window, cx);
                 self.rebind(cx);
                 crate::terminal::set_option_as_meta(self.settings.get("terminal.option_as_meta").and_then(Value::as_bool).unwrap_or(true));
+                crate::finder::sync(self.settings.get("finder.quick_action").and_then(Value::as_bool).unwrap_or(true));
             }
         }
         if let Some(mut p) = r.projects {

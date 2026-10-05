@@ -16,6 +16,7 @@ mod backend;
 mod commands;
 mod composer;
 mod dev;
+mod finder;
 mod frame;
 mod icons;
 mod ide;
@@ -46,7 +47,12 @@ fn main() {
     std::thread::spawn(annotate::sweep);
     let w: f32 = std::env::var("MIDNA_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1280.);
     let h: f32 = std::env::var("MIDNA_H").ok().and_then(|v| v.parse().ok()).unwrap_or(800.);
-    gpui_kit::application().with_assets(icons::Assets).run(move |cx| {
+    // Folders from Finder's "Open in Midna" (finder.rs) or dropped on the Dock icon; they can
+    // arrive before the windows exist, so they wait in a channel.
+    let (otx, orx) = async_channel::unbounded::<Vec<String>>();
+    let app = gpui_kit::application().with_assets(icons::Assets);
+    app.on_open_urls(move |urls| drop(otx.try_send(urls)));
+    app.run(move |cx| {
         let (ui_font, mono_font) = theme::load_fonts(cx);
         cx.set_global(Theme::new(ThemeMode::Dark, ui_font, mono_font));
         bind_keys(cx, |_| None);
@@ -94,6 +100,12 @@ fn main() {
                     cx.activate(true);
                     windows::reveal(c.session, cx);
                 });
+            }
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            while let Ok(urls) = orx.recv().await {
+                cx.update(|cx| urls.iter().filter_map(|u| finder::folder_of(u)).for_each(|d| finder::open(d, cx)));
             }
         })
         .detach();
