@@ -223,6 +223,78 @@ pub struct Session {
     /// global `notify.*` settings. Change with `notify.set`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub notify: std::collections::BTreeMap<String, bool>,
+    /// A label and color a local trigger put on this terminal (`set_status`); shown instead of
+    /// the built-in status, which still drives sorting, notifications and Needs You.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<CustomStatus>,
+    /// Messages waiting to be typed into this terminal, in order (`queue.*`). midnad types the
+    /// first one once its `when` holds and the agent is ready for input, then the next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<QueuedMessage>,
+    /// The queue is paused: nothing is typed until it is resumed (`queue.pause`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_paused: bool,
+}
+
+// ------------------------------------------------------------------ queued messages
+
+/// When a queued message may be typed. Every condition also waits until the agent is ready
+/// for input (not working or waiting on the human, no prompt or dialog on screen, nothing
+/// typed in its input box).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SendWhen {
+    /// As soon as the agent is ready.
+    #[default]
+    Idle,
+    /// Once the terminal has been idle for `minutes` (no prompt, turn or output).
+    IdleFor { minutes: u32 },
+    /// At or after a time (RFC 3339).
+    At { at: Timestamp },
+    /// Once another terminal has finished: it is idle (or its process ended, or it closed) and
+    /// its own queue is empty.
+    After { session: Id },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueState {
+    /// Waiting for its turn and its `when`.
+    #[default]
+    Waiting,
+    /// Being typed right now.
+    Sending,
+    /// Typing failed (`error` says why). It stays first and holds the queue until it is
+    /// retried (`queue.update` with `retry`), sent now, or removed.
+    Failed,
+}
+
+/// One message in a terminal's queue.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct QueuedMessage {
+    pub id: Id,
+    pub text: String,
+    /// Press Enter after the text (submit it). False types it into the input box only.
+    #[serde(default = "yes")]
+    pub enter: bool,
+    /// Images attached before the text (absolute paths), as `session.input` takes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    #[serde(default)]
+    pub when: SendWhen,
+    pub by: Actor,
+    pub queued_at: Timestamp,
+    #[serde(default)]
+    pub state: QueueState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The local trigger that queued it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<Id>,
+    /// First in line only: what it is waiting for right now, in plain words (empty = about to go).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_for: Vec<String>,
 }
 
 /// What an agent terminal's agent is doing beyond its turn, from its hooks: the conversation
@@ -582,6 +654,8 @@ pub struct NeedsYou {
 pub enum TriggerSource {
     Github,
     Bitbucket,
+    /// Something midnad sees on this Mac: an agent hook, a midna event or an idle terminal.
+    Local,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -595,15 +669,113 @@ pub struct TriggerFilter {
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Local: only this terminal (session id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// Local: only terminals in this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<Id>,
+    /// Local: only this agent (`claude` or `codex`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
+    /// Local `idle` triggers: minutes without a turn starting or ending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_minutes: Option<u32>,
+    /// Local `schedule` triggers: when to fire, a five-field cron expression in local time
+    /// (`0 9 * * mon-fri`, `*/30 * * * *`, `@daily`). See `cron.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// Local: dotted path into the hook payload or event data -> case-insensitive glob, e.g.
+    /// `{"message": "*Compact first*"}`. Every entry must match.
+    #[serde(default, rename = "match", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
-/// What a trigger does. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`.
+/// One step of `send_to_session`: text typed into the terminal, then Enter. `{{last_prompt}}`
+/// is the terminal's most recent prompt (in full) as of the firing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SendStep {
+    pub text: String,
+    #[serde(default = "yes")]
+    pub enter: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// When a custom status set by a trigger goes away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusClear {
+    /// The next prompt sent to the agent.
+    #[default]
+    Prompt,
+    /// The next agent turn starting.
+    Turn,
+    /// Any change of the built-in status away from `base`.
+    Status,
+    /// Only a `clear_status` trigger (or the terminal exiting).
+    Never,
+}
+
+/// What a trigger does. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TriggerAction {
     StartAgent { project_id: Id, agent: AgentKind, prompt_template: String },
     RunCommand { project_id: Id, command: String },
     Attention { message: String },
+    /// Local only: type `steps` into the terminal that fired, in order. Each step after the
+    /// first waits until the agent is ready for input again.
+    SendToSession { steps: Vec<SendStep> },
+    /// Local only: show `label` in `color` (named: red, orange, amber, yellow, green, teal, blue,
+    /// purple, pink, gray; or `#rrggbb`) on the terminal that fired, on top of the built-in
+    /// `base` state (which keeps driving sorting, notifications and Needs You).
+    SetStatus {
+        label: String,
+        color: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+        base: StatusState,
+        #[serde(default)]
+        clear_on: StatusClear,
+    },
+    /// Local only: remove the custom status from the terminal that fired.
+    ClearStatus {},
+    /// Post a notification (category `from_trigger`: its sound, volume, image and mute switches
+    /// apply). Clicking it selects the terminal that fired, if any. Templates work in both texts.
+    Notify {
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        body: String,
+        /// Play the category's sound (`notify.sound.from_trigger`).
+        #[serde(default = "yes")]
+        sound: bool,
+    },
+}
+
+impl TriggerAction {
+    /// The project the action opens a terminal in.
+    pub fn project_id(&self) -> Option<&Id> {
+        match self {
+            TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } => Some(project_id),
+            _ => None,
+        }
+    }
+
+    /// Acts on the terminal that fired (local triggers only).
+    pub fn needs_session(&self) -> bool {
+        matches!(self, TriggerAction::SendToSession { .. } | TriggerAction::SetStatus { .. } | TriggerAction::ClearStatus {})
+    }
+}
+
+/// Named colors a custom status may use (or `#rrggbb`).
+pub const STATUS_COLORS: &[&str] = &["red", "orange", "amber", "yellow", "green", "teal", "blue", "purple", "pink", "gray"];
+
+pub fn valid_status_color(c: &str) -> bool {
+    STATUS_COLORS.contains(&c) || (c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -652,6 +824,33 @@ pub struct Trigger {
     /// Name for terminals this trigger opens (same `{{…}}` placeholders). Defaults to the trigger name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_name_template: Option<String>,
+    /// Local: seconds before the same trigger may fire again for the same terminal (default 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_secs: Option<u64>,
+    /// Set on triggers midna ships (e.g. `prompt_blocked_status`); they can be edited, paused or removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<String>,
+}
+
+/// A status a local trigger put on a terminal (`set_status`), shown instead of the built-in one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CustomStatus {
+    pub label: String,
+    pub color: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub base: StatusState,
+    pub clear_on: StatusClear,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<Id>,
+    /// What caused it, e.g. the hook's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The needs-you item raised for a `needs_you` base (closed with the status).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_id: Option<Id>,
+    pub since: Timestamp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -742,6 +941,9 @@ pub mod kinds {
     pub const SESSION_TITLE: &str = "session.title";
     pub const SESSION_EXITED: &str = "session.exited";
     pub const SESSION_INPUT_BY_AGENT: &str = "session.input_by_agent";
+    /// A terminal's message queue changed: `{action: added|sent|failed|removed|updated|moved|
+    /// paused|resumed|cleared, id?, text?, left, paused}`; read it with `queue.list`.
+    pub const SESSION_QUEUE: &str = "session.queue";
     pub const SESSION_GIT: &str = "session.git";
     /// An agent terminal's `AgentInfo` changed in a way worth showing (background work
     /// started/ended, update available, restart queued/blocked). data = the new `AgentInfo`.
@@ -766,6 +968,11 @@ pub mod kinds {
     pub const AGENT_TURN_ENDED: &str = "agent.turn_ended";
     pub const AGENT_PROMPT_SUBMITTED: &str = "agent.prompt_submitted";
     pub const AGENT_COST: &str = "agent.cost";
+    /// A UserPromptSubmit hook refused the prompt (`{hook, message, prompt}`); the agent never
+    /// started a turn. Seen in Claude's transcript.
+    pub const AGENT_PROMPT_BLOCKED: &str = "agent.prompt_blocked";
+    /// A terminal's custom status was set or cleared (`{custom_status}`, null when cleared).
+    pub const SESSION_CUSTOM_STATUS: &str = "session.custom_status";
     pub const DAEMON_STARTED: &str = "daemon.started";
     pub const DAEMON_UPGRADED: &str = "daemon.upgraded";
     /// An upgrade/restart was attempted but the old image kept running (`{to, error}`).

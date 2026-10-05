@@ -2,6 +2,7 @@
 //! See docs/ARCHITECTURE.md.
 pub mod catalog;
 pub mod client;
+pub mod cron;
 pub mod error;
 pub mod frame;
 pub mod methods;

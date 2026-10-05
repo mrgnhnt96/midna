@@ -193,6 +193,27 @@ fn build() -> Vec<MethodSpec> {
              optional title and a note on why it matters. Use it for something important the transcript would not show as \
              a link, or to give one a better name. Adding a target that is already there updates its title/note and pins it. \
              Defaults to your own terminal."),
+        m::<QueueListParams, QueueListResult>("queue.list").d(
+            "A terminal's queued messages, in the order midnad will type them, and whether the queue is paused. The first \
+             waiting one says what it is waiting for (`waiting_for`). Defaults to your own terminal."),
+        m::<QueueAddParams, QueuedMessage>("queue.add").mutating().d(
+            "Queue a message for a terminal instead of typing it now: midnad types it (and presses Enter, unless \
+             `enter: false`) once it is first in line, its `when` holds and the agent is ready for input (not working \
+             or waiting on the human, no dialog on screen, nothing typed in its input box), then the next one. `when`: \
+             {kind: idle} (default), {kind: idle_for, minutes}, {kind: at, at: RFC 3339}, or {kind: after, session} \
+             (once that terminal is idle with an empty queue). The human sees the queue on the terminal and can edit, \
+             reorder or remove it. Defaults to your own terminal, which is how you leave yourself a follow-up \
+             (e.g. `/compact`, then the next step)."),
+        m::<QueueUpdateParams, QueuedMessage>("queue.update").mutating().d(
+            "Change a queued message's text, enter or when; `retry: true` puts a failed one back to waiting."),
+        m::<QueueItemParams, OkResult>("queue.remove").mutating().d("Remove a queued message without sending it."),
+        m::<QueueListParams, QueueListResult>("queue.clear").mutating().d("Remove every message from a terminal's queue."),
+        m::<QueueMoveParams, QueueListResult>("queue.move").mutating().d("Move a queued message to another position (0 = next)."),
+        m::<QueueItemParams, OkResult>("queue.send_now").mutating().d(
+            "Type a queued message right away, ignoring its `when` and whether the agent is busy (Claude Code queues \
+             input it gets mid-turn itself). It leaves the queue. Refused while a permission prompt is on screen."),
+        m::<QueuePauseParams, QueueListResult>("queue.pause").mutating().d(
+            "Pause a terminal's queue (`paused: false` resumes): nothing is typed while it is paused."),
         m::<NotifyListParams, NotifyListResult>("notify.list").d(
             "Which macOS notifications midna posts: every category with its global setting (`notify.<key>`), the \
              terminal's override and what applies to it. Defaults to your own terminal; `global: true` for the global \
@@ -266,21 +287,43 @@ fn build() -> Vec<MethodSpec> {
              rule object from the rule.removed event). Human only (the Rules screen's Undo); agents add rules with rule.add."),
         // triggers / webhooks
         m::<NoParams, Vec<Trigger>>("trigger.list").d(
-            "List webhook triggers (GitHub/Bitbucket event -> start an agent, run a command, or raise attention). \
-             `state`: needs_secret (a human must paste the secret), draft (ready for a human to enable), active, paused."),
+            "List triggers: webhook ones (GitHub/Bitbucket event -> start an agent, run a command, or raise attention) and local \
+             ones (an agent hook, a midna event or an idle terminal -> type into that terminal, put a custom status on it, …). \
+             `state`: needs_secret (a human must paste the secret), draft (ready to enable), active, paused. `builtin` marks the \
+             ones midna ships (they can be edited, paused or removed)."),
         m::<TriggerAddParams, Trigger>("trigger.add").mutating().d(
             "Create a webhook trigger. It starts as needs_secret and never fires until a human sets its secret and enables it; \
              agents can draft freely. event: GitHub `pull_request.opened`/`push`/`check_run.completed` (event[.action]), \
              Bitbucket `pullrequest:created`. filter: repo (owner/name), branch, action, label (globs). action: \
              {kind:start_agent, project_id, agent, prompt_template} | {kind:run_command, project_id, command} | {kind:attention, message}. \
              Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path like {{pull_request.head.ref}}. \
-             In run_command each value is shell-quoted. Set github_hook_id to enable missed-delivery recovery."),
+             In run_command each value is shell-quoted. Set github_hook_id to enable missed-delivery recovery. \
+             LOCAL triggers (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human \
+             asked for it). event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, hook.Notification, hook.PreCompact; \
+             data = the hook payload), any midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
+             session.status, needs_you.raised; data = the event data), `idle` (filter.idle_minutes: no prompt or turn for that \
+             long; fires once per idle stretch), or `schedule` (filter.cron: `min hour dom month dow` in local time, names and \
+             @hourly/@daily/@weekly/@monthly/@yearly ok; data {cron, scheduled_for, local_time}; without a session/project/agent \
+             filter it fires once about no terminal, with one it acts on every running terminal that matches). \
+             filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
+             (case-insensitive, every entry must match). Extra actions, acting on the terminal that fired: \
+             {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready), \
+             {kind:set_status, label, color (red|orange|amber|yellow|green|teal|blue|purple|pink|gray|#rrggbb), icon?, \
+             base (idle|working|needs_you|done|failed: still drives sorting, notifications, Needs You), clear_on (prompt|turn|status|never)}, \
+             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true} (a macOS notification, \
+             category from_trigger; clicking it selects the terminal that fired). Local templates: {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, \
+             {{session.id|name|project_id|agent|status}}, {{data.<path>}} or {{<path>}}. cooldown_secs (default 60) spaces \
+             firings per terminal; what a trigger causes never fires triggers. Example (compact, then resend): \
+             {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact first*\"}}, \
+             action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
         m::<TriggerUpdateParams, Trigger>("trigger.update").mutating().d(
-            "Edit a trigger (name, event, filter, action, github_hook_id, session_name_template). When an agent changes the \
-             action or source of an enabled trigger, it goes back to draft and a human must re-enable it."),
+            "Edit a trigger (name, event, filter, action, github_hook_id, session_name_template, cooldown_secs). When an agent \
+             changes the action or source of an enabled webhook trigger, it goes back to draft and a human must re-enable it \
+             (local triggers stay enabled)."),
         m::<TriggerSetEnabledParams, Trigger>("trigger.set_enabled").mutating().d(
-            "Enable or pause a trigger. Anyone may pause. Enabling is human only and needs the secret set: an agent asking to \
-             enable raises a needs-you confirmation (or a secret_needed item if the secret is missing)."),
+            "Enable or pause a trigger. Anyone may pause, and agents may enable local triggers. Enabling a webhook trigger is \
+             human only and needs the secret set: an agent asking to enable raises a needs-you confirmation (or a secret_needed \
+             item if the secret is missing)."),
         m::<TriggerSetSecretParams, OkResult>("trigger.set_secret").mutating().human().d(
             "Set a trigger's webhook signing secret (stored in the macOS Keychain; never returned or logged). Human only: \
              an agent calling this raises a secret_needed needs-you item and the secret it sent is discarded."),
@@ -288,14 +331,15 @@ fn build() -> Vec<MethodSpec> {
             "Remove a trigger and its secret. Agents may remove triggers that are not enabled; removing an enabled trigger \
              asks the human."),
         m::<TriggerDeliveriesParams, Vec<Delivery>>("trigger.deliveries").d(
-            "List received webhook deliveries, oldest first (default last 50). verdict: verified (fired), bad_signature, \
+            "List received webhook deliveries and local firings (source local), oldest first (default last 50). verdict: verified (fired), bad_signature, \
              filtered (a trigger listens but filters/state said no), no_trigger, replayed, recovered (missed, then fetched from GitHub)."),
         m::<TriggerReplayParams, Delivery>("trigger.replay").mutating().d(
             "Run a past delivery through the triggers again (same filters, no signature check since it was verified when it \
              arrived). Deliveries that failed signature checks can't be replayed."),
         m::<TriggerTestParams, Delivery>("trigger.test").d(
             "Dry-run one trigger against a sample payload: shows how the event and filters evaluate and the rendered \
-             prompt/command. Nothing runs and nothing is recorded."),
+             prompt/command. Local triggers: payload is the hook payload or event data, event defaults to the trigger's, and \
+             session names the terminal (filters, {{session.*}}, {{last_prompt}}). Nothing runs and nothing is recorded."),
         m::<NoParams, WebhooksStatus>("webhooks.status").d(
             "How webhooks reach this Mac: path (tailscale_funnel|self_relay|midna_relay|off), health, the public URL to paste \
              into GitHub/Bitbucket, the local receiver, Tailscale details, the last delivery and missed-delivery recovery."),

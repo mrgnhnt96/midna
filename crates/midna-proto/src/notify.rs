@@ -39,6 +39,7 @@ pub static CATEGORIES: &[NotifyCategory] = &[
     c!("turn_done", "Agent finished", true, "none",
         "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply."),
     c!("agent", "Sent by an agent", true, "Ping", "An agent sent you a notification on purpose (`midna notify send`)."),
+    c!("from_trigger", "Sent by a trigger", true, "Ping", "A trigger you set up sent a notification (its `notify` action)."),
     c!("requests", "Other requests", false, "none",
         "Needs-you items that can wait: a trigger waiting to be enabled, a webhook secret to set, a rule an agent wants removed."),
     c!("background", "Background task finished", false, "none", "A background shell an agent started (Claude's run_in_background) finished."),

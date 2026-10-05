@@ -69,6 +69,11 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
 
 /// Seconds east of UTC for the local timezone right now (via libc localtime_r).
 pub fn local_offset_secs() -> i64 {
+    local_offset_at(now_unix())
+}
+
+/// Seconds east of UTC for the local timezone at unix time `t` (follows DST changes).
+pub fn local_offset_at(t: i64) -> i64 {
     unsafe extern "C" {
         fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
     }
@@ -78,10 +83,18 @@ pub fn local_offset_secs() -> i64 {
         gmtoff: std::ffi::c_long,
         zone: *const std::ffi::c_char,
     }
-    let t = now_unix();
     let mut tm: Tm = unsafe { std::mem::zeroed() };
     let r = unsafe { localtime_r(&t, &mut tm) };
     if r.is_null() { 0 } else { tm.gmtoff as i64 }
+}
+
+/// Local wall clock at unix time `t`: (year, month 1-12, day 1-31, hour, minute, weekday 0=Sunday).
+pub fn local_parts(t: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let l = t + local_offset_at(t);
+    let days = l.div_euclid(86_400);
+    let rem = l.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    (y, m, d, (rem / 3600) as u32, (rem % 3600 / 60) as u32, (days + 4).rem_euclid(7) as u32)
 }
 
 /// Unix seconds of local midnight for the day containing `secs`.

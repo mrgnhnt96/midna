@@ -84,6 +84,91 @@ pub struct LinksAddParams {
     pub pin: bool,
 }
 
+// ------------------------------------------------------------------ queued messages
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct QueueListParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueueListResult {
+    pub session: Id,
+    pub paused: bool,
+    /// In the order they will be typed.
+    pub items: Vec<QueuedMessage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueueAddParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    pub text: String,
+    /// Press Enter after the text (default true).
+    #[serde(default = "yes")]
+    pub enter: bool,
+    /// Absolute paths of images to attach before the text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// When it may go in (default: as soon as the agent is ready).
+    #[serde(default)]
+    pub when: SendWhen,
+    /// Where in the queue, 0 = first. Default: last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueueUpdateParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// The message (`q_…`).
+    pub id: Id,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<SendWhen>,
+    /// A failed message goes back to waiting.
+    #[serde(default)]
+    pub retry: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueueItemParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// The message (`q_…`).
+    pub id: Id,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueueMoveParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// The message (`q_…`).
+    pub id: Id,
+    /// New position, 0 = first.
+    pub to: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct QueuePauseParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// false resumes.
+    #[serde(default = "yes")]
+    pub paused: bool,
+}
+
 // ------------------------------------------------------------------ notifications
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -670,6 +755,9 @@ pub struct TriggerAddParams {
     pub source: TriggerSource,
     /// GitHub: `<X-GitHub-Event>[.<action>]`, e.g. `pull_request.opened`, `push`, `check_run.completed`.
     /// Bitbucket: the X-Event-Key, e.g. `pullrequest:created`. Globs (`*`) allowed.
+    /// Local: `hook.<HookEvent>` (e.g. `hook.Stop`, `hook.Notification`), a midna event kind
+    /// (e.g. `agent.prompt_blocked`, `agent.turn_ended`, `session.status`), `idle` (with
+    /// `filter.idle_minutes`) or `schedule` (with `filter.cron`). Globs allowed.
     pub event: String,
     #[serde(default)]
     pub filter: TriggerFilter,
@@ -678,6 +766,11 @@ pub struct TriggerAddParams {
     pub github_hook_id: Option<u64>,
     #[serde(default)]
     pub session_name_template: Option<String>,
+    #[serde(default)]
+    pub cooldown_secs: Option<u64>,
+    /// Local triggers only: enable right away (agents may, when the human asked for the trigger).
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -697,6 +790,8 @@ pub struct TriggerUpdateParams {
     pub github_hook_id: Option<u64>,
     #[serde(default)]
     pub session_name_template: Option<String>,
+    #[serde(default)]
+    pub cooldown_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -727,11 +822,17 @@ pub struct TriggerReplayParams {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TriggerTestParams {
     pub trigger_id: Id,
-    /// A sample webhook body (the JSON GitHub/Bitbucket would POST).
+    /// A sample webhook body (the JSON GitHub/Bitbucket would POST). Local triggers: the hook
+    /// payload or event data to match against (optional; a `schedule` trigger tests against
+    /// its next run).
+    #[serde(default)]
     pub payload: Value,
     /// The event header value (X-GitHub-Event / X-Event-Key). Defaults to the trigger's event.
     #[serde(default)]
     pub event: Option<String>,
+    /// Local triggers: the terminal the event is about (filters and `{{session.*}}`).
+    #[serde(default)]
+    pub session: Option<Id>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
