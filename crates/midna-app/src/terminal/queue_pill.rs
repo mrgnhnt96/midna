@@ -1,9 +1,9 @@
 //! The queued-messages pill (Queue-E): "3 queued · next when Claude is idle" at the bottom
 //! right of the pane, sitting just above the agent's input box (the second-to-last `────`
 //! rule on screen) and following it as the box grows; the pane's bottom-right corner when
-//! there is no input box. When a message goes in it turns green ("Sent · 2 left") with a
-//! short glow; a failed one turns it red until it is retried or removed. Clicking it (or ⌘U)
-//! opens the panel (`ui/queue.rs`), which the main window draws above the pill.
+//! there is no input box. Only sending glows: when a message goes in it turns green ("Sent · 2
+//! left") with a short glow. A failed one turns it red (no glow) until it is retried or removed.
+//! Clicking it (or ⌘U) opens the panel (`ui/queue.rs`), which its window draws above the pill.
 use super::{LINE_H, PAD_Y, TerminalView};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -77,8 +77,8 @@ impl TerminalView {
         let failed = items.first().is_some_and(|m| m.state == QueueState::Failed);
         let dot = |c: Hsla| div().flex_none().flex().items_center().justify_center().size(px(14.)).rounded_full().bg(c.opacity(0.22)).child(div().size(px(8.)).rounded_full().bg(c));
         let (border, lead, label, label_color, rest): (Hsla, AnyElement, String, Hsla, String) = match &flash {
-            Some(f) if f.ok => (t.ok, Icon::Check.el(12., t.ok).into_any_element(), "Sent".into(), t.ok, if f.left > 0 { format!("· {} left", f.left) } else { String::new() }),
-            _ if failed || flash.as_ref().is_some_and(|f| !f.ok) => (t.err, Icon::Cross.el(12., t.err).into_any_element(), "Couldn't send".into(), t.err, "· open to retry".into()),
+            Some(f) => (t.ok, Icon::Check.el(12., t.ok).into_any_element(), "Sent".into(), t.ok, if f.left > 0 { format!("· {} left", f.left) } else { String::new() }),
+            _ if failed => (t.err, Icon::Cross.el(12., t.err).into_any_element(), "Couldn't send".into(), t.err, "· open to retry".into()),
             _ if items.is_empty() => (t.accent, dot(t.accent).into_any_element(), "Nothing queued".into(), t.fg, String::new()),
             _ if paused => (t.line, dot(t.dim).into_any_element(), format!("{} queued", items.len()), t.fg, "· paused".into()),
             _ => {
@@ -124,12 +124,12 @@ impl TerminalView {
             .child(div().flex_none().font_weight(FontWeight::BOLD).text_color(label_color).child(label))
             .when(!rest.is_empty(), |d| d.child(div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(12.)).text_color(t.dim).child(rest)));
 
-        if let (Some(f), Ok(d)) = (&flash, crate::dev::var("MIDNA_DEBUG_QUEUE_GLOW").map(|v| v.parse::<f32>().unwrap_or(0.3))) {
-            return Some(pill.shadow(glow(if f.ok { t.ok } else { t.err }, d)).into_any_element());
+        if let (Some(_), Ok(d)) = (&flash, crate::dev::var("MIDNA_DEBUG_QUEUE_GLOW").map(|v| v.parse::<f32>().unwrap_or(0.3))) {
+            return Some(pill.shadow(glow(t.ok, d)).into_any_element());
         }
         Some(match flash {
             Some(f) if f.at.elapsed() < GLOW => {
-                let c = if f.ok { t.ok } else { t.err };
+                let c = t.ok;
                 if reduce_motion() {
                     pill.shadow(vec![BoxShadow { color: c.opacity(0.5), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }, drop()]).into_any_element()
                 } else {

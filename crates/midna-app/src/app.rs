@@ -45,8 +45,6 @@ pub enum Menu {
     More,
     /// The header's session links popover (`ui/links.rs`).
     Links,
-    /// A terminal's queued messages, above its pill (`ui/queue.rs`).
-    Queue,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -118,7 +116,7 @@ pub struct MainWindow {
     /// Session links popover (⌘L) and each terminal's links.
     pub links: crate::ui::links::LinksPanel,
     /// The queued-messages panel (⌘U).
-    pub queue: crate::ui::queue::QueuePanel,
+    pub queue: Entity<crate::ui::queue::QueueView>,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// Image sheet drafts and state (`annotate.rs`).
@@ -188,7 +186,8 @@ impl MainWindow {
         let palette = crate::ui::command_bar::Palette::new(cx);
         crate::ui::command_bar::wire(&palette, cx);
         let links = crate::ui::links::LinksPanel::new(cx);
-        let queue = crate::ui::queue::QueuePanel::new(cx);
+        crate::ui::queue::init(cx);
+        let queue = crate::ui::queue::new_for_main(backend.clone(), window, cx);
         crate::ui::links::wire(&links, cx);
         MainWindow {
             backend,
@@ -689,7 +688,12 @@ impl MainWindow {
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
-                    "queue" | "queue-sent" | "queue-failed" => crate::ui::queue::debug(self, &s, window, cx),
+                    "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
+                    "popout-queue" => {
+                        if let Some(sid) = self.selected.clone() {
+                            crate::ui::popout::debug_queue(self, sid, window, cx);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -847,7 +851,7 @@ impl MainWindow {
     pub fn set_screen(&mut self, s: Screen, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = if self.screen == s { Screen::Terminal } else { s };
         self.menu = Menu::None;
-        crate::ui::queue::closed(cx);
+        crate::ui::queue::hide(self, cx);
         if self.screen == Screen::Terminal {
             self.focus_terminal(window, cx);
         } else {
@@ -860,7 +864,7 @@ impl MainWindow {
         let was = self.overlay;
         self.overlay = if self.overlay == o { Overlay::None } else { o };
         self.menu = Menu::None;
-        crate::ui::queue::closed(cx);
+        crate::ui::queue::hide(self, cx);
         match self.overlay {
             Overlay::None => self.focus_terminal(window, cx),
             Overlay::CommandBar => {
@@ -1178,12 +1182,13 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if matches!(m.menu, Menu::Links | Menu::Queue) {
+                    if m.menu == Menu::Links {
                         m.focus_terminal(w, cx);
                     }
-                    crate::ui::queue::closed(cx);
                     m.menu = Menu::None;
                     cx.notify();
+                } else if m.queue.read(cx).is_open() {
+                    m.queue.update(cx, |v, cx| v.close(cx));
                 } else if m.overlay != Overlay::None {
                     m.set_overlay(Overlay::None, w, cx);
                 } else if m.screen != Screen::Terminal {

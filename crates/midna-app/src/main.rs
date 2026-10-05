@@ -104,16 +104,19 @@ fn main() {
     });
 }
 
-/// Dev: render the main window offscreen to `MIDNA_SNAPSHOT` after `MIDNA_SNAPSHOT_DELAY_MS`.
+/// Dev: render the main window offscreen to `MIDNA_SNAPSHOT` after `MIDNA_SNAPSHOT_DELAY_MS`
+/// (`MIDNA_SNAPSHOT_WINDOW=last`: the window opened last instead, e.g. a pop-out).
 #[cfg(feature = "snapshot")]
 fn snapshot(handle: WindowHandle<app::MainWindow>, cx: &mut App) {
     let Ok(path) = std::env::var("MIDNA_SNAPSHOT") else {
         return;
     };
     let delay: u64 = std::env::var("MIDNA_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
-    let any: AnyWindowHandle = handle.into();
+    let main: AnyWindowHandle = handle.into();
+    let last = std::env::var("MIDNA_SNAPSHOT_WINDOW").is_ok_and(|v| v == "last");
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
+        let any = if last { cx.update(|cx| cx.windows().last().copied()).unwrap_or(main) } else { main };
         // two passes so layout-dependent state (terminal size, frames) settles
         for _ in 0..2 {
             let _ = cx.update_window(any, |_, window, cx| {

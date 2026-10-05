@@ -19,6 +19,8 @@ impl Global for Popped {}
 
 pub struct PopOut {
     term: Entity<TerminalView>,
+    /// This window's queued-messages panel (its pill's click and ⌘U open it here).
+    queue: Entity<crate::ui::queue::QueueView>,
     on_top: bool,
     session: String,
     main: WeakEntity<MainWindow>,
@@ -31,6 +33,12 @@ impl PopOut {
         self.on_top = on;
         set_level(window, on);
         cx.notify();
+    }
+
+    fn toggle_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let st = cx.global::<crate::ui::queue::QueueStore>();
+        let sid = st.target.borrow_mut().take().unwrap_or_else(|| self.session.clone());
+        self.queue.update(cx, |v, cx| v.toggle(sid, window, cx));
     }
 
     /// Back into the main window, selected there.
@@ -81,12 +89,14 @@ impl Render for PopOut {
             // the pop-out key toggles: here it docks back into the main window
             .on_action(cx.listener(|p, _: &crate::actions::PopOut, w, cx| p.dock(w, cx)))
             .on_action(cx.listener(move |p, _: &crate::actions::ToggleKeepOnTop, w, cx| p.set_on_top(!on, w, cx)))
+            .on_action(cx.listener(|p, _: &crate::ui::queue::ToggleQueue, w, cx| p.toggle_queue(w, cx)))
             .relative()
             .size_full()
             .bg(t.term)
             .pt(px(28.))
             .child(self.term.clone())
             .child(div().absolute().top(px(4.)).right(px(8.)).flex().items_center().gap(px(6.)).child(dock).child(pill))
+            .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
     }
 }
 
@@ -118,21 +128,44 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
     let opened = cx.open_window(opts, |window, cx| {
         set_level(window, true);
         cx.new(|cx| {
+            let queue = cx.new(|cx| crate::ui::queue::QueueView::new(backend.clone(), cx));
             let term = cx.new(|cx| TerminalView::new(id.clone(), backend, window, cx));
             let fh = term.read(cx).focus_handle().clone();
             fh.focus(window, cx);
+            cx.subscribe_in(&queue, window, |p: &mut PopOut, _, ev: &crate::ui::queue::QueueEvent, window, cx| match ev {
+                crate::ui::queue::QueueEvent::Closed => {
+                    let fh = p.term.read(cx).focus_handle().clone();
+                    fh.focus(window, cx);
+                }
+                crate::ui::queue::QueueEvent::Error(e) => eprintln!("midna-app: pop-out {}: {e}", p.session),
+            })
+            .detach();
             // Closed any way (⌘W, the traffic light, dock): the main window may show it again.
             let _release = cx.on_release(|p: &mut PopOut, cx| {
                 forget(&p.session, cx);
                 let _ = p.main.update(cx, |_, cx| cx.notify());
             });
-            PopOut { term, on_top: true, session: id, main, main_window, _release }
+            PopOut { term, queue, on_top: true, session: id, main, main_window, _release }
         })
     });
     if let Ok(h) = opened {
         cx.default_global::<Popped>().0.insert(session, h);
         cx.notify();
     }
+}
+
+/// Dev only (`MIDNA_DEBUG_SCREEN=popout-queue`): pop the terminal out and open its queue there.
+pub fn debug_queue(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut Context<MainWindow>) {
+    open(m, session.clone(), window, cx);
+    cx.spawn(async move |_, cx| {
+        cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+        cx.update(|cx| {
+            if let Some(h) = cx.try_global::<Popped>().and_then(|p| p.0.get(&session).copied()) {
+                let _ = h.update(cx, |p, w, cx| p.toggle_queue(w, cx));
+            }
+        });
+    })
+    .detach();
 }
 
 /// Floating (above other apps' normal windows) or normal level for the native window.

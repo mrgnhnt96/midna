@@ -150,7 +150,7 @@ impl Render for MainWindow {
             .child(statusbar::render(self, &t, cx))
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
             .when(self.overlay == Overlay::Annotate, |d| d.child(annotate::render(self, &t, window, cx)))
-            .children(queue::panel(self, &t, window, cx))
+            .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
             // ⌘Q hold: releasing ⌘ (or Q, when macOS reports it) cancels
             .on_modifiers_changed(cx.listener(|m, ev: &ModifiersChangedEvent, _, cx| {
                 if !ev.modifiers.platform {
@@ -188,7 +188,6 @@ impl Render for MainWindow {
                         MouseButton::Left,
                         cx.listener(|m, _, _, cx| {
                             m.menu = Menu::None;
-                            queue::closed(cx);
                             cx.notify();
                         }),
                     ))
