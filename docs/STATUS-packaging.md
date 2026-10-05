@@ -62,7 +62,7 @@ Midna.app/Contents/MacOS/midna-app --uninstall | --login-item-status
 - The `RequiresApproval` flow is untested: registration went straight to Enabled.
 - Notarization was never run (opt-in by design).
 - `midna update …` for agents isn't built; it needs an RPC that reaches the GUI.
-- The real feed host (`midna.dev/updates`) doesn't exist; the default URL is a placeholder.
+- ~~The real feed host doesn't exist.~~ done: the feeds live on the `channels` GitHub release (docs/RELEASING.md).
 - The icon is a placeholder.
 - `daemon.upgraded.from.binary` shows the unresolved `bin/current` path (cosmetic, upgrade.rs).
 - The release key isn't made: `dist/0.1.0` embeds the dev key, so make a release key before shipping (RELEASING.md).

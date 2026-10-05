@@ -418,7 +418,7 @@ impl Worker {
             .ok()
             .filter(|s| !s.is_empty())
             .or_else(|| self.setting("updates.feed_url"))
-            .unwrap_or_else(|| "https://midna.dev/updates/{channel}.json".into());
+            .unwrap_or_else(|| midna_proto::settings::DEFAULT_FEED_URL.into());
         let url = updater::feed_url(&template, &channel);
         let r = (|| -> Result<UpdateState, String> {
             let e: FeedEntry = updater::fetch_feed(&url)?;

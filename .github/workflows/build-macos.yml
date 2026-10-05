@@ -1,0 +1,85 @@
+name: Build macOS app
+
+# Manual runs only, and only by the repo owner (see the job's `if`).
+# Builds, tests and packages the app ad-hoc signed, without publishing it;
+# releases come from pushing a version tag (scripts/release.sh, release.yml).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    if: github.triggering_actor == 'mrgnhnt96' && github.actor == 'mrgnhnt96'
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every version string has to agree; fail now rather than after the build.
+      - name: Check version
+        id: version
+        run: |
+          ./scripts/set-version.sh --check
+          echo "version=$(./scripts/set-version.sh --check | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/package"
+
+      - name: Toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: .toolchain
+          key: toolchain-${{ runner.os }}-${{ hashFiles('scripts/setup-toolchain.sh') }}
+
+      - name: Set up toolchain
+        run: ./scripts/setup-toolchain.sh
+
+      # CI has no signing identity here, so sign ad-hoc. macOS treats each
+      # ad-hoc build as a new app, so grants don't carry across installs.
+      - name: Build app
+        run: packaging/build-app.sh --adhoc --out dist/ci
+
+      - name: Info.plist
+        run: |
+          plist=dist/ci/Midna.app/Contents/Info.plist
+          [ "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "${{ steps.version.outputs.version }}" ] ||
+            { echo "::error::Info.plist version isn't ${{ steps.version.outputs.version }}"; exit 1; }
+          [ "$(plutil -extract CFBundleIdentifier raw "$plist")" = com.mrgnhnt.midna ] ||
+            { echo "::error::Bundle identifier changed; installs would lose their data and grants"; exit 1; }
+
+      - name: Daemon reports the version
+        run: |
+          out=$(dist/ci/Midna.app/Contents/MacOS/midnad --version)
+          echo "$out"
+          [[ "$out" == *"${{ steps.version.outputs.version }}"* ]] || { echo "::error::midnad isn't ${{ steps.version.outputs.version }}"; exit 1; }
+
+      # ditto keeps the symlinks and extended attributes the signature needs;
+      # upload-artifact's own zip would drop them.
+      - name: Zip app
+        id: zip
+        run: |
+          name="Midna-${{ steps.version.outputs.version }}-${GITHUB_SHA::7}-macos-arm64"
+          ditto -c -k --keepParent dist/ci/Midna.app "$name.zip"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: ${{ steps.zip.outputs.name }}.zip
+          compression-level: 0
+          retention-days: 30

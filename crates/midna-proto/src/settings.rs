@@ -155,6 +155,10 @@ const fn en_path(options: &'static [&'static str]) -> SettingKind {
 }
 const KB: SettingKind = SettingKind::Keybinding;
 
+/// Where the app looks for updates by default: the manifests the release workflow
+/// (.github/workflows/release.yml) keeps on the `channels` GitHub release.
+pub const DEFAULT_FEED_URL: &str = "https://github.com/mrgnhnt96/midna/releases/download/channels/{channel}.json";
+
 pub static SETTINGS: &[SettingSpec] = &[
     s!("theme", en(&["dark", "light", "system"]), S("system"), "appearance", false, "Color theme of the midna UI."),
     s!("density", en(&["comfortable", "compact"]), S("comfortable"), "appearance", false, "Spacing density of sidebar rows and headers."),
@@ -163,7 +167,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("ui.row.script", en_path(&["none", "git-diff-stats"]), S("git-diff-stats"), "appearance", false,
         "Script that renders the second line of each sidebar terminal row: a built-in name or an executable path."),
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
-    s!("updates.feed_url", SettingKind::String, S("https://midna.dev/updates/{channel}.json"), "general", true,
+    s!("updates.feed_url", SettingKind::String, S(DEFAULT_FEED_URL), "general", true,
         "Update feed the app checks every 6 hours; {channel} is replaced by updates.channel. Updates must carry midna's ed25519 signature whatever the URL. Human only."),
     s!("webhooks.path", en(&["tailscale_funnel", "self_relay", "midna_relay", "off"]), S("off"), "webhooks", true,
         "How GitHub/Bitbucket webhooks reach this Mac."),

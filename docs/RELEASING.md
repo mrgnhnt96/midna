@@ -8,21 +8,57 @@ install and auto-update").
 ## TL;DR: cut a release
 
 ```sh
-# once: a release signing key (keep the .key offline / in CI secrets, never in the repo)
-packaging/gen-update-key.sh ~/.config/midna-release      # prints the public key
+./scripts/release.sh 0.2.0          # public release, from main
+./scripts/release.sh 0.3.0-beta.1   # beta (prerelease), from any branch
+```
 
-# every release
+`release.sh` checks the version is newer than the last one (`scripts/newest-version.py`), writes it
+into `Cargo.toml`/`Cargo.lock` (`scripts/set-version.sh`), commits, tags `vX.Y.Z` and pushes.
+The tag runs `.github/workflows/release.yml` on a `macos-15` runner, which:
+
+1. checks the files' version matches the tag, sets up `.toolchain/` (`scripts/setup-toolchain.sh`)
+2. imports the Developer ID certificate into a throwaway keychain
+3. `packaging/build-app.sh` with the **release** update public key compiled in
+4. `packaging/notarize.sh` (App Store Connect API key), staples
+5. `scripts/build-dmg.sh` (branded window, `packaging/assets/dmg`), signs, notarizes and staples the DMG
+6. release notes = this version's `CHANGELOG.md` section, else its `## Unreleased` section
+7. `packaging/make-update.sh`: the `.app.tar.gz` and its signed feed entry
+8. publishes the GitHub release (DMG + archive; betas as prereleases)
+9. updates the feeds on the `channels` release: `stable.json` (public releases) and `beta.json`
+   (newest of any; a stable hotfix older than the current beta leaves it alone)
+
+Before tagging, rename `## Unreleased` in `CHANGELOG.md` to `## 0.2.0 — <date>`. The website
+(`site/`, deployed by `.github/workflows/site.yml`) shows the changelog, and its `/download/` page
+starts the DMG from the latest non-prerelease.
+
+`.github/workflows/build-macos.yml` (manual) builds an ad-hoc signed app as a CI artifact
+without publishing anything.
+
+### Repository secrets and variables
+
+| Name | Kind | What |
+|---|---|---|
+| `DEVELOPER_ID_CERTIFICATE` | secret | base64 of the Developer ID Application `.p12` |
+| `DEVELOPER_ID_CERTIFICATE_PASSWORD` | secret | its password |
+| `APP_STORE_CONNECT_API_KEY` | secret | contents of the `AuthKey_<id>.p8` (notarization) |
+| `MIDNA_UPDATE_KEY` | secret | contents of `~/.config/midna-release/update-ed25519.key` |
+| `DEVELOPER_ID_IDENTITY` | variable | `Developer ID Application: Morgan Hunt (U2G2XV3688)` |
+| `APP_STORE_CONNECT_KEY_ID` / `APP_STORE_CONNECT_ISSUER_ID` | variable | the API key's ids |
+| `MIDNA_UPDATE_PUBKEY` | variable | contents of `update-ed25519.pub`; the workflow checks it matches the secret |
+
+### By hand (no CI)
+
+```sh
 export MIDNA_UPDATE_PUBKEY="$(cat ~/.config/midna-release/update-ed25519.pub)"
 packaging/build-app.sh --version 0.2.0                   # -> dist/0.2.0/Midna.app (Developer ID signed)
 packaging/notarize.sh dist/0.2.0/Midna.app               # OPT-IN: uploads to Apple, then staples
 packaging/make-update.sh --app dist/0.2.0/Midna.app \
-    --url-base https://midna.dev/updates/files --channel stable \
+    --url-base https://github.com/mrgnhnt96/midna/releases/download/v0.2.0 --channel stable \
     --key ~/.config/midna-release/update-ed25519.key --notes "What changed"
-# upload dist/updates/Midna-0.2.0.app.tar.gz to …/files/ and dist/updates/stable.json to the feed URL
 ```
 
-Bump `[workspace.package] version` in `Cargo.toml` for real releases. `--version` overrides it
-for one build (every binary reports `midna_proto::VERSION`, from `MIDNA_BUILD_VERSION`).
+`--version` overrides the workspace version for one build (every binary reports
+`midna_proto::VERSION`, from `MIDNA_BUILD_VERSION`).
 
 ## The bundle (`packaging/build-app.sh`)
 
@@ -101,15 +137,15 @@ up every terminal), unregisters the login item and removes our CLI link. It leav
 ## Auto-update
 
 **Feed**: the setting `updates.feed_url` (human only; default
-`https://midna.dev/updates/{channel}.json`, where `{channel}` is replaced by `updates.channel`,
-`stable` or `beta`). `MIDNA_UPDATE_FEED_URL` overrides it (tests). The feed is one JSON object:
+`https://github.com/mrgnhnt96/midna/releases/download/channels/{channel}.json`, where `{channel}`
+is replaced by `updates.channel`, `stable` or `beta`; `midna_proto::settings::DEFAULT_FEED_URL`). `MIDNA_UPDATE_FEED_URL` overrides it (tests). The feed is one JSON object:
 
 ```json
 {
   "version": "0.1.1",
   "pub_date": "2026-10-03T21:40:00Z",
   "notes": "What changed (shown in Settings)",
-  "url": "https://midna.dev/updates/files/Midna-0.1.1.app.tar.gz",
+  "url": "https://github.com/mrgnhnt96/midna/releases/download/v0.1.1/Midna-0.1.1.app.tar.gz",
   "sha256": "9f2c…(64 hex)",
   "size": 31457280,
   "minimum_macos": "12.0",
@@ -185,8 +221,7 @@ reuses them, `--keep` skips deleting the installs):
 
 ## Checklist
 
-- [ ] version bumped in `Cargo.toml`; `cargo test` green
-- [ ] `build-app.sh` with `MIDNA_UPDATE_PUBKEY` = the **release** public key
-- [ ] `notarize.sh` (opt-in upload), `spctl -a -vv` says "Notarized Developer ID"
-- [ ] `make-update.sh --key <release key> --channel beta` first; `stable` after a soak
-- [ ] upload the archive, then the feed JSON (in that order, so the feed never points at a missing file)
+- [ ] `CHANGELOG.md`: `## Unreleased` renamed to the version; `cargo test` green
+- [ ] `./scripts/release.sh <version>` (a beta first for anything risky)
+- [ ] the Release workflow is green; the DMG opens without a Gatekeeper warning on another Mac
+- [ ] an installed copy on that channel picks the update up (Settings › Updates › Check now)

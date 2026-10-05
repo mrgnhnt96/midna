@@ -1,0 +1,72 @@
+<!doctype html>
+<!--
+  The background of the DMG window, in points. The design is 660 × 400; it's
+  drawn 420 tall so a Mac whose title bar is shorter than macOS 26's shows
+  more background rather than a white strip. scripts/render-dmg-background.sh
+  renders it to background.tiff.
+
+  Finder draws the two icons on top, centred where scripts/dmg-settings.py
+  puts them: Midna at (180, 170) and Applications at (480, 170). The glow
+  sits behind the Midna icon and the prompt arrow runs between the two, so
+  moving an icon means moving these too.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Midna DMG background</title>
+<style>
+  @font-face {
+    font-family: "Bricolage Grotesque";
+    font-weight: 200 800;
+    src: url("../../../site/node_modules/@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-wght-normal.woff2") format("woff2");
+  }
+  html, body { margin: 0; width: 660px; height: 420px; overflow: hidden; background: #0f1117; }
+  .layer { position: absolute; left: 0; top: 0; }
+  /* The app icon's squircle, a little larger and blurred. */
+  .glow {
+    position: absolute; left: 110px; top: 100px; width: 140px; height: 140px;
+    border-radius: 31px; background: rgba(183, 154, 232, 0.5); filter: blur(14px);
+  }
+  /* Finder always draws icon names black over a background image, even in
+     dark mode, so each name gets a light tag where Finder writes it
+     (measured on macOS 26: centred under the icon, about y 243 to 264). */
+  .tag { position: absolute; top: 242px; height: 22px; border-radius: 7px; background: #e4e7ee; }
+  .tag.app { left: 148px; width: 64px; }
+  .tag.applications { left: 431px; width: 98px; }
+  .hint {
+    position: absolute; left: 0; right: 0; top: 337px; text-align: center;
+    font-family: "Bricolage Grotesque", sans-serif; font-size: 15px; letter-spacing: 0.01em; color: #9aa2b3;
+  }
+</style>
+</head>
+<body>
+<!-- The moon, blown up and faint, and a few stars. -->
+<svg class="layer" width="660" height="400" viewBox="0 0 660 400">
+  <mask id="crescent">
+    <rect width="660" height="400" fill="white"/>
+    <circle cx="640" cy="20" r="74" fill="black"/>
+  </mask>
+  <circle cx="600" cy="56" r="78" fill="#B79AE8" fill-opacity="0.1" mask="url(#crescent)"/>
+  <g fill="#E4E7EE">
+    <circle cx="70" cy="60" r="1.5" opacity="0.35"/>
+    <circle cx="310" cy="48" r="1.2" opacity="0.3"/>
+    <circle cx="420" cy="92" r="1.6" opacity="0.25"/>
+    <circle cx="610" cy="330" r="1.3" opacity="0.3"/>
+    <circle cx="40" cy="300" r="1.2" opacity="0.25"/>
+    <circle cx="250" cy="360" r="1.4" opacity="0.2"/>
+  </g>
+</svg>
+<div class="glow"></div>
+<!-- A prompt: the arrow and a blinking-cursor block, pointing at Applications. -->
+<svg class="layer" width="660" height="400" viewBox="0 0 660 400">
+  <g fill="none" stroke="#B79AE8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 300 150 L 322 170 L 300 190" stroke-opacity="0.55"/>
+    <path d="M 334 150 L 356 170 L 334 190" stroke-opacity="0.8"/>
+  </g>
+  <rect x="368" y="152" width="18" height="36" rx="3" fill="#B79AE8"/>
+</svg>
+<div class="tag app"></div>
+<div class="tag applications"></div>
+<div class="hint">Drag Midna into Applications</div>
+</body>
+</html>

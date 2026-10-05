@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: midna docs
+    url: https://midna.mrgnhnt.com/docs/
+    about: Install, agents, rules, triggers and troubleshooting.

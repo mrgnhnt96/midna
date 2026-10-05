@@ -1,0 +1,41 @@
+name: Report a problem
+description: Something doesn't work, crashes, or an agent got stuck.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. [Troubleshooting](https://midna.mrgnhnt.com/docs/troubleshooting/) covers the most common problems.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what midna did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we see it happen?
+      description: The steps that lead to the problem, and the agent (Claude Code, Codex, …) if one was involved.
+  - type: input
+    id: version
+    attributes:
+      label: midna version
+      description: Shown in Settings › Updates, or run `midna info`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 26.1, MacBook Pro M3
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The end of `~/Library/Application Support/com.mrgnhnt.midna/app.log` or `midnad.log`, if they show anything relevant. Check them for anything private first.
+      render: text

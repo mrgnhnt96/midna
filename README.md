@@ -2,6 +2,8 @@
 
 midna is a macOS terminal built for working with AI agents. It replaces Saggar.
 
+**[Download](https://midna.mrgnhnt.com/download/) · [Docs](https://midna.mrgnhnt.com/docs/) · [Changelog](https://midna.mrgnhnt.com/changelog/)**
+
 - **Projects** group **terminals**, which run shells, monitors, or agents (Claude Code, Codex).
 - **A daemon (`midnad`) is the source of truth.** It owns every PTY, the terminal engines (libghostty-vt), projects, rules, triggers, settings, and the event and audit log. Closing or upgrading the GUI never kills a shell.
 - **Everything is AI-managed.** Agents drive midna through the `midna` CLI, JSON-RPC over a Unix socket, or MCP. Every capability is a method in one discoverable catalog (`midna schema`).
@@ -16,7 +18,7 @@ The design contract is `docs/ARCHITECTURE.md`. The reasoning behind it is in `do
 Requirements:
 - macOS on Apple silicon
 - Rust (edition 2024)
-- the pinned toolchain in `.toolchain/` (Zig 0.15.2, an SDK shim, the ghostty source). It's gitignored, so copy it from an existing checkout.
+- the pinned toolchain in `.toolchain/` (Zig 0.15.2, an SDK shim, the ghostty source). It's gitignored; `scripts/setup-toolchain.sh` sets it up.
 
 Always source `env.sh` first.
 
@@ -109,7 +111,8 @@ docs/
   STATUS-*.md       per-area status (foundation, app, agents, triggers, upgrade, packaging)
   design/           approved screen boards    screens/       screenshots
 packaging/       build-app.sh, make-update.sh, notarize.sh, gen-update-key.sh, e2e/, release-tool/
-scripts/smoke.sh end-to-end smoke test
+scripts/        smoke.sh, release.sh, set-version.sh, setup-toolchain.sh, build-dmg.sh
+site/           midna.mrgnhnt.com: landing page, docs, changelog, download (Astro + Starlight)
 spikes/          proven prototypes the crates grew from
 ```
 
@@ -141,8 +144,6 @@ spikes/          proven prototypes the crates grew from
 - **Packaging gaps:**
   - The build is arm64 only (no universal binary).
   - The icon is a placeholder.
-  - The feed host `midna.dev/updates` doesn't exist yet.
-  - `dist/0.1.0` embeds the **dev** update key.
 - **An unclean daemon death** (SIGKILL, crash) still loses every PTY.
 - **Smaller UI gaps:**
   - Keep-on-top can't be toggled off.
@@ -158,8 +159,8 @@ spikes/          proven prototypes the crates grew from
 
 These need you (credentials, your screen, or your accounts). Nothing in this list was done automatically.
 
-1. **Create the release update-signing key.** Run `packaging/gen-update-key.sh ~/.config/midna-release`, keep the `.key` offline, and rebuild with `MIDNA_UPDATE_PUBKEY` set. Today's `dist/0.1.0` embeds the dev key.
-2. **Notarize.** `packaging/notarize.sh dist/<v>/Midna.app` needs your Apple ID and app-specific password, or a notarytool keychain profile. It is opt-in and never ran.
+1. **Releases** are cut with `./scripts/release.sh <version>`; CI signs, notarizes and publishes them (`docs/RELEASING.md`). The release update key lives in `~/.config/midna-release` and the repo's `MIDNA_UPDATE_KEY` secret.
+2. **Notarize by hand** only outside CI: `packaging/notarize.sh dist/<v>/Midna.app` needs a notarytool keychain profile.
 3. **Run the Kass AX check with midna-app frontmost.** The screen was locked in every session. Steps are in `docs/STATUS-app.md` ("Kass composer"):
    1. Run `kass-probe … kass-sim 2`.
    2. Expect `role=AXTextArea … Inserted{exact:true}`.
@@ -168,5 +169,5 @@ These need you (credentials, your screen, or your accounts). Nothing in this lis
 5. **Enable Tailscale Funnel** for your tailnet. Then run `midna webhooks configure tailscale_funnel` from the GUI (human only), and point a GitHub webhook at the public URL that `midna webhooks status` shows.
 6. **Decide on `triggers.agent_mode`.** The default is `supervised`, which forces permission prompts on webhook-started agents even though your global Claude config bypasses them. Switch to `inherit` only if you accept that risk.
 7. **Grant Accessibility to Midna.app only after reading `docs/SECURITY.md` → "TCC responsibility".** Agents in midna terminals may inherit that grant.
-8. **Set up the feed host** (`midna.dev/updates` is a placeholder), and replace the placeholder icon.
+8. **Replace the placeholder icon.**
 9. **Review and commit.** Nothing here was committed.
