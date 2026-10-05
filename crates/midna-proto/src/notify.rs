@@ -11,6 +11,13 @@
 //!
 //! Add a category here, add its `notify.<key>`, sound, volume and image rows to the settings
 //! catalog, and map a signal to it in midnad.
+//!
+//! Sound effects (`EFFECTS`) share that sound library and the `notify.sound.<key>` /
+//! `notify.volume.<key>` settings, but have no banner: the app plays them itself when you do
+//! something (approve, a queued message goes in, switch terminals, …). A category's sound also
+//! plays in the app when its banner is skipped because you're looking at that terminal.
+//! `notify.sounds` turns every sound off; `notify.sounds_in_app` keeps only the ones that come
+//! with a banner. Agents play a sound on purpose with `notify.play`.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,14 +39,14 @@ macro_rules! c {
 }
 
 pub static CATEGORIES: &[NotifyCategory] = &[
-    c!("approval", "Approvals and questions", true, "Glass",
+    c!("approval", "Approvals and questions", true, "Portal",
         "An agent waits on you: an approval request, a permission prompt or a question it asked in its terminal."),
-    c!("attention", "Agent asks for you", true, "Glass", "An agent raised a needs-you note or said it's blocked (`midna attention`)."),
-    c!("failed", "Failures", true, "Basso", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error."),
-    c!("turn_done", "Agent finished", true, "none",
+    c!("attention", "Agent asks for you", true, "Call", "An agent raised a needs-you note or said it's blocked (`midna attention`)."),
+    c!("failed", "Failures", true, "Uh-oh", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error."),
+    c!("turn_done", "Agent finished", true, "Strum",
         "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply."),
-    c!("agent", "Sent by an agent", true, "Ping", "An agent sent you a notification on purpose (`midna notify send`)."),
-    c!("from_trigger", "Sent by a trigger", true, "Ping", "A trigger you set up sent a notification (its `notify` action)."),
+    c!("agent", "Sent by an agent", true, "Hm", "An agent sent you a notification on purpose (`midna notify send`)."),
+    c!("from_trigger", "Sent by a trigger", true, "Hm", "A trigger you set up sent a notification (its `notify` action)."),
     c!("requests", "Other requests", false, "none",
         "Needs-you items that can wait: a trigger waiting to be enabled, a webhook secret to set, a rule an agent wants removed."),
     c!("background", "Background task finished", false, "none", "A background shell an agent started (Claude's run_in_background) finished."),
@@ -48,6 +55,44 @@ pub static CATEGORIES: &[NotifyCategory] = &[
     c!("triggers", "Trigger fired", false, "none", "A webhook trigger fired and started an agent or a command."),
     c!("restarted", "Agent restarted", false, "none", "midna restarted an agent into the same conversation (an agent update was installed)."),
 ];
+
+/// A sound with no notification: something you did, or a small UI cue.
+pub struct SoundEffect {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// `action` (something you did) or `ui` (small cues while you move around).
+    pub group: &'static str,
+    /// Its sound and volume out of the box (`notify.sound.<key>`, `notify.volume.<key>`).
+    pub sound: &'static str,
+    pub volume: i64,
+    pub description: &'static str,
+}
+
+macro_rules! fx {
+    ($key:literal, $label:literal, $group:literal, $sound:literal, $vol:literal, $desc:literal) => {
+        SoundEffect { key: $key, label: $label, group: $group, sound: $sound, volume: $vol, description: $desc }
+    };
+}
+
+pub static EFFECTS: &[SoundEffect] = &[
+    fx!("approved", "You approve", "action", "Rise", 100, "You approve something: an approval or permission prompt, \"I've done it\", a trigger you start."),
+    fx!("denied", "You deny", "action", "Nn-nn", 100, "You deny an approval or permission prompt, or keep a rule an agent wanted removed."),
+    fx!("queue_sent", "Queued message sent", "action", "Whoosh", 100, "A message you queued went into its terminal (the pill's \"Sent\")."),
+    fx!("image_added", "Image added to chat", "action", "Fwip", 100, "You added an annotated image to a terminal's next message."),
+    fx!("closed", "Terminal closed", "action", "Close", 100, "You closed a terminal."),
+    fx!("switched", "Switch terminal", "ui", "Tick", 100, "You select another terminal."),
+    fx!("command_bar", "Open ⌘K", "ui", "Thump", 100, "The command bar opens."),
+    fx!("copied", "Copy", "ui", "Tick-tick", 100, "midna copies something for you (a selection, a link, a session id)."),
+];
+
+pub fn effect(key: &str) -> Option<&'static SoundEffect> {
+    EFFECTS.iter().find(|e| e.key == key)
+}
+
+/// A key with a sound setting: a notification category or a sound effect.
+pub fn has_sound(key: &str) -> bool {
+    category(key).is_some() || effect(key).is_some()
+}
 
 pub fn category(key: &str) -> Option<&'static NotifyCategory> {
     CATEGORIES.iter().find(|c| c.key == key)
@@ -78,6 +123,27 @@ pub fn image_key(key: &str) -> String {
 /// one of these, `none`, or an imported sound's file name (which has an extension).
 pub static SYSTEM_SOUNDS: &[&str] = &["Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"];
 
+/// midna's own sounds (the "Twilight" set, synthesized for midna; source in tools/twilight).
+/// midnad ships them inside its binary and writes them to `MIDNA_HOME/notify/twilight/<name>.wav`
+/// at startup. Every kind's default sound is one of these. Names have no extension, like the
+/// macOS ones, so they never clash with an imported file's name.
+pub static TWILIGHT: &[&str] = &["Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick"];
+
+/// Where a Twilight sound lives under `home` (MIDNA_HOME), whether or not it's there yet.
+pub fn twilight_path(home: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    TWILIGHT.contains(&name).then(|| home.join("notify/twilight").join(format!("{name}.wav")))
+}
+
+/// A sound that ships with midna or macOS (can't be removed): its name is a setting value as is.
+pub fn is_builtin_sound(name: &str) -> bool {
+    SYSTEM_SOUNDS.contains(&name) || TWILIGHT.contains(&name)
+}
+
+/// A built-in sound's proper name for any spelling (`glass` -> Glass, `uh-oh` -> Uh-oh).
+pub fn builtin_sound_named(name: &str) -> Option<&'static str> {
+    SYSTEM_SOUNDS.iter().chain(TWILIGHT).find(|s| s.eq_ignore_ascii_case(name)).copied()
+}
+
 /// What `notify.import` takes. Sounds play through NSSound / afplay; images must be formats
 /// macOS shows as a notification attachment.
 pub static SOUND_EXTS: &[&str] = &["aiff", "aif", "wav", "mp3", "m4a", "caf"];
@@ -86,6 +152,36 @@ pub static IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif"];
 /// Where a built-in sound's file is.
 pub fn system_sound_path(name: &str) -> Option<String> {
     SYSTEM_SOUNDS.contains(&name).then(|| format!("/System/Library/Sounds/{name}.aiff"))
+}
+
+/// The file a sound setting's value plays: a macOS sound, a Twilight sound, or a sound
+/// imported into `home` (`MIDNA_HOME`). None: `none`, or a file that isn't there.
+pub fn sound_file(home: &std::path::Path, value: &str) -> Option<std::path::PathBuf> {
+    if let Some(p) = system_sound_path(value) {
+        return Some(p.into());
+    }
+    if let Some(p) = twilight_path(home, value) {
+        return p.is_file().then_some(p);
+    }
+    let ext = std::path::Path::new(value).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let plain = !value.is_empty() && !value.starts_with('.') && !value.contains(['/', '\\', '\0']);
+    (plain && SOUND_EXTS.contains(&ext.as_str())).then(|| home.join("notify/sounds").join(value)).filter(|p| p.is_file())
+}
+
+/// `notify.sound` event data (`notify.play`): the app plays it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Played {
+    /// The sound's name (what a setting takes) and its file.
+    pub sound: String,
+    pub file: String,
+    /// 1–100, already scaled by `notify.volume`.
+    pub volume: u8,
+    /// The kind whose sound it is, when it was asked for by kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Who plays it: `app`, `system` (midnad with `afplay`, no app running) or `none`.
+    pub via: String,
 }
 
 /// A terminal's `notify` map may hold `enabled` (false = muted) and any category key.

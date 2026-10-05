@@ -1116,6 +1116,8 @@ pub mod kinds {
     pub const LINKS_CHANGED: &str = "links.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.
     pub const NOTIFY_POSTED: &str = "notify.posted";
+    /// `notify.play`: play a sound now (data: `notify::Played`); the app plays it.
+    pub const NOTIFY_SOUND: &str = "notify.sound";
     /// A terminal's notification overrides changed (`{notify}`, the whole map).
     pub const SESSION_NOTIFY: &str = "session.notify";
     /// A notification sound or image was imported or removed (`{action, kind, name}`).

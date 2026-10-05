@@ -250,6 +250,12 @@ fn build() -> Vec<MethodSpec> {
         m::<NotifyTestParams, NotifySendResult>("notify.test").mutating().d(
             "Show a test notification with a category's sound, volume and image (default `approval`), even when that \
              category is off, so the human can hear and see their choice."),
+        m::<NotifyPlayParams, NotifyPlayResult>("notify.play").mutating().d(
+            "Play a sound now, with no notification: a kind's sound at its volume (a notification category, or a \
+             sound effect: approved, denied, queue_sent, image_added, closed, switched, command_bar, copied) or a \
+             sound by name (Glass, Pop, an imported file). Use it when the human asks for one (\"play a sound when \
+             the deploy is done\"), never as decoration. `notify.sounds` off silences it; an agent can play at most \
+             6 a minute."),
         m::<IdParams, Vec<ProcessInfo>>("session.processes").d(
             "Every OS process under a terminal (its process tree: pid, ppid, pgid, depth, command), with the agent's \
              background task id when a process belongs to one. Subagents run inside the agent process and appear in \

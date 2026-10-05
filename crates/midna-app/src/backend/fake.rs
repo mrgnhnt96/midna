@@ -467,9 +467,14 @@ impl Backend for FakeBackend {
             "needs_you.list" => serde_json::to_value(&st.needs)?,
             "settings.list" => serde_json::to_value(&st.settings)?,
             "notify.media" => {
-                let sounds: Vec<Value> = midna_proto::notify::SYSTEM_SOUNDS
+                // The repo's copies of midna's own sounds, so previews play in dev.
+                let twilight = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../midnad/assets/sounds/twilight");
+                let sounds: Vec<Value> = midna_proto::notify::TWILIGHT
                     .iter()
-                    .map(|n| json!({ "kind": "sound", "name": n, "path": midna_proto::notify::system_sound_path(n), "builtin": true }))
+                    .map(|n| json!({ "kind": "sound", "name": n, "path": twilight.join(format!("{n}.wav")), "builtin": true, "set": "twilight" }))
+                    .chain(midna_proto::notify::SYSTEM_SOUNDS.iter().map(|n| {
+                        json!({ "kind": "sound", "name": n, "path": midna_proto::notify::system_sound_path(n), "builtin": true, "set": "macos" })
+                    }))
                     .collect();
                 json!({ "sounds": sounds, "images": [], "dir": "/tmp/midna-fake/notify" })
             }

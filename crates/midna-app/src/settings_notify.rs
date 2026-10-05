@@ -1,9 +1,10 @@
-//! Settings ▸ Notification sounds / images: each kind's sound (a macOS sound or one you
-//! imported), its volume with a preview, and its image. Picking "Import…" copies the file into
+//! Settings ▸ Sounds / Sound effects / Notification images: each kind's sound (a macOS sound
+//! or one you imported), its volume with a preview, and its image. Sound effects
+//! (`notify::EFFECTS`, played by `crate::sounds`) use the same picker and settings. Picking "Import…" copies the file into
 //! midna (`notify.import`) and uses it; the rows are ordinary `notify.sound.<kind>`,
 //! `notify.volume.<kind>` and `notify.image[.<kind>]` settings, so agents can set them too.
 use super::*;
-use midna_proto::notify::{CATEGORIES, image_key, setting_key, sound_key, volume_key};
+use midna_proto::notify::{CATEGORIES, EFFECTS, image_key, setting_key, sound_key, volume_key};
 use std::path::PathBuf;
 
 /// One entry in a sound or image picker.
@@ -13,6 +14,18 @@ struct Pick {
     thumb: Option<PathBuf>,
     /// An imported file (offer Remove).
     imported: bool,
+    /// A section heading ("Twilight", "macOS"), not a choice.
+    heading: bool,
+}
+
+impl Pick {
+    fn new(label: impl Into<String>, value: impl Into<String>) -> Pick {
+        Pick { label: label.into(), value: value.into(), thumb: None, imported: false, heading: false }
+    }
+
+    fn heading(label: &str) -> Pick {
+        Pick { heading: true, ..Pick::new(label, "") }
+    }
 }
 
 const STEP: i64 = 10;
@@ -32,9 +45,16 @@ impl SettingsWindow {
         list.iter().find(|m| m["name"] == name).and_then(|m| m["path"].as_str()).map(PathBuf::from)
     }
 
-    fn media_names(&self, kind: &str) -> Vec<(String, bool)> {
+    /// Names with their set: `twilight`, `macos`, or empty for an imported file.
+    fn media_names(&self, kind: &str) -> Vec<(String, String)> {
         let list = self.media.get(if kind == "sound" { "sounds" } else { "images" }).and_then(Value::as_array).cloned().unwrap_or_default();
-        list.iter().filter_map(|m| Some((m["name"].as_str()?.to_string(), m["builtin"] == true))).collect()
+        list.iter()
+            .filter_map(|m| {
+                // A daemon from before the Twilight set marks macOS sounds only as builtin.
+                let set = m["set"].as_str().unwrap_or(if m["builtin"] == true { "macos" } else { "" });
+                Some((m["name"].as_str()?.to_string(), set.to_string()))
+            })
+            .collect()
     }
 
     /// Play a kind's sound the way a notification would (its volume times the master).
@@ -51,7 +71,7 @@ impl SettingsWindow {
         let mut rows = vec![RowSpec {
             label: "All sounds".into(),
             note: Some((
-                "Every kind's volume is scaled by this; 0 = silent. Sounds play with the notification, at your Mac's alert volume, and Focus or midna's sound setting in System Settings silences them."
+                "Every kind's volume (notifications and sound effects) is scaled by this; 0 = silent. Sounds play at your Mac's alert volume. Focus or midna's sound setting in System Settings silences the ones that come with a banner."
                     .into(),
                 Hsla::default(),
             )),
@@ -79,12 +99,42 @@ impl SettingsWindow {
                 warn: false,
             });
         }
-        if master == 0 {
-            for r in rows.iter_mut().skip(1) {
-                r.note = Some(("Silent while All sounds is at 0".into(), t.dim));
-            }
-        }
+        self.silence_notes(t, &mut rows[1..], master);
         rows
+    }
+
+    /// Sounds with no banner: what you do, then small UI cues.
+    pub(super) fn sound_effect_rows(&self, t: &Theme) -> Vec<RowSpec> {
+        let mut rows: Vec<RowSpec> = EFFECTS
+            .iter()
+            .map(|e| {
+                let sound = self.text_of(&sound_key(e.key));
+                RowSpec {
+                    label: e.label.into(),
+                    note: Some((e.description.into(), Hsla::default())),
+                    control: Control::Sound { cat: e.key },
+                    cli: format!("midna settings set {} {}", sound_key(e.key), if sound.contains(' ') { format!("\"{sound}\"") } else { sound.clone() }),
+                    who: Who::Agents,
+                    warn: false,
+                }
+            })
+            .collect();
+        self.silence_notes(t, &mut rows, self.int("notify.volume"));
+        rows
+    }
+
+    /// Why a sound row plays nothing: sounds are off, or All sounds is at 0.
+    fn silence_notes(&self, t: &Theme, rows: &mut [RowSpec], master: i64) {
+        let why = if self.value("notify.sounds") == Value::Bool(false) {
+            "Silent while Play sounds is off"
+        } else if master == 0 {
+            "Silent while All sounds is at 0"
+        } else {
+            return;
+        };
+        for r in rows {
+            r.note = Some((why.into(), t.dim));
+        }
     }
 
     pub(super) fn notify_image_rows(&self, t: &Theme) -> Vec<RowSpec> {
@@ -182,11 +232,17 @@ impl SettingsWindow {
         let value = self.text_of(&key);
         let silent = value == "none";
         let label = if silent { "None".to_string() } else { value.clone() };
-        // Yours first, then the macOS sounds.
-        let mut names = self.media_names("sound");
-        names.sort_by_key(|(_, builtin)| *builtin);
-        let mut picks = vec![Pick { label: "None".into(), value: "none".into(), thumb: None, imported: false }];
-        picks.extend(names.into_iter().map(|(n, builtin)| Pick { label: n.clone(), value: n, thumb: None, imported: !builtin }));
+        // Yours first, then midna's Twilight sounds, then the macOS ones.
+        let names = self.media_names("sound");
+        let mut picks = vec![Pick::new("None", "none")];
+        picks.extend(names.iter().filter(|(_, set)| set.is_empty()).map(|(n, _)| Pick { imported: true, ..Pick::new(n, n) }));
+        for (set, title) in [("twilight", "Twilight"), ("macos", "macOS")] {
+            let group: Vec<Pick> = names.iter().filter(|(_, s)| s == set).map(|(n, _)| Pick::new(n, n)).collect();
+            if !group.is_empty() {
+                picks.push(Pick::heading(title));
+                picks.extend(group);
+            }
+        }
         let open = self.picker.as_deref() == Some(key.as_str());
         div()
             .flex()
@@ -232,10 +288,10 @@ impl SettingsWindow {
         let thumb = self.media_path("image", &shown);
         let mut picks = vec![];
         if cat.is_some() {
-            picks.push(Pick { label: "Same as every notification".into(), value: String::new(), thumb: None, imported: false });
+            picks.push(Pick::new("Same as every notification", ""));
         }
-        picks.push(Pick { label: "None".into(), value: if cat.is_some() { "none".into() } else { String::new() }, thumb: None, imported: false });
-        picks.extend(self.media_names("image").into_iter().map(|(n, _)| Pick { thumb: self.media_path("image", &n), label: n.clone(), value: n, imported: true }));
+        picks.push(Pick::new("None", if cat.is_some() { "none" } else { "" }));
+        picks.extend(self.media_names("image").into_iter().map(|(n, _)| Pick { thumb: self.media_path("image", &n), imported: true, ..Pick::new(&n, &n) }));
         let open = self.picker.as_deref() == Some(key);
         let current = if cat.is_none() && value == "none" { String::new() } else { value.clone() };
         div()
@@ -289,6 +345,12 @@ impl SettingsWindow {
     fn picker_menu(&self, t: &Theme, key: &str, kind: &'static str, current: &str, picks: Vec<Pick>, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().id(SharedString::from(format!("pick-list-{key}"))).max_h(px(320.)).overflow_y_scroll().flex().flex_col();
         for (i, p) in picks.into_iter().enumerate() {
+            if p.heading {
+                list = list.child(
+                    div().px(px(8.)).pt(px(8.)).pb(px(2.)).text_size(px(10.5)).text_color(t.dim).child(p.label.to_uppercase()),
+                );
+                continue;
+            }
             let on = p.value == current;
             let (k, v) = (key.to_string(), p.value.clone());
             let remove = p.imported.then(|| p.value.clone());
@@ -306,8 +368,9 @@ impl SettingsWindow {
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.picker = None;
                         s.set(&k, json!(v), cx);
-                        if let Some(cat) = k.strip_prefix("notify.sound.").and_then(midna_proto::notify::category) {
-                            s.preview(cat.key);
+                        // Hear the choice (sound effects as well as notification kinds).
+                        if let Some(kind) = k.strip_prefix("notify.sound.").filter(|k| midna_proto::notify::has_sound(k)) {
+                            s.preview(kind);
                         }
                     }))
                     .child(div().w(px(12.)).flex_none().when(on, |d| d.child(Icon::Check.el(11., t.accent))))

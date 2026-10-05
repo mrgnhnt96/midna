@@ -296,13 +296,16 @@ pub struct NotifyMediaParams {
 pub struct NotifyMedia {
     /// `sound` or `image`.
     pub kind: String,
-    /// What a `notify.sound.<kind>` / `notify.image[.<kind>]` setting holds to use it: a macOS
+    /// What a `notify.sound.<kind>` / `notify.image[.<kind>]` setting holds to use it: a built-in
     /// sound's name, or an imported file's name.
     pub name: String,
     pub path: String,
-    /// A macOS sound (can't be removed).
+    /// Ships with midna or macOS (can't be removed).
     #[serde(default)]
     pub builtin: bool,
+    /// Which set a built-in sound belongs to: `twilight` (midna's own) or `macos`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub set: String,
     /// Settings that use it now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub used_by: Vec<String>,
@@ -348,6 +351,31 @@ pub struct NotifyTestParams {
     /// The terminal the test is about (clicking it selects it). Defaults to the caller's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyPlayParams {
+    /// A kind, to play its sound at its volume: a notification category (approval, failed, …)
+    /// or a sound effect (approved, denied, queue_sent, …). Or a sound's name: a macOS sound
+    /// (Glass, Pop, …) or an imported file's name (see notify.media).
+    pub sound: String,
+    /// 0–100 instead of the kind's volume (still scaled by `notify.volume`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<u8>,
+    /// The terminal it's about. Defaults to the caller's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyPlayResult {
+    pub played: bool,
+    /// The sound's name.
+    pub sound: String,
+    /// Why nothing played: `sounds_off` (notify.sounds), `silent` (volume 0), `no_sound` (the
+    /// kind's sound is none), `rate_limited`, `no_app`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

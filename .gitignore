@@ -14,3 +14,5 @@ spikes/**/*.app
 spikes/**/*.log
 spikes/daemon-reexec/run*/
 spikes/gpui-terminal/shots/*-big.png
+# tools/twilight render output (the shipped sounds are crates/midnad/assets/sounds/twilight)
+/tools/twilight/out

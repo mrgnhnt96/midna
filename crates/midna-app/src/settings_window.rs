@@ -474,13 +474,19 @@ fn label_for(key: &str) -> String {
         "notify.enabled" => "Show notifications",
         "notify.turn_done_min_secs" => "“Agent finished” after (seconds)",
         "notify.volume" => "All sounds",
+        "notify.sounds" => "Play sounds",
+        "notify.sounds_in_app" => "While you're using midna",
         "notify.image" => "Every notification",
         "notify.when_focused" => "Also for the terminal in front of you",
         "notify.when_app_closed" => "When the app isn't running",
-        k if k.starts_with("notify.") => match midna_proto::notify::category(k.rsplit('.').next().unwrap_or(k)) {
-            Some(c) => c.label,
-            None => k,
-        },
+        k if k.starts_with("notify.") => {
+            let kind = k.rsplit('.').next().unwrap_or(k);
+            match (midna_proto::notify::category(kind), midna_proto::notify::effect(kind)) {
+                (Some(c), _) => c.label,
+                (_, Some(e)) => e.label,
+                _ => k,
+            }
+        }
         k => return k.to_string(),
     }
     .to_string()
@@ -680,10 +686,14 @@ impl SettingsWindow {
         notifications.extend(["notify.turn_done_min_secs", "notify.when_focused", "notify.when_app_closed"].map(row));
         let notify_off = self.value("notify.enabled") == Value::Bool(false);
         let mut notifications: Vec<RowSpec> = notifications.into_iter().flatten().collect();
-        let mut sounds = self.notify_sound_rows(t);
+        // Sounds: on/off and in-app first, then every notification kind; effects get their own group.
+        let mut sounds: Vec<RowSpec> = ["notify.sounds", "notify.sounds_in_app"].iter().filter_map(|k| self.spec_row(k)).collect();
+        let switches = sounds.len();
+        sounds.extend(self.notify_sound_rows(t));
+        let effects = self.sound_effect_rows(t);
         let mut images = self.notify_image_rows(t);
         if notify_off {
-            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut()).chain(images.iter_mut()) {
+            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()) {
                 r.note = Some(("No effect while notifications are off".into(), t.dim));
             }
         }
@@ -800,7 +810,8 @@ impl SettingsWindow {
             Group { name: "Permissions", danger: false, badge: missing, rows: perms },
             Group { name: "Webhooks", danger: false, badge: 0, rows: webhooks.into_iter().flatten().collect() },
             Group { name: "Notifications", danger: false, badge: 0, rows: notifications },
-            Group { name: "Notification sounds", danger: false, badge: 0, rows: sounds },
+            Group { name: "Sounds", danger: false, badge: 0, rows: sounds },
+            Group { name: "Sound effects", danger: false, badge: 0, rows: effects },
             Group { name: "Notification images", danger: false, badge: 0, rows: images },
             Group { name: "Look", danger: false, badge: 0, rows: look.into_iter().flatten().collect() },
             Group { name: "Terminal", danger: false, badge: 0, rows: terminal },

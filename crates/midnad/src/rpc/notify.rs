@@ -133,3 +133,11 @@ pub fn test(d: &Daemon, ctx: &Ctx, p: NotifyTestParams) -> R {
     let sid = target(d, ctx, p.session, false)?;
     ok(crate::notify::test(d, sid, &category))
 }
+
+pub fn play(d: &Daemon, ctx: &Ctx, p: NotifyPlayParams) -> R {
+    let sid = target(d, ctx, p.session, false)?;
+    let what = p.sound.trim();
+    // `midna notify play glass` / `uh-oh`: built-in sounds by any case.
+    let what = notify::builtin_sound_named(what).unwrap_or(what);
+    ok(crate::notify::play(d, sid, what, p.volume, !ctx.is_human()).map_err(RpcError::bad_params)?)
+}

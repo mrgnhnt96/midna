@@ -437,6 +437,9 @@ impl MainWindow {
                 }
                 if k == midna_proto::kinds::SESSION_QUEUE {
                     crate::ui::queue::on_event(self, &e, cx);
+                    if self.is_home() && e.data.get("action").and_then(|a| a.as_str()) == Some("sent") {
+                        crate::sounds::play("queue_sent");
+                    }
                 }
                 if k == "links.changed"
                     && let Some(sid) = e.session_id.clone().filter(|s| self.selected.as_ref() == Some(s))
@@ -445,6 +448,15 @@ impl MainWindow {
                 }
                 if k == midna_proto::kinds::NOTIFY_POSTED && self.is_home() {
                     self.on_notification(&e, window, cx);
+                }
+                if k == midna_proto::kinds::NOTIFY_SOUND && self.is_home() {
+                    let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
+                    if let Ok(p) = serde_json::from_value::<midna_proto::notify::Played>(e.data.clone())
+                        && fresh
+                        && p.via == "app"
+                    {
+                        crate::sounds::play_file(&p.file, p.volume);
+                    }
                 }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
@@ -490,8 +502,8 @@ impl MainWindow {
         self.windows.borrow().shows(session, self.id)
     }
 
-    /// midnad's `notify.posted`: show it unless you're looking at that terminal. Old ones
-    /// (replayed after a reconnect) are dropped.
+    /// midnad's `notify.posted`: show it unless you're looking at that terminal (then only its
+    /// sound plays, see `crate::sounds`). Old ones (replayed after a reconnect) are dropped.
     fn on_notification(&self, e: &Event, window: &Window, cx: &App) {
         let Ok(p) = serde_json::from_value::<midna_proto::notify::Posted>(e.data.clone()) else { return };
         let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
@@ -501,7 +513,16 @@ impl MainWindow {
         let when_focused = self.settings.get("notify.when_focused").and_then(Value::as_bool).unwrap_or(false);
         let on_screen = e.session_id.as_deref().is_some_and(|s| crate::windows::on_screen(s, window, self.id, self.selected.as_deref(), cx));
         if !p.test && crate::notify::looking_at(on_screen, e.session_id.as_deref(), e.session_id.as_deref(), when_focused) {
+            if let (true, Some(file)) = (p.sound, p.sound_file.as_deref()) {
+                crate::sounds::play_file(file, p.volume.unwrap_or(100));
+            }
             return;
+        }
+        let mut p = p;
+        // notify.sounds_in_app off: a banner shown while midna is frontmost stays quiet.
+        if !p.test && !crate::sounds::allowed_now() {
+            p.sound = false;
+            p.notification_sound = None;
         }
         crate::notify::post(&p, e.session_id.as_deref());
     }
@@ -670,6 +691,7 @@ impl MainWindow {
             let new: HashMap<String, Value> = s.into_iter().map(|e| (e.key, e.value)).collect();
             if new != self.settings {
                 self.settings = new;
+                crate::sounds::sync(&self.settings, self.backend.socket_path().parent());
                 self.apply_theme(window, cx);
                 self.rebind(cx);
                 crate::terminal::set_option_as_meta(self.settings.get("terminal.option_as_meta").and_then(Value::as_bool).unwrap_or(true));
@@ -992,6 +1014,9 @@ impl MainWindow {
 
     /// A plain click: just this terminal, which also becomes the anchor for ⌘⇧-click.
     pub fn select_only(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.as_deref() != Some(&id) {
+            crate::sounds::play("switched");
+        }
         self.marked.clear();
         self.mark_anchor = Some(id.clone());
         self.select(id, window, cx);
@@ -1081,6 +1106,7 @@ impl MainWindow {
             Overlay::None => self.focus_terminal(window, cx),
             Overlay::CommandBar => {
                 if was != Overlay::CommandBar {
+                    crate::sounds::play("command_bar");
                     crate::ui::command_bar::on_open(self, cx);
                 }
                 self.palette.focus.focus(window, cx);
@@ -1133,6 +1159,11 @@ impl MainWindow {
         self.menu = Menu::None;
         // Optimistic: hide the item now; the event-driven refresh confirms it.
         self.needs.retain(|n| n.id != need_id);
+        match res {
+            Resolution::Approve { .. } | Resolution::Done | Resolution::Restart => crate::sounds::play("approved"),
+            Resolution::Deny => crate::sounds::play("denied"),
+            Resolution::Dismiss => {}
+        }
         let params = json!({"id": need_id, "resolution": res});
         self.rpc("needs_you.resolve", params, cx, |m, _, _, cx| m.request_refresh(refresh::NEEDS | refresh::SESSIONS | refresh::RULES, cx));
         cx.notify();
@@ -1292,6 +1323,7 @@ impl MainWindow {
             return;
         }
         self.close_armed = None;
+        crate::sounds::play("closed");
         self.select_neighbour(&id, window, cx);
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
@@ -1328,6 +1360,7 @@ impl MainWindow {
         }
         self.sessions.retain(|s| !ids.contains(&s.id));
         self.menu = Menu::None;
+        crate::sounds::play("closed");
         for id in ids {
             self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
         }
@@ -1391,12 +1424,14 @@ impl MainWindow {
             return;
         };
         self.menu = Menu::None;
+        crate::sounds::play("closed");
         self.rpc("session.close", json!({"id": id}), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
     }
 
     pub fn copy_session_id(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.selected.clone() {
             cx.write_to_clipboard(ClipboardItem::new_string(id));
+            crate::sounds::play("copied");
             self.toast("Copied the session id.", cx);
         }
         self.menu = Menu::None;
@@ -1425,6 +1460,9 @@ impl MainWindow {
             None if step > 0 => 0,
             None => n - 1,
         };
+        if self.selected.as_deref() != Some(order[next as usize].as_str()) {
+            crate::sounds::play("switched");
+        }
         self.select(order[next as usize].clone(), window, cx);
     }
 

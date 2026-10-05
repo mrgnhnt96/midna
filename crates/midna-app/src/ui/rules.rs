@@ -553,6 +553,7 @@ impl RulesView {
             r.removal_request = None;
         }
         self.flash = None;
+        crate::sounds::play(if remove { "approved" } else { "denied" });
         let params = json!({"id": rr.needs_you_id, "resolution": res});
         self.call("needs_you.resolve", params, cx, move |v, _, cx| {
             if remove {

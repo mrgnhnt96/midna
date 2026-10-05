@@ -151,11 +151,14 @@ macro_rules! s {
 }
 
 /// A notification category's sound, volume and image (see `notify::{sound_key, volume_key, image_key}`).
-const SOUNDS: SettingKind = en_path(&["none", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"]);
+const SOUNDS: SettingKind = en_path(&[
+    "none", "Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick", "Basso", "Blow", "Bottle", "Frog", "Funk",
+    "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink",
+]);
 macro_rules! snd {
     ($cat:literal, $def:literal) => {
         s!(concat!("notify.sound.", $cat), SOUNDS, S($def), "notifications", false,
-            concat!("Sound for “notify.", $cat, "”: none, a macOS sound (Glass, Ping, …) or a sound imported with `midna notify import <file>` (by its file name)."))
+            concat!("Sound for “notify.", $cat, "”: none, one of midna's Twilight sounds (Portal, Call, …), a macOS sound (Glass, Ping, …) or a sound imported with `midna notify import <file>` (by its file name)."))
     };
 }
 macro_rules! vol {
@@ -271,18 +274,30 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
     s!("notify.image", SettingKind::String, S(""), "notifications", false,
         "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
-    snd!("approval", "Glass"), vol!("approval"), pic!("approval"),
-    snd!("attention", "Glass"), vol!("attention"), pic!("attention"),
-    snd!("failed", "Basso"), vol!("failed"), pic!("failed"),
-    snd!("turn_done", "none"), vol!("turn_done"), pic!("turn_done"),
-    snd!("agent", "Ping"), vol!("agent"), pic!("agent"),
-    snd!("from_trigger", "Ping"), vol!("from_trigger"), pic!("from_trigger"),
+    snd!("approval", "Portal"), vol!("approval"), pic!("approval"),
+    snd!("attention", "Call"), vol!("attention"), pic!("attention"),
+    snd!("failed", "Uh-oh"), vol!("failed"), pic!("failed"),
+    snd!("turn_done", "Strum"), vol!("turn_done"), pic!("turn_done"),
+    snd!("agent", "Hm"), vol!("agent"), pic!("agent"),
+    snd!("from_trigger", "Hm"), vol!("from_trigger"), pic!("from_trigger"),
     snd!("requests", "none"), vol!("requests"), pic!("requests"),
     snd!("background", "none"), vol!("background"), pic!("background"),
     snd!("pr_checks", "none"), vol!("pr_checks"), pic!("pr_checks"),
     snd!("exited", "none"), vol!("exited"), pic!("exited"),
     snd!("triggers", "none"), vol!("triggers"), pic!("triggers"),
     snd!("restarted", "none"), vol!("restarted"), pic!("restarted"),
+    snd!("approved", "Rise"), vol!("approved"),
+    snd!("denied", "Nn-nn"), vol!("denied"),
+    snd!("queue_sent", "Whoosh"), vol!("queue_sent"),
+    snd!("image_added", "Fwip"), vol!("image_added"),
+    snd!("closed", "Close"), vol!("closed"),
+    snd!("switched", "Tick"), vol!("switched"),
+    snd!("command_bar", "Thump"), vol!("command_bar"),
+    snd!("copied", "Tick-tick"), vol!("copied"),
+    s!("notify.sounds", SettingKind::Bool, B(true), "notifications", false,
+        "Play sounds at all: notification sounds and sound effects (approve, deny, a queued message sent, switching terminals, …). ⌘K “Mute sounds” turns this off."),
+    s!("notify.sounds_in_app", SettingKind::Bool, B(true), "notifications", false,
+        "Play sounds while midna is the frontmost app: sound effects for what you do, and a notification's sound when its banner is skipped because you're looking at that terminal. Off: midna is quiet while you use it, and you hear only what happens while you're in another app."),
     s!("notify.when_focused", SettingKind::Bool, B(false), "notifications", false,
         "Also notify about the terminal you're looking at while midna is the frontmost app."),
     s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
@@ -371,8 +386,16 @@ mod tests {
             assert!(setting(&crate::notify::volume_key(c.key)).is_some_and(|v| v.range == Some((0, 100))), "{}", c.key);
             assert!(setting(&crate::notify::image_key(c.key)).is_some(), "{}", c.key);
         }
+        for e in crate::notify::EFFECTS {
+            let snd = setting(&crate::notify::sound_key(e.key)).unwrap_or_else(|| panic!("no sound setting for {}", e.key));
+            assert_eq!(snd.default.to_json(), json!(e.sound), "{}", e.key);
+            let vol = setting(&crate::notify::volume_key(e.key)).unwrap_or_else(|| panic!("no volume setting for {}", e.key));
+            assert_eq!((vol.default.to_json(), vol.range), (json!(e.volume), Some((0, 100))), "{}", e.key);
+            assert!(crate::notify::category(e.key).is_none(), "{} is both a category and an effect", e.key);
+        }
         let SettingKind::Enum { options, .. } = setting("notify.sound.approval").unwrap().ty else { panic!() };
-        assert_eq!(&options[1..], crate::notify::SYSTEM_SOUNDS);
+        let builtin: Vec<&str> = crate::notify::TWILIGHT.iter().chain(crate::notify::SYSTEM_SOUNDS).copied().collect();
+        assert_eq!(&options[1..], builtin.as_slice());
     }
 
     #[test]

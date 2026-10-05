@@ -689,6 +689,18 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
                 .cli(format!("midna settings set theme {v}")),
         );
     }
+    let sounds_on = (s.setting)("notify.sounds").as_deref() != Some("false");
+    out.push(
+        Command::new(
+            "sounds",
+            CmdIcon::Screen,
+            if sounds_on { "Mute sounds" } else { "Turn sounds on" },
+            Run::Rpc { method: "settings.set".into(), params: json!({"key": "notify.sounds", "value": !sounds_on}) },
+        )
+        .sub(if sounds_on { "notification sounds and sound effects" } else { "sounds are off" })
+        .kw("sound sounds mute unmute quiet silence audio effects volume")
+        .cli(format!("midna settings set notify.sounds {}", !sounds_on)),
+    );
     let density = (s.setting)("density").unwrap_or_else(|| "comfortable".into());
     let next = if density == "compact" { "comfortable" } else { "compact" };
     let mut dc = Command::new(

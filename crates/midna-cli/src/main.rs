@@ -1018,6 +1018,18 @@ fn notify(a: &Args, out: OutFn) -> Res {
                 Some(r) => println!("not sent: {r}"),
             });
         }
+        "play" => {
+            a.check(&["session", "volume"])?;
+            let volume = match a.get("volume") {
+                Some(v) => Some(v.trim_end_matches('%').parse::<u8>().ok().filter(|v| *v <= 100).ok_or_else(|| Fail::Usage(format!("--volume `{v}`: expected 0-100")))?),
+                None => None,
+            };
+            let v = call("notify.play", json!({ "session": session, "sound": a.need(2, "a kind (approved, failed, …) or a sound (Glass, Pop, …)")?, "volume": volume }))?;
+            out(&v, &|v| match v["reason"].as_str() {
+                None => println!("played {}", s_(v, "sound")),
+                Some(r) => println!("not played: {r}"),
+            });
+        }
         other => return Err(Fail::Usage(format!("unknown `notify {other}`; see midna notify --help"))),
     }
     Ok(())

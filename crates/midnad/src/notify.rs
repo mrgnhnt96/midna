@@ -259,13 +259,80 @@ pub fn style(home: &std::path::Path, setting: &dyn Fn(&str) -> Value, category: 
     let int_of = |k: &str| setting(k).as_i64().unwrap_or(100).clamp(0, 100);
     let volume = int_of("notify.volume") * int_of(&notify::volume_key(category)) / 100;
     let sound = crate::notify_media::sound_path(home, &str_of(&notify::sound_key(category)))
-        .filter(|_| volume > 0)
+        .filter(|_| volume > 0 && setting("notify.sounds") != Value::Bool(false))
         .map(|p| (p.to_string_lossy().into_owned(), volume.max(1) as u8));
     let image = match str_of(&notify::image_key(category)).as_str() {
         "" => crate::notify_media::image_path(home, &str_of("notify.image")),
         v => crate::notify_media::image_path(home, v),
     };
     (sound, image.map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// Play a sound now, with no notification (`notify.play`): `what` is a kind (a notification
+/// category or a sound effect: its sound at its volume) or a sound's name (at `volume`, else
+/// full). Scaled by `notify.volume`; nothing plays with `notify.sounds` off. The app plays it;
+/// with no app, midnad does (`afplay`) when `notify.when_app_closed` allows.
+pub fn play(d: &Daemon, session: Option<Id>, what: &str, volume: Option<u8>, rate_limit: bool) -> Result<NotifyPlayResult, String> {
+    let (file, volume, kind, enabled, when_app_closed) = {
+        let core = d.core();
+        let st = &core.state;
+        let int_of = |k: &str| st.setting(k).as_i64().unwrap_or(100).clamp(0, 100);
+        let (name, kind_volume, kind) = if notify::has_sound(what) {
+            (st.setting_str(&notify::sound_key(what)), int_of(&notify::volume_key(what)), Some(what.to_string()))
+        } else {
+            (what.to_string(), 100, None)
+        };
+        let Some(file) = crate::notify_media::sound_path(&d.cfg.home, &name) else {
+            if kind.is_some() {
+                return Ok(NotifyPlayResult { played: false, sound: name, reason: Some("no_sound".into()) });
+            }
+            return Err(format!(
+                "no sound or kind `{what}`: a kind (approval, approved, …), a Twilight sound ({}), a macOS sound ({}) or a sound from `midna notify media`",
+                notify::TWILIGHT.join(", "),
+                notify::SYSTEM_SOUNDS.join(", ")
+            ));
+        };
+        let volume = int_of("notify.volume") * volume.map_or(kind_volume, i64::from).clamp(0, 100) / 100;
+        ((name, file.to_string_lossy().into_owned()), volume, kind, st.setting_bool("notify.sounds"), st.setting_bool("notify.when_app_closed"))
+    };
+    let ((name, file), mut st) = (file, d.notify());
+    let quiet = |reason: &str| Ok(NotifyPlayResult { played: false, sound: name.clone(), reason: Some(reason.into()) });
+    if !enabled {
+        return quiet("sounds_off");
+    }
+    if volume == 0 {
+        return quiet("silent");
+    }
+    if rate_limit {
+        let prefix = format!("play:{}", session.as_deref().unwrap_or(""));
+        let now = Instant::now();
+        while st.recent.front().is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(60)) {
+            st.recent.pop_front();
+        }
+        let minute = now.checked_sub(Duration::from_secs(60));
+        if st.recent.iter().filter(|(t, k)| *k == prefix && minute.is_none_or(|m| *t > m)).count() >= AGENT_PER_MINUTE {
+            return quiet("rate_limited");
+        }
+        st.recent.push_back((now, prefix));
+    }
+    drop(st);
+    let via = if d.gui_connected() {
+        "app"
+    } else if when_app_closed && system_allowed(d) {
+        "system"
+    } else {
+        "none"
+    };
+    let played = notify::Played { sound: name.clone(), file: file.clone(), volume: volume as u8, kind, via: via.into() };
+    let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
+    d.emit(kinds::NOTIFY_SOUND, Actor::system(), project, session, serde_json::to_value(&played).unwrap_or_default());
+    if via == "system" {
+        let v = format!("{:.2}", volume as f32 / 100.);
+        let _ = std::thread::Builder::new().name("notify-afplay".into()).spawn(move || {
+            let _ = std::process::Command::new("/usr/bin/afplay").args(["-v", &v, &file]).stdin(std::process::Stdio::null()).output();
+        });
+    }
+    Ok(NotifyPlayResult { played: via != "none", sound: name, reason: (via == "none").then(|| "no_app".into()) })
 }
 
 /// Check the settings, dedupe, and emit `notify.posted` (showing it from midnad when no app

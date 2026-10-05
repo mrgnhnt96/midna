@@ -944,6 +944,7 @@ impl TerminalView {
                     return;
                 }
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+                crate::sounds::play("copied");
             }
         });
     }

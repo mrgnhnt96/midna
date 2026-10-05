@@ -383,6 +383,7 @@ impl TerminalView {
         if crate::dev::var_os("MIDNA_DEBUG_TERM").is_none() {
             cx.write_to_clipboard(ClipboardItem::new_string(l.target));
         }
+        crate::sounds::play("copied");
         self.preview_flash("Copied", false, cx);
     }
 

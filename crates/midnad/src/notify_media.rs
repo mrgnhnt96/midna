@@ -2,7 +2,7 @@
 //! `MIDNA_HOME/notify/{sounds,images}` (`notify.import`). Settings name a file by its file name
 //! (`notify.sound.<kind>`, `notify.image[.<kind>]`); the notifier resolves names to paths.
 use crate::daemon::Daemon;
-use midna_proto::notify::{IMAGE_EXTS, SOUND_EXTS, SYSTEM_SOUNDS, system_sound_path};
+use midna_proto::notify::{IMAGE_EXTS, SOUND_EXTS, SYSTEM_SOUNDS, TWILIGHT, is_builtin_sound, system_sound_path, twilight_path};
 use midna_proto::settings::SETTINGS;
 use midna_proto::*;
 use serde_json::{Value, json};
@@ -55,15 +55,45 @@ fn valid_name(name: &str) -> bool {
 
 /// The file a sound setting's value plays (None: silent, or missing).
 pub fn sound_path(home: &Path, value: &str) -> Option<PathBuf> {
-    if let Some(p) = system_sound_path(value) {
-        return Some(PathBuf::from(p));
-    }
-    (valid_name(value) && kind_of(Path::new(value)) == Some("sound")).then(|| kind_dir(home, "sound").join(value)).filter(|p| p.is_file())
+    midna_proto::notify::sound_file(home, value)
 }
 
 /// The file an image setting's value shows (None: no image, or missing).
 pub fn image_path(home: &Path, value: &str) -> Option<PathBuf> {
     (valid_name(value) && kind_of(Path::new(value)) == Some("image")).then(|| kind_dir(home, "image").join(value)).filter(|p| p.is_file())
+}
+
+/// midna's own sounds, in `TWILIGHT` order (tools/twilight made them).
+static TWILIGHT_FILES: &[&[u8]] = &[
+    include_bytes!("../assets/sounds/twilight/Portal.wav"),
+    include_bytes!("../assets/sounds/twilight/Call.wav"),
+    include_bytes!("../assets/sounds/twilight/Uh-oh.wav"),
+    include_bytes!("../assets/sounds/twilight/Strum.wav"),
+    include_bytes!("../assets/sounds/twilight/Hm.wav"),
+    include_bytes!("../assets/sounds/twilight/Rise.wav"),
+    include_bytes!("../assets/sounds/twilight/Nn-nn.wav"),
+    include_bytes!("../assets/sounds/twilight/Whoosh.wav"),
+    include_bytes!("../assets/sounds/twilight/Fwip.wav"),
+    include_bytes!("../assets/sounds/twilight/Close.wav"),
+    include_bytes!("../assets/sounds/twilight/Tick.wav"),
+    include_bytes!("../assets/sounds/twilight/Thump.wav"),
+    include_bytes!("../assets/sounds/twilight/Tick-tick.wav"),
+];
+
+/// Write the Twilight sounds to `MIDNA_HOME/notify/twilight` (at startup), replacing any that
+/// differ, so an upgrade that retunes a sound takes effect. The app and afplay play these files.
+pub fn install_twilight(home: &Path) {
+    for (name, bytes) in TWILIGHT.iter().zip(TWILIGHT_FILES) {
+        let Some(path) = twilight_path(home, name) else { continue };
+        if std::fs::read(&path).is_ok_and(|b| b == *bytes) {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(home));
+        let tmp = path.with_extension("wav.tmp");
+        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)) {
+            eprintln!("midnad: could not install the {name} sound at {}: {e}", path.display());
+        }
+    }
 }
 
 /// Longer notification sounds make macOS play its default sound instead.
@@ -161,10 +191,14 @@ fn scale_wav(mut b: Vec<u8>, volume: u8) -> Option<Vec<u8>> {
 pub fn check_setting(home: &Path, key: &str, value: &Value) -> Result<(), String> {
     let v = value.as_str().unwrap_or("");
     if key.starts_with("notify.sound.") {
-        if v == "none" || SYSTEM_SOUNDS.contains(&v) || sound_path(home, v).is_some() {
+        if v == "none" || is_builtin_sound(v) || sound_path(home, v).is_some() {
             return Ok(());
         }
-        return Err(format!("no sound `{v}`: use none, a macOS sound ({}) or a sound from `midna notify media` (import one with `midna notify import <file>`)", SYSTEM_SOUNDS.join(", ")));
+        return Err(format!(
+            "no sound `{v}`: use none, a Twilight sound ({}), a macOS sound ({}) or a sound from `midna notify media` (import one with `midna notify import <file>`)",
+            TWILIGHT.join(", "),
+            SYSTEM_SOUNDS.join(", ")
+        ));
     }
     if key == "notify.image" || key.starts_with("notify.image.") {
         if v.is_empty() || v == "none" || image_path(home, v).is_some() {
@@ -202,15 +236,17 @@ fn imported(home: &Path, kind: &str) -> Vec<(String, PathBuf)> {
 
 pub fn list(d: &Daemon, kind: Option<&str>) -> NotifyMediaResult {
     let home = &d.cfg.home;
-    let media = |kind: &str, name: String, path: String, builtin: bool| NotifyMedia { kind: kind.into(), used_by: used_by(d, kind, &name), name, path, builtin };
+    let media = |kind: &str, name: String, path: String, set: &str| NotifyMedia { kind: kind.into(), used_by: used_by(d, kind, &name), name, path, builtin: !set.is_empty(), set: set.into() };
     let sounds = if kind.is_none_or(|k| k == "sound") {
-        let system = SYSTEM_SOUNDS.iter().filter_map(|n| system_sound_path(n).map(|p| media("sound", n.to_string(), p, true)));
-        system.chain(imported(home, "sound").into_iter().map(|(n, p)| media("sound", n, p.to_string_lossy().into_owned(), false))).collect()
+        let twilight = TWILIGHT.iter().filter_map(|n| twilight_path(home, n).map(|p| media("sound", n.to_string(), p.to_string_lossy().into_owned(), "twilight")));
+        let system = SYSTEM_SOUNDS.iter().filter_map(|n| system_sound_path(n).map(|p| media("sound", n.to_string(), p, "macos")));
+        let mine = imported(home, "sound").into_iter().map(|(n, p)| media("sound", n, p.to_string_lossy().into_owned(), ""));
+        twilight.chain(system).chain(mine).collect()
     } else {
         vec![]
     };
     let images = if kind.is_none_or(|k| k == "image") {
-        imported(home, "image").into_iter().map(|(n, p)| media("image", n, p.to_string_lossy().into_owned(), false)).collect()
+        imported(home, "image").into_iter().map(|(n, p)| media("image", n, p.to_string_lossy().into_owned(), "")).collect()
     } else {
         vec![]
     };
@@ -260,13 +296,13 @@ pub fn import(d: &Daemon, actor: Actor, path: &str) -> Result<NotifyMedia, RpcEr
         }
     }
     let path = folder.join(&name).to_string_lossy().into_owned();
-    Ok(NotifyMedia { kind: kind.into(), used_by: used_by(d, kind, &name), name, path, builtin: false })
+    Ok(NotifyMedia { kind: kind.into(), used_by: used_by(d, kind, &name), name, path, builtin: false, set: String::new() })
 }
 
 /// Delete an imported file; returns the settings that used it (the caller resets them).
 pub fn remove(d: &Daemon, actor: Actor, name: &str) -> Result<(String, Vec<String>), RpcError> {
-    if SYSTEM_SOUNDS.contains(&name) {
-        return Err(RpcError::bad_params(format!("`{name}` is a macOS sound; only imported files can be removed")));
+    if is_builtin_sound(name) {
+        return Err(RpcError::bad_params(format!("`{name}` ships with midna or macOS; only imported files can be removed")));
     }
     let kind = kind_of(Path::new(name)).filter(|_| valid_name(name)).ok_or_else(|| RpcError::not_found(format!("no imported sound or image `{name}`")))?;
     let file = kind_dir(&d.cfg.home, kind).join(name);
@@ -336,6 +372,25 @@ mod tests {
         assert!(std::fs::read(&a).unwrap().starts_with(b"RIFF"));
         assert_ne!(rendered(&home, "/System/Library/Sounds/Glass.aiff", 80), Some(a));
         assert_eq!(rendered(&home, "/nonexistent.wav", 40), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn installs_and_repairs_the_twilight_sounds() {
+        assert_eq!(TWILIGHT_FILES.len(), TWILIGHT.len());
+        for (name, b) in TWILIGHT.iter().zip(TWILIGHT_FILES) {
+            assert!(b.starts_with(b"RIFF") && &b[8..12] == b"WAVE", "{name} is a WAV");
+        }
+        let home = std::env::temp_dir().join(format!("midna-twilight-{}", std::process::id()));
+        install_twilight(&home);
+        let portal = twilight_path(&home, "Portal").unwrap();
+        assert_eq!(std::fs::read(&portal).unwrap(), TWILIGHT_FILES[0]);
+        assert_eq!(sound_path(&home, "Portal"), Some(portal.clone()));
+        assert!(check_setting(&home, "notify.sound.approval", &serde_json::json!("Uh-oh")).is_ok());
+        // A changed file (an older build's sound) is put back.
+        std::fs::write(&portal, b"old").unwrap();
+        install_twilight(&home);
+        assert_eq!(std::fs::read(&portal).unwrap(), TWILIGHT_FILES[0]);
         let _ = std::fs::remove_dir_all(home);
     }
 }

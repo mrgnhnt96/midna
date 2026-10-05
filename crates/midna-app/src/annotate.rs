@@ -338,6 +338,7 @@ impl AnnotateView {
         }
         self.update_draft(cx, |d| d.attached = true);
         self.sync(cx);
+        crate::sounds::play("image_added");
         self.close(window, cx);
     }
 

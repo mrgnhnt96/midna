@@ -226,7 +226,8 @@ pub static VERBS: &[Verb] = &[
                 notify set <key> on|off|default [--session <id> | --global]\n       \
                 notify mute|unmute [--session <id>]\n       \
                 notify send \"<title>\" [--detail \"<body>\"] [--sound] [--session <id>]\n       \
-                notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]",
+                notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
+                notify play <kind>|<sound> [--volume 0-100] [--session <id>]",
         summary: "which macOS notifications midna posts, per terminal or globally; send the human one",
         details: "Lists each kind (approval, attention, failed, turn_done, agent, requests, background, pr_checks,\n\
                   exited, triggers, restarted), whether it's on globally and for the terminal (default: yours).\n\
@@ -235,13 +236,20 @@ pub static VERBS: &[Verb] = &[
                   when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
                   a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
                   turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
-                  Each kind has a sound, a volume and an image: settings notify.sound.<kind> (none, a macOS sound\n\
-                  like Glass, or an imported file), notify.volume.<kind> (0-100, times the master notify.volume) and\n\
-                  notify.image.<kind> (empty = notify.image, every notification's image). `import` copies a sound\n\
+                  Each kind has a sound, a volume and an image: settings notify.sound.<kind> (none, one of midna's\n\
+                  Twilight sounds, the defaults: Portal, Call, Uh-oh, Strum, Hm, Rise, Nn-nn, Whoosh, Fwip, Close,\n\
+                  Tick, Thump, Tick-tick; a macOS sound like Glass; or an imported file), notify.volume.<kind>\n\
+                  (0-100, times the master notify.volume) and notify.image.<kind> (empty = notify.image, every\n\
+                  notification's image). `import` copies a sound\n\
                   (aiff, wav, mp3, m4a, caf) or image (png, jpg, gif) into midna, --for sets it for those kinds;\n\
                   `media` lists what's there; `test` shows a kind's notification even when it's off. Pick sounds\n\
-                  and images only when the human asks.",
-        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test"],
+                  and images only when the human asks.\n\
+                  Sound effects play in the app with no banner and use the same settings: approved, denied,\n\
+                  queue_sent, image_added, closed (what the human does) and switched, command_bar, copied (UI cues).\n\
+                  notify.sounds turns every sound off; notify.sounds_in_app off silences sounds while midna is the\n\
+                  frontmost app. `play`\n\
+                  plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.",
+        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play"],
     },
     Verb {
         name: "read",
