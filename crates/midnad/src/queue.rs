@@ -177,15 +177,16 @@ fn ready_is_busy(why: &str) -> bool {
 /// Can `sid` take input now? `Ok(None)` = yes, `Ok(Some(why))` = not yet, `Err` = it never
 /// will as things are (the terminal closed or its process ended).
 pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool) -> Result<Option<String>, String> {
-    let (rt, agent, title, state, labelled, in_turn) = {
+    let (rt, agent, title, state, labelled, in_turn, alive) = {
         let core = d.core();
         let s = core.state.session(sid).ok_or("the terminal closed")?;
         let rt = core.rt.get(sid).cloned().ok_or("the terminal's process ended")?;
         // A state a custom status holds (e.g. "Prompt blocked" as needs_you) is only a label.
         let labelled = s.custom_status.as_ref().is_some_and(|c| c.base == s.status.state && s.status.reason.as_deref() == Some(c.label.as_str()));
-        (rt, s.agent, s.title.clone(), s.status.state, labelled, core.agents.get(sid).is_some_and(|a| a.in_turn))
+        (rt, s.agent, s.title.clone(), s.status.state, labelled, core.agents.get(sid).is_some_and(|a| a.in_turn), s.pid.is_some())
     };
-    if state.is_terminal() {
+    // An agent whose turn died on an error (`StopFailure`) is failed but still running.
+    if state.is_terminal() && !alive {
         return Err("the terminal's process ended".into());
     }
     match state {

@@ -151,6 +151,8 @@ pub struct Daemon {
     pub local: crate::local::Runtime,
     /// The queued-message sender's book-keeping (`queue.rs`). Never held together with `core`.
     pub queue: crate::queue::Runtime,
+    /// Agents watched after a wake (`resume.rs`). Lock after `core`, never before it.
+    pub resume: crate::resume::Runtime,
 }
 
 impl Daemon {
@@ -197,6 +199,7 @@ impl Daemon {
             notify: Mutex::new(Default::default()),
             local: Default::default(),
             queue: Default::default(),
+            resume: Default::default(),
             cfg,
         }))
     }

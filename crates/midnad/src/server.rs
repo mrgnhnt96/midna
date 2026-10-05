@@ -229,4 +229,5 @@ fn background(d: &Arc<Daemon>) {
     crate::notify::start(d);
     crate::local::start(d);
     crate::queue::start(d);
+    crate::resume::start(d);
 }

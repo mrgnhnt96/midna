@@ -22,6 +22,7 @@ pub mod procs;
 pub mod prompts;
 pub mod pty;
 pub mod restart;
+pub mod resume;
 pub mod rpc;
 pub mod server;
 pub mod state;
