@@ -55,6 +55,9 @@ pub struct Store {
     pub tools: HashMap<String, (String, Option<String>)>,
     #[serde(default)]
     pub links: Vec<Link>,
+    /// Fresh "a hook refused the prompt" warnings the last read found (see `local.rs`).
+    #[serde(skip)]
+    pub blocked: Vec<String>,
 }
 
 /// Every terminal's links, loaded on first use.
@@ -197,20 +200,23 @@ pub fn after_hook(d: &std::sync::Arc<Daemon>, sid: &str, agent: AgentKind, hook:
 }
 
 /// Read what the transcript gained since the last read.
-pub fn read_transcript(d: &Daemon, sid: &str) {
+pub fn read_transcript(d: &std::sync::Arc<Daemon>, sid: &str) {
     let (path, cwd) = {
         let core = d.core();
         let Some(s) = core.state.session(sid) else { return };
         (s.agent_info.as_ref().and_then(|i| i.transcript_path.clone()), s.cwd.clone())
     };
     let Some(path) = path else { return };
-    let added = d.links.with(&d.cfg.home, sid, |s| {
+    let (added, blocked) = d.links.with(&d.cfg.home, sid, |s| {
         let before = s.offset;
         let n = read_into(s, &path, &cwd);
-        (n, n > 0 || s.offset != before)
+        ((n, std::mem::take(&mut s.blocked)), n > 0 || s.offset != before)
     });
     if added > 0 {
         changed(d, sid, added);
+    }
+    for b in blocked {
+        crate::local::prompt_blocked(d, sid, &b);
     }
 }
 
@@ -243,6 +249,9 @@ pub fn read_into(s: &mut Store, path: &str, cwd: &str) -> usize {
             Ok(n) => {
                 s.offset += n as u64;
                 let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+                if let Some(b) = crate::local::blocked_notice(&v) {
+                    s.blocked.push(b);
+                }
                 let found = scan_entry(&v, cwd, &mut s.tools);
                 if found.is_empty() {
                     continue;

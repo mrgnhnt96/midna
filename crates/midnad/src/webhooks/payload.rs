@@ -94,6 +94,7 @@ pub fn facts(source: TriggerSource, event: &str, p: &Value) -> Facts {
                 _ => f.branch.clone(),
             };
         }
+        TriggerSource::Local => {}
     }
     f
 }
@@ -114,7 +115,7 @@ pub fn event_matches(trigger_event: &str, f: &Facts) -> bool {
     }
 }
 
-fn glob_ci(pattern: &str, text: &str) -> bool {
+pub fn glob_ci(pattern: &str, text: &str) -> bool {
     glob_match(&pattern.to_lowercase(), &text.to_lowercase())
 }
 
@@ -303,6 +304,8 @@ mod tests {
             secret_store: None,
             github_hook_id: None,
             session_name_template: None,
+            cooldown_secs: None,
+            builtin: None,
         }
     }
 
@@ -317,7 +320,7 @@ mod tests {
         assert!(event_matches("pull_request.*", &f));
         assert!(!event_matches("pull_request.closed", &f));
         assert!(!event_matches("push", &f));
-        let filt = TriggerFilter { repo: Some("MRGNHNT96/midna".into()), branch: Some("feat/*".into()), action: Some("opened".into()), label: Some("bug".into()) };
+        let filt = TriggerFilter { repo: Some("MRGNHNT96/midna".into()), branch: Some("feat/*".into()), action: Some("opened".into()), label: Some("bug".into()), ..Default::default() };
         assert!(evaluate(&trig("pull_request.opened", filt.clone()), &f).fires());
         let e = evaluate(&trig("pull_request.opened", TriggerFilter { label: Some("docs".into()), ..filt }), &f);
         assert!(e.event_ok && !e.filters_ok);

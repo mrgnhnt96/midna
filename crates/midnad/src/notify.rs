@@ -207,9 +207,15 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
 
 /// Post an agent's own notification (`notify.send`).
 pub fn send(d: &Daemon, session: Option<Id>, title: &str, body: &str, sound: bool, from_agent: bool) -> NotifySendResult {
+    send_as(d, "agent", session, title, body, sound, from_agent)
+}
+
+/// A notification in `category` ("agent" for `notify.send`, "from_trigger" for a trigger's
+/// `notify` action). `rate_limit`: at most AGENT_PER_MINUTE a minute per terminal.
+pub fn send_as(d: &Daemon, category: &'static str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool) -> NotifySendResult {
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
-    if from_agent && let Some(sid) = &session {
-        let prefix = format!("agent:{sid}:");
+    if rate_limit && let Some(sid) = &session {
+        let prefix = format!("{category}:{sid}:");
         let st = d.notify();
         let minute = Instant::now().checked_sub(Duration::from_secs(60));
         let sent = st.recent.iter().filter(|(t, k)| k.starts_with(&prefix) && minute.is_none_or(|m| *t > m)).count();
@@ -219,8 +225,8 @@ pub fn send(d: &Daemon, session: Option<Id>, title: &str, body: &str, sound: boo
     }
     let text = if body.trim().is_empty() { title.trim().to_string() } else { format!("{}\n{}", title.trim(), body.trim()) };
     let draft = Draft {
-        category: "agent",
-        key: Some(format!("agent:{}:{}", session.as_deref().unwrap_or(""), text)),
+        category,
+        key: Some(format!("{category}:{}:{}", session.as_deref().unwrap_or(""), text)),
         session,
         project,
         body: text,

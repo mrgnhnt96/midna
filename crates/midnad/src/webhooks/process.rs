@@ -58,6 +58,7 @@ pub fn source_name(s: TriggerSource) -> &'static str {
     match s {
         TriggerSource::Github => "github",
         TriggerSource::Bitbucket => "bitbucket",
+        TriggerSource::Local => "local",
     }
 }
 
@@ -195,6 +196,7 @@ pub fn receive(d: &Arc<Daemon>, req: Request) -> Outcome {
     let (event_h, guid_h, sig_h) = match req.source {
         TriggerSource::Github => ("x-github-event", "x-github-delivery", "x-hub-signature-256"),
         TriggerSource::Bitbucket => ("x-event-key", "x-request-uuid", "x-hub-signature"),
+        TriggerSource::Local => return Outcome { status: 404, body: "not found".into(), work: None },
     };
     let event = req.header(event_h).unwrap_or("").trim().to_string();
     let guid = req.header(guid_h).map(|g| g.trim().trim_matches(['{', '}']).to_string()).filter(|g| !g.is_empty());
@@ -342,10 +344,7 @@ pub fn complete(d: &Arc<Daemon>, w: Work) -> Delivery {
         if let Some(sid) = &session {
             delivery.sessions_started.push(sid.clone());
         }
-        let project = match &t.action {
-            TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } => Some(project_id.clone()),
-            TriggerAction::Attention { .. } => None,
-        };
+        let project = t.action.project_id().cloned();
         let summary = facts.subject.clone().or_else(|| facts.pr_number.as_ref().map(|n| format!("#{n}")));
         {
             let mut core = d.core();
@@ -430,6 +429,12 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value) -> (
             let item = d.raise_needs_you(item);
             (None, format!("Raised attention ({})", item.id))
         }
+        TriggerAction::Notify { title, body, sound } => {
+            let (title, body) = (payload::render(title, f, payload, false), payload::render(body, f, payload, false));
+            let body = if body.trim().is_empty() { [f.subject.clone(), f.url.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ") } else { body };
+            (None, crate::local::notify(d, t, None, &title, &body, *sound))
+        }
+        a => (None, format!("Skipped: {} needs a local trigger", crate::local::action_name(a))),
     }
 }
 
@@ -455,10 +460,7 @@ pub fn record(d: &Daemon, del: &Delivery, payload: Option<&Value>) {
     }
     d.mark_dirty();
     let project = del.trigger_id.as_deref().and_then(|tid| {
-        d.core().state.triggers.iter().find(|t| t.id == tid).and_then(|t| match &t.action {
-            TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } => Some(project_id.clone()),
-            TriggerAction::Attention { .. } => None,
-        })
+        d.core().state.triggers.iter().find(|t| t.id == tid).and_then(|t| t.action.project_id().cloned())
     });
     d.emit(kinds::TRIGGER_DELIVERY, Actor::system(), project, del.session_started.clone(), serde_json::to_value(del).unwrap_or_default());
 }
@@ -510,6 +512,8 @@ pub fn dry_run(t: &Trigger, event: &str, payload: Value) -> Delivery {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent_label(*agent), payload::render_prompt(prompt_template, &facts, &payload)),
         TriggerAction::RunCommand { command, .. } => format!("would run: {}", payload::render(command, &facts, &payload, true)),
         TriggerAction::Attention { message } => format!("would raise attention: {}", payload::render(message, &facts, &payload, false)),
+        TriggerAction::Notify { title, body, .. } => format!("would notify: {} {}", payload::render(title, &facts, &payload, false), payload::render(body, &facts, &payload, false)).trim().to_string(),
+        a => format!("would do nothing: {} needs a local trigger", crate::local::action_name(a)),
     };
     w.delivery.summary = match (e.event_ok && e.filters_ok, e.enabled_ok) {
         (true, true) => format!("Matches · {would}"),

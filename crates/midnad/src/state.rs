@@ -39,6 +39,9 @@ pub struct State {
     pub settings: BTreeMap<String, Value>,
     #[serde(default)]
     pub deferred: BTreeMap<String, Deferred>,
+    /// Built-ins already added once (e.g. `prompt_blocked_status`); removing one keeps it gone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeded: Vec<String>,
 }
 
 impl State {

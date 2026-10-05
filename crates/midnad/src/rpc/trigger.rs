@@ -6,6 +6,10 @@
 //!   (or `secret_needed` first when there's no secret yet). Anyone may pause.
 //! - An agent changing the action or source of an enabled trigger sends it back to draft.
 //! - Agents may remove triggers that aren't enabled; removing an enabled one asks the human.
+//!
+//! Local triggers (`source: local`, see `local.rs`) have no secret: they start as drafts (or
+//! active with `enabled: true`), and agents may enable and pause them, since the human asks an
+//! agent for them in the first place ("when this happens, do that").
 use super::{Ctx, R, ok};
 use crate::daemon::Daemon;
 use crate::state::hex_id;
@@ -23,12 +27,40 @@ fn get(d: &Daemon, id: &str) -> Result<Trigger, RpcError> {
     d.core().state.triggers.iter().find(|t| t.id == id).cloned().ok_or_else(|| not_found(id))
 }
 
-fn validate(d: &Daemon, name: &str, event: &str, action: &TriggerAction) -> Result<(), RpcError> {
+fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
+    let (name, event, action) = (&t.name, &t.event, &t.action);
     if name.trim().is_empty() {
         return Err(RpcError::bad_params("name must not be empty"));
     }
+    let local = t.source == TriggerSource::Local;
     if event.trim().is_empty() {
-        return Err(RpcError::bad_params("event must not be empty, e.g. pull_request.opened or pullrequest:created"));
+        return Err(RpcError::bad_params(if local {
+            "event must not be empty, e.g. agent.prompt_blocked, hook.Stop, idle or schedule"
+        } else {
+            "event must not be empty, e.g. pull_request.opened or pullrequest:created"
+        }));
+    }
+    if action.needs_session() && !local {
+        return Err(RpcError::bad_params(format!("{} acts on the terminal that fired, so it needs source local", crate::local::action_name(action))));
+    }
+    if local && event.trim().eq_ignore_ascii_case("idle") && t.filter.idle_minutes.unwrap_or(0) == 0 {
+        return Err(RpcError::bad_params("idle triggers need filter.idle_minutes (e.g. 55)"));
+    }
+    let schedule = local && event.trim().eq_ignore_ascii_case("schedule");
+    match (&t.filter.cron, schedule) {
+        (None, true) => return Err(RpcError::bad_params("schedule triggers need filter.cron, e.g. \"0 9 * * mon-fri\" (local time)")),
+        (Some(_), false) => return Err(RpcError::bad_params("filter.cron only applies to local triggers with event schedule")),
+        (Some(c), true) => {
+            cron::Cron::parse(c).map_err(|e| RpcError::bad_params(format!("filter.cron: {e}")))?;
+            let f = &t.filter;
+            if action.needs_session() && f.session.is_none() && f.project.is_none() {
+                return Err(RpcError::bad_params(format!(
+                    "a schedule isn't about a terminal: {} needs filter.session (or filter.project, for every terminal in it)",
+                    crate::local::action_name(action)
+                )));
+            }
+        }
+        (None, false) => {}
     }
     match action {
         TriggerAction::StartAgent { project_id, prompt_template, .. } => {
@@ -48,15 +80,34 @@ fn validate(d: &Daemon, name: &str, event: &str, action: &TriggerAction) -> Resu
                 return Err(RpcError::bad_params("attention needs a message"));
             }
         }
+        TriggerAction::SendToSession { steps } => {
+            if steps.is_empty() || steps.iter().any(|s| s.text.is_empty() && !s.enter) {
+                return Err(RpcError::bad_params("send_to_session needs steps, e.g. [{\"text\":\"/compact\"},{\"text\":\"{{last_prompt}}\"}]"));
+            }
+        }
+        TriggerAction::SetStatus { label, color, base, .. } => {
+            if label.trim().is_empty() {
+                return Err(RpcError::bad_params("set_status needs a label"));
+            }
+            if !valid_status_color(color) {
+                return Err(RpcError::bad_params(format!("color must be one of {} or #rrggbb", STATUS_COLORS.join(", "))));
+            }
+            if *base == StatusState::Exited {
+                return Err(RpcError::bad_params("base must be idle, working, needs_you, done or failed"));
+            }
+        }
+        TriggerAction::ClearStatus {} => {}
+        TriggerAction::Notify { title, .. } => {
+            if title.trim().is_empty() {
+                return Err(RpcError::bad_params("notify needs a title"));
+            }
+        }
     }
     Ok(())
 }
 
 fn project_of(t: &Trigger) -> Option<Id> {
-    match &t.action {
-        TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } => Some(project_id.clone()),
-        TriggerAction::Attention { .. } => None,
-    }
+    t.action.project_id().cloned()
 }
 
 /// Replace the trigger in state and emit `trigger.updated` (never includes the secret).
@@ -83,6 +134,7 @@ fn raise_secret_needed(d: &Daemon, ctx: &Ctx, t: &Trigger) -> NeedsYou {
         match t.source {
             TriggerSource::Github => "GitHub",
             TriggerSource::Bitbucket => "Bitbucket",
+            TriggerSource::Local => "Local",
         },
         t.event,
         t.id,
@@ -103,7 +155,11 @@ fn close_secret_needed(d: &Daemon, ctx: &Ctx, id: &str) {
 }
 
 pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
-    validate(d, &p.name, &p.event, &p.action)?;
+    let local = p.source == TriggerSource::Local;
+    if p.enabled && !local {
+        return Err(RpcError::bad_params("only local triggers can be enabled on add; webhook triggers need their secret first"));
+    }
+    let now = time::now_rfc3339();
     let t = Trigger {
         id: format!("t_{}", hex_id(6)),
         name: p.name.trim().to_string(),
@@ -111,24 +167,31 @@ pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
         event: p.event.trim().to_string(),
         filter: p.filter,
         action: p.action,
-        enabled: false,
-        state: TriggerState::NeedsSecret,
+        enabled: p.enabled,
+        state: match (local, p.enabled) {
+            (false, _) => TriggerState::NeedsSecret,
+            (true, false) => TriggerState::Draft,
+            (true, true) => TriggerState::Active,
+        },
         secret_set: false,
         created_by: ctx.actor(),
-        created_at: time::now_rfc3339(),
+        created_at: now.clone(),
         last_fired_at: None,
         fired: 0,
         last_fired_summary: None,
-        enabled_at: None,
+        enabled_at: p.enabled.then_some(now),
         secret_set_at: None,
         secret_store: None,
         github_hook_id: p.github_hook_id,
         session_name_template: p.session_name_template.filter(|s| !s.trim().is_empty()),
+        cooldown_secs: p.cooldown_secs,
+        builtin: None,
     };
+    validate(d, &t)?;
     d.core().state.triggers.push(t.clone());
     d.mark_dirty();
     d.emit(kinds::TRIGGER_ADDED, ctx.actor(), project_of(&t), None, json!({ "trigger": t }));
-    if !ctx.is_human() {
+    if !ctx.is_human() && !local {
         raise_secret_needed(d, ctx, &t);
     }
     ok(t)
@@ -172,9 +235,13 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
         t.session_name_template = Some(n).filter(|s| !s.trim().is_empty());
         changed.push("session_name_template");
     }
-    validate(d, &t.name, &t.event, &t.action)?;
+    if let Some(c) = p.cooldown_secs {
+        t.cooldown_secs = Some(c);
+        changed.push("cooldown_secs");
+    }
+    validate(d, &t)?;
     let mut back_to_draft = false;
-    if sensitive && !ctx.is_human() && matches!(t.state, TriggerState::Active | TriggerState::Paused) {
+    if sensitive && !ctx.is_human() && t.source != TriggerSource::Local && matches!(t.state, TriggerState::Active | TriggerState::Paused) {
         t.enabled = false;
         t.state = TriggerState::Draft;
         back_to_draft = true;
@@ -185,7 +252,14 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
 
 pub fn set_enabled(d: &Daemon, ctx: &Ctx, p: TriggerSetEnabledParams) -> R {
     let mut t = get(d, &p.id)?;
-    if p.enabled {
+    if p.enabled && t.source == TriggerSource::Local {
+        if t.enabled && t.state == TriggerState::Active {
+            return ok(t);
+        }
+        t.enabled = true;
+        t.state = TriggerState::Active;
+        t.enabled_at = Some(time::now_rfc3339());
+    } else if p.enabled {
         if !t.secret_set {
             if !ctx.is_human() {
                 let item = raise_secret_needed(d, ctx, &t);
@@ -272,9 +346,13 @@ pub fn replay(d: &Arc<Daemon>, _ctx: &Ctx, p: TriggerReplayParams) -> R {
 
 pub fn test(d: &Daemon, p: TriggerTestParams) -> R {
     let t = get(d, &p.trigger_id)?;
+    if t.source == TriggerSource::Local {
+        let event = p.event.unwrap_or_else(|| t.event.clone());
+        return ok(crate::local::dry_run(d, &t, &event, p.session.as_deref(), &p.payload));
+    }
     let event = p.event.unwrap_or_else(|| match t.source {
         TriggerSource::Github => t.event.split('.').next().unwrap_or(&t.event).to_string(),
-        TriggerSource::Bitbucket => t.event.clone(),
+        _ => t.event.clone(),
     });
     ok(process::dry_run(&t, &event, p.payload))
 }

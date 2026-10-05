@@ -185,6 +185,9 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         git: None,
         agent_info: None,
         notify: Default::default(),
+        custom_status: None,
+        queue: vec![],
+        queue_paused: false,
     };
     {
         let mut core = d.core();

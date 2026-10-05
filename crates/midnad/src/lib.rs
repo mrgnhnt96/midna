@@ -12,6 +12,8 @@ pub mod images;
 pub mod insights;
 pub mod install;
 pub mod links;
+pub mod local;
+pub mod queue;
 pub mod notify;
 pub mod notify_media;
 pub mod peer;

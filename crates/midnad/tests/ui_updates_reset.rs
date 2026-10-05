@@ -207,7 +207,9 @@ fn daemon_reset_clears_state_but_keeps_rules_and_log() {
     let r = call(&mut h, "daemon.reset", json!({}));
     assert_eq!((r["sessions_closed"].as_u64(), r["triggers_removed"].as_u64(), r["settings_reset"].as_u64()), (Some(2), Some(1), Some(1)));
     assert!(r["projects_removed"].as_u64().unwrap() >= 1);
-    for (m, empty) in [("session.list", true), ("project.list", true), ("trigger.list", true), ("needs_you.list", true), ("rule.list", false)] {
+    let triggers = call(&mut h, "trigger.list", json!({}));
+    assert_eq!(triggers.as_array().unwrap().iter().map(|t| t["builtin"].as_str()).collect::<Vec<_>>(), vec![Some("prompt_blocked_status")], "only the built-ins");
+    for (m, empty) in [("session.list", true), ("project.list", true), ("needs_you.list", true), ("rule.list", false)] {
         assert_eq!(call(&mut h, m, json!({})).as_array().unwrap().is_empty(), empty, "{m}");
     }
     assert_eq!(call(&mut h, "settings.get", json!({ "key": "theme" }))["value"], "system");

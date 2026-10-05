@@ -227,4 +227,6 @@ fn background(d: &Arc<Daemon>) {
     crate::restart::start(d);
     crate::webhooks::start(d);
     crate::notify::start(d);
+    crate::local::start(d);
+    crate::queue::start(d);
 }

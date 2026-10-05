@@ -1,7 +1,7 @@
 //! `daemon.reset` (human only): start over without losing the history.
 //!
 //! Closes every terminal, removes projects, triggers (and their secrets), deliveries and
-//! needs-you items, and resets settings. The event log is kept (it is the audit trail), and
+//! needs-you items, and resets settings. Built-in triggers come back as shipped. The event log is kept (it is the audit trail), and
 //! rules are kept unless `keep_rules: false`. Every removal emits its usual event, followed by
 //! one `daemon.reset` summary.
 use super::{Ctx, R, ok};
@@ -32,7 +32,7 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
     out.needs_you_cleared = items.len() as u32;
     d.core().state.deferred.clear();
 
-    let triggers: Vec<Trigger> = d.core().state.triggers.clone();
+    let triggers: Vec<Trigger> = d.core().state.triggers.iter().filter(|t| t.builtin.is_none()).cloned().collect();
     for t in &triggers {
         d.webhooks.secrets.delete(&t.id);
         d.emit(kinds::TRIGGER_REMOVED, ctx.actor(), None, None, json!({ "id": t.id, "name": t.name, "reason": "daemon reset" }));
@@ -41,6 +41,7 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
     let deliveries: Vec<Id> = {
         let mut core = d.core();
         core.state.triggers.clear();
+        core.state.seeded.clear();
         std::mem::take(&mut core.state.deliveries).into_iter().map(|x| x.id).collect()
     };
     for id in deliveries {
@@ -71,6 +72,7 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
         out.rules_removed = ids.len() as u32;
     }
 
+    crate::local::seed_builtins(d);
     d.mark_dirty();
     d.save_now();
     d.emit(kinds::DAEMON_RESET, ctx.actor(), None, None, json!({ "keep_rules": keep_rules, "result": out }));

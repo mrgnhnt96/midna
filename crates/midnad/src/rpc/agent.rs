@@ -20,6 +20,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
         crate::links::after_hook(d, &sid, p.agent, ev, payload);
+        crate::local::hook(d, &sid, p.agent, ev, payload);
     }
     match ev {
         "statusline" => {
@@ -27,10 +28,11 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             return ok(AgentHookResult { ok: true, status: Some(cur) });
         }
         "UserPromptSubmit" => {
-            let preview: String = payload.get("prompt").and_then(Value::as_str).unwrap_or("").chars().take(200).collect();
+            // The whole prompt: local triggers resend it (`{{last_prompt}}`).
+            let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
             // The conversation lets prompt fast travel tell prompts before a /clear apart.
             let conversation = payload.get("session_id").and_then(Value::as_str);
-            d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": preview, "conversation": conversation }));
+            d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
             start_turn(d, &sid, &project, &actor);
         }
         "Stop" | "StopFailure" => {
@@ -44,7 +46,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             }
             // Codex notify arrives once per finished turn; it carries the inputs of that turn.
             let msgs: Vec<String> = payload.get("input-messages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
-            for m in msgs.iter().map(|m| m.chars().take(200).collect::<String>()) {
+            for m in &msgs {
                 d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "via": "notify", "prompt": m, "conversation": payload.get("thread-id") }));
             }
             // The title spinner usually opened this turn already. If the title also ended it

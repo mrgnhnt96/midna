@@ -147,6 +147,10 @@ pub struct Daemon {
     pub links: crate::links::Links,
     /// The notifier's book-keeping (`notify.rs`). Lock after `core`, never before it.
     notify: Mutex<crate::notify::State>,
+    /// Local triggers' worker and book-keeping (`local.rs`). Lock after `core`, never before it.
+    pub local: crate::local::Runtime,
+    /// The queued-message sender's book-keeping (`queue.rs`). Never held together with `core`.
+    pub queue: crate::queue::Runtime,
 }
 
 impl Daemon {
@@ -191,6 +195,8 @@ impl Daemon {
             updates: Mutex::new(UpdatesStatus::default()),
             links: Default::default(),
             notify: Mutex::new(Default::default()),
+            local: Default::default(),
+            queue: Default::default(),
             cfg,
         }))
     }
