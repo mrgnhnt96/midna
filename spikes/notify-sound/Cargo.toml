@@ -1,0 +1,17 @@
+[package]
+name = "notify-sound"
+version = "0.1.0"
+edition = "2024"
+
+# Not part of the workspace: a throwaway check that macOS plays a notification's custom sound
+# from ~/Library/Sounds for a signed, non-sandboxed app (see README.md).
+[workspace]
+
+[dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent",
+    "UNNotificationRequest", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger",
+] }
