@@ -61,6 +61,18 @@ pub enum Icon {
     Orbit,
     /// Open in IDE, when the editor's own icon is missing.
     Code,
+    /// A filled square: the entrance's twilight tiles (`ui/twilight.rs`), which rotate.
+    Tile,
+    /// The same square, outlined (setup's step pips and wordmark); `TileDashed` dashed.
+    TileOutline,
+    TileDashed,
+    /// The faint marks some setup tiles carry (sized like a tile; they turn with it).
+    Rune1,
+    Rune2,
+    Rune3,
+    /// The intro's see-through wave squares (90×94): wash and outline.
+    WaveFill,
+    WaveLine,
 }
 
 impl Icon {
@@ -110,6 +122,14 @@ impl Icon {
             Icon::Sidebar => "icons/sidebar.svg",
             Icon::Orbit => "icons/orbit.svg",
             Icon::Code => "icons/code.svg",
+            Icon::Tile => "icons/tile.svg",
+            Icon::TileOutline => "icons/tile-outline.svg",
+            Icon::TileDashed => "icons/tile-dashed.svg",
+            Icon::Rune1 => "icons/rune1.svg",
+            Icon::Rune2 => "icons/rune2.svg",
+            Icon::Rune3 => "icons/rune3.svg",
+            Icon::WaveFill => "icons/wave-fill.svg",
+            Icon::WaveLine => "icons/wave-line.svg",
         }
     }
 
@@ -291,6 +311,14 @@ fn source(path: &str) -> Option<&'static str> {
         "icons/bell.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11zM6.5 14h3"/></svg>"##
         }
+        "icons/tile.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="#000"><rect width="48" height="48" rx="2"/></svg>"##,
+        "icons/rune1.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="#000" stroke-width="2"><path d="M14 33V14H33"/></svg>"##,
+        "icons/rune2.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="#000" stroke-width="2"><path d="M9 28H36V17"/></svg>"##,
+        "icons/rune3.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46" fill="#000"><rect x="21" y="8" width="2" height="28"/></svg>"##,
+        "icons/wave-fill.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="90" height="94" viewBox="0 0 90 94" fill="#000"><rect width="90" height="94" rx="3"/></svg>"##,
+        "icons/wave-line.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="90" height="94" viewBox="0 0 90 94" fill="none" stroke="#000" stroke-width="1.5"><rect x="0.75" y="0.75" width="88.5" height="92.5" rx="2.25"/></svg>"##,
+        "icons/tile-outline.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#000" stroke-width="2"><rect x="1" y="1" width="12" height="12"/></svg>"##,
+        "icons/tile-dashed.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="3 2"><rect x="1" y="1" width="12" height="12"/></svg>"##,
         "icons/bell-off.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M4 11V7a4 4 0 0 1 6.2-3.3M12 7v4l1.5 1.5h-11zM6.5 14h3M2 2l12 12"/></svg>"##
         }

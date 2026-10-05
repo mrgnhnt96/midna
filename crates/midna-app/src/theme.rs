@@ -149,6 +149,12 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf")),
+        // Setup's Twilight Tiles screen (ui/setup_screen.rs): display and body faces.
+        Cow::Borrowed(include_bytes!("../assets/fonts/ChakraPetch-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/ChakraPetch-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")),
     ];
     if let Err(e) = cx.text_system().add_fonts(fonts) {
         eprintln!("midna-app: could not load bundled fonts: {e:#}");

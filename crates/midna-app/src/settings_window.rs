@@ -72,6 +72,8 @@ pub struct SettingsWindow {
     entries: Vec<SettingEntry>,
     info: Value,
     webhooks: Value,
+    /// `hooks.status`: midna's hooks in Claude Code's and Codex's global config (ui/hooks.rs).
+    hooks: Value,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// The sound/image picker that's open (its setting key).
@@ -126,6 +128,7 @@ impl SettingsWindow {
             entries: vec![],
             info: Value::Null,
             webhooks: Value::Null,
+            hooks: Value::Null,
             media: Value::Null,
             picker: None,
             error: None,
@@ -189,6 +192,10 @@ impl SettingsWindow {
                 self.load(cx);
             }
             BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" => self.load(cx),
+            BackendEvent::Event(e) if e.kind == "hooks.changed" => {
+                self.hooks = e.data.clone();
+                cx.notify();
+            }
             BackendEvent::Conn(crate::backend::ConnState::Connected) => self.load(cx),
             _ => {}
         }
@@ -230,7 +237,8 @@ impl SettingsWindow {
                     let info = backend.call("daemon.info", json!({})).unwrap_or(Value::Null);
                     let webhooks = backend.call("webhooks.status", json!({})).unwrap_or(Value::Null);
                     let media = backend.call("notify.media", json!({})).unwrap_or(Value::Null);
-                    (list, info, webhooks, media)
+                    let hooks = backend.call("hooks.status", json!({})).unwrap_or(Value::Null);
+                    (list, info, webhooks, media, hooks)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -244,6 +252,7 @@ impl SettingsWindow {
                 s.info = r.1;
                 s.webhooks = r.2;
                 s.media = r.3;
+                s.hooks = r.4;
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
                     s.picker = Some(k);
@@ -427,6 +436,8 @@ enum Act {
     Life(crate::lifecycle::Cmd),
     /// Accessibility "Fix": open the pane and offer a relaunch (a running app never sees a new grant).
     AxFix(String),
+    /// Agent hooks: open the main window's hooks sheet (the diff, then install or remove).
+    Hooks { uninstall: bool },
 }
 
 struct RowSpec {
@@ -592,6 +603,42 @@ impl SettingsWindow {
         Some(RowSpec { label: label_for(key), note: Some((note, Hsla::default())), control, cli: format!("midna settings set {key} {cli_value}"), who, warn: false })
     }
 
+    /// "Claude Code hooks" / "Codex hooks": midna's global install (`hooks.status`), with a
+    /// button that opens the main window's hooks sheet (shows the diff before writing).
+    fn hooks_row(&self, t: &Theme, agent: &str) -> RowSpec {
+        let h = &self.hooks[agent];
+        let (label, name) = if agent == "claude" { ("Claude Code hooks", "Claude Code") } else { ("Codex hooks", "Codex") };
+        let path = h["path"].as_str().unwrap_or(if agent == "claude" { "~/.claude/settings.json" } else { "~/.codex/config.toml" });
+        let detail = h["detail"].as_str().map(str::to_string);
+        let per_terminal = if agent == "claude" {
+            "midna adds its hooks to the agents it starts. Install globally so a claude you type into a terminal reports too."
+        } else {
+            "midna adds its notify to the agents it starts. Install globally so a codex you type into a terminal reports too; your own notify keeps running."
+        };
+        let (dot, text, color, note, action): (Hsla, String, Hsla, String, Option<(&str, bool)>) = match h["state"].as_str() {
+            Some("current") => (t.ok, "Global · current".into(), t.fg, format!("In {path}. Does nothing outside midna terminals."), Some(("Remove…", true))),
+            Some("stale") => (t.need, "Global · out of date".into(), t.need, detail.unwrap_or_else(|| format!("midna's entries in {path} are out of date."))
+                + " Until reinstalled, midna adds its hooks to the agents it starts.", Some(("Reinstall…", false))),
+            Some("not_installed") => (t.fg, "Per terminal".into(), t.fg, per_terminal.into(), Some(("Install…", false))),
+            Some("error") => (t.err, format!("Can't read {}", path.rsplit('/').next().unwrap_or(path)), t.err, detail.unwrap_or_else(|| path.into()), Some(("Reinstall…", false))),
+            Some("unavailable") => (t.dim, format!("{name} not set up"), t.dim, format!("No {name} config on this Mac."), None),
+            _ => (t.dim, "Checking…".into(), t.dim, String::new(), None),
+        };
+        RowSpec {
+            label: label.into(),
+            note: (!note.is_empty()).then(|| (note, Hsla::default())),
+            control: Control::Text {
+                dot: Some(dot),
+                text,
+                color,
+                action: action.map(|(l, uninstall)| (l.to_string(), Act::Hooks { uninstall }, !uninstall && h["state"] != "not_installed")),
+            },
+            cli: "midna hooks status".into(),
+            who: Who::Human,
+            warn: matches!(h["state"].as_str(), Some("stale" | "error")),
+        }
+    }
+
     fn groups(&self, t: &Theme) -> Vec<Group> {
         let row = |k: &str| self.spec_row(k);
         let text = |label: &str, value: String, color: Hsla, dot: Option<Hsla>, cli: &str, who: Who, note: Option<String>| RowSpec {
@@ -709,29 +756,10 @@ impl SettingsWindow {
             r.note = Some(("No effect while link previews are off".into(), t.dim));
         }
         // Agents
-        let home = self.info.get("home").and_then(Value::as_str).unwrap_or("");
-        let hook_file = std::path::Path::new(home).join("hooks/claude-settings.json");
-        let claude_ok = !home.is_empty() && hook_file.exists();
         let agents = vec![
             Some(life.cli),
-            Some(text(
-                "Claude Code hooks",
-                if claude_ok { "Installed".into() } else { "Not found".into() },
-                if claude_ok { t.fg } else { t.need },
-                Some(if claude_ok { t.ok } else { t.need }),
-                "midna info",
-                Who::ReadOnly,
-                Some(if claude_ok { format!("midna launches Claude with --settings {}", hook_file.display()) } else { "midnad writes it at startup".into() }),
-            )),
-            Some(text(
-                "Codex",
-                "Via notify (no trust prompt)".into(),
-                t.fg,
-                Some(t.ok),
-                "midna info",
-                Who::ReadOnly,
-                Some("midna launches Codex with -c notify=[midna hook codex notify]".into()),
-            )),
+            Some(self.hooks_row(t, "claude")),
+            Some(self.hooks_row(t, "codex")),
             row("agents.claude.statusline"),
             row("agents.mcp"),
             row("agents.system_hint"),
@@ -1339,6 +1367,10 @@ impl SettingsWindow {
                                         crate::lifecycle::note_ax_fix();
                                         cx.notify();
                                     }
+                                    &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
+                                        window.activate_window();
+                                        crate::ui::hooks::open(m, uninstall, window, cx);
+                                    }),
                                 }))
                                 .child(label),
                         )
@@ -1484,6 +1516,16 @@ impl SettingsWindow {
             t.need,
         );
         let kass_seen = crate::kass::handshake_detected();
+        for agent in ["claude", "codex"] {
+            let st = self.hooks[agent]["state"].as_str().unwrap_or("unknown");
+            let c = match st {
+                "current" => t.ok,
+                "stale" => t.need,
+                "error" => t.err,
+                _ => t.dim,
+            };
+            push("    ", &format!("hooks.{agent}"), format!("\"{st}\","), c, if st == "stale" || st == "error" { "// Settings ▸ Agents to reinstall".into() } else { String::new() }, t.need);
+        }
         push("    ", "kass", if kass_seen { "\"handshake_detected\"" } else { "\"handshake_not_detected\"" }.into(), if kass_seen { t.ok } else { t.dim }, String::new(), t.dim);
         push("  ", "", "}".into(), t.fg, String::new(), t.dim);
         push("", "", "}".into(), t.fg, String::new(), t.dim);

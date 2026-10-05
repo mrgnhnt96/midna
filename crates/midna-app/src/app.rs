@@ -90,6 +90,9 @@ pub struct MainWindow {
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
     pub onboarding: crate::ui::onboarding::Onboarding,
+    /// The twilight tiles entrance (`ui/twilight.rs`): which play, and its phase.
+    pub twilight_seq: u64,
+    pub twilight_phase: crate::ui::twilight::Phase,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -188,6 +191,13 @@ impl MainWindow {
         let background_open = crate::ui::statusbar::load_state(&backend, "background_open");
         let background_hidden = crate::ui::statusbar::load_state(&backend, "background_hidden");
         let onboarding = crate::ui::onboarding::load(&backend);
+        // Main windows open see-through; only the launch entrance keeps it that way for a moment.
+        let intro = crate::ui::twilight::wanted(&onboarding);
+        if intro {
+            crate::ui::twilight::start(1, window, cx);
+        } else {
+            window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        }
         let id = cx.entity_id();
         let windows = crate::windows::register(cx.weak_entity(), id, window.window_handle(), cx);
         cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
@@ -264,6 +274,8 @@ impl MainWindow {
             hooks_sheet: None,
             ax_prompt: false,
             onboarding,
+            twilight_seq: u64::from(intro),
+            twilight_phase: if intro { crate::ui::twilight::Phase::Intro } else { crate::ui::twilight::Phase::Off },
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             id,
             windows,
@@ -843,6 +855,7 @@ impl MainWindow {
             }
             if let Ok(s) = crate::dev::var("MIDNA_DEBUG_SCREEN") {
                 match s.as_str() {
+                    "twilight" => crate::ui::twilight::replay(self, window, cx),
                     "rules" => self.screen = Screen::Rules,
                     "triggers" => self.screen = Screen::Triggers,
                     "insights" => self.screen = Screen::Insights,

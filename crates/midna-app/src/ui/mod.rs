@@ -19,6 +19,7 @@ pub mod rename;
 pub mod rules;
 pub mod screen_kit;
 pub mod screens;
+pub mod setup_screen;
 pub mod settings;
 pub mod sidebar;
 pub mod split;
@@ -27,6 +28,7 @@ pub mod subagent_window;
 pub mod subagents;
 pub mod text_input;
 pub mod triggers;
+pub mod twilight;
 
 use crate::actions::CTX_MAIN;
 use crate::app::{MainWindow, Menu, Overlay, Screen};
@@ -180,6 +182,11 @@ pub fn caps_label(t: &Theme, text: &str) -> Div {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
+        // The launch opening: only the setup screen, over the desktop (the window is see-through).
+        if self.twilight_phase == twilight::Phase::Intro {
+            let root = div().id("midna-main").key_context(CTX_MAIN).track_focus(&self.focus).size_full().children(setup_screen::render(self, &t, window, cx));
+            return crate::composer::register(MainWindow::register_actions(root, cx), cx);
+        }
         crate::composer::sync(self);
         let sidebar = sidebar::render(self, &t, window, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
@@ -251,9 +258,11 @@ impl Render for MainWindow {
             .children(hooks::render(self, &t, cx))
             .child(
                 // Cards over the terminal pane's top-right corner: Kass's Accessibility ask, then the setup step.
-                div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)).children(onboarding::card(self, &t, cx)),
+                div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)),
             )
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
+            // Setup's Twilight Tiles screen covers the whole window while setup is open.
+            .children(setup_screen::render(self, &t, window, cx))
             .when(self.menu != Menu::None, |d| {
                 // click-away layer under any open popover menu
                 d.child(

@@ -339,6 +339,9 @@ pub fn open(backend: Arc<dyn Backend>, bounds: Option<Bounds<Pixels>>, cx: &mut 
         // Screenshot runs float the window so it is never occluded (occluded windows stop drawing).
         kind: if crate::dev::var("MIDNA_DEBUG_ONTOP").is_ok() { WindowKind::PopUp } else { WindowKind::Normal },
         focus: std::env::var("MIDNA_NO_ACTIVATE").is_err(),
+        // See-through until MainWindow::new decides (the launch entrance shows the desktop first).
+        // (Offscreen snapshots need an opaque window.)
+        window_background: if std::env::var("MIDNA_SNAPSHOT").is_ok() { WindowBackgroundAppearance::Opaque } else { WindowBackgroundAppearance::Transparent },
         ..Default::default()
     };
     cx.open_window(opts, |window, cx| cx.new(|cx| MainWindow::new(backend, window, cx))).ok()
