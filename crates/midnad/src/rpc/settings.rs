@@ -56,6 +56,7 @@ fn custom_script(s: &SettingSpec, value: &Value) -> bool {
 pub fn set(d: &Daemon, ctx: &Ctx, p: SettingSetParams) -> R {
     let s = spec(&p.key)?;
     let value = s.coerce(&p.value).map_err(RpcError::bad_params)?;
+    crate::notify_media::check_setting(&d.cfg.home, s.key, &value).map_err(RpcError::bad_params)?;
     if (s.human_only || custom_script(s, &value)) && !ctx.is_human() {
         let cli = format!("settings set {} {}", s.key, cli_value(&value));
         let params = json!({ "key": s.key, "value": value });

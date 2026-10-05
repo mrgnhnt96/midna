@@ -163,6 +163,15 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionFindParams, FindResult>("session.find").mutating().d(
             "Find text in a terminal's scrollback and screen: scrolls to the next (or previous, `backwards`) match and \
              selects it. Returns the match count and the current match's index."),
+        m::<IdParams, SessionPromptsResult>("session.prompts").d(
+            "The prompts the human sent an agent terminal, oldest first and numbered from 1, with where the agent's view \
+             is: `here` is the prompt the top of the screen belongs to and `scrolled` says it is scrolled back. \
+             Prompts with `on_screen: false` were sent before a /clear or a fresh start."),
+        m::<SessionJumpPromptParams, JumpPromptResult>("session.jump_prompt").mutating().d(
+            "Scroll an agent terminal to one of the human's prompts (`n` from session.prompts) so it sits at the top of \
+             the screen, or `to: prev|next|latest|live`. Claude Code and Codex scroll their own full-screen view, so \
+             midnad presses page keys and reads the screen until the prompt shows: it can take a second or two. \
+             Logged as session.input_by_agent when an agent calls it."),
         m::<SessionRestartParams, Session>("session.restart").mutating().d(
             "Restart a terminal's command in place (same id, same tab, fresh process). Agent terminals resume the same \
              conversation by default (`resume`, with the model and permission mode they had). `when: idle` queues it until the \
@@ -170,6 +179,49 @@ fn build() -> Vec<MethodSpec> {
              `when: now` refuses while background work is in flight unless `force`. Policy-checked as `restart <id>`; the \
              default policy asks the human."),
         m::<IdParams, Session>("session.restart_cancel").mutating().d("Cancel a terminal's queued restart (`session.restart` with `when: idle`)."),
+        m::<LinksListParams, LinksListResult>("links.list").d(
+            "The links, pull requests, artifacts and files that came up in an agent terminal's conversation, collected \
+             from the agent's transcript as it runs: URLs the human pasted or the agent wrote or fetched, PRs and artifacts \
+             that tools printed, and files the agent created or edited. Each has where it came up first (`source`, `via`), \
+             how often, and whether it is pinned. Pinned links come first. Defaults to your own terminal."),
+        m::<LinksPinParams, Link>("links.pin").mutating().d(
+            "Pin (or with `pinned: false` unpin) a session link by id or exact URL/path, so it stays at the top of the \
+             terminal's links list in the header. Pin what the human will want to come back to: the PR, the design, the doc \
+             you were sent. Defaults to your own terminal."),
+        m::<LinksAddParams, Link>("links.add").mutating().d(
+            "Add a link (http(s) URL or absolute file path) to a terminal's links on purpose, pinned by default, with an \
+             optional title and a note on why it matters. Use it for something important the transcript would not show as \
+             a link, or to give one a better name. Adding a target that is already there updates its title/note and pins it. \
+             Defaults to your own terminal."),
+        m::<NotifyListParams, NotifyListResult>("notify.list").d(
+            "Which macOS notifications midna posts: every category with its global setting (`notify.<key>`), the \
+             terminal's override and what applies to it. Defaults to your own terminal; `global: true` for the global \
+             settings only. On by default: approvals and questions, attention, failures, agent finished (long turns) and \
+             notifications agents send."),
+        m::<NotifySetParams, NotifyListResult>("notify.set").mutating().d(
+            "Turn a notification category on or off for one terminal (default: your own), or mute it with `key: \"enabled\", \
+             value: false`; `value: null` drops the override. `global: true` changes the global setting instead. Change \
+             notifications when the human asks (\"tell me when every turn ends here\", \"stop pinging me about this one\"); \
+             don't quietly turn off what they rely on."),
+        m::<NotifySendParams, NotifySendResult>("notify.send").mutating().d(
+            "Send the human a macOS notification (category `agent`): use it when they asked to be told about something \
+             (\"ping me when the build is green\") or when a result needs them and they may be away. Clicking it selects \
+             your terminal. Not for routine progress: approvals, failures and finished turns already notify. Duplicates \
+             within a few seconds are dropped and an agent can send at most 6 a minute."),
+        m::<NotifyMediaParams, NotifyMediaResult>("notify.media").d(
+            "The sounds and images notifications can use: the macOS sounds (Glass, Ping, …) and what the human imported, \
+             each with the `name` a setting takes and which settings use it. A category's sound, volume and image are the \
+             settings `notify.sound.<category>`, `notify.volume.<category>` (0-100, scaled by `notify.volume`) and \
+             `notify.image.<category>` (empty = `notify.image`, the image every notification uses)."),
+        m::<NotifyImportParams, NotifyMedia>("notify.import").mutating().d(
+            "Copy a sound (aiff, wav, mp3, m4a, caf) or image (png, jpg, gif) into midna so notifications can use it, and \
+             optionally set it right away (`use_for: [\"notify.sound.approval\"]`). Its `name` is what the settings take. \
+             Import what the human points you at (\"use ~/Downloads/ding.mp3 for approvals\"); don't pick sounds for them."),
+        m::<NotifyRemoveParams, NotifyRemoveResult>("notify.remove").mutating().d(
+            "Delete an imported sound or image. Settings that used it go back to their defaults."),
+        m::<NotifyTestParams, NotifySendResult>("notify.test").mutating().d(
+            "Show a test notification with a category's sound, volume and image (default `approval`), even when that \
+             category is off, so the human can hear and see their choice."),
         m::<IdParams, Vec<ProcessInfo>>("session.processes").d(
             "Every OS process under a terminal (its process tree: pid, ppid, pgid, depth, command), with the agent's \
              background task id when a process belongs to one. Subagents run inside the agent process and appear in \

@@ -41,6 +41,9 @@ pub struct Engine {
     has_selection: bool,
     /// Selection or modes changed: send a frame even when no row is dirty.
     meta_dirty: bool,
+    /// Cursor (position, style) in the last frame: an app that only moves the cursor (Claude
+    /// Code's word jumps) dirties no row, but the client still has to see it move.
+    sent_cursor: Option<(Option<(u16, u16)>, u8)>,
 }
 
 impl Engine {
@@ -64,6 +67,7 @@ impl Engine {
             input: input::Input::new(),
             has_selection: false,
             meta_dirty: false,
+            sent_cursor: None,
         }
     }
 
@@ -122,6 +126,24 @@ impl Engine {
         all.split_off(all.len() - rows)
     }
 
+    /// What the viewport shows: its rows (scrolled back or not), the cursor's row when the live
+    /// screen is shown, and whether the alternate screen is on.
+    pub fn view(&self) -> (Vec<String>, Option<u16>, bool) {
+        if matches!(self.term.active_screen(), Ok(Screen::Alternate)) {
+            return (self.screen_lines(), Some(self.cursor().1), true);
+        }
+        let rows = self.size().1 as usize;
+        let mut all = self.plain_lines();
+        let Some(sb) = self.term.scrollbar().ok().filter(|s| s.offset + s.len < s.total) else {
+            return (self.screen_lines(), Some(self.cursor().1), false);
+        };
+        let start = (sb.offset as usize).min(all.len());
+        let mut v = all.split_off(start);
+        v.truncate(rows);
+        v.resize(rows, String::new());
+        (v, None, false)
+    }
+
     /// The visible screen with dim text blanked (`agent_work::undim`), `rows` lines: for readers
     /// that must tell typed text from dim placeholder text.
     pub fn screen_undimmed(&self) -> Vec<String> {
@@ -143,14 +165,6 @@ impl Engine {
         let snap = rs.update(term).ok()?;
         let dirty = snap.dirty().ok()?;
         let full = self.force_full || dirty == Dirty::Full;
-        if dirty == Dirty::Clean && !self.force_full && !self.meta_dirty {
-            return None;
-        }
-        let colors = snap.colors().ok()?;
-        let dfg = [colors.foreground.r, colors.foreground.g, colors.foreground.b];
-        let dbg = [colors.background.r, colors.background.g, colors.background.b];
-        let cols = snap.cols().ok()?;
-        let nrows = snap.rows().ok()?;
         let cursor = if snap.cursor_visible().unwrap_or(true) {
             snap.cursor_viewport().ok().flatten().map(|c| (c.x, c.y))
         } else {
@@ -162,6 +176,16 @@ impl Engine {
             Ok(CursorVisualStyle::BlockHollow) => 3,
             _ => 0,
         };
+        let cursor_moved = self.sent_cursor != Some((cursor, cursor_style));
+        if dirty == Dirty::Clean && !self.force_full && !self.meta_dirty && !cursor_moved {
+            return None;
+        }
+        self.sent_cursor = Some((cursor, cursor_style));
+        let colors = snap.colors().ok()?;
+        let dfg = [colors.foreground.r, colors.foreground.g, colors.foreground.b];
+        let dbg = [colors.background.r, colors.background.g, colors.background.b];
+        let cols = snap.cols().ok()?;
+        let nrows = snap.rows().ok()?;
         let mut changed = vec![];
         let mut it = rows_it.update(&snap).ok()?;
         let mut y: u16 = 0;
@@ -555,6 +579,18 @@ mod snapshot_tests {
 
     fn plain(e: &Engine) -> String {
         e.plain_lines().join("\n").trim_end().to_string()
+    }
+
+    #[test]
+    fn cursor_only_moves_send_a_frame() {
+        let mut e = Engine::new(40, 5, None);
+        e.feed(b"> hello world", 0);
+        assert_eq!(e.frame().unwrap().cursor, Some((13, 0)));
+        assert!(e.frame().is_none(), "nothing changed");
+        // ESC b in a line editor answers with a bare cursor move: no row changes.
+        e.feed(b"\x1b[6D", 0);
+        assert_eq!(e.frame().expect("cursor moved").cursor, Some((7, 0)));
+        assert!(e.frame().is_none());
     }
 
     #[test]

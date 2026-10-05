@@ -41,12 +41,20 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   `--image PATH` (repeatable) attaches an image ahead of the text, e.g. a screenshot you saved:
   `midna send <id> --image /tmp/shot.png -- "Does this layout look right?"`.
   `midna key <id> ctrl-c` presses a key. `midna read <id> [--lines N | --screen]` reads the output.
+- `midna prompts <id>` lists the prompts the human sent an agent terminal (numbered, ▸ = where its
+  view is). `midna prompts <id> --jump N|prev|next|latest|live` scrolls the agent's own view there,
+  e.g. to show the human the answer to an earlier question.
 - `midna rename`, `midna restart` and `midna close <id>` manage a terminal. Closing a busy
   terminal needs `--force` and may ask the human.
 - `midna procs <id>` lists a terminal's processes and what its agent has in flight (background
   shells, subagents, scheduled wakeups). `midna restart <id>` reopens an agent in the same
   conversation; it refuses while background work would be lost, so use `--idle` to queue it until
   the agent is idle with nothing in flight (`--cancel` drops it, `--fresh` starts over).
+- `midna links` lists the links, PRs, artifacts and files that came up in your conversation;
+  the human sees them under the header's links button (⌘L). Pin what they will want to come back
+  to (`midna links pin <id|url>`: the PR you opened, the design you published, the doc they sent),
+  and `midna links add <url|path> --title T --why "note"` for something important that never
+  showed up as a link. Don't pin everything: a few pins are useful, twenty aren't.
 - Prefer opening your own terminal over typing into one someone else is using. Never answer
   another agent's permission prompt unless `midna read --screen` shows that prompt.
 
@@ -57,6 +65,17 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - Keep it to one short line and put details in `--detail`. Don't raise one per step, and don't
   raise one for something you can decide yourself. Check `midna needs` first so you don't duplicate.
 - Before you speak up, `midna list` shows which terminals are busy.
+- `midna notify send "<title>" --detail "<line>"` posts a macOS notification (click = your
+  terminal). Use it when the human asked to be told ("ping me when CI is green") or a result
+  needs them while they may be away. Approvals, failures and long finished turns already notify:
+  don't duplicate them, and don't send progress updates.
+- Which notifications the human gets is a setting: `midna notify` shows them for your terminal,
+  `midna notify set turn_done on` (or `--global`, or `midna notify mute`) changes them. Do it
+  when they ask; don't turn off something they rely on.
+- Sounds and images are theirs to pick. When they hand you one ("use ~/Downloads/ding.mp3 for
+  approvals, quieter"), `midna notify import <file> --for approval` copies it in and uses it,
+  `midna settings set notify.volume.approval 40` sets how loud, and `midna notify test approval`
+  lets them hear it.
 
 ## Approvals and policy
 

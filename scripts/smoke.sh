@@ -25,7 +25,7 @@ done
 
 BIN="$ROOT/target/debug"
 T="$(mktemp -d /tmp/mds.XXXX)"          # short: Unix socket paths are limited to 104 bytes
-export MIDNA_HOME="$T/home" MIDNA_SOCKET="$T/home/midnad.sock"
+export MIDNA_HOME="$T/home" MIDNA_SOCKET="$T/home/midnad.sock" MIDNA_NOTIFY_SYSTEM=0
 unset MIDNA_SESSION MIDNA_PROJECT
 DAEMON_PID="" STEP="setup"
 

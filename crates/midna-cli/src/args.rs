@@ -7,7 +7,7 @@ const VALUE_FLAGS: &[&str] = &[
     "kind", "detail", "socket", "timeout", "session", "value", "target",
     "source", "event", "repo", "branch", "action", "label", "run", "attention", "hook-id", "session-name", "trigger", "payload",
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",
-    "featured", "id", "image",
+    "featured", "id", "image", "why", "jump", "for",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).

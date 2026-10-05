@@ -1,5 +1,6 @@
 //! Inline rename: double-click a terminal's name (header or sidebar row) to edit it in place.
-//! ↩ or clicking away saves (`session.rename`), esc cancels.
+//! ↩ or clicking away saves (`session.rename`), esc cancels. Only the spot that was
+//! double-clicked shows the edit box; the other mirrors the text as it's typed.
 use super::screen_kit::{KeyOutcome, LineInput};
 use crate::app::{MainWindow, refresh};
 use crate::theme::Theme;
@@ -7,13 +8,22 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::json;
 
-pub struct Rename {
-    pub session: String,
-    input: LineInput,
-    _blur: Subscription,
+/// Where the rename was started, and so where its edit box is drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum At {
+    Header,
+    Sidebar,
 }
 
-pub fn start(m: &mut MainWindow, session: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
+pub struct Rename {
+    pub session: String,
+    at: At,
+    input: LineInput,
+    _blur: Subscription,
+    _edit: Subscription,
+}
+
+pub fn start(m: &mut MainWindow, session: &str, at: At, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.renaming.as_ref().is_some_and(|r| r.session == session) {
         return;
     }
@@ -23,7 +33,9 @@ pub fn start(m: &mut MainWindow, session: &str, window: &mut Window, cx: &mut Co
     input.field.update(cx, |f, cx| f.select_all(cx));
     input.focus.focus(window, cx);
     let blur = cx.on_blur(&input.focus, window, |m, window, cx| commit(m, window, cx));
-    m.renaming = Some(Rename { session: session.to_string(), input, _blur: blur });
+    // re-render on every edit so the other spot's name follows along
+    let edit = cx.observe(&input.field, |_, _, cx| cx.notify());
+    m.renaming = Some(Rename { session: session.to_string(), at, input, _blur: blur, _edit: edit });
     cx.notify();
 }
 
@@ -47,9 +59,18 @@ fn cancel(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     cx.notify();
 }
 
-/// The edit box in place of the name, when `session` is being renamed.
-pub fn field(m: &MainWindow, session: &str, t: &Theme, text_size: f32, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let r = m.renaming.as_ref().filter(|r| r.session == session)?;
+/// The name to show for `session` outside the edit box: the in-progress text while it's
+/// being renamed elsewhere, else `name`.
+pub fn shown_name(m: &MainWindow, session: &str, name: &str, cx: &App) -> SharedString {
+    match m.renaming.as_ref().filter(|r| r.session == session) {
+        Some(r) => r.input.text(cx).into(),
+        None => SharedString::from(name.to_string()),
+    }
+}
+
+/// The edit box in place of the name, when `session` is being renamed from `at`.
+pub fn field(m: &MainWindow, session: &str, at: At, t: &Theme, text_size: f32, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let r = m.renaming.as_ref().filter(|r| r.session == session && r.at == at)?;
     Some(
         div()
             .id(SharedString::from(format!("rename-{session}")))

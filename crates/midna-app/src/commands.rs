@@ -45,6 +45,8 @@ pub enum Run {
         #[serde(default)]
         path: Option<String>,
     },
+    /// Scroll an agent terminal to one of the human's prompts (`session.jump_prompt`).
+    JumpPrompt { session: String, n: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -917,6 +919,38 @@ pub fn path_command(query: &str, home: &str, projects: &[Project]) -> Option<Com
 
 /// ⌘K query prefix for picking a `projects.roots` folder ("Add project folder…").
 pub const FOLDER_PREFIX: &str = "Project folder: ";
+
+/// A query starting with this lists the selected agent terminal's prompts (⌘P).
+pub const PROMPT_PREFIX: &str = ">";
+
+/// Rows for a [`PROMPT_PREFIX`] query, newest first, from a `session.prompts` result. Prompts
+/// sent before a /clear are listed but can't be jumped to (the agent no longer shows them).
+pub fn prompt_rows(session: &str, agent: Option<AgentKind>, v: &Value) -> Vec<Command> {
+    let icon = if agent == Some(AgentKind::Codex) { CmdIcon::Codex } else { CmdIcon::Claude };
+    let here = v.get("here").and_then(Value::as_u64);
+    let list = v.get("prompts").and_then(Value::as_array).cloned().unwrap_or_default();
+    list.iter()
+        .rev()
+        .filter_map(|p| {
+            let n = p.get("n")?.as_u64()? as u32;
+            let text = p.get("text").and_then(Value::as_str).unwrap_or("");
+            let on_screen = p.get("on_screen").and_then(Value::as_bool).unwrap_or(true);
+            let at = p.get("at").and_then(Value::as_str).unwrap_or("");
+            let mut sub = format!("#{n} · {}", crate::ui::screen_kit::clock_or_day(at));
+            if here == Some(n as u64) {
+                sub.push_str(" · you're here");
+            }
+            if !on_screen {
+                sub.push_str(" · before /clear");
+            }
+            let mut c = Command { id: format!("prompt:{n}"), icon, title: midna_proto::prompts::key(text), sub, ..Default::default() };
+            if on_screen {
+                c.run = Some(Run::JumpPrompt { session: session.into(), n });
+            }
+            Some(c)
+        })
+        .collect()
+}
 
 /// Most folder completions listed.
 const FOLDER_ROWS: usize = 12;

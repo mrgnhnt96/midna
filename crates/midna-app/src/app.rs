@@ -43,6 +43,8 @@ pub enum Menu {
     Approve,
     Project(String),
     More,
+    /// The header's session links popover (`ui/links.rs`).
+    Links,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -82,6 +84,13 @@ pub struct MainWindow {
     pub seen: std::collections::HashSet<String>,
     /// Sidebar project groups folded to their heading (project ids; same file as `seen`).
     pub collapsed: std::collections::HashSet<String>,
+    /// Terminal ids in the order the user dragged them to in the sidebar (same file as `seen`).
+    /// Terminals not listed keep daemon order, after the listed ones.
+    pub order: Vec<String>,
+    /// When each group heading was last clicked, to animate the fold (`ui::sidebar`).
+    pub fold_anim: HashMap<String, Instant>,
+    /// Natural height of each foldable run of sidebar rows, measured at prepaint.
+    pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
     pub screen: Screen,
     pub overlay: Overlay,
@@ -104,6 +113,8 @@ pub struct MainWindow {
     /// ⌘K command bar (CommandBar-A) and needs-you card stack (NeedsYou-C) state.
     pub palette: crate::ui::command_bar::Palette,
     pub stack: crate::ui::needs_you::Stack,
+    /// Session links popover (⌘L) and each terminal's links.
+    pub links: crate::ui::links::LinksPanel,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// Image sheet drafts and state (`annotate.rs`).
@@ -123,12 +134,31 @@ impl MainWindow {
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let seen = crate::ui::statusbar::load_state(&backend, "seen");
         let collapsed = crate::ui::statusbar::load_state(&backend, "collapsed");
+        let order = crate::ui::statusbar::load_state(&backend, "order");
         let (tx, rx) = async_channel::unbounded::<BackendEvent>();
         backend.subscribe(tx);
         let mut tasks = vec![];
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             while let Ok(ev) = rx.recv().await {
                 if this.update_in(cx, |m, window, cx| m.on_backend_event(ev, window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+        // A clicked notification selects its terminal (notify.rs).
+        let (ntx, nrx) = async_channel::unbounded::<crate::notify::Clicked>();
+        crate::notify::start(ntx);
+        tasks.push(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(c) = nrx.recv().await {
+                let done = this.update_in(cx, |m, window, cx| {
+                    cx.activate(true);
+                    window.activate_window();
+                    if m.sessions.iter().any(|s| s.id == c.session) {
+                        m.set_screen(Screen::Terminal, window, cx);
+                        m.select(c.session, window, cx);
+                    }
+                });
+                if done.is_err() {
                     break;
                 }
             }
@@ -153,6 +183,8 @@ impl MainWindow {
         focus.focus(window, cx);
         let palette = crate::ui::command_bar::Palette::new(cx);
         crate::ui::command_bar::wire(&palette, cx);
+        let links = crate::ui::links::LinksPanel::new(cx);
+        crate::ui::links::wire(&links, cx);
         MainWindow {
             backend,
             conn: ConnState::Connecting,
@@ -169,6 +201,9 @@ impl MainWindow {
             quit_hold: None,
             seen,
             collapsed,
+            order,
+            fold_anim: HashMap::new(),
+            fold_heights: Default::default(),
             webhooks: Value::Null,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             screen: Screen::Terminal,
@@ -187,6 +222,7 @@ impl MainWindow {
             insights: None,
             palette,
             stack: crate::ui::needs_you::Stack::new(cx),
+            links,
             composer: crate::composer::Composer::new(window, cx),
             annot: crate::annotate::Annotator::new(cx),
             dropped_at: None,
@@ -333,6 +369,14 @@ impl MainWindow {
                 if k == "window.command" {
                     self.on_window_command(e.data.clone(), window, cx);
                 }
+                if k == "links.changed"
+                    && let Some(sid) = e.session_id.clone().filter(|s| self.selected.as_ref() == Some(s))
+                {
+                    crate::ui::links::fetch(self, sid, cx);
+                }
+                if k == midna_proto::kinds::NOTIFY_POSTED {
+                    self.on_notification(&e, window);
+                }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
                 }
@@ -359,6 +403,21 @@ impl MainWindow {
         }
     }
 
+    /// midnad's `notify.posted`: show it unless you're looking at that terminal. Old ones
+    /// (replayed after a reconnect) are dropped.
+    fn on_notification(&self, e: &Event, window: &Window) {
+        let Ok(p) = serde_json::from_value::<midna_proto::notify::Posted>(e.data.clone()) else { return };
+        let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
+        if p.via != "app" || !fresh {
+            return;
+        }
+        let when_focused = self.settings.get("notify.when_focused").and_then(Value::as_bool).unwrap_or(false);
+        if !p.test && crate::notify::looking_at(window.is_window_active(), self.selected.as_deref(), e.session_id.as_deref(), when_focused) {
+            return;
+        }
+        crate::notify::post(&p, e.session_id.as_deref());
+    }
+
     /// "midnad restarting…" rather than "not running": during a restart we saw coming, or the
     /// first seconds of any drop (an upgrade by another client, launchd's restart).
     pub fn daemon_restarting(&self) -> bool {
@@ -372,10 +431,15 @@ impl MainWindow {
         let value = v.get("value").and_then(|a| a.as_str()).unwrap_or("");
         match action {
             "front" => {
+                // Like a clicked notification: midna becomes the frontmost app, showing the terminal.
+                cx.activate(true);
+                window.activate_window();
                 if let Some(t) = target.filter(|t| self.sessions.iter().any(|s| &s.id == t)) {
+                    if self.screen != Screen::Terminal {
+                        self.set_screen(Screen::Terminal, window, cx);
+                    }
                     self.select(t, window, cx);
                 }
-                window.activate_window();
             }
             "open_screen" => {
                 let screen = match value {
@@ -410,7 +474,7 @@ impl MainWindow {
             },
             "pop_out" | "keep_on_top" => {
                 if let Some(t) = target.or(self.selected.clone()) {
-                    crate::ui::popout::open(t, self.backend.clone(), cx);
+                    crate::ui::popout::open(self, t, window, cx);
                 }
             }
             _ => {}
@@ -546,24 +610,30 @@ impl MainWindow {
             self.webhooks = w;
         }
         if let Some((sid, segs)) = r.header {
+            if !self.links.by_session.contains_key(&sid) {
+                crate::ui::links::fetch(self, sid.clone(), cx);
+            }
             self.header_segments.insert(sid, segs);
         }
         if let Some(rows) = r.rows {
             self.row_segments = rows;
         }
         // keep a valid selection
-        let valid = self.selected.as_ref().is_some_and(|id| self.sessions.iter().any(|s| &s.id == id));
-        if !valid && !self.sessions.is_empty() {
-            let pick = self
-                .ordered_sessions()
-                .into_iter()
-                .find(|s| self.need_for_session(&s.id).is_some_and(|n| n.is_approval()))
-                .or_else(|| self.ordered_sessions().into_iter().find(|s| self.effective_state(s) == StatusState::NeedsYou))
-                .or_else(|| self.ordered_sessions().into_iter().next())
-                .map(|s| s.id.clone());
-            if let Some(id) = pick {
-                self.select(id, window, cx);
-            }
+        // (a popped-out terminal lives in its own window, never in the main pane)
+        let valid = self.selected.as_ref().is_some_and(|id| self.sessions.iter().any(|s| &s.id == id) && !crate::ui::popout::is_popped(id, cx));
+        let docked: Vec<&Session> = self.ordered_sessions().into_iter().filter(|s| !crate::ui::popout::is_popped(&s.id, cx)).collect();
+        let pick = (!valid)
+            .then(|| {
+                docked
+                    .iter()
+                    .find(|s| self.need_for_session(&s.id).is_some_and(|n| n.is_approval()))
+                    .or_else(|| docked.iter().find(|s| self.effective_state(s) == StatusState::NeedsYou))
+                    .or_else(|| docked.first())
+                    .map(|s| s.id.clone())
+            })
+            .flatten();
+        if let Some(id) = pick {
+            self.select(id, window, cx);
         } else if !valid {
             self.selected = None;
             self.terminal = None;
@@ -612,7 +682,8 @@ impl MainWindow {
 
     // ------------------------------------------------------------------ selection
 
-    /// Sessions in sidebar order: grouped by project order, then sessions in daemon order.
+    /// Sessions in sidebar order: grouped by project order, then sessions in dragged order
+    /// (`order`), then daemon order.
     pub fn ordered_sessions(&self) -> Vec<&Session> {
         let mut out = vec![];
         for g in self.groups() {
@@ -633,6 +704,10 @@ impl MainWindow {
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
         // and commands, and ⌘O / ⌘K "Go to project" reopen it.
         groups.retain(|g| !g.sessions.is_empty());
+        let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
+        for g in groups.iter_mut().chain(std::iter::once(&mut root)) {
+            g.sessions.sort_by_key(|s| rank(s));
+        }
         // Root terminals (no project) come first and are drawn without a heading.
         if !root.sessions.is_empty() {
             groups.insert(0, root);
@@ -675,10 +750,15 @@ impl MainWindow {
     }
 
     pub fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::ui::popout::is_popped(&id, cx) {
+            crate::ui::popout::open(self, id, window, cx);
+            return;
+        }
         if self.selected.as_deref() != Some(&id) {
-            self.selected = Some(id);
+            self.selected = Some(id.clone());
             self.menu = Menu::None;
             self.request_refresh(refresh::HEADER, cx);
+            crate::ui::links::fetch(self, id, cx);
         }
         if self.screen != Screen::Terminal {
             self.screen = Screen::Terminal;
@@ -969,8 +1049,18 @@ impl MainWindow {
             return;
         }
         self.close_armed = None;
-        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).collect();
-        let next = order.iter().position(|x| *x == id).and_then(|i| order.get(i + 1).or(i.checked_sub(1).and_then(|j| order.get(j)))).cloned();
+        self.select_neighbour(&id, window, cx);
+        self.sessions.retain(|s| s.id != id);
+        self.menu = Menu::None;
+        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+        cx.notify();
+    }
+
+    /// Select the sidebar neighbour of `id` (below, else above) that the main window can show,
+    /// or nothing.
+    fn select_neighbour(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| s == id || !crate::ui::popout::is_popped(s, cx)).collect();
+        let next = order.iter().position(|x| x == id).and_then(|i| order.get(i + 1).or(i.checked_sub(1).and_then(|j| order.get(j)))).cloned();
         match next {
             Some(n) => self.select(n, window, cx),
             None => {
@@ -979,9 +1069,16 @@ impl MainWindow {
                 self.pending_terminal = None;
             }
         }
-        self.sessions.retain(|s| s.id != id);
-        self.menu = Menu::None;
-        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+    }
+
+    /// `id` is moving to its own window (`ui::popout`): take it out of the main and split panes.
+    pub fn release(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split.as_ref().is_some_and(|s| s.session_id(cx) == id) {
+            crate::ui::split::close(self, window, cx);
+        }
+        if self.selected.as_deref() == Some(id) {
+            self.select_neighbour(id, window, cx);
+        }
         cx.notify();
     }
 
@@ -1006,8 +1103,10 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &HoldToQuit, window, cx| crate::ui::quit_hold::start(m, window, cx)))
             .on_action(cx.listener(Self::select_project))
             .on_action(cx.listener(|m, _: &ToggleCommandBar, w, cx| m.set_overlay(Overlay::CommandBar, w, cx)))
+            .on_action(cx.listener(|m, _: &OpenPrompts, w, cx| crate::ui::command_bar::open_prompts(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| crate::annotate::open(m, w, cx)))
+            .on_action(cx.listener(|m, _: &crate::ui::links::ToggleLinks, w, cx| crate::ui::links::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::PasteImage, w, cx| {
                 crate::annotate::open(m, w, cx);
                 let s = crate::annotate::clipboard_sources(cx);
@@ -1025,6 +1124,9 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
+                    if m.menu == Menu::Links {
+                        m.focus_terminal(w, cx);
+                    }
                     m.menu = Menu::None;
                     cx.notify();
                 } else if m.overlay != Overlay::None {
@@ -1034,9 +1136,9 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &SplitRight, window, cx| crate::ui::split::toggle(m, window, cx)))
-            .on_action(cx.listener(|m, _: &PopOut, _w, cx| {
+            .on_action(cx.listener(|m, _: &PopOut, w, cx| {
                 if let Some(id) = m.selected.clone() {
-                    crate::ui::popout::open(id, m.backend.clone(), cx);
+                    crate::ui::popout::open(m, id, w, cx);
                 }
             }))
             .on_action(cx.listener(|m, _: &RestartSession, _w, cx| m.restart_selected(cx)))

@@ -42,6 +42,11 @@ actions!(
         TermPaste,
         TermSelectAll,
         TermClear,
+        /// Agent terminals: scroll to the previous / next prompt you sent (`terminal::prompt_nav`).
+        PrevPrompt,
+        NextPrompt,
+        /// The command bar listing the selected agent terminal's prompts.
+        OpenPrompts,
     ]
 );
 
@@ -68,9 +73,13 @@ pub fn default_keys() -> HashMap<&'static str, &'static str> {
         ("keys.rules", ""),
         ("keys.triggers", ""),
         ("keys.insights", ""),
+        ("keys.links", "cmd-l"),
         ("keys.open_project", "cmd-o"),
         ("keys.composer", "cmd-shift-d"),
         ("keys.add_image", "cmd-i"),
+        ("keys.prev_prompt", "cmd-alt-up"),
+        ("keys.next_prompt", "cmd-alt-down"),
+        ("keys.prompts", "cmd-p"),
     ]
     .into_iter()
     .collect()
@@ -109,6 +118,10 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     add(key("keys.open_project"), &|k| KeyBinding::new(k, OpenProject, ctx));
     add(key("keys.composer"), &|k| KeyBinding::new(k, crate::composer::OpenComposer, ctx));
     add(key("keys.add_image"), &|k| KeyBinding::new(k, crate::annotate::AddImage, ctx));
+    add(key("keys.links"), &|k| KeyBinding::new(k, crate::ui::links::ToggleLinks, ctx));
+    add(key("keys.prev_prompt"), &|k| KeyBinding::new(k, PrevPrompt, Some(CTX_TERM)));
+    add(key("keys.next_prompt"), &|k| KeyBinding::new(k, NextPrompt, Some(CTX_TERM)));
+    add(key("keys.prompts"), &|k| KeyBinding::new(k, OpenPrompts, ctx));
     b.extend(crate::composer::bindings());
     for i in 1..=9 {
         b.push(KeyBinding::new(&format!("cmd-{i}"), SelectProject(i - 1), ctx));

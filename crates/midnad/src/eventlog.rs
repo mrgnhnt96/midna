@@ -39,6 +39,8 @@ struct Inner {
     /// The in-memory window, oldest first.
     events: Vec<Event>,
     subs: Vec<Sub>,
+    /// In-process listeners (`listen`), e.g. the notifier.
+    listeners: Vec<std::sync::mpsc::Sender<Event>>,
     appended: u64,
     retain_secs: i64,
     max_events: usize,
@@ -137,6 +139,7 @@ impl EventLog {
                 seq,
                 events,
                 subs: vec![],
+                listeners: vec![],
                 appended: 0,
                 retain_secs,
                 max_events,
@@ -159,6 +162,7 @@ impl EventLog {
         }
         let note = notification(&e);
         g.subs.retain(|s| !s.filter.matches(&e) || s.tx.send(Out::Line(note.clone())).is_ok());
+        g.listeners.retain(|l| l.send(e.clone()).is_ok());
         g.events.push(e.clone());
         g.appended += 1;
         if g.appended.is_multiple_of(TRIM_EVERY) || g.events.len() > g.max_events {
@@ -169,6 +173,15 @@ impl EventLog {
 
     pub fn seq(&self) -> u64 {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).seq
+    }
+
+    /// Every event appended from now on, in order, for an in-process consumer that must not
+    /// run under the caller's locks (events are emitted with `core` held). Dropping the
+    /// receiver unregisters it.
+    pub fn listen(&self) -> std::sync::mpsc::Receiver<Event> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).listeners.push(tx);
+        rx
     }
 
     /// Register a subscriber; replays events after `since` first (atomically, so nothing is

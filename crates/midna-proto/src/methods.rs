@@ -28,6 +28,213 @@ pub struct IdParams {
     pub id: Id,
 }
 
+// ------------------------------------------------------------------ links
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LinksListParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// Only links of this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<LinkKind>,
+    /// Only pinned links.
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksListResult {
+    pub session: Id,
+    /// Pinned first (most recently pinned first), then the rest, most recent first.
+    pub links: Vec<Link>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksPinParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// A link id (`l_…`) or its exact target (URL or path).
+    pub link: String,
+    /// false unpins.
+    #[serde(default = "yes")]
+    pub pinned: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksAddParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// An http(s) URL or an absolute file path.
+    pub target: String,
+    /// Display name; derived from the target when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Why it matters (shown under the title).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Pin it too (default true: adding a link on purpose means it is important).
+    #[serde(default = "yes")]
+    pub pin: bool,
+}
+
+// ------------------------------------------------------------------ notifications
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyListParams {
+    /// Also show this terminal's overrides and what applies to it. Defaults to the caller's own
+    /// terminal; pass `global: true` for the global settings only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    #[serde(default)]
+    pub global: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyCategoryInfo {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub default: bool,
+    /// The global `notify.<key>` setting.
+    pub global: bool,
+    /// The terminal's override, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<bool>,
+    /// What applies: the override, else the global setting (false whenever notifications are
+    /// off globally or the terminal is muted).
+    pub effective: bool,
+    /// `notify.sound.<key>`: none, a macOS sound or an imported file's name.
+    #[serde(default)]
+    pub sound: String,
+    /// `notify.volume.<key>`, 0–100 (before the master `notify.volume`).
+    #[serde(default)]
+    pub volume: i64,
+    /// `notify.image.<key>`, or `notify.image` when that's empty (empty = none).
+    #[serde(default)]
+    pub image: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyListResult {
+    /// `notify.enabled`.
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// The terminal is muted (`notify set enabled false`).
+    #[serde(default)]
+    pub muted: bool,
+    pub categories: Vec<NotifyCategoryInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifySetParams {
+    /// The terminal to change. Defaults to the caller's own terminal; pass `global: true` to
+    /// change the global setting (same as `settings.set notify.<key>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    #[serde(default)]
+    pub global: bool,
+    /// A category key (see notify.list) or `enabled` (false mutes the terminal).
+    pub key: String,
+    /// true / false, or null to drop the terminal's override and follow the global setting.
+    pub value: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifySendParams {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    /// The terminal it is about (clicking the notification selects it). Defaults to the
+    /// caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// Play the human's sound for agent notifications (`notify.sound.agent`, at its volume).
+    #[serde(default)]
+    pub sound: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyMediaParams {
+    /// `sound` or `image`; both when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// A sound or image notifications can use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyMedia {
+    /// `sound` or `image`.
+    pub kind: String,
+    /// What a `notify.sound.<kind>` / `notify.image[.<kind>]` setting holds to use it: a macOS
+    /// sound's name, or an imported file's name.
+    pub name: String,
+    pub path: String,
+    /// A macOS sound (can't be removed).
+    #[serde(default)]
+    pub builtin: bool,
+    /// Settings that use it now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub used_by: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyMediaResult {
+    pub sounds: Vec<NotifyMedia>,
+    pub images: Vec<NotifyMedia>,
+    /// Where imported files live (MIDNA_HOME/notify).
+    pub dir: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyImportParams {
+    /// Absolute path to a sound (aiff, aif, wav, mp3, m4a, caf; up to 10 MB) or an image (png,
+    /// jpg, jpeg, gif; up to 10 MB). The file is copied; the original can go.
+    pub path: String,
+    /// Use it right away for these settings, e.g. `["notify.sound.approval"]` or `["notify.image"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub use_for: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyRemoveParams {
+    /// An imported file's name (see notify.media).
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyRemoveResult {
+    pub removed: String,
+    /// Settings that used it, now back to their defaults.
+    #[serde(default)]
+    pub reset: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyTestParams {
+    /// The category whose sound, volume and image to use (default `approval`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// The terminal the test is about (clicking it selects it). Defaults to the caller's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifySendResult {
+    pub posted: bool,
+    /// Why it wasn't posted: `disabled`, `muted`, `category_off`, `duplicate`, `rate_limited`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 // ------------------------------------------------------------------ daemon
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -205,6 +412,62 @@ pub struct SessionScrollParams {
     /// Scroll by this many pages (negative = up).
     #[serde(default)]
     pub pages: Option<i32>,
+}
+
+/// One prompt the human sent an agent terminal (`agent.prompt_submitted`), numbered from 1 in
+/// the order sent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptMark {
+    pub n: u32,
+    /// The prompt (first 200 characters).
+    pub text: String,
+    pub at: Timestamp,
+    /// The agent's conversation id when it was sent (Claude's session id, Codex's thread id).
+    #[serde(default)]
+    pub conversation: Option<String>,
+    /// Sent in the conversation the agent shows now, so session.jump_prompt can scroll to it.
+    /// False for prompts before a /clear or a fresh start.
+    pub on_screen: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionPromptsResult {
+    /// Oldest first.
+    pub prompts: Vec<PromptMark>,
+    /// The prompt the top of the agent's view belongs to (its `n`), when the screen shows it.
+    #[serde(default)]
+    pub here: Option<u32>,
+    /// The agent's view is scrolled back from the live end.
+    pub scrolled: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionJumpPromptParams {
+    pub id: Id,
+    /// The prompt to scroll to (`n` from session.prompts).
+    #[serde(default)]
+    pub n: Option<u32>,
+    /// Instead of `n`: `prev` or `next` from where the view is, `latest` (the last prompt), or
+    /// `live` (back to the bottom).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Wait for the agent to finish scrolling and report whether the prompt was found
+    /// (default true). False returns at once.
+    #[serde(default)]
+    pub wait: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct JumpPromptResult {
+    pub ok: bool,
+    /// The prompt jumped to (none for `live`).
+    #[serde(default)]
+    pub n: Option<u32>,
+    /// The prompt's row is on screen (false when waiting was off, or it couldn't be found).
+    pub found: bool,
+    /// Why nothing happened or the prompt wasn't found.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

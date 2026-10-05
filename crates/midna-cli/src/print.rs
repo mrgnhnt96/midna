@@ -168,3 +168,22 @@ pub fn event(e: &Value) {
     }
     println!("{:>6} {} {:<24} {:<14} {:<9} {}", s(e, "seq"), s(e, "at"), s(e, "kind"), who, target, data);
 }
+
+/// `session.prompts`: one line per prompt, ▸ on the one the agent's view is in.
+pub fn prompts(v: &Value) {
+    let list = v["prompts"].as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("no prompts");
+        return;
+    }
+    let here = v["here"].as_u64();
+    for p in &list {
+        let n = p["n"].as_u64().unwrap_or(0);
+        let mark = if Some(n) == here { "▸" } else { " " };
+        let time = s(p, "at").get(11..16).unwrap_or("").to_string();
+        let text: String = s(p, "text").lines().next().unwrap_or("").chars().take(100).collect();
+        let gone = if p["on_screen"].as_bool() == Some(false) { "  (before /clear)" } else { "" };
+        println!("{mark} {n:>3}  {time}  {text}{gone}");
+    }
+    println!("{}", if v["scrolled"].as_bool() == Some(true) { "(scrolled back)" } else { "(live)" });
+}

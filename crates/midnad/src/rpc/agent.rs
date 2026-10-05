@@ -5,8 +5,9 @@ use crate::agent_state::transition;
 use crate::daemon::Daemon;
 use midna_proto::*;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
-pub fn hook(d: &Daemon, ctx: &Ctx, p: AgentHookParams) -> R {
+pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     let sid = p.session.clone().or(ctx.session.clone()).ok_or_else(|| RpcError::bad_params("no session: run inside a midna terminal or pass session"))?;
     let (cur, project) = {
         let core = d.core();
@@ -18,6 +19,7 @@ pub fn hook(d: &Daemon, ctx: &Ctx, p: AgentHookParams) -> R {
     let payload = &p.payload;
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
+        crate::links::after_hook(d, &sid, p.agent, ev, payload);
     }
     match ev {
         "statusline" => {
@@ -26,11 +28,13 @@ pub fn hook(d: &Daemon, ctx: &Ctx, p: AgentHookParams) -> R {
         }
         "UserPromptSubmit" => {
             let preview: String = payload.get("prompt").and_then(Value::as_str).unwrap_or("").chars().take(200).collect();
-            d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": preview }));
+            // The conversation lets prompt fast travel tell prompts before a /clear apart.
+            let conversation = payload.get("session_id").and_then(Value::as_str);
+            d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": preview, "conversation": conversation }));
             start_turn(d, &sid, &project, &actor);
         }
         "Stop" | "StopFailure" => {
-            end_turn(d, &sid, &project, &actor, ev);
+            end_turn(d, &sid, &project, &actor, ev, payload.get("last_assistant_message").and_then(Value::as_str));
         }
         "agent-turn-complete" => {
             // Codex 0.160.0 also notifies for its internal title-generation turn (a separate
@@ -41,7 +45,7 @@ pub fn hook(d: &Daemon, ctx: &Ctx, p: AgentHookParams) -> R {
             // Codex notify arrives once per finished turn; it carries the inputs of that turn.
             let msgs: Vec<String> = payload.get("input-messages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             for m in msgs.iter().map(|m| m.chars().take(200).collect::<String>()) {
-                d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "via": "notify", "prompt": m }));
+                d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "via": "notify", "prompt": m, "conversation": payload.get("thread-id") }));
             }
             // The title spinner usually opened this turn already. If the title also ended it
             // moments ago, this notify belongs to that turn: don't open another.
@@ -49,7 +53,7 @@ pub fn hook(d: &Daemon, ctx: &Ctx, p: AgentHookParams) -> R {
             if !title_just_ended {
                 start_turn(d, &sid, &project, &actor);
             }
-            end_turn(d, &sid, &project, &actor, ev);
+            end_turn(d, &sid, &project, &actor, ev, payload.get("last-assistant-message").and_then(Value::as_str));
         }
         _ => {}
     }
@@ -105,10 +109,15 @@ pub fn start_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor) {
     }
 }
 
-fn end_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor, reason: &str) -> bool {
+/// `message`: the start of the agent's last reply, when the hook carries it (notifications).
+fn end_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor, reason: &str, message: Option<&str>) -> bool {
     let ended = d.core().agents.get_mut(sid).map(|a| std::mem::replace(&mut a.in_turn, false)).unwrap_or(false);
     if ended {
-        d.emit(kinds::AGENT_TURN_ENDED, actor.clone(), Some(project.into()), Some(sid.into()), json!({ "reason": reason }));
+        let mut data = json!({ "reason": reason });
+        if let Some(m) = message.map(|m| m.chars().take(300).collect::<String>()).filter(|m| !m.trim().is_empty()) {
+            data["message"] = json!(m);
+        }
+        d.emit(kinds::AGENT_TURN_ENDED, actor.clone(), Some(project.into()), Some(sid.into()), data);
     }
     ended
 }
@@ -116,7 +125,7 @@ fn end_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor, reason: &str) -
 /// End an open turn without a Stop hook (interrupt, process exit). True if one was open.
 pub fn end_turn_if_open(d: &Daemon, sid: &str, reason: &str) -> bool {
     let project = d.core().state.session(sid).map(|s| s.project_id.clone()).unwrap_or_default();
-    end_turn(d, sid, &project, &Actor::system(), reason)
+    end_turn(d, sid, &project, &Actor::system(), reason, None)
 }
 
 /// Codex's background "generate a task title" turn: its reply is a `{"title": …}` object.

@@ -254,6 +254,8 @@ fn run(a: &Args) -> Res {
             });
             Ok(())
         }
+        "links" => links(a, &out),
+        "notify" | "notifications" => notify(a, &out),
         "key" => {
             let id = a.need(1, "terminal id")?;
             if a.pos.len() < 3 {
@@ -305,6 +307,26 @@ fn run(a: &Args) -> Res {
             };
             let v = call("session.read", json!({ "id": id, "lines": a.num::<u32>("lines")?, "screen": a.has("screen") }))?;
             out(&v, &|v| println!("{}", v["text"].as_str().unwrap_or("")));
+            Ok(())
+        }
+        "prompts" => {
+            a.check(&["jump"])?;
+            let id = a.need(1, "terminal id")?;
+            if let Some(to) = a.get("jump") {
+                let params = match to.parse::<u32>() {
+                    Ok(n) => json!({ "id": id, "n": n }),
+                    Err(_) => json!({ "id": id, "to": to }),
+                };
+                let v = call("session.jump_prompt", params)?;
+                out(&v, &|v| match (v["ok"].as_bool(), v["n"].as_u64()) {
+                    (Some(true), Some(n)) => println!("at prompt {n}"),
+                    (Some(true), None) => println!("back to live"),
+                    _ => eprintln!("{}", v["reason"].as_str().unwrap_or("could not jump")),
+                });
+                return Ok(());
+            }
+            let v = call("session.prompts", json!({ "id": id }))?;
+            out(&v, &print::prompts);
             Ok(())
         }
         "send" => {
@@ -739,6 +761,168 @@ fn insights(a: &Args, out: OutFn) -> Res {
 
 fn s_(v: &Value, k: &str) -> String {
     print::plain(v.get(k).unwrap_or(&Value::Null))
+}
+
+fn links(a: &Args, out: OutFn) -> Res {
+    let session = a.get("session");
+    match a.pos.get(1).map(String::as_str).unwrap_or("list") {
+        "list" | "ls" => {
+            a.check(&["session", "kind", "pinned"])?;
+            let v = call("links.list", json!({ "session": session, "kind": a.get("kind"), "pinned": a.has("pinned") }))?;
+            out(&v, &|v| {
+                let list = v["links"].as_array().cloned().unwrap_or_default();
+                if list.is_empty() {
+                    println!("no links yet in {}", s_(v, "session"));
+                }
+                for l in list {
+                    let pin = if l["pinned"] == true { "*" } else { " " };
+                    let via = l["via"].as_str().map(|v| format!(" via {v}")).unwrap_or_default();
+                    println!("{pin} {}  {:<8} {}  ({}{}, {}×)", s_(&l, "id"), s_(&l, "kind"), s_(&l, "title"), s_(&l, "source"), via, print::plain(&l["mentions"]));
+                    println!("    {}", s_(&l, "target"));
+                    if let Some(n) = l["note"].as_str() {
+                        println!("    {n}");
+                    }
+                }
+            });
+        }
+        verb @ ("pin" | "unpin") => {
+            a.check(&["session"])?;
+            let link = a.need(2, "link id, URL or path")?;
+            let v = call("links.pin", json!({ "session": session, "link": link, "pinned": verb == "pin" }))?;
+            out(&v, &|v| println!("{verb}ned {}  {}", s_(v, "id"), s_(v, "title")));
+        }
+        "add" => {
+            a.check(&["session", "title", "why", "no-pin"])?;
+            let target = a.need(2, "URL or absolute path")?;
+            let v = call("links.add", json!({ "session": session, "target": target, "title": a.get("title"), "note": a.get("why"), "pin": !a.has("no-pin") }))?;
+            out(&v, &|v| println!("added {}  {}{}", s_(v, "id"), s_(v, "title"), if v["pinned"] == true { " (pinned)" } else { "" }));
+        }
+        other => return Err(Fail::Usage(format!("unknown `links {other}`; see midna links --help"))),
+    }
+    Ok(())
+}
+
+fn notify(a: &Args, out: OutFn) -> Res {
+    let print_list = |v: &Value| {
+        let scope = match v["session"].as_str() {
+            Some(s) if v["muted"] == true => format!("terminal {s} (muted)"),
+            Some(s) => format!("terminal {s}"),
+            None => "global".into(),
+        };
+        println!("notifications {} · {scope}", if v["enabled"] == true { "on" } else { "OFF (notify.enabled)" });
+        for c in v["categories"].as_array().cloned().unwrap_or_default() {
+            let mark = if c["effective"] == true { "on " } else { "off" };
+            let here = match c["session"].as_bool() {
+                Some(b) => format!("  (here: {}, global: {})", if b { "on" } else { "off" }, if c["global"] == true { "on" } else { "off" }),
+                None => String::new(),
+            };
+            let sound = match s_(&c, "sound").as_str() {
+                "none" | "" => "no sound".to_string(),
+                snd => format!("{snd} {}%", c["volume"].as_i64().unwrap_or(100)),
+            };
+            let image = match s_(&c, "image").as_str() {
+                "" => String::new(),
+                i => format!(" · {i}"),
+            };
+            println!("  {mark}  {:<11} {:<26} {sound}{image}{here}", s_(&c, "key"), s_(&c, "label"));
+        }
+    };
+    let session = a.get("session");
+    let global = a.has("global");
+    match a.pos.get(1).map(String::as_str).unwrap_or("list") {
+        "list" | "ls" => {
+            a.check(&["session", "global"])?;
+            let v = call("notify.list", json!({ "session": session, "global": global }))?;
+            out(&v, &print_list);
+        }
+        verb @ ("set" | "mute" | "unmute") => {
+            a.check(&["session", "global"])?;
+            let (key, value) = match verb {
+                "mute" => ("enabled".to_string(), json!(false)),
+                "unmute" => ("enabled".to_string(), Value::Null),
+                _ => {
+                    let key = a.need(2, "notification key (see midna notify)")?.to_string();
+                    let value = match a.need(3, "on, off or default")? {
+                        "on" | "true" | "yes" => json!(true),
+                        "off" | "false" | "no" => json!(false),
+                        "default" | "inherit" | "null" => Value::Null,
+                        other => return Err(Fail::Usage(format!("`{other}`: expected on, off or default"))),
+                    };
+                    (key, value)
+                }
+            };
+            let v = call("notify.set", json!({ "session": session, "global": global, "key": key, "value": value }))?;
+            out(&v, &print_list);
+        }
+        "send" => {
+            a.check(&["session", "detail", "sound"])?;
+            let title = a.need(2, "title")?;
+            let v = call("notify.send", json!({ "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound") }))?;
+            out(&v, &|v| match v["reason"].as_str() {
+                None => println!("sent"),
+                Some(r) => println!("not sent: {r}"),
+            });
+        }
+        "media" | "sounds" | "images" => {
+            a.check(&[])?;
+            let v = call("notify.media", json!({}))?;
+            out(&v, &|v| {
+                for (title, list) in [("sounds", &v["sounds"]), ("images", &v["images"])] {
+                    let list = list.as_array().cloned().unwrap_or_default();
+                    println!("{title}{}", if list.is_empty() { " (none imported)" } else { "" });
+                    for m in list {
+                        let used: Vec<&str> = m["used_by"].as_array().map(|u| u.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                        let tag = if m["builtin"] == true { "macOS" } else { "imported" };
+                        let used = if used.is_empty() { String::new() } else { format!("  used by {}", used.join(", ")) };
+                        println!("  {:<22} {tag:<8}{used}", s_(&m, "name"));
+                    }
+                }
+                println!("imported files: {}", s_(v, "dir"));
+            });
+        }
+        "import" => {
+            a.check(&["for"])?;
+            let file = a.need(2, "a sound or image file")?;
+            let path = std::path::absolute(file).map_err(|e| Fail::Usage(format!("{file}: {e}")))?;
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let image = midna_proto::notify::IMAGE_EXTS.contains(&ext.as_str());
+            // --for approval = that kind's sound (or image); --for all = every notification's image
+            let use_for: Vec<String> = a
+                .all("for")
+                .iter()
+                .flat_map(|f| f.split(','))
+                .map(|f| match (f.trim(), image) {
+                    (f, _) if f.starts_with("notify.") => f.to_string(),
+                    ("all" | "every", true) => "notify.image".into(),
+                    (f, true) => midna_proto::notify::image_key(f),
+                    (f, false) => midna_proto::notify::sound_key(f),
+                })
+                .collect();
+            let v = call("notify.import", json!({ "path": path, "use_for": use_for }))?;
+            out(&v, &|v| {
+                let used: Vec<&str> = v["used_by"].as_array().map(|u| u.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                println!("imported {} `{}`{}", s_(v, "kind"), s_(v, "name"), if used.is_empty() { String::new() } else { format!(", used by {}", used.join(", ")) });
+            });
+        }
+        "remove" | "rm" => {
+            a.check(&[])?;
+            let v = call("notify.remove", json!({ "name": a.need(2, "an imported file's name (see midna notify media)")? }))?;
+            out(&v, &|v| {
+                let reset: Vec<&str> = v["reset"].as_array().map(|u| u.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                println!("removed {}{}", s_(v, "removed"), if reset.is_empty() { String::new() } else { format!("; reset {}", reset.join(", ")) });
+            });
+        }
+        "test" => {
+            a.check(&["session"])?;
+            let v = call("notify.test", json!({ "session": session, "category": a.pos.get(2) }))?;
+            out(&v, &|v| match v["reason"].as_str() {
+                None => println!("sent a test notification"),
+                Some(r) => println!("not sent: {r}"),
+            });
+        }
+        other => return Err(Fail::Usage(format!("unknown `notify {other}`; see midna notify --help"))),
+    }
+    Ok(())
 }
 
 fn projects(a: &Args, out: OutFn) -> Res {

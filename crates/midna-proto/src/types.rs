@@ -218,6 +218,11 @@ pub struct Session {
     /// Agent terminals: what the agent is running, as its hooks report it (see `AgentInfo`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_info: Option<AgentInfo>,
+    /// This terminal's notification overrides: `enabled: false` mutes it, and a category key
+    /// (`turn_done`, `pr_checks`, …) turns that kind on or off here only. Unset keys follow the
+    /// global `notify.*` settings. Change with `notify.set`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub notify: std::collections::BTreeMap<String, bool>,
 }
 
 /// What an agent terminal's agent is doing beyond its turn, from its hooks: the conversation
@@ -781,6 +786,79 @@ pub mod kinds {
     pub const UPDATES_REQUESTED: &str = "updates.requested";
     /// `daemon.reset` cleared state (data = counts, `keep_rules`).
     pub const DAEMON_RESET: &str = "daemon.reset";
+    /// A terminal's session links changed (`{count, added, pinned}`); read them with `links.list`.
+    pub const LINKS_CHANGED: &str = "links.changed";
+    /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.
+    pub const NOTIFY_POSTED: &str = "notify.posted";
+    /// A terminal's notification overrides changed (`{notify}`, the whole map).
+    pub const SESSION_NOTIFY: &str = "session.notify";
+    /// A notification sound or image was imported or removed (`{action, kind, name}`).
+    pub const NOTIFY_MEDIA: &str = "notify.media";
+}
+
+// ------------------------------------------------------------------ session links
+
+/// What a session link points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    /// A GitHub or Bitbucket pull request.
+    Pr,
+    /// A claude.ai artifact.
+    Artifact,
+    /// Any other http(s) URL.
+    Web,
+    /// A file the agent created or edited (absolute path).
+    File,
+}
+
+/// Where a link came up first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkSource {
+    /// The human's prompt.
+    User,
+    /// The agent's reply text.
+    Agent,
+    /// The agent fetched it (WebFetch).
+    Fetched,
+    /// A tool's output (e.g. `gh pr create`, an artifact publish).
+    Tool,
+    /// The agent created the file.
+    Created,
+    /// The agent edited the file.
+    Edited,
+    /// Added on purpose with `links.add`.
+    Added,
+}
+
+/// A link, PR, artifact or file that came up in an agent terminal's conversation. The daemon
+/// collects them from the agent's transcript; anyone can pin one or add one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Link {
+    /// `l_` + 8 hex, stable for the same target in the same terminal.
+    pub id: Id,
+    pub kind: LinkKind,
+    /// The URL, or the absolute path for a file.
+    pub target: String,
+    /// Short display name (`PR #12 · owner/repo`, an artifact's title, a host + path, a relative path).
+    pub title: String,
+    pub source: LinkSource,
+    /// The tool or command it came from, when it came from one (`gh pr create`, `WebFetch`, `Edit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// How many transcript entries mentioned it (edits, for a file).
+    pub mentions: u32,
+    pub first_at: Timestamp,
+    pub last_at: Timestamp,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_by: Option<Actor>,
+    /// Why it matters, from `links.add`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 // ------------------------------------------------------------------ scripts

@@ -5,6 +5,7 @@ pub mod charts;
 pub mod command_bar;
 pub mod header;
 pub mod insights;
+pub mod links;
 pub mod needs_you;
 pub mod popout;
 pub mod quit_hold;

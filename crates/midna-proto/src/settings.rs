@@ -24,6 +24,8 @@ pub struct SettingSpec {
     pub description: &'static str,
     pub human_only: bool,
     pub section: &'static str,
+    /// Inclusive bounds for an Int setting.
+    pub range: Option<(i64, i64)>,
 }
 
 /// Static-friendly mirror of [`SettingType`].
@@ -80,8 +82,11 @@ impl SettingSpec {
                 (_, Some("false" | "off" | "no" | "0")) => Ok(json!(false)),
                 _ => Err(format!("{} expects true or false", self.key)),
             },
-            SettingKind::Int => match (v.as_i64(), as_text.and_then(|t| t.parse::<i64>().ok())) {
-                (Some(i), _) | (None, Some(i)) => Ok(json!(i)),
+            SettingKind::Int => match (v.as_i64(), as_text.and_then(|t| t.trim().trim_end_matches('%').parse::<i64>().ok())) {
+                (Some(i), _) | (None, Some(i)) => match self.range {
+                    Some((lo, hi)) if i < lo || i > hi => Err(format!("{} expects {lo} to {hi}", self.key)),
+                    _ => Ok(json!(i)),
+                },
                 _ => Err(format!("{} expects an integer", self.key)),
             },
             SettingKind::String | SettingKind::Keybinding => match as_text {
@@ -115,8 +120,29 @@ impl SettingSpec {
 }
 
 macro_rules! s {
-    ($key:literal, $ty:expr, $def:expr, $section:literal, $human:literal, $desc:literal) => {
-        SettingSpec { key: $key, ty: $ty, default: $def, description: $desc, human_only: $human, section: $section }
+    ($key:expr, $ty:expr, $def:expr, $section:literal, $human:literal, $desc:expr) => {
+        SettingSpec { key: $key, ty: $ty, default: $def, description: $desc, human_only: $human, section: $section, range: None }
+    };
+}
+
+/// A notification category's sound, volume and image (see `notify::{sound_key, volume_key, image_key}`).
+const SOUNDS: SettingKind = en_path(&["none", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"]);
+macro_rules! snd {
+    ($cat:literal, $def:literal) => {
+        s!(concat!("notify.sound.", $cat), SOUNDS, S($def), "notifications", false,
+            concat!("Sound for “notify.", $cat, "”: none, a macOS sound (Glass, Ping, …) or a sound imported with `midna notify import <file>` (by its file name)."))
+    };
+}
+macro_rules! vol {
+    ($cat:literal) => {
+        SettingSpec { range: Some((0, 100)), ..s!(concat!("notify.volume.", $cat), SettingKind::Int, I(100), "notifications", false,
+            concat!("How loud “notify.", $cat, "” plays, 0–100 (scaled by notify.volume).")) }
+    };
+}
+macro_rules! pic {
+    ($cat:literal) => {
+        s!(concat!("notify.image.", $cat), SettingKind::String, S(""), "notifications", false,
+            concat!("Image on “notify.", $cat, "” notifications: empty = the notify.image every notification uses, none, or an imported image's file name."))
     };
 }
 
@@ -174,6 +200,43 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("projects.roots", SettingKind::PathList, L(&[]), "general", false,
         "Folders your projects live in (e.g. ~/Development). Their subfolders show up in the command bar and on the empty screen, ready to open as projects; a subfolder that isn't a git repo but holds some is looked into one level deeper. Nothing is added to the sidebar until you open one. Comma-separated on the CLI."),
     s!("git.refresh_secs", SettingKind::Int, I(10), "general", false, "How often midnad refreshes git info for terminals."),
+    s!("notify.enabled", SettingKind::Bool, B(true), "notifications", false,
+        "Post macOS notifications at all. Each kind has its own notify.<kind> switch, and a terminal can override any of them (or mute itself) with `midna notify set`."),
+    s!("notify.approval", SettingKind::Bool, B(true), "notifications", false,
+        "Notify when an agent waits on you: an approval request, a permission prompt or a question in its terminal."),
+    s!("notify.attention", SettingKind::Bool, B(true), "notifications", false, "Notify when an agent raises a needs-you note or says it's blocked."),
+    s!("notify.failed", SettingKind::Bool, B(true), "notifications", false, "Notify when a terminal's command fails or an agent's turn ends in an error."),
+    s!("notify.turn_done", SettingKind::Bool, B(true), "notifications", false,
+        "Notify when an agent finishes a turn that took at least notify.turn_done_min_secs."),
+    s!("notify.agent", SettingKind::Bool, B(true), "notifications", false, "Show notifications agents send on purpose (`midna notify send`)."),
+    s!("notify.requests", SettingKind::Bool, B(false), "notifications", false,
+        "Notify for needs-you items that can wait: a trigger to enable, a webhook secret to set, a rule an agent wants removed."),
+    s!("notify.background", SettingKind::Bool, B(false), "notifications", false, "Notify when a background shell an agent started finishes."),
+    s!("notify.pr_checks", SettingKind::Bool, B(false), "notifications", false, "Notify when the checks on a terminal's pull request finish (passing or failing)."),
+    s!("notify.exited", SettingKind::Bool, B(false), "notifications", false, "Notify when a terminal's process exits cleanly."),
+    s!("notify.triggers", SettingKind::Bool, B(false), "notifications", false, "Notify when a webhook trigger fires."),
+    s!("notify.restarted", SettingKind::Bool, B(false), "notifications", false, "Notify when midna restarts an agent into the same conversation after an update."),
+    s!("notify.turn_done_min_secs", SettingKind::Int, I(30), "notifications", false,
+        "An agent's turn must take at least this long to notify when it finishes (quick replies you watched don't). 0 = every turn."),
+    SettingSpec { range: Some((0, 100)), ..s!("notify.volume", SettingKind::Int, I(100), "notifications", false,
+        "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
+    s!("notify.image", SettingKind::String, S(""), "notifications", false,
+        "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
+    snd!("approval", "Glass"), vol!("approval"), pic!("approval"),
+    snd!("attention", "Glass"), vol!("attention"), pic!("attention"),
+    snd!("failed", "Basso"), vol!("failed"), pic!("failed"),
+    snd!("turn_done", "none"), vol!("turn_done"), pic!("turn_done"),
+    snd!("agent", "Ping"), vol!("agent"), pic!("agent"),
+    snd!("requests", "none"), vol!("requests"), pic!("requests"),
+    snd!("background", "none"), vol!("background"), pic!("background"),
+    snd!("pr_checks", "none"), vol!("pr_checks"), pic!("pr_checks"),
+    snd!("exited", "none"), vol!("exited"), pic!("exited"),
+    snd!("triggers", "none"), vol!("triggers"), pic!("triggers"),
+    snd!("restarted", "none"), vol!("restarted"), pic!("restarted"),
+    s!("notify.when_focused", SettingKind::Bool, B(false), "notifications", false,
+        "Also notify about the terminal you're looking at while midna is the frontmost app."),
+    s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
+        "When the midna app isn't running, midnad posts the notification itself (shown as a system notification; clicking it doesn't open midna)."),
     s!("keys.command_bar", KB, S("cmd-k"), "keys", false, "Open the command bar."),
     s!("keys.next_needs_you", KB, S("cmd-j"), "keys", false, "Jump to the next needs-you item."),
     s!("keys.new_terminal", KB, S("cmd-t"), "keys", false, "New terminal in the current project."),
@@ -191,6 +254,11 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Open the composer under the terminal to type or paste a long prompt; enter sends it to the terminal, esc cancels."),
     s!("keys.add_image", KB, S("cmd-i"), "keys", false,
         "Add images with numbered notes to the selected terminal's next message (pasted in when you press enter there)."),
+    s!("keys.prev_prompt", KB, S("cmd-alt-up"), "keys", false, "In an agent terminal, scroll to the previous prompt you sent."),
+    s!("keys.next_prompt", KB, S("cmd-alt-down"), "keys", false, "In an agent terminal, scroll to the next prompt you sent (past the last: back to live)."),
+    s!("keys.prompts", KB, S("cmd-p"), "keys", false, "List the prompts you sent the selected agent terminal, to search and jump to one."),
+    s!("keys.links", KB, S("cmd-l"), "keys", false,
+        "Open the selected agent terminal's links: the URLs, PRs, artifacts and files that came up in its conversation."),
     s!("kass.auto_send", SettingKind::Bool, B(false), "kass", false,
         "Send the composer's text to the terminal as soon as a Kass dictation ends, instead of keeping it open for review."),
 ];
@@ -212,5 +280,27 @@ mod tests {
         assert!(s.coerce(&json!("Development")).is_err());
         assert!(s.coerce(&json!([1])).is_err());
         assert_eq!(s.default.to_json(), json!([]));
+    }
+
+    #[test]
+    fn every_notify_category_has_a_setting_with_its_default() {
+        for c in crate::notify::CATEGORIES {
+            let s = setting(&crate::notify::setting_key(c.key)).unwrap_or_else(|| panic!("no setting for notify.{}", c.key));
+            assert_eq!(s.default.to_json(), json!(c.default), "{}", c.key);
+            let snd = setting(&crate::notify::sound_key(c.key)).unwrap_or_else(|| panic!("no sound setting for {}", c.key));
+            assert_eq!(snd.default.to_json(), json!(c.sound), "{}", c.key);
+            assert!(setting(&crate::notify::volume_key(c.key)).is_some_and(|v| v.range == Some((0, 100))), "{}", c.key);
+            assert!(setting(&crate::notify::image_key(c.key)).is_some(), "{}", c.key);
+        }
+        let SettingKind::Enum { options, .. } = setting("notify.sound.approval").unwrap().ty else { panic!() };
+        assert_eq!(&options[1..], crate::notify::SYSTEM_SOUNDS);
+    }
+
+    #[test]
+    fn volumes_stay_in_range() {
+        let v = setting("notify.volume.approval").unwrap();
+        assert_eq!(v.coerce(&json!("60%")), Ok(json!(60)));
+        assert!(v.coerce(&json!(101)).is_err());
+        assert!(v.coerce(&json!(-1)).is_err());
     }
 }

@@ -4,7 +4,6 @@ use crate::backend::{Backend, ConnState};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 pub fn webhooks_label(path: &str) -> &'static str {
@@ -18,13 +17,14 @@ pub fn webhooks_label(path: &str) -> &'static str {
 }
 
 /// App-side UI memory, kept out of the daemon's settings so it doesn't clutter Settings:
-/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...]}`. `seen` = status bar
-/// items clicked at least once; `collapsed` = sidebar project groups folded away.
+/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...], "order": [...]}`. `seen` =
+/// status bar items clicked at least once; `collapsed` = sidebar project groups folded away;
+/// `order` = terminal ids in the order they were dragged to in the sidebar.
 fn state_file(backend: &Arc<dyn Backend>) -> Option<std::path::PathBuf> {
     backend.socket_path().parent().map(|h| h.join("app-state.json"))
 }
 
-pub fn load_state(backend: &Arc<dyn Backend>, key: &str) -> HashSet<String> {
+pub fn load_state<T: serde::de::DeserializeOwned + Default>(backend: &Arc<dyn Backend>, key: &str) -> T {
     state_file(backend)
         .and_then(|p| std::fs::read(p).ok())
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -35,7 +35,7 @@ pub fn load_state(backend: &Arc<dyn Backend>, key: &str) -> HashSet<String> {
 
 pub fn save_state(m: &MainWindow) {
     if let Some(p) = state_file(&m.backend) {
-        let _ = std::fs::write(p, serde_json::json!({ "seen": m.seen, "collapsed": m.collapsed }).to_string());
+        let _ = std::fs::write(p, serde_json::json!({ "seen": m.seen, "collapsed": m.collapsed, "order": m.order }).to_string());
     }
 }
 

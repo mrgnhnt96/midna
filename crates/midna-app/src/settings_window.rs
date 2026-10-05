@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "settings_notify.rs"]
+mod notify_rows;
+
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
 
@@ -65,6 +68,10 @@ pub struct SettingsWindow {
     entries: Vec<SettingEntry>,
     info: Value,
     webhooks: Value,
+    /// `notify.media`: the sounds and images notifications can use.
+    media: Value,
+    /// The sound/image picker that's open (its setting key).
+    picker: Option<String>,
     error: Option<String>,
     view: View,
     ask: LineInput,
@@ -100,6 +107,8 @@ impl SettingsWindow {
             entries: vec![],
             info: Value::Null,
             webhooks: Value::Null,
+            media: Value::Null,
+            picker: None,
             error: None,
             view: if crate::dev::var("MIDNA_SETTINGS_VIEW").as_deref() == Ok("json") { View::Json } else { View::Rows },
             ask: LineInput::new(cx, false, "Ask: make ⌘T open Claude at the project root"),
@@ -123,7 +132,7 @@ impl SettingsWindow {
                 self.note_change(&e);
                 self.load(cx);
             }
-            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") => self.load(cx),
+            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" => self.load(cx),
             BackendEvent::Conn(crate::backend::ConnState::Connected) => self.load(cx),
             _ => {}
         }
@@ -154,6 +163,8 @@ impl SettingsWindow {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        // The answer lands before the rows below are fetched (Settings ▸ Permissions).
+        crate::notify::refresh_permission();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
             let r = cx
@@ -162,7 +173,8 @@ impl SettingsWindow {
                     let list = backend.call("settings.list", json!({}));
                     let info = backend.call("daemon.info", json!({})).unwrap_or(Value::Null);
                     let webhooks = backend.call("webhooks.status", json!({})).unwrap_or(Value::Null);
-                    (list, info, webhooks)
+                    let media = backend.call("notify.media", json!({})).unwrap_or(Value::Null);
+                    (list, info, webhooks, media)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -175,6 +187,11 @@ impl SettingsWindow {
                 }
                 s.info = r.1;
                 s.webhooks = r.2;
+                s.media = r.3;
+                if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
+                    // dev (screenshots): open this setting's sound/image picker
+                    s.picker = Some(k);
+                }
                 if let Ok(v) = crate::dev::var("MIDNA_SETTINGS_SCROLL") {
                     // dev (screenshots): scroll the rows down by this many pixels
                     let y: f32 = v.parse().unwrap_or(0.);
@@ -333,6 +350,11 @@ enum Control {
     Seg { key: String, options: Vec<(String, String)>, current: String },
     Switch { key: String, on: bool, on_text: &'static str, off_text: &'static str },
     Text { dot: Option<Hsla>, text: String, color: Hsla, action: Option<(String, Act, bool)> },
+    /// A notification kind's sound picker, volume and preview (settings_notify.rs).
+    Sound { cat: &'static str },
+    Volume { key: String },
+    /// An image picker: `notify.image` (cat None) or a kind's `notify.image.<kind>`.
+    Image { key: String, cat: Option<&'static str> },
 }
 
 #[derive(Clone)]
@@ -387,6 +409,16 @@ fn label_for(key: &str) -> String {
         "git.refresh_secs" => "Git refresh (seconds)",
         "kass.auto_send" => "Send dictation when Kass finishes",
         "projects.roots" => "Project folders",
+        "notify.enabled" => "Show notifications",
+        "notify.turn_done_min_secs" => "“Agent finished” after (seconds)",
+        "notify.volume" => "All sounds",
+        "notify.image" => "Every notification",
+        "notify.when_focused" => "Also for the terminal in front of you",
+        "notify.when_app_closed" => "When the app isn't running",
+        k if k.starts_with("notify.") => match midna_proto::notify::category(k.rsplit('.').next().unwrap_or(k)) {
+            Some(c) => c.label,
+            None => k,
+        },
         k => return k.to_string(),
     }
     .to_string()
@@ -544,11 +576,15 @@ impl SettingsWindow {
                 ax_row.note = Some(("Granted it? macOS shows a new grant only after midna restarts. Terminals keep running.".into(), Hsla::default()));
             }
         }
-        let perms = vec![
-            ax_row,
-            perm("Notifications", None, "Not requested yet", "midna doesn't post notifications yet; allow them here when it does.", PANE_NOTIF, "permissions.notifications"),
-            life.login,
-        ];
+        use crate::notify::Permission as NP;
+        let (n_ok, n_state, n_why) = match crate::notify::permission() {
+            NP::Allowed => (Some(true), "Allowed", "midna shows approvals, failures and finished turns as macOS notifications."),
+            NP::Denied => (Some(false), "Off in System Settings", "Turn midna's notifications on to get approvals, failures and finished turns."),
+            NP::NotAsked => (None, "Not requested yet", "macOS asks the first time midna has something to tell you."),
+            NP::Unknown => (None, "Checking…", "Approvals, failures and finished turns show as macOS notifications."),
+            NP::Dev => (None, "Dev build", "Not running from Midna.app: notifications go through osascript (shown as Script Editor)."),
+        };
+        let perms = vec![ax_row, perm("Notifications", n_ok, n_state, n_why, PANE_NOTIF, "permissions.notifications"), life.login];
         let missing = perms.iter().filter(|r| r.warn).count();
         // Webhooks
         let wh_note = self
@@ -562,6 +598,20 @@ impl SettingsWindow {
             r.note = Some((n, Hsla::default()));
         }
         let webhooks = vec![wpath, row("webhooks.port"), row("webhooks.relay_url")];
+        // Notifications: the master switch, each kind, then how they're shown. A terminal
+        // overrides any of these with `midna notify set` (or mutes itself from its … menu).
+        let mut notifications = vec![row("notify.enabled")];
+        notifications.extend(midna_proto::notify::CATEGORIES.iter().map(|c| row(&midna_proto::notify::setting_key(c.key))));
+        notifications.extend(["notify.turn_done_min_secs", "notify.when_focused", "notify.when_app_closed"].map(row));
+        let notify_off = self.value("notify.enabled") == Value::Bool(false);
+        let mut notifications: Vec<RowSpec> = notifications.into_iter().flatten().collect();
+        let mut sounds = self.notify_sound_rows(t);
+        let mut images = self.notify_image_rows(t);
+        if notify_off {
+            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut()).chain(images.iter_mut()) {
+                r.note = Some(("No effect while notifications are off".into(), t.dim));
+            }
+        }
         // Look
         let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script")];
         // Keybindings (read-only here; change by asking)
@@ -695,6 +745,9 @@ impl SettingsWindow {
             Group { name: "Updates", danger: false, badge: 0, rows: updates.into_iter().flatten().collect() },
             Group { name: "Permissions", danger: false, badge: missing, rows: perms },
             Group { name: "Webhooks", danger: false, badge: 0, rows: webhooks.into_iter().flatten().collect() },
+            Group { name: "Notifications", danger: false, badge: 0, rows: notifications },
+            Group { name: "Notification sounds", danger: false, badge: 0, rows: sounds },
+            Group { name: "Notification images", danger: false, badge: 0, rows: images },
             Group { name: "Look", danger: false, badge: 0, rows: look.into_iter().flatten().collect() },
             Group { name: "Projects", danger: false, badge: 0, rows: row("projects.roots").into_iter().collect() },
             Group { name: "Agents", danger: false, badge: 0, rows: agents.into_iter().flatten().collect() },
@@ -881,6 +934,19 @@ impl Render for SettingsWindow {
             })
             .child(body)
             .child(self.footer(&t))
+            .when(self.picker.is_some(), |d| {
+                // click-away layer under an open sound/image picker
+                d.child(
+                    deferred(div().id("picker-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|s, _, _, cx| {
+                            s.picker = None;
+                            cx.notify();
+                        }),
+                    ))
+                    .with_priority(1),
+                )
+            })
     }
 }
 
@@ -1098,6 +1164,9 @@ impl SettingsWindow {
                 )
                 .child(div().text_color(t.dim).child(if on { on_text } else { off_text }))
                 .into_any_element(),
+            Control::Sound { cat } => self.sound_control(t, cat, cx),
+            Control::Volume { key } => self.volume_stepper(t, &key, None, cx).into_any_element(),
+            Control::Image { key, cat } => self.image_control(t, &key, cat, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()

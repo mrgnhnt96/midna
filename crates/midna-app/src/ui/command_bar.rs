@@ -27,13 +27,15 @@ pub struct Palette {
     /// `policy.check` decisions for project command lines, fetched when the bar opens.
     policy: HashMap<String, String>,
     user: Vec<Command>,
+    /// `session.prompts` of the terminal the prompt list (⌘P) was opened for.
+    prompts: Option<(String, Value)>,
 }
 
 impl Palette {
     pub fn new(cx: &mut App) -> Palette {
         let input = cx.new(|cx| super::text_input::TextField::new(cx, false, "Type a command, or ask an agent…"));
         let focus = input.read(cx).focus.clone();
-        Palette { input, focus, query: String::new(), sel: 0, armed: None, scroll: ScrollHandle::new(), policy: HashMap::new(), user: vec![] }
+        Palette { input, focus, query: String::new(), sel: 0, armed: None, scroll: ScrollHandle::new(), policy: HashMap::new(), user: vec![], prompts: None }
     }
 }
 
@@ -181,6 +183,9 @@ struct Row {
 }
 
 fn rows(m: &MainWindow) -> Vec<Row> {
+    if prompt_mode(m) {
+        return prompt_rows(m);
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     // "Add project folder…": a path search instead of commands
     let roots: Vec<String> = m.settings.get("projects.roots").and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
@@ -210,6 +215,54 @@ fn folder_mode(m: &MainWindow) -> bool {
     m.palette.query.starts_with(commands::FOLDER_PREFIX)
 }
 
+fn prompt_mode(m: &MainWindow) -> bool {
+    m.palette.query.starts_with(commands::PROMPT_PREFIX)
+}
+
+/// The selected terminal's prompts, newest first, filtered by the text after `>`.
+fn prompt_rows(m: &MainWindow) -> Vec<Row> {
+    let Some(s) = m.selected_session() else { return vec![] };
+    let Some((_, v)) = m.palette.prompts.as_ref().filter(|(id, _)| *id == s.id) else { return vec![] };
+    let cmds = commands::prompt_rows(&s.id, s.agent, v);
+    let q = m.palette.query[commands::PROMPT_PREFIX.len()..].trim();
+    if !q.is_empty() {
+        return commands::search(&cmds, q, cmds.len()).into_iter().map(|h| Row { cmd: h.cmd.clone(), hits: h.hits, head: None }).collect();
+    }
+    let mut earlier = false;
+    cmds.into_iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let head = if i == 0 {
+                Some(format!("Your prompts in {}", s.name))
+            } else if cmd.run.is_none() && !earlier {
+                earlier = true;
+                Some("Before /clear".to_string())
+            } else {
+                None
+            };
+            Row { cmd, hits: vec![], head }
+        })
+        .collect()
+}
+
+/// ⌘P (or the title of a terminal's pinned prompt bar): the bar listing the selected agent
+/// terminal's prompts.
+pub fn open_prompts(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    open_with(m, commands::PROMPT_PREFIX.to_string(), window, cx);
+}
+
+/// Fetch the selected terminal's prompts for the list.
+fn fetch_prompts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(id) = m.selected_session().map(|s| s.id.clone()) else { return };
+    m.palette.prompts = Some((id.clone(), json!({})));
+    m.rpc("session.prompts", json!({ "id": id }), cx, move |m, v, _, cx| {
+        if m.palette.prompts.as_ref().is_some_and(|(x, _)| *x == id) {
+            m.palette.prompts = Some((id, v));
+            cx.notify();
+        }
+    });
+}
+
 /// Open the bar on a typed query, e.g. "Add project folder…" from the empty pane.
 pub fn open_with(m: &mut MainWindow, query: String, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.overlay != Overlay::CommandBar {
@@ -222,7 +275,11 @@ fn set_query(m: &mut MainWindow, q: String, cx: &mut Context<MainWindow>) {
     if m.palette.input.read(cx).text() != q {
         m.palette.input.update(cx, |f, cx| f.set_text(&q, cx));
     }
+    let entering = q.starts_with(commands::PROMPT_PREFIX) && !m.palette.query.starts_with(commands::PROMPT_PREFIX);
     m.palette.query = q;
+    if entering {
+        fetch_prompts(m, cx);
+    }
     m.palette.sel = 0;
     m.palette.armed = None;
     m.palette.scroll.scroll_to_item(0);
@@ -253,7 +310,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
         }
         "enter" if !md.platform => {
             let q = m.palette.query.trim().to_string();
-            if folder_mode(m) && (md.shift || n == 0) {
+            if (folder_mode(m) || prompt_mode(m)) && (md.shift || n == 0) {
                 // nothing to hand to an agent here
             } else if md.shift || (n == 0 && !q.is_empty()) {
                 ask(m, window, cx);
@@ -262,6 +319,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
                 activate(m, &cmd, window, cx);
             }
         }
+        "tab" if prompt_mode(m) => {}
         "tab" if folder_mode(m) => {
             // complete to the selected folder
             if let Some(Run::Prefill { text }) = rows.get(m.palette.sel.min(n.saturating_sub(1))).and_then(|r| r.cmd.run.clone()) {
@@ -327,7 +385,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                 }
             }
         },
-        Run::PopOut { session } => crate::ui::popout::open(session, m.backend.clone(), cx),
+        Run::PopOut { session } => crate::ui::popout::open(m, session, window, cx),
         Run::OpenProject { path: Some(path) } => m.add_project(path, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
         Run::Resolve { need, resolution } => {
@@ -335,6 +393,12 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             m.toast(format!("✓ {title}"), cx);
         }
         Run::Prefill { .. } => {}
+        Run::JumpPrompt { session, n } => {
+            if m.selected.as_deref() != Some(session.as_str()) && m.sessions.iter().any(|s| s.id == session) {
+                m.select(session.clone(), window, cx);
+            }
+            m.rpc("session.jump_prompt", json!({ "id": session, "n": n, "wait": false }), cx, |_, _, _, _| {});
+        }
     }
 }
 
@@ -493,7 +557,16 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         list = list.child(row(m, t, r, n, n == sel, cx));
     }
     let folders = folder_mode(m);
-    if none && folders {
+    let prompts_mode = prompt_mode(m);
+    if prompts_mode && rows.is_empty() {
+        let why = match m.selected_session() {
+            Some(s) if s.agent.is_none() => "Prompts are listed for agent terminals.",
+            Some(_) if q.len() > commands::PROMPT_PREFIX.len() => "No prompt matches.",
+            Some(_) => "No prompts in this terminal yet.",
+            None => "Select an agent terminal first.",
+        };
+        list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child(why));
+    } else if none && folders {
         list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child("No folder here."));
     } else if none {
         list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child(format!("No command matches “{q}”. Press ↩ to hand it to an agent.")));
@@ -505,7 +578,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     let project = if root { None } else { m.current_project_id() };
     let project_name = current_project(m).map(|p| p.name.clone()).unwrap_or_else(|| "root".into());
     let scope_name = if root { "root".to_string() } else { project_name.clone() };
-    let ask_box = (!empty && !folders).then(|| {
+    let ask_box = (!empty && !folders && !prompts_mode).then(|| {
         let seg = |id: &'static str, on: bool| {
             let d = div().id(id).flex().items_center().gap(px(6.)).h(px(24.)).px(px(10.)).rounded(px(6.)).text_size(px(12.)).cursor_pointer();
             if on { d.bg(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD) } else { d.text_color(t.dim) }
@@ -616,7 +689,9 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     });
 
     let sel_danger = rows.get(sel).is_some_and(|r| r.cmd.danger.is_some());
-    let enter_label = if none {
+    let enter_label = if prompts_mode {
+        "jump"
+    } else if none {
         "ask agent"
     } else if sel_danger {
         "arm, ↩ again to run"
@@ -638,12 +713,15 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .text_color(t.dim)
         .child("↑↓ select")
         .child(format!("↩ {enter_label}"))
-        .child("⇧↩ ask instead")
-        .child("⇥ agent · ⇧⇥ scope")
-        .child(div().flex_1())
-        .child(legend(t.err, "destructive"))
-        .child(legend(t.need, "needs approval"))
-        .child(legend(t.accent, "you only"));
+        .when(prompts_mode, |d| d.child("prompts sent before a /clear can't be jumped to"))
+        .when(!prompts_mode, |d| {
+            d.child("⇧↩ ask instead")
+                .child("⇥ agent · ⇧⇥ scope")
+                .child(div().flex_1())
+                .child(legend(t.err, "destructive"))
+                .child(legend(t.need, "needs approval"))
+                .child(legend(t.accent, "you only"))
+        });
 
     let dialog = div()
         .id("command-bar")

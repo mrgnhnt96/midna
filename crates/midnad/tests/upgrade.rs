@@ -34,6 +34,7 @@ impl Bin {
             .env_remove("MIDNA_SESSION")
             .env("MIDNA_APP_PATH", std::env::current_exe().unwrap())
             .env("MIDNA_NO_GH", "1")
+            .env("MIDNA_NOTIFY_SYSTEM", "0")
             .env("MIDNA_UPGRADE_WATCHDOG_SECS", "5")
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())

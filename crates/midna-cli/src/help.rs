@@ -153,12 +153,60 @@ pub static VERBS: &[Verb] = &[
         methods: &["session.processes"],
     },
     Verb {
+        name: "links",
+        aliases: &[],
+        usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned]\n       \
+                links pin|unpin <link-id|url|path> [--session <id>]\n       \
+                links add <url|path> [--title T] [--why <note>] [--no-pin] [--session <id>]",
+        summary: "the links, PRs, artifacts and files that came up in an agent terminal's conversation",
+        details: "midna collects them from the agent's transcript as it works: URLs the human pasted or you wrote or\n\
+                  fetched, PRs and artifacts your tools printed, files you created or edited. The human sees them\n\
+                  under the header's links button (⌘L). Pin what they will want to come back to (the PR, the\n\
+                  design, the doc they sent); `add` puts in something the transcript wouldn't show as a link, pinned\n\
+                  unless --no-pin, with an optional title and --why it matters (shown under it). Defaults to your own terminal.",
+        methods: &["links.list", "links.pin", "links.add"],
+    },
+    Verb {
+        name: "notify",
+        aliases: &["notifications"],
+        usage: "notify [--session <id> | --global]\n       \
+                notify set <key> on|off|default [--session <id> | --global]\n       \
+                notify mute|unmute [--session <id>]\n       \
+                notify send \"<title>\" [--detail \"<body>\"] [--sound] [--session <id>]\n       \
+                notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]",
+        summary: "which macOS notifications midna posts, per terminal or globally; send the human one",
+        details: "Lists each kind (approval, attention, failed, turn_done, agent, requests, background, pr_checks,\n\
+                  exited, triggers, restarted), whether it's on globally and for the terminal (default: yours).\n\
+                  `set` overrides a kind for one terminal (default drops the override); --global changes the\n\
+                  `notify.<key>` setting. `mute` silences a terminal. Change these when the human asks (\"tell me\n\
+                  when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
+                  a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
+                  turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
+                  Each kind has a sound, a volume and an image: settings notify.sound.<kind> (none, a macOS sound\n\
+                  like Glass, or an imported file), notify.volume.<kind> (0-100, times the master notify.volume) and\n\
+                  notify.image.<kind> (empty = notify.image, every notification's image). `import` copies a sound\n\
+                  (aiff, wav, mp3, m4a, caf) or image (png, jpg, gif) into midna, --for sets it for those kinds;\n\
+                  `media` lists what's there; `test` shows a kind's notification even when it's off. Pick sounds\n\
+                  and images only when the human asks.",
+        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test"],
+    },
+    Verb {
         name: "read",
         aliases: &[],
         usage: "read <id> [--lines N] [--screen]",
         summary: "read a terminal's text",
         details: "The last N lines of scrollback + screen (default 50), or exactly the visible screen.",
         methods: &["session.read"],
+    },
+    Verb {
+        name: "prompts",
+        aliases: &[],
+        usage: "prompts <id> [--jump N|prev|next|latest|live]",
+        summary: "list the human's prompts in an agent terminal, or scroll the agent to one",
+        details: "Numbered from 1, oldest first; ▸ marks the prompt the agent's view is in. Prompts sent before a\n\
+                  /clear are listed but the agent no longer shows them. --jump scrolls the agent's own view (it\n\
+                  presses page keys until the prompt shows, a second or two).",
+        methods: &["session.prompts", "session.jump_prompt"],
     },
     Verb {
         name: "send",

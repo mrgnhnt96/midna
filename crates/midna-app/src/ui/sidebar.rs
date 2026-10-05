@@ -10,8 +10,25 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 pub const WIDTH: f32 = 264.;
+/// Group fold/unfold duration (skipped under the system's Reduce motion).
+const FOLD_MS: f32 = 180.;
 
-pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// A terminal row being dragged to a new place in its group.
+struct DraggedRow {
+    id: String,
+    group: String,
+}
+
+/// Nothing follows the cursor: the row itself moves as the drag crosses its neighbours.
+struct NoGhost;
+
+impl Render for NoGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let compact = m.compact();
     let need_n = m.needs.len();
     let jump_key = m.key_label("keys.next_needs_you");
@@ -57,7 +74,16 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         let menu_key = pid.clone().unwrap_or_else(|| "root".into());
         let menu_open = m.menu == Menu::Project(menu_key.clone());
         let collapsed = pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
-        let chevron = Icon::Chevron.el(10., t.dim).when(collapsed, |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2))));
+        // 0 = open, 1 = folded; eased between the two for FOLD_MS after a heading click.
+        let fold = match pid.as_ref().and_then(|p| m.fold_anim.get(p)) {
+            Some(at) if at.elapsed().as_secs_f32() * 1000. < FOLD_MS => {
+                window.request_animation_frame();
+                let e = 1. - (1. - at.elapsed().as_secs_f32() * 1000. / FOLD_MS).powi(3);
+                if collapsed { e } else { 1. - e }
+            }
+            _ => if collapsed { 1. } else { 0. },
+        };
+        let chevron = Icon::Chevron.el(10., t.dim).when(fold > 0., |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2 * fold))));
         let toggle_key = pid.clone();
         let header = div()
             .id(SharedString::from(format!("group-{gi}")))
@@ -72,7 +98,14 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             .on_click(cx.listener(move |m, _, _, cx| {
                 if let Some(p) = toggle_key.clone() {
                     if !m.collapsed.remove(&p) {
-                        m.collapsed.insert(p);
+                        m.collapsed.insert(p.clone());
+                    }
+                    // Re-read each time: macOS posts no change we can follow, and the read is cheap.
+                    gpui_kit::base::apply_system_reduce_motion(cx);
+                    if cx.reduce_motion() {
+                        m.fold_anim.remove(&p);
+                    } else {
+                        m.fold_anim.insert(p, std::time::Instant::now());
                     }
                     crate::ui::statusbar::save_state(m);
                     cx.notify();
@@ -120,12 +153,19 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             );
         // Root terminals belong to no project: no heading, just rows.
         let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).when(g.project.is_none(), |d| d.pt(px(4.)));
-        // A folded group keeps only the selected terminal, so the open one never disappears.
+        // A folded group keeps only the selected terminal, so the open one never disappears:
+        // the rows around it fold as separate runs.
+        let key = pid.clone().unwrap_or_else(|| "root".into());
+        let (mut run, mut ri) = (vec![], 0);
         for s in g.sessions {
-            if !collapsed || m.selected.as_deref() == Some(&s.id) {
-                group = group.child(row(m, s, t, compact, cx));
+            if m.selected.as_deref() == Some(&s.id) {
+                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(row(m, s, &key, t, compact, cx));
+                ri += 1;
+            } else if fold < 1. {
+                run.push(row(m, s, &key, t, compact, cx).into_any_element());
             }
         }
+        group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
         list = list.child(group);
     }
     if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
@@ -151,9 +191,49 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .child(footer)
 }
 
-fn row(m: &MainWindow, s: &Session, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// A run of rows under a group heading, clipped to `1 - fold` of its natural height (measured
+/// every prepaint, so a fold starts from the real height). Gone once fully folded.
+fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Option<Div> {
+    if rows.is_empty() || fold >= 1. {
+        return None;
+    }
+    let full = m.fold_heights.borrow().get(&key).copied().unwrap_or(0.);
+    let heights = m.fold_heights.clone();
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .when(fold > 0., |d| d.h(px(full * (1. - fold))))
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(b) = b.first() {
+                    heights.borrow_mut().insert(key.clone(), f32::from(b.size.height));
+                }
+            })
+            .child(div().flex_none().flex().flex_col().children(rows)),
+    )
+}
+
+/// Moves the dragged terminal to `target`'s place once the cursor passes `target`'s middle
+/// (from above or below), so rows of different heights don't swap back and forth.
+fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds: Bounds<Pixels>, cx: &mut Context<MainWindow>) {
+    let mut ids: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
+    let (Some(from), Some(to)) = (ids.iter().position(|i| i == dragged), ids.iter().position(|i| i == target)) else { return };
+    let mid = bounds.origin.y + bounds.size.height / 2.;
+    if (from < to && y < mid) || (from > to && y > mid) {
+        return;
+    }
+    let id = ids.remove(from);
+    ids.insert(to, id);
+    m.order = ids;
+    crate::ui::statusbar::save_state(m);
+    cx.notify();
+}
+
+fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
     let id = s.id.clone();
+    let (drag, group, target) = (DraggedRow { id: s.id.clone(), group: group.to_string() }, group.to_string(), s.id.clone());
     let state = m.effective_state(s);
     let attention = matches!(state, StatusState::NeedsYou | StatusState::Failed);
     let line2 = (!compact && attention).then(|| {
@@ -185,9 +265,18 @@ fn row(m: &MainWindow, s: &Session, t: &Theme, compact: bool, cx: &mut Context<M
         .cursor_pointer()
         .when(selected, |d| d.bg(t.raised))
         .when(!selected, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .on_drag(drag, |_, _, _, cx| cx.new(|_| NoGhost))
+        .on_drag_move(cx.listener(move |m, ev: &DragMoveEvent<DraggedRow>, _, cx| {
+            let d = ev.drag(cx);
+            let y = ev.event.position.y;
+            if d.group == group && d.id != target && ev.bounds.top() <= y && y < ev.bounds.bottom() {
+                let dragged = d.id.clone();
+                drag_over(m, &dragged, &target, y, ev.bounds, cx);
+            }
+        }))
         .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
             if ev.click_count() == 2 {
-                crate::ui::rename::start(m, &id, w, cx);
+                crate::ui::rename::start(m, &id, crate::ui::rename::At::Sidebar, w, cx);
             } else {
                 m.select(id.clone(), w, cx);
             }
@@ -206,12 +295,13 @@ fn row(m: &MainWindow, s: &Session, t: &Theme, compact: bool, cx: &mut Context<M
                         .gap(px(8.))
                         .flex_1()
                         .min_w_0()
-                        .child(match crate::ui::rename::field(m, &s.id, t, 13., cx) {
+                        .child(match crate::ui::rename::field(m, &s.id, crate::ui::rename::At::Sidebar, t, 13., cx) {
                             Some(f) => f,
-                            None => div().font_weight(FontWeight::MEDIUM).truncate().child(s.name.clone()).into_any_element(),
+                            None => div().font_weight(FontWeight::MEDIUM).truncate().child(crate::ui::rename::shown_name(m, &s.id, &s.name, cx)).into_any_element(),
                         })
                         .when(!segs.is_empty(), |d| d.child(div().ml_auto().flex_none().child(segments(&segs, t, 10.5, cx)))),
                 )
+                .when(crate::ui::popout::is_popped(&s.id, cx), |d| d.child(Icon::PopOut.el(12., t.dim)))
                 .child(Icon::from_glyph(s.glyph()).el(14., t.dim)),
         )
         .when_some(line2, |d, (text, color)| d.child(div().pl(px(21.)).text_size(px(12.)).text_color(color).truncate().child(text)))

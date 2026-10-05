@@ -15,6 +15,8 @@ pub enum Icon {
     Pr,
     Split,
     PopOut,
+    /// Opposite of `PopOut`: put a popped-out terminal back in the main window.
+    DockIn,
     Restart,
     Triggers,
     Rules,
@@ -30,11 +32,20 @@ pub enum Icon {
     Search,
     Lock,
     Bell,
+    /// A muted terminal (no notifications).
+    BellOff,
     // image annotations
     Image,
     Pin,
     Area,
     Trash,
+    // session links
+    Link,
+    Artifact,
+    Globe,
+    File,
+    PushPin,
+    PushPinFill,
 }
 
 impl Icon {
@@ -49,6 +60,7 @@ impl Icon {
             Icon::Pr => "icons/pr.svg",
             Icon::Split => "icons/split.svg",
             Icon::PopOut => "icons/popout.svg",
+            Icon::DockIn => "icons/dockin.svg",
             Icon::Restart => "icons/restart.svg",
             Icon::Triggers => "icons/triggers.svg",
             Icon::Rules => "icons/rules.svg",
@@ -63,10 +75,17 @@ impl Icon {
             Icon::Search => "icons/search.svg",
             Icon::Lock => "icons/lock.svg",
             Icon::Bell => "icons/bell.svg",
+            Icon::BellOff => "icons/bell-off.svg",
             Icon::Image => "icons/image.svg",
             Icon::Pin => "icons/pin.svg",
             Icon::Area => "icons/area.svg",
             Icon::Trash => "icons/trash.svg",
+            Icon::Link => "icons/link.svg",
+            Icon::Artifact => "icons/artifact.svg",
+            Icon::Globe => "icons/globe.svg",
+            Icon::File => "icons/file.svg",
+            Icon::PushPin => "icons/pushpin.svg",
+            Icon::PushPinFill => "icons/pushpin-fill.svg",
         }
     }
 
@@ -113,6 +132,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/popout.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M9 1.5h5.5V7M14.5 1.5 8 8"/></svg>"##
+        }
+        "icons/dockin.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M8 2.5V8h5.5M14.5 1.5 8 8"/></svg>"##
         }
         "icons/restart.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3"/></svg>"##
@@ -165,8 +187,30 @@ fn source(path: &str) -> Option<&'static str> {
         "icons/trash.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5v-2h4v2M4 4.5l.8 9h6.4l.8-9"/></svg>"##
         }
+        // Session links, from docs/design/Links-A.dc.html.
+        "icons/link.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.8 2.8 0 0 1 4 4L11 8.5M9 11.5l-1.2 1.2a2.8 2.8 0 0 1-4-4L5 7.5"/></svg>"##
+        }
+        "icons/artifact.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 10.5 7 8l1.5 1.5L11 6"/></svg>"##
+        }
+        "icons/globe.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2.8 4.2 2.8 6.5S10 12.5 8 14.5C6 12.5 5.2 10.3 5.2 8S6 3.5 8 1.5"/></svg>"##
+        }
+        "icons/file.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><path d="M4 1.5h5l3 3v10H4z"/><path d="M6 8.5h4M6 11h4"/></svg>"##
+        }
+        "icons/pushpin.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"><path d="M10.5 1.5 14.5 5.5 12 6.5 9.5 9l.5 3.5-1 1L6 10.5 2.5 14l-.5-.5L5.5 10 2.5 7l1-1L7 6.5 9.5 4z"/></svg>"##
+        }
+        "icons/pushpin-fill.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="#000"><path d="M10.5 1.5 14.5 5.5 12 6.5 9.5 9l.5 3.5-1 1L6 10.5 2.5 14l-.5-.5L5.5 10 2.5 7l1-1L7 6.5 9.5 4z"/></svg>"##
+        }
         "icons/bell.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11zM6.5 14h3"/></svg>"##
+        }
+        "icons/bell-off.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M4 11V7a4 4 0 0 1 6.2-3.3M12 7v4l1.5 1.5h-11zM6.5 14h3M2 2l12 12"/></svg>"##
         }
         _ => return None,
     })
@@ -181,7 +225,7 @@ impl AssetSource for Assets {
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let all = [
-            "claude", "codex", "monitor", "shell", "dots", "branch", "pr", "split", "popout", "restart", "triggers", "rules", "settings", "chevron", "project", "play", "screen",
+            "claude", "codex", "monitor", "shell", "dots", "branch", "pr", "split", "popout", "dockin", "restart", "triggers", "rules", "settings", "chevron", "project", "play", "screen",
             "check", "cross", "plus", "search", "lock", "bell",
         ];
         Ok(all.iter().map(|n| format!("icons/{n}.svg")).filter(|p| p.starts_with(path)).map(Into::into).collect())

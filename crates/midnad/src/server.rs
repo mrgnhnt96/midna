@@ -226,4 +226,5 @@ fn background(d: &Arc<Daemon>) {
     std::thread::spawn(move || crate::git::refresh_loop(w));
     crate::restart::start(d);
     crate::webhooks::start(d);
+    crate::notify::start(d);
 }

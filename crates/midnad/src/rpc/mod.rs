@@ -3,8 +3,10 @@
 pub mod agent;
 pub mod events;
 pub mod insights;
+pub mod links;
 pub mod misc;
 pub mod needs_you;
+pub mod notify;
 pub mod permissions;
 pub mod policy;
 pub mod project;
@@ -176,10 +178,22 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.clear" => session::clear(d, ctx, parse(p)?),
         "session.link_at" => session::link_at(d, parse(p)?),
         "session.find" => session::find(d, parse(p)?),
+        "session.prompts" => session::prompts(d, parse(p)?),
+        "session.jump_prompt" => session::jump_prompt(d, ctx, parse(p)?),
         "session.restart" => session::restart(d, ctx, parse(p)?),
         "session.restart_cancel" => session::restart_cancel(d, ctx, parse(p)?),
         "session.processes" => session::processes(d, parse(p)?),
         "session.focus" => window::focus(d, ctx, parse(p)?),
+        "links.list" => links::list(d, ctx, parse(p)?),
+        "links.pin" => links::pin(d, ctx, parse(p)?),
+        "links.add" => links::add(d, ctx, parse(p)?),
+        "notify.list" => notify::list(d, ctx, parse(p)?),
+        "notify.set" => notify::set(d, ctx, parse(p)?),
+        "notify.send" => notify::send(d, ctx, parse(p)?),
+        "notify.media" => notify::media(d, parse(p)?),
+        "notify.import" => notify::import(d, ctx, parse(p)?),
+        "notify.remove" => notify::remove(d, ctx, parse(p)?),
+        "notify.test" => notify::test(d, ctx, parse(p)?),
         "events.list" => events::list(d, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),
         "needs_you.list" => needs_you::list(d, parse(p)?),
@@ -223,7 +237,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
 fn skip_audit(method: &str, params: &Value) -> bool {
     match method {
         "agent.hook" => params.get("event").and_then(Value::as_str) == Some("statusline"),
-        "session.resize" | "session.scroll" | "session.selection" | "session.select_all" | "session.link_at" | "session.find" => true,
+        "session.resize" | "session.scroll" | "session.selection" | "session.select_all" | "session.link_at" | "session.find" | "session.jump_prompt" => true,
         _ => false,
     }
 }

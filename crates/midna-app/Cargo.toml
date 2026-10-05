@@ -44,5 +44,11 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
+# native notifications (src/notify.rs)
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std", "block2", "bitflags", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent",
+    "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger",
+    "UNNotificationAttachment",
+] }
 # image annotations (src/annotate.rs): sniff formats and read dimensions; also the snapshot PNG writer
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

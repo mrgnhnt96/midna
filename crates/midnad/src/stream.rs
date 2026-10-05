@@ -49,18 +49,15 @@ pub fn run(h: RtHandle, mut reader: BufReader<UnixStream>, params: &Value, human
         }
         let _ = ws.shutdown(std::net::Shutdown::Both);
     });
-    // Reader: client messages. Raw input goes straight to the PTY; keys, scrolling, mouse,
-    // focus and paste go through the engine thread, which encodes them for the app's modes.
+    // Reader: client messages, all through the engine thread so they reach the PTY in the order
+    // sent (raw input written here directly could overtake keys still being encoded there:
+    // ↓↓ then ctrl-e arrived as ctrl-e ↓↓). It encodes keys, scrolling, mouse, focus and paste
+    // for the app's modes; raw input passes through, snapping the viewport back.
     loop {
         let ok = match ClientMsg::read(&mut reader) {
             Ok(Some(ClientMsg::Want)) => h.tx.send(EngineMsg::Want(id)).is_ok(),
             Ok(Some(_)) if !human => true,
             Ok(Some(ClientMsg::Resize { cols, rows, cell_w, cell_h })) => h.tx.send(EngineMsg::Resize(cols, rows, cell_w, cell_h)).is_ok(),
-            Ok(Some(ClientMsg::Input(data))) => {
-                // Typing snaps the viewport back to the live screen.
-                h.client(ClientMsg::Input(Vec::new()));
-                h.write(&data)
-            }
             Ok(Some(m)) => h.client(m),
             // End of stream, or an unknown tag (protocol error): drop the stream.
             Ok(None) | Err(_) => false,

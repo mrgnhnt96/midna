@@ -143,6 +143,10 @@ pub struct Daemon {
     pub commands_mtime: Mutex<Option<std::time::SystemTime>>,
     /// The app's updater state as the GUI last reported it (`updates.report`).
     pub updates: Mutex<UpdatesStatus>,
+    /// Session links (`links.rs`), loaded per terminal on first use.
+    pub links: crate::links::Links,
+    /// The notifier's book-keeping (`notify.rs`). Lock after `core`, never before it.
+    notify: Mutex<crate::notify::State>,
 }
 
 impl Daemon {
@@ -185,12 +189,18 @@ impl Daemon {
             listener_fd: std::sync::atomic::AtomicI32::new(-1),
             commands_mtime: Mutex::new(std::fs::metadata(cfg.home.join("commands.json")).and_then(|m| m.modified()).ok()),
             updates: Mutex::new(UpdatesStatus::default()),
+            links: Default::default(),
+            notify: Mutex::new(Default::default()),
             cfg,
         }))
     }
 
     pub fn core(&self) -> MutexGuard<'_, Core> {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn notify(&self) -> MutexGuard<'_, crate::notify::State> {
+        self.notify.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn conn_id(&self) -> u64 {

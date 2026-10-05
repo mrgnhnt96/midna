@@ -70,6 +70,9 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("keys.open_project", json!("cmd-o"), "open a project", false),
         e("keys.composer", json!("cmd-shift-d"), "open the composer", false),
         e("keys.add_image", json!("cmd-i"), "add images with notes", false),
+        e("keys.prev_prompt", json!("cmd-alt-up"), "scroll to the previous prompt", false),
+        e("keys.next_prompt", json!("cmd-alt-down"), "scroll to the next prompt", false),
+        e("keys.prompts", json!("cmd-p"), "list your prompts", false),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
     ];
     for s in &mut v {
@@ -362,6 +365,13 @@ impl Backend for FakeBackend {
             "session.list" => serde_json::to_value(&st.sessions)?,
             "needs_you.list" => serde_json::to_value(&st.needs)?,
             "settings.list" => serde_json::to_value(&st.settings)?,
+            "notify.media" => {
+                let sounds: Vec<Value> = midna_proto::notify::SYSTEM_SOUNDS
+                    .iter()
+                    .map(|n| json!({ "kind": "sound", "name": n, "path": midna_proto::notify::system_sound_path(n), "builtin": true }))
+                    .collect();
+                json!({ "sounds": sounds, "images": [], "dir": "/tmp/midna-fake/notify" })
+            }
             "rule.list" => Value::Array(st.rules.clone()),
             "trigger.list" => json!([]),
             "insights.summary" => {

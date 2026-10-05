@@ -184,6 +184,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         keep_on_top: false,
         git: None,
         agent_info: None,
+        notify: Default::default(),
     };
     {
         let mut core = d.core();
@@ -238,6 +239,7 @@ pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool) {
     for id in open {
         d.close_needs_you(&id, json!({ "kind": "dismiss", "reason": "session closed" }), Actor::system());
     }
+    d.links.forget(&d.cfg.home, sid);
     d.mark_dirty();
     d.emit(kinds::SESSION_CLOSED, ctx.actor(), project, Some(sid.to_string()), json!({ "force": force }));
 }
@@ -455,6 +457,34 @@ pub fn find(d: &Daemon, p: SessionFindParams) -> R {
     let (q, back) = (p.query.clone(), p.backwards);
     let h = rt.with(move |e| e.find(&q, back)).ok_or_else(|| RpcError::internal("engine did not answer"))?;
     ok(FindResult { total: h.total, index: h.index })
+}
+
+pub fn prompts(d: &Daemon, p: IdParams) -> R {
+    ok(crate::prompts::locate(d, &p.id).ok_or_else(|| not_found(&p.id))?)
+}
+
+/// `session.jump_prompt`: scrolls on a thread of its own (it presses keys and waits for the
+/// screen, a second or two), so a client that doesn't wait isn't held up.
+pub fn jump_prompt(d: &Arc<Daemon>, ctx: &Ctx, p: SessionJumpPromptParams) -> R {
+    use crate::prompts::{To, jump};
+    d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
+    let to = To::parse(p.n, p.to.as_deref()).map_err(RpcError::bad_params)?;
+    if !ctx.is_human() {
+        let project = d.core().state.session(&p.id).map(|s| s.project_id.clone());
+        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), json!({ "jump_prompt": p.n, "to": p.to }));
+    }
+    let (d2, id) = (d.clone(), p.id.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("jump-prompt".into())
+        .spawn(move || {
+            let _ = tx.send(jump(&d2, &id, to));
+        })
+        .map_err(|e| RpcError::internal(e.to_string()))?;
+    if p.wait == Some(false) {
+        return ok(JumpPromptResult { ok: true, n: p.n, found: false, reason: None });
+    }
+    ok(rx.recv().map_err(|_| RpcError::internal("the jump stopped"))?)
 }
 
 pub fn resize(d: &Daemon, p: SessionResizeParams) -> R {

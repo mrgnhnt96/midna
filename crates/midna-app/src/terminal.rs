@@ -10,6 +10,7 @@
 use crate::actions::*;
 use crate::backend::{AttachRequest, Backend, TermStream};
 use crate::frame::*;
+use crate::term_edit::{self, EraseJob, KbdSel};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -21,6 +22,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+mod prompt_nav;
 
 pub const FONT_SIZE: f32 = 12.5;
 /// Design: line-height 1.6 at 12.5px.
@@ -91,7 +94,28 @@ pub struct TerminalView {
     /// Right-click menu: where it opened, and the link under that cell (if any).
     menu: Option<(Point<Pixels>, Option<Value>)>,
     marked: Option<String>,
+    /// ⇧-arrow selection in the input line (`term_edit`).
+    kbd_sel: Option<KbdSel>,
+    /// The terminal is an agent terminal, "claude" or "codex" (`session.get`): its input box
+    /// gets text editing although the agent draws full-screen, and the left button selects
+    /// (see `on_down`).
+    agent: Option<&'static str>,
+    /// Claude Code or Codex found running in this terminal's full-screen app (started from a
+    /// shell), probed each time the alternate screen turns on.
+    agent_proc: Option<&'static str>,
+    /// The alternate-screen state last probed for `agent_proc`.
+    alt_probed: bool,
+    /// Agent terminals: the left press went to midna's selection; (cell, moved since).
+    agent_press: Option<((i32, i32), bool)>,
+    /// A selection being erased, and the input typed meanwhile, sent once the app has gone quiet
+    /// (Claude Code can apply a typed letter in the middle of a burst of deletes). The job is
+    /// None when the erase needs no check, only that wait.
+    erasing: Option<(Option<EraseJob>, Vec<ClientMsg>)>,
+    /// Bumped per scheduled erase check, so only the latest one runs.
+    erase_gen: u64,
     font_family: SharedString,
+    /// Prompt fast travel (agent terminals): the pinned bar, the rail, ⌥⌘↑ ⌥⌘↓.
+    nav: prompt_nav::PromptNav,
     fps: Option<FpsMeter>,
     _tasks: Vec<Task<()>>,
 }
@@ -263,13 +287,31 @@ impl TerminalView {
             find: None,
             hover_link: None,
             hover_probe: None,
+            kbd_sel: None,
+            agent: None,
+            agent_press: None,
+            agent_proc: None,
+            alt_probed: false,
+            erasing: None,
+            erase_gen: 0,
             menu: None,
             marked: None,
             font_family,
+            nav: Default::default(),
             fps,
             _tasks: tasks,
         };
         v.attach(window, cx);
+        v.call("session.get", json!({ "id": v.session_id }), window, cx, |t, r, window, cx| {
+            t.agent = r.ok().and_then(|s| match s.get("agent").and_then(|a| a.as_str()) {
+                Some("claude") => Some("claude"),
+                Some("codex") => Some("codex"),
+                _ => None,
+            });
+            if t.agent.is_some() {
+                t.refresh_prompts(window, cx);
+            }
+        });
         v
     }
 
@@ -344,7 +386,16 @@ impl TerminalView {
         }
     }
 
-    fn pull(&mut self) {
+    /// The user's input: sent now, or after the selection being erased is gone.
+    fn deliver(&mut self, m: ClientMsg) {
+        match self.erasing.as_mut() {
+            Some((_, queued)) => queued.push(m),
+            None => self.send_msg(m),
+        }
+        self.typed();
+    }
+
+    fn pull(&mut self, cx: &mut Context<Self>) {
         if self.sink.is_ended() && self.status == StreamStatus::Live {
             self.status = StreamStatus::Ended;
         }
@@ -365,6 +416,7 @@ impl TerminalView {
         }
         self.cols = f.cols;
         self.rows = f.rows;
+        let moved = self.cursor != f.cursor;
         self.cursor = f.cursor;
         self.cursor_style = f.cursor_style;
         self.dfg = f.default_fg;
@@ -374,9 +426,53 @@ impl TerminalView {
             self.last_scroll = Instant::now();
         }
         self.ext = f.ext;
+        if self.ext.alt_screen != self.alt_probed {
+            self.alt_probed = self.ext.alt_screen;
+            self.agent_proc = None;
+            if self.alt_probed {
+                self.probe_agent(cx);
+            }
+        }
+        if moved && let Some(k) = self.kbd_sel.filter(|k| k.kill) {
+            if self.live_cursor().is_some_and(|c| c.1 == k.anchor.1) {
+                self.erase_selection(cx);
+            } else {
+                // The line wrapped onto another row: fall back to the shell's own ctrl-u.
+                self.kbd_sel = None;
+                self.send(b"\x15");
+            }
+        }
+        if self.erasing.is_some() {
+            // Check once the app has gone quiet, not between its redraws.
+            self.check_erase_later(120, cx);
+        }
         if let Some(s) = self.stream() {
             s.want();
         }
+    }
+
+    /// Ask the daemon whether the full-screen app just started is Claude Code or Codex.
+    fn probe_agent(&mut self, cx: &mut Context<Self>) {
+        let (backend, id) = (self.backend.clone(), self.session_id.clone());
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.call("session.processes", json!({ "id": id })) }).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.ext.alt_screen {
+                    t.agent_proc = r.ok().and_then(|v| term_edit::agent_running(&v));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Claude Code or Codex runs here: an agent terminal, or one started from a shell.
+    fn is_agent(&self) -> bool {
+        self.agent_kind().is_some()
+    }
+
+    fn agent_kind(&self) -> Option<&'static str> {
+        self.agent.or(self.agent_proc)
     }
 
     /// Whether the app in this terminal enabled bracketed paste (mode 2004).
@@ -394,6 +490,18 @@ impl TerminalView {
         let m = &ks.modifiers;
         if self.find.is_some() && self.find_key(ks, window, cx) {
             cx.stop_propagation();
+            return;
+        }
+        if self.erasing.is_some() && !m.platform {
+            if let Some(k) = key_msg(ks, ev.is_held, OPTION_AS_META.load(Ordering::Relaxed)) {
+                self.deliver(ClientMsg::Key(k));
+                cx.stop_propagation();
+            }
+            return;
+        }
+        if self.find.is_none() && self.marked.is_none() && self.edit_key(ks, cx) {
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         if m.platform {
@@ -456,11 +564,242 @@ impl TerminalView {
                 cx.notify();
                 return;
             }
-            self.send_msg(ClientMsg::Key(k));
-            self.typed();
+            self.deliver(ClientMsg::Key(k));
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    /// macOS editing keys in the input line (`term_edit`). True when the key was handled here;
+    /// false sends it the usual way (after erasing a selection it replaces, for typed text).
+    fn edit_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = &ks.modifiers;
+        if m.control {
+            self.kbd_sel = None;
+            return false;
+        }
+        let (cmd, alt, key) = (m.platform, m.alt, ks.key.as_str());
+        // ⌘↑ ⌘↓: to the start or end of an agent's text (⇧ selects). A shell's line is one
+        // line, so there ⇧⌘↑ ⇧⌘↓ select to its start or end and plain ⌘↑ ⌘↓ still scroll.
+        if cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
+            let Some(c) = self.live_cursor() else { return false };
+            let line_edge = term_edit::Send::Bytes(if key == "up" { b"\x01" } else { b"\x05" });
+            let moves = if self.is_agent() { term_edit::text_edge(key, &self.grid, c) } else { m.shift.then(|| vec![line_edge]) };
+            let Some(moves) = moves else { return false };
+            if !m.shift {
+                self.kbd_sel = None;
+            } else if self.kbd_range().is_none() {
+                self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+            }
+            for mv in moves {
+                self.send_move(mv);
+            }
+            return true;
+        }
+        if m.shift && !cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
+            let Some(c) = self.live_cursor() else { return false };
+            let Some(mv) = term_edit::vertical(key, self.is_agent(), &self.grid, c) else { return false };
+            if self.kbd_range().is_none() {
+                self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+            }
+            self.send_move(mv);
+            return true;
+        }
+        if let Some(mv) = term_edit::movement(key, cmd, alt) {
+            // In other full-screen apps (vim, less) ⇧← is theirs; ⌘ and ⌥ moves are sent
+            // everywhere, as Ghostty and Terminal.app do.
+            if m.shift && !self.line_editing() {
+                return false;
+            }
+            if m.shift {
+                let Some(c) = self.live_cursor() else { return false };
+                if self.kbd_range().is_none() {
+                    self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+                }
+                self.send_move(mv);
+                return true;
+            }
+            // A plain ← → collapses a one-row selection to its edge, like a text field.
+            if !cmd
+                && !alt
+                && let (Some((lo, hi)), Some(c)) = (self.kbd_range(), self.live_cursor())
+                && lo.1 == hi.1
+            {
+                self.kbd_sel = None;
+                let target = if key == "left" { lo.0 } else { hi.0 };
+                let row = self.grid.get(c.1 as usize).cloned().unwrap_or_default();
+                let n = term_edit::chars_between(&row, c.0, target);
+                for _ in 0..n {
+                    self.arrow(if target < c.0 { "left" } else { "right" });
+                }
+                return true;
+            }
+            self.kbd_sel = None;
+            if cmd || alt {
+                self.send_move(mv);
+                return true;
+            }
+            return false;
+        }
+        if let Some(bytes) = term_edit::deletion(key, cmd, alt) {
+            if self.erase_selection(cx) {
+                return true;
+            }
+            match self.live_cursor() {
+                Some(c) if key == "backspace" && cmd && !self.is_agent() && !self.ext.alt_screen => {
+                    // Erased in `pull` once the cursor is at the line start.
+                    self.kbd_sel = Some(KbdSel { anchor: c, kill: true });
+                    self.send(b"\x01");
+                }
+                _ => self.send(bytes),
+            }
+            return true;
+        }
+        if !cmd && !alt && matches!(key, "backspace" | "delete") {
+            return self.erase_selection(cx);
+        }
+        if key == "escape" && self.kbd_sel.take().is_some() {
+            return true;
+        }
+        if cmd {
+            return false; // ⌘C copies the selection, so it stays
+        }
+        let typed = ks.key_char.as_ref().is_some_and(|c| !c.is_empty() && c.chars().all(|c| !c.is_control()));
+        let meta = OPTION_AS_META.load(Ordering::Relaxed);
+        if typed && !alt {
+            self.erase_selection(cx);
+        } else if !(typed && alt && !meta) {
+            // (An option character arrives through the input handler, which erases then.)
+            self.kbd_sel = None;
+        }
+        false
+    }
+
+    /// A selection in the input line can be made and replaced: a shell prompt (not a
+    /// full-screen app) or an agent's input box.
+    fn line_editing(&self) -> bool {
+        !self.ext.alt_screen || self.is_agent()
+    }
+
+    /// The cursor on the live screen (not while scrolled back, where rows don't line up).
+    fn live_cursor(&self) -> Option<(u16, u16)> {
+        self.cursor.filter(|_| self.ext.at_bottom())
+    }
+
+    /// The keyboard selection's ends in reading order.
+    fn kbd_range(&self) -> Option<(term_edit::Pos, term_edit::Pos)> {
+        let (k, c) = (self.kbd_sel?, self.live_cursor()?);
+        Some(term_edit::ordered(k.anchor, c))
+    }
+
+    /// Continuation rows of an agent's input start past this many cells.
+    fn indent(&self) -> u16 {
+        if self.is_agent() { term_edit::AGENT_INDENT } else { 0 }
+    }
+
+    fn arrow(&mut self, key: &str) {
+        self.send_msg(ClientMsg::Key(KeyMsg { action: KeyAction::Press, mods: 0, key: key.into(), text: String::new() }));
+    }
+
+    fn send_move(&mut self, mv: term_edit::Send) {
+        match term_edit::for_agent(mv, self.agent_kind()) {
+            term_edit::Send::Bytes(b) => self.send(b),
+            term_edit::Send::Arrow(k) => self.arrow(k),
+        }
+        self.typed();
+    }
+
+    /// Erase the selection that typing replaces (`term_edit::replace_range`), if there is one.
+    fn erase_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let kbd = self.kbd_sel.take();
+        if !self.line_editing() || self.erasing.is_some() {
+            return false;
+        }
+        let Some(c) = self.live_cursor() else { return false };
+        let Some((s, e)) = term_edit::replace_range(kbd, &self.ext.selection, c) else { return false };
+        if s.1 != e.1 {
+            return self.start_erase_job(s, e, c, cx);
+        }
+        let Some((moves, n)) = self.grid.get(c.1 as usize).and_then(|row| term_edit::erase_plan(row, c.0, s.0, e.0)) else { return false };
+        for _ in 0..moves.unsigned_abs() {
+            self.arrow(if moves < 0 { "left" } else { "right" });
+        }
+        for _ in 0..n {
+            self.arrow("backspace");
+        }
+        // The engine drops its selection on these keys; drop ours now so a second key typed
+        // before the next frame doesn't erase it again.
+        self.ext.selection.clear();
+        self.settle(None, cx);
+        true
+    }
+
+    /// A selection across rows: erase what it certainly holds, then check (`check_erase`).
+    fn start_erase_job(&mut self, s: term_edit::Pos, e: term_edit::Pos, c: term_edit::Pos, cx: &mut Context<Self>) -> bool {
+        let Some(plan) = EraseJob::plan(&self.grid, s, e, c, self.indent()) else { return false };
+        let (key, n, job) = match plan {
+            term_edit::Erase::Blind(key, n) => (key, n, None),
+            term_edit::Erase::Checked(job, n) => (job.key, n, Some(job)),
+        };
+        for _ in 0..n {
+            self.arrow(key);
+        }
+        self.ext.selection.clear();
+        self.settle(job, cx);
+        true
+    }
+
+    /// Hold the input typed from now on until the app has gone quiet (and `job` is done).
+    fn settle(&mut self, job: Option<EraseJob>, cx: &mut Context<Self>) {
+        self.erasing = Some((job, vec![]));
+        self.typed();
+        self.check_erase_later(250, cx);
+    }
+
+    fn check_erase_later(&mut self, ms: u64, cx: &mut Context<Self>) {
+        self.erase_gen += 1;
+        let generation = self.erase_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(ms)).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.erase_gen == generation {
+                    t.check_erase(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Done when the screen shows the text around the selection meeting at the cursor; else one
+    /// more key, within the job's budget. Then the input typed meanwhile goes out.
+    fn check_erase(&mut self, cx: &mut Context<Self>) {
+        // A frame not drawn yet (the window may not be redrawing): take it in first, and judge
+        // once the app has been quiet for a moment (`pull` schedules that).
+        if self.sink.frame.lock().is_ok_and(|f| f.is_some()) {
+            self.pull(cx);
+            return;
+        }
+        let Some((job, _)) = self.erasing.as_mut() else { return };
+        let Some(job) = job.as_mut().filter(|j| !self.cursor.is_some_and(|c| j.done(&self.grid, c))) else {
+            return self.finish_erase(cx);
+        };
+        if job.budget > 0 {
+            job.budget -= 1;
+            let key = job.key;
+            self.arrow(key);
+            self.check_erase_later(250, cx);
+            return;
+        }
+        self.finish_erase(cx);
+    }
+
+    fn finish_erase(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, queued)) = self.erasing.take() {
+            for m in queued {
+                self.send_msg(m);
+            }
+        }
+        cx.notify();
     }
 
     fn on_key_up(&mut self, ev: &KeyUpEvent, _w: &mut Window, _cx: &mut Context<Self>) {
@@ -505,8 +844,8 @@ impl TerminalView {
             self.run_find(true, true, window, cx);
             return;
         }
-        self.send_msg(ClientMsg::Paste(text.to_string()));
-        self.typed();
+        self.erase_selection(cx);
+        self.deliver(ClientMsg::Paste(text.to_string()));
     }
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
@@ -590,6 +929,7 @@ impl TerminalView {
 
     fn on_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
+        self.kbd_sel = None;
         let Some((x, y)) = self.cell_pos(ev.position) else {
             return;
         };
@@ -612,8 +952,11 @@ impl TerminalView {
             return;
         }
         self.pressed = button;
-        self.last_motion = Some((x.floor() as i32, y.floor() as i32));
-        self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Press, button, mods: mods_of(&ev.modifiers), x, y }));
+        let cell = (x.floor() as i32, y.floor() as i32);
+        self.last_motion = Some(cell);
+        self.agent_press = (button == 1 && self.agent_selects()).then_some((cell, false));
+        let mods = mods_of(&ev.modifiers) | if self.agent_press.is_some() { MOD_SHIFT } else { 0 };
+        self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Press, button, mods, x, y }));
         cx.notify();
     }
 
@@ -629,7 +972,11 @@ impl TerminalView {
             self.clear_hover(cx);
         }
         let cell = (x.floor() as i32, y.floor() as i32);
-        let mods = mods_of(&ev.modifiers);
+        let mut mods = mods_of(&ev.modifiers);
+        if let Some((at, moved)) = self.agent_press.as_mut() {
+            *moved |= *at != cell;
+            mods |= MOD_SHIFT;
+        }
         if self.pressed != 0 {
             let m = MouseMsg { action: MouseAction::Motion, button: self.pressed, mods, x, y };
             let out = y < 0. || y >= self.rows as f32;
@@ -653,7 +1000,25 @@ impl TerminalView {
         self.pressed = 0;
         self.drag_out = None;
         let (x, y) = self.cell_pos(ev.position).unwrap_or((0., 0.));
-        self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods: mods_of(&ev.modifiers), x, y }));
+        let mods = mods_of(&ev.modifiers);
+        match self.agent_press.take() {
+            Some((_, moved)) => {
+                self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods: mods | MOD_SHIFT, x, y }));
+                // A plain click (no drag, not a double-click) still reaches the agent, which
+                // moves its cursor there.
+                if !moved && ev.click_count == 1 {
+                    self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Press, button, mods, x, y }));
+                    self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y }));
+                }
+            }
+            None => self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y })),
+        }
+    }
+
+    /// In an agent's terminal the left button makes midna's selection (as ⇧-drag does in any
+    /// app that reports the mouse), so a selected word can be typed over.
+    fn agent_selects(&self) -> bool {
+        self.is_agent() && self.ext.mouse_tracking
     }
 
     fn on_wheel(&mut self, ev: &ScrollWheelEvent, _w: &mut Window, cx: &mut Context<Self>) {
@@ -954,7 +1319,7 @@ impl TerminalView {
 
 /// Open `path` at `line`: `$VISUAL`/`$EDITOR` (from the user's login shell) in a new terminal
 /// next to this one, or the default app (`open`) when no editor is set.
-fn open_file(backend: Arc<dyn Backend>, session: String, path: String, line: Option<u32>) {
+pub(crate) fn open_file(backend: Arc<dyn Backend>, session: String, path: String, line: Option<u32>) {
     std::thread::spawn(move || {
         let editor = login_editor();
         let Some(editor) = editor else {
@@ -1028,7 +1393,8 @@ impl EntityInputHandler for TerminalView {
             f.query.push_str(text);
             self.run_find(true, true, window, cx);
         } else if !text.is_empty() {
-            self.send(text.as_bytes());
+            self.erase_selection(cx);
+            self.deliver(ClientMsg::Input(text.as_bytes().to_vec()));
         }
         cx.notify();
     }
@@ -1080,7 +1446,7 @@ struct ScrollBar {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.pull();
+        self.pull(cx);
         if let Some(m) = self.fps.as_mut() {
             m.renders += 1;
             if m.since.elapsed() >= Duration::from_secs(1) {
@@ -1108,10 +1474,15 @@ impl Render for TerminalView {
         // The cursor belongs to the live screen; hide it while scrolled back.
         let cursor = if (self.blink_on || !focused) && at_bottom { self.cursor } else { None };
         let cstyle = if focused { self.cursor_style } else { 3 };
-        let selection = self.ext.selection.clone();
+        let mut selection = self.ext.selection.clone();
+        if let Some((s, e)) = self.kbd_range() {
+            selection.extend(term_edit::spans(&self.grid, s, e, self.indent()));
+        }
         let hover_link = self.hover_link;
         let link_color = theme.accent;
         let menu = self.render_menu(&theme, cx);
+        self.update_nav(window, cx);
+        let nav = self.render_nav(&theme, cx);
         let marked = self.marked.clone();
         let req = self.req_size.clone();
         let stream = self.stream.clone();
@@ -1162,6 +1533,8 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_prev_prompt))
+            .on_action(cx.listener(Self::on_next_prompt))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_down))
@@ -1237,6 +1610,7 @@ impl Render for TerminalView {
                 )
             })
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
+            .children(nav)
             .children(menu)
     }
 }

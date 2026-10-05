@@ -134,6 +134,14 @@ pub struct Session {
     pub git: Option<GitInfo>,
     /// Agents: conversation, background work in flight, update available, queued restart.
     pub agent_info: Option<midna_proto::AgentInfo>,
+    /// Notification overrides for this terminal (`enabled: false` = muted; see `notify.set`).
+    pub notify: std::collections::BTreeMap<String, bool>,
+}
+
+impl Session {
+    pub fn notify_muted(&self) -> bool {
+        self.notify.get("enabled") == Some(&false)
+    }
 }
 
 /// What a session row/header shows as its icon.
@@ -427,6 +435,7 @@ mod tests {
                 ..Default::default()
             }),
             agent_info: None,
+            notify: Default::default(),
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);

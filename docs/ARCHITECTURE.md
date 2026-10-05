@@ -147,7 +147,7 @@ Each method has a name, a description written for agents, params/result types, `
 | `rpc` | `rpc.discover` |
 | `daemon` | `daemon.info` (version, pid, uptime, home, socket), `daemon.upgrade{binary_path}` (human_only), `daemon.restart`, `daemon.stop` (human_only), `daemon.reset{keep_rules?}` (human_only) |
 | `project` | `project.list`, `project.add{path,name?}`, `project.update{id,name?,icon?,commands?}`, `project.remove{id}` (human_only) |
-| `session` | `session.list{project_id?}`, `session.get{id}`, `session.open{project_id, kind, agent?, name?, cwd?, command?, prompt?}`, `session.close{id, force?}`, `session.rename{id,name}`, `session.input{id, text, enter?: bool}`, `session.read{id, lines?: u32, screen?: bool}` (plain text), `session.resize`, `session.restart{id}`, `session.focus{id}` (emits `window.command`) |
+| `session` | `session.list{project_id?}`, `session.get{id}`, `session.open{project_id, kind, agent?, name?, cwd?, command?, prompt?}`, `session.close{id, force?}`, `session.rename{id,name}`, `session.input{id, text, enter?: bool}`, `session.read{id, lines?: u32, screen?: bool}` (plain text), `session.resize`, `session.restart{id}`, `session.focus{id}` (emits `window.command`), `session.prompts{id}`, `session.jump_prompt{id, n | to}` (prompt fast travel) |
 | `stream` | `stream.attach` (see wire protocol) |
 | `events` | `events.list{since_seq?, limit?, filter?}`, `events.subscribe{since_seq?}` (connection then receives `event` notifications) |
 | `needs_you` | `needs_you.list`, `needs_you.raise{kind:blocked|note, message}` (agents: "attention"), `needs_you.resolve{id, resolution}` (human for approvals; agents get `approve` only when `approve.from_cli` allows it, and only for their own session) |
@@ -158,6 +158,7 @@ Each method has a name, a description written for agents, params/result types, `
 | `settings` | `settings.list`, `settings.get{key}`, `settings.set{key,value}` (refused for human_only keys from agents), `settings.reset{key}` |
 | `insights` | `insights.summary`, `insights.activity{since?, filter?}` |
 | `window` | `window.list`, `window.command{action: front|keep_on_top|pop_out|snap|close|open_screen|split, target?, value?}` (daemon forwards to the GUI; policy-checked; `agents.may_move_windows` gates all but front, open_screen and split) |
+| `notify` | `notify.list{session?, global?}`, `notify.set{session? \| global, key, value: bool\|null}` (per-terminal overrides in `Session.notify`), `notify.send{title, body?, session?, sound?}` (agents: dedupe + 6/min), `notify.media{kind?}`, `notify.import{path, use_for?}` (sound/image into MIDNA_HOME/notify), `notify.remove{name}`, `notify.test{category?, session?}` |
 | `ui` | `ui.commands.list`, `ui.commands.add{command, replace?}`, `ui.commands.remove{id}` (palette user commands, `$MIDNA_HOME/commands.json`) |
 | `updates` | `updates.status`, `updates.check`, `updates.install` (human_only), `updates.report` (GUI only); the app owns the updater, midnad proxies |
 | `permissions` | `permissions.status` (what midnad can see; `midna permissions open <name>`) |
