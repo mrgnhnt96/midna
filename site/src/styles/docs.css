@@ -1,0 +1,64 @@
+@import "@fontsource-variable/bricolage-grotesque";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* Dark: graphite and lavender, matching the landing page and the app. */
+:root {
+  --sl-font: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --sl-color-accent-low: #2a2140;
+  --sl-color-accent: #b79ae8;
+  --sl-color-accent-high: #d4c1f5;
+  --sl-color-white: #e4e7ee;
+  --sl-color-gray-1: #d7dbe4;
+  --sl-color-gray-2: #b0b7c6;
+  --sl-color-gray-3: #8a92a5;
+  --sl-color-gray-4: #5a6175;
+  --sl-color-gray-5: #2e3344;
+  --sl-color-gray-6: #1d2130;
+  --sl-color-black: #0f1117;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #ebe2fa;
+  --sl-color-accent: #6a48b5;
+  --sl-color-accent-high: #3a2370;
+  --sl-color-white: #121418;
+  --sl-color-gray-1: #262a31;
+  --sl-color-gray-2: #3d424b;
+  --sl-color-gray-3: #656b76;
+  --sl-color-gray-4: #969ba5;
+  --sl-color-gray-5: #d5d9e0;
+  --sl-color-gray-6: #eef0f3;
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #fcfcfd;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+h1#_top {
+  font-family: "Bricolage Grotesque Variable", var(--sl-font);
+  letter-spacing: -0.02em;
+}
+
+.site-title img {
+  border-radius: 7px;
+}
+
+.sl-markdown-content kbd {
+  font-family: var(--sl-font-mono);
+  font-size: 0.82em;
+  padding: 0.1em 0.45em;
+  border: 1px solid var(--sl-color-gray-5);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--sl-color-gray-6);
+  white-space: nowrap;
+}
+
+.sl-markdown-content img {
+  border-radius: 10px;
+  border: 1px solid var(--sl-color-gray-5);
+}

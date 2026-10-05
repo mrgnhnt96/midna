@@ -1,0 +1,369 @@
+---
+// A drawing of the midna window for the landing page: the sidebar with two
+// projects, an agent terminal, and a needs-you card asking for approval.
+// Plain HTML so it stays sharp at any size and needs no screenshot updates.
+---
+
+<div class="mock" role="img" aria-label="The midna window: projects and terminals in a sidebar, Claude Code running in a terminal, and a card asking you to approve a command">
+  <div class="chrome">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="need-pill"><span class="pip need"></span>1 needs you <kbd>⌘J</kbd></div>
+      <p class="proj">web <span class="badge">1</span></p>
+      <div class="row active">
+        <span class="pip need"></span>
+        <div><b>claude · checkout</b><small class="need-text">wants to run a command</small></div>
+      </div>
+      <div class="row">
+        <span class="pip work"></span>
+        <div><b>codex · flaky tests</b><small>working · 4m</small></div>
+      </div>
+      <div class="row">
+        <span class="pip ok"></span>
+        <div><b>dev server</b><small>monitor · up 2h</small></div>
+      </div>
+      <p class="proj">api</p>
+      <div class="row">
+        <span class="pip idle"></span>
+        <div><b>shell</b><small>~/src/api</small></div>
+      </div>
+      <div class="today">
+        <span class="today-label">Today</span>
+        <div class="today-stats">
+          <span><b>38</b>turns</span>
+          <span><b>12</b>messages</span>
+          <span><b>$4.20</b>spent</span>
+        </div>
+      </div>
+    </aside>
+    <div class="main">
+      <div class="head"><span class="pip need"></span><b>claude · checkout</b><span class="glyph">✳</span></div>
+      <pre class="term"><span class="dim">›</span> make the checkout form remember the last card
+
+<span class="acc">⏺</span> I'll add a saved-card option. Reading the form first.
+  <span class="dim">⎿ Read src/checkout/Form.tsx (212 lines)</span>
+<span class="acc">⏺</span> Updated Form.tsx and the payment hook.
+<span class="acc">⏺</span> Running the checkout tests before I finish.</pre>
+      <div class="card">
+        <div>
+          <b>Allow <code>npm test -- checkout</code>?</b>
+          <span>claude · checkout · web</span>
+        </div>
+        <div class="actions">
+          <span class="approve">Approve <kbd>⌘↩</kbd></span>
+          <span class="deny">Deny</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="status">
+    <span><span class="pip ok"></span> midnad · 4 terminals</span>
+    <span>Policy <b>auto</b> · 3 rules</span>
+    <span class="hide-sm">Webhooks on</span>
+    <span class="right">⌘K commands</span>
+  </div>
+</div>
+
+<style>
+  .mock {
+    --m-bg: #0f1117;
+    --m-panel: #151821;
+    --m-raised: #1d2130;
+    --m-line: #282d3b;
+    --m-term: #0b0d12;
+    border: 1px solid var(--line-strong);
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--m-bg);
+    box-shadow:
+      0 40px 120px -40px rgba(183, 154, 232, 0.35),
+      0 20px 50px -20px rgba(0, 0, 0, 0.8);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ink);
+    text-align: left;
+    min-width: 0;
+  }
+
+  .chrome {
+    display: flex;
+    gap: 7px;
+    padding: 11px 14px;
+    background: var(--m-panel);
+    border-bottom: 1px solid var(--m-line);
+  }
+
+  .dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #3a3f4d;
+  }
+  .dot.r { background: #ff5f57; }
+  .dot.y { background: #febc2e; }
+  .dot.g { background: #28c840; }
+
+  .body {
+    display: grid;
+    grid-template-columns: 210px 1fr;
+    min-height: 330px;
+  }
+
+  .side {
+    background: var(--m-panel);
+    border-right: 1px solid var(--m-line);
+    padding: 12px 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .need-pill {
+    margin: 0 10px 12px;
+    padding: 7px 10px;
+    border: 1px solid var(--need);
+    border-radius: 8px;
+    background: rgba(242, 169, 59, 0.1);
+    color: var(--need);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .need-pill kbd,
+  .card kbd {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    opacity: 0.85;
+    border: 0;
+    background: none;
+    padding: 0;
+    min-width: 0;
+    color: inherit;
+  }
+
+  .proj {
+    margin: 6px 14px 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .badge {
+    background: var(--need);
+    color: #15111c;
+    border-radius: 999px;
+    font-size: 10px;
+    padding: 0 6px;
+  }
+
+  .row {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    padding: 7px 14px;
+    border-left: 2px solid transparent;
+  }
+
+  .row.active {
+    background: var(--m-raised);
+    border-left-color: var(--accent);
+  }
+
+  .row b {
+    display: block;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .row small {
+    color: var(--ink-faint);
+    font-size: 11.5px;
+  }
+
+  .row small.need-text {
+    color: var(--need);
+  }
+
+  .pip {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-top: 6px;
+    display: inline-block;
+  }
+  .pip.need { background: var(--need); box-shadow: 0 0 0 3px rgba(242, 169, 59, 0.22); }
+  .pip.work { background: var(--work); }
+  .pip.ok { background: var(--ok); }
+  .pip.idle { border: 1.5px solid var(--ink-faint); }
+
+  .need-pill .pip,
+  .head .pip,
+  .status .pip {
+    margin-top: 0;
+  }
+
+  .today {
+    margin: auto 10px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--m-line);
+    border-radius: 10px;
+    background: var(--m-raised);
+  }
+
+  .today-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .today-stats {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    color: var(--ink-faint);
+    font-size: 11px;
+  }
+
+  .today-stats b {
+    display: block;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  .main {
+    display: flex;
+    flex-direction: column;
+    background: var(--m-term);
+    min-width: 0;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--m-line);
+    background: var(--m-bg);
+  }
+
+  .glyph {
+    color: var(--accent);
+  }
+
+  .term {
+    margin: 0;
+    padding: 14px 16px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #d7dbe4;
+    white-space: pre-wrap;
+    flex: 1;
+  }
+
+  .dim { color: var(--ink-faint); }
+  .acc { color: var(--accent); }
+
+  .card {
+    margin: 0 12px 12px;
+    padding: 12px 14px;
+    border: 1.5px solid var(--need);
+    border-radius: 10px;
+    background: var(--m-panel);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .card b {
+    display: block;
+  }
+
+  .card code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .card span {
+    color: var(--ink-faint);
+    font-size: 12px;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .actions span {
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-weight: 600;
+    font-size: 12.5px;
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .approve {
+    background: var(--accent);
+    color: #15111c !important;
+  }
+
+  .deny {
+    border: 1px solid var(--m-line);
+    color: var(--ink) !important;
+  }
+
+  .status {
+    display: flex;
+    gap: 18px;
+    padding: 7px 14px;
+    border-top: 1px solid var(--m-line);
+    background: var(--m-panel);
+    color: var(--ink-faint);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .status span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status b {
+    color: var(--ink);
+  }
+
+  .status .right {
+    margin-left: auto;
+  }
+
+  @media (max-width: 640px) {
+    .body {
+      grid-template-columns: 1fr;
+    }
+    .side {
+      display: none;
+    }
+    .hide-sm {
+      display: none !important;
+    }
+  }
+</style>

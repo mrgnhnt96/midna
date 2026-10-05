@@ -1,0 +1,845 @@
+---
+import '../styles/site.css';
+import AppMock from '../components/AppMock.astro';
+import StarButton from '../components/StarButton.astro';
+import { DOWNLOAD, ISSUES, NEW_ISSUE, REPO } from '../site';
+
+const title = 'midna — The terminal your agents can drive';
+const description =
+  'midna is a macOS terminal built for working with AI agents. Agents open terminals, run commands and ask for what they need. You approve, and your shells survive every restart.';
+
+const steps = [
+  {
+    title: 'Agents do the driving',
+    body: 'Claude Code and Codex open terminals, run tests in a monitor you can watch, and read each other’s output through the midna CLI or MCP.',
+    code: 'midna open --monitor …',
+  },
+  {
+    title: 'You get asked, once',
+    body: 'When an agent wants something only you can allow, it lands in Needs you. Approve it once, for ten minutes, or always, and it becomes a rule.',
+    code: '⌘J  next in Needs you',
+  },
+  {
+    title: 'Nothing gets lost',
+    body: 'A daemon owns every shell. Quit the app, update it, restart the daemon: your terminals keep running with the same screens and processes.',
+    code: 'midna daemon upgrade',
+  },
+];
+
+const features = [
+  {
+    tag: 'Needs you',
+    title: 'One queue for everything that’s waiting',
+    body: 'Permission prompts, failed monitors and agent questions from every terminal, in one place. Answer them from the keyboard without hunting through tabs.',
+    href: '/docs/needs-you/',
+  },
+  {
+    tag: 'Rules',
+    title: 'Agents may add. Only you remove.',
+    body: 'Allow, ask or deny commands and tools by project. Agents can tighten the rules on themselves, but loosening them always comes back to you.',
+    href: '/docs/rules/',
+  },
+  {
+    tag: 'Triggers',
+    title: 'Webhooks that start the work',
+    body: 'A pull request opens on GitHub or Bitbucket and an agent starts reviewing it in its own terminal. Deliveries arrive over Tailscale Funnel, no server to pay for.',
+    href: '/docs/triggers/',
+  },
+  {
+    tag: 'Projects',
+    title: 'Shells, monitors and agents',
+    body: 'Group terminals by project. Split, pop out, search scrollback, click file paths and links, and jump between prompts.',
+    href: '/docs/projects-and-terminals/',
+  },
+  {
+    tag: 'Insights',
+    title: 'See where the time goes',
+    body: 'Turns, messages, spend and how long agents spent waiting on you, charted by day, week or month from midna’s own event log.',
+    href: '/docs/insights/',
+  },
+  {
+    tag: 'Kass',
+    title: 'Talk to your agents',
+    body: 'Dictate into any terminal with Kass. midna opens a real text field the moment you start speaking, so dictation can read and edit what you say.',
+    href: '/docs/kass/',
+  },
+];
+
+const faqs = [
+  {
+    q: 'Which Macs does it run on?',
+    a: 'Macs with Apple Silicon, on macOS 12 or later. midna is a native app written in Rust, with GPUI for the window and libghostty for the terminal engine.',
+  },
+  {
+    q: 'Which agents does it work with?',
+    a: 'Claude Code and Codex are built in: midna wires up their hooks, status, cost and MCP for the terminals it starts, without touching your global agent config. Any other tool can use the midna CLI or the MCP server.',
+  },
+  {
+    q: 'Can an agent approve its own requests?',
+    a: 'No. Approving, removing rules, setting webhook secrets, enabling triggers and changing human-only settings belong to you. When an agent tries one, it becomes a Needs you item instead. The security page explains where that boundary holds and where it doesn’t.',
+  },
+  {
+    q: 'What happens to my terminals when midna updates?',
+    a: 'They keep running. The app swaps itself atomically and relaunches, and the daemon re-executes in place with the same process ID, handing over every shell and its screen.',
+  },
+  {
+    q: 'Does midna send my data anywhere?',
+    a: 'No. Your terminals, events and settings stay on your Mac. midna goes online to check GitHub for updates and, if you turn on triggers, to receive the webhooks you configured.',
+  },
+  {
+    q: 'What does it cost?',
+    a: 'Nothing. midna is free and open source under the MIT license. There’s no account.',
+  },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content="https://midna.mrgnhnt.com/icon.png" />
+    <meta name="theme-color" content="#0f1117" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/icon.png" alt="" width="30" height="30" />
+          <span>midna</span>
+        </a>
+        <nav class="links">
+          <a href="#how">How it works</a>
+          <a href="#features">Features</a>
+          <a href="/docs/">Docs</a>
+          <a href="/changelog/">Changelog</a>
+        </nav>
+        <div class="nav-star"><StarButton size="sm" /></div>
+        <a class="btn btn-accent nav-cta" href={DOWNLOAD}>Download</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="glow" aria-hidden="true"></div>
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">A terminal for working with agents</p>
+            <h1>Let agents drive.<br /><span class="accent">Keep the keys.</span></h1>
+            <p class="lede">
+              midna is a macOS terminal your agents can run themselves: they open terminals, start tests and
+              watch servers. Anything that needs your OK waits in one place, and your shells survive every
+              restart.
+            </p>
+            <div class="ctas">
+              <a class="btn btn-accent" href={DOWNLOAD}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+                  ><path
+                    d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.320-1.8-1.41-.14-2.76.83-3.47.83-.72 0-1.82-.81-3-.79-1.54.02-2.96.9-3.76 2.27-1.6 2.78-.41 6.9 1.15 9.16.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.77.74 2.98.72 1.23-.02 2.010-1.12 2.76-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.39-.92-2.41-3.64zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.01.61-2.66 1.370-.58.67-1.09 1.76-.96 2.8 1.02.08 2.05-.52 2.68-1.28z"
+                  ></path></svg
+                >
+                Download for Mac
+              </a>
+              <a class="btn btn-ghost" href="/docs/">Read the docs</a>
+            </div>
+            <p class="fineprint">Free and open source · Apple Silicon · macOS 12+</p>
+          </div>
+          <AppMock />
+        </div>
+      </section>
+
+      <section id="how" class="how">
+        <div class="wrap">
+          <p class="eyebrow">How it works</p>
+          <h2>Agents add. You decide.</h2>
+          <ol class="steps">
+            {
+              steps.map((s, i) => (
+                <li>
+                  <span class="num">{i + 1}</span>
+                  <code class="step-code">{s.code}</code>
+                  <h3>{s.title}</h3>
+                  <p>{s.body}</p>
+                </li>
+              ))
+            }
+          </ol>
+        </div>
+      </section>
+
+      <section class="split">
+        <div class="wrap split-grid">
+          <div>
+            <p class="eyebrow">Built for agents</p>
+            <h2>Everything is a method.</h2>
+            <p class="lede">
+              Every capability midna has is one call in a discoverable catalog. Agents use the <code>midna</code> CLI
+              or MCP, and refusals tell them what to do next instead of failing silently.
+            </p>
+            <ul class="checks">
+              <li><code>midna capabilities</code> says what an agent can do, and what only you can</li>
+              <li><code>midna schema</code> is the full OpenRPC catalog</li>
+              <li><code>midna mcp</code> exposes every method as a tool</li>
+              <li><code>midna explain</code> says why something is the way it is</li>
+            </ul>
+          </div>
+          <pre class="shell" aria-label="An agent using the midna CLI"><span class="dim">$</span> midna open --name tests --monitor 'cargo test'
+<span class="dim">$</span> midna rules add deny command 'git push --force*'
+<span class="dim">$</span> midna rules remove r_41
+<span class="need">rule.remove is human only; use rule.request_removal
+to ask the human</span>
+<span class="dim">$</span> midna rules request-removal r_41 --reason "blocks the release tag"
+<span class="dim">$</span> midna attention "tests pass, ready for review"</pre>
+        </div>
+      </section>
+
+      <section id="features" class="features">
+        <div class="wrap">
+          <p class="eyebrow">Features</p>
+          <h2>Less babysitting.</h2>
+          <div class="feat-grid">
+            {
+              features.map((f) => (
+                <a class="feat" href={f.href}>
+                  <span class="tag">{f.tag}</span>
+                  <h3>{f.title}</h3>
+                  <p>{f.body}</p>
+                  <span class="more">Learn more →</span>
+                </a>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <section class="native">
+        <div class="wrap native-grid">
+          <div class="stat">
+            <b>Native</b>
+            <span>Rust and GPUI, not Electron. Holds 120 fps scrolling an 80 MB log.</span>
+          </div>
+          <div class="stat">
+            <b>Daemon</b>
+            <span>midnad owns every terminal, so closing or updating the app never kills a shell.</span>
+          </div>
+          <div class="stat">
+            <b>Signed</b>
+            <span>Notarized builds and updates checked by signature, hash and Team ID before they install.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="open">
+        <div class="wrap open-inner">
+          <div>
+            <p class="eyebrow">Open source</p>
+            <h2>Built in the open.</h2>
+            <p class="lede">
+              midna is free, MIT licensed and developed on GitHub. Star the repository to follow along, and tell us
+              when something doesn’t work the way you expect.
+            </p>
+          </div>
+          <div class="open-cards">
+            <a class="open-card" href={REPO}>
+              <span class="open-icon">★</span>
+              <b>Star on GitHub</b>
+              <span>Follow releases and help other people find midna.</span>
+            </a>
+            <a class="open-card" href={NEW_ISSUE}>
+              <span class="open-icon">!</span>
+              <b>Report an issue</b>
+              <span>Something broke, or an agent got stuck? Tell us what happened.</span>
+            </a>
+            <a class="open-card" href={ISSUES}>
+              <span class="open-icon">→</span>
+              <b>Browse issues</b>
+              <span>See what’s known, what’s being worked on, and add your vote.</span>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="faq">
+        <div class="wrap faq-grid">
+          <div>
+            <p class="eyebrow">Questions</p>
+            <h2>Good to know.</h2>
+            <p class="faq-more">More in the <a href="/docs/">docs</a>.</p>
+          </div>
+          <div class="faq-list">
+            {
+              faqs.map((f) => (
+                <details>
+                  <summary>{f.q}</summary>
+                  <p>{f.a}</p>
+                </details>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <section class="final">
+        <div class="wrap final-inner">
+          <img src="/icon.png" alt="" width="96" height="96" />
+          <h2>Stop babysitting tabs.</h2>
+          <p class="lede">Free, no account, and your terminals stay on your Mac.</p>
+          <div class="ctas">
+            <a class="btn btn-accent" href={DOWNLOAD}>Download for Mac</a>
+            <StarButton label="Star on GitHub" />
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap foot-inner">
+        <div class="brand">
+          <img src="/icon.png" alt="" width="24" height="24" />
+          <span>midna</span>
+        </div>
+        <nav>
+          <a href="/docs/">Docs</a>
+          <a href="/docs/security/">Security</a>
+          <a href="/changelog/">Changelog</a>
+          <a href={REPO}>GitHub</a>
+          <a href={NEW_ISSUE}>Report an issue</a>
+        </nav>
+        <p>MIT licensed. Terminal engine by <a href="https://ghostty.org">Ghostty</a>.</p>
+      </div>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(14px);
+    background: rgba(15, 17, 23, 0.72);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    height: 68px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.15rem;
+    text-decoration: none;
+    letter-spacing: -0.02em;
+  }
+
+  .brand img {
+    border-radius: 8px;
+  }
+
+  .links {
+    display: flex;
+    gap: 24px;
+    margin-left: auto;
+  }
+
+  .links a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-size: 0.94rem;
+  }
+
+  .links a:hover {
+    color: var(--ink);
+  }
+
+  .nav-cta {
+    padding: 10px 18px;
+  }
+
+  @media (max-width: 860px) {
+    .links,
+    .nav-star {
+      display: none;
+    }
+    .nav-cta {
+      margin-left: auto;
+    }
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+  }
+
+  /* Hero */
+  .hero {
+    position: relative;
+    padding: 96px 0 120px;
+    overflow: hidden;
+  }
+
+  .glow {
+    position: absolute;
+    inset: -200px -10% auto auto;
+    width: 900px;
+    height: 700px;
+    background: radial-gradient(closest-side, var(--accent-glow), transparent);
+    pointer-events: none;
+  }
+
+  .hero-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    gap: 56px;
+    align-items: center;
+  }
+
+  @media (max-width: 980px) {
+    .hero-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .hero {
+      padding: 56px 0 80px;
+    }
+  }
+
+  h1 {
+    font-size: clamp(2.8rem, 6.4vw, 4.8rem);
+  }
+
+  .hero .lede {
+    margin-top: 24px;
+  }
+
+  .ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 32px;
+  }
+
+  .fineprint {
+    margin-top: 18px;
+    color: var(--ink-faint);
+    font-size: 0.88rem;
+  }
+
+  /* How it works */
+  .how {
+    border-top: 1px solid var(--line);
+  }
+
+  .steps {
+    list-style: none;
+    padding: 0;
+    margin: 48px 0 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+  }
+
+  @media (max-width: 860px) {
+    .steps {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .steps li {
+    position: relative;
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+  }
+
+  .num {
+    position: absolute;
+    top: 24px;
+    right: 26px;
+    font-family: var(--font-mono);
+    color: var(--ink-faint);
+  }
+
+  .step-code {
+    display: block;
+    margin-bottom: 22px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: #0b0d12;
+    border: 1px solid var(--line);
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: calc(100% - 24px);
+  }
+
+  .steps p {
+    margin-top: 10px;
+    color: var(--ink-soft);
+  }
+
+  /* Built for agents */
+  .split {
+    background: var(--bg-raised);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .split-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 56px;
+    align-items: center;
+  }
+
+  @media (max-width: 900px) {
+    .split-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .split .lede {
+    margin-top: 20px;
+  }
+
+  .checks {
+    list-style: none;
+    padding: 0;
+    margin: 28px 0 0;
+    display: grid;
+    gap: 12px;
+    color: var(--ink-soft);
+  }
+
+  .checks li {
+    padding-left: 28px;
+    position: relative;
+  }
+
+  .checks li::before {
+    content: '✓';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+  }
+
+  .checks code {
+    color: var(--ink);
+  }
+
+  .shell {
+    margin: 0;
+    padding: 24px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line-strong);
+    background: #0b0d12;
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    line-height: 1.7;
+    color: #d7dbe4;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+
+  .dim {
+    color: var(--ink-faint);
+  }
+
+  .ok {
+    color: var(--ok);
+  }
+
+  .need {
+    color: var(--need);
+  }
+
+  /* Features */
+  .feat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    margin-top: 48px;
+  }
+
+  @media (max-width: 960px) {
+    .feat-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .feat-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .feat {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    text-decoration: none;
+    transition:
+      border-color 0.15s ease,
+      transform 0.15s ease;
+  }
+
+  .feat:hover {
+    border-color: var(--accent-deep);
+    transform: translateY(-2px);
+  }
+
+  .tag {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+  }
+
+  .feat p {
+    color: var(--ink-soft);
+    flex: 1;
+  }
+
+  .more {
+    color: var(--ink-faint);
+    font-size: 0.9rem;
+  }
+
+  /* Native */
+  .native {
+    padding: 0 0 120px;
+  }
+
+  .native-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+  }
+
+  @media (max-width: 860px) {
+    .native-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .stat {
+    border-top: 1px solid var(--line-strong);
+    padding-top: 22px;
+  }
+
+  .stat b {
+    display: block;
+    font-family: var(--font-display);
+    font-size: 2rem;
+    letter-spacing: -0.03em;
+  }
+
+  .stat span {
+    display: block;
+    margin-top: 8px;
+    color: var(--ink-soft);
+  }
+
+  /* Open source */
+  .open {
+    border-top: 1px solid var(--line);
+  }
+
+  .open-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: 56px;
+    align-items: center;
+  }
+
+  @media (max-width: 900px) {
+    .open-inner {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .open .lede {
+    margin-top: 20px;
+  }
+
+  .open-cards {
+    display: grid;
+    gap: 14px;
+  }
+
+  .open-card {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    column-gap: 16px;
+    padding: 20px 22px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--bg-raised);
+    text-decoration: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .open-card:hover {
+    border-color: var(--accent-deep);
+  }
+
+  .open-icon {
+    grid-row: span 2;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .open-card span:last-child {
+    color: var(--ink-soft);
+    font-size: 0.94rem;
+  }
+
+  /* FAQ */
+  .faq {
+    border-top: 1px solid var(--line);
+  }
+
+  .faq-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+    gap: 56px;
+  }
+
+  @media (max-width: 900px) {
+    .faq-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .faq-more {
+    margin-top: 18px;
+    color: var(--ink-soft);
+  }
+
+  .faq-more a {
+    color: var(--accent);
+  }
+
+  .faq-list details {
+    border-bottom: 1px solid var(--line);
+    padding: 20px 0;
+  }
+
+  .faq-list summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 1.08rem;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .faq-list summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .faq-list summary::after {
+    content: '+';
+    color: var(--accent);
+    font-family: var(--font-mono);
+  }
+
+  .faq-list details[open] summary::after {
+    content: '−';
+  }
+
+  .faq-list details p {
+    margin-top: 12px;
+    color: var(--ink-soft);
+  }
+
+  /* Final */
+  .final {
+    border-top: 1px solid var(--line);
+    background: radial-gradient(ellipse at center top, var(--accent-glow), transparent 60%);
+  }
+
+  .final-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  .final img {
+    border-radius: 22px;
+    margin-bottom: 28px;
+  }
+
+  .final .lede {
+    margin-top: 18px;
+  }
+
+  .final .ctas {
+    justify-content: center;
+  }
+
+  /* Footer */
+  .foot {
+    border-top: 1px solid var(--line);
+    padding: 40px 0 56px;
+    color: var(--ink-faint);
+    font-size: 0.92rem;
+  }
+
+  .foot-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 32px;
+  }
+
+  .foot .brand {
+    color: var(--ink);
+  }
+
+  .foot nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  .foot nav a {
+    text-decoration: none;
+  }
+
+  .foot nav a:hover {
+    color: var(--ink);
+  }
+
+  .foot p {
+    width: 100%;
+  }
+</style>

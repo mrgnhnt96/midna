@@ -1,0 +1,195 @@
+@import "@fontsource-variable/bricolage-grotesque";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+:root {
+  --bg: #0f1117;
+  --bg-raised: #151821;
+  --bg-card: #1d2130;
+  --line: #282d3b;
+  --line-strong: #383e50;
+  --ink: #e4e7ee;
+  --ink-soft: #b0b7c6;
+  --ink-faint: #7b8396;
+  --accent: #b79ae8;
+  --accent-bright: #d4c1f5;
+  --accent-deep: #7b5cc0;
+  --accent-glow: rgba(183, 154, 232, 0.18);
+  --need: #f2a93b;
+  --ok: #4cc38a;
+  --work: #6ea2ff;
+  --err: #f2665c;
+
+  --font-display: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --radius: 18px;
+  --max: 1160px;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+a {
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+.wrap {
+  width: 100%;
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    padding: 0 16px;
+  }
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  margin: 0;
+}
+
+h2 {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+}
+
+h3 {
+  font-size: 1.3rem;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+p {
+  margin: 0;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin-bottom: 18px;
+}
+
+.lede {
+  color: var(--ink-soft);
+  font-size: 1.15rem;
+  max-width: 44ch;
+}
+
+.accent {
+  color: var(--accent);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.98rem;
+  text-decoration: none;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn-accent {
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  color: #15111c;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.35) inset,
+    0 10px 30px -10px rgba(183, 154, 232, 0.55);
+}
+
+.btn-ghost {
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+
+.btn-ghost:hover {
+  border-color: var(--ink-faint);
+}
+
+kbd,
+.key {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2em;
+  padding: 0.25em 0.55em;
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 3px;
+  background: var(--bg-raised);
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+section {
+  padding: 120px 0;
+}
+
+@media (max-width: 720px) {
+  section {
+    padding: 80px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* biome-ignore-start lint/complexity/noImportantStyles: reduced motion has to win over every animation and transition on the page. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* biome-ignore-end lint/complexity/noImportantStyles: reduced motion */
+  html {
+    scroll-behavior: auto;
+  }
+}

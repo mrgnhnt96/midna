@@ -1,0 +1,11 @@
+---
+// Starlight's own 404 route looks for a docs entry named 404, which would
+// also match the docs' catch-all route, so the 404 page lives here instead
+// (disable404Route in astro.config.mjs).
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+---
+
+<StarlightPage frontmatter={{ title: 'Page not found', template: 'splash', editUrl: false, pagefind: false }}>
+  <p>That page isn't here. It may have moved when the docs were reorganized.</p>
+  <p>Start from the <a href="/docs/">docs overview</a> or the <a href="/changelog/">changelog</a>.</p>
+</StarlightPage>

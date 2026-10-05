@@ -1,0 +1,20 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+// The changelog lives at the repo root so it ships with the code.
+import { Content, getHeadings } from '../../../CHANGELOG.md';
+
+// The file's own "# Changelog" heading is the page title here.
+const headings = getHeadings().filter((h) => h.depth > 1);
+---
+
+<StarlightPage frontmatter={{ title: 'Changelog', description: 'What’s new in each midna release.' }} headings={headings}>
+	<div class="changelog">
+		<Content />
+	</div>
+</StarlightPage>
+
+<style>
+	.changelog :global(h1:first-child) {
+		display: none;
+	}
+</style>

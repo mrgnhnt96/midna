@@ -1,0 +1,202 @@
+---
+import '../styles/site.css';
+import StarButton from '../components/StarButton.astro';
+import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Download midna</title>
+    <meta name="description" content="Download midna, the macOS terminal built for working with AI agents." />
+    <link rel="icon" href="/icon.png" />
+    <meta name="theme-color" content="#0f1117" />
+  </head>
+  <body>
+    <main class="wrap page" data-api={REPO_API} data-releases={RELEASES}>
+      <a class="home" href="/"><img src="/icon.png" alt="" width="28" height="28" /> midna</a>
+
+      <img class="icon" src="/icon.png" alt="" width="104" height="104" />
+
+      <h1 data-title>Getting the latest midna…</h1>
+      <p class="lede" data-status>
+        Your download starts in a moment.
+        <noscript
+          >This page needs JavaScript to find the newest version. <a href={RELEASES}>Download it from GitHub</a
+          > instead.</noscript
+        >
+      </p>
+      <p class="fallback" data-fallback hidden>
+        Didn’t start? <a data-direct href={RELEASES}>Download it directly</a>.
+      </p>
+
+      <ol class="steps">
+        <li class="star-step">
+          <span><b>Star midna on GitHub.</b> It’s free and open source, and a star helps other people find it.</span>
+          <StarButton label="Star" size="sm" />
+        </li>
+        <li data-install><b>Open the DMG</b> from your Downloads folder.</li>
+        <li data-install><b>Drag Midna into Applications.</b> It updates itself in place there.</li>
+        <li data-install>
+          <b>Open Midna.</b> If macOS asks, allow it in <b>Login Items</b> so its daemon keeps your terminals running.
+        </li>
+      </ol>
+
+      <p class="help">Stuck? The <a href="/docs/install/">install guide</a> walks through every step.</p>
+
+      <p class="help">Found a bug or have an idea? <a href={NEW_ISSUE}>Report an issue</a>.</p>
+    </main>
+  </body>
+</html>
+
+<style>
+  .page {
+    max-width: 640px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding-top: 40px;
+    padding-bottom: 64px;
+  }
+
+  .home {
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.1rem;
+    text-decoration: none;
+  }
+
+  .home img {
+    border-radius: 7px;
+  }
+
+  .icon {
+    margin: 64px 0 28px;
+    border-radius: 24px;
+    box-shadow: 0 20px 60px -20px rgba(183, 154, 232, 0.45);
+  }
+
+  h1 {
+    font-size: clamp(2rem, 6vw, 3rem);
+  }
+
+  .lede {
+    margin: 16px auto 0;
+  }
+
+  .lede a,
+  .fallback a,
+  .help a {
+    color: var(--accent);
+  }
+
+  .fallback {
+    margin-top: 12px;
+    color: var(--ink-faint);
+    font-size: 0.92rem;
+  }
+
+  .steps {
+    counter-reset: step;
+    list-style: none;
+    padding: 0;
+    margin: 48px 0 0;
+    display: grid;
+    gap: 12px;
+    width: 100%;
+    text-align: left;
+  }
+
+  .steps li[hidden] {
+    display: none;
+  }
+
+  .star-step {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+  }
+
+  .steps li {
+    counter-increment: step;
+    position: relative;
+    padding: 18px 20px 18px 50px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--bg-raised);
+    color: var(--ink-soft);
+  }
+
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 22px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+  }
+
+  .steps b {
+    color: var(--ink);
+  }
+
+  .help {
+    margin-top: 20px;
+    color: var(--ink-faint);
+    font-size: 0.92rem;
+  }
+</style>
+
+<script>
+  // Ask GitHub for the newest release and start its DMG. The file comes
+  // straight from GitHub; this page just finds it.
+  type Asset = { name: string; browser_download_url: string };
+  type Release = { tag_name: string; assets: Asset[] };
+
+  const page = document.querySelector<HTMLElement>('[data-api]')!;
+  const $ = (name: string) => page.querySelector<HTMLElement>(`[data-${name}]`)!;
+  const releases = page.dataset.releases!;
+
+  const fail = (title: string, status: string) => {
+    $('title').textContent = title;
+    $('status').innerHTML = status;
+    for (const step of page.querySelectorAll<HTMLElement>('[data-install]')) step.hidden = true;
+  };
+
+  fetch(`${page.dataset.api}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
+    .then(async (response) => {
+      if (response.status === 404) {
+        fail(
+          'midna isn’t out yet',
+          'The first release is on its way. Star the repository to hear when it lands.',
+        );
+        return;
+      }
+      if (!response.ok) throw new Error(String(response.status));
+      const release: Release = await response.json();
+      const dmg = release.assets.find((a) => a.name.endsWith('.dmg'));
+      if (!dmg) throw new Error('No DMG in the release');
+
+      const version = release.tag_name.replace(/^v/, '');
+      $('title').textContent = `Downloading midna ${version}`;
+      $('status').textContent = 'For Macs with Apple Silicon, macOS 12 or later. Your download should start right away.';
+      $('direct').setAttribute('href', dmg.browser_download_url);
+      $('fallback').hidden = false;
+      window.location.href = dmg.browser_download_url;
+    })
+    .catch(() => {
+      fail(
+        'Download midna',
+        `We couldn’t reach GitHub to find the newest version. <a href="${releases}">Download it from the Releases page</a> instead.`,
+      );
+    });
+</script>
