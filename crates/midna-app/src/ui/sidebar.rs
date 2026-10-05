@@ -312,6 +312,7 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
 /// project) in the tooltip.
 fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
+    let marked = !selected && m.marked.len() > 1 && m.is_marked(&s.id);
     let id = s.id.clone();
     let name = crate::ui::rename::shown_name(m, &s.id, &s.name, cx);
     let tip = if project.is_empty() { name.to_string() } else { format!("{name} · {project}") };
@@ -326,12 +327,29 @@ fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Cont
         .justify_center()
         .cursor_pointer()
         .when(selected, |d| d.bg(t.raised))
-        .when(!selected, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .when(marked, |d| d.bg(t.accent_soft))
+        .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
         .tooltip(super::header::tip(tip))
-        .on_click(cx.listener(move |m, _, w, cx| m.select(id.clone(), w, cx)))
+        .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
+            if !click_marks(m, &id, ev, w, cx) {
+                m.select_only(id.clone(), w, cx);
+            }
+        }))
         .when(selected, |d| d.child(div().absolute().left(px(-18.)).top(px(8.)).bottom(px(8.)).w(px(2.)).bg(t.accent)))
         .child(Icon::from_glyph(s.glyph()).el(16., if selected { t.fg } else { t.dim }))
         .child(div().absolute().top(px(5.)).right(px(5.)).child(session_dot(t, m.effective_state(s), s.custom_status.as_ref(), 8.)))
+}
+
+/// ⌘-click toggles `id` in the selection, ⌘⇧-click selects the range to it. False for a
+/// click without ⌘.
+fn click_marks(m: &mut MainWindow, id: &str, ev: &ClickEvent, w: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    let md = ev.modifiers();
+    match (md.platform, md.shift) {
+        (true, true) => m.mark_range(id.to_string(), w, cx),
+        (true, false) => m.toggle_mark(id.to_string(), w, cx),
+        _ => return false,
+    }
+    true
 }
 
 /// A run of rows under a group heading, clipped to `1 - fold` of its natural height (measured
@@ -358,16 +376,28 @@ fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Op
 }
 
 /// Moves the dragged terminal to `target`'s place once the cursor passes `target`'s middle
-/// (from above or below), so rows of different heights don't swap back and forth.
+/// (from above or below), so rows of different heights don't swap back and forth. Dragging
+/// a selected row (⌘-click / ⌘⇧-click) moves its group's selected rows with it, as one block.
 fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds: Bounds<Pixels>, cx: &mut Context<MainWindow>) {
-    let mut ids: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
+    let ids: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
+    let moving: Vec<String> = if m.marked.len() > 1 && m.is_marked(dragged) {
+        let group = m.groups().into_iter().find(|g| g.sessions.iter().any(|s| s.id == dragged)).map(|g| g.sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        group.into_iter().filter(|id| m.is_marked(id)).collect()
+    } else {
+        vec![dragged.to_string()]
+    };
+    if moving.iter().any(|i| i == target) {
+        return;
+    }
     let (Some(from), Some(to)) = (ids.iter().position(|i| i == dragged), ids.iter().position(|i| i == target)) else { return };
     let mid = bounds.origin.y + bounds.size.height / 2.;
     if (from < to && y < mid) || (from > to && y > mid) {
         return;
     }
-    let id = ids.remove(from);
-    ids.insert(to, id);
+    let mut ids: Vec<String> = ids.into_iter().filter(|i| !moving.contains(i)).collect();
+    let Some(at) = ids.iter().position(|i| i == target) else { return };
+    let at = if from < to { at + 1 } else { at };
+    ids.splice(at..at, moving);
     m.order = ids;
     crate::ui::statusbar::save_state(m);
     cx.notify();
@@ -375,6 +405,8 @@ fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds:
 
 fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
+    // Part of a multi-selection but not the terminal on screen.
+    let marked = !selected && m.marked.len() > 1 && m.is_marked(&s.id);
     let id = s.id.clone();
     let (drag, group, target) = (DraggedRow { id: s.id.clone(), group: group.to_string() }, group.to_string(), s.id.clone());
     let state = m.effective_state(s);
@@ -415,7 +447,8 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         .py(px(pad_y))
         .cursor_pointer()
         .when(selected, |d| d.bg(t.raised))
-        .when(!selected, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .when(marked, |d| d.bg(t.accent_soft))
+        .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
         .on_drag(drag, |_, _, _, cx| cx.new(|_| NoGhost))
         .on_drag_move(cx.listener(move |m, ev: &DragMoveEvent<DraggedRow>, _, cx| {
             let d = ev.drag(cx);
@@ -426,10 +459,11 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
             }
         }))
         .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
-            if ev.click_count() == 2 {
+            if click_marks(m, &id, ev, w, cx) {
+            } else if ev.click_count() == 2 {
                 crate::ui::rename::start(m, &id, crate::ui::rename::At::Sidebar, w, cx);
             } else {
-                m.select(id.clone(), w, cx);
+                m.select_only(id.clone(), w, cx);
             }
         }))
         .when(selected, |d| d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))

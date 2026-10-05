@@ -94,6 +94,11 @@ pub struct MainWindow {
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
     pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
+    /// Sidebar multi-selection (⌘-click toggles a row, ⌘⇧-click selects a range): every
+    /// selected terminal id, `selected` included, or empty when just `selected` is.
+    pub marked: Vec<String>,
+    /// Where a ⌘⇧-click range starts: the last row clicked without ⇧.
+    pub mark_anchor: Option<String>,
     pub screen: Screen,
     pub overlay: Overlay,
     pub menu: Menu,
@@ -214,6 +219,8 @@ impl MainWindow {
             fold_heights: Default::default(),
             webhooks: Value::Null,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
+            marked: vec![],
+            mark_anchor: None,
             screen: Screen::Terminal,
             overlay: Overlay::None,
             menu: Menu::None,
@@ -611,6 +618,11 @@ impl MainWindow {
         }
         if let Some(s) = r.sessions {
             self.sessions = s;
+            let live = &self.sessions;
+            self.marked.retain(|id| live.iter().any(|s| &s.id == id));
+            if self.marked.len() < 2 {
+                self.marked.clear();
+            }
             crate::ui::queue::sync(&self.sessions, cx);
         }
         if let Some(n) = r.needs {
@@ -779,6 +791,10 @@ impl MainWindow {
             crate::ui::popout::open(self, id, window, cx);
             return;
         }
+        // Showing a terminal outside the multi-selection ends it.
+        if !self.marked.contains(&id) {
+            self.marked.clear();
+        }
         if self.selected.as_deref() != Some(&id) {
             self.selected = Some(id.clone());
             self.menu = Menu::None;
@@ -790,6 +806,78 @@ impl MainWindow {
         }
         self.ensure_terminal(window, cx);
         cx.notify();
+    }
+
+    /// Whether `id` is part of the sidebar selection.
+    pub fn is_marked(&self, id: &str) -> bool {
+        self.marked.iter().any(|m| m == id) || (self.marked.is_empty() && self.selected.as_deref() == Some(id))
+    }
+
+    /// The selected terminals in sidebar order: the multi-selection, else just `selected`.
+    pub fn marked_ids(&self) -> Vec<String> {
+        self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|id| self.is_marked(id)).collect()
+    }
+
+    /// ⌘-click: add `id` to the selection and show it, or take it out (showing another
+    /// selected terminal when it was the one on screen). The last one can't be taken out.
+    pub fn toggle_mark(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::ui::popout::is_popped(&id, cx) {
+            self.select(id, window, cx);
+            return;
+        }
+        if self.marked.is_empty() {
+            self.marked.extend(self.selected.clone().filter(|s| !crate::ui::popout::is_popped(s, cx)));
+        }
+        self.mark_anchor = Some(id.clone());
+        if let Some(i) = self.marked.iter().position(|m| m == &id) {
+            if self.marked.len() < 2 {
+                return;
+            }
+            self.marked.remove(i);
+            let show = if self.selected.as_deref() == Some(&id) { self.marked.last().cloned() } else { self.selected.clone() };
+            if self.marked.len() < 2 {
+                self.marked.clear();
+            }
+            if let Some(show) = show {
+                self.select(show, window, cx);
+            }
+        } else {
+            self.marked.push(id.clone());
+            if self.marked.len() < 2 {
+                self.marked.clear();
+            }
+            self.select(id, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// ⌘⇧-click: select every row from the anchor (the last row clicked without ⇧) to `id`,
+    /// in sidebar order, skipping popped-out terminals and rows hidden in folded projects.
+    pub fn mark_range(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let rows: Vec<String> = self
+            .ordered_sessions()
+            .into_iter()
+            .filter(|s| !crate::ui::popout::is_popped(&s.id, cx))
+            .filter(|s| self.selected.as_deref() == Some(&s.id) || !s.project_id.as_ref().is_some_and(|p| self.collapsed.contains(p)))
+            .map(|s| s.id.clone())
+            .collect();
+        let anchor = self.mark_anchor.clone().or_else(|| self.selected.clone());
+        let (Some(a), Some(b)) = (anchor.and_then(|a| rows.iter().position(|r| *r == a)), rows.iter().position(|r| *r == id)) else {
+            self.toggle_mark(id, window, cx);
+            return;
+        };
+        self.marked = rows[a.min(b)..=a.max(b)].to_vec();
+        if self.marked.len() < 2 {
+            self.marked.clear();
+        }
+        self.select(id, window, cx);
+    }
+
+    /// A plain click: just this terminal, which also becomes the anchor for ⌘⇧-click.
+    pub fn select_only(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.marked.clear();
+        self.mark_anchor = Some(id.clone());
+        self.select(id, window, cx);
     }
 
     fn ensure_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1063,6 +1151,10 @@ impl MainWindow {
             window.dispatch_action(Box::new(Dismiss), cx);
             return;
         }
+        if self.marked.len() > 1 {
+            self.close_marked(window, cx);
+            return;
+        }
         let Some(s) = self.selected_session() else {
             window.remove_window();
             return;
@@ -1080,6 +1172,41 @@ impl MainWindow {
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
         self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+        cx.notify();
+    }
+
+    /// ⌘W with several terminals selected: close them all and select the nearest one left
+    /// below (else above). If any is busy, a second ⌘W within 2 s is needed first.
+    fn close_marked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids = self.marked_ids();
+        let busy = self.sessions.iter().filter(|s| ids.contains(&s.id) && matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou)).count();
+        let key = ids.join(",");
+        let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| *a == key && t.elapsed() < Duration::from_secs(2));
+        if busy > 0 && !confirmed {
+            self.close_armed = Some((key, Instant::now()));
+            let still = if busy == 1 { "1 is still running".to_string() } else { format!("{busy} are still running") };
+            self.toast(format!("Closing {} terminals: {still}. Press ⌘W again to close them.", ids.len()), cx);
+            return;
+        }
+        self.close_armed = None;
+        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
+        let last = order.iter().rposition(|x| ids.contains(x)).unwrap_or(0);
+        let next = order[last..].iter().chain(order[..last].iter().rev()).find(|x| !ids.contains(x)).cloned();
+        self.marked.clear();
+        self.mark_anchor = None;
+        match next {
+            Some(n) => self.select(n, window, cx),
+            None => {
+                self.selected = None;
+                self.terminal = None;
+                self.pending_terminal = None;
+            }
+        }
+        self.sessions.retain(|s| !ids.contains(&s.id));
+        self.menu = Menu::None;
+        for id in ids {
+            self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+        }
         cx.notify();
     }
 
@@ -1197,6 +1324,9 @@ impl MainWindow {
                     m.set_overlay(Overlay::None, w, cx);
                 } else if m.screen != Screen::Terminal {
                     m.set_screen(Screen::Terminal, w, cx);
+                } else if !m.marked.is_empty() {
+                    m.marked.clear();
+                    cx.notify();
                 }
             }))
             .on_action(cx.listener(|m, _: &SplitRight, window, cx| crate::ui::split::toggle(m, window, cx)))

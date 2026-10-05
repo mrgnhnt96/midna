@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT]` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -126,14 +126,24 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
         // Click at window coordinates in points (`clickxy:300,22,2` = double-click), for chrome
         // outside the terminal grid (header, sidebar).
         "clickxy" if nums.len() >= 2 => {
-            let p = point(px(nums[0]), px(nums[1]));
+            let (p, md) = (point(px(nums[0]), px(nums[1])), mods(&words));
             for n in 1..=nums.get(2).copied().unwrap_or(1.) as usize {
-                window.dispatch_event(
-                    PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: n, first_mouse: false }),
-                    cx,
-                );
-                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: n }), cx);
+                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: md, click_count: n, first_mouse: false }), cx);
+                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: md, click_count: n }), cx);
             }
+        }
+        // Drag in window points (e.g. a sidebar row to a new place).
+        "dragxy" if nums.len() >= 4 => {
+            let (a, b) = (point(px(nums[0]), px(nums[1])), point(px(nums[2]), px(nums[3])));
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: a, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }), cx);
+            for i in 1..=12 {
+                let f = i as f32 / 12.;
+                let p = point(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }), cx);
+                window.refresh();
+                window.draw(cx).clear(cx);
+            }
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: b, modifiers: Modifiers::default(), click_count: 1 }), cx);
         }
         // Release all modifiers (e.g. let go of ⌘ during a ⌘Q hold).
         "release" => {
