@@ -897,7 +897,7 @@ fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoE
             .child(icon.el(16., if active { t.fg } else { t.dim }))
             .child(label)
     };
-    div().flex().flex_col().gap(px(8.)).p(px(10.)).border_t_1().border_color(t.line).child(card).child(
+    div().flex().flex_col().gap(px(8.)).p(px(10.)).border_t_1().border_color(t.line).children(super::onboarding::checklist(m, t, cx)).child(card).child(
         div()
             .flex()
             .gap(px(4.))

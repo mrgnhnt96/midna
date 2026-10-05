@@ -101,6 +101,19 @@ pub fn refresh_permission() {
     UNUserNotificationCenter::currentNotificationCenter().getNotificationSettingsWithCompletionHandler(&done);
 }
 
+/// Ask macOS for permission now (onboarding), without posting anything. Asking again once
+/// decided returns at once without a prompt.
+pub fn request_permission() {
+    if !native() {
+        return;
+    }
+    let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge;
+    let done = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
+        STATUS.store(if granted.as_bool() { 2 } else { 1 }, Ordering::Relaxed);
+    });
+    UNUserNotificationCenter::currentNotificationCenter().requestAuthorizationWithOptions_completionHandler(options, &done);
+}
+
 /// Show one notification about `session` (None: about midna in general).
 pub fn post(p: &Posted, session: Option<&str>) {
     if !native() {

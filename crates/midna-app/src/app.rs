@@ -64,7 +64,8 @@ pub mod refresh {
     pub const WEBHOOKS: u32 = 64;
     pub const HEADER: u32 = 128;
     pub const ROWS: u32 = 256;
-    pub const ALL: u32 = 0x1ff;
+    pub const HOOKS: u32 = 512;
+    pub const ALL: u32 = 0x3ff;
 }
 
 pub struct MainWindow {
@@ -79,6 +80,12 @@ pub struct MainWindow {
     pub today: Today,
     pub rules_count: usize,
     pub webhooks: Value,
+    /// `hooks.status`: midna's hooks in the agents' global config (`ui/hooks.rs`).
+    pub hooks: Value,
+    pub hooks_sheet: Option<crate::ui::hooks::HooksSheet>,
+    /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
+    pub ax_prompt: bool,
+    pub onboarding: crate::ui::onboarding::Onboarding,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -169,6 +176,7 @@ impl MainWindow {
         let sidebar_collapsed = crate::ui::statusbar::load_state(&backend, "sidebar_collapsed");
         let background_open = crate::ui::statusbar::load_state(&backend, "background_open");
         let background_hidden = crate::ui::statusbar::load_state(&backend, "background_hidden");
+        let onboarding = crate::ui::onboarding::load(&backend);
         let id = cx.entity_id();
         let windows = crate::windows::register(cx.weak_entity(), id, window.window_handle(), cx);
         cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
@@ -241,6 +249,10 @@ impl MainWindow {
             fold_anim: HashMap::new(),
             fold_heights: Default::default(),
             webhooks: Value::Null,
+            hooks: Value::Null,
+            hooks_sheet: None,
+            ax_prompt: false,
+            onboarding,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             id,
             windows,
@@ -416,6 +428,9 @@ impl MainWindow {
                 }
                 if k.starts_with("rule.") {
                     what |= refresh::RULES;
+                }
+                if k == midna_proto::kinds::HOOKS_CHANGED {
+                    self.hooks = e.data.clone();
                 }
                 if k == "window.command" {
                     self.on_window_command(e.data.clone(), window, cx);
@@ -616,6 +631,9 @@ impl MainWindow {
                         r.webhooks = call("webhooks.status", json!({}));
                         r.triggers = call("trigger.list", json!({})).map(|v| parse_list::<Value>(&v).len());
                     }
+                    if what & refresh::HOOKS != 0 {
+                        r.hooks = call("hooks.status", json!({}));
+                    }
                     if what & refresh::HEADER != 0
                         && let Some(sid) = &header_for
                     {
@@ -702,6 +720,9 @@ impl MainWindow {
         if let Some(w) = r.webhooks {
             self.webhooks = w;
         }
+        if let Some(h) = r.hooks {
+            self.hooks = h;
+        }
         if let Some((sid, segs)) = r.header {
             if !self.links.by_session.contains_key(&sid) {
                 crate::ui::links::fetch(self, sid.clone(), cx);
@@ -771,6 +792,9 @@ impl MainWindow {
                     "close-window" => {
                         self.close_ask = Some(Default::default());
                     }
+                    "hooks" => crate::ui::hooks::open(self, false, window, cx),
+                    "ax" => self.ax_prompt = true,
+                    "onboarding" => crate::ui::onboarding::reopen(self, cx),
                     "popout-queue" => {
                         if let Some(sid) = self.selected.clone() {
                             crate::ui::popout::debug_queue(self, sid, window, cx);
@@ -1520,6 +1544,7 @@ struct RefreshResult {
     today: Option<Today>,
     rules: Option<usize>,
     webhooks: Option<Value>,
+    hooks: Option<Value>,
     triggers: Option<usize>,
     header: Option<(String, Vec<Segment>)>,
     rows: Option<HashMap<String, Vec<Segment>>>,

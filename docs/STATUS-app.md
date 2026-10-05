@@ -23,7 +23,8 @@ Dev env (the `MIDNA_DEBUG_*`, `MIDNA_SELECT` and updater-override variables work
 | `MIDNA_SELECT=<session>` | Initial selection |
 | `MIDNA_W` / `MIDNA_H` | Window size |
 | `MIDNA_DEBUG_APPROVE_MENU=1` | Opens the approve dropdown |
-| `MIDNA_DEBUG_SCREEN=rules\|triggers\|insights\|commands\|needs` | Opens that screen or overlay |
+| `MIDNA_DEBUG_SCREEN=rules\|triggers\|insights\|commands\|needs\|hooks` | Opens that screen or overlay |
+| `MIDNA_FAKE_HOOKS=not_installed\|stale\|current` | Fake backend's `hooks.status` (status bar hooks item) |
 | `MIDNA_DEBUG_KEYS=cmd-t,e,c,h,o,enter` | Sends keystrokes through GPUI's own dispatch: bindings, then key handlers, then the IME input handler |
 | `MIDNA_NO_ACTIVATE=1` | Doesn't take focus on launch |
 | `MIDNA_DEBUG=1` | Logs backend events |

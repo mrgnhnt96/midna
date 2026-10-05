@@ -1,4 +1,4 @@
-//! Bottom status bar: midnad status, policy, webhooks path, triggers today, key hints.
+//! Bottom status bar: midnad status, policy, webhooks path, triggers today, agent hooks, key hints.
 use super::header::tip;
 use crate::app::{MainWindow, Screen};
 use crate::backend::{Backend, ConnState};
@@ -87,6 +87,11 @@ mod tests {
     }
 }
 
+/// Remember a one-time UI answer (e.g. "Not now" on the Accessibility card) in `seen`.
+pub fn remember_seen(m: &mut MainWindow, key: &str) {
+    mark_seen(m, key);
+}
+
 fn mark_seen(m: &mut MainWindow, key: &str) {
     if m.seen.insert(key.to_string()) {
         save_state(m);
@@ -170,6 +175,8 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
             )
             .child(wh)
             .child(tr)
+            .children(crate::ui::hooks::status_item(m, t, cx))
+            .children(crate::ui::ax_prompt::status_item(m, t, cx))
         })
         .child(div().flex_1())
         .when_some(update_item(t, cx), |d, item| d.child(item))

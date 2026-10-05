@@ -1,11 +1,14 @@
 //! Main window rendering, laid out after docs/design/Main.dc.html.
 pub mod annotate;
+pub mod ax_prompt;
 pub mod banner;
 pub mod charts;
 pub mod close_window;
 pub mod command_bar;
 pub mod header;
+pub mod hooks;
 pub mod insights;
+pub mod onboarding;
 pub mod links;
 pub mod queue;
 pub mod needs_you;
@@ -167,6 +170,11 @@ impl Render for MainWindow {
             }))
             .children(quit_hold::render(self, &t))
             .children(close_window::render(self, &t, cx))
+            .children(hooks::render(self, &t, cx))
+            .child(
+                // Cards over the terminal pane's top-right corner: Kass's Accessibility ask, then the setup step.
+                div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)).children(onboarding::card(self, &t, cx)),
+            )
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
             .when(self.menu != Menu::None, |d| {
                 // click-away layer under any open popover menu

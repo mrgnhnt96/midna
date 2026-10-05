@@ -747,3 +747,34 @@ Anything typed into Claude Code or Codex goes to the model. So a secret pasted i
 - **Agents learn it** from the system hint (one sentence on `[secret:NAME]`), SKILL.md ("Secrets the human pasted"), `midna capabilities` and `midna explain secrets`.
 - **Why the CLI runs the command (not midnad).** The command keeps the agent's sandbox, environment, cwd, stdin and process tree. Running it in midnad wouldn't have been safer: the child holds the value either way, so neither stops a determined agent. The goal is keeping the value out of the context by accident.
 - **Dev.** `MIDNA_DEBUG_TERM` has a `paste:TEXT` step (`\n` = newline): a ⌘V of TEXT without touching the pasteboard.
+
+## Global agent hooks (midnad `global_hooks.rs`; midna-app `ui/hooks.rs`; CLI `midna hooks`; 2026-10-05)
+Agents midna starts get its hooks per launch (`--settings`, `-c notify`). A `claude` or `codex` typed into a shell terminal got none, so its status wasn't real. Now midna's hooks can also go into the agents' global config, as an opt in that only the human can turn on. The user chose "both": the global install and the per-launch wiring are either/or for each agent.
+- **Methods.** `hooks.status` (per agent: `not_installed | current | stale | unavailable | error`, `detail`, `per_session`), `hooks.preview {agents, uninstall}` (diff lines, read only), `hooks.install` / `hooks.uninstall {agents}` (human only). Event `hooks.changed`; midnad re-checks every 5 s, so editing a file by hand updates the status bar.
+- **Either/or.** While an agent's global install is `current`, midna starts Claude with `hooks/claude-settings-base.json` (permissions and statusLine, no hooks) and Codex without `-c notify`. Otherwise it injects as before and sets `MIDNA_HOOKS_INJECTED=1`, and `midna hook … --global` exits at once. That covers the stale case, where both sets would otherwise fire.
+- **No effect on other apps.**
+  - Claude entries are `[ -n "$MIDNA_SESSION" ] && [ -x '<cli>' ] && exec '<cli>' hook claude --global || true`. Outside a midna terminal the binary never runs, and a deleted midna is skipped rather than failing the hook.
+  - Codex allows only one `notify`, so midna's is `/bin/sh -c <script> midna-notify <previous argv…>`. The script reports to midna only inside a midna terminal, then `exec`s the previous notify with the same arguments. Uninstall restores it.
+  - `midna hook` sends `policy.request` only if `agent.hook` succeeded. midnad drops a `MIDNA_SESSION` claim from a process that isn't really in that terminal (`bind_caller`), so a GUI app started from a midna terminal is never held up by midna's approvals.
+- **Files.**
+  - Writes are atomic. The original is kept once as `<file>.before-midna`.
+  - JSON key order is kept (serde_json `preserve_order` in midnad). TOML formatting is kept (`toml_edit`).
+  - A file that doesn't parse (e.g. JSONC comments) is never rewritten: status `error`.
+  - The user's `statusLine` and own hooks are left alone.
+  - The CLI path is `$MIDNA_HOME/bin/current/midna` when installed, so updates don't make the install stale.
+  - Tests use `Config::for_home`, which points `claude_dir` / `codex_dir` inside the temp home and never at `~/.claude`.
+- **Stale** = an entry runs another CLI path, an event is missing (e.g. a new midna adds one), or an entry differs from what this build writes.
+- **Status bar.** No item if neither agent is set up. Otherwise:
+  - accent "Install hooks" while not installed;
+  - "● Hooks" when current;
+  - amber "● Reinstall hooks" (tooltip says why) when stale or unreadable.
+  Each opens a sheet with the exact diff and Install / Reinstall, or "Remove hooks…" when current. Hooks are deliberately not an onboarding step.
+
+## Accessibility on demand (midna-app `ui/ax_prompt.rs`; 2026-10-05)
+Not an onboarding step. The first `dictationWillBegin` from Kass for midna's pid while `AXIsProcessTrusted` is false shows a card at the top right of the terminal pane. It never takes focus, so the dictation goes on. The card offers Open Accessibility, then Relaunch midna, with the TCC-responsibility warning from SECURITY.md. "Not now" is remembered (`app-state.json` `seen: ["ax-prompt"]`); after that, a quiet amber "Kass needs Accessibility" in the status bar reopens the card while Kass is around and midna is still untrusted. Dev: `MIDNA_DEBUG_SCREEN=ax`, `MIDNA_DEBUG_AX_UNTRUSTED=1`.
+
+## Onboarding (midna-app `ui/onboarding.rs`; board `docs/design/Onboarding-B.dc.html`; 2026-10-05)
+Five steps from the board: background daemon, notifications, first project, webhooks, theme. Accessibility and agent hooks were taken out (see above).
+- **Done-ness** is read from real state (login item, notification permission, a non-root project, `webhooks.path`, the theme step confirmed), so doing a step elsewhere ticks it.
+- **Layout.** A card at the top right of the terminal pane shows the current step: Step k of 5, the status, "Only you can do this one" on the macOS steps, the ⌘K phrasing on agent-doable steps, and Hide / Later / the action. The sidebar shows "Setup N of 5" above Today, with Continue setup / Finish once the card is hidden.
+- **Persistence.** `app-state.json` `onboarding: {finished, later}`. Dev: `MIDNA_DEBUG_SCREEN=onboarding` reopens it; `MIDNA_DEBUG_ONBOARDING=1` makes the fake backend show the daemon step as not installed.

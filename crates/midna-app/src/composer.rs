@@ -191,6 +191,7 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Cont
     match ev {
         KassEvent::WillBegin { mode } => {
             let t0 = Instant::now();
+            crate::ui::ax_prompt::on_kass_begin(m, cx);
             let active = window.is_window_active() || crate::dev::var("MIDNA_KASS_ANY_WINDOW").is_ok();
             if !active || !can_show(m) {
                 // Kass only asks the frontmost app; if the main window isn't the key window

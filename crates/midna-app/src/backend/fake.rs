@@ -484,6 +484,26 @@ impl Backend for FakeBackend {
             }
             "insights.activity" => json!([]),
             "webhooks.status" => json!({"path": st.setting("webhooks.path"), "health": "ok"}),
+            // MIDNA_FAKE_HOOKS = not_installed | stale | current (default) for screenshots.
+            "hooks.status" | "hooks.install" | "hooks.uninstall" => {
+                let state = match method {
+                    "hooks.install" => "current".to_string(),
+                    "hooks.uninstall" => "not_installed".to_string(),
+                    _ => std::env::var("MIDNA_FAKE_HOOKS").unwrap_or_else(|_| "current".into()),
+                };
+                let detail = (state == "stale").then_some("Missing 1 event: PermissionRequest.");
+                json!({
+                    "claude": {"agent": "claude", "state": state, "path": "~/.claude/settings.json", "detail": detail, "per_session": state != "current"},
+                    "codex": {"agent": "codex", "state": if state == "stale" { "current" } else { state.as_str() }, "path": "~/.codex/config.toml", "per_session": state != "current"},
+                })
+            }
+            "hooks.preview" => json!({"files": [
+                {"agent": "claude", "path": "~/.claude/settings.json", "creates": false, "unchanged": false, "lines": [
+                    {"op": "…", "text": ""}, {"op": " ", "text": "  \"hooks\": {"},
+                    {"op": "+", "text": "    \"PermissionRequest\": [{ \"matcher\": \"*\", \"hooks\": [{ \"type\": \"command\", \"command\": \"[ -n \\\"$MIDNA_SESSION\\\" ] && … hook claude --global || true\" }] }],"},
+                    {"op": " ", "text": "    \"Stop\": ["}, {"op": "…", "text": ""}]},
+                {"agent": "codex", "path": "~/.codex/config.toml", "creates": false, "unchanged": true, "lines": []},
+            ]}),
             "script.run" => {
                 let sid = p("session_id").unwrap_or_default();
                 let slot = p("slot").unwrap_or_else(|| "header".into());
