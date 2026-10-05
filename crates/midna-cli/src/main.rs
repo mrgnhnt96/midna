@@ -7,6 +7,7 @@ mod hook;
 mod mcp;
 mod print;
 mod queue;
+mod secret;
 mod triggers;
 
 use args::{ArgError, Args};
@@ -102,7 +103,7 @@ pub fn connect() -> Result<Client, Fail> {
     Client::connect_default().map_err(|e| Fail::Unreachable(e.to_string()))
 }
 
-fn call(method: &str, params: Value) -> Result<Value, Fail> {
+pub(crate) fn call(method: &str, params: Value) -> Result<Value, Fail> {
     match connect()?.call_value(method, params.clone()) {
         Ok(v) => Ok(v),
         Err(ClientError::Rpc(e)) => Err(Fail::Rpc(guide::with_next_step(method, &params, e, guide::Surface::Cli))),
@@ -416,6 +417,7 @@ fn run(a: &Args) -> Res {
         "rules" | "rule" => rules(a, &out),
         "triggers" | "trigger" => triggers::triggers(a, &out),
         "webhooks" | "webhook" => triggers::webhooks(a, &out),
+        "secret" | "secrets" => secret::secret(a, &out),
         "settings" | "setting" => settings(a, &out),
         "commands" => commands(a, &out),
         "updates" => updates(a, &out),
@@ -438,6 +440,9 @@ fn run(a: &Args) -> Res {
         "mcp" => mcp::run(),
         "call" => {
             let method = a.need(1, "method")?;
+            if method == "secret.exec_env" {
+                return Err(Fail::Usage("secret.exec_env is internal to `midna secret exec NAME -- <command>`; values are never printed".into()));
+            }
             let params: Value = match a.pos.get(2) {
                 Some(p) => serde_json::from_str(p).map_err(|e| Fail::Usage(format!("params must be JSON: {e}")))?,
                 None => json!({}),

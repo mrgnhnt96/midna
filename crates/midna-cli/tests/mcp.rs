@@ -139,8 +139,8 @@ fn protocol_conformance() {
     assert_eq!(m.request("ping", json!({}))["result"], json!({}));
 
     let tools = m.request("tools/list", json!({}))["result"]["tools"].as_array().unwrap().clone();
-    // Every catalog method except the two streaming ones, plus capabilities/explain/guide.
-    assert_eq!(tools.len(), midna_proto::catalog().len() - 2 + 3);
+    // Every catalog method except the two streaming ones and secret.exec_env, plus capabilities/explain/guide.
+    assert_eq!(tools.len(), midna_proto::catalog().len() - 3 + 3);
     for t in &tools {
         let name = t["name"].as_str().unwrap();
         assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{name}");

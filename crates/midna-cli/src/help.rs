@@ -390,6 +390,19 @@ pub static VERBS: &[Verb] = &[
                   (via `gh`) for deliveries midnad missed. configure is human only: it asks the human.",
         methods: &["webhooks.status", "webhooks.reconcile", "webhooks.configure"],
     },
+    Verb {
+        name: "secret",
+        aliases: &["secrets"],
+        usage: "secret [list] [--all]\n       <command> | secret save <NAME> [--label L] [--global]\n       secret exec <NAME>[,<VAR=NAME>…] -- <command…>\n       secret write <NAME> <file> [--as KEY]\n       secret rm <NAME>   (human only)",
+        summary: "save and use secrets without seeing them",
+        details: "When the human pastes a secret into an agent terminal, midna stores it and the agent sees\n\
+                  [secret:NAME] instead. `exec` runs a command with $NAME set (VAR=NAME sets $VAR) and masks\n\
+                  the value in its output as ‹NAME›. `write` sets NAME (or --as KEY) in a .env-style file;\n\
+                  don't read that file back. Values are never printed. `save` stores a token a command\n\
+                  produced, read from stdin (`gh auth token | midna secret save GH_TOKEN`), so it never\n\
+                  enters your context; replacing a secret the human stored asks them. `rm` asks the human.",
+        methods: &["secret.list", "secret.set", "secret.replace", "secret.remove", "secret.write", "secret.exec_env"],
+    },
     // ---------------------------------------------------------------- settings / windows / data
     Verb {
         name: "settings",

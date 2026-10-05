@@ -113,7 +113,15 @@ What keeps them out of logs:
 - `triggers::agents_cannot_set_secrets_or_enable` greps `state.json` and `events.jsonl` for both secrets.
 - The smoke script also greps `midnad.log`.
 
-No other secret material passes through midnad.
+**Stored secrets (`secret.*`).** When the human pastes a secret into an agent terminal, the app stores it with `secret.set` and the agent gets `[secret:NAME]`. Agents can store secrets too, preferably piped in (`<cmd> | midna secret save NAME`); a value an agent sends itself is marked `exposed`. An agent can't replace a secret the human stored without approval: its value is parked in the vault as `p_<hex>` until the human answers, then moved into place (`secret.replace`, human only) or deleted. Values live in the Keychain (service `com.mrgnhnt.midna.secret`) or `$MIDNA_HOME/vault/<id>` (0600) with `MIDNA_SECRETS=file`. Metadata is in `state.secrets`.
+- Events (`secret.set|used|removed`) and audits never carry a value. The audit masks `value` for `secret.*` methods, and the deferred-approval detail masks it too.
+- Only `secret.exec_env` returns values. It answers a peer only when its executable is the configured midna CLI (`cfg.cli_path`, canonicalized). `midna call` refuses the method, and `midna mcp` doesn't list it.
+- `midna secret exec` puts values only in the child's environment and scrubs the child's stdout and stderr. It masks the raw value and its base64, base64url, percent-encoded and JSON-escaped forms, across chunk boundaries.
+- `secrets_cli::*` greps `state.json` and `events.jsonl` for the values, including agent-sent and parked ones, and checks that the needs-you item doesn't carry the parked value.
+
+**What this does and doesn't protect.** It keeps a secret out of the agent's context, and so out of the model provider's logs, when the agent uses it normally. It does not stop a determined agent. A command run with `secret exec` holds the value, so it can write it to a file that the agent then reads. A same-user process can also call the socket from a copy of the CLI binary. That is the same-user limitation at the top of this file. `secret write` puts the value in a file by design; SKILL.md tells agents not to read it back.
+
+Webhook and pasted secrets are the only secret material that passes through midnad.
 
 ## Files and paths
 
@@ -183,4 +191,6 @@ Webhook content is attacker-controlled: anyone who can open a PR or push a branc
 - **Unsigned builds keep the name rule** (spoofable by renaming), plus the in-terminal check (bypassable by double-forking out of the terminal). Ship signed builds only.
 - **`--uninstall` from a terminal is now an agent,** so its `daemon.stop` is deferred. But unregistering the LaunchAgent still stops the daemon, as `launchctl bootout` would. Same-user.
 - **`trigger.replay` is agent-callable.** It re-runs actions on stored, once-verified payloads, so an agent can start extra webhook agents. Consider gating it.
+- **Secrets can still reach a model.** Detection is heuristic, "Paste anyway" sends the value, and a secret typed by hand isn't checked. Secrets pasted into a *shell* terminal stay in its scrollback, where `session.read` (agents) and the upgrade handoff files can see them. Masking stored values in scrollback reads and a `UserPromptSubmit` backstop were considered and dropped by choice.
+- **An agent can fill the vault.** Any agent can add secrets under new names (no rate limit). They're labelled with `added_by`, and replacing the human's own still asks.
 - **No per-client rate limits** beyond the caps above. A local agent can still spam `needs_you.raise` and similar calls.

@@ -195,8 +195,9 @@ fn mcp_exposes_catalog_as_tools() {
     assert_eq!(replies.len(), 4, "notification gets no reply");
     assert_eq!(replies[0]["result"]["serverInfo"]["name"], "midna");
     let tools = replies[1]["result"]["tools"].as_array().unwrap();
-    // minus stream.attach and events.subscribe, plus capabilities, explain and guide
-    assert_eq!(tools.len(), midna_proto::catalog().len() - 2 + 3);
+    // minus stream.attach, events.subscribe and secret.exec_env, plus capabilities, explain and guide
+    assert_eq!(tools.len(), midna_proto::catalog().len() - 3 + 3);
+    assert!(!tools.iter().any(|t| t["name"] == "secret_exec_env"), "secret values never go through MCP");
     let open = tools.iter().find(|t| t["name"] == "session_open").unwrap();
     assert_eq!(open["inputSchema"]["type"], "object");
     assert!(open["description"].as_str().unwrap().contains("agent"));

@@ -13,6 +13,7 @@ pub mod project;
 pub mod queue;
 pub mod reset;
 pub mod script;
+pub mod secret;
 pub mod session;
 pub mod settings;
 pub mod trigger;
@@ -226,6 +227,12 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "trigger.remove" => trigger::remove(d, ctx, parse(p)?),
         "trigger.replay" => trigger::replay(d, ctx, parse(p)?),
         "trigger.test" => trigger::test(d, parse(p)?),
+        "secret.list" => secret::list(d, ctx, parse(p)?),
+        "secret.set" => secret::set(d, ctx, parse(p)?),
+        "secret.replace" => secret::replace(d, ctx, parse(p)?),
+        "secret.remove" => secret::remove(d, ctx, parse(p)?),
+        "secret.write" => secret::write(d, ctx, parse(p)?),
+        "secret.exec_env" => secret::exec_env(d, ctx, parse(p)?),
         "webhooks.status" => ok(crate::webhooks::status(d, false)),
         "webhooks.configure" => trigger::configure(d, ctx, parse(p)?),
         "webhooks.reconcile" => ok(crate::webhooks::reconcile::run(d, "manual")),
@@ -256,8 +263,8 @@ fn skip_audit(method: &str, params: &Value) -> bool {
 fn summarize(method: &str, params: &Value) -> String {
     let mut p = params.clone();
     if let Some(o) = p.as_object_mut() {
-        for k in ["secret", "payload"] {
-            if o.contains_key(k) {
+        for k in ["secret", "payload", "value"] {
+            if o.contains_key(k) && (k != "value" || method.starts_with("secret.")) {
                 o.insert(k.into(), json!("…"));
             }
         }
@@ -291,6 +298,10 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
         // Never defer this one: the deferred call would store the secret the agent sent.
         return trigger::secret_refusal(d, ctx, params);
     }
+    if method == "secret.replace" {
+        // Only an approval runs it (see secret::set).
+        return RpcError::human_only("secret.replace runs when the human approves a replacement; call secret.set (`midna secret save`)");
+    }
     if method == "updates.report" {
         // Only the GUI reports updater state; a deferred approval would make no sense.
         return RpcError::human_only("updates.report is for the midna app; agents read updates.status");
@@ -310,10 +321,12 @@ pub fn defer_to_human(d: &Daemon, ctx: &Ctx, title: &str, cli: &str, method: &st
     let mut item = d.new_needs_you(NeedsYouKind::Approval, title.to_string(), ctx.actor(), ctx.session.clone());
     let (guard, context) = deferred_guard(d, method, params);
     let mut shown = params.clone();
-    if let Some(o) = shown.as_object_mut()
-        && o.contains_key("secret")
-    {
-        o.insert("secret".into(), json!("…"));
+    if let Some(o) = shown.as_object_mut() {
+        for k in ["secret", "value"] {
+            if o.contains_key(k) {
+                o.insert(k.into(), json!("…"));
+            }
+        }
     }
     item.detail = format!("Human-only action requested by an agent: {cli}\nApproving runs exactly: {method} {shown}");
     if let Some(c) = context {
@@ -343,6 +356,19 @@ pub fn deferred_guard(d: &Daemon, method: &str, params: &Value) -> (Option<Strin
                     let def = json!({ "source": t.source, "event": t.event, "filter": t.filter, "action": t.action, "name": t.session_name_template });
                     let shown = format!("Trigger “{}”: on {} {} {} → {}", t.name, process_source(&t), t.event, json!(t.filter), json!(t.action));
                     (Some(hex(def.to_string().as_bytes())), Some(shown))
+                }
+                None => (Some("missing".into()), None),
+            }
+        }
+        "secret.replace" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let project = params.get("project_id").and_then(Value::as_str);
+            let s = d.core().state.secrets.iter().find(|s| s.name == name && s.project_id.as_deref() == project).cloned();
+            match s {
+                Some(s) => {
+                    let when = s.updated_at.clone().unwrap_or(s.created_at.clone());
+                    let shown = format!("Secret {name} ({}), stored {when}. The value isn't shown; nothing changes unless you approve.", s.label.as_deref().unwrap_or("secret"));
+                    (Some(hex(format!("{}|{when}", s.id).as_bytes())), Some(shown))
                 }
                 None => (Some("missing".into()), None),
             }

@@ -1,7 +1,10 @@
-//! Webhook signing secrets. Human-only to set; never returned over RPC or logged.
+//! Secret values: webhook signing secrets and the human's pasted secrets (the vault).
+//! Human-only to set; never returned over RPC (except `secret.exec_env`) or logged.
 //!
-//! - Keychain (default): generic password, service `com.mrgnhnt.midna.webhook`, account = trigger id.
-//! - File (`MIDNA_SECRETS=file`, used by tests): `$MIDNA_HOME/secrets/<trigger id>`, mode 0600.
+//! - Keychain (default): generic password, service `com.mrgnhnt.midna.webhook` (account =
+//!   trigger id) or `com.mrgnhnt.midna.secret` (account = secret id).
+//! - File (`MIDNA_SECRETS=file`, used by tests): `$MIDNA_HOME/secrets/<trigger id>` or
+//!   `$MIDNA_HOME/vault/<secret id>`, mode 0600.
 //!
 //! Secrets are cached in memory after the first read so a delivery doesn't hit the Keychain
 //! for every candidate trigger.
@@ -12,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub const KEYCHAIN_SERVICE: &str = "com.mrgnhnt.midna.webhook";
+pub const VAULT_SERVICE: &str = "com.mrgnhnt.midna.secret";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -37,6 +41,7 @@ impl Mode {
 
 pub struct Store {
     pub mode: Mode,
+    service: &'static str,
     dir: PathBuf,
     cache: Mutex<HashMap<String, Vec<u8>>>,
 }
@@ -47,7 +52,12 @@ fn valid_account(id: &str) -> bool {
 
 impl Store {
     pub fn new(mode: Mode, home: &std::path::Path) -> Store {
-        Store { mode, dir: home.join("secrets"), cache: Mutex::new(HashMap::new()) }
+        Store { mode, service: KEYCHAIN_SERVICE, dir: home.join("secrets"), cache: Mutex::new(HashMap::new()) }
+    }
+
+    /// The human's pasted secrets (`secret.*`).
+    pub fn vault(mode: Mode, home: &std::path::Path) -> Store {
+        Store { mode, service: VAULT_SERVICE, dir: home.join("vault"), cache: Mutex::new(HashMap::new()) }
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, HashMap<String, Vec<u8>>> {
@@ -56,10 +66,10 @@ impl Store {
 
     pub fn set(&self, id: &str, secret: &[u8]) -> Result<(), String> {
         if !valid_account(id) {
-            return Err("bad trigger id".into());
+            return Err("bad id".into());
         }
         match self.mode {
-            Mode::Keychain => security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, id, secret)
+            Mode::Keychain => security_framework::passwords::set_generic_password(self.service, id, secret)
                 .map_err(|e| format!("keychain: {e}"))?,
             Mode::File => {
                 std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
@@ -85,7 +95,7 @@ impl Store {
             return Some(s.clone());
         }
         let v = match self.mode {
-            Mode::Keychain => security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, id).ok()?,
+            Mode::Keychain => security_framework::passwords::get_generic_password(self.service, id).ok()?,
             Mode::File => std::fs::read(self.dir.join(id)).ok()?,
         };
         self.cache().insert(id.to_string(), v.clone());
@@ -99,7 +109,7 @@ impl Store {
         self.cache().remove(id);
         match self.mode {
             Mode::Keychain => {
-                let _ = security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, id);
+                let _ = security_framework::passwords::delete_generic_password(self.service, id);
             }
             Mode::File => {
                 let _ = std::fs::remove_file(self.dir.join(id));

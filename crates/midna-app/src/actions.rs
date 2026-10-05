@@ -42,6 +42,7 @@ actions!(
         // terminal
         TermCopy,
         TermPaste,
+        TermPasteSecret,
         TermSelectAll,
         TermClear,
         /// Agent terminals: scroll to the previous / next prompt you sent (`terminal::prompt_nav`).
@@ -176,7 +177,8 @@ pub const FIXED: &[Fixed] = &[
     },
     fixed(&["escape"], "Close the overlay, or go back to the terminal", "Main window"),
     fixed(&["cmd-c"], "Copy the selection", "Terminal"),
-    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet)", "Terminal"),
+    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet; a secret pasted into an agent asks to store it)", "Terminal"),
+    fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", "Terminal"),
     fixed(&["cmd-a"], "Select all", "Terminal"),
     fixed(&["cmd-f"], "Find in the terminal", "Terminal"),
     fixed(&["cmd-g", "enter"], "Find: older match", "Terminal find"),
@@ -261,6 +263,7 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     b.push(KeyBinding::new("escape", Dismiss, Some("MidnaOverlay")));
     b.push(KeyBinding::new("cmd-c", TermCopy, TERM));
     b.push(KeyBinding::new("cmd-v", TermPaste, TERM));
+    b.push(KeyBinding::new("cmd-alt-v", TermPasteSecret, TERM));
     b.push(KeyBinding::new("cmd-a", TermSelectAll, TERM));
     cx.bind_keys(b);
     cx.set_global(bound);

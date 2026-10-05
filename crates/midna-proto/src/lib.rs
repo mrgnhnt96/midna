@@ -10,6 +10,7 @@ pub mod notify;
 pub mod openrpc;
 pub mod paths;
 pub mod prompts;
+pub mod secrets;
 pub mod settings;
 pub mod time;
 pub mod types;

@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 /// Methods that need a dedicated streaming connection and can't work as one-shot tools.
-const SKIP: &[&str] = &["stream.attach", "events.subscribe"];
+/// `secret.exec_env` returns values; only `midna secret exec` may call it, never a tool.
+const SKIP: &[&str] = &["stream.attach", "events.subscribe", "secret.exec_env"];
 
 /// Protocol versions we speak, newest first.
 const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -62,6 +63,9 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
     Some(match m.name {
         "rule.remove" => "Agents: this is refused. Use rule_request_removal {id, reason}; the human sees it and decides.",
         "trigger.set_secret" => "Agents: never call this; the secret is discarded and the human is asked to paste it in the GUI.",
+        "secret.set" => "Prefer piping in a shell (`<command> | midna secret save NAME`): a value you pass here is already in \
+            your context, so the secret is marked exposed.",
+        "secret.replace" => "Agents: never call this; call secret_set, which asks the human when it would replace their secret.",
         "trigger.add" | "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers (source local) fire on this Mac and \
             act on the terminal that fired. event: hook.<HookEvent> (hook.Stop, hook.Notification, …), a midna event kind \
             (agent.prompt_blocked data {hook, message, prompt}, agent.turn_ended, session.status, …), idle (with \
@@ -95,7 +99,7 @@ fn description(m: &MethodSpec) -> String {
         d.push(' ');
         d.push_str(n);
     }
-    if m.human_only && m.name != "rule.remove" && m.name != "trigger.set_secret" {
+    if m.human_only && !["rule.remove", "trigger.set_secret", "secret.replace"].contains(&m.name) {
         d.push_str(
             " HUMAN ONLY: calling this does not do it. midna asks the human (a needs-you approval) and returns an error with \
              the needs-you id; if they approve, midna runs it for them. Tell the user, don't retry or work around it.",

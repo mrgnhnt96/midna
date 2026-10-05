@@ -32,6 +32,9 @@ pub struct State {
     pub triggers: Vec<Trigger>,
     #[serde(default)]
     pub deliveries: Vec<Delivery>,
+    /// The human's stored secrets (metadata; values are in the Keychain).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<Secret>,
     #[serde(default)]
     pub needs_you: Vec<NeedsYou>,
     /// Only values that differ from the catalog default are stored.

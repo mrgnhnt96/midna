@@ -4,7 +4,7 @@
 //! sending input to the OS. Cell positions are grid cells of the focused/main pane.
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
-//! key by key), `run:CMD` (text + enter), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
+//! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
 //! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
@@ -89,6 +89,13 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
             }
             if verb == "run" {
                 window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            }
+        }
+        "paste" => {
+            // As if ⌘V pasted ARG (`\n` = newline), without touching the pasteboard.
+            if let Some(t) = pane {
+                let text = arg.replace("\\n", "\n");
+                t.update(cx, |t, cx| t.paste_text(&text, window, cx));
             }
         }
         "wheel" => {

@@ -265,6 +265,12 @@ fn submit(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Contex
     let bpaste = m.terminal.as_ref().filter(|t| t.read(cx).session_id == id).map(|t| t.read(cx).bracketed_paste()).unwrap_or(true);
     let data = encode(&text, bpaste);
     close(m, window, cx);
+    // A secret in the text: the terminal asks whether to store it first (`terminal/secret_paste.rs`).
+    if let Some(t) = m.terminal.clone().filter(|t| t.read(cx).session_id == id)
+        && t.update(cx, |t, cx| t.submit_checks_secrets(&text, window, cx))
+    {
+        return;
+    }
     m.rpc("session.input", json!({"id": id, "text": data, "enter": true}), cx, |_, _, _, _| {});
 }
 

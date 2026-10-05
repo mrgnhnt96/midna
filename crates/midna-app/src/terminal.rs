@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 mod link_preview;
 mod prompt_nav;
 mod queue_pill;
+mod secret_paste;
 
 pub use link_preview::share as share_preview_env;
 
@@ -111,6 +112,10 @@ pub struct TerminalView {
     /// gets text editing although the agent draws full-screen, and the left button selects
     /// (see `on_down`).
     agent: Option<&'static str>,
+    /// The terminal's project (`session.get`): where a secret pasted here is stored.
+    project_id: Option<String>,
+    /// Asking whether to store the secrets in a paste (`terminal/secret_paste.rs`).
+    secret_sheet: Option<secret_paste::Sheet>,
     /// Claude Code or Codex found running in this terminal's full-screen app (started from a
     /// shell), probed each time the alternate screen turns on.
     agent_proc: Option<&'static str>,
@@ -305,6 +310,8 @@ impl TerminalView {
             preview: Default::default(),
             kbd_sel: None,
             agent: None,
+            project_id: None,
+            secret_sheet: None,
             agent_press: None,
             agent_proc: None,
             alt_probed: false,
@@ -320,7 +327,9 @@ impl TerminalView {
         };
         v.attach(window, cx);
         v.call("session.get", json!({ "id": v.session_id }), window, cx, |t, r, window, cx| {
-            t.agent = r.ok().and_then(|s| match s.get("agent").and_then(|a| a.as_str()) {
+            let r = r.ok();
+            t.project_id = r.as_ref().and_then(|s| s.get("project_id")).and_then(Value::as_str).map(str::to_string);
+            t.agent = r.and_then(|s| match s.get("agent").and_then(|a| a.as_str()) {
                 Some("claude") => Some("claude"),
                 Some("codex") => Some("codex"),
                 _ => None,
@@ -505,6 +514,9 @@ impl TerminalView {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
+        if self.secret_sheet.is_some() {
+            return;
+        }
         self.preview_close(cx);
         if self.find.is_some() && self.find_key(ks, window, cx) {
             cx.stop_propagation();
@@ -856,10 +868,13 @@ impl TerminalView {
         true
     }
 
-    fn paste_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn paste_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(f) = self.find.as_mut() {
             f.query.push_str(text.lines().next().unwrap_or(""));
             self.run_find(true, true, window, cx);
+            return;
+        }
+        if self.paste_checks_secrets(text, window, cx) {
             return;
         }
         self.erase_selection(cx);
@@ -1192,6 +1207,7 @@ impl TerminalView {
                     self.paste_text(&t, window, cx);
                 }
             }
+            "paste_secret" => return self.paste_as_secret(window, cx),
             "open" => {
                 if let Some(v) = link {
                     self.open_link(&v, cx);
@@ -1247,6 +1263,7 @@ impl TerminalView {
             }))
             .child(item("copy", "Copy", "⌘C", has_sel, cx))
             .child(item("paste", "Paste", "⌘V", true, cx))
+            .child(item("paste_secret", "Paste as Secret", "⌥⌘V", true, cx))
             .child(sep())
             .child(item("open", link_label, "⌘-click", link.is_some(), cx))
             .child(sep())
@@ -1528,6 +1545,7 @@ impl Render for TerminalView {
         let hover_link = self.hover_link;
         let link_color = theme.accent;
         let menu = self.render_menu(&theme, cx);
+        let secret_sheet = self.render_secret_sheet(&theme, window, cx);
         self.update_nav(window, cx);
         let nav = self.render_nav(&theme, cx);
         let marked = self.marked.clone();
@@ -1596,6 +1614,7 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_action(cx.listener(Self::on_paste))
+            .on_action(cx.listener(|t, _: &TermPasteSecret, w, cx| t.paste_as_secret(w, cx)))
             .on_drop(cx.listener(Self::on_drop))
             .on_drag_move(cx.listener(Self::on_file_drag))
             .on_action(cx.listener(Self::on_copy))
@@ -1689,6 +1708,7 @@ impl Render for TerminalView {
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
             .children(nav)
             .children(menu)
+            .children(secret_sheet)
     }
 }
 

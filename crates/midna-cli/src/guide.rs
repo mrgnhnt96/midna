@@ -30,6 +30,8 @@ WHAT YOU CAN DO
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
   policy     midna check <kind> <value> · rules add <allow|ask|deny> <kind> <glob> [--scope …] [--expires S]
   triggers   midna triggers add … (webhook drafts; local hook/event/idle triggers you may enable) · test · update · disable
+  secrets    [secret:NAME] = a stored secret: midna secret exec NAME -- <cmd> ($NAME set, output masked) · write NAME .env · list
+             save a token a command produced: <cmd> | midna secret save NAME (stdin only; never echo it)
   settings   midna settings list | get | set | reset   (human-only keys: setting one asks the human)
   windows    midna focus <id> · window open_screen <rules|triggers|insights|settings|needs_you>
   projects   midna projects add <path> · update <id> --name/--icon · add-command <id> --name N -- <cmd>
@@ -192,6 +194,14 @@ const TOPICS: &[(&str, &str)] = &[
         like {{message}}; run_command shell-quotes values. cooldown_secs (default 60) per terminal. Events caused by a trigger never fire triggers. Agents may \
         add, enable and pause local triggers directly (no approval) when the human asked for one (`--enable` on add). Built in: \
         prompt_blocked_status shows “Prompt blocked” when a hook refuses a prompt; edit, pause or remove it like any other."),
+    ("secrets", "When the human pastes a secret into an agent terminal, the midna app stores it (Keychain) and the \
+        agent sees `[secret:NAME]` instead, so the value never reaches the model. `midna secret exec NAME -- <cmd>` \
+        runs cmd with $NAME set (VAR=NAME sets $VAR) and masks the value (raw, base64, URL-encoded, JSON-escaped) in \
+        its output as ‹NAME›. `midna secret write NAME .env [--as KEY]` sets it in a .env file. `midna secret list` \
+        shows names. A project's secret shadows a global one of the same name. Agents save tokens a command \
+        produced with `<cmd> | midna secret save NAME [--global]` (stdin only, so the value never enters the context); \
+        a value an agent passes itself is marked exposed. Replacing a secret the human stored asks the human; only \
+        the human removes secrets. Never ask for a value in chat."),
     ("needs-you", "Needs-you items are what the human must look at: approval, permission_prompt, blocked, note, failed, \
         trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`. The human \
         resolves: approve{scope}, deny, dismiss, done, restart."),
@@ -201,7 +211,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),
-    ("human-only", "Human only: removing rules, setting webhook secrets, enabling webhook triggers, human-only settings, \
+    ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
         dismissing items, macOS permissions. Calling one never does it: it becomes a needs-you request (or tells you \
         the request path) and the human decides. Never route around a refusal."),

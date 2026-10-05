@@ -818,6 +818,50 @@ pub enum TriggerState {
     Paused,
 }
 
+// ------------------------------------------------------------------ secrets
+
+/// A secret the human stored (usually by pasting it into an agent terminal). Only this
+/// metadata ever leaves midnad: the value lives in the Keychain. Agents see `[secret:NAME]`
+/// in place of the value and use it with `midna secret exec NAME -- <command>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Secret {
+    pub id: Id,
+    /// Also the environment variable `midna secret exec` sets: `[A-Z_][A-Z0-9_]*`.
+    pub name: String,
+    /// The project it belongs to; None = every project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Id>,
+    /// What it looked like when stored ("GitHub token").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<Timestamp>,
+    /// Times a command was run with it (`secret exec`) or it was written to a file.
+    #[serde(default)]
+    pub used: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<Timestamp>,
+    /// Files `secret write` put it in (absolute paths).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub written_to: Vec<String>,
+    /// Who stored the current value. None = the human (secrets stored before agents could).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<Actor>,
+    /// An agent sent the value itself (not piped into `midna secret save`), so it passed
+    /// through the agent's context and reached its model. Rotate it if that matters.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exposed: bool,
+}
+
+impl Secret {
+    /// Stored by the human (agents may not silently replace these).
+    pub fn humans(&self) -> bool {
+        self.added_by.as_ref().is_none_or(|a| a.kind == ActorKind::Human)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Trigger {
@@ -994,6 +1038,9 @@ pub mod kinds {
     pub const TRIGGER_DELIVERY: &str = "trigger.delivery";
     pub const TRIGGER_FIRED: &str = "trigger.fired";
     pub const TRIGGER_REMOVED: &str = "trigger.removed";
+    pub const SECRET_SET: &str = "secret.set";
+    pub const SECRET_REMOVED: &str = "secret.removed";
+    pub const SECRET_USED: &str = "secret.used";
     pub const SETTINGS_CHANGED: &str = "settings.changed";
     pub const WINDOW_COMMAND: &str = "window.command";
     pub const AGENT_TURN_STARTED: &str = "agent.turn_started";

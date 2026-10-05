@@ -64,6 +64,7 @@ pub fn system_hint(mcp: bool) -> String {
         "You are running inside a midna terminal (midna = an AI-managed terminal; the human watches it). \
          Run `midna capabilities` to see what you can do here (terminals, attention, approvals, rules, triggers, settings, windows); \
          the full guide is `midna skill` (file $MIDNA_SKILL).{tools} \
+         `[secret:NAME]` is a stored secret midna keeps out of your context: use it with `midna secret exec NAME -- <command>` ($NAME is set there); save a token a command produced with `<command> | midna secret save NAME`. Never ask for, echo or print a secret's value. \
          Human-only actions become requests the human sees: when midna refuses or denies something, never route around it."
     )
 }

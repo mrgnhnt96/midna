@@ -135,6 +135,8 @@ pub struct Daemon {
     pub next_gen: AtomicU64,
     /// Webhook receiver, secrets and delivery-path runtime state.
     pub webhooks: crate::webhooks::Runtime,
+    /// Values of the human's stored secrets (`secret.*`); metadata is in `state.secrets`.
+    pub vault: crate::webhooks::secrets::Store,
     /// A handoff (upgrade/restart) is in progress: mutating calls are refused meanwhile.
     pub upgrading: AtomicBool,
     /// The listening socket's fd (inherited across a same-PID upgrade).
@@ -191,6 +193,7 @@ impl Daemon {
             next_conn: AtomicU64::new(1),
             next_gen: AtomicU64::new(1),
             webhooks: crate::webhooks::Runtime::new(&cfg),
+            vault: crate::webhooks::secrets::Store::vault(cfg.webhooks.secrets, &cfg.home),
             upgrading: AtomicBool::new(false),
             listener_fd: std::sync::atomic::AtomicI32::new(-1),
             commands_mtime: Mutex::new(std::fs::metadata(cfg.home.join("commands.json")).and_then(|m| m.modified()).ok()),
@@ -340,7 +343,11 @@ impl Daemon {
         let mut core = self.core();
         let idx = core.state.needs_you.iter().position(|n| n.id == id)?;
         let item = core.state.needs_you.remove(idx);
-        core.state.deferred.remove(id);
+        let deferred = core.state.deferred.remove(id);
+        drop(core);
+        if let Some(def) = &deferred {
+            crate::rpc::secret::drop_pending(self, def);
+        }
         self.mark_dirty();
         self.emit(
             kinds::NEEDS_YOU_RESOLVED,

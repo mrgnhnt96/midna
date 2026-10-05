@@ -1,6 +1,6 @@
 //! `daemon.reset` (human only): start over without losing the history.
 //!
-//! Closes every terminal, removes projects, triggers (and their secrets), deliveries and
+//! Closes every terminal, removes projects, triggers (and their secrets), stored secrets, deliveries and
 //! needs-you items, and resets settings. Built-in triggers come back as shipped. The event log is kept (it is the audit trail), and
 //! rules are kept unless `keep_rules: false`. Every removal emits its usual event, followed by
 //! one `daemon.reset` summary.
@@ -30,7 +30,10 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
         }
     }
     out.needs_you_cleared = items.len() as u32;
-    d.core().state.deferred.clear();
+    let deferred = std::mem::take(&mut d.core().state.deferred);
+    for def in deferred.values() {
+        super::secret::drop_pending(d, def);
+    }
 
     let triggers: Vec<Trigger> = d.core().state.triggers.iter().filter(|t| t.builtin.is_none()).cloned().collect();
     for t in &triggers {
@@ -46,6 +49,12 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
     };
     for id in deliveries {
         let _ = std::fs::remove_file(d.cfg.home.join("deliveries").join(format!("{id}.json")));
+    }
+
+    let secrets = std::mem::take(&mut d.core().state.secrets);
+    for s in &secrets {
+        d.vault.delete(&s.id);
+        d.emit(kinds::SECRET_REMOVED, ctx.actor(), s.project_id.clone(), None, json!({ "id": s.id, "name": s.name, "reason": "daemon reset" }));
     }
 
     let projects: Vec<Id> = d.core().state.projects.iter().map(|p| p.id.clone()).collect();

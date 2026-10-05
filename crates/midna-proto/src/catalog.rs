@@ -348,6 +348,30 @@ fn build() -> Vec<MethodSpec> {
             "Dry-run one trigger against a sample payload: shows how the event and filters evaluate and the rendered \
              prompt/command. Local triggers: payload is the hook payload or event data, event defaults to the trigger's, and \
              session names the terminal (filters, {{session.*}}, {{last_prompt}}). Nothing runs and nothing is recorded."),
+        // secrets
+        m::<SecretListParams, Vec<Secret>>("secret.list").d(
+            "Stored secrets (names and metadata only; values never leave midnad). `[secret:NAME]` in a prompt is one of \
+             these: the human pasted a secret, or an agent saved one, and midna keeps the value out of your context. \
+             added_by is who stored it (absent = the human); exposed = an agent sent the value itself, so a model saw it. Use it with \
+             `midna secret exec NAME -- <command>` ($NAME is set in that command's environment and its output is scrubbed) or \
+             `midna secret write NAME <file>` (.env style). Never ask the human to paste the value."),
+        m::<SecretSetParams, Secret>("secret.set").mutating().d(
+            "Store a secret so it can be used as [secret:NAME] without its value passing through you again. Agents: pipe \
+             the value in with `<command> | midna secret save NAME` (e.g. `gh auth token | midna secret save GH_TOKEN`) so it \
+             never enters your context. A value you pass here yourself already has, so the secret is marked exposed (the \
+             human may rotate it). An agent's secret belongs to its terminal's project unless global. Replacing a secret the \
+             human stored asks the human (needs-you); new names and agent-stored ones are saved at once."),
+        m::<SecretReplaceParams, Secret>("secret.replace").mutating().human().d(
+            "Internal: approving an agent's replacement of a secret the human stored runs this (the agent's value waits in \
+             the Keychain until then). Agents call secret.set / `midna secret save` instead."),
+        m::<SecretNameParams, OkResult>("secret.remove").mutating().human().d(
+            "Delete a stored secret. Human only: an agent's call becomes a needs-you confirmation."),
+        m::<SecretWriteParams, SecretWriteResult>("secret.write").mutating().d(
+            "Write a secret into a .env-style file as KEY=value (replacing an existing KEY line; a new file is created 0600) \
+             without the value passing through you. Don't read the file back afterwards; that would put the value in your context."),
+        m::<SecretExecEnvParams, SecretExecEnvResult>("secret.exec_env").mutating().d(
+            "Internal: `midna secret exec` resolves values here to set them in the command's environment. Answers only the \
+             midna CLI's own exec; every other caller is refused. Use `midna secret exec`."),
         m::<NoParams, WebhooksStatus>("webhooks.status").d(
             "How webhooks reach this Mac: path (tailscale_funnel|self_relay|midna_relay|off), health, the public URL to paste \
              into GitHub/Bitbucket, the local receiver, Tailscale details, the last delivery and missed-delivery recovery."),

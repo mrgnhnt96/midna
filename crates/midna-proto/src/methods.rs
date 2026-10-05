@@ -855,6 +855,113 @@ pub struct TriggerSetSecretParams {
     pub secret: String,
 }
 
+// ------------------------------------------------------------------ secrets
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SecretListParams {
+    /// Only the secrets this project can use (its own plus the global ones). Agents in a
+    /// terminal default to their terminal's project.
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    /// Every secret, in any project.
+    #[serde(default)]
+    pub all: bool,
+    /// The caller's working directory: outside a midna terminal, the project whose folder holds it.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretSetParams {
+    pub name: String,
+    pub value: String,
+    /// None = usable in every project.
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    /// What it looks like ("GitHub token").
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Usable in every project. Without it, an agent's secret belongs to its terminal's project.
+    #[serde(default)]
+    pub global: bool,
+    /// The value was piped in (`<command> | midna secret save NAME`), so it never passed
+    /// through the agent's context. An agent's value without this is marked `exposed`.
+    #[serde(default)]
+    pub piped: bool,
+    /// The caller's working directory: outside a midna terminal, the project whose folder holds it.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// Approving an agent's replacement of a secret the human stored.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretReplaceParams {
+    /// Where the agent's value waits (a vault entry, never the value itself).
+    pub pending: String,
+    pub name: String,
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub exposed: bool,
+    pub added_by: Actor,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretNameParams {
+    pub name: String,
+    /// Which project's secret; None = the caller's project first, then the global one.
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    /// The caller's working directory: outside a midna terminal, the project whose folder holds it.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretWriteParams {
+    pub name: String,
+    /// Absolute path of the file (created 0600 if missing).
+    pub path: String,
+    /// The variable to set in the file; default = the secret's name.
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    /// The caller's working directory: outside a midna terminal, the project whose folder holds it.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretWriteResult {
+    pub path: String,
+    pub key: String,
+    /// True when the file already set this key and the line was replaced.
+    pub replaced: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretExecEnvParams {
+    /// Secret names to resolve.
+    pub names: Vec<String>,
+    /// The command about to run (audit trail only).
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    /// The caller's working directory: outside a midna terminal, the project whose folder holds it.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SecretExecEnvResult {
+    /// name → value.
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TriggerDeliveriesParams {
     #[serde(default)]

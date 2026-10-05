@@ -158,7 +158,8 @@ fn signed_github_delivery_starts_agent_with_rendered_prompt() {
     // The stand-in agent echoes the prompt into the terminal.
     wait_for(5, "prompt on screen", || {
         let t = call(&mut h, "session.read", json!({ "id": sid, "lines": 50 }))["text"].as_str().unwrap_or("").to_string();
-        t.contains("Funnel health check").then_some(())
+        // The echoed command line is long, so the title may wrap across rows.
+        t.split_whitespace().collect::<String>().contains("Funnelhealthcheck").then_some(())
     });
     let t = webhook_triggers(&mut h)[0].clone();
     assert_eq!(t["fired"], 1);
