@@ -76,6 +76,9 @@ pub struct TerminalView {
     cell_w: f32,
     req_size: Rc<StdCell<(u16, u16)>>,
     bounds: Rc<StdCell<Option<Bounds<Pixels>>>>,
+    /// The pane's hit area from the last paint: whether a file drag is over this pane and not
+    /// over something covering it (drag moves reach every pane).
+    drop_hit: Rc<RefCell<Option<Hitbox>>>,
     /// Mouse button held since a press inside the pane (1 left, 2 right, 3 middle).
     pressed: u8,
     /// The last drag position while the pointer is above/below the grid (autoscroll repeats it).
@@ -281,6 +284,7 @@ impl TerminalView {
             cell_w,
             req_size: Rc::new(StdCell::new(size)),
             bounds: Rc::new(StdCell::new(None)),
+            drop_hit: Rc::new(RefCell::new(None)),
             pressed: 0,
             drag_out: None,
             last_motion: None,
@@ -860,6 +864,23 @@ impl TerminalView {
         }
         if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
             self.paste_text(&t, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Dropped image files go to the image sheet, like ⌘V of a screenshot.
+    fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = crate::annotate::image_paths(paths);
+        if !paths.is_empty() {
+            window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths }), cx);
+        }
+    }
+
+    /// Image files dragged over this pane focus it, so you can see which terminal gets them.
+    fn on_file_drag(&mut self, ev: &DragMoveEvent<ExternalPaths>, window: &mut Window, cx: &mut Context<Self>) {
+        let over = self.drop_hit.borrow().as_ref().is_some_and(|h| h.is_hovered(window));
+        if over && !self.focus.is_focused(window) && !crate::annotate::image_paths(ev.drag(cx)).is_empty() {
+            self.focus.focus(window, cx);
             cx.notify();
         }
     }
@@ -1492,6 +1513,8 @@ impl Render for TerminalView {
         let req = self.req_size.clone();
         let stream = self.stream.clone();
         let bounds_cell = self.bounds.clone();
+        let drop_hit = self.drop_hit.clone();
+        let drop_edge = theme.accent;
         let family = self.font_family.clone();
         let entity = cx.entity();
         let focus = self.focus.clone();
@@ -1536,6 +1559,8 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_action(cx.listener(Self::on_paste))
+            .on_drop(cx.listener(Self::on_drop))
+            .on_drag_move(cx.listener(Self::on_file_drag))
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(|t, _: &TermClear, w, cx| t.menu_action("clear", w, cx)))
@@ -1547,8 +1572,9 @@ impl Render for TerminalView {
             .on_scroll_wheel(cx.listener(Self::on_wheel))
             .child(
                 canvas(
-                    move |bounds, _w, _cx| {
+                    move |bounds, w, _cx| {
                         bounds_cell.set(Some(bounds));
+                        *drop_hit.borrow_mut() = Some(w.insert_hitbox(bounds, HitboxBehavior::Normal));
                         let cols = ((f32::from(bounds.size.width) - 2. * PAD_X) / cw).floor().max(2.) as u16;
                         let rows = ((f32::from(bounds.size.height) - 2. * PAD_Y) / LINE_H).floor().max(2.) as u16;
                         if req.get() != (cols, rows) {
@@ -1592,6 +1618,10 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             )
+            // An accent edge while image files are dragged over the pane.
+            .child(div().absolute().top_0().left_0().size_full().drag_over::<ExternalPaths>(move |s, paths, _, _| {
+                if crate::annotate::image_paths(paths).is_empty() { s } else { s.border_2().border_color(drop_edge).bg(drop_edge.opacity(0.06)) }
+            }))
             .children(self.render_queue_pill(&theme, !at_bottom && below > 0 && overlay.is_none(), window, cx))
             .when(!at_bottom && below > 0 && overlay.is_none(), |d| {
                 d.child(chip(div().absolute().bottom(px(10.)).right(px(18.))).text_color(dim).child(format!("↓ {below} line{} below · ⌘↓", if below == 1 { "" } else { "s" })))

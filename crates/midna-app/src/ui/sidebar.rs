@@ -402,6 +402,7 @@ fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Cont
         .when(selected, |d| d.bg(t.raised))
         .when(marked, |d| d.bg(t.accent_soft))
         .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .map(|d| crate::annotate::row_drop_target(d, m, &s.id, t, cx))
         .tooltip(super::header::tip(tip))
         .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
             if !click_marks(m, &id, ev, w, cx) {
@@ -522,6 +523,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         .when(selected, |d| d.bg(t.raised))
         .when(marked, |d| d.bg(t.accent_soft))
         .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .map(|d| crate::annotate::row_drop_target(d, m, &s.id, t, cx))
         .on_drag(drag, |_, _, _, cx| cx.new(|_| NoGhost))
         .on_drag_move(cx.listener(move |m, ev: &DragMoveEvent<DraggedRow>, _, cx| {
             let d = ev.drag(cx);

@@ -128,7 +128,7 @@ impl Render for MainWindow {
                             None => screens::empty_terminal(self, &t, cx).into_any_element(),
                         })
                         .children(banner::render(self, &t, cx))
-                        .children(annotate::tray(self, &t, cx))
+                        .children(self.selected.clone().and_then(|id| annotate::tray(&id, &t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| m.focus_terminal(w, cx))))
                         .children(crate::composer::render(self, &t, cx)),
                 )
                 .into_any_element(),
@@ -152,7 +152,7 @@ impl Render for MainWindow {
             .child(div().flex().flex_1().min_h_0().child(sidebar).child(main))
             .child(statusbar::render(self, &t, cx))
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
-            .when(self.overlay == Overlay::Annotate, |d| d.child(annotate::render(self, &t, window, cx)))
+            .when(self.overlay == Overlay::Annotate, |d| d.child(self.annot.clone()))
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
             // ⌘Q hold: releasing ⌘ (or Q, when macOS reports it) cancels
             .on_modifiers_changed(cx.listener(|m, ev: &ModifiersChangedEvent, _, cx| {
@@ -167,24 +167,7 @@ impl Render for MainWindow {
             }))
             .children(quit_hold::render(self, &t))
             .children(close_window::render(self, &t, cx))
-            .when_some(self.toast.clone(), |d, (msg, _)| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom(px(40.))
-                        .right(px(16.))
-                        .max_w(px(420.))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .rounded(px(8.))
-                        .bg(t.raised)
-                        .border_1()
-                        .border_color(t.line)
-                        .text_size(px(12.))
-                        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.3), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
-                        .child(msg),
-                )
-            })
+            .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
             .when(self.menu != Menu::None, |d| {
                 // click-away layer under any open popover menu
                 d.child(
@@ -200,4 +183,21 @@ impl Render for MainWindow {
             });
         crate::composer::register(MainWindow::register_actions(root, cx), cx)
     }
+}
+
+/// A short message in the bottom-right corner (place it with `.bottom(…)`).
+pub fn toast(t: &Theme, msg: String) -> Div {
+    div()
+        .absolute()
+        .right(px(16.))
+        .max_w(px(420.))
+        .px(px(12.))
+        .py(px(8.))
+        .rounded(px(8.))
+        .bg(t.raised)
+        .border_1()
+        .border_color(t.line)
+        .text_size(px(12.))
+        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.3), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
+        .child(msg)
 }

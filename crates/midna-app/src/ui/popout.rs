@@ -2,7 +2,8 @@
 //! apps' windows (`NSFloatingWindowLevel`, like picture-in-picture) until its "Keep on top"
 //! pill is turned off. While popped out the main window doesn't show it: the sidebar row
 //! carries a pop-out mark and clicking it brings the window forward. The dock button (or
-//! closing the window) puts it back. The session keeps running in midnad either way.
+//! closing the window) puts it back. The session keeps running in midnad either way. A pop-out
+//! hosts its own queue panel and image sheet, so both work there as in the main window.
 use crate::actions::CTX_MAIN;
 use crate::app::MainWindow;
 use crate::icons::Icon;
@@ -11,6 +12,8 @@ use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// Popped-out terminals by session id.
 #[derive(Default)]
@@ -21,6 +24,9 @@ pub struct PopOut {
     term: Entity<TerminalView>,
     /// This window's queued-messages panel (its pill's click and ⌘U open it here).
     queue: Entity<crate::ui::queue::QueueView>,
+    /// This window's image sheet (⌘I, ⌘V of a screenshot, dropped images, the tray's Edit).
+    annot: Entity<crate::annotate::AnnotateView>,
+    toast: Option<(String, Instant)>,
     on_top: bool,
     session: String,
     main: WeakEntity<MainWindow>,
@@ -40,6 +46,37 @@ impl PopOut {
         self.queue.update(cx, |v, cx| v.toggle(sid, window, cx));
     }
 
+    fn open_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.session.clone();
+        self.annot.update(cx, |v, cx| v.open(id, window, cx));
+        cx.notify();
+    }
+
+    fn add_images(&mut self, sources: Vec<crate::annotate::Source>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_sheet(window, cx);
+        self.annot.update(cx, |v, cx| v.add(sources, window, cx));
+    }
+
+    fn show_toast(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.toast = Some((msg, Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(4200)).await;
+            let _ = this.update(cx, |p, cx| {
+                if p.toast.as_ref().is_some_and(|(_, t)| t.elapsed() >= Duration::from_secs(4)) {
+                    p.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn focus_term(&self, window: &mut Window, cx: &mut App) {
+        let fh = self.term.read(cx).focus_handle().clone();
+        fh.focus(window, cx);
+    }
+
     /// Back into its main window (the one that has it now, see `windows`), selected there.
     fn dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         forget(&self.session, cx);
@@ -51,7 +88,8 @@ impl PopOut {
 
 impl Render for PopOut {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>();
+        let t = cx.global::<Theme>().clone();
+        let tray = crate::ui::annotate::tray(&self.session, &t, cx, |p, _, w, cx| p.open_sheet(w, cx), |p, w, cx| p.focus_term(w, cx));
         let on = self.on_top;
         let pill = div()
             .id("keep-on-top")
@@ -86,13 +124,29 @@ impl Render for PopOut {
             .on_action(cx.listener(|p, _: &crate::actions::PopOut, w, cx| p.dock(w, cx)))
             .on_action(cx.listener(move |p, _: &crate::actions::ToggleKeepOnTop, w, cx| p.set_on_top(!on, w, cx)))
             .on_action(cx.listener(|p, _: &crate::ui::queue::ToggleQueue, w, cx| p.toggle_queue(w, cx)))
+            .on_action(cx.listener(|p, _: &crate::annotate::AddImage, w, cx| p.open_sheet(w, cx)))
+            .on_action(cx.listener(|p, _: &crate::annotate::PasteImage, w, cx| p.add_images(crate::annotate::clipboard_sources(cx), w, cx)))
+            .on_action(cx.listener(|p, a: &crate::annotate::DropImages, w, cx| p.add_images(a.paths.iter().cloned().map(crate::annotate::Source::Path).collect(), w, cx)))
+            .on_action(cx.listener(|p, _: &crate::annotate::EditAttachment, w, cx| {
+                if crate::annotate::is_attached(&p.session, cx) {
+                    p.open_sheet(w, cx);
+                }
+            }))
             .relative()
             .size_full()
+            .flex()
+            .flex_col()
             .bg(t.term)
+            .text_color(t.fg)
+            .font_family(t.ui_font.clone())
+            .text_size(px(13.))
             .pt(px(28.))
-            .child(self.term.clone())
+            .child(div().flex_1().min_h_0().child(self.term.clone()))
+            .children(tray)
             .child(div().absolute().top(px(4.)).right(px(8.)).flex().items_center().gap(px(6.)).child(dock).child(pill))
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
+            .when(self.annot.read(cx).is_open(), |d| d.child(self.annot.clone()))
+            .when_some(self.toast.clone(), |d, (msg, _)| d.child(super::toast(&t, msg).bottom(px(16.))))
     }
 }
 
@@ -156,18 +210,38 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
                 crate::ui::queue::QueueEvent::Error(e) => eprintln!("midna-app: pop-out {}: {e}", p.session),
             })
             .detach();
+            let annot = cx.new(crate::annotate::AnnotateView::new);
+            cx.subscribe_in(&annot, window, |p: &mut PopOut, _, ev: &crate::annotate::AnnotateEvent, window, cx| match ev {
+                crate::annotate::AnnotateEvent::Closed => p.focus_term(window, cx),
+                crate::annotate::AnnotateEvent::Toast(msg) => p.show_toast(msg.clone(), cx),
+            })
+            .detach();
+            // The tray follows the outbox (an attach here, or the terminal sending it).
+            cx.observe_global::<crate::annotate::Outbox>(|_, cx| cx.notify()).detach();
             // Closed any way (⌘W, the traffic light, dock): the main window may show it again.
             let _release = cx.on_release(|p: &mut PopOut, cx| {
                 forget(&p.session, cx);
                 let _ = p.main.update(cx, |_, cx| cx.notify());
             });
-            PopOut { term, queue, on_top: true, session: id, main, _release }
+            PopOut { term, queue, annot, toast: None, on_top: true, session: id, main, _release }
         })
     });
     if let Ok(h) = opened {
         cx.default_global::<Popped>().0.insert(session, h);
         cx.notify();
     }
+}
+
+/// Image files dropped on `session`'s sidebar row while it's popped out: its window opens the
+/// sheet with them.
+pub fn drop_images(session: &str, paths: Vec<PathBuf>, cx: &mut App) {
+    let Some(h) = cx.try_global::<Popped>().and_then(|p| p.0.get(session).copied()) else {
+        return;
+    };
+    let _ = h.update(cx, |p, w, cx| {
+        w.activate_window();
+        p.add_images(paths.into_iter().map(crate::annotate::Source::Path).collect(), w, cx);
+    });
 }
 
 /// Dev only (`MIDNA_DEBUG_SCREEN=popout-queue`): pop the terminal out and open its queue there.
@@ -180,6 +254,18 @@ pub fn debug_queue(m: &mut MainWindow, session: String, window: &mut Window, cx:
                 let _ = h.update(cx, |p, w, cx| p.toggle_queue(w, cx));
             }
         });
+    })
+    .detach();
+}
+
+/// Dev only (`MIDNA_DEBUG_SCREEN=popout-annotate`): pop the terminal out and drop the images in
+/// `MIDNA_DEBUG_IMAGES` (comma-separated paths) on it.
+pub fn debug_annotate(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut Context<MainWindow>) {
+    open(m, session.clone(), window, cx);
+    let paths: Vec<PathBuf> = crate::dev::var("MIDNA_DEBUG_IMAGES").unwrap_or_default().split(',').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+    cx.spawn(async move |_, cx| {
+        cx.background_executor().timer(Duration::from_millis(400)).await;
+        cx.update(|cx| drop_images(&session, paths, cx));
     })
     .detach();
 }

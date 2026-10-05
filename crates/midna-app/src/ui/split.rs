@@ -143,7 +143,13 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
         .child(button("split-select", "↖", "Show in the main pane", "keys.split_to_main").on_click(cx.listener(|m, _, window, cx| to_main(m, window, cx))))
         .child(button("split-close", "✕", "Close this pane (the terminal keeps running)", "keys.split").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
     let first = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), main_focused).child(div().flex_1().min_h_0().child(main.clone()));
-    let second = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), split_focused).child(strip).child(div().flex_1().min_h_0().child(split.view.clone()));
+    let tray = super::annotate::tray(&sid, t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| {
+        if let Some(s) = &m.split {
+            let fh = s.view.read(cx).focus_handle().clone();
+            fh.focus(w, cx);
+        }
+    });
+    let second = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), split_focused).child(strip).child(div().flex_1().min_h_0().child(split.view.clone())).children(tray);
     let divider = if stacked { div().h(px(1.)).w_full() } else { div().w(px(1.)).h_full() }.flex_none().bg(t.line);
     let row = div().flex().flex_1().min_h_0().min_w_0();
     if stacked { row.flex_col() } else { row.flex_row() }.child(first).child(divider).child(second).into_any_element()

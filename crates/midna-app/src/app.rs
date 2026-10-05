@@ -132,13 +132,13 @@ pub struct MainWindow {
     pub stack: crate::ui::needs_you::Stack,
     /// Session links popover (⌘L) and each terminal's links.
     pub links: crate::ui::links::LinksPanel,
+    pub subagents: crate::ui::subagents::SubagentsPanel,
     /// The queued-messages panel (⌘U).
     pub queue: Entity<crate::ui::queue::QueueView>,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
-    /// Image sheet drafts and state (`annotate.rs`).
-    pub annot: crate::annotate::Annotator,
-    pub subagents: crate::ui::subagents::SubagentsPanel,
+    /// The image sheet (`annotate.rs`); drafts are in the `Drafts` global.
+    pub annot: Entity<crate::annotate::AnnotateView>,
     /// When the daemon connection last dropped (None while connected). The status bar says
     /// "midnad restarting…" for the first seconds of any drop, or until reconnect when a
     /// restart/upgrade was seen in the log just before.
@@ -199,6 +199,10 @@ impl MainWindow {
             crate::ui::queue::init(cx);
         }
         let queue = crate::ui::queue::new_for_main(backend.clone(), window, cx);
+        if !cx.has_global::<crate::annotate::Drafts>() {
+            crate::annotate::init(cx);
+        }
+        let annot = crate::annotate::new_for_main(window, cx);
         crate::ui::links::wire(&links, cx);
         MainWindow {
             backend,
@@ -243,12 +247,12 @@ impl MainWindow {
             triggers_view: None,
             insights: None,
             palette,
-            subagents: crate::ui::subagents::SubagentsPanel::new(cx),
             stack: crate::ui::needs_you::Stack::new(cx),
             links,
+            subagents: crate::ui::subagents::SubagentsPanel::new(cx),
             queue,
             composer: crate::composer::Composer::new(window, cx),
-            annot: crate::annotate::Annotator::new(cx),
+            annot,
             dropped_at: None,
             restart_expected: false,
             pending_refresh: 0,
@@ -752,6 +756,11 @@ impl MainWindow {
                             crate::ui::popout::debug_queue(self, sid, window, cx);
                         }
                     }
+                    "popout-annotate" => {
+                        if let Some(sid) = self.selected.clone() {
+                            crate::ui::popout::debug_annotate(self, sid, window, cx);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1007,6 +1016,9 @@ impl MainWindow {
     pub fn set_overlay(&mut self, o: Overlay, window: &mut Window, cx: &mut Context<Self>) {
         let was = self.overlay;
         self.overlay = if self.overlay == o { Overlay::None } else { o };
+        if was == Overlay::Annotate && self.overlay != Overlay::Annotate {
+            self.annot.update(cx, |v, cx| v.hide(window, cx));
+        }
         self.menu = Menu::None;
         crate::ui::queue::hide(self, cx);
         match self.overlay {
@@ -1023,7 +1035,10 @@ impl MainWindow {
                 }
                 self.stack.focus.focus(window, cx);
             }
-            Overlay::Annotate => self.annot.focus.focus(window, cx),
+            Overlay::Annotate => {
+                let fh = self.annot.read(cx).focus.clone();
+                fh.focus(window, cx);
+            }
         }
         cx.notify();
     }
@@ -1372,19 +1387,22 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &ToggleCommandBar, w, cx| m.set_overlay(Overlay::CommandBar, w, cx)))
             .on_action(cx.listener(|m, _: &OpenPrompts, w, cx| crate::ui::command_bar::open_prompts(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
-            .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| crate::annotate::open(m, w, cx)))
+            .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| {
+                crate::annotate::open(m, None, w, cx);
+            }))
             .on_action(cx.listener(|m, _: &crate::ui::links::ToggleLinks, w, cx| crate::ui::links::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::subagents::ToggleSubagents, w, cx| crate::ui::subagents::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::queue::ToggleQueue, w, cx| crate::ui::queue::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::PasteImage, w, cx| {
-                crate::annotate::open(m, w, cx);
-                let s = crate::annotate::clipboard_sources(cx);
-                crate::annotate::add(m, s, w, cx);
+                if crate::annotate::open(m, None, w, cx) {
+                    let s = crate::annotate::clipboard_sources(cx);
+                    m.annot.update(cx, |v, cx| v.add(s, w, cx));
+                }
             }))
+            .on_action(cx.listener(|m, a: &crate::annotate::DropImages, w, cx| crate::annotate::drop_images(m, a.session.clone(), a.paths.clone(), w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::EditAttachment, w, cx| {
-                let attached = m.selected.as_ref().is_some_and(|id| cx.try_global::<crate::annotate::Outbox>().is_some_and(|o| o.0.contains_key(id)));
-                if attached {
-                    crate::annotate::open(m, w, cx);
+                if let Some(id) = crate::annotate::pane_session(m, w, cx).filter(|id| crate::annotate::is_attached(id, cx)) {
+                    crate::annotate::open(m, Some(id), w, cx);
                 }
             }))
             .on_action(cx.listener(|m, _: &OpenRules, w, cx| m.set_screen(Screen::Rules, w, cx)))
