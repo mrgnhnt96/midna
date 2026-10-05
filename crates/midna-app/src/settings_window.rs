@@ -469,6 +469,8 @@ fn label_for(key: &str) -> String {
         "git.refresh_secs" => "Git refresh (seconds)",
         "kass.auto_send" => "Send dictation when Kass finishes",
         "projects.roots" => "Project folders",
+        "terminal.link_preview" => "Link previews",
+        "terminal.preview_path_click" => "Clicking a preview's path",
         "notify.enabled" => "Show notifications",
         "notify.turn_done_min_secs" => "“Agent finished” after (seconds)",
         "notify.volume" => "All sounds",
@@ -491,6 +493,11 @@ fn option_label(key: &str, v: &str) -> String {
         ("webhooks.path", "midna_relay") => "midna relay".into(),
         ("webhooks.path", "off") => "Off".into(),
         ("ui.header.script", "github+agent") => "github + agent".into(),
+        ("terminal.link_preview", "hover") => "On hover".into(),
+        ("terminal.link_preview", "cmd") => "On ⌘-hover".into(),
+        ("terminal.preview_path_click", "reveal") => "Reveal in Finder".into(),
+        ("terminal.preview_path_click", "ide") => "Open in IDE".into(),
+        ("terminal.preview_path_click", "copy") => "Copy path".into(),
         // script names are names: keep them as typed
         ("ui.ask.agent" | "ui.ask.scope", v) => capitalize(v),
         (k, v) if k.starts_with("ui.") => v.to_string(),
@@ -682,6 +689,13 @@ impl SettingsWindow {
         }
         // Look
         let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script")];
+        // Terminal: link previews (the card a hovered path or link opens)
+        let mut terminal: Vec<RowSpec> = [row("terminal.link_preview"), row("terminal.preview_path_click")].into_iter().flatten().collect();
+        if self.value("terminal.link_preview") == json!("off")
+            && let Some(r) = terminal.get_mut(1)
+        {
+            r.note = Some(("No effect while link previews are off".into(), t.dim));
+        }
         // Agents
         let home = self.info.get("home").and_then(Value::as_str).unwrap_or("");
         let hook_file = std::path::Path::new(home).join("hooks/claude-settings.json");
@@ -789,6 +803,7 @@ impl SettingsWindow {
             Group { name: "Notification sounds", danger: false, badge: 0, rows: sounds },
             Group { name: "Notification images", danger: false, badge: 0, rows: images },
             Group { name: "Look", danger: false, badge: 0, rows: look.into_iter().flatten().collect() },
+            Group { name: "Terminal", danger: false, badge: 0, rows: terminal },
             Group { name: "Projects", danger: false, badge: 0, rows: row("projects.roots").into_iter().collect() },
             Group { name: "Agents", danger: false, badge: 0, rows: agents.into_iter().flatten().collect() },
             Group { name: "What agents may do without asking", danger: false, badge: 0, rows: allow },

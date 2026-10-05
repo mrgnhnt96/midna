@@ -240,6 +240,102 @@ fn with_project_rule(rules: &[String], project: &Path, shown: &str, ide: Option<
     out
 }
 
+/// The editor for a path outside the selected terminal (link previews): `dirs` are the path's
+/// folder and its project; file rules look at their top-level names.
+pub fn choose_for(list: &[Ide], app: Option<&str>, rules: &[String], dirs: &[&Path]) -> Option<(Ide, Source)> {
+    let names: Vec<String> = dirs
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()).unwrap_or_default())
+        .collect();
+    choose(list, app, rules, dirs, &names).map(|(i, s)| (i.clone(), s))
+}
+
+/// The user chose this editor (a rule, or `ide.app` naming one), rather than `auto` taking the
+/// first one found.
+pub fn is_remembered(source: &Source, app: Option<&str>) -> bool {
+    !matches!(source, Source::Default) || app.map(str::trim).is_some_and(|a| !a.is_empty() && a != "auto")
+}
+
+/// The settings to write so `ide` is remembered for `project` (a folder rule, first, replacing
+/// the project's old one), or with `everywhere` (or no project) as `ide.app`. Unlike the
+/// header's [`remember`], a project rule is dropped only when another remembered choice picks
+/// the same editor, so a pick over `auto` still counts as a pick.
+pub fn remember_settings(list: &[Ide], app: Option<&str>, rules: &[String], project: Option<&Path>, dirs: &[&Path], ide: &Ide, everywhere: bool) -> Vec<(&'static str, serde_json::Value)> {
+    let mut out = vec![];
+    let Some(proj) = project.filter(|_| !everywhere) else {
+        if app != Some(ide.id.as_str()) {
+            out.push(("ide.app", json!(ide.id)));
+        }
+        if let Some(proj) = project {
+            let next = with_project_rule(rules, proj, "", None);
+            if next != rules {
+                out.push(("ide.rules", json!(next)));
+            }
+        }
+        return out;
+    };
+    let without = with_project_rule(rules, proj, "", None);
+    let fallback = choose_for(list, app, &without, dirs).filter(|(i, s)| i.id == ide.id && is_remembered(s, app));
+    let next = if fallback.is_some() { without } else { with_project_rule(rules, proj, &crate::commands::tilde(&proj.to_string_lossy()), Some(&ide.id)) };
+    if next != rules {
+        out.push(("ide.rules", json!(next)));
+    }
+    out
+}
+
+/// How to open `path` at `line` in `ide`: the editor's own CLI or URL scheme where it takes a
+/// line, else plain `open -a` (the file opens at the top).
+fn open_file_command(ide: &Ide, path: &str, line: Option<u32>) -> Command {
+    let app = &ide.path;
+    let open_a = |target: &str| {
+        let mut c = Command::new("/usr/bin/open");
+        c.arg("-a").arg(app).arg(target);
+        c
+    };
+    let Some(line) = line else { return open_a(path) };
+    let at = format!("{path}:{line}");
+    let tool = |rel: &str| Some(app.join(rel)).filter(|p| p.exists());
+    match ide.id.as_str() {
+        "vscode" | "vscode-insiders" | "cursor" | "windsurf" | "kiro" => {
+            let enc: String = path.chars().map(|c| if c == ' ' { "%20".to_string() } else { c.to_string() }).collect();
+            open_a(&format!("{}://file{enc}:{line}:1", ide.id))
+        }
+        "zed" | "zed-preview" => match tool("Contents/MacOS/cli") {
+            Some(cli) => {
+                let mut c = Command::new(cli);
+                c.arg(&at);
+                c
+            }
+            None => open_a(path),
+        },
+        "sublime" => match tool("Contents/SharedSupport/bin/subl") {
+            Some(cli) => {
+                let mut c = Command::new(cli);
+                c.arg(&at);
+                c
+            }
+            None => open_a(path),
+        },
+        "xcode" => {
+            let mut c = Command::new("/usr/bin/xed");
+            c.arg("-l").arg(line.to_string()).arg(path);
+            c
+        }
+        "intellij" | "rustrover" | "webstorm" | "pycharm" | "goland" | "clion" | "phpstorm" | "rider" | "rubymine" | "android-studio" => {
+            let mut c = Command::new("/usr/bin/open");
+            c.arg("-na").arg(app).arg("--args").arg("--line").arg(line.to_string()).arg(path);
+            c
+        }
+        _ => open_a(path),
+    }
+}
+
+/// Open `path` (at `line` when the editor takes one) in `ide`. Blocking.
+pub fn open_file(ide: &Ide, path: &str, line: Option<u32>) -> Result<(), String> {
+    let o = open_file_command(ide, path, line).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
+    if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) }
+}
+
 /// Look for editors again (at launch and when the menu opens), off the main thread.
 pub fn detect(cx: &mut Context<MainWindow>) {
     cx.spawn(async move |this, cx| {
@@ -248,6 +344,7 @@ pub fn detect(cx: &mut Context<MainWindow>) {
         let _ = this.update(cx, |m, cx| {
             if m.ide.list != list {
                 m.ide.list = list;
+                crate::terminal::share_preview_env(m, cx);
                 cx.notify();
             }
         });

@@ -23,8 +23,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+mod link_preview;
 mod prompt_nav;
 mod queue_pill;
+
+pub use link_preview::share as share_preview_env;
 
 pub const FONT_SIZE: f32 = 12.5;
 /// Design: line-height 1.6 at 12.5px.
@@ -95,6 +98,10 @@ pub struct TerminalView {
     hover_link: Option<(u16, u16, u16)>,
     /// The cell the last ⌘-hover probe was sent for.
     hover_probe: Option<(i32, i32)>,
+    /// ⌘ is held over the link (the pointing hand: ⌘-click opens it).
+    hover_cmd: bool,
+    /// The card previewing the link under the pointer (`terminal/link_preview.rs`).
+    preview: link_preview::Preview,
     /// Right-click menu: where it opened, and the link under that cell (if any).
     menu: Option<(Point<Pixels>, Option<Value>)>,
     marked: Option<String>,
@@ -294,6 +301,8 @@ impl TerminalView {
             find: None,
             hover_link: None,
             hover_probe: None,
+            hover_cmd: false,
+            preview: Default::default(),
             kbd_sel: None,
             agent: None,
             agent_press: None,
@@ -496,6 +505,7 @@ impl TerminalView {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
+        self.preview_close(cx);
         if self.find.is_some() && self.find_key(ks, window, cx) {
             cx.stop_propagation();
             return;
@@ -955,6 +965,7 @@ impl TerminalView {
     fn on_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
         self.kbd_sel = None;
+        self.preview_close(cx);
         let Some((x, y)) = self.cell_pos(ev.position) else {
             return;
         };
@@ -987,11 +998,17 @@ impl TerminalView {
 
     /// Mouse move anywhere in the window (registered during paint so drags keep working
     /// outside the pane).
-    fn on_move(&mut self, ev: &MouseMoveEvent, inside: bool, cx: &mut Context<Self>) {
+    /// `over_grid`: nothing covers the pane at the pointer (the link preview card, a pill).
+    fn on_move(&mut self, ev: &MouseMoveEvent, inside: bool, over_grid: bool, cx: &mut Context<Self>) {
         let Some((x, y)) = self.cell_pos(ev.position) else {
             return;
         };
-        if ev.modifiers.platform && inside && self.pressed == 0 {
+        let cmd = ev.modifiers.platform;
+        if (cmd || link_preview::mode(cx) == link_preview::Mode::Hover) && inside && over_grid && self.pressed == 0 {
+            if self.hover_cmd != cmd {
+                self.hover_cmd = cmd;
+                cx.notify();
+            }
             self.probe_hover(x, y, cx);
         } else if self.hover_link.is_some() || self.hover_probe.is_some() {
             self.clear_hover(cx);
@@ -1118,13 +1135,16 @@ impl TerminalView {
                 if t.hover_probe != Some(cell) {
                     return; // the pointer moved on
                 }
+                let link = r.as_ref().ok().and_then(link_preview::Link::from_link_at);
                 let span = r.ok().filter(|v| v.get("kind").and_then(Value::as_str).is_some_and(|k| k != "none")).and_then(|v| {
                     let row = t.grid.get(cell.1 as usize)?;
                     let chars: Vec<char> = row.cells.iter().map(|c| c.ch).collect();
                     let target = v.get("target").and_then(Value::as_str).filter(|_| v.get("kind").and_then(Value::as_str) == Some("url"));
                     link_span(&chars, cell.0 as usize, target).map(|(a, b)| (cell.1 as u16, a as u16, b as u16))
                 });
+
                 t.set_hover(span, cx);
+                t.preview_hover(link.filter(|_| span.is_some()), cx);
             });
         })
         .detach();
@@ -1140,6 +1160,7 @@ impl TerminalView {
     fn clear_hover(&mut self, cx: &mut Context<Self>) {
         self.hover_probe = None;
         self.set_hover(None, cx);
+        self.preview_hover(None, cx);
     }
 
     // ------------------------------------------------------------------ context menu
@@ -1514,6 +1535,7 @@ impl Render for TerminalView {
         let stream = self.stream.clone();
         let bounds_cell = self.bounds.clone();
         let drop_hit = self.drop_hit.clone();
+        let grid_hit = self.drop_hit.clone();
         let drop_edge = theme.accent;
         let family = self.font_family.clone();
         let entity = cx.entity();
@@ -1535,6 +1557,9 @@ impl Render for TerminalView {
             StreamStatus::Failed(e) => Some((format!("Could not attach: {e}"), theme.err)),
             StreamStatus::Live => None,
         };
+        let below_chip = !at_bottom && below > 0 && overlay.is_none();
+        let pill = self.render_queue_pill(&theme, below_chip, window, cx);
+        let preview = self.render_link_preview(&theme, pill.is_some(), below_chip, cx);
         let chip = |d: Div| d.px(px(10.)).py(px(4.)).rounded(px(6.)).bg(theme.panel).border_1().border_color(theme.line).text_size(px(11.5));
 
         div()
@@ -1544,7 +1569,7 @@ impl Render for TerminalView {
             .size_full()
             .relative()
             .bg(term_bg)
-            .cursor(if self.hover_link.is_some() {
+            .cursor(if self.hover_link.is_some() && self.hover_cmd {
                 CursorStyle::PointingHand
             } else if self.ext.mouse_tracking {
                 CursorStyle::Arrow
@@ -1552,7 +1577,19 @@ impl Render for TerminalView {
                 CursorStyle::IBeam
             })
             .on_modifiers_changed(cx.listener(|t, ev: &ModifiersChangedEvent, _, cx| {
-                if !ev.modifiers.platform {
+                if ev.modifiers.platform || !t.hover_cmd {
+                    return;
+                }
+                t.hover_cmd = false;
+                if link_preview::mode(cx) == link_preview::Mode::Hover {
+                    cx.notify();
+                } else {
+                    t.clear_hover(cx);
+                }
+            }))
+            // The pointer left the pane (or the window): no link under it.
+            .on_hover(cx.listener(|t, over: &bool, _, cx| {
+                if !*over && (t.hover_link.is_some() || t.hover_probe.is_some()) {
                     t.clear_hover(cx);
                 }
             }))
@@ -1588,10 +1625,12 @@ impl Render for TerminalView {
                         window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                         // Moves and releases anywhere in the window, so drags can leave the pane.
                         let e = entity.clone();
-                        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _w, cx| {
+                        let hit = grid_hit.clone();
+                        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, w, cx| {
                             if phase == DispatchPhase::Bubble {
                                 let inside = bounds.contains(&ev.position);
-                                e.update(cx, |t, cx| t.on_move(ev, inside, cx));
+                                let over_grid = hit.borrow().as_ref().is_none_or(|h| h.is_hovered(w));
+                                e.update(cx, |t, cx| t.on_move(ev, inside, over_grid, cx));
                             }
                         });
                         let e = entity.clone();
@@ -1622,7 +1661,8 @@ impl Render for TerminalView {
             .child(div().absolute().top_0().left_0().size_full().drag_over::<ExternalPaths>(move |s, paths, _, _| {
                 if crate::annotate::image_paths(paths).is_empty() { s } else { s.border_2().border_color(drop_edge).bg(drop_edge.opacity(0.06)) }
             }))
-            .children(self.render_queue_pill(&theme, !at_bottom && below > 0 && overlay.is_none(), window, cx))
+            .children(pill)
+            .children(preview)
             .when(!at_bottom && below > 0 && overlay.is_none(), |d| {
                 d.child(chip(div().absolute().bottom(px(10.)).right(px(18.))).text_color(dim).child(format!("↓ {below} line{} below · ⌘↓", if below == 1 { "" } else { "s" })))
             })

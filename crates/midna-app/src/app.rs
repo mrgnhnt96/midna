@@ -665,6 +665,7 @@ impl MainWindow {
         if let Some(d) = r.discovered {
             self.discovered = d;
         }
+        crate::terminal::share_preview_env(self, cx);
         if let Some(s) = r.sessions {
             self.sessions = s;
             // New terminals (from an agent, a trigger, the CLI) land in the home window.

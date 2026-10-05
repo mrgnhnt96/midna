@@ -12,7 +12,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::QueueState;
 
-const PILL_H: f32 = 30.;
+pub(super) const PILL_H: f32 = 30.;
 /// Clear of the prompt rail on the right edge.
 const RIGHT: f32 = 22.;
 

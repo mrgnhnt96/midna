@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -131,6 +131,10 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
                 window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: md, click_count: n, first_mouse: false }), cx);
                 window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: md, click_count: n }), cx);
             }
+        }
+        // Pointer move to a window point (onto a card over the grid, e.g. the link preview).
+        "hoverxy" if nums.len() >= 2 => {
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: point(px(nums[0]), px(nums[1])), pressed_button: None, modifiers: mods(&words) }), cx);
         }
         // Drag in window points (e.g. a sidebar row to a new place).
         "dragxy" if nums.len() >= 4 => {
