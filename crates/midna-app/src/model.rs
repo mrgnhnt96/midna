@@ -113,6 +113,8 @@ pub struct GitInfo {
     pub removed: u32,
     pub files: u32,
     pub pr: Option<PrInfo>,
+    /// Linked worktree name; None in the main checkout.
+    pub worktree: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -290,6 +292,7 @@ pub struct Segment {
     pub tone: Option<Tone>,
     pub link: Option<String>,
     pub icon: Option<String>,
+    pub tooltip: Option<String>,
     pub mono: bool,
     /// Attach to the previous segment with a single space instead of the normal gap.
     pub join: bool,
@@ -497,9 +500,9 @@ mod tests {
         assert_eq!((cs.label.as_str(), cs.color.as_str(), cs.base, cs.clear_on.as_str()), ("Prompt blocked", "amber", StatusState::NeedsYou, "prompt"));
         assert_eq!((got[0].queue[0].when.clone(), got[0].queue_paused), (p::SendWhen::IdleFor { minutes: 5 }, true));
         assert!(got[0].background);
-        let seg = p::Segment { text: "#3".into(), tone: Some(p::Tone::Accent), link: Some("u".into()) };
+        let seg = p::Segment { link: Some("u".into()), tooltip: Some("PR".into()), ..p::Segment::new("#3", Some(p::Tone::Accent)).icon("pr") };
         let got: Vec<Segment> = parse_list(&serde_json::json!({"segments": [seg]}));
-        assert_eq!(got[0].tone, Some(Tone::Accent));
+        assert_eq!((got[0].tone, got[0].icon.as_deref(), got[0].tooltip.as_deref()), (Some(Tone::Accent), Some("pr"), Some("PR")));
     }
 
     #[test]

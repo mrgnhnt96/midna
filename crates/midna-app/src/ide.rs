@@ -553,7 +553,7 @@ pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     Some(div().relative().flex().items_center().child(main).child(chevron).when(open, |d| d.child(menu(m, t, cx))).into_any_element())
 }
 
-fn menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+pub fn menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let cur = current(m);
     let sel = m.ide.sel.min(m.ide.list.len().saturating_sub(1));
     let mut list = div().flex().flex_col().p(px(6.));

@@ -208,6 +208,29 @@ const TOPICS: &[(&str, &str)] = &[
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
         description. Agents may change any key not marked human only; setting a human-only key asks the human. The GUI \
         updates live on settings.changed. Keybindings are settings too (keys.*)."),
+    ("scripts", "What the terminal header, each sidebar row and the status bar show is set by scripts. Settings: \
+        ui.header.script, ui.row.script, ui.status.script (run for the selected terminal), and ui.status.items, the \
+        status bar's items left to right (daemon, policy, webhooks, triggers, hooks, accessibility, script, spacer, update, \
+        keys, or an absolute path to a script, one item each; leave an item out to hide it).\n\
+        Header buttons: ui.header.buttons lists the toolbar left to right (subagents, links, ide, image, split, popout, \
+        restart, or a script path; More is always last). A built-in left out moves into the … menu and its shortcut \
+        keeps working. A script path is your own button, \
+        printing its button's look (segments; [] hides it) and run again with MIDNA_CLICK=1 when the human clicks it \
+        (its output is the new look). A click script can call `midna` itself, e.g. `midna open …` or `midna attention …`.\n\
+        A script setting is built-in parts joined with + (worktree, branch, sync, diff, files, pr, agent; github = \
+        worktree+branch+sync+diff+files+pr; none) or an absolute path to an executable. midnad runs it in the terminal's \
+        cwd with the terminal as JSON on stdin and MIDNA_SESSION, MIDNA_PROJECT, MIDNA_SLOT (header|row|status|button) set; \
+        5 s timeout; it runs again on the terminal's events and every git.refresh_secs, so keep it fast.\n\
+        It prints a JSON array of segments (or {\"segments\": [...]}), each {text, tone?: dim|ok|err|need|work|accent, \
+        icon?: dot|check|cross|bell|lock|branch|worktree|pr|bolt|play|globe|link|file|search|shield|…, tooltip?, \
+        link? (opened on click), mono?, join? (attach to the previous segment)}. Example: \
+        [{\"text\":\"CI\",\"tone\":\"ok\",\"icon\":\"check\",\"tooltip\":\"14 checks passed\"}]. An empty array hides it.\n\
+        Statuses: ui.status.looks restyles built-in statuses, one rule per status, only the parts given: \
+        `needs_you = pink icon:bell label:Your turn`, `claude.working = teal icon:bolt` (color = the dot, icon = in place \
+        of the agent icon, label = header chip and row line; agent rules add to the plain one). A trigger's set_status still wins.\n\
+        Agents may pick built-ins and hide, show or reorder items directly. Pointing a setting at a script path, or \
+        adding a path to ui.status.items or ui.header.buttons, asks the human: write the script, make it executable, test it by running it, \
+        then `midna settings set …`. `midna settings reset ui.status.items` restores the default bar."),
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),
@@ -624,7 +647,7 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
     let Some(target) = args.first().map(String::as_str) else {
         return Err(RpcError::bad_params(
             "explain what? pass an id (terminal, r_…, t_…, n_…, p_…, d_…), a method, a setting key, a topic \
-             (status, rules, approvals, triggers, needs-you, settings, windows, human-only, mcp), or <kind> <value>",
+             (status, rules, approvals, triggers, needs-you, settings, scripts, windows, human-only, mcp), or <kind> <value>",
         ));
     };
     if matches!(target, "command" | "tool" | "path" | "cli" | "window") && args.len() > 1 {

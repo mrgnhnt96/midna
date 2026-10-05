@@ -53,7 +53,7 @@ pub fn finished(info: &AgentInfo, running: &[Subagent]) -> Vec<Subagent> {
     info.finished_subagents.iter().rev().filter(|f| !running.iter().any(|r| r.id == f.id)).cloned().collect()
 }
 
-fn lists(m: &MainWindow) -> (Vec<Subagent>, Vec<Subagent>) {
+pub fn lists(m: &MainWindow) -> (Vec<Subagent>, Vec<Subagent>) {
     let info = m.selected_session().and_then(|s| s.agent_info.clone()).unwrap_or_default();
     let run = running(&info);
     let done = finished(&info, &run);
@@ -144,7 +144,7 @@ pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     Some(div().relative().child(el).when(open, |d| d.child(popover(m, t, cx))).into_any_element())
 }
 
-fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let (run, done) = lists(m);
     let n = run.len() + done.len();
     let sel = m.subagents.sel.min(n.saturating_sub(1));

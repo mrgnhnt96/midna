@@ -31,7 +31,7 @@ pub mod triggers;
 use crate::actions::CTX_MAIN;
 use crate::app::{MainWindow, Menu, Overlay, Screen};
 use crate::backend::ConnState;
-use crate::model::{CustomStatus, StatusState};
+use crate::model::{CustomStatus, Glyph, Session, StatusState};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -63,6 +63,82 @@ pub fn session_dot(t: &Theme, state: StatusState, custom: Option<&CustomStatus>,
     } else {
         d
     }
+}
+
+/// A terminal's status look from `ui.status.looks` (empty when nothing restyles its status).
+pub fn look(m: &MainWindow, s: &Session) -> midna_proto::settings::StatusLook {
+    let rules: Vec<String> = m.settings.get("ui.status.looks").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    if rules.is_empty() {
+        return Default::default();
+    }
+    let who = match s.glyph() {
+        Glyph::Claude => "claude",
+        Glyph::Codex => "codex",
+        Glyph::Monitor => "monitor",
+        Glyph::Shell => "shell",
+    };
+    let state = match m.effective_state(s) {
+        StatusState::Working => "working",
+        StatusState::NeedsYou => "needs_you",
+        StatusState::Done => "done",
+        StatusState::Failed => "failed",
+        StatusState::Exited => "exited",
+        _ => "idle",
+    };
+    midna_proto::settings::status_look(&rules, who, state)
+}
+
+/// The built-in color of a status, as a `status_color` name (for a restyled label without a color).
+fn state_color(state: StatusState) -> &'static str {
+    match state {
+        StatusState::NeedsYou => "amber",
+        StatusState::Working => "blue",
+        StatusState::Done => "green",
+        StatusState::Failed => "red",
+        _ => "gray",
+    }
+}
+
+/// A terminal's dot: a trigger's custom status first, then a `ui.status.looks` color, else
+/// the built-in dot.
+pub fn terminal_dot(m: &MainWindow, t: &Theme, s: &Session, size: f32) -> Div {
+    let state = m.effective_state(s);
+    if s.custom_status.is_some() {
+        return session_dot(t, state, s.custom_status.as_ref(), size);
+    }
+    match look(m, s).color {
+        Some(c) => {
+            let color = t.status_color(&c);
+            let d = div().size(px(size)).flex_none().rounded_full().bg(color);
+            if state == StatusState::NeedsYou {
+                d.shadow(vec![BoxShadow { color: color.opacity(0.22), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }])
+            } else {
+                d
+            }
+        }
+        None => status_dot(t, state, size),
+    }
+}
+
+/// The agent icon spot: a `ui.status.looks` icon (in the look's color) while that status
+/// holds, else the terminal's agent/kind icon in `color`.
+pub fn terminal_icon(m: &MainWindow, t: &Theme, s: &Session, size: f32, color: Hsla) -> Svg {
+    let l = look(m, s);
+    match l.icon.as_deref().and_then(crate::icons::Icon::from_name) {
+        Some(i) => i.el(size, l.color.as_deref().map_or(color, |c| t.status_color(c))),
+        None => crate::icons::Icon::from_glyph(s.glyph()).el(size, color),
+    }
+}
+
+/// The label to show for a terminal's status: a trigger's custom status, else a
+/// `ui.status.looks` label (as a custom status in the look's color, or the status's own).
+pub fn status_label(m: &MainWindow, s: &Session) -> Option<CustomStatus> {
+    if let Some(c) = &s.custom_status {
+        return Some(c.clone());
+    }
+    let l = look(m, s);
+    let state = m.effective_state(s);
+    l.label.map(|label| CustomStatus { label, color: l.color.unwrap_or_else(|| state_color(state).into()), base: state, ..Default::default() })
 }
 
 /// A custom status as a small colored label (icon when the icon set has it), e.g. in the

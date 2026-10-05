@@ -51,6 +51,10 @@ pub enum Menu {
     Ide,
     /// Right-click menu on the sidebar's Background heading (`ui/sidebar.rs`).
     Background,
+    /// Right-click menu on the status bar: show/hide its items (`ui/statusbar.rs`).
+    StatusBar,
+    /// Right-click menu on the header toolbar: show/hide its buttons (`ui/header.rs`).
+    HeaderButtons,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -130,6 +134,13 @@ pub struct MainWindow {
     pub menu: Menu,
     pub header_segments: HashMap<String, Vec<Segment>>,
     pub row_segments: HashMap<String, Vec<Segment>>,
+    /// The status bar's script items, per terminal they ran for: `script` (`ui.status.script`)
+    /// and each script path in `ui.status.items`.
+    pub status_segments: HashMap<String, HashMap<String, Vec<Segment>>>,
+    /// Custom header buttons' looks (`ui.header.buttons`), per terminal: script path → segments.
+    pub header_buttons: HashMap<String, HashMap<String, Vec<Segment>>>,
+    /// Where the status bar or header toolbar was right-clicked (its menu opens there).
+    pub status_menu_at: Point<Pixels>,
     pub terminal: Option<Entity<TerminalView>>,
     /// The next terminal while it attaches; `terminal` stays on screen until this has a frame.
     pending_terminal: Option<(Entity<TerminalView>, Subscription)>,
@@ -265,6 +276,9 @@ impl MainWindow {
             menu: Menu::None,
             header_segments: HashMap::new(),
             row_segments: HashMap::new(),
+            status_segments: HashMap::new(),
+            status_menu_at: Point::default(),
+            header_buttons: HashMap::new(),
             terminal: None,
             pending_terminal: None,
             split: None,
@@ -615,6 +629,8 @@ impl MainWindow {
         let header_for = self.selected.clone();
         let row_ids: Vec<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
         let row_script_on = self.setting_str("ui.row.script").map(|s| s != "none" && !s.is_empty()).unwrap_or(false);
+        let buttons_now = crate::ui::header::custom_buttons(self);
+        let status_scripts = crate::ui::statusbar::scripts_wanted(self.settings.get("ui.status.items"), self.settings.get("ui.status.script"));
         cx.spawn(async move |this, cx| {
             let res = cx
                 .background_executor()
@@ -660,6 +676,24 @@ impl MainWindow {
                     {
                         let segs = call("script.run", json!({"session_id": sid, "slot": "header"})).map(|v| parse_list::<Segment>(&v)).unwrap_or_default();
                         r.header = Some((sid.clone(), segs));
+                        let get = |k: &str| r.settings.as_ref().and_then(|s| s.iter().find(|e| e.key == k).map(|e| e.value.clone()));
+                        let scripts = match (get("ui.status.items"), get("ui.status.script")) {
+                            (None, None) => status_scripts,
+                            (items, script) => crate::ui::statusbar::scripts_wanted(items.as_ref(), script.as_ref()),
+                        };
+                        let mut status = HashMap::new();
+                        for item in scripts {
+                            let p = if item == "script" { json!({"session_id": sid, "slot": "status"}) } else { json!({"session_id": sid, "slot": "status", "script": item}) };
+                            status.insert(item, call("script.run", p).map(|v| parse_list::<Segment>(&v)).unwrap_or_default());
+                        }
+                        r.status = Some((sid.clone(), status));
+                        let buttons: Vec<String> = get("ui.header.buttons").and_then(|v| serde_json::from_value(v).ok()).unwrap_or(buttons_now);
+                        let mut looks = HashMap::new();
+                        for path in buttons {
+                            let p = json!({"session_id": sid, "slot": "button", "script": path});
+                            looks.insert(path, call("script.run", p).map(|v| parse_list::<Segment>(&v)).unwrap_or_default());
+                        }
+                        r.buttons = Some((sid.clone(), looks));
                     }
                     if what & refresh::ROWS != 0 {
                         let ids = r.sessions.as_ref().map(|s| s.iter().map(|s| s.id.clone()).collect()).unwrap_or(row_ids);
@@ -750,6 +784,12 @@ impl MainWindow {
                 crate::ui::links::fetch(self, sid.clone(), cx);
             }
             self.header_segments.insert(sid, segs);
+        }
+        if let Some((sid, segs)) = r.status {
+            self.status_segments.insert(sid, segs);
+        }
+        if let Some((sid, looks)) = r.buttons {
+            self.header_buttons.insert(sid, looks);
         }
         if let Some(rows) = r.rows {
             self.row_segments = rows;
@@ -1585,6 +1625,8 @@ struct RefreshResult {
     hooks: Option<Value>,
     triggers: Option<usize>,
     header: Option<(String, Vec<Segment>)>,
+    status: Option<(String, HashMap<String, Vec<Segment>>)>,
+    buttons: Option<(String, HashMap<String, Vec<Segment>>)>,
     rows: Option<HashMap<String, Vec<Segment>>>,
 }
 

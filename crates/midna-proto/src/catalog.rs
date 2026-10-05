@@ -468,7 +468,12 @@ fn build() -> Vec<MethodSpec> {
             "Remove midna's hooks from the global config (Codex's previous notify is restored). Human only."),
         // scripts
         m::<ScriptRunParams, ScriptRunResult>("script.run").d(
-            "Run the configured header or row script for a terminal and return its segments (built-ins: github, git-diff-stats, \
-             or a custom executable printing JSON segments)."),
+            "Run the configured header, row or status script for a terminal and return its segments (built-in parts joined with +: \
+             github, agent, worktree, branch, sync, diff, files, pr; or a custom executable printing JSON segments; \
+             `midna explain scripts`). With slot status, `script` runs one of the script paths in ui.status.items; with \
+             slot button, one in ui.header.buttons."),
+        m::<ScriptClickParams, ScriptRunResult>("script.click").mutating().human().d(
+            "Click a custom header button: run its script (listed in ui.header.buttons) with MIDNA_CLICK=1 and return the \
+             button's new segments. Human only (the midna app calls it)."),
     ]
 }

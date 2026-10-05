@@ -122,8 +122,10 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
   - Keys include:
     - `theme` (dark|light|system)
     - `density` (comfortable|compact)
-    - `ui.header.script` (github|github+agent|none|custom path)
-    - `ui.row.script` (none|git-diff-stats|custom path)
+    - `ui.header.script` (built-in parts joined with `+`, or a custom path; default `github`)
+    - `ui.row.script` (same; default `worktree+diff`)
+    - `ui.status.script` (same, run for the selected terminal; default `worktree+branch`)
+    - `ui.status.items` (ordered list: daemon, policy, webhooks, triggers, hooks, accessibility, script, spacer, update, keys)
     - `updates.channel` (stable|beta)
     - `webhooks.path` (tailscale_funnel|self_relay|midna_relay|off)
     - `webhooks.port` (int, default 7787)
@@ -163,7 +165,7 @@ Each method has a name, a description written for agents, params/result types, `
 | `updates` | `updates.status`, `updates.check`, `updates.install` (human_only), `updates.report` (GUI only); the app owns the updater, midnad proxies |
 | `permissions` | `permissions.status` (what midnad can see; `midna permissions open <name>`) |
 | `agent` | `agent.hook{agent, event, payload}` (called by `midna hook`; drives status, turns and approvals) |
-| `script` | `script.run{session_id, slot: header|row}` (executes the configured script; returns segments `[{text, tone?: dim|ok|err|need|work|accent, link?}]`) |
+| `script` | `script.run{session_id, slot: header|row|status, script?}` (executes the configured script, or with `script` a script path listed in `ui.status.items`; returns segments `[{text, tone?: dim|ok|err|need|work|accent, icon?, tooltip?, link?, mono?, join?}]`; contract in `midna explain scripts`) |
 
 ## Agent status and hooks (proven in `spikes/agent-status`)
 

@@ -451,6 +451,8 @@ fn label_for(key: &str) -> String {
         "density" => "Sidebar density",
         "ui.header.script" => "Terminal header line",
         "ui.row.script" => "Sidebar row line",
+        "ui.status.script" => "Status bar line",
+        "ui.status.items" => "Status bar items",
         "updates.channel" => "Channel",
         "ui.ask.agent" => "⌘K “Ask an agent” uses",
         "ui.ask.scope" => "⌘K “Ask an agent” starts in",
@@ -698,7 +700,7 @@ impl SettingsWindow {
             }
         }
         // Look
-        let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script")];
+        let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script"), row("ui.status.script"), row("ui.status.items")];
         // Terminal: link previews (the card a hovered path or link opens)
         let mut terminal: Vec<RowSpec> = [row("terminal.link_preview"), row("terminal.preview_path_click")].into_iter().flatten().collect();
         if self.value("terminal.link_preview") == json!("off")
@@ -1460,6 +1462,7 @@ impl SettingsWindow {
                     SettingKind::String => "string".into(),
                     SettingKind::PathList => "[paths]".into(),
                     SettingKind::RuleList => "[\"match = value\"]".into(),
+                    SettingKind::ItemList { options, allow_paths } => format!("[{}{}]", options.join(" | "), if allow_paths { " | <path>" } else { "" }),
                 };
                 let (c, cc) = if s.human_only { (format!("// {opts} · human only: agents get a needs-you confirmation"), t.fg) } else { (format!("// {opts}"), t.dim) };
                 let k = s.key.split_once('.').map(|(_, r)| r).filter(|_| !p.is_empty()).unwrap_or(s.key);

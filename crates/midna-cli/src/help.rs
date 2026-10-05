@@ -45,7 +45,7 @@ pub static VERBS: &[Verb] = &[
                   t_… trigger = what it does, what it is waiting for, recent deliveries;\n\
                   n_… needs-you item = what it asks and who can answer it; p_… project; d_… delivery.\n\
                   Also a method (`session.open` or `session_open`), a setting key (`theme`), or a topic:\n\
-                  status, rules, approvals, triggers, needs-you, settings, windows, human-only, mcp.\n\
+                  status, rules, approvals, triggers, needs-you, settings, scripts, windows, human-only, mcp.\n\
                   With a kind and a value it explains which rule decides that action and why\n\
                   (e.g. `midna explain command -- git push --force`).",
         methods: &["session.get", "rule.list", "trigger.list", "needs_you.list", "events.list", "policy.check", "settings.get"],
@@ -626,7 +626,7 @@ mod tests {
         // method has to be placed deliberately.
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
-            "session.get", "stream.attach", "script.run", "updates.report", "session.clear",
+            "session.get", "stream.attach", "script.run", "script.click", "updates.report", "session.clear",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

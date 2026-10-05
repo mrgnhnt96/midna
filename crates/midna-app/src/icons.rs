@@ -12,6 +12,8 @@ pub enum Icon {
     Shell,
     Dots,
     Branch,
+    /// A linked git worktree (a folder with a branch in it).
+    Worktree,
     Pr,
     Split,
     PopOut,
@@ -70,6 +72,7 @@ impl Icon {
             Icon::Shell => "icons/shell.svg",
             Icon::Dots => "icons/dots.svg",
             Icon::Branch => "icons/branch.svg",
+            Icon::Worktree => "icons/worktree.svg",
             Icon::Pr => "icons/pr.svg",
             Icon::Split => "icons/split.svg",
             Icon::PopOut => "icons/popout.svg",
@@ -129,6 +132,7 @@ impl Icon {
             "cross" | "x" => Icon::Cross,
             "restart" | "refresh" => Icon::Restart,
             "branch" => Icon::Branch,
+            "worktree" => Icon::Worktree,
             "pr" => Icon::Pr,
             "bolt" | "trigger" | "triggers" => Icon::Triggers,
             "shell" | "terminal" => Icon::Shell,
@@ -174,6 +178,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/branch.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5"><circle cx="4.5" cy="3.5" r="1.8"/><circle cx="4.5" cy="12.5" r="1.8"/><circle cx="11.5" cy="5.5" r="1.8"/><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 3.4"/></svg>"##
+        }
+        "icons/worktree.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 4a1 1 0 0 1 1-1h3.2l1.5 1.6h6.3a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/><circle cx="10.5" cy="7.6" r="1.1"/><path d="M6 7v4M10.5 8.7c0 1.4-4.5.9-4.5 2"/></svg>"##
         }
         "icons/pr.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M4 5.3v5.4M12 10.7V6.5a2 2 0 0 0-2-2H7.5M9 3 7.5 4.5 9 6"/></svg>"##

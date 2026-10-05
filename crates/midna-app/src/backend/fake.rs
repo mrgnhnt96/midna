@@ -111,8 +111,12 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
     let mut v = vec![
         e("theme", json!("dark"), "dark | light | system", false),
         e("density", json!("comfortable"), "comfortable | compact", false),
-        e("ui.header.script", json!("github"), "github | github+agent | none | custom path", false),
-        e("ui.row.script", json!("none"), "none | git-diff-stats | custom path", false),
+        e("ui.header.script", json!("github"), "github | github+agent | worktree+branch | none | custom path", false),
+        e("ui.row.script", json!("worktree+diff"), "worktree+diff | worktree+branch | diff | none | custom path", false),
+        e("ui.status.script", json!("worktree+branch"), "worktree+branch | branch | github | none | custom path", false),
+        e("ui.status.looks", json!([]), "restyle built-in statuses", false),
+        e("ui.header.buttons", json!(midna_proto::settings::HEADER_BUTTONS), "header toolbar buttons", false),
+        e("ui.status.items", json!(midna_proto::settings::setting("ui.status.items").map(|s| s.default.to_json()).unwrap_or_default()), "status bar items", false),
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
@@ -229,7 +233,7 @@ impl FakeBackend {
                         since: Some(ago(2)),
                         ..Default::default()
                     }),
-                    ..s("a1f00008", "p_midna1", "triggers", Agent, Some(Claude), NeedsYou, Some("Prompt blocked"), 2, git("feat/local-triggers", 64, 8, 4, None))
+                    ..s("a1f00008", "p_midna1", "triggers", Agent, Some(Claude), NeedsYou, Some("Prompt blocked"), 2, git("feat/local-triggers", 64, 8, 4, None).map(|g| GitInfo { worktree: Some("midna-triggers".into()), ..g }))
                 },
                 // Background terminals (`midna open --background`): the sidebar's folded group.
                 Session { background: true, ..s("a1f00009", "p_zonai1", "dev server", Monitor, None, Working, None, 1, None) },
@@ -286,7 +290,8 @@ impl FakeBackend {
                 if let Some((k, v)) = kv.split_once('=')
                     && let Some(s) = settings.iter_mut().find(|s| s.key == k.trim())
                 {
-                    s.value = json!(v.trim());
+                    // lists use `|`: ui.status.items=daemon|spacer|script
+                    s.value = if s.value.is_array() { json!(v.split('|').map(str::trim).filter(|x| !x.is_empty()).collect::<Vec<_>>()) } else { json!(v.trim()) };
                 }
             }
         }
@@ -400,7 +405,7 @@ impl FakeState {
             return vec![];
         };
         let Some(g) = &s.git else { return vec![] };
-        let seg = |text: String, tone: Option<Tone>, icon: Option<&str>, mono: bool, join: bool| Segment { text, tone, icon: icon.map(Into::into), mono, join, link: None };
+        let seg = |text: String, tone: Option<Tone>, icon: Option<&str>, mono: bool, join: bool| Segment { text, tone, icon: icon.map(Into::into), mono, join, link: None, tooltip: None };
         let stats = |out: &mut Vec<Segment>| {
             if g.files > 0 {
                 out.push(seg(format!("+{}", g.added), Some(Tone::Ok), None, true, false));
@@ -408,35 +413,42 @@ impl FakeState {
                 out.push(seg(format!("×{}", g.files), Some(Tone::Dim), None, true, true));
             }
         };
-        let mut out = vec![];
-        match slot {
-            "row" => {
-                if self.setting("ui.row.script") == "git-diff-stats" {
-                    stats(&mut out);
-                }
+        let pr = |out: &mut Vec<Segment>| {
+            if let Some(pr) = &g.pr {
+                let mut p = seg(format!("#{}", pr.number), None, Some("pr"), false, false);
+                p.link = Some(pr.url.clone());
+                out.push(p);
+                let (t, tone) = match pr.checks {
+                    Checks::Failing => (format!("{} failing", pr.failing_count.max(1)), Tone::Err),
+                    Checks::Passing => ("checks passing".into(), Tone::Ok),
+                    _ => ("checks running".into(), Tone::Need),
+                };
+                out.push(seg(t, Some(tone), Some("dot"), false, false));
             }
-            _ => {
-                let which = self.setting("ui.header.script");
-                if which == "none" {
-                    return out;
+        };
+        let mut out = vec![];
+        let which = self.setting(match slot {
+            "row" => "ui.row.script",
+            "status" => "ui.status.script",
+            _ => "ui.header.script",
+        });
+        for part in which.split('+') {
+            match part {
+                "github" => {
+                    out.extend(g.worktree.iter().map(|w| seg(w.clone(), Some(Tone::Work), Some("worktree"), false, false)));
+                    out.push(seg(g.branch.clone(), Some(Tone::Dim), Some("branch"), false, false));
+                    stats(&mut out);
+                    pr(&mut out);
                 }
-                out.push(seg(g.branch.clone(), Some(Tone::Dim), Some("branch"), false, false));
-                stats(&mut out);
-                if let Some(pr) = &g.pr {
-                    let mut p = seg(format!("#{}", pr.number), None, Some("pr"), false, false);
-                    p.link = Some(pr.url.clone());
-                    out.push(p);
-                    let (t, tone) = match pr.checks {
-                        Checks::Failing => (format!("{} failing", pr.failing_count.max(1)), Tone::Err),
-                        Checks::Passing => ("checks passing".into(), Tone::Ok),
-                        _ => ("checks running".into(), Tone::Need),
-                    };
-                    out.push(seg(t, Some(tone), Some("dot"), false, false));
-                }
-                if which == "github+agent" && s.kind == SessionKind::Agent {
+                "worktree" => out.extend(g.worktree.iter().map(|w| seg(w.clone(), Some(Tone::Work), Some("worktree"), false, false))),
+                "branch" => out.push(seg(g.branch.clone(), Some(Tone::Dim), Some("branch"), false, false)),
+                "diff" | "git-diff-stats" => stats(&mut out),
+                "pr" => pr(&mut out),
+                "agent" if s.kind == SessionKind::Agent => {
                     out.push(seg("$0.82".into(), Some(Tone::Dim), None, false, false));
                     out.push(seg("opus".into(), Some(Tone::Dim), None, false, false));
                 }
+                _ => {}
             }
         }
         out
@@ -512,8 +524,15 @@ impl Backend for FakeBackend {
             "script.run" => {
                 let sid = p("session_id").unwrap_or_default();
                 let slot = p("slot").unwrap_or_else(|| "header".into());
-                serde_json::to_value(st.script(&sid, &slot))?
+                match p("script") {
+                    // a custom header button: a stand-in deploy button
+                    Some(_) if slot == "button" => json!([{"text": "Deploy", "tone": "dim", "icon": "play", "tooltip": "Deploy a preview"}]),
+                    // a status-bar script path: a stand-in CI indicator
+                    Some(_) => json!([{"text": "CI", "tone": "ok", "icon": "check", "tooltip": "main: all 14 checks passed"}]),
+                    None => serde_json::to_value(st.script(&sid, &slot))?,
+                }
             }
+            "script.click" => json!([{"text": "Deployed", "tone": "ok", "icon": "check", "tooltip": "Preview is live"}]),
             "settings.set" => {
                 let key = p("key").ok_or_else(|| anyhow!("key required"))?;
                 let value = params.get("value").cloned().unwrap_or(Value::Null);

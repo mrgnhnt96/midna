@@ -66,9 +66,18 @@ pub fn parse_shortstat(s: &str) -> (u32, u32, u32) {
     (files, added, removed)
 }
 
-/// Branch, ahead/behind upstream and uncommitted diff stats. None outside a repo.
+/// `git rev-parse --git-dir --git-common-dir --show-toplevel --abbrev-ref HEAD` →
+/// (branch, linked worktree name). The two dirs differ only in a linked worktree.
+fn parse_rev_parse(out: &str) -> Option<(String, Option<String>)> {
+    let mut it = out.lines().map(str::trim);
+    let (dir, common, top, branch) = (it.next()?, it.next()?, it.next()?, it.next()?);
+    let worktree = (dir != common).then(|| top.rsplit('/').next().unwrap_or(top).to_string());
+    Some((branch.to_string(), worktree))
+}
+
+/// Branch, linked worktree, ahead/behind upstream and uncommitted diff stats. None outside a repo.
 pub fn git_info(cwd: &str) -> Option<GitInfo> {
-    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let (branch, worktree) = parse_rev_parse(&git(cwd, &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel", "--abbrev-ref", "HEAD"])?)?;
     let (behind, ahead) = git(cwd, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
         .and_then(|s| {
             let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
@@ -77,7 +86,7 @@ pub fn git_info(cwd: &str) -> Option<GitInfo> {
         .unwrap_or((0, 0));
     let (files, added, removed) = git(cwd, &["diff", "--shortstat", "HEAD"]).map(|s| parse_shortstat(&s)).unwrap_or((0, 0, 0));
     let pr = pr_info(cwd, &branch);
-    Some(GitInfo { branch, ahead, behind, added, removed, files, pr })
+    Some(GitInfo { branch, ahead, behind, added, removed, files, pr, worktree })
 }
 
 // ------------------------------------------------------------------ gh PR cache
@@ -191,6 +200,13 @@ mod tests {
         assert_eq!(parse_shortstat(" 3 files changed, 10 insertions(+), 2 deletions(-)"), (3, 10, 2));
         assert_eq!(parse_shortstat(" 1 file changed, 1 deletion(-)"), (1, 0, 1));
         assert_eq!(parse_shortstat(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn worktree_only_when_git_dir_is_not_the_common_dir() {
+        assert_eq!(parse_rev_parse("/r/.git\n/r/.git\n/r\nmain\n"), Some(("main".into(), None)));
+        assert_eq!(parse_rev_parse("/r/.git/worktrees/fix\n/r/.git\n/w/fix-login\nfix/login\n"), Some(("fix/login".into(), Some("fix-login".into()))));
+        assert_eq!(parse_rev_parse("/r/.git\n"), None);
     }
 
     #[test]

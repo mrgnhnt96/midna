@@ -433,6 +433,89 @@ fn script_run_builtins_and_custom() {
 }
 
 #[test]
+fn script_parts_show_the_worktree_and_branch() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let ok = std::process::Command::new("git").args(args).current_dir(cwd).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    let main = d.home.join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    git(&main, &["init", "-q", "-b", "main"]);
+    git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&main, &["worktree", "add", "-q", "../repo-fix", "-b", "fix/login"]);
+    let open = |h: &mut midna_proto::Client, cwd: &std::path::Path| {
+        call(h, "session.open", json!({ "kind": "shell", "cwd": cwd, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string()
+    };
+    let (in_main, in_wt) = (open(&mut h, &main), open(&mut h, &d.home.join("repo-fix")));
+    // status bar default: worktree+branch; the main checkout has no worktree segment
+    let r = call(&mut h, "script.run", json!({ "session_id": in_main, "slot": "status" }));
+    assert_eq!(r["segments"], json!([{ "text": "main", "tone": "accent", "icon": "branch" }]));
+    let r = call(&mut h, "script.run", json!({ "session_id": in_wt, "slot": "status" }));
+    assert_eq!(r["segments"], json!([{ "text": "repo-fix", "tone": "work", "icon": "worktree" }, { "text": "fix/login", "tone": "accent", "icon": "branch" }]));
+    // header default (github) leads with the worktree too
+    let r = call(&mut h, "script.run", json!({ "session_id": in_wt, "slot": "header" }));
+    assert_eq!(r["segments"][0]["icon"], "worktree");
+    // agents may combine built-in parts but not point a slot at an executable
+    let mut a = d.agent(Some(&in_wt));
+    call(&mut a, "settings.set", json!({ "key": "ui.status.script", "value": "branch+worktree" }));
+    let r = call(&mut h, "script.run", json!({ "session_id": in_wt, "slot": "status" }));
+    assert_eq!(r["segments"][0]["text"], "fix/login");
+    assert!(call_err(&mut a, "settings.set", json!({ "key": "ui.status.script", "value": "branch+/bin/date" })).code != 0);
+}
+
+#[test]
+fn status_bar_script_items() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let script = d.home.join("ci.sh");
+    std::fs::write(&script, "#!/bin/sh\necho '[{\"text\":\"CI\",\"tone\":\"ok\",\"icon\":\"check\",\"tooltip\":\"all green\",\"mono\":true}]'\n").unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = script.to_str().unwrap();
+    // only a path listed in ui.status.items runs
+    let run = json!({ "session_id": sid, "slot": "status", "script": path });
+    assert!(call_err(&mut h, "script.run", run.clone()).code != 0);
+    // an agent can't add a script path; the human can
+    let mut a = d.agent(Some(&sid));
+    assert!(call_err(&mut a, "settings.set", json!({ "key": "ui.status.items", "value": ["daemon", path] })).code != 0);
+    call(&mut h, "settings.set", json!({ "key": "ui.status.items", "value": ["daemon", path, "keys"] }));
+    let r = call(&mut h, "script.run", run);
+    assert_eq!(r["segments"], json!([{ "text": "CI", "tone": "ok", "icon": "check", "tooltip": "all green", "mono": true }]));
+    // but it may reorder or hide items, keeping the human's path
+    call(&mut a, "settings.set", json!({ "key": "ui.status.items", "value": [path, "daemon"] }));
+    call(&mut a, "settings.set", json!({ "key": "ui.status.items", "value": ["keys"] }));
+    call(&mut a, "settings.reset", json!({ "key": "ui.status.items" }));
+}
+
+#[test]
+fn custom_header_buttons_run_and_click() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let script = d.home.join("deploy.sh");
+    std::fs::write(&script, "#!/bin/sh\nif [ -n \"$MIDNA_CLICK\" ]; then echo '[{\"text\":\"Deployed\",\"icon\":\"check\"}]'; else echo '[{\"text\":\"Deploy\",\"icon\":\"play\"}]'; fi\n").unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = script.to_str().unwrap();
+    let look = json!({ "session_id": sid, "slot": "button", "script": path });
+    let click = json!({ "session_id": sid, "script": path });
+    assert!(call_err(&mut h, "script.run", look.clone()).code != 0);
+    assert!(call_err(&mut h, "script.click", click.clone()).code != 0);
+    let mut a = d.agent(Some(&sid));
+    assert!(call_err(&mut a, "settings.set", json!({ "key": "ui.header.buttons", "value": [path, "ide"] })).code != 0);
+    call(&mut h, "settings.set", json!({ "key": "ui.header.buttons", "value": ["links", path, "ide", "split"] }));
+    assert_eq!(call(&mut h, "script.run", look)["segments"], json!([{ "text": "Deploy", "icon": "play" }]));
+    assert_eq!(call(&mut h, "script.click", click.clone())["segments"], json!([{ "text": "Deployed", "icon": "check" }]));
+    // clicking is the human's; an agent's click becomes a request
+    assert!(call_err(&mut a, "script.click", click).code != 0);
+    // agents may reorder and hide buttons, keeping the human's script
+    call(&mut a, "settings.set", json!({ "key": "ui.header.buttons", "value": format!("ide, {path}, links") }));
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "ui.header.buttons" }))["value"], json!(["ide", path, "links"]));
+    assert!(call_err(&mut a, "settings.set", json!({ "key": "ui.header.buttons", "value": ["more"] })).code != 0);
+}
+
+#[test]
 fn state_persists_across_restart() {
     let home = {
         let d = TestDaemon::start();

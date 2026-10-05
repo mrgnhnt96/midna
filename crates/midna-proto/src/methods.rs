@@ -1524,12 +1524,27 @@ pub struct HooksPreview {
 pub enum ScriptSlot {
     Header,
     Row,
+    /// The status bar's `script` item, run for the selected terminal.
+    Status,
+    /// A custom header button (a script path in `ui.header.buttons`; pass it as `script`).
+    Button,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScriptRunParams {
     pub session_id: Id,
     pub slot: ScriptSlot,
+    /// With slot `status`: one of the script paths listed in `ui.status.items`, run instead
+    /// of `ui.status.script`. With slot `button`: one of the paths in `ui.header.buttons`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ScriptClickParams {
+    pub session_id: Id,
+    /// A script path listed in `ui.header.buttons`.
+    pub script: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

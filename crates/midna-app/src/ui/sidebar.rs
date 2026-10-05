@@ -1,7 +1,7 @@
 //! Left sidebar (264px): traffic-light strip, "N need you", project groups with terminal
 //! rows (click a heading to fold it; remembered in app-state.json), and the footer (Today card + Triggers / Rules / Settings).
 //! Collapsed (⌘B, also in app-state.json) it's a 76px rail: one status dot per terminal.
-use super::{caps_label, session_dot};
+use super::caps_label;
 use crate::actions::*;
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
@@ -536,8 +536,8 @@ fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Cont
             }
         }))
         .when(selected, |d| d.child(div().absolute().left(px(-18.)).top(px(8.)).bottom(px(8.)).w(px(2.)).bg(t.accent)))
-        .child(Icon::from_glyph(s.glyph()).el(16., if selected { t.fg } else { t.dim }))
-        .child(div().absolute().top(px(5.)).right(px(5.)).child(session_dot(t, m.effective_state(s), s.custom_status.as_ref(), 8.)))
+        .child(super::terminal_icon(m, t, s, 16., if selected { t.fg } else { t.dim }))
+        .child(div().absolute().top(px(5.)).right(px(5.)).child(super::terminal_dot(m, t, s, 8.)))
 }
 
 /// ⌘-click toggles `id` in the selection, ⌘⇧-click selects the range to it. False for a
@@ -611,14 +611,15 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let (drag, group, target) = (DraggedRow { id: s.id.clone(), group: group.to_string() }, group.to_string(), s.id.clone());
     let state = m.effective_state(s);
     let attention = matches!(state, StatusState::NeedsYou | StatusState::Failed);
-    let custom = s.custom_status.as_ref();
-    // A trigger's custom status replaces the built-in second line: its label in its color.
-    let custom_line = custom.filter(|_| !compact).map(|c| {
+    let custom = super::status_label(m, s);
+    // A trigger's custom status (or a ui.status.looks label) replaces the built-in second
+    // line: its label in its color.
+    let custom_line = custom.as_ref().filter(|_| !compact).map(|c| {
         let since = c.since.as_deref().map(since_short).unwrap_or_default();
         let text = if since.is_empty() { c.label.clone() } else { format!("{} · {since}", c.label) };
         (text, t.status_color(&c.color))
     });
-    let custom_icon = custom.and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);
+    let custom_icon = custom.as_ref().and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);
     let line2 = custom_line.or_else(|| (!compact && attention).then(|| {
         let need = m.need_for_session(&s.id);
         let text = s
@@ -673,7 +674,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(div().w(px(12.)).flex_none().flex().items_center().child(session_dot(t, state, custom, 8.)))
+                .child(div().w(px(12.)).flex_none().flex().items_center().child(super::terminal_dot(m, t, s, 8.)))
                 .child(
                     div()
                         .flex()
@@ -688,7 +689,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                         .when(!segs.is_empty(), |d| d.child(div().ml_auto().flex_none().child(segments(&segs, t, 10.5, cx)))),
                 )
                 .when(crate::ui::popout::is_popped(&s.id, cx), |d| d.child(Icon::PopOut.el(12., t.dim)))
-                .child(Icon::from_glyph(s.glyph()).el(14., t.dim)),
+                .child(super::terminal_icon(m, t, s, 14., t.dim)),
         )
         .when_some(line2, |d, (text, color)| {
             d.child(
@@ -706,24 +707,27 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
 }
 
 /// Script segments (`script.run`): gap between segments, a single space when `join`.
+/// `icon` is `dot` or any `Icon::from_name` name (branch, worktree, pr, check, cross, …).
 pub fn segments(segs: &[Segment], t: &Theme, mono_size: f32, _cx: &mut Context<MainWindow>) -> Div {
     let mut out = div().flex().items_center().gap(px(14.)).whitespace_nowrap();
     let mut cur: Option<Div> = None;
-    for seg in segs {
+    for (i, seg) in segs.iter().enumerate() {
         let color = t.tone(seg.tone);
-        let mut el = div().flex().items_center().gap(px(6.)).text_color(color);
+        let mut el = div().id(("segment", i)).flex().items_center().gap(px(6.)).text_color(color);
         if seg.mono {
             el = el.font_family(t.mono_font.clone()).text_size(px(mono_size));
         }
-        match seg.icon.as_deref() {
-            Some("branch") => el = el.child(Icon::Branch.el(13., color)),
-            Some("pr") => el = el.child(Icon::Pr.el(13., color)),
-            Some("dot") => el = el.child(div().size(px(7.)).rounded_full().bg(color)),
+        match seg.icon.as_deref().map(|n| (n, Icon::from_name(n))) {
+            Some(("dot", _)) => el = el.child(div().size(px(7.)).rounded_full().bg(color)),
+            Some((_, Some(icon))) => el = el.child(icon.el(13., color)),
             _ => {}
         }
-        el = el.child(seg.text.clone());
+        el = el.when(!seg.text.is_empty(), |d| d.child(seg.text.clone()));
         if let Some(url) = seg.link.clone() {
             el = el.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url));
+        }
+        if let Some(tip) = seg.tooltip.clone().filter(|t| !t.is_empty()) {
+            el = el.tooltip(super::header::tip(tip));
         }
         cur = Some(match cur.take() {
             Some(group) if seg.join => group.child(el),

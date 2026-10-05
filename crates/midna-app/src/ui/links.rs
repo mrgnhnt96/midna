@@ -292,7 +292,7 @@ fn subtitle(l: &Link, agent: &str) -> String {
     format!("{lead}{times} · {}", ago(&l.last_at))
 }
 
-fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let all = current(m);
     let rows = rows(m);
     let sel = m.links.sel.min(rows.len().saturating_sub(1));

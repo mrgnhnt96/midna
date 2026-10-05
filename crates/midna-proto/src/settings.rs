@@ -16,6 +16,8 @@ pub enum SettingType {
     PathList,
     /// A list of `<match> = <value>` rules (JSON array of strings), first match wins.
     RuleList,
+    /// An ordered list of names from the options (JSON array of strings, no repeats).
+    ItemList(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +46,9 @@ pub enum SettingKind {
     RuleList,
     /// Enum options; `allow_other` accepts any string too (e.g. a custom script path).
     Enum { options: &'static [&'static str], allow_other: bool },
+    /// JSON array of names from `options` (and, with `allow_paths`, absolute paths), in order,
+    /// no repeats. A string is split on commas and newlines. Empty is allowed (show nothing).
+    ItemList { options: &'static [&'static str], allow_paths: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -75,6 +80,7 @@ impl SettingSpec {
             SettingKind::PathList => SettingType::PathList,
             SettingKind::RuleList => SettingType::RuleList,
             SettingKind::Enum { options, .. } => SettingType::Enum(options.iter().map(|s| s.to_string()).collect()),
+            SettingKind::ItemList { options, .. } => SettingType::ItemList(options.iter().map(|s| s.to_string()).collect()),
         }
     }
 
@@ -129,9 +135,31 @@ impl SettingSpec {
                         return Err(format!("{}: `{i}` must look like `match = value`", self.key));
                     };
                     let m = if m.len() > 1 { m.trim_end_matches('/') } else { m };
+                    if self.key == "ui.status.looks" {
+                        check_status_look(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
+                    }
                     let rule = format!("{m} = {val}");
                     if !out.contains(&rule) {
                         out.push(rule);
+                    }
+                }
+                Ok(json!(out))
+            }
+            SettingKind::ItemList { options, allow_paths } => {
+                let bad = || format!("{} expects a list of: {}", self.key, options.join(", "));
+                let items: Vec<String> = match v {
+                    Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(bad)).collect::<Result<_, _>>()?,
+                    Value::String(t) => t.split([',', '\n']).map(str::to_string).collect(),
+                    _ => return Err(bad()),
+                };
+                let mut out: Vec<&str> = vec![];
+                for i in items.iter().map(|i| i.trim()).filter(|i| !i.is_empty()) {
+                    if !(options.contains(&i) || (allow_paths && i.starts_with('/'))) {
+                        let paths = if allow_paths { ", or an absolute path to a script" } else { "" };
+                        return Err(format!("{}: unknown item `{i}` (one of: {}{paths})", self.key, options.join(", ")));
+                    }
+                    if !out.contains(&i) {
+                        out.push(i);
                     }
                 }
                 Ok(json!(out))
@@ -183,6 +211,88 @@ const fn en_path(options: &'static [&'static str]) -> SettingKind {
 }
 const KB: SettingKind = SettingKind::Keybinding;
 
+/// Built-in parts of `ui.header.script` / `ui.row.script` / `ui.status.script`. Join them
+/// with `+` (`worktree+branch`); `github` = worktree+branch+sync+diff+files+pr.
+pub const SCRIPT_PARTS: &[&str] = &["none", "github", "agent", "worktree", "branch", "sync", "diff", "git-diff-stats", "files", "pr"];
+
+/// True when a script setting's value is built-in parts only (not a custom executable).
+pub fn is_builtin_script(v: &str) -> bool {
+    v.is_empty() || v.split('+').all(|p| SCRIPT_PARTS.contains(&p.trim()))
+}
+
+/// The terminal header's built-in toolbar buttons, for `ui.header.buttons` (More is always there, last).
+pub const HEADER_BUTTONS: &[&str] = &["subagents", "links", "ide", "image", "split", "popout", "restart"];
+
+/// The built-in statuses `ui.status.looks` can restyle.
+pub const STATUS_STATES: &[&str] = &["idle", "working", "needs_you", "done", "failed", "exited"];
+
+/// How a built-in status looks, from `ui.status.looks`. Every field is optional: what a rule
+/// leaves out keeps the built-in look.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusLook {
+    /// The dot's color: a named color (`crate::STATUS_COLORS`) or `#rrggbb`.
+    pub color: Option<String>,
+    /// Shown in place of the agent icon.
+    pub icon: Option<String>,
+    /// Shown as a chip in the header and as the row's second line.
+    pub label: Option<String>,
+}
+
+/// `<color>? icon:<name>? label:<text>?` (label takes the rest of the line).
+fn parse_look(val: &str) -> Result<StatusLook, String> {
+    let mut look = StatusLook::default();
+    let mut rest = val.trim();
+    while !rest.is_empty() {
+        if let Some(l) = rest.strip_prefix("label:") {
+            look.label = Some(l.trim().to_string()).filter(|l| !l.is_empty());
+            break;
+        }
+        let (tok, tail) = rest.split_once(' ').unwrap_or((rest, ""));
+        if let Some(i) = tok.strip_prefix("icon:") {
+            look.icon = Some(i.to_string()).filter(|i| !i.is_empty());
+        } else if crate::types::valid_status_color(tok) {
+            look.color = Some(tok.to_string());
+        } else {
+            return Err(format!("`{tok}` is not a color ({} or #rrggbb), icon:<name> or label:<text>", crate::types::STATUS_COLORS.join(", ")));
+        }
+        rest = tail.trim_start();
+    }
+    Ok(look)
+}
+
+/// A `ui.status.looks` rule: `<status> = …` or `<agent>.<status> = …` (claude, codex, shell, monitor).
+fn check_status_look(m: &str, val: &str) -> Result<(), String> {
+    let state = m.split_once('.').map_or(m, |(who, st)| if ["claude", "codex", "shell", "monitor"].contains(&who) { st } else { m });
+    if !STATUS_STATES.contains(&state) {
+        return Err(format!("`{m}` is not a status ({}), optionally after claude., codex., shell. or monitor.", STATUS_STATES.join(", ")));
+    }
+    parse_look(val).map(|_| ())
+}
+
+/// The look for a terminal of kind `who` (claude, codex, shell, monitor) in `state`: the
+/// `<state>` rule, then the `<who>.<state>` rule's fields on top. Bad rules are skipped.
+pub fn status_look(rules: &[String], who: &str, state: &str) -> StatusLook {
+    let mut out = StatusLook::default();
+    for key in [state.to_string(), format!("{who}.{state}")] {
+        for r in rules {
+            let Some((m, val)) = r.split_once('=') else { continue };
+            if m.trim() != key {
+                continue;
+            }
+            if let Ok(l) = parse_look(val) {
+                out.color = l.color.or(out.color);
+                out.icon = l.icon.or(out.icon);
+                out.label = l.label.or(out.label);
+            }
+        }
+    }
+    out
+}
+
+/// What the status bar can show, for `ui.status.items`. `script` is `ui.status.script`'s
+/// segments for the selected terminal; `spacer` pushes what follows to the right.
+pub const STATUS_ITEMS: &[&str] = &["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "script", "spacer", "update", "keys"];
+
 /// Where the app looks for updates by default: the manifests the release workflow
 /// (.github/workflows/release.yml) keeps on the `channels` GitHub release.
 pub const DEFAULT_FEED_URL: &str = "https://github.com/mrgnhnt96/midna/releases/download/channels/{channel}.json";
@@ -190,10 +300,18 @@ pub const DEFAULT_FEED_URL: &str = "https://github.com/mrgnhnt96/midna/releases/
 pub static SETTINGS: &[SettingSpec] = &[
     s!("theme", en(&["dark", "light", "system"]), S("system"), "appearance", false, "Color theme of the midna UI."),
     s!("density", en(&["comfortable", "compact"]), S("comfortable"), "appearance", false, "Spacing density of sidebar rows and headers."),
-    s!("ui.header.script", en_path(&["github", "github+agent", "none"]), S("github"), "appearance", false,
-        "Script that renders the terminal header line: a built-in name or an absolute path to an executable printing JSON segments."),
-    s!("ui.row.script", en_path(&["none", "git-diff-stats"]), S("git-diff-stats"), "appearance", false,
-        "Script that renders the second line of each sidebar terminal row: a built-in name or an executable path."),
+    s!("ui.header.script", en_path(&["github", "github+agent", "worktree+branch", "none"]), S("github"), "appearance", false,
+        "Script that renders the terminal header line: built-in parts joined with + (github, agent, worktree, branch, sync, diff, files, pr) or an absolute path to an executable printing JSON segments (`midna explain scripts`)."),
+    s!("ui.row.script", en_path(&["worktree+diff", "worktree+branch", "diff", "none"]), S("worktree+diff"), "appearance", false,
+        "Script that renders the extra text on each sidebar terminal row: built-in parts joined with + (worktree, branch, diff, …) or an executable path (`midna explain scripts`)."),
+    s!("ui.header.buttons", SettingKind::ItemList { options: HEADER_BUTTONS, allow_paths: true }, L(&["subagents", "links", "ide", "image", "split", "popout", "restart"]), "appearance", false,
+        "Header toolbar buttons, left to right (More is always last): subagents, links, ide, image, split, popout, restart, or an absolute path to your own button script (it prints the button's look and runs again with MIDNA_CLICK=1 when clicked; `midna explain scripts`). A built-in left out moves into the More (…) menu; its shortcut still works. Adding a script path is human only."),
+    s!("ui.status.looks", SettingKind::RuleList, L(&[]), "appearance", false,
+        "Restyle built-in statuses, one rule per status, only what you list: `<status> = <color> icon:<name> label:<text>` (each part optional). status: idle, working, needs_you, done, failed, exited, optionally for one kind of terminal (`claude.working`, `codex.done`, `shell.failed`; its fields override the plain rule's). color = the dot (red, orange, amber, yellow, green, teal, blue, purple, pink, gray or #rrggbb); icon replaces the agent icon (check, cross, bell, lock, bolt, play, …); label shows in the header and the row's second line. A trigger's custom status still wins. E.g. `needs_you = pink icon:bell label:Your turn`."),
+    s!("ui.status.script", en_path(&["worktree+branch", "branch", "github", "none"]), S("worktree+branch"), "appearance", false,
+        "Script behind the status bar's `script` item, run for the selected terminal: built-in parts joined with + or an executable path (`midna explain scripts`)."),
+    s!("ui.status.items", SettingKind::ItemList { options: STATUS_ITEMS, allow_paths: true }, L(&["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "spacer", "script", "update", "keys"]), "appearance", false,
+        "What the status bar shows, left to right: daemon, policy, webhooks, triggers, hooks, accessibility, script (ui.status.script), spacer (the rest goes right), update, keys, or an absolute path to your own script (one item each; see `midna explain scripts`). Leave one out to hide it. Adding a script path is human only."),
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
         "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
@@ -406,6 +524,45 @@ mod tests {
         assert_eq!(s.coerce(&json!("")), Ok(json!([])));
         assert!(s.coerce(&json!("pubspec.yaml")).is_err());
         assert!(s.coerce(&json!("= xcode")).is_err());
+    }
+
+    #[test]
+    fn status_items_keep_order_and_reject_unknown_names() {
+        let s = setting("ui.status.items").unwrap();
+        assert_eq!(s.coerce(&json!("script, daemon,spacer,daemon")), Ok(json!(["script", "daemon", "spacer"])));
+        assert_eq!(s.coerce(&json!(["daemon", "/Users/me/bin/ci.sh"])), Ok(json!(["daemon", "/Users/me/bin/ci.sh"])));
+        assert_eq!(s.coerce(&json!([])), Ok(json!([])));
+        assert!(s.coerce(&json!("daemon, clock")).is_err());
+        assert!(s.coerce(&json!("bin/ci.sh")).is_err());
+        assert!(s.default.to_json().as_array().unwrap().iter().all(|v| STATUS_ITEMS.contains(&v.as_str().unwrap())));
+    }
+
+    #[test]
+    fn script_values_are_built_in_only_when_every_part_is() {
+        assert!(is_builtin_script("worktree+branch"));
+        assert!(is_builtin_script("github+agent"));
+        assert!(is_builtin_script(""));
+        assert!(!is_builtin_script("worktree+/bin/date"));
+        assert!(!is_builtin_script("/usr/local/bin/seg"));
+        assert_eq!(setting("ui.header.buttons").unwrap().default.to_json(), json!(HEADER_BUTTONS));
+        for k in ["ui.header.script", "ui.row.script", "ui.status.script"] {
+            let SettingKind::Enum { options, .. } = setting(k).unwrap().ty else { panic!() };
+            assert!(options.iter().all(|o| is_builtin_script(o)), "{k}");
+        }
+    }
+
+    #[test]
+    fn status_looks_merge_per_field_and_reject_typos() {
+        let s = setting("ui.status.looks").unwrap();
+        let rules = s.coerce(&json!(["needs_you = pink icon:bell label:Your turn", "claude.needs_you = icon:lock", "done=green"])).unwrap();
+        let rules: Vec<String> = serde_json::from_value(rules).unwrap();
+        assert_eq!(status_look(&rules, "claude", "needs_you"), StatusLook { color: Some("pink".into()), icon: Some("lock".into()), label: Some("Your turn".into()) });
+        assert_eq!(status_look(&rules, "codex", "needs_you").icon.as_deref(), Some("bell"));
+        assert_eq!(status_look(&rules, "shell", "done"), StatusLook { color: Some("green".into()), ..Default::default() });
+        assert_eq!(status_look(&rules, "shell", "working"), StatusLook::default());
+        assert!(s.coerce(&json!("needsyou = red")).is_err());
+        assert!(s.coerce(&json!("working = bleu")).is_err());
+        assert!(s.coerce(&json!("claude.working = #7aa2f7 label:Thinking hard")).is_ok());
     }
 
     #[test]

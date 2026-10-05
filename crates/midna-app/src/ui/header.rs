@@ -1,7 +1,7 @@
 //! Terminal header: status dot, name, agent icon, script segments (`script.run` slot
 //! `header`, default `github`), and the right toolbar.
 use super::sidebar::{menu_box, menu_item, segments};
-use super::{custom_status_label, session_dot};
+use super::{custom_status_label, status_label, terminal_dot, terminal_icon};
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -13,20 +13,6 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         return div().h(px(44.)).flex_none().border_b_1().border_color(t.line).into_any_element();
     };
     let segs = m.header_segments.get(&s.id).cloned().unwrap_or_default();
-    let tool = |id: &'static str, icon: Icon, text: &'static str, setting: &'static str| {
-        div()
-            .id(id)
-            .size(px(32.))
-            .rounded(px(7.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|st| st.bg(t.raised))
-            .tooltip(tip_keys(text, setting))
-            .child(icon.el(16., t.dim))
-    };
-    let more_open = m.menu == Menu::More;
     div()
         .flex()
         .flex_none()
@@ -37,7 +23,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .pr(px(10.))
         .border_b_1()
         .border_color(t.line)
-        .child(session_dot(t, m.effective_state(s), s.custom_status.as_ref(), 9.))
+        .child(terminal_dot(m, t, s, 9.))
         .child(match crate::ui::rename::field(m, &s.id, crate::ui::rename::At::Header, t, 15., cx) {
             Some(f) => f,
             None => {
@@ -57,10 +43,11 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                     .into_any_element()
             }
         })
-        .child(Icon::from_glyph(s.glyph()).el(14., t.dim))
-        .when_some(s.custom_status.as_ref(), |d, c| {
-            let tip = c.detail.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| "Set by a trigger".into());
-            d.child(div().id("header-custom-status").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, c, 11.5)))
+        .child(terminal_icon(m, t, s, 14., t.dim))
+        .when_some(status_label(m, s), |d, c| {
+            let by = if s.custom_status.is_some() { "Set by a trigger" } else { "Set in ui.status.looks" };
+            let tip = c.detail.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| by.into());
+            d.child(div().id("header-custom-status").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, &c, 11.5)))
         })
         .when(s.notify_muted(), |d| {
             d.child(
@@ -81,51 +68,260 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                 }
             }),
         )
-        .child(
-            div()
-                .flex()
-                .gap(px(2.))
-                .children(crate::ui::subagents::button(m, t, cx))
-                .children(crate::ui::links::button(m, t, cx))
-                .children(crate::ide::button(m, t, cx))
-                .child(tool("tb-image", Icon::Image, "Add image", "keys.add_image").on_click(cx.listener(|m, _, window, cx| {
-                    crate::annotate::open(m, None, window, cx);
-                })))
-                .child(
-                    tool("tb-split", Icon::Split, if m.split.is_some() { "Close split" } else { "Split" }, "keys.split")
-                        .when(m.split.is_some(), |d| d.bg(t.raised))
-                        .on_click(cx.listener(|m, _, window, cx| crate::ui::split::toggle(m, window, cx))),
-                )
-                .child(tool("tb-popout", Icon::PopOut, "Pop out", "keys.pop_out").on_click(cx.listener(|m, _, w, cx| {
-                    if let Some(id) = m.selected.clone() {
-                        crate::ui::popout::open(m, id, w, cx);
-                    }
-                })))
-                .child(tool("tb-restart", Icon::Restart, "Restart", "keys.restart").on_click(cx.listener(|m, _, _, cx| m.restart_selected(cx))))
-                .child(
-                    div()
-                        .relative()
-                        .child(tool("tb-more", Icon::Dots, "More", "keys.terminal_menu").when(more_open, |d| d.bg(t.raised)).on_click(cx.listener(|m, _, _, cx| {
-                            m.menu = if m.menu == Menu::More { Menu::None } else { Menu::More };
-                            cx.notify();
-                        })))
-                        .when(more_open, |d| d.child(more_menu(m, t, cx))),
-                ),
-        )
+        .child(toolbar(m, t, cx))
         .into_any_element()
 }
 
-fn more_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// What each built-in toolbar button is called in menus.
+fn button_label(b: &str) -> &str {
+    match b {
+        "subagents" => "Subagents",
+        "links" => "Session links",
+        "ide" => "Open in IDE",
+        "image" => "Add image",
+        "split" => "Split",
+        "popout" => "Pop out",
+        "restart" => "Restart",
+        p => p.rsplit('/').next().unwrap_or(p),
+    }
+}
+
+fn list_setting(m: &MainWindow, key: &str) -> Vec<String> {
+    m.settings.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+}
+
+/// `ui.header.buttons`, in order: built-in names and the human's own script paths. Falls back
+/// to the default while settings haven't loaded.
+pub fn buttons(m: &MainWindow) -> Vec<String> {
+    if m.settings.contains_key("ui.header.buttons") {
+        list_setting(m, "ui.header.buttons")
+    } else {
+        midna_proto::settings::HEADER_BUTTONS.iter().map(|s| s.to_string()).collect()
+    }
+}
+
+/// The script paths in `ui.header.buttons` (custom buttons).
+pub fn custom_buttons(m: &MainWindow) -> Vec<String> {
+    buttons(m).into_iter().filter(|b| b.starts_with('/')).collect()
+}
+
+/// Built-in buttons left out of `ui.header.buttons`: their actions live in the More menu.
+pub fn hidden(m: &MainWindow) -> Vec<String> {
+    let shown = buttons(m);
+    midna_proto::settings::HEADER_BUTTONS.iter().filter(|b| !shown.iter().any(|s| s == *b)).map(|s| s.to_string()).collect()
+}
+
+fn tool(t: &Theme, id: &'static str, icon: Icon, text: &'static str, setting: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(px(32.))
+        .rounded(px(7.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|st| st.bg(t.raised))
+        .tooltip(tip_keys(text, setting))
+        .child(icon.el(16., t.dim))
+}
+
+/// The right toolbar: `ui.header.buttons` in order, then More. A hidden built-in's popover (links, subagents, IDE list) opens from More. Right-click shows or
+/// hides buttons.
+fn toolbar(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let hidden = hidden(m);
+    let shown = |b: &str| !hidden.iter().any(|h| h == b);
+    let more_open = m.menu == Menu::More;
+    let popover_on_more: Option<AnyElement> = match &m.menu {
+        Menu::Links if !shown("links") => Some(crate::ui::links::popover(m, t, cx).into_any_element()),
+        Menu::Subagents if !shown("subagents") => Some(crate::ui::subagents::popover(m, t, cx).into_any_element()),
+        Menu::Ide if !shown("ide") => Some(crate::ide::menu(m, t, cx).into_any_element()),
+        _ => None,
+    };
+    div()
+        .id("header-toolbar")
+        .flex()
+        .gap(px(2.))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|m, ev: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                m.status_menu_at = ev.position;
+                m.menu = if m.menu == Menu::HeaderButtons { Menu::None } else { Menu::HeaderButtons };
+                cx.notify();
+            }),
+        )
+        .children(buttons(m).into_iter().filter_map(|b| toolbar_button(m, b, t, cx)))
+        .child(
+            div()
+                .relative()
+                .child(tool(t, "tb-more", Icon::Dots, "More", "keys.terminal_menu").when(more_open, |d| d.bg(t.raised)).on_click(cx.listener(|m, _, _, cx| {
+                    m.menu = if m.menu == Menu::More { Menu::None } else { Menu::More };
+                    cx.notify();
+                })))
+                .when(more_open, |d| d.child(more_menu(m, &hidden, t, cx)))
+                .children(popover_on_more),
+        )
+        .when(m.menu == Menu::HeaderButtons, |d| d.child(buttons_menu(m, t, cx)))
+}
+
+/// One `ui.header.buttons` entry: a built-in button, or a custom one (a script path).
+fn toolbar_button(m: &MainWindow, b: String, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    Some(match b.as_str() {
+        "subagents" => crate::ui::subagents::button(m, t, cx)?,
+        "links" => crate::ui::links::button(m, t, cx)?,
+        "ide" => crate::ide::button(m, t, cx)?,
+        "image" => tool(t, "tb-image", Icon::Image, "Add image", "keys.add_image")
+            .on_click(cx.listener(|m, _, window, cx| {
+                crate::annotate::open(m, None, window, cx);
+            }))
+            .into_any_element(),
+        "split" => tool(t, "tb-split", Icon::Split, if m.split.is_some() { "Close split" } else { "Split" }, "keys.split")
+            .when(m.split.is_some(), |d| d.bg(t.raised))
+            .on_click(cx.listener(|m, _, window, cx| crate::ui::split::toggle(m, window, cx)))
+            .into_any_element(),
+        "popout" => tool(t, "tb-popout", Icon::PopOut, "Pop out", "keys.pop_out")
+            .on_click(cx.listener(|m, _, w, cx| {
+                if let Some(id) = m.selected.clone() {
+                    crate::ui::popout::open(m, id, w, cx);
+                }
+            }))
+            .into_any_element(),
+        "restart" => tool(t, "tb-restart", Icon::Restart, "Restart", "keys.restart").on_click(cx.listener(|m, _, _, cx| m.restart_selected(cx))).into_any_element(),
+        p if p.starts_with('/') => custom_button(m, b, t, cx)?,
+        _ => return None,
+    })
+}
+
+/// A custom button: its script's segments (an empty list hides it); the first tooltip, else the
+/// script's name, on hover. A click runs the script with MIDNA_CLICK=1 (`script.click`).
+fn custom_button(m: &MainWindow, path: String, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let sid = m.selected.clone()?;
+    let segs = m.header_buttons.get(&sid).and_then(|b| b.get(&path)).cloned().unwrap_or_default();
+    if segs.is_empty() {
+        return None;
+    }
+    let tip_text = segs.iter().find_map(|s| s.tooltip.clone()).unwrap_or_else(|| button_label(&path).to_string());
+    // the tooltip is the button's; segments without one keep hover quiet
+    let plain: Vec<_> = segs.into_iter().map(|s| crate::model::Segment { tooltip: None, link: None, ..s }).collect();
+    Some(
+        div()
+            .id(SharedString::from(format!("tb-custom-{path}")))
+            .h(px(32.))
+            .px(px(8.))
+            .rounded(px(7.))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(12.5))
+            .hover(|st| st.bg(t.raised))
+            .tooltip(tip(tip_text))
+            .on_click(cx.listener(move |m, _, _, cx| click_custom(m, sid.clone(), path.clone(), cx)))
+            .child(segments(&plain, t, 12., cx).gap(px(6.)))
+            .into_any_element(),
+    )
+}
+
+fn click_custom(m: &mut MainWindow, sid: String, path: String, cx: &mut Context<MainWindow>) {
+    let params = serde_json::json!({"session_id": sid, "script": path});
+    m.rpc("script.click", params, cx, move |m, v, _, cx| {
+        let segs: Vec<crate::model::Segment> = crate::model::parse_list(&v);
+        if !segs.is_empty() {
+            m.header_buttons.entry(sid).or_default().insert(path, segs);
+        }
+        m.request_refresh(crate::app::refresh::HEADER, cx);
+        cx.notify();
+    });
+}
+
+/// Right-click on the toolbar: a check row per built-in button and per custom one, saved to
+/// `ui.header.buttons` (a re-shown built-in goes back to its default place; unchecking a custom
+/// one removes it). Order is changed in settings (or by asking an agent).
+fn buttons_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let current = buttons(m);
+    let mut list = menu_box(t).text_size(px(12.5));
+    let all = midna_proto::settings::HEADER_BUTTONS.iter().map(|s| s.to_string()).chain(current.iter().filter(|b| b.starts_with('/')).cloned());
+    for b in all {
+        let on = current.iter().any(|c| *c == b);
+        let next = crate::ui::statusbar::toggled(&current, &b, "ui.header.buttons");
+        let hint = if b.starts_with('/') { "unchecking removes it" } else { "" };
+        list = list.child(
+            menu_item(t, &format!("hb-{b}"), button_label(&b), hint, cx.listener(move |m, _, _, cx| save_list(m, "ui.header.buttons", next.clone(), cx)))
+                .child(div().size(px(14.)).flex_none().when(on, |d| d.child(Icon::Check.el(13., t.accent)))),
+        );
+    }
+    deferred(anchored().position(m.status_menu_at).anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(list.mt(px(4.)))).with_priority(1)
+}
+
+fn save_list(m: &mut MainWindow, key: &'static str, value: Vec<String>, cx: &mut Context<MainWindow>) {
+    m.menu = Menu::None;
+    m.settings.insert(key.into(), serde_json::json!(value));
+    m.rpc("settings.set", serde_json::json!({"key": key, "value": value}), cx, |_, _, _, _| {});
+    cx.notify();
+}
+
+fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let id = m.selected.clone().unwrap_or_default();
     let keys = |setting: &str| {
         let k = m.key_label(setting);
         (!k.is_empty()).then(|| key_chip(t, k.into()))
     };
     let muted = m.selected_session().is_some_and(|s| s.notify_muted());
+    // hidden toolbar buttons, in toolbar order, above the terminal's own actions
+    let mut moved = div().flex().flex_col();
+    for b in midna_proto::settings::HEADER_BUTTONS.iter().filter(|b| hidden.iter().any(|h| h == *b)) {
+        let id = format!("more-{b}");
+        let item = match *b {
+            "subagents" => {
+                let n = crate::ui::subagents::lists(m).0.len();
+                menu_item(t, &id, "Subagents", &format!("{n} running"), cx.listener(|m, _, w, cx| crate::ui::subagents::toggle(m, w, cx))).children(keys("keys.subagents"))
+            }
+            "links" => {
+                let n = m.selected.as_ref().and_then(|s| m.links.by_session.get(s)).map_or(0, Vec::len);
+                menu_item(t, &id, "Session links", &n.to_string(), cx.listener(|m, _, w, cx| crate::ui::links::toggle(m, w, cx))).children(keys("keys.links"))
+            }
+            "ide" => {
+                let name = crate::ide::current(m).map(|(i, _)| i.name).unwrap_or_else(|| "IDE".into());
+                moved = moved.child(
+                    menu_item(t, "more-ide-open", &format!("Open in {name}"), "", cx.listener(|m, _, _, cx| {
+                        m.menu = Menu::None;
+                        crate::ide::open_default(m, cx);
+                    }))
+                    .children(keys("keys.open_ide")),
+                );
+                menu_item(t, &id, "Open in…", "", cx.listener(|m, _, w, cx| crate::ide::toggle(m, w, cx))).children(keys("keys.choose_ide"))
+            }
+            "image" => menu_item(t, &id, "Add image", "", cx.listener(|m, _, w, cx| {
+                m.menu = Menu::None;
+                crate::annotate::open(m, None, w, cx);
+            }))
+            .children(keys("keys.add_image")),
+            "split" => menu_item(t, &id, if m.split.is_some() { "Close split" } else { "Split" }, "", cx.listener(|m, _, w, cx| {
+                m.menu = Menu::None;
+                crate::ui::split::toggle(m, w, cx);
+            }))
+            .children(keys("keys.split")),
+            "popout" => menu_item(t, &id, "Pop out", "", cx.listener(|m, _, w, cx| {
+                m.menu = Menu::None;
+                if let Some(id) = m.selected.clone() {
+                    crate::ui::popout::open(m, id, w, cx);
+                }
+            }))
+            .children(keys("keys.pop_out")),
+            "restart" => menu_item(t, &id, "Restart", "", cx.listener(|m, _, _, cx| {
+                m.menu = Menu::None;
+                m.restart_selected(cx);
+            }))
+            .children(keys("keys.restart")),
+            _ => continue,
+        };
+        moved = moved.child(item);
+    }
+    let any_moved = hidden.iter().any(|h| midna_proto::settings::HEADER_BUTTONS.contains(&h.as_str()));
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             menu_box(t)
                 .mt(px(36.))
+                .when(any_moved, |d| d.child(moved).child(div().h(px(1.)).my(px(4.)).bg(t.line)))
                 .child(menu_item(
                     t,
                     "more-copy",

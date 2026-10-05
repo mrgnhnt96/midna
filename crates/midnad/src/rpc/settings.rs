@@ -45,19 +45,28 @@ pub fn get(d: &Daemon, p: SettingKeyParams) -> R {
     ok(entry(s, d.core().state.setting(s.key)))
 }
 
-/// Header/row scripts take a built-in name or an executable path. midnad runs that path for
-/// every terminal, outside any agent's policy rules, so pointing it at a custom executable
-/// is human only (an agent may still pick a built-in).
-fn custom_script(s: &SettingSpec, value: &Value) -> bool {
-    const BUILTIN: &[&str] = &["github", "github+agent", "none", "git-diff-stats", ""];
-    matches!(s.key, "ui.header.script" | "ui.row.script") && value.as_str().is_some_and(|v| !BUILTIN.contains(&v))
+/// Header/row/status scripts take built-in parts or an executable path. midnad runs that path
+/// for every terminal, outside any agent's policy rules, so pointing it at a custom executable
+/// is human only (an agent may still pick built-ins).
+/// `ui.status.items` and `ui.header.buttons` the same way: an agent may hide, show and reorder items, and keep script
+/// paths already there, but adding a new path asks the human.
+fn custom_script(s: &SettingSpec, value: &Value, current: &Value) -> bool {
+    match s.key {
+        "ui.header.script" | "ui.row.script" | "ui.status.script" => value.as_str().is_some_and(|v| !midna_proto::settings::is_builtin_script(v)),
+        "ui.status.items" | "ui.header.buttons" => {
+            let had = |p: &str| current.as_array().is_some_and(|a| a.iter().any(|i| i.as_str() == Some(p)));
+            value.as_array().is_some_and(|a| a.iter().filter_map(Value::as_str).any(|i| i.starts_with('/') && !had(i)))
+        }
+        _ => false,
+    }
 }
 
 pub fn set(d: &Daemon, ctx: &Ctx, p: SettingSetParams) -> R {
     let s = spec(&p.key)?;
     let value = s.coerce(&p.value).map_err(RpcError::bad_params)?;
     crate::notify_media::check_setting(&d.cfg.home, s.key, &value).map_err(RpcError::bad_params)?;
-    if (s.human_only || custom_script(s, &value)) && !ctx.is_human() {
+    let current = d.core().state.setting(s.key);
+    if (s.human_only || custom_script(s, &value, &current)) && !ctx.is_human() {
         let cli = format!("settings set {} {}", s.key, cli_value(&value));
         let params = json!({ "key": s.key, "value": value });
         return Err(super::defer_to_human(d, ctx, &format!("Agent asks to change {}", s.key), &cli, "settings.set", &params));

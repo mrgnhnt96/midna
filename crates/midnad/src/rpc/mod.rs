@@ -259,6 +259,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "window.command" => window::command(d, ctx, parse(p)?),
         "agent.hook" => agent::hook(d, ctx, parse(p)?),
         "script.run" => script::run(d, parse(p)?),
+        "script.click" => script::click(d, parse(p)?),
         _ => Err(RpcError::new(NOT_IMPLEMENTED, format!("{method} has no handler yet"))),
     }
 }

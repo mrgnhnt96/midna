@@ -42,8 +42,12 @@ Values are JSON or bare words: `true`, `42`, `dark`.
 | --- | --- | --- |
 | `theme` | `system` | `dark`, `light` or `system` |
 | `density` | `comfortable` | `comfortable` or `compact` sidebar rows |
-| `ui.header.script` | `github` | What the terminal header shows: `github` (branch, diff, PR and checks), `github+agent`, `none`, or a path to your own script. Agents may only pick the built-ins. |
-| `ui.row.script` | `git-diff-stats` | The second line of each sidebar row: `git-diff-stats`, `none`, or your own script |
+| `ui.header.script` | `github` | What the terminal header shows. Built-in parts joined with `+`: `worktree`, `branch`, `sync` (ahead/behind), `diff`, `files`, `pr` (with checks), `agent`; `github` = worktree+branch+sync+diff+files+pr. Or `none`, or a path to your own script. Agents may only pick built-ins. |
+| `ui.row.script` | `worktree+diff` | The extra text on each sidebar row: same parts, `none`, or your own script |
+| `ui.header.buttons` | all built-ins | Header toolbar buttons, left to right: `subagents`, `links`, `ide`, `image`, `split`, `popout`, `restart`, or a path to your own button script (prints its look, runs again with `MIDNA_CLICK=1` when clicked; `midna explain scripts`). A built-in left out moves into the … menu. Right-click the toolbar to toggle. |
+| `ui.status.looks` | (none) | Restyle built-in statuses, one rule each, only what you list: `needs_you = pink icon:bell label:Your turn`, `claude.working = teal icon:bolt`. Color is the dot, icon replaces the agent icon, label shows in the header and sidebar. |
+| `ui.status.script` | `worktree+branch` | The status bar's `script` item, for the selected terminal: same parts, `none`, or your own script |
+| `ui.status.items` | `daemon, policy, webhooks, triggers, hooks, accessibility, spacer, script, update, keys` | What the status bar shows, left to right. Leave an item out to hide it; `spacer` pushes the rest to the right. Add an absolute path to your own script as an item to add an indicator (`midna explain scripts` has the output format: text, tone, icon such as `check`, tooltip, link). Right-click the status bar to toggle items. |
 | `terminal.option_as_meta` | `true` | <kbd>⌥</kbd> acts as Meta. Off: <kbd>⌥</kbd> types accented characters. |
 
 ### What agents may do without asking

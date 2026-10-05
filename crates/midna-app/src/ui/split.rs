@@ -4,7 +4,6 @@
 //! top pane). ⌘D or the header's split button opens a new shell in the current project in
 //! the second pane; its strip toggles side-by-side ⇄ stacked and closes it (the session keeps
 //! running and stays in the sidebar).
-use super::session_dot;
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
 use crate::theme::Theme;
@@ -137,7 +136,10 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
         .border_b_1()
         .border_color(t.line)
         .bg(t.bg)
-        .child(session_dot(t, state, session.and_then(|s| s.custom_status.as_ref()), 7.))
+        .child(match session {
+            Some(s) => super::terminal_dot(m, t, s, 7.),
+            None => super::status_dot(t, state, 7.),
+        })
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(name))
         .child(button("split-orient", if stacked { "⇆" } else { "⇅" }, if stacked { "Side by side" } else { "Stack top and bottom" }, "keys.split_orientation").on_click(cx.listener(|m, _, _, cx| flip(m, cx))))
         .child(button("split-select", "↖", "Show in the main pane", "keys.split_to_main").on_click(cx.listener(|m, _, window, cx| to_main(m, window, cx))))

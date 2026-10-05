@@ -190,6 +190,9 @@ pub struct GitInfo {
     pub files: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<PrInfo>,
+    /// Name of the linked worktree `cwd` is in (its folder name); None in the main checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
 }
 
 /// A terminal: a shell, monitor or agent running in a PTY owned by midnad.
@@ -1202,7 +1205,7 @@ pub enum Tone {
     Accent,
 }
 
-/// One piece of a header/row script line.
+/// One piece of a header/row/status script line.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Segment {
@@ -1211,10 +1214,28 @@ pub struct Segment {
     pub tone: Option<Tone>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Icon drawn before the text, in the tone's color: `dot`, `branch`, `worktree`, `pr`, `check`,
+    /// `cross`, `bell`, `lock`, `bolt`, `play`, `globe`, `link`, `file`, `search`, `shield`, …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Shown on hover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<String>,
+    /// Monospace text.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mono: bool,
+    /// Attach to the previous segment with a single space instead of the normal gap.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub join: bool,
 }
 
 impl Segment {
     pub fn new(text: impl Into<String>, tone: Option<Tone>) -> Segment {
-        Segment { text: text.into(), tone, link: None }
+        Segment { text: text.into(), tone, link: None, icon: None, tooltip: None, mono: false, join: false }
+    }
+
+    pub fn icon(mut self, icon: &str) -> Segment {
+        self.icon = Some(icon.into());
+        self
     }
 }
