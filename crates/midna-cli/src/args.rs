@@ -8,6 +8,9 @@ const VALUE_FLAGS: &[&str] = &[
     "source", "event", "repo", "branch", "action", "label", "run", "attention", "hook-id", "session-name", "trigger", "payload",
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",
     "featured", "id", "image", "why", "jump", "for",
+    // local triggers
+    "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
+    "action-json", "filter-json", "notify", "notify-body",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).
@@ -19,6 +22,8 @@ pub struct Args {
     flags: HashMap<String, Option<String>>,
     /// Every value of a repeated flag, in order (`--image a --image b`).
     multi: HashMap<String, Vec<String>>,
+    /// Every valued flag in command-line order (`--send a --send-no-enter b --send c`).
+    seq: Vec<(String, String)>,
     /// Everything after `--`.
     pub rest: Vec<String>,
 }
@@ -28,6 +33,11 @@ pub struct ArgError(pub String);
 
 impl Args {
     pub fn parse(raw: impl IntoIterator<Item = String>) -> Result<Args, ArgError> {
+        Args::parse_with(raw, &[])
+    }
+
+    /// `parse`, with `extra` also taking a value (flags one verb uses differently, e.g. `queue --idle 10m`).
+    pub fn parse_with(raw: impl IntoIterator<Item = String>, extra: &[&str]) -> Result<Args, ArgError> {
         let mut a = Args::default();
         let mut it = raw.into_iter().peekable();
         while let Some(s) = it.next() {
@@ -43,7 +53,7 @@ impl Args {
                 let optional = OPTIONAL_VALUE_FLAGS.contains(&name.as_str());
                 let v = if optional && inline.is_none() {
                     it.next_if(|next| !next.starts_with('-'))
-                } else if VALUE_FLAGS.contains(&name.as_str()) {
+                } else if VALUE_FLAGS.contains(&name.as_str()) || extra.contains(&name.as_str()) {
                     Some(match inline {
                         Some(v) => v,
                         None => it.next().ok_or_else(|| ArgError(format!("--{name} needs a value")))?,
@@ -53,6 +63,7 @@ impl Args {
                 };
                 if let Some(v) = &v {
                     a.multi.entry(name.clone()).or_default().push(v.clone());
+                    a.seq.push((name.clone(), v.clone()));
                 }
                 a.flags.insert(name, v);
             } else if s == "-f" {
@@ -77,6 +88,11 @@ impl Args {
     /// All values of a flag that may repeat.
     pub fn all(&self, name: &str) -> &[String] {
         self.multi.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Values of any of `names`, in command-line order, with the flag each came from.
+    pub fn ordered(&self, names: &[&str]) -> Vec<(&str, &str)> {
+        self.seq.iter().filter(|(k, _)| names.contains(&k.as_str())).map(|(k, v)| (k.as_str(), v.as_str())).collect()
     }
 
     pub fn num<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>, ArgError> {
@@ -135,5 +151,12 @@ mod tests {
         assert!(a.has("screen") && a.has("json"));
         let a = Args::parse(["commands", "add", "--screen", "rules"].map(String::from)).unwrap();
         assert_eq!(a.get("screen"), Some("rules"));
+    }
+
+    #[test]
+    fn ordered_across_flags() {
+        let a = Args::parse(["t", "--send", "/compact", "--send-no-enter=x", "--send", "{{last_prompt}}"].map(String::from)).unwrap();
+        assert_eq!(a.ordered(&["send", "send-no-enter"]), [("send", "/compact"), ("send-no-enter", "x"), ("send", "{{last_prompt}}")]);
+        assert_eq!(a.all("send"), ["/compact", "{{last_prompt}}"]);
     }
 }

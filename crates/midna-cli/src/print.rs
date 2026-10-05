@@ -15,9 +15,10 @@ pub fn plain(v: &Value) -> String {
     }
 }
 
-fn table(rows: Vec<Vec<String>>) {
+pub fn table(rows: Vec<Vec<String>>) {
     let n = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..n).map(|i| rows.iter().map(|r| r.get(i).map_or(0, |c| c.chars().count())).max().unwrap_or(0)).collect();
+    // A row's last cell isn't padded, so it doesn't widen its column (a note row can be long).
+    let widths: Vec<usize> = (0..n).map(|i| rows.iter().filter(|r| i + 1 < r.len()).map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
     for r in rows {
         let mut line = String::new();
         for (i, c) in r.iter().enumerate() {
@@ -40,6 +41,16 @@ pub fn kv(v: &Value) {
     }
 }
 
+/// A terminal's status for one line: the built-in state, plus the label a local trigger put
+/// on it (`needs_you · Prompt blocked`).
+pub fn status_text(x: &Value) -> String {
+    let state = plain(&x["status"]["state"]);
+    match x["custom_status"]["label"].as_str() {
+        Some(label) => format!("{state} · {label}"),
+        None => state,
+    }
+}
+
 pub fn sessions(v: &Value) {
     let list = v.as_array().cloned().unwrap_or_default();
     if list.is_empty() {
@@ -52,7 +63,7 @@ pub fn sessions(v: &Value) {
             Some(a) if !a.is_null() => plain(a),
             _ => s(&x, "kind"),
         };
-        rows.push(vec![s(&x, "id"), plain(&x["status"]["state"]), kind, s(&x, "name"), s(&x, "project_id"), s(&x, "title")]);
+        rows.push(vec![s(&x, "id"), status_text(&x), kind, s(&x, "name"), s(&x, "project_id"), s(&x, "title")]);
     }
     table(rows);
 }

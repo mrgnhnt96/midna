@@ -6,6 +6,7 @@ mod help;
 mod hook;
 mod mcp;
 mod print;
+mod queue;
 mod triggers;
 
 use args::{ArgError, Args};
@@ -55,7 +56,12 @@ type OutFn<'a> = &'a dyn Fn(&Value, &dyn Fn(&Value));
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let args = match Args::parse(raw) {
+    // `queue` gives a few flags values (`--idle 10m`) that are booleans elsewhere (`restart --idle`).
+    let args = match Args::parse(raw.clone()) {
+        Ok(a) if a.pos.first().map(String::as_str) == Some("queue") => Args::parse_with(raw, queue::VALUE_FLAGS),
+        r => r,
+    };
+    let args = match args {
         Ok(a) => a,
         Err(e) => finish(Err(e.into()), false),
     };
@@ -255,6 +261,7 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "links" => links(a, &out),
+        "queue" => queue::queue(a, &out),
         "notify" | "notifications" => notify(a, &out),
         "key" => {
             let id = a.need(1, "terminal id")?;

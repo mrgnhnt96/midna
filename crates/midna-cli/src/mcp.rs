@@ -21,9 +21,9 @@ const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "midna is the AI-managed terminal you are running in (if MIDNA_SESSION is set). These tools \
 drive it: list/read/open terminals (session_*), get the human's attention (needs_you_raise), test and add policy rules \
-(policy_check, rule_add), draft webhook triggers (trigger_add), change settings (settings_set), and move the GUI \
+(policy_check, rule_add), draft webhook triggers or add local hook/event/idle triggers (trigger_add), change settings (settings_set), and move the GUI \
 (window_command). Start with the `capabilities` tool; `explain` answers \"why\" about any id; `guide` is the full guide. \
-Human-only actions (removing rules, secrets, enabling triggers, human-only settings, project_remove, daemon_stop) are \
+Human-only actions (removing rules, secrets, enabling webhook triggers, human-only settings, project_remove, daemon_stop) are \
 never done for you: calling them asks the human and returns an error with the needs-you id and the next step. Never \
 route around a refusal.";
 
@@ -62,6 +62,17 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
     Some(match m.name {
         "rule.remove" => "Agents: this is refused. Use rule_request_removal {id, reason}; the human sees it and decides.",
         "trigger.set_secret" => "Agents: never call this; the secret is discarded and the human is asked to paste it in the GUI.",
+        "trigger.add" | "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers (source local) fire on this Mac and \
+            act on the terminal that fired. event: hook.<HookEvent> (hook.Stop, hook.Notification, …), a midna event kind \
+            (agent.prompt_blocked data {hook, message, prompt}, agent.turn_ended, session.status, …), idle (with \
+            filter.idle_minutes) or schedule (filter.cron: 5 fields in local time or @daily etc.; without a session/project/agent \
+            filter it fires once about no terminal); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
+            (case-insensitive). action: {kind:send_to_session, steps:[{text, enter:true}]} (in order, each waits for the agent) | \
+            {kind:set_status, label, color, icon?, base, clear_on: prompt|turn|status|never} | {kind:clear_status} | {kind:notify, title, body?, sound:true} | attention | \
+            run_command | start_agent. Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or bare {{<path>}}. \
+            cooldown_secs defaults to 60 per terminal; events triggers cause never fire triggers. enabled:true (add, local only) or \
+            trigger_set_enabled turns a local trigger on with no approval; do it when the human asked for the trigger. trigger_test takes \
+            session for local triggers. The `guide` tool (section “Local triggers”) has worked examples.",
         "needs_you.resolve" => "Agents normally don't call this: answering is the human's job. Refused unless the human enabled \
             approve.from_cli, and then only for your own session's approvals.",
         "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action.",

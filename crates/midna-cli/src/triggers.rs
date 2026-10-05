@@ -25,17 +25,66 @@ fn table(rows: Vec<Vec<String>>) {
     }
 }
 
-fn action_text(a: &Value) -> String {
+/// A value for one-line output: quoted when it has spaces (or is empty), cut at 60 chars.
+fn q(v: &str) -> String {
+    let short: String = if v.chars().count() > 60 { format!("{}…", v.chars().take(59).collect::<String>()) } else { v.to_string() };
+    if short.is_empty() || short.contains(char::is_whitespace) || short.contains('"') { format!("{short:?}") } else { short }
+}
+
+/// One line saying what a trigger action does (`send: "/compact" → "{{last_prompt}}"`).
+pub fn action_text(a: &Value) -> String {
     match a["kind"].as_str() {
         Some("start_agent") => format!("start {} in {}", s(a, "agent"), s(a, "project_id")),
         Some("run_command") => format!("run `{}` in {}", s(a, "command"), s(a, "project_id")),
         Some("attention") => format!("attention: {}", s(a, "message")),
+        Some("send_to_session") => {
+            let steps: Vec<String> = a["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|st| {
+                    let text = format!("\"{}\"", st["text"].as_str().unwrap_or(""));
+                    if st["enter"].as_bool() == Some(false) { format!("{text} (no enter)") } else { text }
+                })
+                .collect();
+            format!("send: {}", steps.join(" → "))
+        }
+        Some("set_status") => {
+            let mut bits = vec![s(a, "color"), s(a, "base"), format!("clears on {}", a["clear_on"].as_str().unwrap_or("prompt"))];
+            if let Some(i) = a["icon"].as_str() {
+                bits.insert(1, format!("icon {i}"));
+            }
+            format!("status: {} ({})", s(a, "label"), bits.join(", "))
+        }
+        Some("clear_status") => "clear status".into(),
+        Some("notify") => {
+            let body = a["body"].as_str().filter(|b| !b.is_empty()).map(|b| format!(" — \"{b}\"")).unwrap_or_default();
+            let silent = if a["sound"].as_bool() == Some(false) { " (silent)" } else { "" };
+            format!("notify: \"{}\"{body}{silent}", s(a, "title"))
+        }
         _ => a.to_string(),
     }
 }
 
-fn filter_text(f: &Value) -> String {
-    ["repo", "branch", "action", "label"].iter().filter_map(|k| f.get(*k).and_then(Value::as_str).map(|v| format!("{k}={v}"))).collect::<Vec<_>>().join(" ")
+/// Filters as `key=value` words; local ones too (`session=… idle=55m match message="*Compact first*"`).
+pub fn filter_text(f: &Value) -> String {
+    let mut out: Vec<String> = ["repo", "branch", "action", "label", "session", "project", "agent"]
+        .iter()
+        .filter_map(|k| f.get(*k).and_then(Value::as_str).map(|v| format!("{k}={}", q(v))))
+        .collect();
+    if let Some(m) = f["idle_minutes"].as_u64() {
+        out.push(format!("idle={m}m"));
+    }
+    if let Some(c) = f["cron"].as_str() {
+        out.push(format!("cron={}", q(c)));
+    }
+    if let Some(m) = f["match"].as_object().filter(|m| !m.is_empty()) {
+        // Sorted: map order depends on serde_json's preserve_order, which the workspace may turn on.
+        let mut pairs: Vec<String> = m.iter().map(|(k, v)| format!("{k}={}", q(v.as_str().unwrap_or("")))).collect();
+        pairs.sort();
+        out.push(format!("match {}", pairs.join(" ")));
+    }
+    out.join(" ")
 }
 
 fn print_triggers(v: &Value) {
@@ -50,23 +99,45 @@ fn print_triggers(v: &Value) {
             Some(at) => format!("{} (last {at})", s(&t, "fired")),
             None => "never".into(),
         };
-        rows.push(vec![s(&t, "id"), s(&t, "state"), s(&t, "name"), s(&t, "source"), s(&t, "event"), filter_text(&t["filter"]), action_text(&t["action"]), fired]);
+        let mut name = s(&t, "name");
+        if t["builtin"].is_string() {
+            name.push_str(" (builtin)");
+        }
+        rows.push(vec![s(&t, "id"), s(&t, "state"), name, s(&t, "source"), s(&t, "event"), filter_text(&t["filter"]), action_text(&t["action"]), fired]);
     }
     table(rows);
 }
 
 fn print_trigger(t: &Value) {
+    let local = t["source"] == "local";
     println!("{}  {}  ({})", s(t, "id"), s(t, "name"), s(t, "state"));
-    println!("  on      {} {} {}", s(t, "source"), s(t, "event"), filter_text(&t["filter"]));
-    println!("  does    {}", action_text(&t["action"]));
+    println!("  on       {} {} {}", s(t, "source"), s(t, "event"), filter_text(&t["filter"]));
+    println!("  does     {}", action_text(&t["action"]));
     if let Some(p) = t["action"]["prompt_template"].as_str() {
-        println!("  prompt  {p}");
+        println!("  prompt   {p}");
     }
-    let secret = if t["secret_set"].as_bool() == Some(true) { format!("set {} ({})", s(t, "secret_set_at"), s(t, "secret_store")) } else { "not set".into() };
-    println!("  secret  {secret}");
+    if local {
+        for (i, st) in t["action"]["steps"].as_array().into_iter().flatten().enumerate() {
+            let enter = if st["enter"].as_bool() == Some(false) { "  (no enter)" } else { "" };
+            println!("  step {}   {}{enter}", i + 1, st["text"].as_str().unwrap_or(""));
+        }
+        if let Some(c) = t["filter"]["cron"].as_str().and_then(|c| midna_proto::cron::Cron::parse(c).ok()) {
+            let runs: Vec<String> = c.upcoming(midna_proto::time::now_unix(), 3).into_iter().map(midna_proto::cron::local_label).collect();
+            println!("  runs     {} (local time)", if runs.is_empty() { "never".into() } else { format!("{}, …", runs.join(", ")) });
+        } else {
+            println!("  cooldown {}s per terminal", t["cooldown_secs"].as_u64().unwrap_or(60));
+        }
+    } else {
+        let secret = if t["secret_set"].as_bool() == Some(true) { format!("set {} ({})", s(t, "secret_set_at"), s(t, "secret_store")) } else { "not set".into() };
+        println!("  secret   {secret}");
+    }
+    if let Some(b) = t["builtin"].as_str() {
+        println!("  builtin  {b} (ships with midna; edit, pause or remove it like any other)");
+    }
     match t["state"].as_str() {
-        Some("needs_secret") => println!("  next    a human runs `midna triggers set-secret {}`", s(t, "id")),
-        Some("draft") => println!("  next    a human runs `midna triggers enable {}`", s(t, "id")),
+        Some("needs_secret") => println!("  next     a human runs `midna triggers set-secret {}`", s(t, "id")),
+        Some("draft" | "paused") if local => println!("  next     `midna triggers enable {}` (agents may, when the human asked for it)", s(t, "id")),
+        Some("draft") => println!("  next     a human runs `midna triggers enable {}`", s(t, "id")),
         _ => {}
     }
 }
@@ -124,11 +195,119 @@ fn print_status(v: &Value) {
     }
 }
 
-/// Build a TriggerAction from flags, if any action flag was given.
-fn action_from(a: &Args, project: Option<String>) -> Result<Option<Value>, Fail> {
+/// Event namespaces that can only be local (GitHub/Bitbucket never send these).
+const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_you."];
+
+/// Flags that only make sense on a local trigger; any of them makes `add` default to `--source local`.
+const LOCAL_FLAGS: &[&str] = &[
+    "session", "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "clear-status", "cooldown", "enable",
+];
+
+fn is_local_event(e: &str) -> bool {
+    e == "idle" || e == "schedule" || LOCAL_EVENT_PREFIXES.iter().any(|p| e.starts_with(p))
+}
+
+/// `55m`, `1h30m`, `90s`, `2d`; a bare number counts in `bare_unit` seconds. Returns seconds.
+pub fn parse_duration(v: &str, bare_unit: u64) -> Result<u64, String> {
+    let v = v.trim().to_ascii_lowercase();
+    if v.is_empty() {
+        return Err("empty duration".into());
+    }
+    if let Ok(n) = v.parse::<u64>() {
+        return Ok(n * bare_unit);
+    }
+    let (mut total, mut num) = (0u64, String::new());
+    for c in v.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let unit = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86400,
+            _ => return Err(format!("`{v}`: unknown unit `{c}` (use s, m, h or d, e.g. 55m or 1h30m)")),
+        };
+        let n: u64 = num.parse().map_err(|_| format!("`{v}`: expected a number before `{c}`"))?;
+        total += n * unit;
+        num.clear();
+    }
+    if !num.is_empty() {
+        return Err(format!("`{v}`: a number without a unit at the end (e.g. 55m)"));
+    }
+    Ok(total)
+}
+
+/// `--match key=glob` → (dotted path, glob). An empty glob removes that key on update.
+pub fn parse_match(v: &str) -> Result<(String, String), String> {
+    let (k, g) = v.split_once('=').ok_or_else(|| format!("--match `{v}`: expected path=glob, e.g. message=*Compact first*"))?;
+    let k = k.trim();
+    if k.is_empty() {
+        return Err(format!("--match `{v}`: empty path"));
+    }
+    Ok((k.to_string(), g.to_string()))
+}
+
+fn json_arg(a: &Args, flag: &str) -> Result<Option<Value>, Fail> {
+    let Some(raw) = a.get(flag) else { return Ok(None) };
+    let v: Value = serde_json::from_str(raw).map_err(|e| Fail::Usage(format!("--{flag} must be JSON: {e}")))?;
+    if !v.is_object() {
+        return Err(Fail::Usage(format!("--{flag} must be a JSON object")));
+    }
+    Ok(Some(v))
+}
+
+fn one_of(flag: &str, v: &str, ok: &[&str]) -> Result<(), Fail> {
+    if ok.contains(&v) { Ok(()) } else { Err(Fail::Usage(format!("--{flag} `{v}`: use one of {}", ok.join(", ")))) }
+}
+
+/// Build a TriggerAction from flags, if any action flag was given. `cur` is the current
+/// action (update), so `--color`/`--base`/`--clear-on`/`--icon` alone can edit a set_status.
+fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result<Option<Value>, Fail> {
+    let picked: Vec<&str> = ["agent", "run", "attention", "send", "send-no-enter", "set-status", "clear-status", "notify", "action-json"]
+        .into_iter()
+        .filter(|f| a.has(f))
+        .filter(|f| *f != "send-no-enter" || !a.has("send"))
+        .collect();
+    if picked.len() > 1 {
+        let names: Vec<String> = picked.iter().map(|f| format!("--{f}")).collect();
+        return Err(Fail::Usage(format!("pick one action, not {}", names.join(" and "))));
+    }
+    let status_mods = ["color", "base", "clear-on", "icon"];
+    if !a.has("set-status") && status_mods.iter().any(|f| a.has(f)) {
+        let Some(cur) = cur.filter(|c| c["kind"] == "set_status" && picked.is_empty()) else {
+            return Err(Fail::Usage("--color, --base, --clear-on and --icon go with --set-status LABEL".into()));
+        };
+        let mut act = cur.clone();
+        if let Some(c) = a.get("color") {
+            if !midna_proto::valid_status_color(c) {
+                return Err(Fail::Usage(format!("--color `{c}`: use one of {} or #rrggbb", midna_proto::STATUS_COLORS.join(", "))));
+            }
+            act["color"] = json!(c);
+        }
+        if let Some(b) = a.get("base") {
+            one_of("base", b, &["idle", "working", "needs_you", "done", "failed"])?;
+            act["base"] = json!(b);
+        }
+        if let Some(c) = a.get("clear-on") {
+            one_of("clear-on", c, &["prompt", "turn", "status", "never"])?;
+            act["clear_on"] = json!(c);
+        }
+        if let Some(i) = a.get("icon") {
+            act["icon"] = if i.is_empty() { Value::Null } else { json!(i) };
+        }
+        return Ok(Some(act));
+    }
     let need_project = || project.clone().ok_or_else(|| Fail::Usage("--project is required for this action".into()));
+    if let Some(v) = json_arg(a, "action-json")? {
+        if !v["kind"].is_string() {
+            return Err(Fail::Usage("--action-json needs a \"kind\" (start_agent, run_command, attention, notify, send_to_session, set_status, clear_status)".into()));
+        }
+        return Ok(Some(v));
+    }
     if let Some(agent) = a.get("agent") {
-        let prompt = a.get("prompt").ok_or_else(|| Fail::Usage("--agent needs --prompt TEMPLATE".into()))?;
+        let prompt = a.get("prompt").ok_or_else(|| Fail::Usage("--agent needs --prompt TEMPLATE (to only fire for one agent's terminals, use --for-agent)".into()))?;
         return Ok(Some(json!({ "kind": "start_agent", "project_id": need_project()?, "agent": agent, "prompt_template": prompt })));
     }
     if let Some(cmd) = a.get("run") {
@@ -137,22 +316,112 @@ fn action_from(a: &Args, project: Option<String>) -> Result<Option<Value>, Fail>
     if let Some(msg) = a.get("attention") {
         return Ok(Some(json!({ "kind": "attention", "message": msg })));
     }
+    let sends = a.ordered(&["send", "send-no-enter"]);
+    if !sends.is_empty() {
+        let steps: Vec<Value> = sends.iter().map(|(f, t)| json!({ "text": t, "enter": *f == "send" })).collect();
+        return Ok(Some(json!({ "kind": "send_to_session", "steps": steps })));
+    }
+    if let Some(label) = a.get("set-status") {
+        let color = a.get("color").ok_or_else(|| Fail::Usage(format!("--set-status needs --color ({} or #rrggbb)", midna_proto::STATUS_COLORS.join(", "))))?;
+        if !midna_proto::valid_status_color(color) {
+            return Err(Fail::Usage(format!("--color `{color}`: use one of {} or #rrggbb", midna_proto::STATUS_COLORS.join(", "))));
+        }
+        let base = a.get("base").ok_or_else(|| Fail::Usage("--set-status needs --base idle|working|needs_you|done|failed (the built-in state underneath)".into()))?;
+        one_of("base", base, &["idle", "working", "needs_you", "done", "failed"])?;
+        let clear_on = a.get("clear-on").unwrap_or("prompt");
+        one_of("clear-on", clear_on, &["prompt", "turn", "status", "never"])?;
+        let mut act = json!({ "kind": "set_status", "label": label, "color": color, "base": base, "clear_on": clear_on });
+        if let Some(i) = a.get("icon").filter(|i| !i.is_empty()) {
+            act["icon"] = json!(i);
+        }
+        return Ok(Some(act));
+    }
+    if a.has("clear-status") {
+        return Ok(Some(json!({ "kind": "clear_status" })));
+    }
+    if let Some(title) = a.get("notify") {
+        return Ok(Some(json!({ "kind": "notify", "title": title, "body": a.get("notify-body").unwrap_or(""), "sound": !a.has("silent") })));
+    }
+    if a.has("notify-body") || a.has("silent") {
+        return Err(Fail::Usage("--notify-body and --silent go with --notify TITLE".into()));
+    }
     Ok(None)
 }
 
-fn filter_from(a: &Args, base: Value) -> (Value, bool) {
-    let mut f = if base.is_object() { base } else { json!({}) };
+/// Apply filter flags on top of `base` (the current filter on update). `--filter-json`
+/// replaces the whole filter first. Returns whether anything changed.
+fn filter_from(a: &Args, base: Value) -> Result<(Value, bool), Fail> {
     let mut touched = false;
-    for (flag, key) in [("repo", "repo"), ("branch", "branch"), ("action", "action"), ("label", "label")] {
+    let mut f = match json_arg(a, "filter-json")? {
+        Some(v) => {
+            touched = true;
+            v
+        }
+        None if base.is_object() => base,
+        None => json!({}),
+    };
+    for (flag, key) in [("repo", "repo"), ("branch", "branch"), ("action", "action"), ("label", "label"), ("session", "session"), ("in-project", "project")] {
         if let Some(v) = a.get(flag) {
             touched = true;
             f[key] = if v.is_empty() { Value::Null } else { json!(v) };
         }
     }
-    (f, touched)
+    if let Some(v) = a.get("for-agent") {
+        if !v.is_empty() {
+            one_of("for-agent", v, &["claude", "codex"])?;
+        }
+        touched = true;
+        f["agent"] = if v.is_empty() { Value::Null } else { json!(v) };
+    }
+    if let Some(v) = a.get("idle-for") {
+        touched = true;
+        f["idle_minutes"] = if v.is_empty() {
+            Value::Null
+        } else {
+            let secs = parse_duration(v, 60).map_err(|e| Fail::Usage(format!("--idle-for {e}")))?;
+            if secs < 60 || secs % 60 != 0 {
+                return Err(Fail::Usage(format!("--idle-for `{v}`: whole minutes, at least 1m")));
+            }
+            json!(secs / 60)
+        };
+    }
+    if let Some(v) = a.get("cron") {
+        touched = true;
+        f["cron"] = if v.trim().is_empty() {
+            Value::Null
+        } else {
+            midna_proto::cron::Cron::parse(v).map_err(|e| Fail::Usage(format!("--cron {e}")))?;
+            json!(v.trim())
+        };
+    }
+    if !a.all("match").is_empty() {
+        touched = true;
+        let mut m = f.get("match").and_then(Value::as_object).cloned().unwrap_or_default();
+        for raw in a.all("match") {
+            let (k, g) = parse_match(raw).map_err(Fail::Usage)?;
+            if g.is_empty() {
+                m.remove(&k);
+            } else {
+                m.insert(k, json!(g));
+            }
+        }
+        f["match"] = Value::Object(m);
+    }
+    if f.get("match").is_some_and(Value::is_null) {
+        f["match"] = json!({});
+    }
+    Ok((f, touched))
 }
 
-const ADD_FLAGS: &[&str] = &["name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name"];
+fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
+    a.get("cooldown").map(|v| parse_duration(v, 1).map_err(|e| Fail::Usage(format!("--cooldown {e}")))).transpose()
+}
+
+const ADD_FLAGS: &[&str] = &[
+    "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
+    "session", "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on",
+    "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "silent",
+];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).
 fn read_secret(id: &str) -> Result<String, Fail> {
@@ -205,27 +474,66 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             if name.is_empty() {
                 return Err(Fail::Usage("missing --name".into()));
             }
-            let event = a.get("event").ok_or_else(|| Fail::Usage("missing --event (e.g. pull_request.opened)".into()))?;
-            let action = action_from(a, a.get("project").map(str::to_string))?.ok_or_else(|| Fail::Usage("pick an action: --agent claude|codex --prompt T, --run CMD, or --attention MSG".into()))?;
-            let (filter, _) = filter_from(a, json!({}));
+            let event = match (a.get("event"), a.has("idle-for"), a.has("cron")) {
+                (Some(e), _, _) => e,
+                (None, true, _) => "idle",
+                (None, _, true) => "schedule",
+                (None, false, false) => {
+                    return Err(Fail::Usage("missing --event (e.g. pull_request.opened, hook.Stop, agent.prompt_blocked, idle, schedule)".into()));
+                }
+            };
+            let local_flag = LOCAL_FLAGS.iter().find(|f| a.has(f));
+            let source = match a.get("source") {
+                Some(src) => {
+                    if let (true, Some(f)) = (src != "local", local_flag) {
+                        return Err(Fail::Usage(format!("--{f} is for local triggers; use --source local")));
+                    }
+                    src
+                }
+                None if local_flag.is_some() || is_local_event(event) => "local",
+                None => "github",
+            };
+            let action = action_from(a, a.get("project").map(str::to_string), None)?.ok_or_else(|| {
+                Fail::Usage(if source == "local" {
+                    "pick an action: --send TEXT (repeatable), --set-status LABEL --color C --base B, --clear-status, --notify TITLE, \
+                     --attention MSG, --run CMD --project P, --agent claude|codex --prompt T --project P, or --action-json JSON"
+                        .into()
+                } else {
+                    "pick an action: --agent claude|codex --prompt T, --run CMD, --attention MSG, or --notify TITLE".into()
+                })
+            })?;
+            let (filter, _) = filter_from(a, json!({}))?;
             let p = json!({
-                "name": name, "source": a.get("source").unwrap_or("github"), "event": event, "filter": filter, "action": action,
+                "name": name, "source": source, "event": event, "filter": filter, "action": action,
                 "github_hook_id": a.num::<u64>("hook-id")?, "session_name_template": a.get("session-name"),
+                "cooldown_secs": cooldown(a)?, "enabled": a.has("enable"),
             });
             let v = call("trigger.add", p)?;
             out(&v, &|v| {
                 println!("added {} ({})", s(v, "id"), s(v, "state"));
-                println!("next: a human runs `midna triggers set-secret {}` then `midna triggers enable {}`", s(v, "id"), s(v, "id"));
+                match (v["source"].as_str(), v["state"].as_str()) {
+                    (_, Some("active")) => {}
+                    (Some("local"), _) => println!("next: `midna triggers enable {}` when the human wants it on (or add with --enable)", s(v, "id")),
+                    _ => println!("next: a human runs `midna triggers set-secret {}` then `midna triggers enable {}`", s(v, "id"), s(v, "id")),
+                }
             });
         }
         "update" | "edit" => {
-            a.check(ADD_FLAGS)?;
+            a.check(&ADD_FLAGS.iter().copied().filter(|f| *f != "enable").collect::<Vec<_>>())?;
             let id = a.need(2, "trigger id")?;
             let cur = find(id)?;
             let project = a.get("project").map(str::to_string).or_else(|| cur["action"]["project_id"].as_str().map(str::to_string));
-            let (filter, touched) = filter_from(a, cur["filter"].clone());
-            let mut p = json!({ "id": id, "name": a.get("name"), "event": a.get("event"), "source": a.get("source"),
-                "action": action_from(a, project)?, "github_hook_id": a.num::<u64>("hook-id")?, "session_name_template": a.get("session-name") });
+            let (filter, touched) = filter_from(a, cur["filter"].clone())?;
+            let event = a.get("event").or(if a.has("idle-for") && cur["event"] != "idle" {
+                Some("idle")
+            } else if a.get("cron").is_some_and(|c| !c.trim().is_empty()) && cur["event"] != "schedule" {
+                Some("schedule")
+            } else {
+                None
+            });
+            let mut p = json!({ "id": id, "name": a.get("name"), "event": event, "source": a.get("source"),
+                "action": action_from(a, project, Some(&cur["action"]))?, "github_hook_id": a.num::<u64>("hook-id")?,
+                "session_name_template": a.get("session-name"), "cooldown_secs": cooldown(a)? });
             if touched {
                 p["filter"] = filter;
             }
@@ -263,9 +571,11 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             out(&v, &print_delivery);
         }
         "test" => {
-            a.check(&["payload", "event"])?;
+            a.check(&["payload", "event", "session"])?;
             let id = a.need(2, "trigger id")?;
             let raw = match a.get("payload") {
+                Some(inline) if inline.trim_start().starts_with(['{', '[']) => inline.to_string(),
+                None if std::io::stdin().is_terminal() => "{}".into(),
                 None | Some("-") => {
                     let mut b = String::new();
                     std::io::stdin().read_to_string(&mut b).map_err(|e| Fail::Other(e.to_string()))?;
@@ -273,8 +583,9 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
                 }
                 Some(path) => std::fs::read_to_string(path).map_err(|e| Fail::Usage(format!("--payload {path}: {e}")))?,
             };
+            let raw = if raw.trim().is_empty() { "{}".to_string() } else { raw };
             let payload: Value = serde_json::from_str(&raw).map_err(|e| Fail::Usage(format!("payload must be JSON: {e}")))?;
-            let v = call("trigger.test", json!({ "trigger_id": id, "payload": payload, "event": a.get("event") }))?;
+            let v = call("trigger.test", json!({ "trigger_id": id, "payload": payload, "event": a.get("event"), "session": a.get("session") }))?;
             out(&v, &print_delivery);
         }
         other => return Err(Fail::Usage(format!("unknown triggers subcommand `{other}`"))),
@@ -310,4 +621,130 @@ pub fn webhooks(a: &Args, out: OutFn) -> Res {
         other => return Err(Fail::Usage(format!("unknown webhooks subcommand `{other}`"))),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok<T>(r: Result<T, Fail>) -> T {
+        match r {
+            Ok(v) => v,
+            Err(Fail::Usage(m)) => panic!("usage error: {m}"),
+            Err(_) => panic!("failed"),
+        }
+    }
+
+    fn args(v: &[&str]) -> Args {
+        Args::parse(v.iter().map(|s| s.to_string())).unwrap()
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("55m", 60), Ok(3300));
+        assert_eq!(parse_duration("1h30m", 1), Ok(5400));
+        assert_eq!(parse_duration("90s", 1), Ok(90));
+        assert_eq!(parse_duration("2d", 1), Ok(172_800));
+        assert_eq!(parse_duration("1H", 1), Ok(3600));
+        assert_eq!(parse_duration("45", 60), Ok(2700));
+        assert_eq!(parse_duration("45", 1), Ok(45));
+        assert!(parse_duration("", 1).is_err());
+        assert!(parse_duration("5x", 1).is_err());
+        assert!(parse_duration("1h30", 1).is_err());
+        assert!(parse_duration("m", 1).is_err());
+    }
+
+    #[test]
+    fn matches() {
+        assert_eq!(parse_match("message=*Compact first*"), Ok(("message".into(), "*Compact first*".into())));
+        assert_eq!(parse_match("tool_input.command=git push*=x"), Ok(("tool_input.command".into(), "git push*=x".into())));
+        assert_eq!(parse_match("message="), Ok(("message".into(), String::new())));
+        assert!(parse_match("message").is_err());
+        assert!(parse_match("=x").is_err());
+    }
+
+    #[test]
+    fn local_events() {
+        for e in ["hook.Stop", "agent.prompt_blocked", "session.status", "needs_you.raised", "idle", "schedule", "hook.*"] {
+            assert!(is_local_event(e), "{e}");
+        }
+        for e in ["pull_request.opened", "push", "pullrequest:created", "project.created"] {
+            assert!(!is_local_event(e), "{e}");
+        }
+    }
+
+    #[test]
+    fn send_steps_keep_order() {
+        let a = args(&["triggers", "add", "--send", "/compact", "--send-no-enter", "draft", "--send", "{{last_prompt}}"]);
+        let act = ok(action_from(&a, None, None)).unwrap();
+        assert_eq!(
+            act,
+            json!({ "kind": "send_to_session", "steps": [
+                { "text": "/compact", "enter": true }, { "text": "draft", "enter": false }, { "text": "{{last_prompt}}", "enter": true },
+            ] })
+        );
+        assert_eq!(action_text(&act), r#"send: "/compact" → "draft" (no enter) → "{{last_prompt}}""#);
+    }
+
+    #[test]
+    fn set_status_flags() {
+        let a = args(&["t", "--set-status", "Prompt blocked", "--color", "amber", "--base", "needs_you"]);
+        let act = ok(action_from(&a, None, None)).unwrap();
+        assert_eq!(act, json!({ "kind": "set_status", "label": "Prompt blocked", "color": "amber", "base": "needs_you", "clear_on": "prompt" }));
+        assert_eq!(action_text(&act), "status: Prompt blocked (amber, needs_you, clears on prompt)");
+        assert!(action_from(&args(&["t", "--set-status", "X", "--color", "mauve", "--base", "idle"]), None, None).is_err());
+        assert!(action_from(&args(&["t", "--set-status", "X", "--color", "#ff8800"]), None, None).is_err(), "base required");
+        assert!(action_from(&args(&["t", "--set-status", "X", "--color", "#ff8800", "--base", "exited"]), None, None).is_err());
+        // update: modifiers alone edit the current set_status
+        let edited = ok(action_from(&args(&["t", "--color", "#ff8800", "--clear-on", "turn"]), None, Some(&act))).unwrap();
+        assert_eq!(edited["color"], "#ff8800");
+        assert_eq!(edited["clear_on"], "turn");
+        assert_eq!(edited["label"], "Prompt blocked");
+        assert!(action_from(&args(&["t", "--color", "red"]), None, None).is_err());
+        assert!(action_from(&args(&["t", "--color", "red", "--send", "x"]), None, Some(&act)).is_err());
+    }
+
+    #[test]
+    fn one_action_only() {
+        assert!(action_from(&args(&["t", "--send", "x", "--clear-status"]), None, None).is_err());
+        assert!(action_from(&args(&["t", "--attention", "x", "--set-status", "y"]), None, None).is_err());
+        assert_eq!(ok(action_from(&args(&["t", "--clear-status"]), None, None)), Some(json!({ "kind": "clear_status" })));
+        let n = ok(action_from(&args(&["t", "--notify", "{{session.name}} is blocked", "--notify-body", "{{message}}", "--silent"]), None, None));
+        assert_eq!(n, Some(json!({ "kind": "notify", "title": "{{session.name}} is blocked", "body": "{{message}}", "sound": false })));
+        assert_eq!(action_text(&n.unwrap()), r#"notify: "{{session.name}} is blocked" — "{{message}}" (silent)"#);
+        assert!(action_from(&args(&["t", "--notify", "x", "--send", "y"]), None, None).is_err());
+        assert!(action_from(&args(&["t", "--notify-body", "x"]), None, None).is_err());
+        let raw = ok(action_from(&args(&["t", "--action-json", r#"{"kind":"clear_status"}"#]), None, None));
+        assert_eq!(raw, Some(json!({ "kind": "clear_status" })));
+        assert!(action_from(&args(&["t", "--action-json", r#"{"steps":[]}"#]), None, None).is_err());
+        assert!(action_from(&args(&["t", "--agent", "claude"]), Some("p".into()), None).is_err(), "start_agent needs --prompt");
+    }
+
+    #[test]
+    fn local_filters() {
+        let a = args(&["t", "--session", "s_1", "--in-project", "p_1", "--for-agent", "claude", "--idle-for", "1h", "--match", "message=*Compact*", "--match", "hook=UserPromptSubmit"]);
+        let (f, touched) = ok(filter_from(&a, json!({})));
+        assert!(touched);
+        assert_eq!(f, json!({ "session": "s_1", "project": "p_1", "agent": "claude", "idle_minutes": 60, "match": { "message": "*Compact*", "hook": "UserPromptSubmit" } }));
+        assert_eq!(filter_text(&f), "session=s_1 project=p_1 agent=claude idle=60m match hook=UserPromptSubmit message=*Compact*");
+        // update: merge match, empty glob removes, empty value clears
+        let a = args(&["t", "--match", "hook=", "--match", "prompt=*deploy*", "--session", ""]);
+        let (f2, _) = ok(filter_from(&a, f));
+        assert_eq!(f2["match"], json!({ "message": "*Compact*", "prompt": "*deploy*" }));
+        assert!(f2["session"].is_null());
+        assert!(filter_from(&args(&["t", "--idle-for", "90s"]), json!({})).is_err());
+        assert!(filter_from(&args(&["t", "--for-agent", "gpt"]), json!({})).is_err());
+        let (f3, _) = ok(filter_from(&args(&["t", "--filter-json", r#"{"match":{"message":"*x y*"}}"#, "--idle-for", "55"]), json!({ "repo": "a/b" })));
+        assert_eq!(f3, json!({ "match": { "message": "*x y*" }, "idle_minutes": 55 }));
+        assert_eq!(filter_text(&f3), r#"idle=55m match message="*x y*""#);
+        let (f5, _) = ok(filter_from(&args(&["t", "--cron", "0 9 * * mon-fri", "--in-project", "p_1"]), json!({})));
+        assert_eq!(f5, json!({ "cron": "0 9 * * mon-fri", "project": "p_1" }));
+        assert_eq!(filter_text(&f5), r#"project=p_1 cron="0 9 * * mon-fri""#);
+        assert!(matches!(filter_from(&args(&["t", "--cron", "0 9 * *"]), json!({})), Err(Fail::Usage(e)) if e.contains("cron needs 5")));
+        let (f6, _) = ok(filter_from(&args(&["t", "--cron", ""]), f5));
+        assert!(f6["cron"].is_null());
+        let (f4, touched) = ok(filter_from(&args(&["t"]), json!({ "repo": "a/b" })));
+        assert!(!touched);
+        assert_eq!(f4, json!({ "repo": "a/b" }));
+    }
 }

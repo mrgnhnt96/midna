@@ -210,7 +210,7 @@ fn discoverability() {
     let s = "/tmp/midna-no-such.sock";
     // Every verb has complete `--help` (and `help <verb>`), offline, and never runs the verb.
     let top = stdout(&midna(s, &["help"], None, None));
-    for v in ["capabilities", "skill", "explain", "schema", "projects", "open", "send", "key", "restart", "attention", "rules", "triggers", "settings", "window", "mcp"] {
+    for v in ["capabilities", "skill", "explain", "schema", "projects", "open", "send", "key", "restart", "queue", "attention", "rules", "triggers", "settings", "window", "mcp"] {
         assert!(top.contains(&format!("  {v}")), "help lacks {v}");
         let o = midna(s, &[v, "--help"], None, None);
         assert_eq!(code(&o), 0, "{v} --help: {o:?}");
@@ -300,4 +300,65 @@ fn agents_get_mcp_skill_and_hint_without_global_config() {
         assert!(t0.elapsed().as_secs() < 5, "MIDNA_SKILL not set");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+#[test]
+fn queue_add_list_move_remove() {
+    let d = D::start();
+    let s = d.sock();
+    let o = midna(&s, &["open", "--cwd", "/tmp", "--name", "q", "--", "/bin/sh"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let id = stdout(&o).trim().to_string();
+    let o = midna(&s, &["open", "--cwd", "/tmp", "--name", "other", "--", "/bin/sh"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let other = stdout(&o).trim().to_string();
+    let ok = |o: &Output| assert_eq!(code(o), 0, "{}{}", stdout(o), String::from_utf8_lossy(&o.stderr));
+    let json_of = |o: &Output| -> Value { serde_json::from_str(&stdout(o)).unwrap_or_else(|e| panic!("{e}: {}", stdout(o))) };
+    // Paused first so nothing is typed while the test looks at the queue.
+    let o = midna(&s, &["queue", "pause", "--session", &id, "--json"], None, None);
+    ok(&o);
+    assert_eq!(json_of(&o)["paused"], true);
+    // Defaults to the caller's terminal (MIDNA_SESSION); text from args, `--`, or stdin.
+    let o = midna(&s, &["queue", "add", "/compact", "--json"], None, Some(&id));
+    ok(&o);
+    let a = json_of(&o);
+    assert_eq!(a["text"], "/compact");
+    assert_eq!(a["when"], json!({ "kind": "idle" }));
+    let o = midna(&s, &["queue", "add", "--session", &id, "--idle", "10m", "--no-enter", "next", "step", "--json"], None, None);
+    ok(&o);
+    let b = json_of(&o);
+    assert_eq!(b["text"], "next step");
+    assert_eq!(b["enter"], false);
+    assert_eq!(b["when"], json!({ "kind": "idle_for", "minutes": 10 }));
+    let o = midna(&s, &["queue", "add", "--session", &id, "--after", &other, "-", "--json"], Some("from stdin\n"), None);
+    ok(&o);
+    let c = json_of(&o);
+    assert_eq!(c["text"], "from stdin");
+    assert_eq!(c["when"], json!({ "kind": "after", "session": other }));
+    let ids = |v: &Value| -> Vec<String> { v["items"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_string()).collect() };
+    let (a, b, c) = (a["id"].as_str().unwrap().to_string(), b["id"].as_str().unwrap().to_string(), c["id"].as_str().unwrap().to_string());
+    let o = midna(&s, &["queue", "list", "--session", &id, "--json"], None, None);
+    ok(&o);
+    assert_eq!(ids(&json_of(&o)), [a.clone(), b.clone(), c.clone()]);
+    // Human list: number, when in words, text, paused.
+    let o = midna(&s, &["queue", "--session", &id], None, None);
+    ok(&o);
+    let text = stdout(&o);
+    assert!(text.contains("(paused)") && text.contains("after 10 min idle") && text.contains("from stdin") && text.contains(" 1 "), "{text}");
+    // mv is 1-based: the last one to the front.
+    let o = midna(&s, &["queue", "mv", &c, "1", "--session", &id, "--json"], None, None);
+    ok(&o);
+    assert_eq!(ids(&json_of(&o)), [c.clone(), a.clone(), b.clone()]);
+    assert_eq!(code(&midna(&s, &["queue", "mv", &c, "0", "--session", &id], None, None)), 2);
+    let o = midna(&s, &["queue", "rm", &a, "--session", &id], None, None);
+    ok(&o);
+    let o = midna(&s, &["queue", "list", "--session", &id, "--json"], None, None);
+    assert_eq!(ids(&json_of(&o)), [c.clone(), b.clone()]);
+    let o = midna(&s, &["queue", "clear", "--session", &id], None, None);
+    ok(&o);
+    let o = midna(&s, &["queue", "--session", &id], None, None);
+    assert!(stdout(&o).contains("queue is empty"), "{}", stdout(&o));
+    // Usage errors never reach the daemon.
+    assert_eq!(code(&midna(&s, &["queue", "add", "x", "--idle", "soon", "--session", &id], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["queue", "add", "x", "--idle", "5", "--at", "18:00", "--session", &id], None, None)), 2);
 }

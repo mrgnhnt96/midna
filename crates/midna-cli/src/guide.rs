@@ -26,9 +26,10 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 WHAT YOU CAN DO
   see        midna list | projects | needs | read <id> | explain <id> | events | insights
   terminals  midna open [--agent claude|codex --prompt T | --monitor CMD | -- argv] · send · key · rename · restart · close
+  queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
   policy     midna check <kind> <value> · rules add <allow|ask|deny> <kind> <glob> [--scope …] [--expires S]
-  triggers   midna triggers add … (drafts) · test · update · disable · deliveries · replay
+  triggers   midna triggers add … (webhook drafts; local hook/event/idle triggers you may enable) · test · update · disable
   settings   midna settings list | get | set | reset   (human-only keys: setting one asks the human)
   windows    midna focus <id> · window open_screen <rules|triggers|insights|settings|needs_you>
   projects   midna projects add <path> · update <id> --name/--icon · add-command <id> --name N -- <cmd>
@@ -38,7 +39,7 @@ HUMAN ONLY (calling these makes a request the human sees; nothing happens until 
   methods    {}
   settings   {}
   also       removing rules (use `midna rules request-removal <id> --reason …`), webhook secrets, enabling
-             triggers, approving approvals (unless the human enabled approve.from_cli, own session only),
+             webhook triggers, approving approvals (unless the human enabled approve.from_cli, own session only),
              dismissing needs-you items, macOS permission grants (ask with `midna attention`).
 
 RULES OF THE ROAD
@@ -127,6 +128,7 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
                 "session" | "stream" | "script" => cmd(surface, "list", "session_list"),
                 "rule" => cmd(surface, "rules list", "rule_list"),
                 "trigger" => cmd(surface, "triggers list", "trigger_list"),
+                "queue" => cmd(surface, "queue", "queue_list"),
                 "needs_you" => cmd(surface, "needs", "needs_you_list"),
                 "project" => cmd(surface, "projects", "project_list"),
                 "settings" => cmd(surface, "settings list", "settings_list"),
@@ -171,10 +173,25 @@ const TOPICS: &[(&str, &str)] = &[
         (setting policy.request_timeout_secs, default 300). Approving with a scope adds a rule: minutes(n) and session \
         → session rule, always → project rule. Agents can't approve unless the human enabled approve.from_cli, and \
         then only their own session's requests. Approvals that confirm a human-only action are the human's alone."),
-    ("triggers", "A trigger maps a GitHub/Bitbucket webhook event (`pull_request.opened`, `pullrequest:created`, globs \
+    ("triggers", "A webhook trigger maps a GitHub/Bitbucket event (`pull_request.opened`, `pullrequest:created`, globs \
         ok) plus filters (repo, branch, action, label) to an action: start_agent (prompt template), run_command (a \
         monitor terminal; values shell-quoted) or attention. States: needs_secret → draft → active ⇄ paused. Agents \
-        draft; the human pastes the secret and enables. `midna triggers test <id> --payload f.json` dry-runs one."),
+        draft; the human pastes the secret and enables. `midna triggers test <id> --payload f.json` dry-runs one.\n\
+        A local trigger (source local) fires on this Mac. event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, \
+        hook.Notification, …), a midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
+        session.status, …), `idle` (no turn started/ended for filter idle_minutes) or `schedule` (filter cron: five \
+        fields in local time, `0 9 * * mon-fri`, `*/30 * * * *`, or @hourly/@daily/@weekly/@monthly/@yearly; data \
+        {cron, scheduled_for, local_time}; with no session/project/agent filter it fires once about no terminal, with \
+        one it acts on every running terminal that matches; a missed run fires late only within 10 minutes); globs ok. \
+        Filters: session, project, agent (claude|codex), idle_minutes, cron, match {dotted.path: glob} (case-insensitive, all must match the \
+        hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
+        order, each waits until the agent is ready), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \
+        clear_on: prompt|turn|status|never} (shown instead of the built-in status, which still drives sorting and \
+        Needs You), clear_status, notify {title, body?, sound} (a macOS notification, category from_trigger); also attention, run_command, start_agent. Templates: {{last_prompt}} (the terminal's \
+        latest full prompt), {{event}}, {{session.id|name|project_id|agent|status}}, {{data.<path>}} or bare {{<path>}} \
+        like {{message}}; run_command shell-quotes values. cooldown_secs (default 60) per terminal. Events caused by a trigger never fire triggers. Agents may \
+        add, enable and pause local triggers directly (no approval) when the human asked for one (`--enable` on add). Built in: \
+        prompt_blocked_status shows “Prompt blocked” when a hook refuses a prompt; edit, pause or remove it like any other."),
     ("needs-you", "Needs-you items are what the human must look at: approval, permission_prompt, blocked, note, failed, \
         trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`. The human \
         resolves: approve{scope}, deny, dismiss, done, restart."),
@@ -184,7 +201,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),
-    ("human-only", "Human only: removing rules, setting webhook secrets, enabling triggers, human-only settings, \
+    ("human-only", "Human only: removing rules, setting webhook secrets, enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
         dismissing items, macOS permissions. Calling one never does it: it becomes a needs-you request (or tells you \
         the request path) and the human decides. Never route around a refusal."),
@@ -317,6 +334,18 @@ fn explain_session(call: Caller, id: &str, surface: Surface) -> Result<String, R
     if !reason.is_empty() {
         out.push_str(&format!("why: reason “{reason}”, set by {}\n", reason_source(&reason)));
     }
+    if let Some(c) = x.get("custom_status").filter(|c| c.is_object()) {
+        let by = c["trigger_id"].as_str().map(|t| format!(" by trigger {t}")).unwrap_or_default();
+        let detail = c["detail"].as_str().map(|d| format!(" — {d}")).unwrap_or_default();
+        out.push_str(&format!(
+            "shown as: “{}” ({}) on top of {}, set{by} {}{detail}; clears on {}\n",
+            s(c, "label"),
+            s(c, "color"),
+            s(c, "base"),
+            ago(&s(c, "since")),
+            c["clear_on"].as_str().unwrap_or("prompt")
+        ));
+    }
     if let Some(c) = x["status"]["exit_code"].as_i64() {
         out.push_str(&format!("exit code: {c}\n"));
     }
@@ -395,6 +424,7 @@ fn action_text(a: &Value) -> String {
         Some("start_agent") => format!("starts a {} agent in project {} with the prompt “{}”", s(a, "agent"), s(a, "project_id"), s(a, "prompt_template")),
         Some("run_command") => format!("runs `{}` in a monitor terminal in project {}", s(a, "command"), s(a, "project_id")),
         Some("attention") => format!("raises a note for the human: “{}”", s(a, "message")),
+        Some("send_to_session" | "set_status" | "clear_status") => format!("acts on the terminal that fired: {}", crate::triggers::action_text(a)),
         _ => a.to_string(),
     }
 }
@@ -402,17 +432,32 @@ fn action_text(a: &Value) -> String {
 fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, RpcError> {
     let list = call("trigger.list", json!({}))?;
     let t = find_in(&list, id).ok_or_else(|| RpcError::not_found(format!("no trigger {id}")))?;
-    let f = &t["filter"];
-    let filters: Vec<String> = ["repo", "branch", "action", "label"].iter().filter_map(|k| f[*k].as_str().map(|v| format!("{k} {v}"))).collect();
-    let mut out = format!("{id} “{}”: when {} sends `{}`", s(&t, "name"), s(&t, "source"), s(&t, "event"));
+    let local = t["source"] == "local";
+    let filters = crate::triggers::filter_text(&t["filter"]);
+    let mut out = if local {
+        format!("{id} “{}”: when `{}` happens on this Mac", s(&t, "name"), s(&t, "event"))
+    } else {
+        format!("{id} “{}”: when {} sends `{}`", s(&t, "name"), s(&t, "source"), s(&t, "event"))
+    };
     if !filters.is_empty() {
-        out.push_str(&format!(" ({})", filters.join(", ")));
+        out.push_str(&format!(" ({filters})"));
     }
     out.push_str(&format!(", it {}.\n", action_text(&t["action"])));
+    if local {
+        out.push_str(&format!("cooldown: {}s per terminal\n", t["cooldown_secs"].as_u64().unwrap_or(60)));
+    }
+    if let Some(b) = t["builtin"].as_str() {
+        out.push_str(&format!("built in ({b}): ships with midna; edit, pause or remove it like any other\n"));
+    }
     out.push_str(&format!("created by {} {}\n", actor(&t["created_by"]), ago(&s(&t, "created_at"))));
     let state = s(&t, "state");
     let st = match state.as_str() {
         "needs_secret" => "needs_secret — waiting for the human to paste the webhook signing secret (human only), then enable it".to_string(),
+        "draft" | "paused" if local => format!(
+            "{state} — enable with {} (agents may, when the human asked for this trigger)",
+            cmd(surface, &format!("triggers enable {id}"), "trigger_set_enabled")
+        ),
+        "active" if local => "active — it fires on matching local events (events triggers cause never fire triggers)".into(),
         "draft" => "draft — the secret is set; waiting for the human to enable it".into(),
         "active" => "active — it fires on matching verified deliveries".into(),
         "paused" => format!("paused — anyone may keep it paused; enabling asks the human ({})", cmd(surface, &format!("triggers enable {id}"), "trigger_set_enabled")),
@@ -428,7 +473,8 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
             out.push_str(&format!("  {} {} {}: {}\n", s(x, "id"), ago(&s(x, "received_at")), s(x, "verdict"), s(x, "summary")));
         }
     }
-    out.push_str(&format!("try it: {}", cmd(surface, &format!("triggers test {id} --payload sample.json"), "trigger_test")));
+    let sample = if local { format!("triggers test {id} --session <terminal-id> --payload '{{\"message\":\"…\"}}'") } else { format!("triggers test {id} --payload sample.json") };
+    out.push_str(&format!("try it: {}", cmd(surface, &sample, "trigger_test")));
     Ok(out)
 }
 
@@ -488,7 +534,7 @@ fn explain_project(call: Caller, id: &str) -> Result<String, RpcError> {
     let mut out = format!("{id} “{}” at {}\n", s(&p, "name"), s(&p, "path"));
     let sessions = call("session.list", json!({ "project_id": id }))?;
     for x in sessions.as_array().into_iter().flatten() {
-        out.push_str(&format!("  terminal {} {} “{}”\n", s(x, "id"), x["status"]["state"].as_str().unwrap_or(""), s(x, "name")));
+        out.push_str(&format!("  terminal {} {} “{}”\n", s(x, "id"), crate::print::status_text(x), s(x, "name")));
     }
     for c in p["commands"].as_array().into_iter().flatten() {
         out.push_str(&format!("  command “{}”: {}{}\n", s(c, "name"), s(c, "run"), if c["pinned"] == true { " (pinned)" } else { "" }));

@@ -85,3 +85,70 @@ fn triggers_cli_flow() {
     let o = d.midna(&["triggers", "remove", &id], None);
     assert_eq!(o.status.code(), Some(0));
 }
+
+#[test]
+fn local_triggers_cli() {
+    let d = D::start("local");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}{}", out(o), String::from_utf8_lossy(&o.stderr));
+    // Source is inferred from the event; --enable turns a local trigger on right away.
+    let o = d.midna(
+        &["triggers", "add", "--name", "Auto-compact", "--event", "agent.prompt_blocked", "--match", "message=*Compact first*", "--send", "/compact", "--send", "{{last_prompt}}", "--enable", "--json"],
+        None,
+    );
+    ok(&o);
+    let t: Value = serde_json::from_str(&out(&o)).unwrap();
+    let id = t["id"].as_str().unwrap().to_string();
+    assert_eq!(t["source"], "local");
+    assert_eq!(t["enabled"], true);
+    assert_eq!(t["filter"]["match"], json!({ "message": "*Compact first*" }));
+    assert_eq!(t["action"], json!({ "kind": "send_to_session", "steps": [{ "text": "/compact", "enter": true }, { "text": "{{last_prompt}}", "enter": true }] }));
+    // --idle-for implies the idle event.
+    let o = d.midna(&["triggers", "add", "--name", "Keep warm", "--idle-for", "55m", "--session", "s_nope", "--send", "ping", "--json"], None);
+    ok(&o);
+    let warm: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(warm["event"], "idle");
+    assert_eq!(warm["filter"]["idle_minutes"], 55);
+    let warm_id = warm["id"].as_str().unwrap().to_string();
+    // --cron implies the schedule event; show lists the next runs.
+    let o = d.midna(&["triggers", "add", "--name", "Standup", "--cron", "0 9 * * mon-fri", "--notify", "Standup", "--json"], None);
+    ok(&o);
+    let cron: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!((cron["event"].as_str(), cron["source"].as_str(), cron["filter"]["cron"].as_str()), (Some("schedule"), Some("local"), Some("0 9 * * mon-fri")));
+    let cron_id = cron["id"].as_str().unwrap().to_string();
+    let shown = out(&d.midna(&["triggers", "show", &cron_id], None));
+    assert!(shown.contains(r#"local schedule cron="0 9 * * mon-fri""#) && shown.contains(" 09:00, ") && shown.contains("(local time)"), "{shown}");
+    assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--cron", "0 9 * *", "--notify", "x"], None).status.code(), Some(2));
+    // A set_status trigger; then edit only its color and cooldown.
+    let o = d.midna(
+        &["triggers", "add", "--name", "Stopped", "--event", "hook.Stop", "--set-status", "Stopped", "--color", "teal", "--base", "done", "--clear-on", "turn", "--json"],
+        None,
+    );
+    ok(&o);
+    let st: Value = serde_json::from_str(&out(&o)).unwrap();
+    let st_id = st["id"].as_str().unwrap().to_string();
+    let o = d.midna(&["triggers", "update", &st_id, "--color", "#ff8800", "--cooldown", "5m", "--json"], None);
+    ok(&o);
+    let st: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(st["action"]["color"], "#ff8800");
+    assert_eq!(st["action"]["label"], "Stopped");
+    assert_eq!(st["cooldown_secs"], 300);
+    // Human output: list and show summarize local filters and actions.
+    let o = d.midna(&["triggers", "list"], None);
+    let text = out(&o);
+    assert!(text.contains(r#"send: "/compact" → "{{last_prompt}}""#), "{text}");
+    assert!(text.contains("idle=55m") && text.contains("status: Stopped (#ff8800, done, clears on turn)"), "{text}");
+    assert!(text.contains("(builtin)"), "the built-in Prompt blocked trigger is listed: {text}");
+    let o = d.midna(&["triggers", "show", &id], None);
+    assert!(out(&o).contains("cooldown 60s") && out(&o).contains(r#"match message="*Compact first*""#), "{}", out(&o));
+    // Bad flags are usage errors (exit 2), before reaching the daemon.
+    assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--event", "pull_request.opened", "--source", "github", "--send", "hi"], None).status.code(), Some(2));
+    assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--event", "hook.Stop", "--set-status", "X", "--color", "mauve", "--base", "idle"], None).status.code(), Some(2));
+    // Dry run with an inline payload.
+    let o = d.midna(&["triggers", "test", &id, "--payload", r#"{"hook":"UserPromptSubmit","message":"Context low. Compact first.","prompt":"hi"}"#], None);
+    ok(&o);
+    for t in [&id, &warm_id, &st_id, &cron_id] {
+        let o = d.midna(&["triggers", "disable", t], None);
+        ok(&o);
+        ok(&d.midna(&["triggers", "remove", t], None));
+    }
+}

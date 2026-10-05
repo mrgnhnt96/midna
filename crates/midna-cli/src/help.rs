@@ -167,6 +167,38 @@ pub static VERBS: &[Verb] = &[
         methods: &["links.list", "links.pin", "links.add"],
     },
     Verb {
+        name: "queue",
+        aliases: &[],
+        usage: "queue [list] [--session <id>]\n       \
+                queue add <text…|-> [--idle <dur> | --at <time> | --after <id> | --when-idle] [--no-enter]\n            \
+                [--image PATH]… [--first | --position N] [--session <id>]\n       \
+                queue edit <q_id> [--text T|-] [--idle <dur> | --at <time> | --after <id> | --when-idle]\n            \
+                [--enter | --no-enter] [--retry] [--session <id>]\n       \
+                queue rm <q_id> | mv <q_id> <to> | send-now <q_id> | clear | pause | resume   [--session <id>]",
+        summary: "queue messages midna types into a terminal once its agent is ready (follow-ups, sequencing)",
+        details: "A queued message is typed (and Enter pressed, unless --no-enter) once it is first in line, its\n\
+                  `when` holds and the agent is ready for input: not working or waiting on the human, no dialog\n\
+                  on screen, nothing typed in its input box. Then the next one goes. Every verb defaults to your\n\
+                  own terminal; --session <id> targets another. The human sees the queue on the terminal and can\n\
+                  edit, reorder or remove it.\n\
+                  Use it to leave yourself a follow-up you can't send mid-turn (`queue add /compact`, then\n\
+                  `queue add \"continue with step 3\"`), to hand another terminal its next step without\n\
+                  interrupting it, or to sequence work across terminals: `queue add --session B --after A \"…\"`\n\
+                  waits until terminal A is idle with an empty queue. Don't use it for something to send now\n\
+                  (`midna send`) or for a recurring reaction (a local trigger).\n\
+                  when: default as soon as the agent is ready (--when-idle sets that back on `edit`);\n\
+                  --idle 10m|1h|90 once the terminal has been idle that long (bare number = minutes);\n\
+                  --at 18:00 (today, or tomorrow if that time has passed; local) or RFC 3339;\n\
+                  --after <id> once that terminal has finished.\n\
+                  Text: the words after `add` joined with spaces, everything after `--`, or `-` to read stdin.\n\
+                  Positions are 1-based here (1 = next to go); the RPC's `position`/`to` are 0-based.\n\
+                  `list` shows each message's state (a failed one shows its error and holds the queue until\n\
+                  `edit --retry`, `send-now` or `rm`), its when, who queued it, and what the first one is waiting for.\n\
+                  `send-now` types one at once, even mid-turn (refused while a permission prompt is up).\n\
+                  `pause` holds the whole queue until `resume`.",
+        methods: &["queue.list", "queue.add", "queue.update", "queue.remove", "queue.clear", "queue.move", "queue.send_now", "queue.pause"],
+    },
+    Verb {
         name: "notify",
         aliases: &["notifications"],
         usage: "notify [--session <id> | --global]\n       \
@@ -295,13 +327,35 @@ pub static VERBS: &[Verb] = &[
                 triggers add --name N --event E [--source github|bitbucket] [--repo R] [--branch B] [--action A]\n            \
                 [--label L] (--agent claude|codex --prompt TEMPLATE | --run CMD | --attention MSG)\n            \
                 [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
+                triggers add --name N --event hook.<Hook>|<midna event kind>|idle|schedule [--source local]\n            \
+                [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
+                [--match path=glob]...\n            \
+                (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
+                [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--silent]\n             \
+                | --attention MSG | --run CMD --project P)\n            \
+                [--cooldown 60s] [--enable]\n       \
+                triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \
                 triggers update <id> [same flags] | enable <id> | disable <id> | remove <id>\n       \
                 triggers set-secret <id>   (human only; reads stdin)\n       \
-                triggers test <id> [--payload FILE|-] [--event E]",
-        summary: "webhook triggers: GitHub/Bitbucket events that start agents, run commands, or raise attention",
-        details: "Agents draft triggers freely; they start as needs_secret. Only the human pastes the signing\n\
-                  secret and enables a trigger (`enable` from an agent asks the human). Anyone may pause.\n\
-                  Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} or any payload path.",
+                triggers test <id> [--payload FILE|-|JSON] [--event E] [--session ID]",
+        summary: "triggers: GitHub/Bitbucket webhooks, or local agent hooks / midna events / idle terminals / schedules, that act",
+        details: "Webhook triggers: agents draft freely; they start as needs_secret. Only the human pastes the signing\n\
+                  secret and enables one (`enable` from an agent asks the human). Anyone may pause.\n\
+                  Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} or any payload path.\n\
+                  \n\
+                  Local triggers (source local; inferred for hook.*, agent.*, session.*, needs_you.*, idle, schedule, or any\n\
+                  local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\
+                  (--enable) and disable them when the human asked for one. --send steps run in order, each waiting\n\
+                  until the agent is ready. --match path=glob (repeatable) matches the hook payload / event data,\n\
+                  case-insensitive; an empty glob removes the key on update; an empty value clears a filter flag.\n\
+                  Durations: 90s, 55m, 1h30m; a bare number is minutes for --idle-for, seconds for --cooldown.\n\
+                  --cron (implies --event schedule): minute hour day-of-month month day-of-week in local time, or\n\
+                  @hourly/@daily/@weekly/@monthly/@yearly. Without --session/--in-project/--for-agent it fires once\n\
+                  about no terminal (notify, attention, run, agent); with one it acts on each running match.\n\
+                  Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or {{<path>}}.\n\
+                  Example: triggers add --name \"Auto-compact\" --event agent.prompt_blocked \\\n\
+                  \x20 --match 'message=*Compact first*' --send /compact --send '{{last_prompt}}' --enable\n\
+                  `midna explain triggers` has the full rules.",
         methods: &[
             "trigger.list", "trigger.add", "trigger.update", "trigger.set_enabled", "trigger.set_secret", "trigger.remove",
             "trigger.deliveries", "trigger.replay", "trigger.test",
