@@ -53,6 +53,8 @@ pub enum Icon {
     SendNow,
     Pencil,
     Pause,
+    /// Collapse / expand the sidebar.
+    Sidebar,
 }
 
 impl Icon {
@@ -98,6 +100,7 @@ impl Icon {
             Icon::SendNow => "icons/sendnow.svg",
             Icon::Pencil => "icons/pencil.svg",
             Icon::Pause => "icons/pause.svg",
+            Icon::Sidebar => "icons/sidebar.svg",
         }
     }
 
@@ -200,6 +203,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/pause.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>"##
+        }
+        "icons/sidebar.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11M3.5 5.5h0.5M3.5 7.5h0.5"/></svg>"##
         }
         "icons/keyboard.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8"/><path d="M4.2 6.4h.1M6.7 6.4h.1M9.2 6.4h.1M11.7 6.4h.1M4.2 8.4h.1M11.7 8.4h.1M6.3 10h3.4"/></svg>"##

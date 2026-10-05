@@ -84,6 +84,8 @@ pub struct MainWindow {
     pub seen: std::collections::HashSet<String>,
     /// Sidebar project groups folded to their heading (project ids; same file as `seen`).
     pub collapsed: std::collections::HashSet<String>,
+    /// The sidebar is collapsed to its rail (`ui::sidebar::rail`; same file as `seen`).
+    pub sidebar_collapsed: bool,
     /// Terminal ids in the order the user dragged them to in the sidebar (same file as `seen`).
     /// Terminals not listed keep daemon order, after the listed ones.
     pub order: Vec<String>,
@@ -137,6 +139,7 @@ impl MainWindow {
         let seen = crate::ui::statusbar::load_state(&backend, "seen");
         let collapsed = crate::ui::statusbar::load_state(&backend, "collapsed");
         let order = crate::ui::statusbar::load_state(&backend, "order");
+        let sidebar_collapsed = crate::ui::statusbar::load_state(&backend, "sidebar_collapsed");
         let (tx, rx) = async_channel::unbounded::<BackendEvent>();
         backend.subscribe(tx);
         let mut tasks = vec![];
@@ -205,6 +208,7 @@ impl MainWindow {
             quit_hold: None,
             seen,
             collapsed,
+            sidebar_collapsed,
             order,
             fold_anim: HashMap::new(),
             fold_heights: Default::default(),
@@ -1235,6 +1239,7 @@ impl MainWindow {
                     crate::ui::sidebar::toggle_fold(m, p, cx);
                 }
             }))
+            .on_action(cx.listener(|m, _: &ToggleSidebar, _w, cx| crate::ui::sidebar::toggle_collapsed(m, cx)))
             .on_action(cx.listener(|m, _: &CopySessionId, _w, cx| m.copy_session_id(cx)))
             .on_action(cx.listener(|m, _: &ToggleMute, _w, cx| m.toggle_mute(cx)))
             .on_action(cx.listener(|m, _: &ToggleSplitOrientation, _w, cx| crate::ui::split::flip(m, cx)))

@@ -170,6 +170,7 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         rules_count: m.rules_count,
         last_agent: last_agent(m, m.current_project_id().as_deref()),
         policy: &policy,
+        sidebar_collapsed: m.sidebar_collapsed,
     };
     let mut cmds = commands::build(&snap);
     cmds.extend(m.palette.user.iter().cloned());
@@ -373,6 +374,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
         Run::Screen { screen } => match screen.as_str() {
             "settings" => crate::ui::settings::open(m.backend.clone(), cx),
             "needs_you" => m.set_overlay(Overlay::NeedsYou, window, cx),
+            "sidebar" => crate::ui::sidebar::toggle_collapsed(m, cx),
             s => {
                 let target = match s {
                     "rules" => Screen::Rules,

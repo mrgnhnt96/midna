@@ -1,5 +1,6 @@
 //! Left sidebar (264px): traffic-light strip, "N need you", project groups with terminal
 //! rows (click a heading to fold it; remembered in app-state.json), and the footer (Today card + Triggers / Rules / Settings).
+//! Collapsed (⌘B, also in app-state.json) it's a 76px rail: one status dot per terminal.
 use super::{caps_label, session_dot};
 use crate::actions::*;
 use crate::app::{MainWindow, Menu, Screen};
@@ -10,6 +11,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 pub const WIDTH: f32 = 264.;
+/// Collapsed: just wide enough for the traffic lights.
+pub const RAIL_WIDTH: f32 = 76.;
 /// Group fold/unfold duration (skipped under the system's Reduce motion).
 const FOLD_MS: f32 = 180.;
 
@@ -28,19 +31,15 @@ impl Render for NoGhost {
     }
 }
 
-pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    if m.sidebar_collapsed {
+        return rail(m, t, cx).into_any_element();
+    }
     let compact = m.compact();
     let need_n = m.needs.len();
     let jump_key = m.key_label("keys.next_needs_you");
 
-    // Traffic lights are drawn by AppKit (transparent titlebar); this strip is the drag area.
-    let top = div().id("titlebar-drag").h(px(44.)).flex_none().on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
-        if ev.click_count >= 2 {
-            window.titlebar_double_click();
-        } else {
-            window.start_window_move();
-        }
-    });
+    let top = titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false));
 
     let need_btn = {
         let has = need_n > 0;
@@ -185,6 +184,154 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         .when(need_n > 0, |d| d.child(need_btn))
         .child(list)
         .child(footer)
+        .into_any_element()
+}
+
+/// Traffic lights are drawn by AppKit (transparent titlebar); this strip is the drag area.
+fn titlebar_strip() -> Stateful<Div> {
+    div().id("titlebar-drag").h(px(44.)).flex_none().on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
+        if ev.click_count >= 2 {
+            window.titlebar_double_click();
+        } else {
+            window.start_window_move();
+        }
+    })
+}
+
+fn collapse_button(t: &Theme, collapsed: bool) -> Stateful<Div> {
+    div()
+        .id("sidebar-toggle")
+        .size(px(28.))
+        .flex_none()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(t.raised))
+        .tooltip(super::header::tip_keys(if collapsed { "Expand the sidebar" } else { "Collapse the sidebar" }, "keys.sidebar"))
+        // don't start a window drag from the strip under it
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(|_, w, cx| w.dispatch_action(Box::new(ToggleSidebar), cx))
+        .child(Icon::Sidebar.el(16., t.dim))
+}
+
+/// Collapse the sidebar to its rail, or expand it again (remembered in app-state.json).
+pub fn toggle_collapsed(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    m.sidebar_collapsed = !m.sidebar_collapsed;
+    crate::ui::statusbar::save_state(m);
+    cx.notify();
+}
+
+/// The collapsed sidebar: expand button, a needs-you count, one status dot per terminal (groups
+/// split by a rule; folded groups keep only the selected terminal), and Triggers / Rules / Settings.
+fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let need_n = m.needs.len();
+    let mut list = div().id("rail-sessions").flex().flex_col().items_center().gap(px(2.)).flex_1().min_h_0().py(px(4.)).overflow_y_scroll();
+    let mut first = true;
+    for g in m.groups() {
+        let folded = g.project.is_some_and(|p| m.collapsed.contains(&p.id));
+        let sessions: Vec<_> = g.sessions.into_iter().filter(|s| !folded || m.selected.as_deref() == Some(&s.id)).collect();
+        if sessions.is_empty() {
+            continue;
+        }
+        if !std::mem::take(&mut first) {
+            list = list.child(div().w(px(28.)).h(px(1.)).my(px(5.)).flex_none().bg(t.line));
+        }
+        let project = if g.project.is_some() { g.name.as_str() } else { "" };
+        for s in sessions {
+            list = list.child(rail_row(m, s, project, t, cx));
+        }
+    }
+    let btn = |id: &'static str, icon: Icon, label: &'static str, setting: &'static str, active: bool| {
+        div()
+            .id(id)
+            .size(px(36.))
+            .rounded(px(7.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(active, |d| d.bg(t.raised))
+            .cursor_pointer()
+            .hover(|s| s.bg(t.raised))
+            .tooltip(super::header::tip_keys(label, setting))
+            .child(icon.el(16., if active { t.fg } else { t.dim }))
+    };
+    div()
+        .w(px(RAIL_WIDTH))
+        .flex_none()
+        .h_full()
+        .flex()
+        .flex_col()
+        .bg(t.panel)
+        .border_r_1()
+        .border_color(t.line)
+        .child(titlebar_strip())
+        .child(div().flex().justify_center().pb(px(6.)).child(collapse_button(t, true)))
+        .when(need_n > 0, |d| {
+            d.child(
+                div().flex().justify_center().pb(px(6.)).child(
+                    div()
+                        .id("rail-need-you")
+                        .min_w(px(28.))
+                        .h(px(24.))
+                        .px(px(7.))
+                        .rounded(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(t.need)
+                        .text_color(t.badge_fg)
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .cursor_pointer()
+                        .tooltip(super::header::tip_keys(format!("{need_n} need you"), "keys.needs_you"))
+                        .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenNeedsYou), cx))
+                        .child(need_n.to_string()),
+                ),
+            )
+        })
+        .child(list)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .py(px(8.))
+                .border_t_1()
+                .border_color(t.line)
+                .child(btn("rail-insights", Icon::Screen, "Insights", "keys.insights", m.screen == Screen::Insights).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Insights, w, cx))))
+                .child(btn("rail-triggers", Icon::Triggers, "Triggers", "keys.triggers", m.screen == Screen::Triggers).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Triggers, w, cx))))
+                .child(btn("rail-rules", Icon::Rules, "Rules", "keys.rules", m.screen == Screen::Rules).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Rules, w, cx))))
+                .child(btn("rail-settings", Icon::Settings, "Settings", "keys.settings", false).on_click(cx.listener(|m, _, _, cx| crate::ui::settings::open(m.backend.clone(), cx)))),
+        )
+}
+
+/// A terminal on the rail: its agent icon with the status dot in the corner; the name (and
+/// project) in the tooltip.
+fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let selected = m.selected.as_deref() == Some(&s.id);
+    let id = s.id.clone();
+    let name = crate::ui::rename::shown_name(m, &s.id, &s.name, cx);
+    let tip = if project.is_empty() { name.to_string() } else { format!("{name} · {project}") };
+    div()
+        .id(SharedString::from(format!("rail-{}", s.id)))
+        .relative()
+        .size(px(40.))
+        .flex_none()
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .when(selected, |d| d.bg(t.raised))
+        .when(!selected, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .tooltip(super::header::tip(tip))
+        .on_click(cx.listener(move |m, _, w, cx| m.select(id.clone(), w, cx)))
+        .when(selected, |d| d.child(div().absolute().left(px(-18.)).top(px(8.)).bottom(px(8.)).w(px(2.)).bg(t.accent)))
+        .child(Icon::from_glyph(s.glyph()).el(16., if selected { t.fg } else { t.dim }))
+        .child(div().absolute().top(px(5.)).right(px(5.)).child(session_dot(t, m.effective_state(s), s.custom_status.as_ref(), 8.)))
 }
 
 /// A run of rows under a group heading, clipped to `1 - fold` of its natural height (measured

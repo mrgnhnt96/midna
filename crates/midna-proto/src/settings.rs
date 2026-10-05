@@ -273,6 +273,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.prev_terminal", KB, S(""), "keys", false, "Select the previous terminal in the sidebar. Unbound by default."),
     s!("keys.project_menu", KB, S("cmd-alt-p"), "keys", false, "Open the current project's … menu in the sidebar."),
     s!("keys.fold_project", KB, S("cmd-alt-f"), "keys", false, "Fold or unfold the current project's terminals in the sidebar."),
+    s!("keys.sidebar", KB, S("cmd-b"), "keys", false, "Collapse the sidebar to a rail of status dots, or expand it again."),
     s!("keys.rename", KB, S("cmd-shift-e"), "keys", false, "Rename the selected terminal."),
     s!("keys.restart", KB, S("cmd-alt-r"), "keys", false, "Restart the selected terminal."),
     s!("keys.terminal_menu", KB, S("cmd-alt-m"), "keys", false, "Open the selected terminal's … menu."),

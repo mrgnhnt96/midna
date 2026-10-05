@@ -32,7 +32,7 @@ pub enum Run {
     Focus { session: String },
     /// ⌘1–9: select project N (sidebar order).
     Project { index: usize },
-    /// `rules` | `triggers` | `insights` | `settings` | `needs_you`.
+    /// `rules` | `triggers` | `insights` | `settings` | `needs_you`, or `sidebar` (collapse / expand it).
     Screen { screen: String },
     /// Open the terminal in a separate always-on-top window.
     PopOut { session: String },
@@ -151,6 +151,7 @@ pub struct Snapshot<'a> {
     pub last_agent: AgentKind,
     /// `policy.check` decisions for project command lines (`allow` | `ask` | `deny`).
     pub policy: &'a dyn Fn(&str) -> Option<String>,
+    pub sidebar_collapsed: bool,
 }
 
 pub fn agent_name(a: AgentKind) -> &'static str {
@@ -673,6 +674,17 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
     .cli(format!("midna settings set density {next}"));
     dc.state = Some(density);
     out.push(dc);
+    out.push(
+        Command::new(
+            "sidebar",
+            CmdIcon::Screen,
+            if s.sidebar_collapsed { "Expand sidebar" } else { "Collapse sidebar" },
+            Run::Screen { screen: "sidebar".into() },
+        )
+        .sub(if s.sidebar_collapsed { "back to full rows" } else { "down to a rail of status dots" })
+        .kw("sidebar collapse expand hide show toggle rail")
+        .keys(key("keys.sidebar")),
+    );
     out
 }
 
@@ -1156,6 +1168,7 @@ mod tests {
             rules_count: 3,
             last_agent: AgentKind::Claude,
             policy,
+            sidebar_collapsed: false,
         };
         build(&snap)
     }
@@ -1218,6 +1231,7 @@ mod tests {
             rules_count: 0,
             last_agent: AgentKind::Claude,
             policy: &|_| None,
+            sidebar_collapsed: false,
         };
         let cmds = build(&snap);
         // nothing typed: the five most recently opened (no terminals here, so "open" counts)

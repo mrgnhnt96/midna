@@ -651,3 +651,10 @@ The user asked for queued messages as a feature of their own (local triggers' `s
   - a terminal whose process ended fails the message, raises a note, and can be retried.
 
   There are also CLI unit tests plus `queue_add_list_move_remove`, app unit tests (phrases, input-box detection, the model reading the wire type), and `local_triggers` passes with steps going through the queue.
+
+## Collapsible sidebar (midna-app `ui/sidebar.rs` `rail`; 2026-10-05)
+
+- **Collapsed = a 76 px rail, not hidden.** The rail is just wide enough for the native traffic lights, so no screen's header has to make room for them. It has the expand button, a needs-you count (opens the cards), one agent icon per terminal with its status dot in the corner (name · project in the tooltip; click selects), a rule between project groups, and Insights / Triggers / Rules / Settings. A folded project shows only the selected terminal, as in the full sidebar.
+- **Toggle.** `keys.sidebar` (default ⌘B, `ToggleSidebar`), the sidebar button at the right of the 44 px titlebar strip (below the traffic lights on the rail), or ⌘K "Collapse sidebar" / "Expand sidebar" (`Run::Screen { screen: "sidebar" }`).
+- **Remembered** in `app-state.json` as `sidebar_collapsed`, next to the folded groups. It's UI memory, not a daemon setting.
+- **Dev.** `MIDNA_DEBUG_KEYS=cmd-b` with `MIDNA_SNAPSHOT` renders the rail. The fake backend's socket path has no parent folder, so its app-state.json lands in the working directory; delete it afterwards.
