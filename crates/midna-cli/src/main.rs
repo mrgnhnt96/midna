@@ -8,6 +8,7 @@ mod mcp;
 mod print;
 mod queue;
 mod secret;
+mod shim;
 mod triggers;
 
 use args::{ArgError, Args};
@@ -57,6 +58,10 @@ type OutFn<'a> = &'a dyn Fn(&Value, &dyn Fn(&Value));
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    // `claude` in a midna shell: every argument is Claude's, so none are parsed here.
+    if raw.first().map(String::as_str) == Some("shim") {
+        shim::run(&raw[1..]);
+    }
     // `queue` gives a few flags values (`--idle 10m`) that are booleans elsewhere (`restart --idle`).
     let args = match Args::parse(raw.clone()) {
         Ok(a) if a.pos.first().map(String::as_str) == Some("queue") => Args::parse_with(raw, queue::VALUE_FLAGS),
@@ -205,11 +210,16 @@ fn run(a: &Args) -> Res {
         }
         "projects" => projects(a, &out),
         "restart" => {
-            a.check(&["idle", "fresh", "force", "cancel", "reason"])?;
+            a.check(&["idle", "fresh", "force", "cancel", "decline", "reason"])?;
             let id = a.need(1, "terminal id")?;
             if a.has("cancel") {
                 let v = call("session.restart_cancel", json!({ "id": id }))?;
                 out(&v, &|_| println!("cancelled the queued restart of {id}"));
+                return Ok(());
+            }
+            if a.has("decline") {
+                let v = call("session.update_decline", json!({ "id": id }))?;
+                out(&v, &|_| println!("not now: {id}'s update prompt stays hidden until a newer update"));
                 return Ok(());
             }
             let mut p = json!({ "id": id, "when": if a.has("idle") { "idle" } else { "now" }, "force": a.has("force") });

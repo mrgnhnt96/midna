@@ -37,6 +37,9 @@ pub fn apply_hook(info: &mut AgentInfo, agent: AgentKind, event: &str, p: &Value
                 && let Some(t) = str_at(p, "/thread-id")
             {
                 info.conversation_id = Some(t);
+                if let Some(c) = str_at(p, "/cwd") {
+                    info.cwd = Some(c);
+                }
             }
         }
     }
@@ -54,6 +57,9 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
         }
         if let Some(m) = str_at(p, "/permission_mode") {
             info.permission_mode = Some(m);
+        }
+        if let Some(c) = str_at(p, "/cwd") {
+            info.cwd = Some(c);
         }
     }
     match event {
@@ -241,6 +247,13 @@ fn material(i: &AgentInfo) -> Value {
     ])
 }
 
+/// Whether the conversation can be reopened: Claude saves it only once a prompt reached the
+/// model (`claude --resume` of a newer one says "No conversation found"). Codex reports no
+/// transcript path, so its conversation is assumed saved.
+pub fn has_transcript(info: &AgentInfo) -> bool {
+    info.transcript_path.as_deref().is_none_or(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0))
+}
+
 /// The command that reopens `info`'s conversation: `base` is the agent's launch command
 /// without its initial prompt. Claude also keeps the model and permission mode it had.
 pub fn resume_command(agent: AgentKind, base: &[String], info: &AgentInfo) -> Option<Vec<String>> {
@@ -376,6 +389,19 @@ pub fn claude_input_text(screen: &[String]) -> Option<String> {
     }
     let text = body.iter().enumerate().map(|(i, l)| if i == 0 { l.trim_start_matches(['❯', '>']).trim() } else { l }).collect::<Vec<_>>().join("\n");
     Some(text.trim().to_string())
+}
+
+/// Does Claude show its "✔ Update installed · Restart to update" notice? Claude draws it
+/// right-aligned just above the input box's top rule (seen on 2.1.289), so only the few rows
+/// there count: the same words quoted in the transcript don't match.
+pub fn claude_update_notice(screen: &[String]) -> bool {
+    let is_rule = |l: &String| {
+        let t = l.trim();
+        t.chars().count() >= 20 && t.chars().all(|c| c == '─')
+    };
+    let rules: Vec<usize> = screen.iter().enumerate().filter(|(_, l)| is_rule(l)).map(|(i, _)| i).collect();
+    let Some(&top) = rules.get(rules.len().wrapping_sub(2)) else { return false };
+    screen[top.saturating_sub(3)..top].iter().any(|l| l.contains("Restart to update"))
 }
 
 #[cfg(test)]
@@ -574,5 +600,18 @@ mod tests {
         assert_eq!(claude_input_text(&["just a shell $".to_string()]), None);
         let real: Vec<String> = include_str!("../tests/fixtures/claude-2.1.288-interrupted.screen.txt").lines().map(str::to_string).collect();
         assert_eq!(claude_input_text(&real).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn update_notice() {
+        let rule = "─".repeat(60);
+        let notice = "                                        ✔ Update installed · Restart to update".to_string();
+        let screen = |above: Vec<String>| [above, vec![rule.clone(), "❯ ".into(), rule.clone(), "  kass @ main · Opus".into()]].concat();
+        assert!(claude_update_notice(&screen(vec!["✻ Baked for 42s".into(), notice.clone()])));
+        assert!(claude_update_notice(&screen(vec![notice.clone(), String::new()])), "a spacer row between");
+        assert!(!claude_update_notice(&screen(vec!["✻ Baked for 42s".into()])));
+        // Quoted in the transcript, well above the input box: not the notice.
+        assert!(!claude_update_notice(&screen(vec![notice.clone(), "a".into(), "b".into(), "c".into()])));
+        assert!(!claude_update_notice(&[notice]), "no input box on screen");
     }
 }

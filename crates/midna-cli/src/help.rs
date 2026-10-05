@@ -146,13 +146,14 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "restart",
         aliases: &[],
-        usage: "restart <id> [--idle] [--fresh] [--force] [--reason TEXT] | restart <id> --cancel",
+        usage: "restart <id> [--idle] [--fresh] [--force] [--reason TEXT] | restart <id> --cancel | --decline",
         summary: "restart a terminal's command in place (same id, same tab)",
         details: "Agent terminals reopen the same conversation (claude --resume / codex resume) unless --fresh. \
                   --idle queues it until the agent is idle with no background work, subagents or scheduled wakeups in flight; \
                   without it, a restart that would kill background work is refused unless --force. --cancel drops a queued restart. \
+                  --decline answers \"Not now\" to an agent update prompt (hidden until a newer update). \
                   Policy-checked as `restart <id>`; the default policy asks the human.",
-        methods: &["session.restart", "session.restart_cancel"],
+        methods: &["session.restart", "session.restart_cancel", "session.update_decline"],
     },
     Verb {
         name: "procs",
@@ -514,6 +515,16 @@ pub static VERBS: &[Verb] = &[
         details: "Reads Claude's hook JSON on stdin and reports it; for PreToolUse it asks midna's policy.\n\
                   You don't need to call this yourself.",
         methods: &["agent.hook", "policy.request"],
+    },
+    Verb {
+        name: "shim",
+        aliases: &[],
+        usage: "shim claude|codex [args…]",
+        summary: "what `claude` / `codex` run in a midna shell terminal (setting agents.adopt_typed)",
+        details: "Runs the agent under midna when it's an interactive session, so the terminal works like an agent\n\
+                  terminal (and restarts into the same conversation inside the shell); anything else runs as typed.\n\
+                  You don't need to call this yourself.",
+        methods: &["session.adopt", "session.adopt_end"],
     },
     Verb {
         name: "help",

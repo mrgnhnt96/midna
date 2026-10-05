@@ -183,6 +183,9 @@ fn build() -> Vec<MethodSpec> {
              `when: now` refuses while background work is in flight unless `force`. Policy-checked as `restart <id>`; the \
              default policy asks the human."),
         m::<IdParams, Session>("session.restart_cancel").mutating().d("Cancel a terminal's queued restart (`session.restart` with `when: idle`)."),
+        m::<IdParams, Session>("session.update_decline").mutating().d(
+            "Answer \"Not now\" to an agent terminal's update prompt (`agent_info.update_available`): it stays hidden for \
+             that update (`agent_info.update_declined`). A newer update asks again; a restart still picks it up."),
         m::<LinksListParams, LinksListResult>("links.list").d(
             "The links, pull requests, artifacts and files that came up in an agent terminal's conversation, collected \
              from the agent's transcript as it runs: URLs the human pasted or the agent wrote or fetched, PRs and artifacts \
@@ -435,6 +438,14 @@ fn build() -> Vec<MethodSpec> {
             "macOS permissions midna uses (accessibility, notifications, login-items) as far as the daemon can see them, \
              each with the `midna permissions open <name>` command that opens the right System Settings pane. Only the \
              human can grant them; use needs_you.raise to ask."),
+        // adopted agents (`midna shim`)
+        m::<SessionAdoptParams, SessionAdoptResult>("session.adopt").mutating().d(
+            "Internal (`midna shim`): a `claude` or `codex` typed into a shell terminal asks to run under midna. When \
+             it's an interactive session and agents.adopt_typed is on, the reply is the command to run (midna's hooks \
+             and MCP added) and the terminal works like an agent terminal until it exits; otherwise it runs as typed."),
+        m::<SessionAdoptEndParams, SessionAdoptResult>("session.adopt_end").mutating().d(
+            "Internal (`midna shim`): the adopted agent exited. The reply's `run` is the next command when a restart asked \
+             for one (same conversation, same shell); otherwise the terminal is a plain shell again."),
         // agent hooks
         m::<AgentHookParams, AgentHookResult>("agent.hook").mutating().d(
             "Report an agent hook event (called by `midna hook claude|codex`). Drives terminal status, turns, prompt counts and cost."),

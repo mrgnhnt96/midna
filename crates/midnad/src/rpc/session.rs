@@ -65,7 +65,7 @@ pub fn exec_argv(command: &[String]) -> Vec<String> {
 /// `supervised` (agents a webhook trigger starts, setting `triggers.agent_mode`): force the
 /// agent's own permission prompts on, whatever the user's global config says, because the
 /// prompt carries untrusted webhook text.
-fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(String, String)], supervised: bool) -> Vec<String> {
+pub(crate) fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(String, String)], supervised: bool) -> Vec<String> {
     let (mcp, hint) = {
         let core = d.core();
         (core.state.setting_bool("agents.mcp"), core.state.setting_bool("agents.system_hint"))
@@ -122,7 +122,7 @@ fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(Str
 
 /// `MIDNA_HOOKS_INJECTED=1` when `command` carries midna's per-launch hooks, so global ones
 /// (`midna hook … --global`) stand down instead of reporting a second time.
-fn mark_injected(d: &Daemon, command: &[String], env: &mut Vec<(String, String)>) {
+pub(crate) fn mark_injected(d: &Daemon, command: &[String], env: &mut Vec<(String, String)>) {
     let full = crate::hooks::claude_settings_path(&d.cfg.home).to_string_lossy().into_owned();
     let notify = crate::hooks::codex_notify_arg(&d.cfg.cli_path);
     if command.iter().any(|a| *a == full || *a == notify) {
@@ -130,7 +130,7 @@ fn mark_injected(d: &Daemon, command: &[String], env: &mut Vec<(String, String)>
     }
 }
 
-fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, String)> {
+pub(crate) fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, String)> {
     let cli_dir = std::path::Path::new(&d.cfg.cli_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
     let path = if cli_dir.is_empty() { path } else { format!("{cli_dir}:{path}") };
@@ -177,6 +177,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         }
         _ => (p.command.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| vec![login_shell(), "-l".into()]), None),
     };
+    let argv = if p.kind == SessionKind::Shell { crate::adopt::shell_env(d, &command, &mut env) } else { None };
     mark_injected(d, &command, &mut env);
     let name = p.name.clone().unwrap_or_else(|| match agent {
         Some(a) => a.as_str().to_string(),
@@ -184,7 +185,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     });
     let now = time::now_rfc3339();
     let (cols, rows) = (p.cols.unwrap_or(100).max(2), p.rows.unwrap_or(30).max(2));
-    let launch = Launch { sid: sid.clone(), argv: exec_argv(&command), cwd: cwd.clone(), env, cols, rows };
+    let launch = Launch { sid: sid.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: cwd.clone(), env, cols, rows };
     let rt = term::start(d, launch).map_err(|e| RpcError::bad_params(format!("could not start {}: {e}", command[0])))?;
     let session = Session {
         id: sid.clone(),
@@ -207,6 +208,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         custom_status: None,
         queue: vec![],
         queue_paused: false,
+        adopted: None,
     };
     {
         let mut core = d.core();
@@ -584,6 +586,14 @@ pub fn restart_cancel(d: &Daemon, ctx: &Ctx, p: IdParams) -> R {
     get(d, p)
 }
 
+pub fn update_decline(d: &Daemon, p: IdParams) -> R {
+    if d.core().state.session(&p.id).is_none() {
+        return Err(not_found(&p.id));
+    }
+    crate::restart::decline_update(d, &p.id);
+    get(d, p)
+}
+
 pub fn processes(d: &Daemon, p: IdParams) -> R {
     let s = d.core().state.session(&p.id).cloned().ok_or_else(|| not_found(&p.id))?;
     let Some(pid) = d.rt(&p.id).map(|rt| rt.pid).filter(|&p| p > 1) else { return ok(Vec::<ProcessInfo>::new()) };
@@ -619,6 +629,12 @@ fn was_supervised(command: &[String]) -> bool {
 /// rebuilt without its initial prompt, so current midna settings (hooks, MCP) apply.
 pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor: Actor) -> Result<Session, RpcError> {
     let s = d.core().state.session(sid).cloned().ok_or_else(|| not_found(sid))?;
+    // A conversation nothing was said in yet isn't saved: start fresh instead.
+    let resume = resume && s.agent_info.as_ref().is_none_or(crate::agent_work::has_transcript);
+    // A `claude` typed into this shell: relaunch it inside the shell, which keeps running.
+    if s.adopted.is_some() {
+        return crate::adopt::restart(d, &s, resume, reason, actor);
+    }
     let info = s.agent_info.clone().unwrap_or_default();
     let (cols, rows) = d.rt(sid).and_then(|rt| rt.read(true)).map(|(_, c, r)| (c, r)).unwrap_or((100, 30));
     let mut env = session_env(d, &s.id, &s.project_id);
@@ -629,6 +645,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
         }
         _ => s.command.clone(),
     };
+    let argv = if s.kind == SessionKind::Shell { crate::adopt::shell_env(d, &command, &mut env) } else { None };
     mark_injected(d, &command, &mut env);
     // Take the old runtime out first, so its exit is ignored (no runtime for this session).
     let old = d.core().rt.remove(sid);
@@ -644,7 +661,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
         let _ = old.tx.send(EngineMsg::Stop);
         stop_orphans(&procs);
     }
-    let launch = Launch { sid: s.id.clone(), argv: exec_argv(&command), cwd: s.cwd.clone(), env, cols, rows };
+    let launch = Launch { sid: s.id.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows };
     let new_rt = term::start(d, launch).map_err(|e| {
         d.set_status(sid, StatusState::Failed, Some(format!("restart failed: {e}")), None, Actor::system());
         RpcError::bad_params(format!("could not restart: {e}"))
@@ -655,6 +672,17 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
         core.rt.insert(s.id.clone(), new_rt);
         if let Some(sess) = core.state.session_mut(&s.id) {
             sess.pid = Some(pid);
+        }
+    }
+    after_restart(d, &s, &info, resume, reason, actor)
+}
+
+/// The agent bookkeeping of a restart, once the new process runs: what was in flight went with
+/// the old one, the cost keeps counting from the conversation's total, and `session.restarted`.
+pub(crate) fn after_restart(d: &Daemon, s: &Session, info: &AgentInfo, resume: bool, reason: &str, actor: Actor) -> Result<Session, RpcError> {
+    {
+        let mut core = d.core();
+        if let Some(sess) = core.state.session_mut(&s.id) {
             sess.title.clear();
             if let Some(i) = sess.agent_info.as_mut() {
                 i.background.clear();
@@ -664,6 +692,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
                 }
                 i.restart = None;
                 i.update_available = None;
+                i.update_declined = None;
             }
         }
         if s.agent.is_some() {
@@ -686,14 +715,14 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
     );
     let status = if resumed { "restarted (resumed)" } else { "restarted" };
     d.set_status(&s.id, StatusState::Idle, Some(status.into()), None, actor);
-    let s = d.core().state.session(sid).cloned().ok_or_else(|| not_found(sid))?;
+    let s = d.core().state.session(&s.id).cloned().ok_or_else(|| not_found(&s.id))?;
     Ok(live(d, &s))
 }
 
 /// SIGHUP what is left of an exited agent's background tasks (re-parented to launchd). Only
 /// processes tagged with a background task: anything else the agent left running on purpose
 /// (a daemon it started) is not ours to stop.
-fn stop_orphans(procs: &[ProcessInfo]) {
+pub(crate) fn stop_orphans(procs: &[ProcessInfo]) {
     for p in procs.iter().filter(|p| p.task_id.is_some() && p.depth > 0) {
         if crate::procs::parent(p.pid) == Some(1) {
             unsafe {
@@ -707,13 +736,13 @@ fn stop_orphans(procs: &[ProcessInfo]) {
 }
 
 /// `session.agent` with the session's current AgentInfo (after the daemon itself changed it).
-fn emit_agent_info(d: &Daemon, sid: &str) {
+pub(crate) fn emit_agent_info(d: &Daemon, sid: &str) {
     let Some((project, info)) = d.core().state.session(sid).and_then(|s| Some((s.project_id.clone(), s.agent_info.clone()?))) else { return };
     d.emit(kinds::SESSION_AGENT, Actor::system(), Some(project), Some(sid.into()), serde_json::to_value(&info).unwrap_or_default());
 }
 
 /// Wait for a process we signalled to be reaped (the reaper thread waitpids it).
-fn wait_gone(pid: i32, max: std::time::Duration) {
+pub(crate) fn wait_gone(pid: i32, max: std::time::Duration) {
     let t0 = std::time::Instant::now();
     while t0.elapsed() < max && unsafe { libc::kill(pid, 0) } == 0 {
         std::thread::sleep(std::time::Duration::from_millis(25));

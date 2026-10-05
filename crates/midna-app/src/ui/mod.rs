@@ -2,6 +2,7 @@
 pub mod annotate;
 pub mod ax_prompt;
 pub mod banner;
+pub mod update_banner;
 pub mod charts;
 pub mod close_window;
 pub mod command_bar;
@@ -131,6 +132,7 @@ impl Render for MainWindow {
                             None => screens::empty_terminal(self, &t, cx).into_any_element(),
                         })
                         .children(banner::render(self, &t, cx))
+                        .children(update_banner::render(self, &t, cx))
                         .children(self.selected.clone().and_then(|id| annotate::tray(&id, &t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| m.focus_terminal(w, cx))))
                         .children(crate::composer::render(self, &t, cx)),
                 )

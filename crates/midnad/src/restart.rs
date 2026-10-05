@@ -1,11 +1,11 @@
 //! Queued restarts and agent update detection.
 //!
-//! A queued restart (`session.restart` with `when: idle`, or an installed agent update under
-//! `agents.restart_on_update = when_idle`) runs once nothing would be lost: the agent is not in
+//! A queued restart (`session.restart` with `when: idle`, an installed agent update under
+//! `agents.restart_on_update = when_idle`, or "When idle" on an update prompt under `ask`) runs once nothing would be lost: the agent is not in
 //! a turn or waiting on the human, its last `Stop` reported no background work and no scheduled
 //! wakeups, no subagent is running, its input box is empty, and the terminal has been quiet for
 //! `agents.restart_idle_secs`. Until then `AgentInfo.restart.waiting_for` says why it waits.
-use crate::agent_work::{claude_input_text, newer, parse_version};
+use crate::agent_work::{claude_input_text, claude_update_notice, newer, parse_version};
 use crate::daemon::Daemon;
 use midna_proto::*;
 use serde_json::json;
@@ -48,6 +48,15 @@ pub fn cancel(d: &Daemon, sid: &str, by: Actor) {
         let project = d.core().state.session(sid).map(|s| s.project_id.clone());
         d.emit(kinds::AUDIT, by, project, Some(sid.into()), json!({ "action": "restart_cancelled" }));
     }
+}
+
+/// "Not now" to the terminal's update prompt: hidden until a newer update.
+pub fn decline_update(d: &Daemon, sid: &str) {
+    edit(d, sid, |i| {
+        let changed = i.update_available.is_some() && i.update_declined != i.update_available;
+        i.update_declined = i.update_available.clone();
+        changed
+    });
 }
 
 /// Why `sid` can't be restarted without losing anything right now (empty = go).
@@ -174,47 +183,51 @@ fn installed_version(d: &Daemon, agent: AgentKind) -> Option<String> {
     parse_version(&out)
 }
 
-/// Compare each live Claude terminal's running version with the installed one, and act per
-/// `agents.restart_on_update`.
+/// For each live Claude terminal: is a newer Claude installed than the one it runs? Either the
+/// status line's version is older than `claude --version`, or Claude shows its own "Restart to
+/// update" notice (the only signal when the terminal's status line isn't midna's, so no version
+/// is reported). Either sets `update_available`; `agents.restart_on_update = when_idle` also
+/// queues the restart, `ask` leaves it to the prompt the GUI shows on the terminal.
 pub fn check_updates(d: &Daemon) {
-    let running: Vec<(Id, String, String)> = {
+    let running: Vec<(Id, Option<String>)> = {
         let core = d.core();
         core.state
             .sessions
             .iter()
             .filter(|s| s.pid.is_some() && s.agent == Some(AgentKind::Claude))
-            .filter_map(|s| Some((s.id.clone(), s.name.clone(), s.agent_info.as_ref()?.version.clone()?)))
+            .map(|s| (s.id.clone(), s.agent_info.as_ref().and_then(|i| i.version.clone())))
             .collect()
     };
     if running.is_empty() {
         return;
     }
-    let Some(installed) = installed_version(d, AgentKind::Claude) else { return };
+    let installed = installed_version(d, AgentKind::Claude);
     let mode = d.core().state.setting_str("agents.restart_on_update");
-    for (sid, name, version) in running {
-        if !newer(&installed, &version) {
+    for (sid, version) in running {
+        let by_version = matches!((&installed, &version), (Some(i), Some(v)) if newer(i, v));
+        let notice = || d.rt(&sid).and_then(|rt| rt.read(true)).is_some_and(|(screen, _, _)| claude_update_notice(&screen));
+        if !by_version && !notice() {
             continue;
         }
+        // The notice without a known installed version still names the update, so it is noted once.
+        let target = installed.clone().unwrap_or_else(|| "update".into());
         let mut fresh = false;
         edit(d, &sid, |i| {
-            fresh = i.update_available.as_deref() != Some(installed.as_str());
-            i.update_available = Some(installed.clone());
+            fresh = i.update_available.as_deref() != Some(target.as_str());
+            i.update_available = Some(target.clone());
             fresh
         });
         if !fresh {
             continue;
         }
-        let reason = format!("Claude {version} → {installed}");
-        match mode.as_str() {
-            "when_idle" => queue(d, &sid, &reason, Actor::system()),
-            "ask" => {
-                let title = format!("Restart {name} into the same conversation to update Claude ({version} → {installed})");
-                let mut item = d.new_needs_you(NeedsYouKind::Note, title, Actor::system(), Some(sid.clone()));
-                item.bulk_safe = true;
-                item.detail = "Resolve with restart: it runs once the agent is idle with nothing in flight.".into();
-                d.raise_needs_you(item);
-            }
-            _ => {}
+        let change = match (&version, &installed) {
+            (Some(v), Some(i)) if newer(i, v) => format!("{v} → {i}"),
+            (_, Some(i)) => format!("{i} installed"),
+            _ => "update installed".into(),
+        };
+        // ask: `update_available` is the prompt, shown when the terminal is opened.
+        if mode == "when_idle" {
+            queue(d, &sid, &format!("Claude {change}"), Actor::system());
         }
     }
 }
@@ -231,6 +244,7 @@ pub fn start(d: &Arc<Daemon>) {
                 return;
             }
             tick(&d);
+            crate::adopt::reap(&d);
             n += 1;
             // First check ~10s after start, then every minute. Off the tick so a slow login
             // shell never delays a queued restart.

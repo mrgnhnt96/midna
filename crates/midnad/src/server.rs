@@ -163,6 +163,7 @@ pub fn start_with(mut cfg: Config, resume: Option<crate::upgrade::Resume>) -> st
     };
     d.listener_fd.store(std::os::fd::AsRawFd::as_raw_fd(&listener), Ordering::SeqCst);
     crate::hooks::write_claude_settings(&d);
+    crate::adopt::write_files(&d);
     match &resume {
         Some(r) => crate::upgrade::adopt_all(&d, r),
         None => {

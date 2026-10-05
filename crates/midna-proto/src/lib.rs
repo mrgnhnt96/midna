@@ -1,6 +1,7 @@
 //! midna wire types, method catalog, OpenRPC generation, frame codec and a blocking client.
 //! See docs/ARCHITECTURE.md.
 pub mod catalog;
+pub mod agent_cli;
 pub mod client;
 pub mod cron;
 pub mod error;

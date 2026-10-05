@@ -239,6 +239,30 @@ pub struct Session {
     /// The queue is paused: nothing is typed until it is resumed (`queue.pause`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub queue_paused: bool,
+    /// A `claude` typed into this shell terminal, running under midna (`session.adopt`). While
+    /// it runs, `agent` is set and the terminal works like an agent terminal; a restart
+    /// relaunches it inside the same shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted: Option<AdoptedAgent>,
+}
+
+/// An agent typed into a shell terminal and run by `midna shim` (see `Session.adopted`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AdoptedAgent {
+    pub agent: AgentKind,
+    /// The `midna shim` process, which runs the agent as its child and relaunches it.
+    pub pid: i32,
+    /// The agent binary the shell would have run.
+    pub bin: String,
+    /// The arguments as typed.
+    pub args: Vec<String>,
+    pub since: Timestamp,
+    /// The command the shim runs next when the agent exits (a restart in progress).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<Vec<String>>,
+    /// Where it runs, when the agent had moved out of the shell's directory (into a worktree).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cwd: Option<String>,
 }
 
 // ------------------------------------------------------------------ queued messages
@@ -322,12 +346,20 @@ pub struct AgentInfo {
     /// Model id the agent is using now (Claude's status line); kept across a resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The directory the agent works in, as its hooks report it: the terminal's, or a worktree
+    /// it moved into (`claude -w`, `codex --worktree`). A restart comes back there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// Permission mode the agent is in now (`default`, `plan`, `acceptEdits`, …); kept across a resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     /// A newer version is installed than the one running: a restart picks it up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_available: Option<String>,
+    /// The `update_available` the human answered "Not now" to (`session.update_decline`): its
+    /// prompt stays hidden. A newer update asks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_declined: Option<String>,
     /// In-flight background work (shells, subagents, monitors, workflows, MCP tasks) as of
     /// `background_at`. Replaced by each `Stop`; shells and agents started mid-turn are added live.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -355,6 +387,12 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
+    /// The update the terminal should offer to restart for: installed, not declined, and no
+    /// restart already queued.
+    pub fn update_prompt(&self) -> Option<&str> {
+        self.update_available.as_deref().filter(|u| self.update_declined.as_deref() != Some(*u) && self.restart.is_none())
+    }
+
     /// Why restarting the agent now would lose work, one line each (empty = safe).
     pub fn in_flight(&self) -> Vec<String> {
         let mut out = vec![];

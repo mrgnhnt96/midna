@@ -22,6 +22,7 @@ impl FakeClaude {
             "#!/bin/sh\n\
              case \"$1\" in --version) cat '{d}/installed'; exit 0;; esac\n\
              echo \"$@\" >> '{d}/argv'\n\
+             [ -f '{d}/notice' ] && printf '%30s\\342\\234\\224 Update installed \\302\\267 Restart to update\\n' ''\n\
              printf '\\033[38;2;136;136;136m%s\\033[39m\\n\\342\\235\\257\\302\\240\\033[2mTry \"fix lint errors\"\\033[22m\\n\\033[38;2;136;136;136m%s\\033[39m\\n' '{rule}' '{rule}'\n\
              trap 'exit 0' HUP TERM\n\
              sleep 300 & wait $!\n",
@@ -40,6 +41,11 @@ impl FakeClaude {
 
     fn launches(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.join("argv")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Draw Claude's "Restart to update" notice above the input box from the next launch on.
+    fn show_notice(&self) {
+        std::fs::write(self.dir.join("notice"), "").unwrap();
     }
 
     fn install(&self, version: &str) {
@@ -124,7 +130,8 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     let procs = procs.as_array().unwrap();
     assert!(procs.iter().any(|p| p["depth"] == 1 && p["command"].as_str().unwrap().contains("sleep 300")), "{procs:?}");
 
-    // An update is installed: queued by default (agents.restart_on_update = when_idle).
+    // An update is installed: when_idle queues the restart without asking.
+    call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "when_idle" }));
     let mut a = d.agent(Some(&sid));
     hook(&mut a, "SessionStart", json!({ "session_id": "conv-1", "source": "resume" }));
     hook(&mut a, "statusline", json!({ "session_id": "conv-1", "version": "2.1.289", "model": { "id": "claude-opus-5-5" } }));
@@ -135,20 +142,61 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
     assert_eq!(ev.as_array().unwrap().last().unwrap()["data"]["reason"], "Claude 2.1.289 → 2.1.290");
 
-    // ask: a needs-you note; resolving it with restart queues the same thing.
+    // ask: recorded for the terminal's prompt, no needs-you item; "When idle" queues it.
     call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "ask" }));
     let mut a = d.agent(Some(&sid));
     hook(&mut a, "statusline", json!({ "session_id": "conv-1", "version": "2.1.290" }));
     fake.install("2.1.291");
     midnad::restart::check_updates(&d.daemon());
-    let items = call(&mut h, "needs_you.list", json!({}));
-    let note = items.as_array().unwrap().iter().find(|n| n["kind"] == "note").cloned().expect("update note");
-    assert!(note["title"].as_str().unwrap().contains("2.1.291"));
+    assert_eq!(call(&mut h, "needs_you.list", json!({})), json!([]), "the status never changes for an update");
     assert_eq!(info(&mut h, &sid)["update_available"], "2.1.291");
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(fake.launches().len(), 3, "ask never restarts on its own");
-    call(&mut h, "needs_you.resolve", json!({ "id": note["id"], "resolution": { "kind": "restart" } }));
-    wait_for(10, "restart after the note", || (fake.launches().len() == 4).then_some(()));
+    call(&mut h, "session.restart", json!({ "id": sid, "when": "idle" }));
+    wait_for(10, "restart when idle", || (fake.launches().len() == 4).then_some(()));
+}
+
+#[test]
+fn on_screen_update_notice_is_offered_without_a_status_line() {
+    let fake = FakeClaude::new("n");
+    let bin = fake.bin();
+    let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.restart_idle_secs", "value": 0 }));
+    fake.show_notice();
+    fake.install("2.1.290");
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
+    wait_for(5, "fake claude started", || (fake.launches().len() == 1).then_some(()));
+    let mut a = d.agent(Some(&sid));
+    // The user's own status line: midna never hears a version.
+    hook(&mut a, "SessionStart", json!({ "session_id": "conv-1", "source": "startup" }));
+    stop(&mut a, json!([]));
+    wait_for(5, "notice drawn", || call(&mut h, "session.read", json!({ "id": sid, "screen": true })).to_string().contains("Restart to update").then_some(()));
+
+    // Default (ask): recorded for the prompt, no needs-you item.
+    midnad::restart::check_updates(&d.daemon());
+    assert_eq!(call(&mut h, "needs_you.list", json!({})), json!([]));
+    assert_eq!(info(&mut h, &sid)["update_available"], "2.1.290");
+
+    // Not now: hidden for this update, and a later check doesn't bring it back.
+    let s = call(&mut h, "session.update_decline", json!({ "id": sid }));
+    assert_eq!(s["agent_info"]["update_declined"], "2.1.290");
+    midnad::restart::check_updates(&d.daemon());
+    assert_eq!(info(&mut h, &sid)["update_declined"], "2.1.290");
+    assert_eq!(fake.launches().len(), 1, "ask never restarts on its own");
+
+    // A newer update asks again.
+    fake.install("2.1.291");
+    midnad::restart::check_updates(&d.daemon());
+    let i = info(&mut h, &sid);
+    assert_eq!((i["update_available"].as_str(), i["update_declined"].as_str()), (Some("2.1.291"), Some("2.1.290")));
+
+    // Restart (now): same conversation, and the update state is gone.
+    call(&mut h, "session.restart", json!({ "id": sid }));
+    wait_for(10, "restart", || (fake.launches().len() == 2).then_some(()));
+    let i = info(&mut h, &sid);
+    assert!(i["update_available"].is_null() && i["update_declined"].is_null(), "{i}");
+    assert!(fake.launches()[1].ends_with("--resume conv-1"), "{:?}", fake.launches());
 }
 
 #[test]

@@ -486,6 +486,7 @@ mod tests {
                 waiting_for: vec![],
             }],
             queue_paused: true,
+            adopted: None,
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);

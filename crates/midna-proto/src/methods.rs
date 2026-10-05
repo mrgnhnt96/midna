@@ -1358,6 +1358,48 @@ pub struct SessionRestartParams {
     pub reason: Option<String>,
 }
 
+// ------------------------------------------------------------------ adopted agents
+
+/// `midna shim`: an agent was typed into a shell terminal. The reply says whether midna runs it
+/// (`run`, the full command) or the shim runs the agent as typed.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionAdoptParams {
+    pub agent: AgentKind,
+    /// The agent binary the shell would have run (the next one on PATH after midna's shim).
+    pub bin: String,
+    pub args: Vec<String>,
+    /// The shim's pid; it must be a process in the terminal.
+    pub pid: i32,
+    /// Defaults to the caller's session.
+    #[serde(default)]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SessionAdoptResult {
+    /// The command to run (binary first); none = run the agent as typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Vec<String>>,
+    /// Environment the command gets on top of the shell's.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// The directory to run it in, when not the shell's (a restart of an agent that had moved
+    /// into a worktree).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// `midna shim`: the adopted agent exited. The reply's `run` is the next command when a
+/// restart asked for one; none = the shim exits with the agent's code.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionAdoptEndParams {
+    pub pid: i32,
+    #[serde(default)]
+    pub code: Option<i32>,
+    #[serde(default)]
+    pub session: Option<Id>,
+}
+
 // ------------------------------------------------------------------ agent hooks
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

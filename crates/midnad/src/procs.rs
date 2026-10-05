@@ -22,6 +22,18 @@ struct Bsd {
     start: i64,
 }
 
+/// A process's working directory.
+pub fn cwd(pid: i32) -> Option<String> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, &mut info as *mut _ as *mut libc::c_void, size) };
+    if got != size {
+        return None;
+    }
+    let bytes: Vec<u8> = info.pvi_cdir.vip_path.iter().flatten().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    Some(String::from_utf8_lossy(&bytes).into_owned()).filter(|p| p.starts_with('/'))
+}
+
 fn bsd_info(pid: i32) -> Option<Bsd> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
