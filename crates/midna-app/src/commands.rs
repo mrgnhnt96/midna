@@ -155,6 +155,8 @@ pub struct Snapshot<'a> {
     /// `policy.check` decisions for project command lines (`allow` | `ask` | `deny`).
     pub policy: &'a dyn Fn(&str) -> Option<String>,
     pub sidebar_collapsed: bool,
+    /// The sidebar's Background group is hidden (`MainWindow::background_hidden`).
+    pub background_hidden: bool,
     /// "this window" / "other window" for a terminal whose name another window also uses.
     pub name_note: &'a dyn Fn(&Session) -> Option<&'static str>,
 }
@@ -631,6 +633,17 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
                 .kw("window float detach")
                 .cli(format!("midna window pop_out {}", x.id)),
         );
+        let (title, sub, cli) = if x.background {
+            (format!("Move {} to foreground", x.name), format!("{pname} · back under its project in the sidebar"), format!("midna background {} --off", x.id))
+        } else {
+            (format!("Move {} to background", x.name), format!("{pname} · folded away at the bottom of the sidebar, still running"), format!("midna background {}", x.id))
+        };
+        out.push(
+            Command::new(format!("background:{}", x.id), CmdIcon::Pin, title, Run::Rpc { method: "session.set_background".into(), params: json!({"id": x.id, "background": !x.background}) })
+                .sub(sub)
+                .kw("background foreground hide unhide tuck away bg")
+                .cli(cli),
+        );
         out.extend(restart_commands(x, &pname));
         let queued = x.queue.len();
         let mut q = Command::new(format!("queue:{}", x.id), CmdIcon::Run, format!("Queue a message for {}", x.name), Run::Queue { session: x.id.clone() })
@@ -693,6 +706,19 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         .kw("sidebar collapse expand hide show toggle rail")
         .keys(key("keys.sidebar")),
     );
+    // Hiding is offered once there is something to hide; showing, always while hidden.
+    if s.background_hidden || s.sessions.iter().any(|x| x.background) {
+        out.push(
+            Command::new(
+                "background",
+                CmdIcon::Screen,
+                if s.background_hidden { "Show background terminals in the sidebar" } else { "Hide background terminals from the sidebar" },
+                Run::Screen { screen: "background".into() },
+            )
+            .sub(if s.background_hidden { "the folded Background group above Today" } else { "they keep running; find them here in ⌘K" })
+            .kw("background bg hide show sidebar group"),
+        );
+    }
     out
 }
 
@@ -1195,6 +1221,7 @@ mod tests {
             last_agent: AgentKind::Claude,
             policy,
             sidebar_collapsed: false,
+            background_hidden: false,
             name_note: &|_| None,
         };
         build(&snap)
@@ -1259,6 +1286,7 @@ mod tests {
             last_agent: AgentKind::Claude,
             policy: &|_| None,
             sidebar_collapsed: false,
+            background_hidden: false,
             name_note: &|_| None,
         };
         let cmds = build(&snap);
@@ -1268,6 +1296,40 @@ mod tests {
         // folders under projects.roots: searchable, never listed up front, once per path
         assert_eq!(search(&cmds, "kass", 5)[0].cmd.run, Some(Run::OpenProject { path: Some("/src/kass".into()) }));
         assert!(!cmds.iter().any(|c| c.id == "folder:/src/new"));
+    }
+
+    #[test]
+    fn background_terminals_get_move_and_sidebar_commands() {
+        let key = |_: &str| String::new();
+        let setting = |_: &str| None;
+        let bg = Session { id: "b1".into(), name: "dev server".into(), background: true, ..Default::default() };
+        let fg = Session { id: "f1".into(), name: "api".into(), ..Default::default() };
+        let build_with = |sessions: Vec<&Session>, hidden: bool| {
+            build(&Snapshot {
+                projects: &[],
+                discovered: &[],
+                sessions,
+                needs: &[],
+                selected: None,
+                current_project: None,
+                key: &key,
+                setting: &setting,
+                rules_count: 0,
+                last_agent: AgentKind::Claude,
+                policy: &|_| None,
+                sidebar_collapsed: false,
+                background_hidden: hidden,
+                name_note: &|_| None,
+            })
+        };
+        let title = |cmds: &[Command], id: &str| cmds.iter().find(|c| c.id == id).map(|c| c.title.clone());
+        let cmds = build_with(vec![&bg, &fg], false);
+        assert_eq!(title(&cmds, "background:b1").as_deref(), Some("Move dev server to foreground"));
+        assert_eq!(title(&cmds, "background:f1").as_deref(), Some("Move api to background"));
+        assert_eq!(title(&cmds, "background").as_deref(), Some("Hide background terminals from the sidebar"));
+        // Nothing to hide: no sidebar row. Hidden: the row to bring it back, always.
+        assert_eq!(title(&build_with(vec![&fg], false), "background"), None);
+        assert_eq!(title(&build_with(vec![], true), "background").as_deref(), Some("Show background terminals in the sidebar"));
     }
 
     #[test]

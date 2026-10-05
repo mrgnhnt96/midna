@@ -169,6 +169,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.open" => session::open(d, ctx, parse(p)?),
         "session.close" => session::close(d, ctx, parse(p)?),
         "session.rename" => session::rename(d, ctx, parse(p)?),
+        "session.set_background" => session::set_background(d, ctx, parse(p)?),
         "session.input" => session::input(d, ctx, parse(p)?),
         "session.read" => session::read(d, parse(p)?),
         "session.resize" => session::resize(d, parse(p)?),

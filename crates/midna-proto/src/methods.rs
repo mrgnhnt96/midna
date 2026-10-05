@@ -449,6 +449,17 @@ pub struct SessionOpenParams {
     pub cols: Option<u16>,
     #[serde(default)]
     pub rows: Option<u16>,
+    /// Open it as a background terminal: tracked as usual, but folded away at the bottom of
+    /// the sidebar instead of listed under its project, and never selected on open.
+    #[serde(default)]
+    pub background: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSetBackgroundParams {
+    pub id: Id,
+    /// True moves the terminal to the sidebar's Background group, false back to its project.
+    pub background: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

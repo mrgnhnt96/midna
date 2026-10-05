@@ -563,3 +563,27 @@ fn no_project_opens_at_root() {
     let child = call(&mut a, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"] }));
     assert_eq!(child["project_id"], "root");
 }
+
+#[test]
+fn background_terminals_open_and_move() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let s = call(&mut c, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"], "background": true }));
+    let id = s["id"].as_str().unwrap().to_string();
+    assert_eq!(s["background"], true);
+    // Still a normal terminal: listed and readable.
+    let list = call(&mut c, "session.list", json!({}));
+    assert_eq!(list[0]["background"], true);
+    call(&mut c, "session.input", json!({ "id": id, "text": "echo bg-$((40+2))", "enter": true }));
+    wait_for(5, "echo output", || read(&mut c, &id).contains("bg-42").then_some(()));
+    // Moving it back drops the field (it is only serialized when set) and logs one event.
+    let s = call(&mut c, "session.set_background", json!({ "id": id, "background": false }));
+    assert!(s.get("background").is_none());
+    call(&mut c, "session.set_background", json!({ "id": id, "background": false }));
+    let moves = call(&mut c, "events.list", json!({ "filter": { "kinds": ["session.background"] } }));
+    assert_eq!(moves.as_array().unwrap().len(), 1);
+    assert_eq!(moves[0]["data"]["background"], false);
+    // Agents may move terminals too.
+    let mut a = d.agent(Some(&id));
+    assert_eq!(call(&mut a, "session.set_background", json!({ "id": id, "background": true }))["background"], true);
+}

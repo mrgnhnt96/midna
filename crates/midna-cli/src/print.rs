@@ -59,10 +59,13 @@ pub fn sessions(v: &Value) {
     }
     let mut rows = vec![vec!["ID".into(), "STATUS".into(), "KIND".into(), "NAME".into(), "PROJECT".into(), "TITLE".into()]];
     for x in list {
-        let kind = match x.get("agent") {
+        let mut kind = match x.get("agent") {
             Some(a) if !a.is_null() => plain(a),
             _ => s(&x, "kind"),
         };
+        if x["background"].as_bool() == Some(true) {
+            kind.push_str(" (bg)");
+        }
         rows.push(vec![s(&x, "id"), status_text(&x), kind, s(&x, "name"), s(&x, "project_id"), s(&x, "title")]);
     }
     table(rows);

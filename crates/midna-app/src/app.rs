@@ -49,6 +49,8 @@ pub enum Menu {
     Subagents,
     /// The header's Open in IDE menu (`ide.rs`).
     Ide,
+    /// Right-click menu on the sidebar's Background heading (`ui/sidebar.rs`).
+    Background,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -90,6 +92,11 @@ pub struct MainWindow {
     pub collapsed: std::collections::HashSet<String>,
     /// The sidebar is collapsed to its rail (`ui::sidebar::rail`; same file as `seen`).
     pub sidebar_collapsed: bool,
+    /// The sidebar's Background group is unfolded (same file as `seen`; folded by default).
+    pub background_open: bool,
+    /// The Background group is left out of the sidebar and rail entirely (same file as `seen`).
+    /// ⌘K "Show background terminals in the sidebar" brings it back.
+    pub background_hidden: bool,
     /// Terminal ids in the order the user dragged them to in the sidebar (same file as `seen`).
     /// Terminals not listed keep daemon order, after the listed ones.
     pub order: Vec<String>,
@@ -160,6 +167,8 @@ impl MainWindow {
         let collapsed = crate::ui::statusbar::load_state(&backend, "collapsed");
         let order = crate::ui::statusbar::load_state(&backend, "order");
         let sidebar_collapsed = crate::ui::statusbar::load_state(&backend, "sidebar_collapsed");
+        let background_open = crate::ui::statusbar::load_state(&backend, "background_open");
+        let background_hidden = crate::ui::statusbar::load_state(&backend, "background_hidden");
         let id = cx.entity_id();
         let windows = crate::windows::register(cx.weak_entity(), id, window.window_handle(), cx);
         cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
@@ -226,6 +235,8 @@ impl MainWindow {
             seen,
             collapsed,
             sidebar_collapsed,
+            background_open,
+            background_hidden,
             order,
             fold_anim: HashMap::new(),
             fold_heights: Default::default(),
@@ -755,6 +766,7 @@ impl MainWindow {
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
+                    "background-menu" => self.menu = Menu::Background,
                     "close-window" => {
                         self.close_ask = Some(Default::default());
                     }
@@ -778,19 +790,31 @@ impl MainWindow {
     // ------------------------------------------------------------------ selection
 
     /// Sessions in sidebar order: grouped by project order, then sessions in dragged order
-    /// (`order`), then daemon order.
+    /// (`order`), then daemon order. Background terminals come last, and only while their
+    /// group is unfolded and not hidden (the selected one always), so ⌘]/⌘[ and auto-select
+    /// skip them.
     pub fn ordered_sessions(&self) -> Vec<&Session> {
         let mut out = vec![];
         for g in self.groups() {
             out.extend(g.sessions);
         }
+        let shown = |s: &&Session| (self.background_open && !self.background_hidden) || self.selected.as_deref() == Some(&s.id);
+        out.extend(self.background_sessions().into_iter().filter(shown));
+        out
+    }
+
+    /// This window's background terminals (`Session::background`), in dragged order. They sit
+    /// in the sidebar's Background group, not under their projects.
+    pub fn background_sessions(&self) -> Vec<&Session> {
+        let mut out: Vec<&Session> = self.sessions.iter().filter(|s| s.background && self.shows(&s.id)).collect();
+        out.sort_by_key(|s| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX));
         out
     }
 
     pub fn groups(&self) -> Vec<Group<'_>> {
         let mut groups: Vec<Group> = self.projects.iter().map(|p| Group { project: Some(p), name: p.name.clone(), sessions: vec![] }).collect();
         let mut root = Group { project: None, name: "root".into(), sessions: vec![] };
-        for s in self.sessions.iter().filter(|s| self.shows(&s.id)) {
+        for s in self.sessions.iter().filter(|s| !s.background && self.shows(&s.id)) {
             match s.project_id.as_ref().and_then(|pid| groups.iter_mut().find(|g| g.project.is_some_and(|p| &p.id == pid))) {
                 Some(g) => g.sessions.push(s),
                 None => root.sessions.push(s),

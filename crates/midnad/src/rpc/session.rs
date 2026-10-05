@@ -182,6 +182,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         created_at: now.clone(),
         last_activity_at: now,
         keep_on_top: false,
+        background: p.background,
         git: None,
         agent_info: None,
         notify: Default::default(),
@@ -254,6 +255,19 @@ pub fn rename(d: &Daemon, ctx: &Ctx, p: SessionRenameParams) -> R {
     let out = s.clone();
     d.mark_dirty();
     d.emit(kinds::SESSION_RENAMED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "name": p.name, "old": old }));
+    ok(out)
+}
+
+pub fn set_background(d: &Daemon, ctx: &Ctx, p: SessionSetBackgroundParams) -> R {
+    let mut core = d.core();
+    let s = core.state.session_mut(&p.id).ok_or_else(|| not_found(&p.id))?;
+    if s.background == p.background {
+        return ok(s.clone());
+    }
+    s.background = p.background;
+    let out = s.clone();
+    d.mark_dirty();
+    d.emit(kinds::SESSION_BACKGROUND, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "background": p.background }));
     ok(out)
 }
 

@@ -231,6 +231,9 @@ impl FakeBackend {
                     }),
                     ..s("a1f00008", "p_midna1", "triggers", Agent, Some(Claude), NeedsYou, Some("Prompt blocked"), 2, git("feat/local-triggers", 64, 8, 4, None))
                 },
+                // Background terminals (`midna open --background`): the sidebar's folded group.
+                Session { background: true, ..s("a1f00009", "p_zonai1", "dev server", Monitor, None, Working, None, 1, None) },
+                Session { background: true, ..s("a1f0000a", "p_midna1", "cargo watch", Shell, None, Idle, None, 6, None) },
             ]
         };
         let needs = vec![
@@ -531,9 +534,19 @@ impl Backend for FakeBackend {
                     agent,
                     status: Status { state: if agent.is_some() { StatusState::Working } else { StatusState::Idle }, since: Some(now_rfc3339()), ..Default::default() },
                     created_at: now_rfc3339(),
+                    background: params.get("background").and_then(Value::as_bool).unwrap_or(false),
                     ..Default::default()
                 });
                 st.emit("session.opened", Some(&id), json!({}));
+                json!({"id": id})
+            }
+            "session.set_background" => {
+                let id = p("id").unwrap_or_default();
+                let on = params.get("background").and_then(Value::as_bool).unwrap_or(false);
+                if let Some(x) = st.sessions.iter_mut().find(|x| x.id == id) {
+                    x.background = on;
+                }
+                st.emit("session.background", Some(&id), json!({ "background": on }));
                 json!({"id": id})
             }
             "session.restart" => {

@@ -213,6 +213,11 @@ pub struct Session {
     pub last_activity_at: Timestamp,
     #[serde(default)]
     pub keep_on_top: bool,
+    /// A background terminal: it runs and is tracked like any other (list, read, send, needs-you),
+    /// but the GUI keeps it out of the sidebar's project lists, in a folded, dimmed "Background"
+    /// group at the bottom. Set with `session.open` or `session.set_background`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitInfo>,
     /// Agent terminals: what the agent is running, as its hooks report it (see `AgentInfo`).
@@ -962,6 +967,7 @@ pub mod kinds {
     pub const PROJECT_REMOVED: &str = "project.removed";
     pub const SESSION_OPENED: &str = "session.opened";
     pub const SESSION_RENAMED: &str = "session.renamed";
+    pub const SESSION_BACKGROUND: &str = "session.background";
     pub const SESSION_CLOSED: &str = "session.closed";
     pub const SESSION_STATUS: &str = "session.status";
     pub const SESSION_TITLE: &str = "session.title";

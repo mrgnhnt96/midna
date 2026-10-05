@@ -329,6 +329,14 @@ fn run(a: &Args) -> Res {
             out(&v, &|_| println!("renamed {id} to {name}"));
             Ok(())
         }
+        "background" | "bg" => {
+            a.check(&["off"])?;
+            let id = a.need(1, "terminal id")?;
+            let on = !a.has("off");
+            let v = call("session.set_background", json!({ "id": id, "background": on }))?;
+            out(&v, &|_| println!("{} {id}", if on { "backgrounded" } else { "foregrounded" }));
+            Ok(())
+        }
         "read" => {
             a.check(&["lines", "screen"])?;
             // `read --screen <id>`: the id was taken as --screen's value.
@@ -443,13 +451,13 @@ fn run(a: &Args) -> Res {
 }
 
 fn open(a: &Args, out: OutFn) -> Res {
-    a.check(&["agent", "prompt", "monitor", "name", "project", "cwd"])?;
+    a.check(&["agent", "prompt", "monitor", "name", "project", "cwd", "background"])?;
     let cwd = match a.get("cwd") {
         Some(c) => Some(c.to_string()),
         None if a.get("project").is_none() => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         None => None,
     };
-    let mut p = json!({ "project_id": a.get("project"), "name": a.get("name"), "cwd": cwd });
+    let mut p = json!({ "project_id": a.get("project"), "name": a.get("name"), "cwd": cwd, "background": a.has("background") });
     if let Some(agent) = a.get("agent") {
         p["kind"] = json!("agent");
         p["agent"] = json!(agent);

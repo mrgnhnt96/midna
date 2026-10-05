@@ -242,6 +242,7 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
             .child(div().px(px(14.)).py(px(10.)).text_size(px(12.)).text_color(t.dim).child(format!("Or {} for a terminal at root.", m.key_label("keys.new_terminal"))));
     }
 
+    let background = background_group(m, t, compact, window, cx);
     let footer = footer(m, t, cx);
 
     div()
@@ -256,8 +257,121 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         .child(top)
         .when(need_n > 0, |d| d.child(need_btn))
         .child(list)
+        .children(background)
         .child(footer)
         .into_any_element()
+}
+
+/// Key of the Background group in `fold_anim` / `fold_heights` (project ids start with `p_`).
+const BACKGROUND: &str = "@background";
+/// Unfolded Background rows scroll past this height, so the project list keeps the room.
+const BACKGROUND_MAX_H: f32 = 220.;
+
+/// Background terminals (`session.open` with `background`, `midna open --background`): a
+/// dimmed group pinned between the project list and the footer (outside the list's scroll, so
+/// it never falls below the fold), folded by default. Unfolded, its rows scroll on their own
+/// past `BACKGROUND_MAX_H`. A folded group keeps only the selected terminal; clicking a row
+/// previews it in the main pane like any other.
+fn background_group(m: &MainWindow, t: &Theme, compact: bool, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<Div> {
+    let sessions = m.background_sessions();
+    if sessions.is_empty() || m.background_hidden {
+        return None;
+    }
+    let menu_open = m.menu == Menu::Background;
+    let n = sessions.len();
+    let need = sessions.iter().filter(|s| matches!(m.effective_state(s), StatusState::NeedsYou | StatusState::Failed)).count();
+    let fold = match m.fold_anim.get(BACKGROUND) {
+        Some(at) if at.elapsed().as_secs_f32() * 1000. < FOLD_MS => {
+            window.request_animation_frame();
+            let e = 1. - (1. - at.elapsed().as_secs_f32() * 1000. / FOLD_MS).powi(3);
+            if m.background_open { 1. - e } else { e }
+        }
+        _ => if m.background_open { 0. } else { 1. },
+    };
+    let chevron = Icon::Chevron.el(10., t.dim).when(fold > 0., |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2 * fold))));
+    let header = div()
+        .id("group-background")
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .pt(px(8.))
+        .pr(px(14.))
+        .pb(px(2.))
+        .pl(px(10.))
+        .opacity(0.7)
+        .cursor_pointer()
+        .hover(|s| s.opacity(1.))
+        .relative()
+        .when(menu_open, |d| d.opacity(1.))
+        .tooltip(super::header::tip(if m.background_open { "Fold background terminals (right-click for more)" } else { "Show background terminals (right-click for more)" }))
+        .on_click(cx.listener(|m, _, _, cx| toggle_background(m, cx)))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|m, _, _, cx| {
+                cx.stop_propagation();
+                m.menu = if m.menu == Menu::Background { Menu::None } else { Menu::Background };
+                cx.notify();
+            }),
+        )
+        .child(chevron)
+        .child(caps_label(t, "Background").flex_1())
+        .when(need > 0, |d| d.child(div().size(px(7.)).rounded_full().bg(t.need)))
+        .child(div().text_size(px(11.)).text_color(t.dim).child(n.to_string()))
+        .when(menu_open, |d| d.child(background_menu(t, cx)));
+    let mut group = div().id("background-rows").flex().flex_col().max_h(px(BACKGROUND_MAX_H)).overflow_y_scroll();
+    let (mut run, mut ri) = (vec![], 0);
+    let dim = |el: AnyElement, selected: bool| div().when(!selected, |d| d.opacity(0.55)).child(el).into_any_element();
+    for s in sessions {
+        if m.selected.as_deref() == Some(&s.id) {
+            group = group.children(fold_run(std::mem::take(&mut run), format!("{BACKGROUND}/{ri}"), fold, m)).child(dim(row(m, s, BACKGROUND, t, compact, cx).into_any_element(), true));
+            ri += 1;
+        } else if fold < 1. {
+            run.push(dim(row(m, s, BACKGROUND, t, compact, cx).into_any_element(), false));
+        }
+    }
+    group = group.children(fold_run(run, format!("{BACKGROUND}/{ri}"), fold, m));
+    Some(div().flex_none().flex().flex_col().pb(px(if compact { 2. } else { 6. })).border_t_1().border_color(t.line).child(header).child(group))
+}
+
+/// The Background heading's right-click menu. Opens upward: the heading sits above the footer.
+fn background_menu(t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    deferred(
+        anchored().anchor(Anchor::BottomLeft).snap_to_window_with_margin(px(8.)).child(
+            menu_box(t).mb(px(4.)).child(menu_item(
+                t,
+                "background-hide",
+                "Hide from sidebar",
+                "show again from ⌘K",
+                cx.listener(|m, _, _, cx| set_background_hidden(m, true, cx)),
+            )),
+        ),
+    )
+    .with_priority(1)
+}
+
+/// Leave the Background group out of the sidebar and rail, or bring it back (remembered in
+/// app-state.json). The terminals keep running and stay in ⌘K and the needs-you count.
+pub fn set_background_hidden(m: &mut MainWindow, hidden: bool, cx: &mut Context<MainWindow>) {
+    m.background_hidden = hidden;
+    m.menu = Menu::None;
+    crate::ui::statusbar::save_state(m);
+    if hidden {
+        m.toast("Background terminals hidden from the sidebar. ⌘K \"Show background terminals\" brings them back.", cx);
+    }
+    cx.notify();
+}
+
+/// Fold or unfold the Background group (remembered in app-state.json).
+pub fn toggle_background(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    m.background_open = !m.background_open;
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        m.fold_anim.remove(BACKGROUND);
+    } else {
+        m.fold_anim.insert(BACKGROUND.into(), std::time::Instant::now());
+    }
+    crate::ui::statusbar::save_state(m);
+    cx.notify();
 }
 
 /// Traffic lights are drawn by AppKit (transparent titlebar); this strip is the drag area.
@@ -314,6 +428,18 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
         let project = if g.project.is_some() { g.name.as_str() } else { "" };
         for s in sessions {
             list = list.child(rail_row(m, s, project, t, cx));
+        }
+    }
+    // Background terminals: dimmed after a rule, only while their group is unfolded (the
+    // selected one always), and never while it is hidden.
+    let bg: Vec<_> = m.background_sessions().into_iter().filter(|s| !m.background_hidden && (m.background_open || m.selected.as_deref() == Some(&s.id))).collect();
+    if !bg.is_empty() {
+        if !first {
+            list = list.child(div().w(px(28.)).h(px(1.)).my(px(5.)).flex_none().bg(t.line));
+        }
+        for s in bg {
+            let selected = m.selected.as_deref() == Some(&s.id);
+            list = list.child(div().when(!selected, |d| d.opacity(0.55)).child(rail_row(m, s, "background", t, cx)));
         }
     }
     let btn = |id: &'static str, icon: Icon, label: &'static str, setting: &'static str, active: bool| {

@@ -106,12 +106,14 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "open",
         aliases: &["new"],
-        usage: "open [--agent claude|codex] [--prompt TEXT] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [-- argv...]",
+        usage: "open [--agent claude|codex] [--prompt TEXT] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [-- argv...]",
         summary: "open a terminal: a shell (default), a monitor, or an agent",
         details: "Shell: the login shell, or `-- argv...`. Monitor: `--monitor CMD` runs a command the human\n\
                   should watch; a failure raises a needs-you item. Agent: `--agent claude|codex` starts a\n\
                   new agent with midna's hooks and MCP server, optionally with `--prompt`. Without\n\
                   --project the terminal goes in the project containing --cwd (default: this directory).\n\
+                  --background puts it in the sidebar's folded Background group instead of under its\n\
+                  project (a dev server, a watcher); it is still listed, readable and can raise needs-you.\n\
                   Prints the new terminal's id.",
         methods: &["session.open"],
     },
@@ -131,6 +133,15 @@ pub static VERBS: &[Verb] = &[
         summary: "rename a terminal",
         details: "Changes the sidebar label.",
         methods: &["session.rename"],
+    },
+    Verb {
+        name: "background",
+        aliases: &["bg"],
+        usage: "background <id> [--off]",
+        summary: "move a terminal to the sidebar's Background group (or back with --off)",
+        details: "Background terminals sit folded and dimmed at the bottom of the sidebar instead of under\n\
+                  their project. Nothing else changes: the process keeps running and needs-you items still show.",
+        methods: &["session.set_background"],
     },
     Verb {
         name: "restart",

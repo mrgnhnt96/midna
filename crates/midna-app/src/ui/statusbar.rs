@@ -18,10 +18,11 @@ pub fn webhooks_label(path: &str) -> &'static str {
 }
 
 /// App-side UI memory, kept out of the daemon's settings so it doesn't clutter Settings:
-/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...], "order": [...], "sidebar_collapsed": bool}`.
+/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...], "order": [...], "sidebar_collapsed": bool, "background_open": bool, "background_hidden": bool}`.
 /// `seen` = status bar items clicked at least once; `collapsed` = sidebar project groups folded
 /// away; `order` = terminal ids in the order they were dragged to in the sidebar;
-/// `sidebar_collapsed` = the sidebar is down to its rail.
+/// `sidebar_collapsed` = the sidebar is down to its rail; `background_open` = the sidebar's
+/// Background group is unfolded; `background_hidden` = it is left out of the sidebar.
 fn state_file(backend: &Arc<dyn Backend>) -> Option<std::path::PathBuf> {
     backend.socket_path().parent().map(|h| h.join("app-state.json"))
 }
@@ -46,7 +47,7 @@ pub fn save_state(m: &mut MainWindow) {
     let mine: Vec<String> = m.order.iter().filter(|id| m.shows(id)).cloned().collect();
     m.order = merge_order(&base, &mine);
     let mut all = saved.as_object().cloned().unwrap_or_default();
-    for (k, v) in [("seen", serde_json::json!(m.seen)), ("collapsed", serde_json::json!(m.collapsed)), ("order", serde_json::json!(m.order)), ("sidebar_collapsed", serde_json::json!(m.sidebar_collapsed))] {
+    for (k, v) in [("seen", serde_json::json!(m.seen)), ("collapsed", serde_json::json!(m.collapsed)), ("order", serde_json::json!(m.order)), ("sidebar_collapsed", serde_json::json!(m.sidebar_collapsed)), ("background_open", serde_json::json!(m.background_open)), ("background_hidden", serde_json::json!(m.background_hidden))] {
         all.insert(k.into(), v);
     }
     let _ = std::fs::write(p, serde_json::Value::Object(all).to_string());

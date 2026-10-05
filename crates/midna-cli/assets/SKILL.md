@@ -36,6 +36,9 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - `midna open [--name N] [-- argv...]` opens a shell. Use `--monitor CMD` for a long-running process
   the human should see (a failure raises a needs-you item). Use `--agent claude|codex --prompt TEXT`
   to delegate durable work to a new agent the human can follow.
+- Add `--background` to `open` for something that should run out of the way (a dev server, a
+  watcher). It sits in the sidebar's folded Background group but is still listed, readable and
+  able to raise needs-you. `midna background <id> [--off]` moves an existing terminal.
 - `midna send <id> <text>` types text and presses Enter. Add `--no-enter` to skip Enter. In a
   Claude Code or Codex terminal that is a chat message (multi-line text stays one message).
   `--image PATH` (repeatable) attaches an image ahead of the text, e.g. a screenshot you saved:

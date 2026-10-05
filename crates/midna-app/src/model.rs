@@ -131,6 +131,8 @@ pub struct Session {
     pub created_at: String,
     pub last_activity_at: String,
     pub keep_on_top: bool,
+    /// Kept out of the project lists, in the sidebar's folded Background group.
+    pub background: bool,
     pub git: Option<GitInfo>,
     /// Agents: conversation, background work in flight, update available, queued restart.
     pub agent_info: Option<midna_proto::AgentInfo>,
@@ -450,6 +452,7 @@ mod tests {
             created_at: "2026-10-03T10:00:00Z".into(),
             last_activity_at: "2026-10-03T10:00:00Z".into(),
             keep_on_top: false,
+            background: true,
             git: Some(p::GitInfo {
                 branch: "main".into(),
                 files: 2,
@@ -492,6 +495,7 @@ mod tests {
         let cs = got[0].custom_status.as_ref().unwrap();
         assert_eq!((cs.label.as_str(), cs.color.as_str(), cs.base, cs.clear_on.as_str()), ("Prompt blocked", "amber", StatusState::NeedsYou, "prompt"));
         assert_eq!((got[0].queue[0].when.clone(), got[0].queue_paused), (p::SendWhen::IdleFor { minutes: 5 }, true));
+        assert!(got[0].background);
         let seg = p::Segment { text: "#3".into(), tone: Some(p::Tone::Accent), link: Some("u".into()) };
         let got: Vec<Segment> = parse_list(&serde_json::json!({"segments": [seg]}));
         assert_eq!(got[0].tone, Some(Tone::Accent));

@@ -161,6 +161,8 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
     let name_note = |s: &Session| crate::windows::name_note(m, s);
     // This window's terminals in sidebar order, then the other windows' (choosing one brings its window forward).
     let mut sessions = m.ordered_sessions();
+    let folded: Vec<&Session> = m.background_sessions().into_iter().filter(|s| !sessions.iter().any(|x| x.id == s.id)).collect();
+    sessions.extend(folded);
     sessions.extend(m.sessions.iter().filter(|s| !m.shows(&s.id)));
     let snap = commands::Snapshot {
         projects: &m.projects,
@@ -175,6 +177,7 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         last_agent: last_agent(m, m.current_project_id().as_deref()),
         policy: &policy,
         sidebar_collapsed: m.sidebar_collapsed,
+        background_hidden: m.background_hidden,
         name_note: &name_note,
     };
     let mut cmds = commands::build(&snap);
@@ -384,6 +387,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             "settings" => crate::ui::settings::open(m.backend.clone(), cx),
             "needs_you" => m.set_overlay(Overlay::NeedsYou, window, cx),
             "sidebar" => crate::ui::sidebar::toggle_collapsed(m, cx),
+            "background" => crate::ui::sidebar::set_background_hidden(m, !m.background_hidden, cx),
             s => {
                 let target = match s {
                     "rules" => Screen::Rules,

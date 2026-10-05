@@ -131,7 +131,11 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionOpenParams, Session>("session.open").mutating().d(
             "Open a new terminal. kind=shell runs the login shell (or `command`), kind=monitor runs `command` for the human to watch, \
              kind=agent launches Claude or Codex (agent=claude|codex) with midna's hooks and an optional initial `prompt`. \
-             Use this to delegate durable work to a new agent the human can see."),
+             Use this to delegate durable work to a new agent the human can see. background=true opens it in the sidebar's \
+             folded Background group instead (a dev server, a watcher): still listed, readable and able to raise needs-you."),
+        m::<SessionSetBackgroundParams, Session>("session.set_background").mutating().d(
+            "Move a terminal to the sidebar's folded Background group (background=true) or back to its project (false). \
+             Its process, status and needs-you items are unchanged."),
         m::<SessionCloseParams, OkResult>("session.close").mutating().d(
             "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`)."),
         m::<SessionRenameParams, Session>("session.rename").mutating().d("Rename a terminal (the sidebar label the human sees). Give terminals you open a short, task-describing name."),
