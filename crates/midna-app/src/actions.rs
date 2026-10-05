@@ -19,6 +19,8 @@ actions!(
         NewAgentRoot,
         /// Folder picker → `project.add` → a terminal in it.
         OpenProject,
+        /// Another main window (same daemon, its own selection).
+        NewWindow,
         /// Approve the selected session's pending approval once.
         ApproveOnce,
         Deny,
@@ -116,6 +118,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.triggers", OpenTriggers, MAIN),
     shortcut!("keys.insights", OpenInsights, MAIN),
     shortcut!("keys.open_project", OpenProject, MAIN),
+    shortcut!("keys.new_window", NewWindow, None),
     shortcut!("keys.composer", crate::composer::OpenComposer, MAIN),
     shortcut!("keys.add_image", crate::annotate::AddImage, MAIN),
     shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, MAIN),

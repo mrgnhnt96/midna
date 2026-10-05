@@ -97,26 +97,28 @@ impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         let focus = cx.focus_handle();
         let mut tasks = vec![];
+        // The native text view and Kass have one sink each for the whole app: their events
+        // go to the main window you're using (there can be several, see `windows`).
         let (tx, rx) = async_channel::unbounded::<ComposerEvent>();
-        let _ = EVENTS.set(tx);
-        tasks.push(cx.spawn_in(window, async move |this, cx| {
-            while let Ok(ev) = rx.recv().await {
-                if this.update_in(cx, |m, window, cx| on_event(m, ev, window, cx)).is_err() {
-                    break;
+        if EVENTS.set(tx).is_ok() {
+            let app: &App = cx;
+            app.spawn(async move |cx| {
+                while let Ok(ev) = rx.recv().await {
+                    cx.update(|cx| crate::windows::with_active(cx, |m, window, cx| on_event(m, ev, window, cx)));
                 }
-            }
-        }));
-        let (ktx, krx) = async_channel::unbounded::<KassEvent>();
-        kass::start(move |ev| {
-            let _ = ktx.try_send(ev);
-        });
-        tasks.push(cx.spawn_in(window, async move |this, cx| {
-            while let Ok(ev) = krx.recv().await {
-                if this.update_in(cx, |m, window, cx| on_kass(m, ev, window, cx)).is_err() {
-                    break;
+            })
+            .detach();
+            let (ktx, krx) = async_channel::unbounded::<KassEvent>();
+            kass::start(move |ev| {
+                let _ = ktx.try_send(ev);
+            });
+            app.spawn(async move |cx| {
+                while let Ok(ev) = krx.recv().await {
+                    cx.update(|cx| crate::windows::with_active(cx, |m, window, cx| on_kass(m, ev, window, cx)));
                 }
-            }
-        }));
+            })
+            .detach();
+        }
         if let Ok(text) = crate::dev::var("MIDNA_DEBUG_COMPOSER") {
             // Dev: open the composer with `text` once terminals have loaded (screenshots).
             tasks.push(cx.spawn_in(window, async move |this, cx| {

@@ -24,7 +24,6 @@ pub struct PopOut {
     on_top: bool,
     session: String,
     main: WeakEntity<MainWindow>,
-    main_window: AnyWindowHandle,
     _release: Subscription,
 }
 
@@ -41,15 +40,12 @@ impl PopOut {
         self.queue.update(cx, |v, cx| v.toggle(sid, window, cx));
     }
 
-    /// Back into the main window, selected there.
+    /// Back into its main window (the one that has it now, see `windows`), selected there.
     fn dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         forget(&self.session, cx);
         window.remove_window();
-        let (main, id) = (self.main.clone(), self.session.clone());
-        let _ = self.main_window.update(cx, |_, w, cx| {
-            w.activate_window();
-            let _ = main.update(cx, |m, cx| m.select(id, w, cx));
-        });
+        let id = self.session.clone();
+        cx.defer(move |cx| crate::windows::reveal(id, cx));
     }
 }
 
@@ -104,6 +100,26 @@ pub fn is_popped(session: &str, cx: &App) -> bool {
     cx.try_global::<Popped>().is_some_and(|p| p.0.contains_key(session))
 }
 
+/// Bring `session`'s pop-out forward. False when it isn't popped out.
+pub fn activate(session: &str, cx: &mut App) -> bool {
+    cx.try_global::<Popped>().and_then(|p| p.0.get(session).copied()).is_some_and(|h| h.update(cx, |_, w, _| w.activate_window()).is_ok())
+}
+
+/// Whether `session`'s pop-out is the window you're using.
+pub fn is_active(session: &str, cx: &App) -> bool {
+    let h = cx.try_global::<Popped>().and_then(|p| p.0.get(session).copied());
+    h.is_some_and(|h| cx.active_window() == Some(h.into()))
+}
+
+/// Close `session`'s pop-out, if it has one (its terminal is being closed).
+pub fn close(session: &str, cx: &mut App) {
+    let h = cx.try_global::<Popped>().and_then(|p| p.0.get(session).copied());
+    forget(session, cx);
+    if let Some(h) = h {
+        let _ = h.update(cx, |_, w, _| w.remove_window());
+    }
+}
+
 fn forget(session: &str, cx: &mut App) {
     cx.default_global::<Popped>().0.remove(session);
 }
@@ -116,7 +132,7 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
         return;
     }
     m.release(&session, window, cx);
-    let (main, main_window, backend) = (cx.entity().downgrade(), window.window_handle(), m.backend.clone());
+    let (main, backend) = (cx.entity().downgrade(), m.backend.clone());
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(720.), px(440.)), cx))),
         titlebar: Some(TitlebarOptions { title: Some(format!("midna · {session}").into()), appears_transparent: true, traffic_light_position: Some(point(px(10.), px(9.))) }),
@@ -145,7 +161,7 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
                 forget(&p.session, cx);
                 let _ = p.main.update(cx, |_, cx| cx.notify());
             });
-            PopOut { term, queue, on_top: true, session: id, main, main_window, _release }
+            PopOut { term, queue, on_top: true, session: id, main, _release }
         })
     });
     if let Ok(h) = opened {

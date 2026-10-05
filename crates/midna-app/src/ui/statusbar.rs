@@ -35,9 +35,54 @@ pub fn load_state<T: serde::de::DeserializeOwned + Default>(backend: &Arc<dyn Ba
         .unwrap_or_default()
 }
 
-pub fn save_state(m: &MainWindow) {
-    if let Some(p) = state_file(&m.backend) {
-        let _ = std::fs::write(p, serde_json::json!({ "seen": m.seen, "collapsed": m.collapsed, "order": m.order, "sidebar_collapsed": m.sidebar_collapsed }).to_string());
+/// Every main window writes the same file: keep what the others saved (their "seen" clicks,
+/// their terminals' places in the order) and put this window's terminals in its order.
+pub fn save_state(m: &mut MainWindow) {
+    let Some(p) = state_file(&m.backend) else { return };
+    let saved = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or_default();
+    let seen_before: Vec<String> = saved.get("seen").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    m.seen.extend(seen_before);
+    let base: Vec<String> = saved.get("order").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let mine: Vec<String> = m.order.iter().filter(|id| m.shows(id)).cloned().collect();
+    m.order = merge_order(&base, &mine);
+    let mut all = saved.as_object().cloned().unwrap_or_default();
+    for (k, v) in [("seen", serde_json::json!(m.seen)), ("collapsed", serde_json::json!(m.collapsed)), ("order", serde_json::json!(m.order)), ("sidebar_collapsed", serde_json::json!(m.sidebar_collapsed))] {
+        all.insert(k.into(), v);
+    }
+    let _ = std::fs::write(p, serde_json::Value::Object(all).to_string());
+}
+
+/// Set one key of `app-state.json`, keeping the rest.
+pub fn update_state(backend: &Arc<dyn Backend>, key: &str, value: serde_json::Value) {
+    let Some(p) = state_file(backend) else { return };
+    let saved = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or_default();
+    let mut all = saved.as_object().cloned().unwrap_or_default();
+    all.insert(key.into(), value);
+    let _ = std::fs::write(p, serde_json::Value::Object(all).to_string());
+}
+
+/// `base` with the ids in `mine` re-ordered among their own slots (new ones at the end).
+fn merge_order(base: &[String], mine: &[String]) -> Vec<String> {
+    let mut next = mine.iter().filter(|id| base.contains(id));
+    let mut out: Vec<String> = base.iter().map(|id| if mine.contains(id) { next.next().cloned().unwrap_or_else(|| id.clone()) } else { id.clone() }).collect();
+    out.extend(mine.iter().filter(|id| !base.contains(id)).cloned());
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_order;
+    use ::core::prelude::v1::test;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn merge_keeps_other_windows_places() {
+        // this window has b and d; another window's a, c, e stay put
+        assert_eq!(merge_order(&v(&["a", "b", "c", "d", "e"]), &v(&["d", "b"])), v(&["a", "d", "c", "b", "e"]));
+        assert_eq!(merge_order(&v(&["a"]), &v(&["x"])), v(&["a", "x"]));
     }
 }
 

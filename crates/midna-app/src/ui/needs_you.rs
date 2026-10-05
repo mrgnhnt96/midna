@@ -125,7 +125,10 @@ fn project_name(m: &MainWindow, pid: Option<&str>) -> String {
 
 fn where_of(m: &MainWindow, n: &NeedsYou) -> String {
     match session_of(m, n) {
-        Some(s) => format!("{} › {}", project_name(m, s.project_id.as_deref()), s.name),
+        Some(s) => match crate::windows::name_note(m, s) {
+            Some(w) => format!("{} › {} ({w})", project_name(m, s.project_id.as_deref()), s.name),
+            None => format!("{} › {}", project_name(m, s.project_id.as_deref()), s.name),
+        },
         None => project_name(m, n.project_id.as_deref()),
     }
 }

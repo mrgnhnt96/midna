@@ -31,10 +31,83 @@ impl Render for NoGhost {
     }
 }
 
+/// The sidebar, which also tracks a row dragged out of the window (to move it to another
+/// main window, or a new one) and lights up while another window's row is over it.
 pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    if m.sidebar_collapsed {
-        return rail(m, t, cx).into_any_element();
+    let inner = if m.sidebar_collapsed { rail(m, t, cx).into_any_element() } else { full(m, t, window, cx) };
+    let hint = m.windows.borrow().drop_hint == Some(m.id);
+    div()
+        .id("sidebar")
+        .relative()
+        .flex()
+        .flex_none()
+        .h_full()
+        .on_drag_move(cx.listener(drag_out_move))
+        .on_mouse_up(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| drag_out_end(m, ev.position, w, cx)))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| drag_out_end(m, ev.position, w, cx)))
+        .child(inner)
+        .when(hint, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(t.accent_soft)
+                    .border_2()
+                    .border_color(t.accent)
+                    .text_color(t.accent)
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("Move here"),
+            )
+        })
+        .into_any_element()
+}
+
+/// The rows a drag moves: the dragged one, or its group's selected rows when it's selected.
+fn drag_ids(m: &MainWindow, dragged: &str) -> Vec<String> {
+    if m.marked.len() > 1 && m.is_marked(dragged) { m.marked_ids() } else { vec![dragged.to_string()] }
+}
+
+fn drag_out_move(m: &mut MainWindow, ev: &DragMoveEvent<DraggedRow>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let dragged = ev.drag(cx).id.clone();
+    let pos = ev.event.position;
+    m.drag_out = Some((drag_ids(m, &dragged), pos));
+    let bounds = window.bounds();
+    let over = crate::windows::window_at(bounds.origin + pos, m.id, bounds, cx).filter(|w| *w != m.id);
+    crate::windows::set_drop_hint(over, cx);
+}
+
+/// Released: over another main window, the rows move there; outside every window, they get
+/// a new one under the cursor. Inside this window the drag was a reorder (already done).
+fn drag_out_end(m: &mut MainWindow, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some((ids, _)) = m.drag_out.take() else { return };
+    crate::windows::set_drop_hint(None, cx);
+    let bounds = window.bounds();
+    let screen = bounds.origin + pos;
+    if bounds.contains(&screen) {
+        return;
     }
+    let target = crate::windows::window_at(screen, m.id, bounds, cx);
+    if target == Some(m.id) {
+        return;
+    }
+    m.hand_off(&ids, window, cx);
+    let backend = m.backend.clone();
+    cx.defer(move |cx| {
+        let target = target.or_else(|| {
+            let at = Bounds::new(screen - point(px(80.), px(20.)), bounds.size);
+            crate::windows::open(backend, Some(at), cx).and_then(|h| crate::windows::id_of(h, cx))
+        });
+        if let Some(t) = target {
+            crate::windows::give(ids, t, cx);
+        }
+    });
+}
+
+fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let compact = m.compact();
     let need_n = m.needs.len();
     let jump_key = m.key_label("keys.next_needs_you");

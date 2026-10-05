@@ -30,9 +30,9 @@ mod terminal;
 mod theme;
 mod ui;
 mod updater;
+mod windows;
 
 use actions::*;
-use gpui_kit::prelude::*;
 use gpui_kit::*;
 use theme::{Theme, ThemeMode};
 
@@ -65,25 +65,37 @@ fn main() {
                 let _ = w.update(cx, |_, window, _| window.remove_window());
             }
         });
+        // ⌘⇧N: another main window, empty until you open something in it.
+        let b = backend.clone();
+        cx.on_action(move |_: &NewWindow, cx| {
+            let _ = windows::open(b.clone(), None, cx);
+        });
         cx.set_menus(vec![Menu {
             name: "midna".into(),
-            items: vec![MenuItem::action("Settings…", OpenSettings), MenuItem::separator(), MenuItem::action("Close", CloseWindow), MenuItem::action("Quit midna", Quit)],
+            items: vec![
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Close", CloseWindow),
+                MenuItem::action("Quit midna", Quit),
+            ],
             disabled: false,
         }]);
-        let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx))),
-            titlebar: Some(TitlebarOptions { title: Some("midna".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
-            window_min_size: Some(size(px(720.), px(420.))),
-            app_id: Some("com.mrgnhnt.midna".into()),
-            // Keep rendering daemon updates at full rate while the window is in the background.
-            inactive_frame_interval: None,
-            // Screenshot runs float the window so it is never occluded (occluded windows stop drawing).
-            kind: if crate::dev::var("MIDNA_DEBUG_ONTOP").is_ok() { WindowKind::PopUp } else { WindowKind::Normal },
-            focus: std::env::var("MIDNA_NO_ACTIVATE").is_err(),
-            ..Default::default()
-        };
-        let b = backend.clone();
-        let handle = cx.open_window(opts, |window, cx| cx.new(|cx| app::MainWindow::new(b, window, cx))).expect("open main window");
+        // The windows, places and terminals from last time (or one centered window).
+        let fallback = Bounds::centered(None, size(px(w), px(h)), cx);
+        let handle = windows::restore(backend.clone(), fallback, cx).expect("open main window");
+        // A clicked notification shows its terminal, in whichever window has it (notify.rs).
+        let (ntx, nrx) = async_channel::unbounded::<notify::Clicked>();
+        notify::start(ntx);
+        cx.spawn(async move |cx| {
+            while let Ok(c) = nrx.recv().await {
+                cx.update(|cx| {
+                    cx.activate(true);
+                    windows::reveal(c.session, cx);
+                });
+            }
+        })
+        .detach();
         #[cfg(feature = "snapshot")]
         snapshot(handle, cx);
         let _ = handle;

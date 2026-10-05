@@ -152,6 +152,8 @@ pub struct Snapshot<'a> {
     /// `policy.check` decisions for project command lines (`allow` | `ask` | `deny`).
     pub policy: &'a dyn Fn(&str) -> Option<String>,
     pub sidebar_collapsed: bool,
+    /// "this window" / "other window" for a terminal whose name another window also uses.
+    pub name_note: &'a dyn Fn(&Session) -> Option<&'static str>,
 }
 
 pub fn agent_name(a: AgentKind) -> &'static str {
@@ -407,7 +409,7 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         }
     }
 
-    // ---- Go to terminals (needs-you terminals are featured)
+    // ---- Go to terminals (needs-you terminals are featured; other windows' too, after this one's)
     for x in &s.sessions {
         let needs = s.needs.iter().any(|n| n.session_id.as_ref() == Some(&x.id));
         let state = match &x.custom_status {
@@ -416,7 +418,10 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             None => state_word(x.status.state),
         };
         let mut c = Command::new(format!("focus:{}", x.id), icon_for(x), format!("Go to {}", x.name), Run::Focus { session: x.id.clone() })
-            .sub(format!("{} · {} · {}", project_name(x.project_id.as_deref()), agent_label(x), state))
+            .sub(match (s.name_note)(x) {
+                Some(w) => format!("{} · {} · {} · {w}", project_name(x.project_id.as_deref()), agent_label(x), state),
+                None => format!("{} · {} · {}", project_name(x.project_id.as_deref()), agent_label(x), state),
+            })
             .kw("jump switch focus terminal tab")
             .cli(format!("midna focus {}", x.id));
         if needs {
@@ -1169,6 +1174,7 @@ mod tests {
             last_agent: AgentKind::Claude,
             policy,
             sidebar_collapsed: false,
+            name_note: &|_| None,
         };
         build(&snap)
     }
@@ -1232,6 +1238,7 @@ mod tests {
             last_agent: AgentKind::Claude,
             policy: &|_| None,
             sidebar_collapsed: false,
+            name_note: &|_| None,
         };
         let cmds = build(&snap);
         // nothing typed: the five most recently opened (no terminals here, so "open" counts)

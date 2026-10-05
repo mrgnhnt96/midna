@@ -2,6 +2,7 @@
 pub mod annotate;
 pub mod banner;
 pub mod charts;
+pub mod close_window;
 pub mod command_bar;
 pub mod header;
 pub mod insights;
@@ -165,6 +166,7 @@ impl Render for MainWindow {
                 }
             }))
             .children(quit_hold::render(self, &t))
+            .children(close_window::render(self, &t, cx))
             .when_some(self.toast.clone(), |d, (msg, _)| {
                 d.child(
                     div()

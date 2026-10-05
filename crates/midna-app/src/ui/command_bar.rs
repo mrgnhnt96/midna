@@ -158,10 +158,14 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
     };
     let setting = |k: &str| m.setting_str(k);
     let policy = |run: &str| m.palette.policy.get(run).cloned();
+    let name_note = |s: &Session| crate::windows::name_note(m, s);
+    // This window's terminals in sidebar order, then the other windows' (choosing one brings its window forward).
+    let mut sessions = m.ordered_sessions();
+    sessions.extend(m.sessions.iter().filter(|s| !m.shows(&s.id)));
     let snap = commands::Snapshot {
         projects: &m.projects,
         discovered: &m.discovered,
-        sessions: m.ordered_sessions(),
+        sessions,
         needs: &m.needs,
         selected: m.selected_session(),
         current_project: current_project(m),
@@ -171,6 +175,7 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         last_agent: last_agent(m, m.current_project_id().as_deref()),
         policy: &policy,
         sidebar_collapsed: m.sidebar_collapsed,
+        name_note: &name_note,
     };
     let mut cmds = commands::build(&snap);
     cmds.extend(m.palette.user.iter().cloned());
