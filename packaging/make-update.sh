@@ -30,6 +30,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/
 TOOL="$ROOT/packaging/release-tool/target/release/midna-release"
 cargo build --release -q --manifest-path "$ROOT/packaging/release-tool/Cargo.toml"
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"   # tar runs from the app's folder, so a relative --out would miss
 ARCHIVE="$OUT/Midna-$VERSION.app.tar.gz"
 # COPYFILE_DISABLE: no AppleDouble ._ files (they'd break the code signature check).
 ( cd "$(dirname "$APP")" && COPYFILE_DISABLE=1 tar -czf "$ARCHIVE" "$(basename "$APP")" )
