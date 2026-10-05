@@ -45,6 +45,8 @@ pub enum Menu {
     More,
     /// The header's session links popover (`ui/links.rs`).
     Links,
+    /// The header's subagents popover (`ui/subagents.rs`).
+    Subagents,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -128,6 +130,7 @@ pub struct MainWindow {
     pub composer: crate::composer::Composer,
     /// Image sheet drafts and state (`annotate.rs`).
     pub annot: crate::annotate::Annotator,
+    pub subagents: crate::ui::subagents::SubagentsPanel,
     /// When the daemon connection last dropped (None while connected). The status bar says
     /// "midnad restarting…" for the first seconds of any drop, or until reconnect when a
     /// restart/upgrade was seen in the log just before.
@@ -236,6 +239,7 @@ impl MainWindow {
             triggers_view: None,
             insights: None,
             palette,
+            subagents: crate::ui::subagents::SubagentsPanel::new(cx),
             stack: crate::ui::needs_you::Stack::new(cx),
             links,
             queue,
@@ -1295,6 +1299,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| crate::annotate::open(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::links::ToggleLinks, w, cx| crate::ui::links::toggle(m, w, cx)))
+            .on_action(cx.listener(|m, _: &crate::ui::subagents::ToggleSubagents, w, cx| crate::ui::subagents::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::queue::ToggleQueue, w, cx| crate::ui::queue::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::PasteImage, w, cx| {
                 crate::annotate::open(m, w, cx);
@@ -1313,7 +1318,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if m.menu == Menu::Links {
+                    if matches!(m.menu, Menu::Links | Menu::Subagents) {
                         m.focus_terminal(w, cx);
                     }
                     m.menu = Menu::None;

@@ -120,6 +120,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.add_image", crate::annotate::AddImage, MAIN),
     shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, MAIN),
     shortcut!("keys.links", crate::ui::links::ToggleLinks, MAIN),
+    shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, MAIN),
     shortcut!("keys.queue", crate::ui::queue::ToggleQueue, MAIN),
     shortcut!("keys.prev_prompt", PrevPrompt, TERM),
     shortcut!("keys.next_prompt", NextPrompt, TERM),

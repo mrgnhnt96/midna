@@ -267,6 +267,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Open the selected terminal's queued messages: what will be typed into it next, once the agent is ready."),
     s!("keys.links", KB, S("cmd-l"), "keys", false,
         "Open the selected agent terminal's links: the URLs, PRs, artifacts and files that came up in its conversation."),
+    s!("keys.subagents", KB, S("cmd-alt-a"), "keys", false,
+        "Open the selected agent terminal's subagents: what each is doing, and a read-only window that follows one live."),
     s!("keys.needs_you", KB, S("cmd-shift-j"), "keys", false, "Open the needs-you cards (approvals and questions, one at a time)."),
     s!("keys.approve_options", KB, S("cmd-shift-enter"), "keys", false, "Show the approve options (15 min, 1 h, session, always) for the focused approval."),
     s!("keys.next_terminal", KB, S(""), "keys", false, "Select the next terminal in the sidebar. Unbound by default (ctrl-tab would be taken from terminal apps)."),

@@ -198,6 +198,7 @@ impl FakeBackend {
                         qm("q_aaaa02", "/compact", midna_proto::SendWhen::Idle, midna_proto::Actor::human()),
                         qm("q_aaaa03", "Update docs/DECISIONS.md with what changed and why", midna_proto::SendWhen::IdleFor { minutes: 5 }, trigger),
                     ],
+                    agent_info: Some(fake_subagents()),
                     ..s("a1f00001", "p_zonai1", "api", Agent, Some(Claude), Working, None, 4, git("feat/auth", 48, 12, 6, Some((231, Checks::Pending))))
                 },
                 s(
@@ -459,6 +460,7 @@ impl Backend for FakeBackend {
                 {"name": "midna", "path": "~/Development/rust/midna", "root": "~/Development", "git": true},
             ]),
             "session.list" => serde_json::to_value(&st.sessions)?,
+            "session.subagent_log" => fake_subagent_log(&p("agent").unwrap_or_default(), params.get("from").and_then(Value::as_u64).unwrap_or(0)),
             "needs_you.list" => serde_json::to_value(&st.needs)?,
             "settings.list" => serde_json::to_value(&st.settings)?,
             "notify.media" => {
@@ -837,4 +839,50 @@ mod pty {
             self.close();
         }
     }
+}
+
+/// The `api` terminal's subagents (`MIDNA_DEBUG_SCREEN=subagents|subagent-window`).
+fn fake_subagents() -> midna_proto::AgentInfo {
+    let ago = |s: i64| midna_proto::time::format_unix(midna_proto::time::now_unix() - s);
+    let sub = |id: &str, ty: &str, desc: &str, started: i64, ended: Option<i64>, background: bool| midna_proto::Subagent {
+        id: id.into(),
+        agent_type: ty.into(),
+        description: desc.into(),
+        background,
+        started_at: ago(started),
+        ended_at: ended.map(ago),
+    };
+    midna_proto::AgentInfo {
+        conversation_id: Some("c0ffee00-fake".into()),
+        subagents: vec![
+            sub("a0000000000000001", "Explore", "Map SubagentStart payload fields", 72, None, false),
+            sub("a0000000000000002", "general-purpose", "Draft agent_work tests", 48, None, false),
+            sub("a0000000000000003", "qa-reviewer", "Review daemon changes", 185, None, true),
+        ],
+        finished_subagents: vec![sub("a0000000000000000", "Explore", "Find where hooks set agent status", 140, Some(99), false)],
+        ..Default::default()
+    }
+}
+
+/// One subagent's transcript, served whole on the first read.
+fn fake_subagent_log(agent: &str, from: u64) -> Value {
+    let e = |kind: &str, text: &str| json!({ "kind": kind, "text": text });
+    let entries = if from > 0 {
+        vec![]
+    } else {
+        vec![
+            e("prompt", "Find every field Claude Code 2.1.289 sends in SubagentStart and SubagentStop hook payloads in this repo's recorded fixtures, and report which ones could link a subagent back to the Agent tool call that launched it.\nLook in crates/midnad/tests/fixtures first.\nThen check ~/.claude/projects for meta files.\nReport field names and an example payload for each.\nDon't change any files."),
+            e("tool", "Grep(SubagentStart)"),
+            e("result", "crates/midnad/tests/fixtures/claude-2.1.289-background.jsonl:11 (+1 lines)"),
+            e("tool", "Read(crates/midnad/tests/fixtures/claude-2.1.289-background.jsonl)"),
+            e("result", "Read 61 lines"),
+            e("text", "SubagentStart carries agent_id and agent_type only. SubagentStop adds agent_transcript_path and last_assistant_message. Neither has the tool_use_id of the Agent call."),
+            e("tool", "Grep(tool_use_id)"),
+            e("result", "(no output)"),
+            e("tool", "Bash(ls ~/.claude/projects/*/subagents | head)"),
+            e("error", "ls: no matches found"),
+        ]
+    };
+    let finished = agent == "a0000000000000000";
+    json!({ "running": !finished, "entries": entries, "next": 4096, "model": "claude-haiku-4-5" })
 }

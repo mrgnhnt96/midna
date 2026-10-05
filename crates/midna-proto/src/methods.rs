@@ -28,6 +28,44 @@ pub struct IdParams {
     pub id: Id,
 }
 
+// ------------------------------------------------------------------ subagent log
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentLogParams {
+    /// The terminal the subagent belongs to.
+    pub id: Id,
+    /// The subagent's `agent_id` (from `agent_info.subagents` / `finished_subagents`).
+    pub agent: String,
+    /// Byte offset to read from: 0 for the start, then the last result's `next`.
+    #[serde(default)]
+    pub from: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentLog {
+    /// What midna knows of it from the hooks (absent once it has scrolled out of `finished_subagents`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Subagent>,
+    pub running: bool,
+    /// Entries from `from` on (complete lines only).
+    pub entries: Vec<SubagentLogEntry>,
+    /// Where the next read starts.
+    pub next: u64,
+    /// The model it runs on, when this chunk names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// One line of a subagent's transcript, as midna shows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SubagentLogEntry {
+    /// `prompt` (what it was asked), `text` (what it said), `tool` (`Name(summary)`),
+    /// `result` (first line of a tool's output) or `error` (a failed tool).
+    pub kind: String,
+    pub text: String,
+}
+
 // ------------------------------------------------------------------ links
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

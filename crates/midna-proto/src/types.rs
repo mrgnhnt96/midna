@@ -334,6 +334,14 @@ pub struct AgentInfo {
     /// Subagents running right now (started, not yet stopped), foreground or background.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<Subagent>,
+    /// Subagents that stopped since the human's last prompt, newest last (at most 10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finished_subagents: Vec<Subagent>,
+    /// Agent tool calls seen in `PreToolUse` whose `SubagentStart` has not come yet: where a
+    /// subagent's description comes from, since `SubagentStart` carries only its id and type.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub pending_agents: Vec<PendingAgent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_at: Option<Timestamp>,
     /// A restart waiting for the agent to be idle with nothing in flight.
@@ -350,7 +358,8 @@ impl AgentInfo {
             out.push(format!("{} {} running: {}", t.kind, t.id, clip(what, 80)));
         }
         for a in &self.subagents {
-            out.push(format!("subagent {} ({}) running", a.id, a.agent_type));
+            let what = if a.description.is_empty() { String::new() } else { format!(": {}", clip(&a.description, 80)) };
+            out.push(format!("subagent {} ({}) running{what}", a.id, a.agent_type));
         }
         out
     }
@@ -400,7 +409,24 @@ pub struct Subagent {
     pub id: String,
     #[serde(default)]
     pub agent_type: String,
+    /// The short task the main agent gave it (the Agent tool's `description`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Launched with `run_in_background`: the main turn can end while it runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     pub started_at: Timestamp,
+    /// Set once it stopped (in `finished_subagents`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PendingAgent {
+    pub tool_use_id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub background: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

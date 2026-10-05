@@ -18,6 +18,8 @@ pub mod settings;
 pub mod sidebar;
 pub mod split;
 pub mod statusbar;
+pub mod subagent_window;
+pub mod subagents;
 pub mod text_input;
 pub mod triggers;
 

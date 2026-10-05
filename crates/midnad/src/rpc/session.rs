@@ -562,6 +562,19 @@ pub fn processes(d: &Daemon, p: IdParams) -> R {
     ok(procs)
 }
 
+pub fn subagent_log(d: &Daemon, p: SubagentLogParams) -> R {
+    let s = d.core().state.session(&p.id).cloned().ok_or_else(|| not_found(&p.id))?;
+    let info = s.agent_info.unwrap_or_default();
+    let running = info.subagents.iter().find(|a| a.id == p.agent);
+    let agent = running.or_else(|| info.finished_subagents.iter().rev().find(|a| a.id == p.agent)).cloned();
+    // A background agent between wakes is only in the Stop snapshot.
+    let waiting = info.background.iter().any(|t| t.id == p.agent && t.kind == "subagent");
+    let transcript = info.transcript_path.as_deref().ok_or_else(|| RpcError::conflict(format!("session {} has no agent transcript", p.id)))?;
+    let path = crate::subagent_log::path(transcript, &p.agent).ok_or_else(|| RpcError::bad_params(format!("not a subagent id: {}", p.agent)))?;
+    let (entries, next, model) = crate::subagent_log::read(&path, p.from);
+    ok(SubagentLog { agent, running: running.is_some() || waiting, entries, next, model })
+}
+
 /// Supervised agents (webhook triggers) were launched with permission prompts forced on; a
 /// rebuilt command keeps that.
 fn was_supervised(command: &[String]) -> bool {

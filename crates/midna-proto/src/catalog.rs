@@ -247,6 +247,10 @@ fn build() -> Vec<MethodSpec> {
             "Every OS process under a terminal (its process tree: pid, ppid, pgid, depth, command), with the agent's \
              background task id when a process belongs to one. Subagents run inside the agent process and appear in \
              `session.get` -> agent_info.subagents / background instead."),
+        m::<SubagentLogParams, SubagentLog>("session.subagent_log").d(
+            "Read one of a terminal's subagents (Claude) from its own transcript: what it was asked, what it said, \
+             its tool calls and the first line of each result. Read from `from` = 0, then pass the last `next` to \
+             follow it while `running`."),
         m::<IdParams, WindowCommandResult>("session.focus").mutating().d(
             "Bring a terminal to the front in the midna GUI (emits window.command front). Always allowed; use it to show the human something you want them to see."),
         // stream

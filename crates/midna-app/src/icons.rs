@@ -55,6 +55,8 @@ pub enum Icon {
     Pause,
     /// Collapse / expand the sidebar.
     Sidebar,
+    /// Subagents (a body with a small satellite).
+    Orbit,
 }
 
 impl Icon {
@@ -101,6 +103,7 @@ impl Icon {
             Icon::Pencil => "icons/pencil.svg",
             Icon::Pause => "icons/pause.svg",
             Icon::Sidebar => "icons/sidebar.svg",
+            Icon::Orbit => "icons/orbit.svg",
         }
     }
 
@@ -138,6 +141,7 @@ impl Icon {
             "rules" | "shield" => Icon::Rules,
             "keyboard" => Icon::Keyboard,
             "queue" => Icon::Queue,
+            "orbit" | "subagent" | "subagents" => Icon::Orbit,
             _ => return None,
         })
     }
@@ -206,6 +210,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/sidebar.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11M3.5 5.5h0.5M3.5 7.5h0.5"/></svg>"##
+        }
+        "icons/orbit.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6"><circle cx="7" cy="9" r="4.5"/><circle cx="13" cy="3.2" r="1.7" fill="#000" stroke="none"/></svg>"##
         }
         "icons/keyboard.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8"/><path d="M4.2 6.4h.1M6.7 6.4h.1M9.2 6.4h.1M11.7 6.4h.1M4.2 8.4h.1M11.7 8.4h.1M6.3 10h3.4"/></svg>"##

@@ -153,6 +153,15 @@ pub static VERBS: &[Verb] = &[
         methods: &["session.processes"],
     },
     Verb {
+        name: "subagent",
+        aliases: &["subagents"],
+        usage: "subagent <terminal-id> <agent-id>",
+        summary: "read one of an agent terminal's subagents: its prompt, tool calls and what it said",
+        details: "From the subagent's own transcript (Claude). Ids are in `midna procs <terminal-id>` (running and\n\
+                  finished this turn). The human opens the same thing from the header's subagents chip (⌥⌘A).",
+        methods: &["session.subagent_log"],
+    },
+    Verb {
         name: "links",
         aliases: &[],
         usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned]\n       \

@@ -16,8 +16,11 @@
 //! background shells and agents do not.
 //!
 //! Codex reports its thread id in notify (`thread-id`).
-use midna_proto::{AgentCron, AgentInfo, AgentKind, BackgroundTask, Subagent};
+use midna_proto::{AgentCron, AgentInfo, AgentKind, BackgroundTask, PendingAgent, Subagent};
 use serde_json::Value;
+
+/// Stopped subagents kept for the header popover and their windows.
+const FINISHED_KEPT: usize = 10;
 
 fn str_at(v: &Value, ptr: &str) -> Option<String> {
     v.pointer(ptr).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
@@ -76,6 +79,7 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
             }
             if source == Some("startup") {
                 info.crons.clear();
+                info.finished_subagents.clear();
             }
             if let Some(m) = str_at(p, "/model") {
                 info.model = Some(m);
@@ -86,22 +90,53 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
                 info.subagents.clear();
             }
         }
+        "UserPromptSubmit" if main_thread => {
+            // "Finished this turn" starts over with each prompt the human sends.
+            info.finished_subagents.clear();
+        }
+        "PreToolUse" if main_thread && p.get("tool_name").and_then(Value::as_str) == Some("Agent") => {
+            if let Some(tool_use_id) = str_at(p, "/tool_use_id") {
+                info.pending_agents.push(PendingAgent {
+                    tool_use_id,
+                    agent_type: str_at(p, "/tool_input/subagent_type").unwrap_or_else(|| "general-purpose".into()),
+                    description: str_at(p, "/tool_input/description").unwrap_or_default(),
+                    background: p.pointer("/tool_input/run_in_background").and_then(Value::as_bool) == Some(true),
+                });
+            }
+        }
         "SubagentStart" => {
-            // A woken background agent starts again under the same id.
+            // A woken background agent starts again under the same id; its background entry
+            // still has the description.
             if let (Some(id), Some(agent_type)) = (str_at(p, "/agent_id"), str_at(p, "/agent_type"))
                 && !info.subagents.iter().any(|a| a.id == id)
             {
-                info.subagents.push(Subagent { id, agent_type, started_at: now.to_string() });
+                // SubagentStart has no tool_use_id: take the oldest Agent call of this type.
+                // Parallel launches of one type may swap descriptions until an async
+                // PostToolUse names the agent.
+                let woken = info.background.iter().find(|t| t.id == id).map(|t| (t.description.clone(), true));
+                let pending = info.pending_agents.iter().position(|a| a.agent_type == agent_type).map(|n| info.pending_agents.remove(n));
+                let (description, background) = woken.or(pending.map(|a| (a.description, a.background))).unwrap_or_default();
+                info.subagents.push(Subagent { id, agent_type, description, background, started_at: now.to_string(), ended_at: None });
             }
         }
         "Stop" | "SubagentStop" => {
             let stopping = str_at(p, "/agent_id").filter(|_| event == "SubagentStop");
             if let Some(id) = &stopping {
-                info.subagents.retain(|a| &a.id != id);
+                if let Some(n) = info.subagents.iter().position(|a| &a.id == id) {
+                    let mut a = info.subagents.remove(n);
+                    a.ended_at = Some(now.to_string());
+                    // A woken background agent finishes again: keep its latest run only.
+                    info.finished_subagents.retain(|f| &f.id != id);
+                    info.finished_subagents.push(a);
+                    let over = info.finished_subagents.len().saturating_sub(FINISHED_KEPT);
+                    info.finished_subagents.drain(..over);
+                }
             } else if main_thread {
                 // The main turn ended: foreground subagents are done, and background ones are
-                // in background_tasks. A SubagentStop lost to a crash must not linger.
+                // in background_tasks. A SubagentStop lost to a crash must not linger, nor an
+                // Agent call that failed before it started one.
                 info.subagents.clear();
+                info.pending_agents.clear();
             }
             if let Some(tasks) = p.get("background_tasks").and_then(Value::as_array) {
                 // A stopping subagent still lists itself as running in its own snapshot.
@@ -112,9 +147,25 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
                 info.crons = crons.iter().filter_map(cron).collect();
             }
         }
+        "PostToolUseFailure" => {
+            if let Some(t) = str_at(p, "/tool_use_id") {
+                info.pending_agents.retain(|a| a.tool_use_id != t);
+            }
+        }
         "PostToolUse" => {
-            // A shell sent to the background mid-turn; the next Stop confirms or drops it.
+            if let Some(t) = str_at(p, "/tool_use_id") {
+                info.pending_agents.retain(|a| a.tool_use_id != t);
+            }
             let r = p.get("tool_response").unwrap_or(&Value::Null);
+            // An async launch names its agent: correct a description the type match got wrong.
+            if r.get("isAsync").and_then(Value::as_bool) == Some(true)
+                && let Some(id) = str_at(r, "/agentId")
+                && let Some(a) = info.subagents.iter_mut().find(|a| a.id == id)
+            {
+                a.description = str_at(r, "/description").unwrap_or_default();
+                a.background = true;
+            }
+            // A shell sent to the background mid-turn; the next Stop confirms or drops it.
             let task = if let Some(id) = str_at(r, "/backgroundTaskId") {
                 Some(BackgroundTask {
                     id,
@@ -181,6 +232,8 @@ fn material(i: &AgentInfo) -> Value {
         ids(i.background.iter().map(|t| t.id.as_str()).collect()),
         ids(i.background.iter().map(|t| t.status.as_str()).collect()),
         ids(i.subagents.iter().map(|t| t.id.as_str()).collect()),
+        ids(i.subagents.iter().map(|t| t.description.as_str()).collect()),
+        ids(i.finished_subagents.iter().map(|t| t.id.as_str()).collect()),
         ids(i.crons.iter().map(|t| t.id.as_str()).collect()),
         i.restart.as_ref().map(|r| (&r.reason, &r.waiting_for)),
         i.version,
@@ -385,6 +438,40 @@ mod tests {
         assert_eq!((i.background[1].kind.as_str(), i.background[1].agent_type.as_deref()), ("subagent", Some("Explore")));
     }
 
+    #[test]
+    fn subagent_descriptions_come_from_the_agent_call() {
+        let mut i = AgentInfo::default();
+        let call = |id: &str, ty: &str, desc: &str| json!({"session_id": "c1", "tool_name": "Agent", "tool_use_id": id, "tool_input": {"description": desc, "subagent_type": ty, "prompt": "p"}});
+        hook(&mut i, "PreToolUse", call("t1", "Explore", "find hooks"));
+        hook(&mut i, "PreToolUse", call("t2", "general-purpose", "write tests"));
+        hook(&mut i, "SubagentStart", json!({"session_id": "c1", "agent_id": "a2", "agent_type": "general-purpose"}));
+        hook(&mut i, "SubagentStart", json!({"session_id": "c1", "agent_id": "a1", "agent_type": "Explore"}));
+        let desc = |i: &AgentInfo| i.subagents.iter().map(|a| format!("{}={}", a.id, a.description)).collect::<Vec<_>>().join(",");
+        assert_eq!(desc(&i), "a2=write tests,a1=find hooks", "matched by type, not arrival order");
+        assert!(i.pending_agents.is_empty());
+        // A call that fails before starting an agent leaves nothing behind.
+        hook(&mut i, "PreToolUse", call("t3", "Explore", "doomed"));
+        hook(&mut i, "PostToolUseFailure", json!({"session_id": "c1", "tool_name": "Agent", "tool_use_id": "t3"}));
+        assert!(i.pending_agents.is_empty());
+        // Two of one type swap until the async PostToolUse names each agent.
+        hook(&mut i, "PreToolUse", call("t4", "Explore", "left"));
+        hook(&mut i, "PreToolUse", call("t5", "Explore", "right"));
+        hook(&mut i, "SubagentStart", json!({"session_id": "c1", "agent_id": "a5", "agent_type": "Explore"}));
+        assert!(hook(&mut i, "PostToolUse", json!({"session_id": "c1", "tool_name": "Agent", "tool_use_id": "t5",
+            "tool_response": {"isAsync": true, "agentId": "a5", "description": "right"}})));
+        let a5 = i.subagents.iter().find(|a| a.id == "a5").unwrap();
+        assert_eq!((a5.description.as_str(), a5.background), ("right", true));
+        // Stopped ones move to finished, until the human's next prompt.
+        hook(&mut i, "SubagentStop", json!({"session_id": "c1", "agent_id": "a1", "agent_type": "Explore"}));
+        assert_eq!(i.finished_subagents.iter().map(|a| (a.id.as_str(), a.ended_at.is_some())).collect::<Vec<_>>(), [("a1", true)]);
+        // A main-thread Stop drops calls that never started an agent.
+        hook(&mut i, "Stop", json!({"session_id": "c1"}));
+        assert!(i.pending_agents.is_empty());
+        assert_eq!(i.finished_subagents.len(), 1, "a Stop keeps what finished");
+        hook(&mut i, "UserPromptSubmit", json!({"session_id": "c1", "prompt": "next"}));
+        assert!(i.finished_subagents.is_empty());
+    }
+
     /// A real Claude 2.1.289 session (crates/midnad/tests/fixtures): a background shell, a
     /// background subagent that starts its own shell and is woken again, a session cron, the
     /// hidden prompt-suggestion agent after each turn, then SIGTERM and two resumes.
@@ -397,6 +484,12 @@ mod tests {
         for (n, l) in lines.iter().enumerate() {
             apply_hook(&mut i, AgentKind::Claude, l["event"].as_str().unwrap(), &l["payload"], NOW);
             at.push((n, ids(&i), i.subagents.len(), i.crons.len(), i.in_flight().len()));
+            if n == 10 {
+                assert_eq!(i.subagents[0].description, "sleeper", "described by its Agent call (the failed worktree call has the same type)");
+            }
+            if n == 11 {
+                assert!(i.subagents[0].background, "the async PostToolUse marks it background");
+            }
         }
         let state = |n: usize| (at[n].1.as_str(), at[n].2, at[n].3);
         assert_eq!(state(5), ("bgcn3vn01", 0, 0), "background shell from the Stop snapshot");

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Subagent window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-soft:rgba(183,154,232,.12);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--work-soft:rgba(110,162,255,.18);--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-soft:rgba(98,55,160,.08);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--work-soft:rgba(39,88,184,.14);--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="width: 900px; height: 640px; display: flex; flex-direction: column; background: var(--term); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; box-sizing: border-box">
+  <header style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel)">
+    <span style="display: flex; gap: 8px" aria-hidden="true">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+    </span>
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--work)" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="9" r="4.5"></circle><circle cx="13" cy="3.2" r="1.7" fill="var(--work)" stroke="none"></circle></svg>
+    <span style="font-weight: 700">Map SubagentStart payload fields</span>
+    <span style="color: var(--dim); font-family: 'JetBrains Mono', monospace; font-size: 11.5px">Explore · from api-refactor</span>
+    <span style="margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--work); font-family: 'JetBrains Mono', monospace; font-size: 11.5px"><span style="width: 7px; height: 7px; border-radius: 50%; background: var(--work)"></span>running 1m 12s</span>
+    <span style="padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); font-size: 11px">read-only</span>
+  </header>
+  <div style="flex: 1; min-height: 0; overflow: hidden; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.6">
+    <details open="{{true}}" style="border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 12px; font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif">
+      <summary style="cursor: pointer; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase">Prompt from Claude</summary>
+      <div style="margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden">Find every field Claude Code 2.1.289 sends in SubagentStart and SubagentStop hook payloads in this repo's recorded fixtures, and report which ones could link a subagent back to the Agent tool call that launched it.</div>
+    </details>
+    <sc-for list="{{lines}}" as="l" hint-placeholder-count="12">
+      <div style="color: {{l.c}}; white-space: pre">{{l.t}}</div>
+    </sc-for>
+  </div>
+  <footer style="display: flex; align-items: center; gap: 16px; height: 28px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 11.5px">
+    <span>14 tool uses</span>
+    <span>claude-haiku-4-5</span>
+    <a href="HeaderChip.dc.html" style="margin-left: auto">Show parent terminal</a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":900,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const D = 'var(--dim)', F = 'var(--fg)', A = 'var(--accent)', W = 'var(--work)';
+    const lines = [
+      { t: '⏺ Grep("SubagentStart", crates/midnad/tests/fixtures)', c: A },
+      { t: '  ⎿ Found 2 matches in claude-2.1.289-background.jsonl', c: D },
+      { t: '⏺ Read(crates/midnad/tests/fixtures/claude-2.1.289-background.jsonl)', c: A },
+      { t: '  ⎿ Read 61 lines', c: D },
+      { t: '⏺ SubagentStart carries agent_id and agent_type only. SubagentStop adds', c: F },
+      { t: '  agent_transcript_path and last_assistant_message. Neither has the', c: F },
+      { t: '  tool_use_id of the Agent call.', c: F },
+      { t: '⏺ Grep("tool_use_id", crates/midnad/src)', c: A },
+      { t: '  ⎿ Found 0 matches', c: D },
+      { t: '⏺ Bash(ls ~/.claude/projects/*/subagents | head)', c: A },
+      { t: '  ⎿ agent-ad61ffdfcac32ed60.jsonl', c: D },
+      { t: '    agent-ad61ffdfcac32ed60.meta.json', c: D },
+      { t: '', c: D },
+      { t: '✻ Working…', c: W },
+    ];
+    return { themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark', lines };
+  }
+}
+</script>
+</body>
+</html>

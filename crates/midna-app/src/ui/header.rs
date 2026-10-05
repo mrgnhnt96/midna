@@ -85,6 +85,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             div()
                 .flex()
                 .gap(px(2.))
+                .children(crate::ui::subagents::button(m, t, cx))
                 .children(crate::ui::links::button(m, t, cx))
                 .child(tool("tb-image", Icon::Image, "Add image", "keys.add_image").on_click(cx.listener(|m, _, window, cx| crate::annotate::open(m, window, cx))))
                 .child(

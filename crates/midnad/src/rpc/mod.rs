@@ -184,6 +184,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.restart" => session::restart(d, ctx, parse(p)?),
         "session.restart_cancel" => session::restart_cancel(d, ctx, parse(p)?),
         "session.processes" => session::processes(d, parse(p)?),
+        "session.subagent_log" => session::subagent_log(d, parse(p)?),
         "session.focus" => window::focus(d, ctx, parse(p)?),
         "links.list" => links::list(d, ctx, parse(p)?),
         "links.pin" => links::pin(d, ctx, parse(p)?),

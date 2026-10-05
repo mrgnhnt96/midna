@@ -231,6 +231,26 @@ fn run(a: &Args) -> Res {
             });
             Ok(())
         }
+        "subagent" | "subagents" => {
+            let id = a.need(1, "terminal id")?;
+            let agent = a.need(2, "agent id")?;
+            let v = call("session.subagent_log", json!({ "id": id, "agent": agent }))?;
+            out(&v, &|_| {
+                let ag = &v["agent"];
+                let state = if v["running"].as_bool() == Some(true) { "running" } else { "finished" };
+                println!("{} ({}, {state}): {}", agent, print::plain(&ag["agent_type"]), ag["description"].as_str().unwrap_or(""));
+                for e in v["entries"].as_array().into_iter().flatten() {
+                    let text = e["text"].as_str().unwrap_or("");
+                    match e["kind"].as_str().unwrap_or("") {
+                        "prompt" => println!("\n> {}\n", text.replace('\n', "\n  ")),
+                        "tool" => println!("⏺ {text}"),
+                        "result" | "error" => println!("  ⎿ {text}"),
+                        _ => println!("⏺ {}", text.replace('\n', "\n  ")),
+                    }
+                }
+            });
+            Ok(())
+        }
         "procs" | "processes" => {
             let id = a.need(1, "terminal id")?;
             let procs = call("session.processes", json!({ "id": id }))?;
@@ -249,7 +269,11 @@ fn run(a: &Args) -> Res {
                     println!("background {} {} ({}): {}", print::plain(&t["kind"]), print::plain(&t["id"]), print::plain(&t["status"]), what);
                 }
                 for x in list("subagents") {
-                    println!("subagent {} ({})", print::plain(&x["id"]), print::plain(&x["agent_type"]));
+                    let bg = if x["background"].as_bool() == Some(true) { ", background" } else { "" };
+                    println!("subagent {} ({}{bg}): {}", print::plain(&x["id"]), print::plain(&x["agent_type"]), x["description"].as_str().unwrap_or(""));
+                }
+                for x in list("finished_subagents") {
+                    println!("subagent {} ({}) finished: {}", print::plain(&x["id"]), print::plain(&x["agent_type"]), x["description"].as_str().unwrap_or(""));
                 }
                 for c in list("crons") {
                     println!("scheduled {} {}: {}", print::plain(&c["id"]), print::plain(&c["schedule"]), print::plain(&c["prompt"]));
