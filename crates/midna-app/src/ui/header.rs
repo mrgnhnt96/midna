@@ -1,7 +1,7 @@
 //! Terminal header: status dot, name, agent icon, script segments (`script.run` slot
 //! `header`, default `github`), and the right toolbar.
 use super::sidebar::{menu_box, menu_item, segments};
-use super::status_dot;
+use super::{custom_status_label, session_dot};
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -13,7 +13,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         return div().h(px(44.)).flex_none().border_b_1().border_color(t.line).into_any_element();
     };
     let segs = m.header_segments.get(&s.id).cloned().unwrap_or_default();
-    let tool = |id: &'static str, icon: Icon, tip: &'static str| {
+    let tool = |id: &'static str, icon: Icon, text: &'static str, setting: &'static str| {
         div()
             .id(id)
             .size(px(32.))
@@ -23,7 +23,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             .justify_center()
             .cursor_pointer()
             .hover(|st| st.bg(t.raised))
-            .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
+            .tooltip(tip_keys(text, setting))
             .child(icon.el(16., t.dim))
     };
     let more_open = m.menu == Menu::More;
@@ -37,7 +37,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .pr(px(10.))
         .border_b_1()
         .border_color(t.line)
-        .child(status_dot(t, m.effective_state(s), 9.))
+        .child(session_dot(t, m.effective_state(s), s.custom_status.as_ref(), 9.))
         .child(match crate::ui::rename::field(m, &s.id, crate::ui::rename::At::Header, t, 15., cx) {
             Some(f) => f,
             None => {
@@ -47,6 +47,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                     .text_size(px(15.))
                     .font_weight(FontWeight::BOLD)
                     .whitespace_nowrap()
+                    .tooltip(tip_keys("Double-click to rename", "keys.rename"))
                     .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
                         if ev.click_count() == 2 {
                             crate::ui::rename::start(m, &sid, crate::ui::rename::At::Header, w, cx);
@@ -57,11 +58,15 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             }
         })
         .child(Icon::from_glyph(s.glyph()).el(14., t.dim))
+        .when_some(s.custom_status.as_ref(), |d, c| {
+            let tip = c.detail.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| "Set by a trigger".into());
+            d.child(div().id("header-custom-status").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, c, 11.5)))
+        })
         .when(s.notify_muted(), |d| {
             d.child(
                 div()
                     .id("header-muted")
-                    .tooltip(|_, cx| cx.new(|_| Tip("Notifications muted for this terminal".into())).into())
+                    .tooltip(tip_keys("Notifications muted for this terminal", "keys.mute"))
                     .child(Icon::BellOff.el(13., t.dim)),
             )
         })
@@ -81,22 +86,22 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                 .flex()
                 .gap(px(2.))
                 .children(crate::ui::links::button(m, t, cx))
-                .child(tool("tb-image", Icon::Image, "Add image").on_click(cx.listener(|m, _, window, cx| crate::annotate::open(m, window, cx))))
+                .child(tool("tb-image", Icon::Image, "Add image", "keys.add_image").on_click(cx.listener(|m, _, window, cx| crate::annotate::open(m, window, cx))))
                 .child(
-                    tool("tb-split", Icon::Split, "Split ⌘D")
+                    tool("tb-split", Icon::Split, if m.split.is_some() { "Close split" } else { "Split" }, "keys.split")
                         .when(m.split.is_some(), |d| d.bg(t.raised))
                         .on_click(cx.listener(|m, _, window, cx| crate::ui::split::toggle(m, window, cx))),
                 )
-                .child(tool("tb-popout", Icon::PopOut, "Pop out, keep on top").on_click(cx.listener(|m, _, w, cx| {
+                .child(tool("tb-popout", Icon::PopOut, "Pop out", "keys.pop_out").on_click(cx.listener(|m, _, w, cx| {
                     if let Some(id) = m.selected.clone() {
                         crate::ui::popout::open(m, id, w, cx);
                     }
                 })))
-                .child(tool("tb-restart", Icon::Restart, "Restart").on_click(cx.listener(|m, _, _, cx| m.restart_selected(cx))))
+                .child(tool("tb-restart", Icon::Restart, "Restart", "keys.restart").on_click(cx.listener(|m, _, _, cx| m.restart_selected(cx))))
                 .child(
                     div()
                         .relative()
-                        .child(tool("tb-more", Icon::Dots, "More").when(more_open, |d| d.bg(t.raised)).on_click(cx.listener(|m, _, _, cx| {
+                        .child(tool("tb-more", Icon::Dots, "More", "keys.terminal_menu").when(more_open, |d| d.bg(t.raised)).on_click(cx.listener(|m, _, _, cx| {
                             m.menu = if m.menu == Menu::More { Menu::None } else { Menu::More };
                             cx.notify();
                         })))
@@ -108,6 +113,10 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
 
 fn more_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let id = m.selected.clone().unwrap_or_default();
+    let keys = |setting: &str| {
+        let k = m.key_label(setting);
+        (!k.is_empty()).then(|| key_chip(t, k.into()))
+    };
     let muted = m.selected_session().is_some_and(|s| s.notify_muted());
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
@@ -118,44 +127,58 @@ fn more_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl In
                     "more-copy",
                     "Copy session id",
                     &id,
-                    cx.listener(move |m, _, _, cx| {
-                        if let Some(id) = m.selected.clone() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(id));
-                        }
-                        m.menu = Menu::None;
-                        cx.notify();
-                    }),
-                ))
+                    cx.listener(|m, _, _, cx| m.copy_session_id(cx)),
+                )
+                .children(keys("keys.copy_session_id")))
                 .child(menu_item(
                     t,
                     "more-mute",
                     if muted { "Unmute notifications" } else { "Mute notifications" },
                     "this terminal",
-                    cx.listener(move |m, _, _, cx| {
-                        if let Some(id) = m.selected.clone() {
-                            // null drops the override: back to the global settings
-                            let value = if muted { serde_json::Value::Null } else { serde_json::json!(false) };
-                            m.rpc("notify.set", serde_json::json!({ "session": id, "key": "enabled", "value": value }), cx, |m, _, _, cx| {
-                                m.request_refresh(crate::app::refresh::SESSIONS, cx)
-                            });
-                        }
-                        m.menu = Menu::None;
-                        cx.notify();
-                    }),
-                ))
-                .child(menu_item(t, "more-close", "Close terminal", "", cx.listener(|m, _, _, cx| m.close_selected(cx)))),
+                    cx.listener(|m, _, _, cx| m.toggle_mute(cx)),
+                )
+                .children(keys("keys.mute")))
+                .child(menu_item(t, "more-close", "Close terminal", "", cx.listener(|m, _, _, cx| m.close_selected(cx))).children(keys("keys.close"))),
         ),
     )
     .with_priority(1)
 }
 
-/// Plain tooltip view.
-pub struct Tip(pub SharedString);
+/// Tooltip view: the text, and the shortcut keys when the thing has one.
+pub struct Tip {
+    pub text: SharedString,
+    /// Pretty keys ("⇧⌘T"), or empty.
+    pub keys: SharedString,
+}
+
+/// Tooltip with no shortcut.
+pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| Tip { text: text.clone(), keys: SharedString::default() }).into()
+}
+
+/// Tooltip with the keys bound to a `keys.*` setting, looked up when shown (so a rebind shows).
+pub fn tip_keys(text: impl Into<SharedString>, setting: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| {
+        let keys = crate::actions::label(cx, setting).into();
+        cx.new(|_| Tip { text: text.clone(), keys }).into()
+    }
+}
+
+/// Tooltip with fixed keys (a screen's own keys, e.g. "⇧↩").
+pub fn tip_fixed(text: impl Into<SharedString>, keys: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| cx.new(|_| Tip { text: text.clone(), keys: keys.into() }).into()
+}
 
 impl Render for Tip {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>();
         div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
             .px(px(8.))
             .py(px(4.))
             .rounded(px(6.))
@@ -165,6 +188,12 @@ impl Render for Tip {
             .text_color(t.fg)
             .font_family(t.ui_font.clone())
             .text_size(px(11.5))
-            .child(self.0.clone())
+            .child(self.text.clone())
+            .when(!self.keys.is_empty(), |d| d.child(key_chip(t, self.keys.clone())))
     }
+}
+
+/// Keys drawn as a small key cap ("⇧⌘T").
+pub fn key_chip(t: &Theme, keys: SharedString) -> Div {
+    div().flex_none().px(px(5.)).rounded(px(4.)).border_1().border_color(t.line).bg(t.panel).text_color(t.dim).text_size(px(11.)).whitespace_nowrap().child(keys)
 }

@@ -4,7 +4,7 @@
 //! top pane). ⌘D or the header's split button opens a new shell in the current project in
 //! the second pane; its strip toggles side-by-side ⇄ stacked and closes it (the session keeps
 //! running and stays in the sidebar).
-use super::status_dot;
+use super::session_dot;
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
 use crate::theme::Theme;
@@ -56,6 +56,36 @@ pub fn show(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
     cx.notify();
 }
 
+/// Side by side ⇄ stacked.
+pub fn flip(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if let Some(s) = m.split.as_mut() {
+        s.stacked = !s.stacked;
+        cx.notify();
+    }
+}
+
+/// Show the split's terminal in the main pane (the split closes).
+pub fn to_main(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(id) = m.split.take().map(|s| s.session_id(cx)) else {
+        return;
+    };
+    m.select(id, window, cx);
+}
+
+/// Focus the other pane.
+pub fn focus_other(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(split) = &m.split else {
+        return;
+    };
+    let focus = split.view.read(cx).focus_handle().clone();
+    if focus.contains_focused(window, cx) {
+        m.focus_terminal(window, cx);
+    } else {
+        focus.focus(window, cx);
+    }
+    cx.notify();
+}
+
 pub fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.split.take().is_some() {
         m.focus_terminal(window, cx);
@@ -82,7 +112,7 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
     let state = session.map(|s| m.effective_state(s)).unwrap_or_default();
     let stacked = split.stacked;
     let edge = |d: Div, on: bool| if stacked { d.border_l_2() } else { d.border_t_2() }.border_color(if on { t.accent.opacity(0.7) } else { t.term.opacity(0.) });
-    let button = |id: &'static str, label: &'static str, tip: &'static str| {
+    let button = |id: &'static str, label: &'static str, tip: &'static str, setting: &'static str| {
         div()
             .id(id)
             .px(px(6.))
@@ -94,7 +124,7 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
             .text_size(px(12.))
             .text_color(t.dim)
             .hover(|st| st.bg(t.raised))
-            .tooltip(move |_, cx| cx.new(|_| super::header::Tip(tip.into())).into())
+            .tooltip(super::header::tip_keys(tip, setting))
             .child(label)
     };
     let strip = div()
@@ -107,22 +137,11 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
         .border_b_1()
         .border_color(t.line)
         .bg(t.bg)
-        .child(status_dot(t, state, 7.))
+        .child(session_dot(t, state, session.and_then(|s| s.custom_status.as_ref()), 7.))
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(name))
-        .child(button("split-orient", if stacked { "⇆" } else { "⇅" }, if stacked { "Side by side" } else { "Stack top and bottom" }).on_click(cx.listener(|m, _, _, cx| {
-            if let Some(s) = m.split.as_mut() {
-                s.stacked = !s.stacked;
-            }
-            cx.notify();
-        })))
-        .child(button("split-select", "↖", "Show in the main pane").on_click(cx.listener(move |m, _, window, cx| {
-            let id = m.split.as_ref().map(|s| s.session_id(cx));
-            m.split = None;
-            if let Some(id) = id {
-                m.select(id, window, cx);
-            }
-        })))
-        .child(button("split-close", "✕", "Close this pane (the terminal keeps running)").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
+        .child(button("split-orient", if stacked { "⇆" } else { "⇅" }, if stacked { "Side by side" } else { "Stack top and bottom" }, "keys.split_orientation").on_click(cx.listener(|m, _, _, cx| flip(m, cx))))
+        .child(button("split-select", "↖", "Show in the main pane", "keys.split_to_main").on_click(cx.listener(|m, _, window, cx| to_main(m, window, cx))))
+        .child(button("split-close", "✕", "Close this pane (the terminal keeps running)", "keys.split").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
     let first = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), main_focused).child(div().flex_1().min_h_0().child(main.clone()));
     let second = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), split_focused).child(strip).child(div().flex_1().min_h_0().child(split.view.clone()));
     let divider = if stacked { div().h(px(1.)).w_full() } else { div().w(px(1.)).h_full() }.flex_none().bg(t.line);

@@ -1,4 +1,5 @@
 //! Bottom status bar: midnad status, policy, webhooks path, triggers today, key hints.
+use super::header::tip;
 use crate::app::{MainWindow, Screen};
 use crate::backend::{Backend, ConnState};
 use crate::theme::Theme;
@@ -61,9 +62,6 @@ fn link(id: &'static str, key: &'static str, screen: Screen, t: &Theme, cx: &mut
     }))
 }
 
-fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |_, cx| cx.new(|_| super::header::Tip(text.into())).into()
-}
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let dot = |c: Hsla| div().text_color(c).child("●");

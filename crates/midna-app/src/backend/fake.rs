@@ -38,6 +38,66 @@ fn ago(mins: i64) -> String {
     rfc3339_from_unix(now - mins * 60)
 }
 
+/// Local triggers for the Triggers screen: the built-in prompt-blocked status, an
+/// auto-compact one and a schedule.
+fn fake_triggers() -> Vec<midna_proto::Trigger> {
+    use midna_proto as p;
+    let t = |id: &str, name: &str, filter: p::TriggerFilter, action: p::TriggerAction, builtin: Option<&str>, fired: u64| p::Trigger {
+        id: id.into(),
+        name: name.into(),
+        source: p::TriggerSource::Local,
+        event: p::kinds::AGENT_PROMPT_BLOCKED.into(),
+        filter,
+        action,
+        enabled: true,
+        state: p::TriggerState::Active,
+        secret_set: false,
+        created_by: if builtin.is_some() { p::Actor::human() } else { p::Actor::agent(Some("a1f00007".into())) },
+        created_at: ago(60 * 24 * 3),
+        last_fired_at: (fired > 0).then(|| ago(2)),
+        fired,
+        last_fired_summary: (fired > 0).then(|| "triggers".into()),
+        enabled_at: Some(ago(60 * 24 * 3)),
+        secret_set_at: None,
+        secret_store: None,
+        github_hook_id: None,
+        session_name_template: None,
+        cooldown_secs: None,
+        builtin: builtin.map(Into::into),
+    };
+    vec![
+        t(
+            "t_lblock",
+            "Prompt blocked status",
+            p::TriggerFilter::default(),
+            p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt },
+            Some("prompt_blocked_status"),
+            3,
+        ),
+        t(
+            "t_lcompact",
+            "Compact and resend",
+            p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() },
+            p::TriggerAction::SendToSession {
+                steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
+            },
+            None,
+            0,
+        ),
+        p::Trigger {
+            event: "schedule".into(),
+            ..t(
+                "t_lstandup",
+                "Morning standup",
+                p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() },
+                p::TriggerAction::Notify { title: "Standup in 5".into(), body: "{{local_time}}".into(), sound: true },
+                None,
+                0,
+            )
+        },
+    ]
+}
+
 /// The settings catalog the GUI reads (subset of the daemon's; same keys).
 pub fn settings_catalog() -> Vec<SettingEntry> {
     let e = |key: &str, default: Value, description: &str, human_only: bool| SettingEntry {
@@ -55,26 +115,11 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("ui.row.script", json!("none"), "none | git-diff-stats | custom path", false),
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
-        e("keys.command_bar", json!("cmd-k"), "open the command bar", false),
-        e("keys.next_needs_you", json!("cmd-j"), "jump to the next needs-you item", false),
-        e("keys.new_terminal", json!("cmd-t"), "new terminal in the current project", false),
-        e("keys.new_agent", json!("cmd-shift-t"), "new agent in the current project", false),
-        e("keys.new_terminal_root", json!("cmd-alt-t"), "new terminal at root", false),
-        e("keys.new_agent_root", json!("cmd-alt-shift-t"), "new agent at root", false),
-        e("keys.approve", json!("cmd-enter"), "approve once", false),
-        e("keys.deny", json!("cmd-backspace"), "deny", false),
-        e("keys.settings", json!("cmd-,"), "open settings", false),
-        e("keys.rules", json!(""), "open rules", false),
-        e("keys.triggers", json!(""), "open triggers", false),
-        e("keys.insights", json!(""), "open insights", false),
-        e("keys.open_project", json!("cmd-o"), "open a project", false),
-        e("keys.composer", json!("cmd-shift-d"), "open the composer", false),
-        e("keys.add_image", json!("cmd-i"), "add images with notes", false),
-        e("keys.prev_prompt", json!("cmd-alt-up"), "scroll to the previous prompt", false),
-        e("keys.next_prompt", json!("cmd-alt-down"), "scroll to the next prompt", false),
-        e("keys.prompts", json!("cmd-p"), "list your prompts", false),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
     ];
+    // every shortcut, so the Shortcuts tab and tooltips match the daemon
+    let keys = midna_proto::settings::SETTINGS.iter().filter(|s| matches!(s.ty, midna_proto::settings::SettingKind::Keybinding));
+    v.extend(keys.map(|s| e(s.key, s.default.to_json(), s.description, false)));
     for s in &mut v {
         s.cli = format!("midna settings set {} <value>", s.key);
     }
@@ -132,8 +177,29 @@ impl FakeBackend {
             use AgentKind::*;
             use SessionKind::*;
             use StatusState::*;
+            let qm = |id: &str, text: &str, when: midna_proto::SendWhen, by: midna_proto::Actor| midna_proto::QueuedMessage {
+                id: id.into(),
+                text: text.into(),
+                enter: true,
+                images: vec![],
+                when,
+                by,
+                queued_at: ago(2),
+                state: midna_proto::QueueState::Waiting,
+                error: None,
+                trigger_id: None,
+                waiting_for: vec![],
+            };
+            let trigger = midna_proto::Actor { kind: midna_proto::ActorKind::Trigger, session: None, name: Some("After compact, write notes".into()) };
             vec![
-                s("a1f00001", "p_zonai1", "api", Agent, Some(Claude), Working, None, 4, git("feat/auth", 48, 12, 6, Some((231, Checks::Pending)))),
+                Session {
+                    queue: vec![
+                        qm("q_aaaa01", "Now run the full workspace tests and fix anything the refresh change broke", midna_proto::SendWhen::Idle, midna_proto::Actor::human()),
+                        qm("q_aaaa02", "/compact", midna_proto::SendWhen::Idle, midna_proto::Actor::human()),
+                        qm("q_aaaa03", "Update docs/DECISIONS.md with what changed and why", midna_proto::SendWhen::IdleFor { minutes: 5 }, trigger),
+                    ],
+                    ..s("a1f00001", "p_zonai1", "api", Agent, Some(Claude), Working, None, 4, git("feat/auth", 48, 12, 6, Some((231, Checks::Pending))))
+                },
                 s(
                     "a1f00002",
                     "p_zonai1",
@@ -150,6 +216,20 @@ impl FakeBackend {
                 s("a1f00005", "p_drops1", "golden", Agent, Some(Claude), NeedsYou, Some("Asked a question"), 12, git("main", 0, 0, 0, None)),
                 s("a1f00006", "p_drops1", "flutter build", Shell, None, Failed, Some("exit 1"), 9, git("main", 0, 0, 0, None)),
                 s("a1f00007", "p_midna1", "spike", Agent, Some(Claude), Working, None, 0, git("main", 210, 41, 9, None)),
+                // A local trigger's custom status (the built-in prompt-blocked one).
+                Session {
+                    custom_status: Some(CustomStatus {
+                        label: "Prompt blocked".into(),
+                        color: "amber".into(),
+                        base: NeedsYou,
+                        clear_on: "prompt".into(),
+                        trigger_id: Some("t_lblock".into()),
+                        detail: Some("Context is full. Compact first, then resend.".into()),
+                        since: Some(ago(2)),
+                        ..Default::default()
+                    }),
+                    ..s("a1f00008", "p_midna1", "triggers", Agent, Some(Claude), NeedsYou, Some("Prompt blocked"), 2, git("feat/local-triggers", 64, 8, 4, None))
+                },
             ]
         };
         let needs = vec![
@@ -184,6 +264,17 @@ impl FakeBackend {
                 created_at: ago(12),
                 ..Default::default()
             },
+            NeedsYou {
+                id: "n_blockd".into(),
+                session_id: Some("a1f00008".into()),
+                project_id: Some("p_midna1".into()),
+                kind: NeedsYouKind::Blocked,
+                title: "Prompt blocked".into(),
+                detail: "Context is full. Compact first, then resend.".into(),
+                asked_by: Actor { kind: "agent".into(), session: Some("a1f00008".into()), name: Some("claude".into()) },
+                created_at: ago(2),
+                ..Default::default()
+            },
         ];
         let mut settings = settings_catalog();
         if let Ok(over) = crate::dev::var("MIDNA_FAKE_SETTINGS") {
@@ -214,6 +305,11 @@ impl FakeBackend {
                     (OK, "    test result: ok. 18 passed; 0 failed"),
                     ("", ""),
                     (DIM, "✻ Wiring refresh into the middleware… (4m 12s)"),
+                    ("", ""),
+                    (DIM, &"─".repeat(60)),
+                    ("", "❯ "),
+                    (DIM, &"─".repeat(60)),
+                    (DIM, "  ⏵⏵ accept edits on (shift+tab to cycle)"),
                 ]),
             ),
             (
@@ -373,7 +469,7 @@ impl Backend for FakeBackend {
                 json!({ "sounds": sounds, "images": [], "dir": "/tmp/midna-fake/notify" })
             }
             "rule.list" => Value::Array(st.rules.clone()),
-            "trigger.list" => json!([]),
+            "trigger.list" => serde_json::to_value(fake_triggers())?,
             "insights.summary" => {
                 json!({"range": "today", "totals": {"turns": 38, "messages": 52, "spend_usd": 4.12, "triggers_fired": 2}})
             }
@@ -456,6 +552,58 @@ impl Backend for FakeBackend {
                 }
                 st.emit("session.closed", Some(&id), json!({}));
                 json!({"ok": true})
+            }
+            m if m.starts_with("queue.") => {
+                let sid = p("session").ok_or_else(|| anyhow!("session required"))?;
+                let id = p("id").unwrap_or_default();
+                let Some(s) = st.sessions.iter_mut().find(|s| s.id == sid) else { bail!("rpc error 3: no terminal {sid}") };
+                let mut action = m.trim_start_matches("queue.").to_string();
+                match m {
+                    "queue.list" => {}
+                    "queue.add" => {
+                        let mut q: midna_proto::QueuedMessage = serde_json::from_value(json!({
+                            "id": format!("q_f{:05x}", s.queue.len() + 1), "text": p("text").unwrap_or_default(), "by": {"kind": "human"},
+                            "queued_at": now_rfc3339(), "when": params.get("when").cloned().unwrap_or(json!({"kind": "idle"}))
+                        }))?;
+                        q.enter = true;
+                        s.queue.push(q);
+                        action = "added".into();
+                    }
+                    "queue.update" => {
+                        if let Some(q) = s.queue.iter_mut().find(|q| q.id == id) {
+                            if let Some(t) = p("text") {
+                                q.text = t;
+                            }
+                            if let Some(w) = params.get("when").and_then(|w| serde_json::from_value(w.clone()).ok()) {
+                                q.when = w;
+                            }
+                            q.state = midna_proto::QueueState::Waiting;
+                            q.error = None;
+                        }
+                        action = "updated".into();
+                    }
+                    "queue.remove" | "queue.send_now" => {
+                        s.queue.retain(|q| q.id != id);
+                        action = if m == "queue.remove" { "removed".into() } else { "sent".into() };
+                    }
+                    "queue.move" => {
+                        if let Some(i) = s.queue.iter().position(|q| q.id == id) {
+                            let q = s.queue.remove(i);
+                            let to = params.get("to").and_then(Value::as_u64).unwrap_or(0) as usize;
+                            s.queue.insert(to.min(s.queue.len()), q);
+                        }
+                        action = "moved".into();
+                    }
+                    "queue.clear" => s.queue.clear(),
+                    "queue.pause" => s.queue_paused = params.get("paused").and_then(Value::as_bool).unwrap_or(true),
+                    _ => bail!("rpc error -32601: unknown method {m}"),
+                }
+                let out = json!({ "session": sid, "paused": s.queue_paused, "items": s.queue });
+                let left = s.queue.len();
+                if m != "queue.list" {
+                    st.emit("session.queue", Some(&sid), json!({ "action": action, "id": id, "left": left }));
+                }
+                out
             }
             "window.command" => {
                 let cmd = params.clone();

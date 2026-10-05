@@ -234,7 +234,7 @@ fn strip(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEl
                             .justify_center()
                             .bg(hsla(0., 0., 0., 0.6))
                             .cursor_pointer()
-                            .tooltip(|_, cx| cx.new(|_| crate::ui::header::Tip("Remove image".into())).into())
+                            .tooltip(crate::ui::header::tip("Remove image"))
                             .on_click(cx.listener(move |m, _, w, cx| {
                                 cx.stop_propagation();
                                 an::remove_image(m, i, w, cx);
@@ -507,7 +507,7 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
                         div()
                             .id(("annot-note-remove", i))
                             .cursor_pointer()
-                            .tooltip(|_, cx| cx.new(|_| crate::ui::header::Tip("Remove note".into())).into())
+                            .tooltip(crate::ui::header::tip_fixed("Remove note", "⌫"))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |m, _, w, cx| {
                                 m.annot.editing = None;

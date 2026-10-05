@@ -25,7 +25,7 @@ pub struct Stack {
     /// `pos` takes its place.
     cur: Option<String>,
     pos: usize,
-    menu: bool,
+    pub menu: bool,
     /// Handled during this pass, for the progress bar and the "All clear" summary.
     log: Vec<(String, Outcome)>,
     /// Live screen tails for items without a `screen_excerpt` (None while loading).

@@ -153,7 +153,7 @@ fn current_project(m: &MainWindow) -> Option<&Project> {
 /// The full registry for the current state (built-ins plus `$MIDNA_HOME/commands.json`).
 pub fn registry(m: &MainWindow) -> Vec<Command> {
     let key = |k: &str| {
-        let v = m.setting_str(k).unwrap_or_else(|| crate::actions::default_keys().get(k).copied().unwrap_or("").to_string());
+        let v = m.setting_str(k).unwrap_or_else(|| crate::actions::default_key(k).to_string());
         if v.trim().is_empty() { String::new() } else { crate::actions::pretty(&v) }
     };
     let setting = |k: &str| m.setting_str(k);
@@ -386,6 +386,10 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             }
         },
         Run::PopOut { session } => crate::ui::popout::open(m, session, window, cx),
+        Run::Queue { session } => {
+            cx.global::<crate::ui::queue::QueueStore>().target.replace(Some(session));
+            crate::ui::queue::toggle(m, window, cx);
+        }
         Run::OpenProject { path: Some(path) } => m.add_project(path, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
         Run::Resolve { need, resolution } => {

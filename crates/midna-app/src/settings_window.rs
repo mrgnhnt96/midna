@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 #[path = "settings_notify.rs"]
 mod notify_rows;
+#[path = "settings_shortcuts.rs"]
+mod shortcuts;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
@@ -53,6 +55,8 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
 enum View {
     Rows,
     Json,
+    /// Every shortcut, searchable by name or by pressing keys (settings_shortcuts.rs).
+    Shortcuts,
 }
 
 struct Last {
@@ -75,6 +79,14 @@ pub struct SettingsWindow {
     error: Option<String>,
     view: View,
     ask: LineInput,
+    /// Shortcuts tab: the search field, the key detector while it's on, and the keys it caught.
+    search: LineInput,
+    recorder: Option<Subscription>,
+    recorded: Vec<String>,
+    /// The shortcut being rebound by pressing keys.
+    editing: Option<shortcuts::Editing>,
+    /// A shortcut row's right-click menu: its setting and where it opened.
+    shortcut_menu: Option<(&'static str, Point<Pixels>)>,
     last: Option<Last>,
     /// Keys this window changed recently (so the echoed `settings.changed` reads "you").
     mine: Vec<(String, Instant)>,
@@ -99,7 +111,14 @@ impl SettingsWindow {
                 }
             }
         });
-        let subs = vec![cx.observe_global::<Theme>(|_, cx| cx.notify())];
+        let search = LineInput::new(cx, false, "Search shortcuts");
+        let subs = vec![
+            cx.observe_global::<Theme>(|_, cx| cx.notify()),
+            cx.subscribe(&search.field, |s, _, _: &crate::ui::text_input::FieldChanged, cx| {
+                s.recorded.clear();
+                cx.notify();
+            }),
+        ];
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut s = SettingsWindow {
@@ -110,8 +129,17 @@ impl SettingsWindow {
             media: Value::Null,
             picker: None,
             error: None,
-            view: if crate::dev::var("MIDNA_SETTINGS_VIEW").as_deref() == Ok("json") { View::Json } else { View::Rows },
+            view: match crate::dev::var("MIDNA_SETTINGS_VIEW").as_deref() {
+                Ok("json") => View::Json,
+                Ok("shortcuts") => View::Shortcuts,
+                _ => View::Rows,
+            },
             ask: LineInput::new(cx, false, "Ask: make ⌘T open Claude at the project root"),
+            search,
+            recorder: None,
+            recorded: vec![],
+            editing: None,
+            shortcut_menu: None,
             last: None,
             mine: vec![],
             armed_reset: false,
@@ -123,6 +151,34 @@ impl SettingsWindow {
             _tasks: vec![task],
         };
         s.load(cx);
+        if let Some(sc) = crate::dev::var("MIDNA_SETTINGS_EDIT").ok().and_then(|k| crate::actions::SHORTCUTS.iter().find(|s| s.setting == k)) {
+            // dev (screenshots): start rebinding this shortcut
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let _ = this.update_in(cx, |s, window, cx| s.start_edit(sc.setting, window, cx));
+            })
+            .detach();
+        }
+        if let Some(sc) = crate::dev::var("MIDNA_SETTINGS_SHORTCUT_MENU").ok().and_then(|k| crate::actions::SHORTCUTS.iter().find(|s| s.setting == k)) {
+            // dev (screenshots): a shortcut row's right-click menu
+            s.shortcut_menu = Some((sc.setting, point(px(340.), px(250.))));
+        }
+        if let Ok(keys) = crate::dev::var("MIDNA_SETTINGS_DEBUG_KEYS") {
+            // Dev: comma-separated keystrokes through GPUI's own dispatch (interceptors,
+            // bindings, key handlers), e.g. to drive the key detector.
+            cx.spawn_in(window, async move |_, cx| {
+                cx.background_executor().timer(Duration::from_millis(800)).await;
+                for k in keys.split(',').filter(|k| !k.is_empty()) {
+                    if let Ok(ks) = Keystroke::parse(k) {
+                        let _ = cx.update(|window, cx| {
+                            window.dispatch_keystroke(ks, cx);
+                        });
+                    }
+                    cx.background_executor().timer(Duration::from_millis(120)).await;
+                }
+            })
+            .detach();
+        }
         s
     }
 
@@ -141,7 +197,7 @@ impl SettingsWindow {
     /// Footer line for a change made anywhere (this window, the CLI, an agent).
     fn note_change(&mut self, e: &Event) {
         let key = e.data.get("key").and_then(Value::as_str).unwrap_or("").to_string();
-        let value = e.data.get("value").map(value_text).unwrap_or_default();
+        let value = e.data.get("value").map(cli_text).unwrap_or_default();
         self.mine.retain(|(_, t)| t.elapsed() < Duration::from_secs(5));
         let ours = self.mine.iter().position(|(k, _)| *k == key);
         let who = if let Some(i) = ours {
@@ -192,6 +248,10 @@ impl SettingsWindow {
                     // dev (screenshots): open this setting's sound/image picker
                     s.picker = Some(k);
                 }
+                if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_KEYS") {
+                    // dev (screenshots): a key-detector search, e.g. "cmd-t"
+                    s.recorded = vec![k];
+                }
                 if let Ok(v) = crate::dev::var("MIDNA_SETTINGS_SCROLL") {
                     // dev (screenshots): scroll the rows down by this many pixels
                     let y: f32 = v.parse().unwrap_or(0.);
@@ -211,7 +271,7 @@ impl SettingsWindow {
         let backend = self.backend.clone();
         let k = key.to_string();
         self.mine.push((k.clone(), Instant::now()));
-        let cmd = format!("midna settings set {k} {}", value_text(&value));
+        let cmd = format!("midna settings set {k} {}", cli_text(&value));
         // optimistic
         if let Some(e) = self.entries.iter_mut().find(|e| e.key == k) {
             e.value = value.clone();
@@ -447,6 +507,14 @@ fn value_text(v: &Value) -> String {
     }
 }
 
+/// A value as typed on the command line: "" for an empty string.
+fn cli_text(v: &Value) -> String {
+    match value_text(v) {
+        t if t.is_empty() => "\"\"".into(),
+        t => t,
+    }
+}
+
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -614,34 +682,6 @@ impl SettingsWindow {
         }
         // Look
         let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script")];
-        // Keybindings (read-only here; change by asking)
-        let mut keys: Vec<Option<RowSpec>> = SETTINGS
-            .iter()
-            .filter(|s| s.key.starts_with("keys."))
-            .map(|s| {
-                let v = value_text(&self.value(s.key));
-                Some(RowSpec {
-                    label: s.description.trim_end_matches('.').to_string(),
-                    note: None,
-                    control: Control::Text { dot: None, text: if v.is_empty() { "unbound".into() } else { crate::actions::pretty(&v) }, color: t.fg, action: None },
-                    cli: format!("midna settings set {} {}", s.key, if v.is_empty() { "<keys>".into() } else { v }),
-                    who: Who::Agents,
-                    warn: false,
-                })
-            })
-            .collect();
-        keys.insert(
-            0,
-            Some(text(
-                "Change a shortcut",
-                "Ask above, e.g. “make ⌘T open Claude at the project root”".into(),
-                t.dim,
-                None,
-                "midna settings list --json | grep keys.",
-                Who::ReadOnly,
-                Some("⌘1–9 jump to projects (reserved).".into()),
-            )),
-        );
         // Agents
         let home = self.info.get("home").and_then(Value::as_str).unwrap_or("");
         let hook_file = std::path::Path::new(home).join("hooks/claude-settings.json");
@@ -752,7 +792,6 @@ impl SettingsWindow {
             Group { name: "Projects", danger: false, badge: 0, rows: row("projects.roots").into_iter().collect() },
             Group { name: "Agents", danger: false, badge: 0, rows: agents.into_iter().flatten().collect() },
             Group { name: "What agents may do without asking", danger: false, badge: 0, rows: allow },
-            Group { name: "Keybindings", danger: false, badge: 0, rows: keys.into_iter().flatten().collect() },
             Group { name: "Danger zone", danger: true, badge: 0, rows: danger },
         ]
     }
@@ -913,12 +952,14 @@ impl Render for SettingsWindow {
         let body: AnyElement = match self.view {
             View::Rows => self.rows(&t, cx).into_any_element(),
             View::Json => self.json(&t).into_any_element(),
+            View::Shortcuts => self.shortcuts(&t, window, cx).into_any_element(),
         };
         div()
             .id("settings-root")
             .track_focus(&self.focus)
             .key_context("MidnaSettings")
             .on_action(|_: &crate::actions::CloseWindow, window, _| window.remove_window())
+            .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .flex()
             .flex_col()
@@ -953,8 +994,9 @@ impl Render for SettingsWindow {
 impl SettingsWindow {
     fn title_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut tabs = div().flex().p(px(2.)).gap(px(2.)).rounded(px(7.)).border_1().border_color(t.line).bg(t.bg);
-        for (v, label) in [(View::Rows, "Rows"), (View::Json, "settings.json")] {
+        for (i, (v, label)) in [(View::Rows, "Rows"), (View::Json, "settings.json"), (View::Shortcuts, "Shortcuts")].into_iter().enumerate() {
             let on = self.view == v;
+            let keys = ["⌘1", "⌘2", "⌘3"][i];
             tabs = tabs.child(
                 div()
                     .id(label)
@@ -967,11 +1009,9 @@ impl SettingsWindow {
                     .cursor_pointer()
                     .when(on, |d| d.bg(t.raised).text_color(t.fg).font_weight(FontWeight::BOLD))
                     .when(!on, |d| d.text_color(t.dim).hover(|s| s.text_color(t.fg)))
+                    .tooltip(crate::ui::header::tip_fixed(label, keys))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |s, _, _, cx| {
-                        s.view = v;
-                        cx.notify();
-                    }))
+                    .on_click(cx.listener(move |s, _, _, cx| s.show(v, cx)))
                     .child(label),
             );
         }
@@ -996,6 +1036,43 @@ impl SettingsWindow {
             .child(div().absolute().top_0().left_0().size_full().flex().items_center().justify_center().text_size(px(13.)).font_weight(FontWeight::BOLD).child("Settings"))
             .child(div().flex_1())
             .child(tabs)
+    }
+
+    fn show(&mut self, v: View, cx: &mut Context<Self>) {
+        self.view = v;
+        if v != View::Shortcuts {
+            self.recorder = None;
+            self.editing = None;
+            self.shortcut_menu = None;
+        }
+        cx.notify();
+    }
+
+    /// The window's own keys (listed under Built in on the Shortcuts tab). The key detector
+    /// takes keys before this while it's on.
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        let m = &ks.modifiers;
+        if !m.platform || m.control || m.shift {
+            return;
+        }
+        match (ks.key.as_str(), m.alt) {
+            ("1", false) => self.show(View::Rows, cx),
+            ("2", false) => self.show(View::Json, cx),
+            ("3", false) => self.show(View::Shortcuts, cx),
+            ("k", false) => {
+                self.show(View::Rows, cx);
+                self.ask.focus.focus(window, cx);
+            }
+            ("f", false) => {
+                self.show(View::Shortcuts, cx);
+                self.recorded.clear();
+                self.search.focus.focus(window, cx);
+            }
+            ("k", true) => self.toggle_recording(window, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
     }
 
     fn ask_bar(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {

@@ -47,6 +47,8 @@ pub enum Run {
     },
     /// Scroll an agent terminal to one of the human's prompts (`session.jump_prompt`).
     JumpPrompt { session: String, n: u32 },
+    /// Open a terminal's queued messages (the pill's panel).
+    Queue { session: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,7 +409,11 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
     // ---- Go to terminals (needs-you terminals are featured)
     for x in &s.sessions {
         let needs = s.needs.iter().any(|n| n.session_id.as_ref() == Some(&x.id));
-        let state = if needs { "waiting on you" } else { state_word(x.status.state) };
+        let state = match &x.custom_status {
+            Some(c) => c.label.as_str(),
+            None if needs => "waiting on you",
+            None => state_word(x.status.state),
+        };
         let mut c = Command::new(format!("focus:{}", x.id), icon_for(x), format!("Go to {}", x.name), Run::Focus { session: x.id.clone() })
             .sub(format!("{} · {} · {}", project_name(x.project_id.as_deref()), agent_label(x), state))
             .kw("jump switch focus terminal tab")
@@ -617,6 +623,15 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
                 .cli(format!("midna window pop_out {}", x.id)),
         );
         out.extend(restart_commands(x, &pname));
+        let queued = x.queue.len();
+        let mut q = Command::new(format!("queue:{}", x.id), CmdIcon::Run, format!("Queue a message for {}", x.name), Run::Queue { session: x.id.clone() })
+            .sub(if queued > 0 { format!("{pname} · {queued} queued, sent in order once it's ready") } else { format!("{pname} · sent once it's ready") })
+            .kw("queue later next when idle follow up send after")
+            .cli(format!("midna queue add --session {} <text>", x.id));
+        if is_sel {
+            q = q.keys(key("keys.queue"));
+        }
+        out.push(q);
         let working = x.status.state == StatusState::Working;
         out.push(
             Command::new(

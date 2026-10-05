@@ -136,6 +136,28 @@ pub struct Session {
     pub agent_info: Option<midna_proto::AgentInfo>,
     /// Notification overrides for this terminal (`enabled: false` = muted; see `notify.set`).
     pub notify: std::collections::BTreeMap<String, bool>,
+    /// A label + color a local trigger put on this terminal (`set_status`). Shown instead of the
+    /// built-in status; `status.state` still drives sorting, counts and notifications.
+    pub custom_status: Option<CustomStatus>,
+    /// Messages waiting to be typed into this terminal, in order (`queue.*`).
+    pub queue: Vec<midna_proto::QueuedMessage>,
+    /// Nothing is typed from the queue while paused.
+    pub queue_paused: bool,
+}
+
+/// Lenient copy of `midna_proto::CustomStatus` (only what the GUI shows).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct CustomStatus {
+    pub label: String,
+    /// Named (`amber`, `teal`, … see `midna_proto::STATUS_COLORS`) or `#rrggbb`.
+    pub color: String,
+    pub icon: Option<String>,
+    pub base: StatusState,
+    pub clear_on: String,
+    pub trigger_id: Option<String>,
+    pub detail: Option<String>,
+    pub since: Option<String>,
 }
 
 impl Session {
@@ -436,12 +458,40 @@ mod tests {
             }),
             agent_info: None,
             notify: Default::default(),
+            custom_status: Some(p::CustomStatus {
+                label: "Prompt blocked".into(),
+                color: "amber".into(),
+                icon: None,
+                base: p::StatusState::NeedsYou,
+                clear_on: p::StatusClear::Prompt,
+                trigger_id: Some("t_1".into()),
+                detail: Some("Compact first".into()),
+                needs_you_id: None,
+                since: "2026-10-03T10:00:00Z".into(),
+            }),
+            queue: vec![p::QueuedMessage {
+                id: "q_1".into(),
+                text: "/compact".into(),
+                enter: true,
+                images: vec![],
+                when: p::SendWhen::IdleFor { minutes: 5 },
+                by: p::Actor::human(),
+                queued_at: "2026-10-03T10:00:00Z".into(),
+                state: p::QueueState::Waiting,
+                error: None,
+                trigger_id: None,
+                waiting_for: vec![],
+            }],
+            queue_paused: true,
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);
         assert_eq!(got[0].glyph(), Glyph::Codex);
         assert_eq!(got[0].status.state, StatusState::NeedsYou);
         assert_eq!(got[0].git.as_ref().unwrap().pr.as_ref().unwrap().checks, Checks::Failing);
+        let cs = got[0].custom_status.as_ref().unwrap();
+        assert_eq!((cs.label.as_str(), cs.color.as_str(), cs.base, cs.clear_on.as_str()), ("Prompt blocked", "amber", StatusState::NeedsYou, "prompt"));
+        assert_eq!((got[0].queue[0].when.clone(), got[0].queue_paused), (p::SendWhen::IdleFor { minutes: 5 }, true));
         let seg = p::Segment { text: "#3".into(), tone: Some(p::Tone::Accent), link: Some("u".into()) };
         let got: Vec<Segment> = parse_list(&serde_json::json!({"segments": [seg]}));
         assert_eq!(got[0].tone, Some(Tone::Accent));

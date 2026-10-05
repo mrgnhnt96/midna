@@ -102,6 +102,26 @@ impl Theme {
         }
     }
 
+    /// A custom status color (`set_status`): a named color from `midna_proto::STATUS_COLORS`,
+    /// mapped onto this theme's tokens where one fits, or `#rrggbb`. Unknown values read as `need`.
+    pub fn status_color(&self, c: &str) -> Hsla {
+        let dark = self.mode == ThemeMode::Dark;
+        match c.trim().to_ascii_lowercase().as_str() {
+            "red" => self.err,
+            "amber" => self.need,
+            "green" => self.ok,
+            "blue" => self.work,
+            "purple" => self.accent,
+            "gray" | "grey" => self.dim,
+            "orange" => hex(if dark { 0xF28A4B } else { 0xB4480C }),
+            "yellow" => hex(if dark { 0xE6D25A } else { 0x8A7300 }),
+            "teal" => hex(if dark { 0x3FC4C0 } else { 0x0E7A78 }),
+            "pink" => hex(if dark { 0xF07AB6 } else { 0xB0286D }),
+            h if h.len() == 7 && h.starts_with('#') => u32::from_str_radix(&h[1..], 16).map(hex).unwrap_or(self.need),
+            _ => self.need,
+        }
+    }
+
     pub fn tone(&self, t: Option<crate::model::Tone>) -> Hsla {
         use crate::model::Tone::*;
         match t {

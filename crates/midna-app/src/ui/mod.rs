@@ -6,6 +6,7 @@ pub mod command_bar;
 pub mod header;
 pub mod insights;
 pub mod links;
+pub mod queue;
 pub mod needs_you;
 pub mod popout;
 pub mod quit_hold;
@@ -23,7 +24,7 @@ pub mod triggers;
 use crate::actions::CTX_MAIN;
 use crate::app::{MainWindow, Menu, Overlay, Screen};
 use crate::backend::ConnState;
-use crate::model::StatusState;
+use crate::model::{CustomStatus, StatusState};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -40,6 +41,42 @@ pub fn status_dot(t: &Theme, state: StatusState, size: f32) -> Div {
         StatusState::Failed => d.bg(t.err),
         _ => border_w(d, 1.5).border_color(t.dim),
     }
+}
+
+/// A terminal's status dot: a trigger's custom status in its color when set (ringed like
+/// needs-you when its base is needs-you), else the built-in `status_dot`.
+pub fn session_dot(t: &Theme, state: StatusState, custom: Option<&CustomStatus>, size: f32) -> Div {
+    let Some(c) = custom else {
+        return status_dot(t, state, size);
+    };
+    let color = t.status_color(&c.color);
+    let d = div().size(px(size)).flex_none().rounded_full().bg(color);
+    if state == StatusState::NeedsYou || c.base == StatusState::NeedsYou {
+        d.shadow(vec![BoxShadow { color: color.opacity(0.22), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }])
+    } else {
+        d
+    }
+}
+
+/// A custom status as a small colored label (icon when the icon set has it), e.g. in the
+/// terminal header.
+pub fn custom_status_label(t: &Theme, c: &CustomStatus, size: f32) -> Div {
+    let color = t.status_color(&c.color);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .h(px(size + 9.))
+        .px(px(8.))
+        .rounded(px((size + 9.) / 2.))
+        .bg(color.opacity(0.12))
+        .text_size(px(size))
+        .font_weight(FontWeight::BOLD)
+        .text_color(color)
+        .whitespace_nowrap()
+        .children(c.icon.as_deref().and_then(crate::icons::Icon::from_name).map(|i| i.el(size, color)))
+        .child(c.label.clone())
 }
 
 /// Border with a fractional width (GPUI's helpers are whole pixels).
@@ -113,6 +150,7 @@ impl Render for MainWindow {
             .child(statusbar::render(self, &t, cx))
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
             .when(self.overlay == Overlay::Annotate, |d| d.child(annotate::render(self, &t, window, cx)))
+            .children(queue::panel(self, &t, window, cx))
             // ⌘Q hold: releasing ⌘ (or Q, when macOS reports it) cancels
             .on_modifiers_changed(cx.listener(|m, ev: &ModifiersChangedEvent, _, cx| {
                 if !ev.modifiers.platform {
@@ -150,6 +188,7 @@ impl Render for MainWindow {
                         MouseButton::Left,
                         cx.listener(|m, _, _, cx| {
                             m.menu = Menu::None;
+                            queue::closed(cx);
                             cx.notify();
                         }),
                     ))

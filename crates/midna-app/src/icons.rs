@@ -46,6 +46,13 @@ pub enum Icon {
     File,
     PushPin,
     PushPinFill,
+    /// Settings ▸ Shortcuts: record keys to search by.
+    Keyboard,
+    // queued messages
+    Queue,
+    SendNow,
+    Pencil,
+    Pause,
 }
 
 impl Icon {
@@ -86,6 +93,11 @@ impl Icon {
             Icon::File => "icons/file.svg",
             Icon::PushPin => "icons/pushpin.svg",
             Icon::PushPinFill => "icons/pushpin-fill.svg",
+            Icon::Keyboard => "icons/keyboard.svg",
+            Icon::Queue => "icons/queue.svg",
+            Icon::SendNow => "icons/sendnow.svg",
+            Icon::Pencil => "icons/pencil.svg",
+            Icon::Pause => "icons/pause.svg",
         }
     }
 
@@ -96,6 +108,35 @@ impl Icon {
             crate::model::Glyph::Monitor => Icon::Monitor,
             crate::model::Glyph::Shell => Icon::Shell,
         }
+    }
+
+    /// An icon a custom status names (`set_status --icon`), when this set has it.
+    pub fn from_name(name: &str) -> Option<Icon> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "bell" => Icon::Bell,
+            "bell-off" | "bell_off" | "mute" => Icon::BellOff,
+            "lock" => Icon::Lock,
+            "check" => Icon::Check,
+            "cross" | "x" => Icon::Cross,
+            "restart" | "refresh" => Icon::Restart,
+            "branch" => Icon::Branch,
+            "pr" => Icon::Pr,
+            "bolt" | "trigger" | "triggers" => Icon::Triggers,
+            "shell" | "terminal" => Icon::Shell,
+            "monitor" => Icon::Monitor,
+            "pin" => Icon::PushPin,
+            "link" => Icon::Link,
+            "globe" => Icon::Globe,
+            "file" => Icon::File,
+            "search" => Icon::Search,
+            "play" => Icon::Play,
+            "claude" => Icon::Claude,
+            "codex" => Icon::Codex,
+            "rules" | "shield" => Icon::Rules,
+            "keyboard" => Icon::Keyboard,
+            "queue" => Icon::Queue,
+            _ => return None,
+        })
     }
 
     pub fn el(self, size: f32, color: Hsla) -> Svg {
@@ -147,6 +188,21 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/settings.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>"##
+        }
+        "icons/queue.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6"/></svg>"##
+        }
+        "icons/sendnow.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>"##
+        }
+        "icons/pencil.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 13.5l.6-3L11 2.6l2.4 2.4-7.9 7.9z"/></svg>"##
+        }
+        "icons/pause.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>"##
+        }
+        "icons/keyboard.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8"/><path d="M4.2 6.4h.1M6.7 6.4h.1M9.2 6.4h.1M11.7 6.4h.1M4.2 8.4h.1M11.7 8.4h.1M6.3 10h3.4"/></svg>"##
         }
         "icons/chevron.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5 6 7.5 9 4.5"/></svg>"##

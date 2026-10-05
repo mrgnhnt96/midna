@@ -60,6 +60,7 @@ impl Render for PopOut {
             .cursor_pointer()
             .when(on, |d| d.bg(t.accent_soft).text_color(t.accent))
             .when(!on, |d| d.text_color(t.dim).hover(|s| s.bg(t.raised)))
+            .tooltip(crate::ui::header::tip_keys(if on { "Stop keeping this window on top" } else { "Keep this window above others" }, "keys.keep_on_top"))
             .child(if on { "Keep on top ✓" } else { "Keep on top" })
             .on_click(cx.listener(move |p, _, w, cx| p.set_on_top(!on, w, cx)));
         let dock = div()
@@ -71,12 +72,15 @@ impl Render for PopOut {
             .rounded(px(5.))
             .cursor_pointer()
             .hover(|s| s.bg(t.raised))
-            .tooltip(|_, cx| cx.new(|_| crate::ui::header::Tip("Back to main window".into())).into())
+            .tooltip(crate::ui::header::tip_keys("Back to main window", "keys.pop_out"))
             .child(Icon::DockIn.el(13., t.dim))
             .on_click(cx.listener(|p, _, w, cx| p.dock(w, cx)));
         div()
             .key_context(CTX_MAIN)
             .on_action(|_: &crate::actions::CloseWindow, window, _| window.remove_window())
+            // the pop-out key toggles: here it docks back into the main window
+            .on_action(cx.listener(|p, _: &crate::actions::PopOut, w, cx| p.dock(w, cx)))
+            .on_action(cx.listener(move |p, _: &crate::actions::ToggleKeepOnTop, w, cx| p.set_on_top(!on, w, cx)))
             .relative()
             .size_full()
             .bg(t.term)

@@ -226,7 +226,7 @@ pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     }
     let open = m.menu == Menu::Links;
     let fresh = !open && m.links.seen_at.get(&s.id).is_some_and(|since| new_count(links, since) > 0);
-    let tip = format!("Session links ({}) {}", links.len(), crate::actions::pretty(&m.setting_str("keys.links").unwrap_or_else(|| "cmd-l".into())));
+    let tip = format!("Session links ({})", links.len());
     let color = if open || fresh { t.accent } else { t.dim };
     let el = div()
         .id("tb-links")
@@ -241,7 +241,7 @@ pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         .border_color(if open { t.accent } else { transparent_black() })
         .when(open, |d| d.bg(t.accent_soft))
         .hover(|st| st.bg(t.raised))
-        .tooltip(move |_, cx| cx.new(|_| super::header::Tip(tip.clone().into())).into())
+        .tooltip(super::header::tip_keys(tip, "keys.links"))
         .on_click(cx.listener(|m, _, window, cx| toggle(m, window, cx)))
         .child(Icon::Link.el(16., color))
         .when(!links.is_empty(), |d| d.child(div().text_size(px(12.5)).font_weight(FontWeight::BOLD).text_color(color).child(links.len().to_string())))
@@ -464,10 +464,7 @@ fn row(m: &MainWindow, t: &Theme, l: &Link, i: usize, selected: bool, agent: &st
                 .size(px(26.))
                 .rounded(px(6.))
                 .hover(|st| st.bg(t.panel))
-                .tooltip({
-                    let tip = if l.pinned { "Unpin ⇧↩" } else { "Pin ⇧↩" };
-                    move |_, cx| cx.new(|_| super::header::Tip(tip.into())).into()
-                })
+                .tooltip(super::header::tip_fixed(if l.pinned { "Unpin" } else { "Pin" }, "⇧↩"))
                 .on_click(cx.listener(move |m, _, _, cx| {
                     cx.stop_propagation();
                     pin(m, &pin_l, cx);

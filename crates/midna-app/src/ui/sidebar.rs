@@ -1,6 +1,6 @@
 //! Left sidebar (264px): traffic-light strip, "N need you", project groups with terminal
 //! rows (click a heading to fold it; remembered in app-state.json), and the footer (Today card + Triggers / Rules / Settings).
-use super::{caps_label, status_dot};
+use super::{caps_label, session_dot};
 use crate::actions::*;
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
@@ -61,6 +61,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
             .text_color(fg)
             .font_weight(FontWeight::BOLD)
             .cursor_pointer()
+            .tooltip(super::header::tip_keys("Open the needs-you cards", "keys.needs_you"))
             .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenNeedsYou), cx))
             .child(div().size(px(8.)).rounded_full().flex_none().when(has, |d| d.bg(t.need)).when(!has, |d| super::border_w(d, 1.5).border_color(t.dim)))
             .child(div().flex_1().child(if has { format!("{need_n} need you") } else { "Nothing needs you".to_string() }))
@@ -95,20 +96,10 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
             .pb(px(2.))
             .pl(px(10.))
             .cursor_pointer()
+            .tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project"))
             .on_click(cx.listener(move |m, _, _, cx| {
                 if let Some(p) = toggle_key.clone() {
-                    if !m.collapsed.remove(&p) {
-                        m.collapsed.insert(p.clone());
-                    }
-                    // Re-read each time: macOS posts no change we can follow, and the read is cheap.
-                    gpui_kit::base::apply_system_reduce_motion(cx);
-                    if cx.reduce_motion() {
-                        m.fold_anim.remove(&p);
-                    } else {
-                        m.fold_anim.insert(p, std::time::Instant::now());
-                    }
-                    crate::ui::statusbar::save_state(m);
-                    cx.notify();
+                    toggle_fold(m, p, cx);
                 }
             }))
             .child(chevron)
@@ -142,6 +133,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
                     .cursor_pointer()
                     .hover(|s| s.bg(t.raised))
                     .when(menu_open, |d| d.bg(t.raised))
+                    .tooltip(super::header::tip_keys("Project actions", "keys.project_menu"))
                     .on_click(cx.listener(move |m, _, _, cx| {
                         cx.stop_propagation();
                         let k = Menu::Project(menu_key.clone());
@@ -149,7 +141,11 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
                         cx.notify();
                     }))
                     .child(Icon::Dots.el(14., t.dim))
-                    .when(menu_open, |d| d.child(project_menu(t, pid.clone(), cx))),
+                    .when(menu_open, |d| {
+                        // ⌘T opens in the current project, so its keys belong on this menu only there
+                        let keys = (m.current_project_id() == pid).then(|| m.key_label("keys.new_terminal")).filter(|k| !k.is_empty());
+                        d.child(project_menu(t, pid.clone(), keys, cx))
+                    }),
             );
         // Root terminals belong to no project: no heading, just rows.
         let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).when(g.project.is_none(), |d| d.pt(px(4.)));
@@ -236,7 +232,15 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let (drag, group, target) = (DraggedRow { id: s.id.clone(), group: group.to_string() }, group.to_string(), s.id.clone());
     let state = m.effective_state(s);
     let attention = matches!(state, StatusState::NeedsYou | StatusState::Failed);
-    let line2 = (!compact && attention).then(|| {
+    let custom = s.custom_status.as_ref();
+    // A trigger's custom status replaces the built-in second line: its label in its color.
+    let custom_line = custom.filter(|_| !compact).map(|c| {
+        let since = c.since.as_deref().map(since_short).unwrap_or_default();
+        let text = if since.is_empty() { c.label.clone() } else { format!("{} · {since}", c.label) };
+        (text, t.status_color(&c.color))
+    });
+    let custom_icon = custom.and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);
+    let line2 = custom_line.or_else(|| (!compact && attention).then(|| {
         let need = m.need_for_session(&s.id);
         let text = s
             .status
@@ -249,7 +253,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         let since = need.filter(|_| state == StatusState::NeedsYou).map(|n| since_short(&n.created_at)).or_else(|| s.status.since.as_deref().map(since_short)).unwrap_or_default();
         let text = if since.is_empty() { text } else { format!("{text} · {since}") };
         (text, if state == StatusState::Failed { t.err } else { t.need })
-    });
+    }));
     let segs = m.row_segments.get(&s.id).cloned().unwrap_or_default();
     let pad_y = if compact { 5. } else { 8. };
 
@@ -287,7 +291,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(div().w(px(12.)).flex_none().flex().items_center().child(status_dot(t, state, 8.)))
+                .child(div().w(px(12.)).flex_none().flex().items_center().child(session_dot(t, state, custom, 8.)))
                 .child(
                     div()
                         .flex()
@@ -304,7 +308,19 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 .when(crate::ui::popout::is_popped(&s.id, cx), |d| d.child(Icon::PopOut.el(12., t.dim)))
                 .child(Icon::from_glyph(s.glyph()).el(14., t.dim)),
         )
-        .when_some(line2, |d, (text, color)| d.child(div().pl(px(21.)).text_size(px(12.)).text_color(color).truncate().child(text)))
+        .when_some(line2, |d, (text, color)| {
+            d.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .pl(px(21.))
+                    .text_size(px(12.))
+                    .text_color(color)
+                    .children(custom_icon.filter(|_| custom.is_some()).map(|i| i.el(12., color)))
+                    .child(div().min_w_0().truncate().child(text)),
+            )
+        })
 }
 
 /// Script segments (`script.run`): gap between segments, a single space when `join`.
@@ -364,7 +380,7 @@ pub fn open_project_button(m: &MainWindow, t: &Theme, id: &'static str, cx: &mut
         .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).font_weight(FontWeight::NORMAL).child(m.key_label("keys.open_project")))
 }
 
-fn project_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+fn project_menu(t: &Theme, pid: Option<String>, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let p1 = pid.clone();
     let p2 = pid.clone();
     deferred(
@@ -380,7 +396,8 @@ fn project_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) ->
                         m.menu = Menu::None;
                         m.rpc("session.open", serde_json::json!({"kind": "shell", "project_id": p1}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::SESSIONS, cx));
                     }),
-                ))
+                )
+                .children(terminal_keys.map(|k| super::header::key_chip(t, k.into()))))
                 .child(menu_item(
                     t,
                     "new-agent",
@@ -396,6 +413,22 @@ fn project_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) ->
         ),
     )
     .with_priority(1)
+}
+
+/// Fold or unfold a project's group (animated unless Reduce Motion is on).
+pub fn toggle_fold(m: &mut MainWindow, project: String, cx: &mut Context<MainWindow>) {
+    if !m.collapsed.remove(&project) {
+        m.collapsed.insert(project.clone());
+    }
+    // Re-read each time: macOS posts no change we can follow, and the read is cheap.
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        m.fold_anim.remove(&project);
+    } else {
+        m.fold_anim.insert(project, std::time::Instant::now());
+    }
+    crate::ui::statusbar::save_state(m);
+    cx.notify();
 }
 
 pub fn menu_box(t: &Theme) -> Div {
@@ -450,6 +483,7 @@ fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoE
         .border_color(if m.screen == Screen::Insights { t.accent } else { t.line })
         .bg(t.raised)
         .cursor_pointer()
+        .tooltip(super::header::tip_keys("Insights", "keys.insights"))
         .on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Insights, w, cx)))
         .child(div().flex().items_baseline().gap(px(8.)).child(caps_label(t, "Today").flex_1()).child(div().text_size(px(11.)).text_color(t.dim).child("Insights ›")))
         .child(
@@ -461,7 +495,7 @@ fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoE
                 .child(stat(today.messages.to_string(), "messages sent"))
                 .child(stat(format!("${:.2}", today.spend_usd), "spent")),
         );
-    let btn = |id: &'static str, icon: Icon, label: &'static str, active: bool| {
+    let btn = |id: &'static str, icon: Icon, label: &'static str, setting: &'static str, active: bool| {
         div()
             .id(id)
             .flex()
@@ -477,6 +511,7 @@ fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoE
             .when(active, |d| d.bg(t.raised))
             .cursor_pointer()
             .hover(|s| s.bg(t.raised))
+            .tooltip(super::header::tip_keys(label, setting))
             .child(icon.el(16., if active { t.fg } else { t.dim }))
             .child(label)
     };
@@ -484,8 +519,8 @@ fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoE
         div()
             .flex()
             .gap(px(4.))
-            .child(btn("btn-triggers", Icon::Triggers, "Triggers", m.screen == Screen::Triggers).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Triggers, w, cx))))
-            .child(btn("btn-rules", Icon::Rules, "Rules", m.screen == Screen::Rules).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Rules, w, cx))))
-            .child(btn("btn-settings", Icon::Settings, "Settings", false).on_click(cx.listener(|m, _, _, cx| crate::ui::settings::open(m.backend.clone(), cx)))),
+            .child(btn("btn-triggers", Icon::Triggers, "Triggers", "keys.triggers", m.screen == Screen::Triggers).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Triggers, w, cx))))
+            .child(btn("btn-rules", Icon::Rules, "Rules", "keys.rules", m.screen == Screen::Rules).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Rules, w, cx))))
+            .child(btn("btn-settings", Icon::Settings, "Settings", "keys.settings", false).on_click(cx.listener(|m, _, _, cx| crate::ui::settings::open(m.backend.clone(), cx)))),
     )
 }

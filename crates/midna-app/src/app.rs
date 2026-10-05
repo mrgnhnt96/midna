@@ -45,6 +45,8 @@ pub enum Menu {
     More,
     /// The header's session links popover (`ui/links.rs`).
     Links,
+    /// A terminal's queued messages, above its pill (`ui/queue.rs`).
+    Queue,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -115,6 +117,8 @@ pub struct MainWindow {
     pub stack: crate::ui::needs_you::Stack,
     /// Session links popover (⌘L) and each terminal's links.
     pub links: crate::ui::links::LinksPanel,
+    /// The queued-messages panel (⌘U).
+    pub queue: crate::ui::queue::QueuePanel,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// Image sheet drafts and state (`annotate.rs`).
@@ -184,6 +188,7 @@ impl MainWindow {
         let palette = crate::ui::command_bar::Palette::new(cx);
         crate::ui::command_bar::wire(&palette, cx);
         let links = crate::ui::links::LinksPanel::new(cx);
+        let queue = crate::ui::queue::QueuePanel::new(cx);
         crate::ui::links::wire(&links, cx);
         MainWindow {
             backend,
@@ -223,6 +228,7 @@ impl MainWindow {
             palette,
             stack: crate::ui::needs_you::Stack::new(cx),
             links,
+            queue,
             composer: crate::composer::Composer::new(window, cx),
             annot: crate::annotate::Annotator::new(cx),
             dropped_at: None,
@@ -245,7 +251,7 @@ impl MainWindow {
     }
 
     pub fn key_label(&self, key: &str) -> String {
-        let k = self.setting_str(key).unwrap_or_else(|| default_keys().get(key).copied().unwrap_or("").to_string());
+        let k = self.setting_str(key).unwrap_or_else(|| crate::actions::default_key(key).to_string());
         pretty(&k)
     }
 
@@ -335,6 +341,12 @@ impl MainWindow {
                 if k.starts_with("project.") {
                     what |= refresh::PROJECTS;
                 }
+                if k == midna_proto::kinds::SESSION_CUSTOM_STATUS
+                    && let Some(sess) = e.session_id.as_ref().and_then(|id| self.sessions.iter_mut().find(|s| &s.id == id))
+                {
+                    // Show it now; the session.list refetch below confirms it.
+                    sess.custom_status = e.data.get("custom_status").cloned().and_then(|v| serde_json::from_value(v).ok());
+                }
                 if k.starts_with("session.") {
                     what |= refresh::SESSIONS | refresh::ROWS;
                     if e.session_id.is_some() && e.session_id == self.selected {
@@ -368,6 +380,9 @@ impl MainWindow {
                 }
                 if k == "window.command" {
                     self.on_window_command(e.data.clone(), window, cx);
+                }
+                if k == midna_proto::kinds::SESSION_QUEUE {
+                    crate::ui::queue::on_event(self, &e, cx);
                 }
                 if k == "links.changed"
                     && let Some(sid) = e.session_id.clone().filter(|s| self.selected.as_ref() == Some(s))
@@ -593,6 +608,7 @@ impl MainWindow {
         }
         if let Some(s) = r.sessions {
             self.sessions = s;
+            crate::ui::queue::sync(&self.sessions, cx);
         }
         if let Some(n) = r.needs {
             self.needs = n;
@@ -673,6 +689,7 @@ impl MainWindow {
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
+                    "queue" | "queue-sent" | "queue-failed" => crate::ui::queue::debug(self, &s, window, cx),
                     _ => {}
                 }
             }
@@ -830,6 +847,7 @@ impl MainWindow {
     pub fn set_screen(&mut self, s: Screen, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = if self.screen == s { Screen::Terminal } else { s };
         self.menu = Menu::None;
+        crate::ui::queue::closed(cx);
         if self.screen == Screen::Terminal {
             self.focus_terminal(window, cx);
         } else {
@@ -842,6 +860,7 @@ impl MainWindow {
         let was = self.overlay;
         self.overlay = if self.overlay == o { Overlay::None } else { o };
         self.menu = Menu::None;
+        crate::ui::queue::closed(cx);
         match self.overlay {
             Overlay::None => self.focus_terminal(window, cx),
             Overlay::CommandBar => {
@@ -1090,6 +1109,40 @@ impl MainWindow {
         self.rpc("session.close", json!({"id": id}), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
     }
 
+    pub fn copy_session_id(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.selected.clone() {
+            cx.write_to_clipboard(ClipboardItem::new_string(id));
+            self.toast("Copied the session id.", cx);
+        }
+        self.menu = Menu::None;
+        cx.notify();
+    }
+
+    /// Mute the selected terminal's notifications, or drop the override (back to the global settings).
+    pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+        if let Some(s) = self.selected_session() {
+            let value = if s.notify_muted() { Value::Null } else { json!(false) };
+            self.rpc("notify.set", json!({ "session": s.id, "key": "enabled", "value": value }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS, cx));
+        }
+        self.menu = Menu::None;
+        cx.notify();
+    }
+
+    /// Select the terminal `step` rows away in sidebar order (wrapping), skipping popped-out ones.
+    fn select_step(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
+        if order.is_empty() {
+            return;
+        }
+        let n = order.len() as isize;
+        let next = match self.selected.as_ref().and_then(|id| order.iter().position(|x| x == id)) {
+            Some(i) => (i as isize + step).rem_euclid(n),
+            None if step > 0 => 0,
+            None => n - 1,
+        };
+        self.select(order[next as usize].clone(), window, cx);
+    }
+
     pub fn register_actions<E: InteractiveElement>(el: E, cx: &mut Context<Self>) -> E {
         el.on_action(cx.listener(Self::approve_once))
             .on_action(cx.listener(Self::deny))
@@ -1107,6 +1160,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| crate::annotate::open(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::links::ToggleLinks, w, cx| crate::ui::links::toggle(m, w, cx)))
+            .on_action(cx.listener(|m, _: &crate::ui::queue::ToggleQueue, w, cx| crate::ui::queue::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::PasteImage, w, cx| {
                 crate::annotate::open(m, w, cx);
                 let s = crate::annotate::clipboard_sources(cx);
@@ -1124,9 +1178,10 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if m.menu == Menu::Links {
+                    if matches!(m.menu, Menu::Links | Menu::Queue) {
                         m.focus_terminal(w, cx);
                     }
+                    crate::ui::queue::closed(cx);
                     m.menu = Menu::None;
                     cx.notify();
                 } else if m.overlay != Overlay::None {
@@ -1142,6 +1197,44 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &RestartSession, _w, cx| m.restart_selected(cx)))
+            .on_action(cx.listener(|m, _: &ApproveOptions, _w, cx| {
+                if m.overlay == Overlay::NeedsYou {
+                    m.stack.menu = !m.stack.menu;
+                } else if m.approval_for_selected().is_some() {
+                    m.menu = if m.menu == Menu::Approve { Menu::None } else { Menu::Approve };
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|m, _: &NextTerminal, w, cx| m.select_step(1, w, cx)))
+            .on_action(cx.listener(|m, _: &PrevTerminal, w, cx| m.select_step(-1, w, cx)))
+            .on_action(cx.listener(|m, _: &RenameSession, w, cx| {
+                if let Some(id) = m.selected.clone() {
+                    crate::ui::rename::start(m, &id, crate::ui::rename::At::Header, w, cx);
+                }
+            }))
+            .on_action(cx.listener(|m, _: &ToggleTerminalMenu, _w, cx| {
+                if m.selected.is_some() {
+                    m.menu = if m.menu == Menu::More { Menu::None } else { Menu::More };
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|m, _: &ToggleProjectMenu, _w, cx| {
+                if let Some(p) = m.selected_session().and_then(|s| s.project_id.clone()).filter(|p| p != ROOT_PROJECT_ID) {
+                    let k = Menu::Project(p);
+                    m.menu = if m.menu == k { Menu::None } else { k };
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|m, _: &FoldProject, _w, cx| {
+                if let Some(p) = m.selected_session().and_then(|s| s.project_id.clone()).filter(|p| p != ROOT_PROJECT_ID) {
+                    crate::ui::sidebar::toggle_fold(m, p, cx);
+                }
+            }))
+            .on_action(cx.listener(|m, _: &CopySessionId, _w, cx| m.copy_session_id(cx)))
+            .on_action(cx.listener(|m, _: &ToggleMute, _w, cx| m.toggle_mute(cx)))
+            .on_action(cx.listener(|m, _: &ToggleSplitOrientation, _w, cx| crate::ui::split::flip(m, cx)))
+            .on_action(cx.listener(|m, _: &SplitToMain, w, cx| crate::ui::split::to_main(m, w, cx)))
+            .on_action(cx.listener(|m, _: &FocusOtherPane, w, cx| crate::ui::split::focus_other(m, w, cx)))
     }
 }
 

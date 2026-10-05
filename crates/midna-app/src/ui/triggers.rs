@@ -29,6 +29,17 @@ pub struct FilterItem {
     pub branch: Option<String>,
     pub action: Option<String>,
     pub label: Option<String>,
+    /// Local: only this terminal / project / agent.
+    pub session: Option<String>,
+    pub project: Option<String>,
+    pub agent: Option<String>,
+    /// Local `idle`: minutes without a turn.
+    pub idle_minutes: Option<u32>,
+    /// Local `schedule`: a cron expression in local time.
+    pub cron: Option<String>,
+    /// Local: dotted path into the hook payload / event data -> glob.
+    #[serde(rename = "match")]
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -39,7 +50,8 @@ pub struct TriggerItem {
     pub source: String,
     pub event: String,
     pub filter: FilterItem,
-    /// Tagged by `kind`: start_agent{project_id, agent, prompt_template} | run_command{project_id, command} | attention{message}.
+    /// Tagged by `kind`: start_agent{project_id, agent, prompt_template} | run_command{project_id, command} | attention{message}
+    /// | send_to_session{steps} | set_status{label, color, icon, base, clear_on} | clear_status{}.
     pub action: Value,
     pub enabled: bool,
     pub state: String,
@@ -54,6 +66,35 @@ pub struct TriggerItem {
     pub secret_store: Option<String>,
     pub github_hook_id: Option<u64>,
     pub session_name_template: Option<String>,
+    /// Local: seconds before it may fire again for the same terminal (daemon default 60).
+    pub cooldown_secs: Option<u64>,
+    /// Set on triggers midna ships (e.g. `prompt_blocked_status`).
+    pub builtin: Option<String>,
+}
+
+/// A local trigger's `set_status` action, read leniently.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SetStatusItem {
+    pub label: String,
+    pub color: String,
+    pub icon: Option<String>,
+    pub base: String,
+    pub clear_on: String,
+}
+
+/// Quote a CLI argument for display (single quotes when the shell would mangle it).
+fn sh_quote(a: &str) -> String {
+    if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c)) {
+        a.to_string()
+    } else {
+        format!("'{}'", a.replace('\'', "'\\''"))
+    }
+}
+
+/// Words for a status state (`needs_you` -> "needs you").
+fn state_words(s: &str) -> String {
+    s.replace('_', " ")
 }
 
 /// Where a trigger stands for the human.
@@ -71,6 +112,10 @@ impl TriggerItem {
         if self.enabled || self.state == "active" || self.state == "paused" {
             return None;
         }
+        if self.is_local() {
+            // Local triggers have no secret; a draft only needs switching on.
+            return Some(Pending::Enable);
+        }
         if !self.secret_set || self.state == "needs_secret" { Some(Pending::Secret) } else { Some(Pending::Enable) }
     }
 
@@ -86,11 +131,21 @@ impl TriggerItem {
         Some(self.s("project_id")).filter(|s| !s.is_empty())
     }
 
+    pub fn is_local(&self) -> bool {
+        self.source == "local"
+    }
+
     fn source_label(&self) -> &'static str {
         match self.source.as_str() {
             "bitbucket" => "Bitbucket",
+            "local" => "Local",
             _ => "GitHub",
         }
+    }
+
+    /// Source icon for local triggers (this Mac's terminals).
+    fn source_icon(&self) -> Option<Icon> {
+        self.is_local().then_some(Icon::Shell)
     }
 
     fn icon(&self) -> Icon {
@@ -98,17 +153,37 @@ impl TriggerItem {
             ("start_agent", "codex") => Icon::Codex,
             ("start_agent", _) => Icon::Claude,
             ("run_command", _) => Icon::Shell,
+            ("send_to_session", _) => Icon::Keyboard,
+            ("set_status", _) => Icon::Triggers,
+            ("clear_status", _) => Icon::Cross,
             _ => Icon::Bell,
         }
     }
 
-    /// "Start Claude in midna", "Run a command in api", "Raise attention".
+    /// `send_to_session` steps' text, in order.
+    fn steps(&self) -> Vec<String> {
+        self.action.get("steps").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|st| st.get("text").and_then(|t| t.as_str()).map(String::from)).collect()).unwrap_or_default()
+    }
+
+    fn set_status(&self) -> Option<SetStatusItem> {
+        (self.action_kind() == "set_status").then(|| serde_json::from_value(self.action.clone()).unwrap_or_default())
+    }
+
+    /// "Start Claude in midna", "Run a command in api", "Raise attention",
+    /// `Send "/compact" → "{{last_prompt}}"`, "Set status Prompt blocked", "Clear status".
     fn action_label(&self, n: &Names) -> String {
         let proj = self.project_id().map(|p| format!(" in {}", n.project(&p))).unwrap_or_default();
         match self.action_kind().as_str() {
             "start_agent" => format!("Start {}{proj}", if self.s("agent") == "codex" { "Codex" } else { "Claude" }),
             "run_command" => format!("Run a command{proj}"),
             "attention" => "Raise attention".into(),
+            "send_to_session" => {
+                let steps = self.steps();
+                if steps.is_empty() { "Send nothing".into() } else { format!("Send {}", steps.iter().map(|s| format!("“{}”", s.replace('\n', " "))).collect::<Vec<_>>().join(" → ")) }
+            }
+            "set_status" => format!("Set status “{}”", self.set_status().unwrap_or_default().label),
+            "clear_status" => "Clear status".into(),
+            "notify" => format!("Notify “{}”", self.s("title")),
             k => k.replace('_', " "),
         }
     }
@@ -118,6 +193,12 @@ impl TriggerItem {
         match self.action_kind().as_str() {
             "start_agent" => self.s("prompt_template"),
             "run_command" => self.s("command"),
+            "send_to_session" => {
+                let steps = self.steps();
+                if steps.len() < 2 { steps.join("") } else { steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect::<Vec<_>>().join("\n") }
+            }
+            "set_status" | "clear_status" => String::new(),
+            "notify" => self.s("body"),
             _ => self.s("message"),
         }
     }
@@ -126,12 +207,106 @@ impl TriggerItem {
         self.filter.repo.clone().unwrap_or_else(|| "any repo".into())
     }
 
-    /// The Only-if line, built from the structured filter.
+    /// Where a trigger listens: the repo, or for local triggers the terminals it watches
+    /// ("any terminal", "api", "Claude terminals in zonai").
+    fn scope(&self, n: &Names) -> String {
+        if !self.is_local() {
+            return self.repo();
+        }
+        let f = &self.filter;
+        if let Some(sid) = &f.session {
+            return n.term(sid);
+        }
+        if f.cron.is_some() && f.project.is_none() && f.agent.is_none() {
+            return "no terminal".into();
+        }
+        let agent = f.agent.as_deref().map(|a| if a == "codex" { "Codex " } else { "Claude " }).unwrap_or("");
+        match &f.project {
+            Some(p) => format!("{agent}terminals in {}", n.project(p)),
+            None if agent.is_empty() => "any terminal".into(),
+            None => format!("any {agent}terminal"),
+        }
+    }
+
+    /// The Only-if line, built from the structured filter (local session/project/agent are in
+    /// the When line's scope instead).
     fn filter_text(&self) -> Option<String> {
         let f = &self.filter;
-        let parts: Vec<String> =
+        let mut parts: Vec<String> =
             [("branch", &f.branch), ("action", &f.action), ("label", &f.label)].iter().filter_map(|(k, v)| v.as_ref().map(|v| format!("{k} == \"{v}\""))).collect();
+        if let Some(m) = f.idle_minutes {
+            parts.push(format!("idle {m} min"));
+        }
+        if let Some(c) = &f.cron {
+            parts.push(format!("cron \"{c}\"{}", self.next_run().map(|r| format!(" · next {r}")).unwrap_or_default()));
+        }
+        parts.extend(f.fields.iter().map(|(k, v)| format!("{k} ~ \"{v}\"")));
         (!parts.is_empty()).then(|| parts.join(" && "))
+    }
+
+    /// A schedule's next run (`Tue Oct 6 09:00`, local time).
+    fn next_run(&self) -> Option<String> {
+        let c = midna_proto::cron::Cron::parse(self.filter.cron.as_deref()?).ok()?;
+        c.next_after(midna_proto::time::now_unix()).map(midna_proto::cron::local_label)
+    }
+
+    /// The `midna triggers add` command that makes this local trigger.
+    fn cli(&self) -> String {
+        let mut a: Vec<String> = vec![format!("midna triggers add --source local --name {}", sh_quote(&self.name)), format!("--event {}", sh_quote(&self.event))];
+        let f = &self.filter;
+        if let Some(x) = &f.session {
+            a.push(format!("--session {}", sh_quote(x)));
+        }
+        if let Some(x) = &f.project {
+            a.push(format!("--in-project {}", sh_quote(x)));
+        }
+        if let Some(x) = &f.agent {
+            a.push(format!("--for-agent {}", sh_quote(x)));
+        }
+        if let Some(m) = f.idle_minutes {
+            a.push(format!("--idle-for {m}m"));
+        }
+        if let Some(c) = &f.cron {
+            a.push(format!("--cron {}", sh_quote(c)));
+        }
+        for (k, v) in &f.fields {
+            a.push(format!("--match {}", sh_quote(&format!("{k}={v}"))));
+        }
+        match self.action_kind().as_str() {
+            "send_to_session" => a.extend(self.steps().iter().map(|s| format!("--send {}", sh_quote(s)))),
+            "set_status" => {
+                let st = self.set_status().unwrap_or_default();
+                a.push(format!("--set-status {}", sh_quote(&st.label)));
+                a.push(format!("--color {}", sh_quote(&st.color)));
+                if let Some(i) = &st.icon {
+                    a.push(format!("--icon {}", sh_quote(i)));
+                }
+                if !st.base.is_empty() {
+                    a.push(format!("--base {}", st.base));
+                }
+                if !st.clear_on.is_empty() && st.clear_on != "prompt" {
+                    a.push(format!("--clear-on {}", st.clear_on));
+                }
+            }
+            "clear_status" => a.push("--clear-status".into()),
+            "notify" => {
+                a.push(format!("--notify {}", sh_quote(&self.s("title"))));
+                if !self.s("body").is_empty() {
+                    a.push(format!("--notify-body {}", sh_quote(&self.s("body"))));
+                }
+                if self.action.get("sound").and_then(|v| v.as_bool()) == Some(false) {
+                    a.push("--silent".into());
+                }
+            }
+            _ => a.push(format!("--action-json {}", sh_quote(&self.action.to_string()))),
+        }
+        if let Some(c) = self.cooldown_secs {
+            a.push(format!("--cooldown {c}s"));
+        }
+        if self.enabled {
+            a.push("--enable".into());
+        }
+        a.join(" ")
     }
 
     fn last_text(&self) -> String {
@@ -869,7 +1044,7 @@ impl TriggersView {
                 .child(Icon::Triggers.el(28., t.accent))
                 .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("No triggers yet"))
                 .child(div().text_color(t.dim).child(
-                    "A trigger turns a GitHub or Bitbucket event into an agent terminal, a command, or a ping. Describe one and an agent drafts it. You paste the secret and switch it on.",
+                    "A trigger turns a GitHub or Bitbucket event into an agent terminal, a command, or a ping. Local triggers react to this Mac's terminals: an agent hook, a blocked prompt, an idle terminal. Describe one and an agent drafts it. You switch it on.",
                 ))
                 .child(list)
                 .when_some(arrival, |d, a| d.child(div().text_size(px(12.)).text_color(t.dim).child(a))),
@@ -984,21 +1159,26 @@ impl TriggersView {
                                 .items_center()
                                 .gap(px(10.))
                                 .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(tr.name.clone()))
-                                .child(tr.icon().el(14., t.dim)),
+                                .when(tr.builtin.is_some(), |d| d.child(builtin_tag(t)))
+                                .child(match tr.set_status() {
+                                    Some(st) => kit::dot(t.status_color(&st.color), 9.).mx(px(2.)).into_any_element(),
+                                    None => tr.icon().el(14., t.dim).into_any_element(),
+                                }),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
-                                .child(kit::mono(t, format!("{} · {}", tr.event, tr.repo()), 11.5).flex_1().min_w_0().truncate().text_color(t.dim))
+                                .child(kit::mono(t, format!("{} · {}", tr.event, tr.scope(n)), 11.5).flex_1().min_w_0().truncate().text_color(t.dim))
                                 .child(div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(tr.last_short())),
                         ),
                 ),
             );
         }
-        let hint_name = self.selected.as_ref().and_then(|s| self.triggers.iter().find(|t| &t.id == s)).map(|t| t.name.clone()).unwrap_or_else(|| "Review new PRs".into());
-        let hint = format!("Skip dependabot PRs in {hint_name}");
+        let sel_tr = self.selected.as_ref().and_then(|s| self.triggers.iter().find(|t| &t.id == s));
+        let hint_name = sel_tr.map(|t| t.name.clone()).unwrap_or_else(|| "Review new PRs".into());
+        let hint = if sel_tr.is_some_and(|t| t.is_local()) { format!("Only fire {hint_name} in Claude terminals") } else { format!("Skip dependabot PRs in {hint_name}") };
         let main = self.main.clone();
         let prompt = trigger_prompt(&hint);
         list.child(div().flex_1().min_h(px(8.))).child(
@@ -1078,7 +1258,24 @@ impl TriggersView {
             .gap(px(12.))
             .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(s.name.clone()))
             .children(project.clone().map(|p| kit::chip(t, p)))
-            .child(kit::chip(t, s.source_label()))
+            .child(match s.source_icon() {
+                Some(i) => div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(px(20.))
+                    .px(px(7.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(t.line)
+                    .text_size(px(11.5))
+                    .text_color(t.dim)
+                    .child(i.el(11., t.dim))
+                    .child(s.source_label()),
+                None => kit::chip(t, s.source_label()),
+            })
+            .when(s.builtin.is_some(), |d| d.child(builtin_tag(t)))
             .child(div().flex_1())
             .when(pending.is_none(), |d| {
                 d.child(div().text_size(px(12.)).text_color(t.dim).child(s.last_text()))
@@ -1146,7 +1343,7 @@ impl TriggersView {
                 .gap(px(5.))
                 .child(kit::mono(t, s.event.clone(), 13.).text_color(t.accent))
                 .child(div().text_color(t.dim).child("on"))
-                .child(kit::mono(t, s.repo(), 12.5))
+                .child(if s.is_local() { div().child(s.scope(n)) } else { kit::mono(t, s.scope(n), 12.5) })
                 .child(div().text_color(t.dim).child(format!("· {}", s.source_label()))),
         );
         let only_if = dd(false).child(match s.filter_text() {
@@ -1166,6 +1363,37 @@ impl TriggersView {
                 .child(div().font_weight(FontWeight::BOLD).child(s.action_label(n)))
                 .when_some(term_name, |d, tn| d.child(div().text_color(t.dim).child("as")).child(kit::mono(t, tn, 12.))),
         );
+        let then = then.when_some(s.set_status(), |d, st| {
+            let color = t.status_color(&st.color);
+            let clears = match st.clear_on.as_str() {
+                "turn" => "clears when the next turn starts",
+                "status" => "clears when the status changes",
+                "never" => "stays until cleared",
+                _ => "clears on prompt",
+            };
+            let base = if st.base.is_empty() { String::new() } else { format!("counts as {} · ", state_words(&st.base)) };
+            d.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(7.))
+                            .px(px(10.))
+                            .py(px(5.))
+                            .rounded(px(7.))
+                            .bg(color.opacity(0.12))
+                            .child(kit::dot(color, 9.))
+                            .children(st.icon.as_deref().and_then(Icon::from_name).map(|i| i.el(12., color)))
+                            .child(div().font_weight(FontWeight::BOLD).text_color(color).child(st.label.clone())),
+                    )
+                    .child(div().text_size(px(12.)).text_color(t.dim).child(format!("{base}{clears}"))),
+            )
+        });
         let template = s.template();
         let then = then.when(!template.is_empty(), |d| {
             d.child(div().px(px(12.)).py(px(10.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).line_height(px(12. * 1.55)).child(template))
@@ -1219,8 +1447,33 @@ impl TriggersView {
             .overflow_hidden()
             .child(row(dt("When", false), when))
             .child(row(dt("Only if", false), only_if))
-            .child(row(dt("Then", false), then))
-            .child(row(dt("Secret", true), secret_row));
+            .child(row(dt("Then", false), then));
+        let dl = if s.is_local() {
+            // No secret: local triggers fire on what midnad sees here. Show the cooldown and
+            // the CLI that makes this trigger instead of a form.
+            let cooldown = s.cooldown_secs.unwrap_or(60);
+            let cli = s.cli();
+            let copy = cli.clone();
+            dl.child(row(
+                dt("Cooldown", false),
+                dd(false).child(div().text_color(t.dim).child(format!("{} per terminal{}", cooldown_text(cooldown), if s.cooldown_secs.is_none() { " (default)" } else { "" }))),
+            ))
+            .child(row(
+                dt("CLI", true),
+                dd(true)
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .py(px(8.))
+                    .child(kit::mono(t, cli, 11.5).flex_1().min_w_0().text_color(t.dim))
+                    .child(kit::btn(t, "trig-cli-copy", "Copy").on_click(cx.listener(move |v, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                        v.toast("Copied the CLI command".into(), cx);
+                    }))),
+            ))
+        } else {
+            dl.child(row(dt("Secret", true), secret_row))
+        };
 
         // Deliveries
         let mine: Vec<DeliveryItem> = self.deliveries.iter().filter(|d| d.concerns(&s.id)).take(20).cloned().collect();
@@ -1245,15 +1498,22 @@ impl TriggersView {
                     .gap(px(10.))
                     .mt(px(22.))
                     .mb(px(8.))
-                    .child(kit::cap(t, "Recent deliveries"))
+                    .child(kit::cap(t, if s.is_local() { "Recent firings" } else { "Recent deliveries" }))
                     .when(today > 0, |d| d.child(div().text_size(px(12.)).text_color(t.dim).child(format!("{today} today")))),
             );
         if mine.is_empty() {
-            detail = detail.child(div().p(px(14.)).rounded(px(10.)).border_1().border_color(t.line).text_color(t.dim).child(format!(
-                "Nothing delivered yet. The first matching {} on {} will show here.",
-                s.event,
-                s.repo()
-            )));
+            let empty = if s.is_local() {
+                match &s.last_fired_at {
+                    Some(at) => format!("Fired {} time{}, most recently {}.", s.fired, if s.fired == 1 { "" } else { "s" }, kit::ago(Some(at.as_str()))),
+                    None => match s.next_run() {
+                        Some(r) => format!("Hasn’t fired yet. Next run: {r}."),
+                        None => format!("Hasn’t fired yet. The first {} on {} will show here.", s.event, s.scope(n)),
+                    },
+                }
+            } else {
+                format!("Nothing delivered yet. The first matching {} on {} will show here.", s.event, s.repo())
+            };
+            detail = detail.child(div().p(px(14.)).rounded(px(10.)).border_1().border_color(t.line).text_color(t.dim).child(empty));
         } else {
             let mut table = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).overflow_hidden();
             for (i, d) in mine.into_iter().enumerate() {
@@ -1346,6 +1606,20 @@ impl TriggersView {
     }
 }
 
+/// "60s", "5 min", "1 h".
+fn cooldown_text(secs: u64) -> String {
+    match secs {
+        s if s >= 3600 && s % 3600 == 0 => format!("{} h", s / 3600),
+        s if s >= 60 && s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+/// The small "built-in" tag on triggers midna ships.
+fn builtin_tag(t: &Theme) -> Div {
+    kit::chip(t, "built-in").h(px(17.)).text_size(px(10.5)).text_color(t.dim)
+}
+
 fn drafted_line(n: &Names, tr: &TriggerItem) -> String {
     let who = match (tr.created_by.kind.as_str(), &tr.created_by.session) {
         ("human", _) => "you".to_string(),
@@ -1392,7 +1666,55 @@ mod tests {
             secret_store: None,
             github_hook_id: None,
             session_name_template: None,
+            cooldown_secs: None,
+            builtin: None,
         }
+    }
+
+    #[test]
+    fn reads_local_triggers() {
+        use midna_proto as p;
+        let names = super::Names::default();
+        let mut tr = proto_trigger(true, p::TriggerState::Active, false);
+        tr.source = p::TriggerSource::Local;
+        tr.event = "agent.prompt_blocked".into();
+        tr.filter = p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() };
+        tr.action = p::TriggerAction::SendToSession {
+            steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
+        };
+        let got: Vec<TriggerItem> = parse_list(&json!([tr.clone()]));
+        let g = &got[0];
+        assert_eq!(g.source_label(), "Local");
+        assert_eq!(g.pending(), None);
+        assert_eq!(g.action_label(&names), "Send “/compact” → “{{last_prompt}}”");
+        assert_eq!(g.filter_text().as_deref(), Some("message ~ \"*Compact first*\""));
+        assert_eq!(g.scope(&names), "any terminal");
+        assert_eq!(
+            g.cli(),
+            "midna triggers add --source local --name 'Review new PRs' --event agent.prompt_blocked --match 'message=*Compact first*' --send /compact --send '{{last_prompt}}' --enable"
+        );
+
+        tr.builtin = Some("prompt_blocked_status".into());
+        tr.filter = p::TriggerFilter { idle_minutes: Some(55), agent: Some(p::AgentKind::Claude), ..Default::default() };
+        tr.action = p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt };
+        let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
+        assert_eq!(g.builtin.as_deref(), Some("prompt_blocked_status"));
+        assert_eq!(g.set_status().unwrap().base, "needs_you");
+        assert_eq!(g.filter_text().as_deref(), Some("idle 55 min"));
+        assert_eq!(g.scope(&names), "any Claude terminal");
+        assert_eq!(
+            g.cli(),
+            "midna triggers add --source local --name 'Review new PRs' --event agent.prompt_blocked --for-agent claude --idle-for 55m --set-status 'Prompt blocked' --color amber --base needs_you --enable"
+        );
+
+        tr.event = "schedule".into();
+        tr.filter = p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() };
+        tr.action = p::TriggerAction::Notify { title: "Standup".into(), body: String::new(), sound: true };
+        let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
+        assert_eq!(g.scope(&names), "no terminal");
+        let text = g.filter_text().unwrap();
+        assert!(text.starts_with("cron \"0 9 * * mon-fri\" · next ") && text.ends_with(" 09:00"), "{text}");
+        assert!(g.cli().contains("--event schedule --cron '0 9 * * mon-fri' --notify Standup"), "{}", g.cli());
     }
 
     #[test]

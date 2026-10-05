@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 mod prompt_nav;
+mod queue_pill;
 
 pub const FONT_SIZE: f32 = 12.5;
 /// Design: line-height 1.6 at 12.5px.
@@ -116,6 +117,8 @@ pub struct TerminalView {
     font_family: SharedString,
     /// Prompt fast travel (agent terminals): the pinned bar, the rail, ⌥⌘↑ ⌥⌘↓.
     nav: prompt_nav::PromptNav,
+    /// Repaint when queued messages change (the pill, `queue_pill.rs`).
+    _queue_sub: Option<Subscription>,
     fps: Option<FpsMeter>,
     _tasks: Vec<Task<()>>,
 }
@@ -298,6 +301,7 @@ impl TerminalView {
             marked: None,
             font_family,
             nav: Default::default(),
+            _queue_sub: cx.try_global::<crate::ui::queue::QueueStore>().is_some().then(|| cx.observe_global::<crate::ui::queue::QueueStore>(|_, cx| cx.notify())),
             fps,
             _tasks: tasks,
         };
@@ -1166,7 +1170,8 @@ impl TerminalView {
             Some("file") => "Open file",
             _ => "Open link",
         };
-        let item = |id: &'static str, label: &'static str, keys: &'static str, enabled: bool, cx: &mut Context<Self>| {
+        let clear_keys = crate::actions::label(cx, "keys.clear");
+        let item = |id: &'static str, label: &'static str, keys: &str, enabled: bool, cx: &mut Context<Self>| {
             div()
                 .id(id)
                 .flex()
@@ -1181,7 +1186,7 @@ impl TerminalView {
                     d.cursor_pointer().hover(|s| s.bg(theme.accent).text_color(theme.accent_fg)).on_click(cx.listener(move |t, _, window, cx| t.menu_action(id, window, cx)))
                 })
                 .child(div().flex_1().child(label))
-                .child(div().text_color(theme.dim).text_size(px(11.5)).child(keys))
+                .child(div().text_color(theme.dim).text_size(px(11.5)).child(keys.to_string()))
         };
         let sep = || div().h(px(1.)).my(px(4.)).mx(px(6.)).bg(theme.line);
         let menu = div()
@@ -1204,7 +1209,7 @@ impl TerminalView {
             .child(item("open", link_label, "⌘-click", link.is_some(), cx))
             .child(sep())
             .child(item("select_all", "Select All", "⌘A", true, cx))
-            .child(item("clear", "Clear", "", true, cx));
+            .child(item("clear", "Clear", &clear_keys, true, cx));
         Some(deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
@@ -1533,6 +1538,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_copy))
             .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(|t, _: &TermClear, w, cx| t.menu_action("clear", w, cx)))
             .on_action(cx.listener(Self::on_prev_prompt))
             .on_action(cx.listener(Self::on_next_prompt))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
@@ -1586,6 +1592,7 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             )
+            .children(self.render_queue_pill(&theme, !at_bottom && below > 0 && overlay.is_none(), window, cx))
             .when(!at_bottom && below > 0 && overlay.is_none(), |d| {
                 d.child(chip(div().absolute().bottom(px(10.)).right(px(18.))).text_color(dim).child(format!("↓ {below} line{} below · ⌘↓", if below == 1 { "" } else { "s" })))
             })
