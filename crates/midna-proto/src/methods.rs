@@ -1379,6 +1379,74 @@ pub struct AgentHookResult {
     pub status: Option<StatusState>,
 }
 
+// ------------------------------------------------------------------ global hooks
+
+/// midna's hooks in one agent's global config (`~/.claude/settings.json` or
+/// `~/.codex/config.toml`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HookInstall {
+    pub agent: AgentKind,
+    /// `not_installed`, `current`, `stale` (installed but out of date: reinstall),
+    /// `unavailable` (the agent's config folder doesn't exist) or `error` (unreadable config).
+    pub state: String,
+    /// The config file.
+    pub path: String,
+    /// Why it is stale or unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// midna adds its hooks to each agent it starts itself (true unless the global install is
+    /// current, which already covers them).
+    pub per_session: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HooksStatus {
+    pub claude: HookInstall,
+    pub codex: HookInstall,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct HooksTargetParams {
+    /// Which agents (`claude`, `codex`). Empty = every agent whose config folder exists.
+    #[serde(default)]
+    pub agents: Vec<AgentKind>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct HooksPreviewParams {
+    #[serde(default)]
+    pub agents: Vec<AgentKind>,
+    /// Preview removing midna's hooks instead of installing them.
+    #[serde(default)]
+    pub uninstall: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DiffLine {
+    /// `+` added, `-` removed, ` ` context, `…` skipped unchanged lines.
+    pub op: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HookFileDiff {
+    pub agent: AgentKind,
+    pub path: String,
+    /// The file doesn't exist yet and would be created.
+    pub creates: bool,
+    /// Nothing would change.
+    pub unchanged: bool,
+    pub lines: Vec<DiffLine>,
+    /// The file can't be changed safely (e.g. it doesn't parse); nothing will be written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HooksPreview {
+    pub files: Vec<HookFileDiff>,
+}
+
 // ------------------------------------------------------------------ scripts
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -77,8 +77,10 @@ fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(Str
                 v.push("--mcp-config".into());
                 v.push(crate::hooks::mcp_config_path(&d.cfg.home).to_string_lossy().into_owned());
             }
+            // While the global install reports for Claude, its hooks would fire twice.
+            let settings = if crate::global_hooks::covers(d, agent) { crate::hooks::claude_base_settings_path(&d.cfg.home) } else { crate::hooks::claude_settings_path(&d.cfg.home) };
             v.push("--settings".into());
-            v.push(crate::hooks::claude_settings_path(&d.cfg.home).to_string_lossy().into_owned());
+            v.push(settings.to_string_lossy().into_owned());
             if supervised {
                 v.push("--permission-mode".into());
                 v.push("default".into());
@@ -90,7 +92,12 @@ fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(Str
             v
         }
         AgentKind::Codex => {
-            let mut v = vec!["codex".to_string(), "-c".into(), crate::hooks::codex_notify_arg(&d.cfg.cli_path)];
+            let mut v = vec!["codex".to_string()];
+            // `-c notify` replaces the global one (midna's wrapper and whatever it chains), so
+            // only when the global install doesn't cover Codex.
+            if !crate::global_hooks::covers(d, agent) {
+                v.extend(["-c".into(), crate::hooks::codex_notify_arg(&d.cfg.cli_path)]);
+            }
             if supervised {
                 v.extend(["-c".into(), "approval_policy=\"on-request\"".into(), "-c".into(), "sandbox_mode=\"workspace-write\"".into()]);
             }
@@ -111,6 +118,16 @@ fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(Str
         v.push(p.to_string());
     }
     v
+}
+
+/// `MIDNA_HOOKS_INJECTED=1` when `command` carries midna's per-launch hooks, so global ones
+/// (`midna hook … --global`) stand down instead of reporting a second time.
+fn mark_injected(d: &Daemon, command: &[String], env: &mut Vec<(String, String)>) {
+    let full = crate::hooks::claude_settings_path(&d.cfg.home).to_string_lossy().into_owned();
+    let notify = crate::hooks::codex_notify_arg(&d.cfg.cli_path);
+    if command.iter().any(|a| *a == full || *a == notify) {
+        env.push(("MIDNA_HOOKS_INJECTED".into(), "1".into()));
+    }
 }
 
 fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, String)> {
@@ -150,7 +167,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     };
     let cwd = p.cwd.clone().unwrap_or_else(|| project.path.clone());
     let sid = hex_id(8);
-    let env = session_env(d, &sid, &project.id);
+    let mut env = session_env(d, &sid, &project.id);
     let (command, agent) = match p.kind {
         SessionKind::Agent => {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;
@@ -160,6 +177,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         }
         _ => (p.command.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| vec![login_shell(), "-l".into()]), None),
     };
+    mark_injected(d, &command, &mut env);
     let name = p.name.clone().unwrap_or_else(|| match agent {
         Some(a) => a.as_str().to_string(),
         None => command[0].rsplit('/').next().unwrap_or("shell").to_string(),
@@ -603,7 +621,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
     let s = d.core().state.session(sid).cloned().ok_or_else(|| not_found(sid))?;
     let info = s.agent_info.clone().unwrap_or_default();
     let (cols, rows) = d.rt(sid).and_then(|rt| rt.read(true)).map(|(_, c, r)| (c, r)).unwrap_or((100, 30));
-    let env = session_env(d, &s.id, &s.project_id);
+    let mut env = session_env(d, &s.id, &s.project_id);
     let command = match s.agent {
         Some(agent) if resume => {
             let base = agent_command(d, agent, None, &env, was_supervised(&s.command));
@@ -611,6 +629,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
         }
         _ => s.command.clone(),
     };
+    mark_injected(d, &command, &mut env);
     // Take the old runtime out first, so its exit is ignored (no runtime for this session).
     let old = d.core().rt.remove(sid);
     if let Some(old) = old {

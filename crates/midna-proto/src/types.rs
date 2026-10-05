@@ -1042,6 +1042,8 @@ pub mod kinds {
     pub const SECRET_REMOVED: &str = "secret.removed";
     pub const SECRET_USED: &str = "secret.used";
     pub const SETTINGS_CHANGED: &str = "settings.changed";
+    /// midna's hooks in the agents' global config changed (data = `HooksStatus`).
+    pub const HOOKS_CHANGED: &str = "hooks.changed";
     pub const WINDOW_COMMAND: &str = "window.command";
     pub const AGENT_TURN_STARTED: &str = "agent.turn_started";
     pub const AGENT_TURN_ENDED: &str = "agent.turn_ended";

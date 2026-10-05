@@ -475,6 +475,17 @@ pub static VERBS: &[Verb] = &[
                   grant anything there (from an agent, raise `midna attention` to ask).",
         methods: &["permissions.status"],
     },
+    Verb {
+        name: "hooks",
+        aliases: &[],
+        usage: "hooks [status] | preview [claude|codex] [--uninstall] | install [claude|codex] | uninstall [claude|codex]   (install/uninstall: human only)",
+        summary: "midna's hooks in Claude Code's and Codex's global config",
+        details: "Agents midna starts always report status. Installing the hooks globally makes a claude or codex\n\
+                  typed into a midna terminal report too; outside midna terminals they do nothing, and Codex's\n\
+                  existing notify keeps running. status: not_installed, current, stale (reinstall), unavailable.\n\
+                  preview prints the exact change. install/uninstall are human only (from an agent they ask).",
+        methods: &["hooks.status", "hooks.preview", "hooks.install", "hooks.uninstall"],
+    },
     // ---------------------------------------------------------------- plumbing
     Verb {
         name: "mcp",

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// dialog opens (verified live and in spikes/agent-status); `PermissionRequest` is the hook that
 /// fires. `PostToolUseFailure`, `PermissionDenied` and `StopFailure` keep the status honest when a
 /// tool fails, a prompt is denied, or a turn dies on an API error.
-const CLAUDE_EVENTS: &[&str] = &[
+pub(crate) const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
@@ -29,10 +29,16 @@ const CLAUDE_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 /// Tool events take a matcher; `*` matches every tool.
-const CLAUDE_TOOL_EVENTS: &[&str] = &["PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PermissionDenied"];
+pub(crate) const CLAUDE_TOOL_EVENTS: &[&str] = &["PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PermissionDenied"];
 
 pub fn claude_settings_path(home: &Path) -> PathBuf {
     home.join("hooks").join("claude-settings.json")
+}
+
+/// The same without `hooks`: for agents midna starts while the global install (see
+/// `global_hooks`) already reports for them.
+pub fn claude_base_settings_path(home: &Path) -> PathBuf {
+    home.join("hooks").join("claude-settings-base.json")
 }
 
 /// `$MIDNA_HOME/hooks/mcp.json`: registers `midna mcp` as the stdio MCP server `midna`.
@@ -92,7 +98,7 @@ pub fn codex_mcp_args(cli: &str, env: &[(String, String)]) -> Vec<String> {
     ]
 }
 
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
@@ -128,11 +134,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
     }
 }
 
-/// (Re)write the agent files under $MIDNA_HOME/hooks/: claude-settings.json, mcp.json, SKILL.md.
+/// (Re)write the agent files under $MIDNA_HOME/hooks/: claude-settings.json (and its -base
+/// twin without hooks), mcp.json, SKILL.md.
 pub fn write_claude_settings(d: &Daemon) {
     let statusline = d.core().state.setting_bool("agents.claude.statusline");
-    let v = claude_settings(&d.cfg.cli_path, statusline);
+    let mut v = claude_settings(&d.cfg.cli_path, statusline);
     write_atomic(&claude_settings_path(&d.cfg.home), &serde_json::to_vec_pretty(&v).unwrap_or_default());
+    if let Some(o) = v.as_object_mut() {
+        o.remove("hooks");
+    }
+    write_atomic(&claude_base_settings_path(&d.cfg.home), &serde_json::to_vec_pretty(&v).unwrap_or_default());
     write_atomic(&mcp_config_path(&d.cfg.home), &serde_json::to_vec_pretty(&mcp_config(&d.cfg.cli_path)).unwrap_or_default());
     write_atomic(&skill_path(&d.cfg.home), SKILL_MD.as_bytes());
 }

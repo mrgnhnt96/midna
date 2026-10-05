@@ -5,7 +5,8 @@
 //!   claude statusline: reports cost, prints a short status line.
 //!   codex notify '<json>': Codex's legacy notify (payload is the last argv).
 //!
-//! Never breaks the agent: every failure exits 0 without output.
+//! Never breaks the agent: every failure exits 0 without output. `--global` marks the entries
+//! `midna hooks install` writes into the agents' global config.
 use crate::args::Args;
 use crate::{Fail, Res};
 use midna_proto::Client;
@@ -37,8 +38,14 @@ pub fn run(a: &Args) -> Res {
             .or(other.map(str::to_string))
             .unwrap_or_else(|| "unknown".into()),
     };
-    // Outside a midna terminal there is nothing to report to.
+    // Outside a midna terminal there is nothing to report to. `--global` = the entry
+    // `hooks.install` put in the agent's global config: it stands down when midna already
+    // added its own hooks to this agent (they would report everything twice).
     let in_midna = std::env::var("MIDNA_SESSION").is_ok_and(|s| !s.is_empty());
+    let injected = std::env::var("MIDNA_HOOKS_INJECTED").is_ok_and(|s| !s.is_empty());
+    if a.has("global") && injected {
+        return Ok(());
+    }
     let client = if in_midna { Client::connect_default().ok() } else { None };
     if event == "statusline" {
         if let Some(mut c) = client {
@@ -50,8 +57,10 @@ pub fn run(a: &Args) -> Res {
     }
     let Some(mut c) = client else { return Ok(()) };
     let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = c.call_value("agent.hook", json!({ "agent": agent, "event": event, "payload": payload }));
-    if agent == "claude" && event == "PreToolUse" {
+    // agent.hook fails when midnad doesn't place this process in a midna terminal (e.g. an app
+    // started from one inherited MIDNA_SESSION): then midna's policy must not touch it either.
+    let reported = c.call_value("agent.hook", json!({ "agent": agent, "event": event, "payload": payload })).is_ok();
+    if reported && agent == "claude" && event == "PreToolUse" {
         // policy.request may block while the human decides.
         let _ = c.set_read_timeout(None);
         let action = json!({ "kind": "tool", "value": tool_value(&payload) });

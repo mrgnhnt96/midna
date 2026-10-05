@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod engine;
 pub mod eventlog;
 pub mod git;
+pub mod global_hooks;
 pub mod hooks;
 pub mod images;
 pub mod insights;

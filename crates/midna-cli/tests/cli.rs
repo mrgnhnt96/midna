@@ -177,6 +177,39 @@ fn hook_bridge_prints_claude_decision() {
 }
 
 #[test]
+fn global_hook_stands_down_when_midna_injected_its_own() {
+    let d = D::start();
+    let s = d.sock();
+    let mut h = d.human();
+    h.call_value("rule.add", json!({ "effect": "deny", "matcher": { "kind": "tool", "pattern": "Bash(rm -rf*)" } })).unwrap();
+    let sess = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+    let sid = sess["id"].as_str().unwrap();
+    let pre = json!({ "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": { "command": "rm -rf /" } }).to_string();
+    let run = |injected: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_midna"));
+        cmd.args(["hook", "claude", "--global"]).env("MIDNA_SOCKET", &s).env("MIDNA_SESSION", sid).env_remove("MIDNA_HOME");
+        if injected {
+            cmd.env("MIDNA_HOOKS_INJECTED", "1");
+        } else {
+            cmd.env_remove("MIDNA_HOOKS_INJECTED");
+        }
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(pre.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    // midna already passed its own hooks to this agent: the global entry does nothing.
+    let o = run(true);
+    assert_eq!((code(&o), stdout(&o).trim().to_string()), (0, String::new()));
+    assert_eq!(h.call_value("session.get", json!({ "id": sid })).unwrap()["status"]["state"], "idle");
+    // A hand-typed agent: the global entry reports and applies policy.
+    let o = run(false);
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(h.call_value("session.get", json!({ "id": sid })).unwrap()["status"]["state"], "working");
+}
+
+#[test]
 fn mcp_exposes_catalog_as_tools() {
     let d = D::start();
     let input = [

@@ -256,6 +256,9 @@ the human stored asks them first. Only the human removes secrets.
 - `midna updates status|check` reads or refreshes the app's updater; `install` asks the human.
 - `midna permissions status` shows what midna can see; `midna permissions open accessibility`
   opens the pane, but only the human can grant it.
+- `midna hooks status` says whether midna's hooks are in Claude Code's / Codex's global config
+  (so a hand-typed `claude` in a midna terminal reports status). `midna hooks preview` shows the
+  change; `install` / `uninstall` ask the human.
 
 ## Human-only, and what to do instead
 

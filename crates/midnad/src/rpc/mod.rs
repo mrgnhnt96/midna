@@ -233,6 +233,14 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "secret.remove" => secret::remove(d, ctx, parse(p)?),
         "secret.write" => secret::write(d, ctx, parse(p)?),
         "secret.exec_env" => secret::exec_env(d, ctx, parse(p)?),
+        "hooks.status" => ok(crate::global_hooks::status(d)),
+        "hooks.preview" => ok(crate::global_hooks::preview(d, parse(p)?)),
+        "hooks.install" | "hooks.uninstall" => {
+            let p: HooksTargetParams = parse(p)?;
+            let r = crate::global_hooks::apply(d, &p.agents, method == "hooks.uninstall");
+            crate::global_hooks::poll(d);
+            ok(r?)
+        }
         "webhooks.status" => ok(crate::webhooks::status(d, false)),
         "webhooks.configure" => trigger::configure(d, ctx, parse(p)?),
         "webhooks.reconcile" => ok(crate::webhooks::reconcile::run(d, "manual")),

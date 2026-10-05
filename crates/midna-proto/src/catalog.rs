@@ -438,6 +438,17 @@ fn build() -> Vec<MethodSpec> {
         // agent hooks
         m::<AgentHookParams, AgentHookResult>("agent.hook").mutating().d(
             "Report an agent hook event (called by `midna hook claude|codex`). Drives terminal status, turns, prompt counts and cost."),
+        m::<NoParams, HooksStatus>("hooks.status").d(
+            "Whether midna's hooks are in Claude Code's and Codex's global config, so agents started by hand in a midna terminal \
+             report status too. state: not_installed | current | stale (reinstall) | unavailable | error. Agents midna starts \
+             itself always report (per_session = midna adds its hooks to them)."),
+        m::<HooksPreviewParams, HooksPreview>("hooks.preview").d(
+            "The exact change hooks.install (or, with uninstall, hooks.uninstall) would make to each global config file, as diff lines."),
+        m::<HooksTargetParams, HooksStatus>("hooks.install").mutating().human().d(
+            "Add (or refresh) midna's hooks in the global config of Claude Code (~/.claude/settings.json) and Codex \
+             (~/.codex/config.toml; an existing notify keeps running). The hooks do nothing outside midna terminals. Human only."),
+        m::<HooksTargetParams, HooksStatus>("hooks.uninstall").mutating().human().d(
+            "Remove midna's hooks from the global config (Codex's previous notify is restored). Human only."),
         // scripts
         m::<ScriptRunParams, ScriptRunResult>("script.run").d(
             "Run the configured header or row script for a terminal and return its segments (built-ins: github, git-diff-stats, \

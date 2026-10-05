@@ -13,7 +13,8 @@ path = "src/main.rs"
 [dependencies]
 midna-proto.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+toml_edit = "0.25"
 libc.workspace = true
 libghostty-vt.workspace = true
 tiny_http = "0.12"

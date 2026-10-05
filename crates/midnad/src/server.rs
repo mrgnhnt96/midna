@@ -219,6 +219,7 @@ fn background(d: &Arc<Daemon>) {
             }
             if ticks.is_multiple_of(25) {
                 crate::rpc::policy::expire_rules(&d);
+                crate::global_hooks::poll(&d);
             }
         }
     });

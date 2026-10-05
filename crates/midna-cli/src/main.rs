@@ -422,6 +422,7 @@ fn run(a: &Args) -> Res {
         "commands" => commands(a, &out),
         "updates" => updates(a, &out),
         "permissions" => permissions(a, &out),
+        "hooks" => hooks(a, &out),
         "events" => events(a),
         "insights" => insights(a, &out),
         "window" if a.pos.get(1).map(String::as_str) == Some("list") => {
@@ -640,6 +641,49 @@ fn updates(a: &Args, out: OutFn) -> Res {
         }
         print::kv(st);
     });
+    Ok(())
+}
+
+fn hooks(a: &Args, out: OutFn) -> Res {
+    let sub = a.pos.get(1).map(String::as_str).unwrap_or("status");
+    let agents: Vec<&str> = a.pos.iter().skip(2).map(String::as_str).collect();
+    if let Some(bad) = agents.iter().find(|x| !matches!(**x, "claude" | "codex")) {
+        return Err(Fail::Usage(format!("unknown agent `{bad}`; claude or codex")));
+    }
+    let print_status = |v: &Value| {
+        for k in ["claude", "codex"] {
+            let h = &v[k];
+            let detail = h["detail"].as_str().map(|d| format!("  {d}")).unwrap_or_default();
+            println!("{k:<7} {:<14} {}{detail}", h["state"].as_str().unwrap_or(""), h["path"].as_str().unwrap_or(""));
+        }
+    };
+    match sub {
+        "status" => {
+            let v = call("hooks.status", json!({}))?;
+            out(&v, &print_status);
+        }
+        "preview" => {
+            let v = call("hooks.preview", json!({ "agents": agents, "uninstall": a.has("uninstall") }))?;
+            out(&v, &|v| {
+                for f in v["files"].as_array().into_iter().flatten() {
+                    println!("{}{}", f["path"].as_str().unwrap_or(""), if f["creates"] == true { " (new file)" } else { "" });
+                    if let Some(e) = f["error"].as_str() {
+                        println!("  {e}");
+                    } else if f["unchanged"] == true {
+                        println!("  no change");
+                    }
+                    for l in f["lines"].as_array().into_iter().flatten() {
+                        println!("{} {}", l["op"].as_str().unwrap_or(" "), l["text"].as_str().unwrap_or(""));
+                    }
+                }
+            });
+        }
+        "install" | "uninstall" => {
+            let v = call(&format!("hooks.{sub}"), json!({ "agents": agents }))?;
+            out(&v, &print_status);
+        }
+        other => return Err(Fail::Usage(format!("unknown hooks subcommand `{other}`"))),
+    }
     Ok(())
 }
 

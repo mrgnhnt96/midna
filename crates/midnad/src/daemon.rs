@@ -35,6 +35,11 @@ pub struct Config {
     /// execv and `daemon.stop` may exit. False for in-process daemons (tests), where both
     /// would take the host process down.
     pub owns_process: bool,
+    /// Claude Code's and Codex's config folders, where `hooks.install` writes midna's global
+    /// hooks (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, else `~/.claude` / `~/.codex`). Tests point
+    /// them inside their own home so they never touch the real ones.
+    pub claude_dir: PathBuf,
+    pub codex_dir: PathBuf,
 }
 
 impl Config {
@@ -51,21 +56,32 @@ impl Config {
             webhooks: crate::webhooks::WebhookConfig::from_env(),
             agent_bin: std::env::var("MIDNA_AGENT_BIN").ok().filter(|s| !s.is_empty()),
             owns_process: false,
+            claude_dir: agent_dir("CLAUDE_CONFIG_DIR", ".claude"),
+            codex_dir: agent_dir("CODEX_HOME", ".codex"),
         }
     }
 
     pub fn for_home(home: PathBuf) -> Config {
         Config {
             socket: home.join("midnad.sock"),
-            home,
             app_path: None,
             gui_requirement: None,
             cli_path: default_cli_path(),
             webhooks: crate::webhooks::WebhookConfig::from_env(),
             agent_bin: std::env::var("MIDNA_AGENT_BIN").ok().filter(|s| !s.is_empty()),
             owns_process: false,
+            claude_dir: home.join("agent-config/claude"),
+            codex_dir: home.join("agent-config/codex"),
+            home,
         }
     }
+}
+
+fn agent_dir(var: &str, default: &str) -> PathBuf {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(default))
 }
 
 /// `MIDNA_APP_PATH` makes any executable the human GUI. That's a development convenience only:
