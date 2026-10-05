@@ -524,7 +524,7 @@ fn capitalize(s: &str) -> String {
 }
 
 /// AXIsProcessTrusted: whether midna may use Accessibility (Kass input editing, window moves).
-fn accessibility_trusted() -> bool {
+pub(crate) fn accessibility_trusted() -> bool {
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
         fn AXIsProcessTrusted() -> u8;

@@ -416,6 +416,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                 }
             }
         }
+        Run::ReportIssue => report_issue(m, cx),
         Run::Resolve { need, resolution } => {
             m.resolve(need, resolution, cx);
             m.toast(format!("✓ {title}"), cx);
@@ -428,6 +429,46 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             m.rpc("session.jump_prompt", json!({ "id": session, "n": n, "wait": false }), cx, |_, _, _, _| {});
         }
     }
+}
+
+/// Gather this Mac's details off the main thread, then open the prefilled GitHub issue.
+fn report_issue(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let mut agents: Vec<String> = vec![];
+    for (s, kind) in m.sessions.iter().filter_map(|s| s.agent.map(|a| (s, a))) {
+        let info = s.agent_info.clone().unwrap_or_default();
+        let name = commands::agent_name(kind);
+        let line = match (info.version, info.model) {
+            (Some(v), Some(model)) => format!("{name} {v} ({model})"),
+            (Some(v), None) => format!("{name} {v}"),
+            (None, _) => name.to_string(),
+        };
+        if !agents.contains(&line) {
+            agents.push(line);
+        }
+    }
+    let backend = m.backend.clone();
+    let known = (m.setting_str("updates.channel").unwrap_or_else(|| "stable".into()), m.sessions.len(), m.sessions.iter().filter(|s| s.agent.is_some()).count());
+    m.toast("Opening a new GitHub issue…", cx);
+    cx.spawn(async move |this, cx| {
+        let (channel, terminals, agent_count) = known;
+        let url = cx
+            .background_executor()
+            .spawn(async move {
+                let facts = crate::report::gather(crate::report::Known {
+                    daemon_info: backend.call("daemon.info", json!({})).ok(),
+                    channel,
+                    accessibility: crate::settings_window::accessibility_trusted(),
+                    kass: crate::kass::handshake_detected(),
+                    terminals,
+                    agents,
+                    agent_count,
+                });
+                crate::report::issue_url(&facts)
+            })
+            .await;
+        let _ = this.update(cx, |_, cx| cx.open_url(&url));
+    })
+    .detach();
 }
 
 /// Any RPC by name. A `session.open` result becomes the selection.

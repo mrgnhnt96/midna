@@ -25,6 +25,7 @@ mod kass;
 mod lifecycle;
 mod model;
 mod notify;
+mod report;
 mod settings_window;
 mod term_debug;
 mod term_edit;

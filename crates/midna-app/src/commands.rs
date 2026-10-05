@@ -51,6 +51,8 @@ pub enum Run {
     Queue { session: String },
     /// Open a folder in an installed IDE (`ide.rs`), remembered for its project.
     OpenIde { ide: String, dir: String },
+    /// Open a new GitHub issue with this Mac's details filled in (`report.rs`).
+    ReportIssue,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,6 +601,11 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .kw("preferences config screen")
             .keys(key("keys.settings"))
             .cli("midna settings list"),
+    );
+    out.push(
+        Command::new("report.issue", CmdIcon::Screen, "Report an issue…", Run::ReportIssue)
+            .sub("opens a new GitHub issue with your midna, macOS and Mac details filled in")
+            .kw("bug issue feedback github report problem crash broken file"),
     );
     out.push(
         Command::new("folder.pick", CmdIcon::Project, "Add project folder…", Run::Prefill { text: format!("{FOLDER_PREFIX}~/") })
