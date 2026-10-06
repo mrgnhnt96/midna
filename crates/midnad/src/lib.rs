@@ -1,6 +1,7 @@
 //! midnad library: the daemon's modules, kept in a lib so they're testable.
 //! See docs/ARCHITECTURE.md. Entry point: [`server::start`].
 pub mod adopt;
+pub mod agent_args;
 pub mod agent_state;
 pub mod agent_work;
 pub mod conn;

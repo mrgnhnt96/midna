@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 /// Flags that take a value (everything else starting with `--` is boolean).
 const VALUE_FLAGS: &[&str] = &[
-    "since", "limit", "lines", "project", "cwd", "name", "prompt", "agent", "monitor", "scope", "expires", "reason", "range", "by",
+    "since", "limit", "lines", "project", "cwd", "name", "prompt", "resume", "agent", "monitor", "scope", "expires", "reason", "range", "by",
     "kind", "detail", "socket", "timeout", "session", "value", "target",
     "source", "event", "repo", "branch", "action", "label", "run", "attention", "hook-id", "session-name", "trigger", "payload",
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",

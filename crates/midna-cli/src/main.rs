@@ -473,7 +473,7 @@ fn run(a: &Args) -> Res {
 }
 
 fn open(a: &Args, out: OutFn) -> Res {
-    a.check(&["agent", "prompt", "monitor", "name", "project", "cwd", "background"])?;
+    a.check(&["agent", "prompt", "resume", "monitor", "name", "project", "cwd", "background"])?;
     let cwd = match a.get("cwd") {
         Some(c) => Some(c.to_string()),
         None if a.get("project").is_none() => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
@@ -485,6 +485,15 @@ fn open(a: &Args, out: OutFn) -> Res {
         p["agent"] = json!(agent);
         let prompt = a.get("prompt").map(str::to_string).or_else(|| (a.pos.len() > 1).then(|| a.pos[1..].join(" ")));
         p["prompt"] = json!(prompt);
+        // Everything after `--` is the agent's own arguments.
+        if !a.rest.is_empty() {
+            p["agent_args"] = json!(a.rest);
+        }
+        if let Some(r) = a.get("resume") {
+            p["resume"] = json!(r);
+        }
+    } else if a.has("resume") {
+        return Err(Fail::Usage("--resume needs --agent claude|codex".into()));
     } else if let Some(m) = a.get("monitor") {
         p["kind"] = json!("monitor");
         p["command"] = json!([m]);

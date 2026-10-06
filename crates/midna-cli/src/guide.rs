@@ -25,7 +25,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 
 WHAT YOU CAN DO
   see        midna list | projects | needs | read <id> | explain <id> | events | insights | usage
-  terminals  midna open [--agent claude|codex --prompt T | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
+  terminals  midna open [--agent claude|codex --prompt T --resume ID -- agent-args | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
   policy     midna check <kind> <value> · rules add <allow|ask|deny> <kind> <glob> [--scope …] [--expires S]

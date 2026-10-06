@@ -106,11 +106,15 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "open",
         aliases: &["new"],
-        usage: "open [--agent claude|codex] [--prompt TEXT] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [-- argv...]",
+        usage: "open [--agent claude|codex [--prompt TEXT] [--resume ID]] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [-- argv... | -- agent args...]",
         summary: "open a terminal: a shell (default), a monitor, or an agent",
         details: "Shell: the login shell, or `-- argv...`. Monitor: `--monitor CMD` runs a command the human\n\
                   should watch; a failure raises a needs-you item. Agent: `--agent claude|codex` starts a\n\
-                  new agent with midna's hooks and MCP server, optionally with `--prompt`. Without\n\
+                  new agent with midna's hooks and MCP server, optionally with `--prompt`; `--resume ID`\n\
+                  reopens a conversation, and words after `--` go to the agent itself\n\
+                  (`-- --append-system-prompt \"…\" --settings board.json --model opus`). A `--settings`\n\
+                  or `--append-system-prompt` is merged with midna's own (Claude reads only one); Codex\n\
+                  `-c developer_instructions=…` / `-c notify=…` likewise. Without\n\
                   --project the terminal goes in the project containing --cwd (default: this directory).\n\
                   --background puts it in the sidebar's folded Background group instead of under its\n\
                   project (a dev server, a watcher); it is still listed, readable and can raise needs-you.\n\

@@ -203,14 +203,16 @@ fn alive(pid: i32) -> bool {
     pid > 1 && unsafe { libc::kill(pid, 0) } == 0
 }
 
-/// The command midna runs for `args` typed to `bin`: midna's flags first (Claude's
+/// The command midna runs for `args` typed to `bin` in `cwd`: midna's flags first (Claude's
 /// `--mcp-config` takes every word up to the next option, and `--settings` ends it; Codex's
-/// are `-c` overrides, which must come before a subcommand), then the user's.
-fn command(d: &Daemon, s: &Session, agent: AgentKind, bin: &str, args: &[String]) -> (Vec<String>, BTreeMap<String, String>) {
+/// are `-c` overrides, which must come before a subcommand), then the user's, with a typed
+/// `--settings` / `--append-system-prompt` merged into midna's (see `agent_args`).
+fn command(d: &Daemon, s: &Session, agent: AgentKind, bin: &str, args: &[String], cwd: Option<String>) -> (Vec<String>, BTreeMap<String, String>) {
     let env = crate::rpc::session::session_env(d, &s.id, &s.project_id);
-    let mut v = crate::rpc::session::agent_command(d, agent, None, &env, false);
+    let mut v = crate::rpc::session::agent_command(d, agent, &env, false);
     v[0] = bin.to_string();
-    v.extend(args.iter().cloned());
+    let cwd = cwd.unwrap_or_else(|| s.cwd.clone());
+    let v = crate::agent_args::combine(d, agent, v, args, &spec_for(agent, bin, false), Path::new(&cwd));
     let mut extra = vec![];
     crate::rpc::session::mark_injected(d, &v, &mut extra);
     (v, extra.into_iter().collect())
@@ -239,7 +241,7 @@ pub fn adopt(d: &Arc<Daemon>, ctx: &crate::rpc::Ctx, p: SessionAdoptParams) -> R
     if !spec_for(p.agent, &p.bin, false).parse(&p.args).interactive(p.agent) {
         return none;
     }
-    let (run, env) = command(d, &s, p.agent, &p.bin, &p.args);
+    let (run, env) = command(d, &s, p.agent, &p.bin, &p.args, crate::procs::cwd(p.pid));
     {
         let mut core = d.core();
         let Some(sess) = core.state.session_mut(&sid) else { return none };
@@ -258,7 +260,7 @@ pub fn adopt_end(d: &Arc<Daemon>, ctx: &crate::rpc::Ctx, p: SessionAdoptEndParam
     let s = d.core().state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no session {sid}")))?;
     let Some(a) = s.adopted.as_ref().filter(|a| a.pid == p.pid) else { return Ok(SessionAdoptResult::default()) };
     if let Some(next) = &a.next {
-        let (_, env) = command(d, &s, a.agent, &a.bin, &[]);
+        let (_, env) = command(d, &s, a.agent, &a.bin, &[], None);
         if let Some(sess) = d.core().state.session_mut(&sid)
             && let Some(a) = sess.adopted.as_mut()
         {
@@ -304,7 +306,7 @@ pub fn restart(d: &Arc<Daemon>, s: &Session, resume: bool, reason: &str, actor: 
     let a = s.adopted.clone().ok_or_else(|| RpcError::conflict("not adopted"))?;
     let info = s.agent_info.clone().unwrap_or_default();
     let args = resume_args(a.agent, &spec_for(a.agent, &a.bin, true), &a.args);
-    let (base, _) = command(d, s, a.agent, &a.bin, &args);
+    let (base, _) = command(d, s, a.agent, &a.bin, &args, crate::procs::cwd(a.pid));
     let next = if resume {
         crate::agent_work::resume_command(a.agent, &base, &info).ok_or_else(|| RpcError::conflict(format!("session {} has no conversation to resume", s.id)))?
     } else {

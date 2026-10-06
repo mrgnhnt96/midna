@@ -207,6 +207,10 @@ pub struct Session {
     pub agent: Option<AgentKind>,
     pub cwd: String,
     pub command: Vec<String>,
+    /// Agent terminals: the caller's own agent arguments (`session.open {agent_args}`), which a
+    /// restart into the same conversation keeps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
     #[serde(default)]

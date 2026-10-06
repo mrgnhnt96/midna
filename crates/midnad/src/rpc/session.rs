@@ -65,7 +65,7 @@ pub fn exec_argv(command: &[String]) -> Vec<String> {
 /// `supervised` (agents a webhook trigger starts, setting `triggers.agent_mode`): force the
 /// agent's own permission prompts on, whatever the user's global config says, because the
 /// prompt carries untrusted webhook text.
-pub(crate) fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, env: &[(String, String)], supervised: bool) -> Vec<String> {
+pub(crate) fn agent_command(d: &Daemon, agent: AgentKind, env: &[(String, String)], supervised: bool) -> Vec<String> {
     let (mcp, hint) = {
         let core = d.core();
         (core.state.setting_bool("agents.mcp"), core.state.setting_bool("agents.system_hint"))
@@ -114,7 +114,32 @@ pub(crate) fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, 
     if let Some(bin) = &d.cfg.agent_bin {
         v[0] = bin.clone(); // dev/test override (MIDNA_AGENT_BIN)
     }
+    v
+}
+
+/// An agent midna starts: `agent_command`, then the caller's own arguments (merged where both
+/// set an option, see `agent_args`), then the conversation to reopen and the first prompt.
+/// After caller arguments the prompt follows `--`, so an option that takes several words
+/// (`--add-dir a b`) can't swallow it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_command(
+    d: &Daemon, agent: AgentKind, args: &[String], resume: Option<&str>, prompt: Option<&str>, env: &[(String, String)], supervised: bool, cwd: &str,
+) -> Vec<String> {
+    let base = agent_command(d, agent, env, supervised);
+    let mut v = crate::agent_args::combine(d, agent, base, args, &midna_proto::agent_cli::Spec::builtin(agent), std::path::Path::new(cwd));
+    if let Some(id) = resume.filter(|r| !r.is_empty()) {
+        match agent {
+            AgentKind::Claude => v.extend(["--resume".to_string(), id.to_string()]),
+            AgentKind::Codex => {
+                v.insert(1.min(v.len()), "resume".into());
+                v.push(id.to_string());
+            }
+        }
+    }
     if let Some(p) = prompt.filter(|p| !p.is_empty()) {
+        if !args.is_empty() && !args.iter().any(|a| a == "--") {
+            v.push("--".into());
+        }
         v.push(p.to_string());
     }
     v
@@ -125,7 +150,8 @@ pub(crate) fn agent_command(d: &Daemon, agent: AgentKind, prompt: Option<&str>, 
 pub(crate) fn mark_injected(d: &Daemon, command: &[String], env: &mut Vec<(String, String)>) {
     let full = crate::hooks::claude_settings_path(&d.cfg.home).to_string_lossy().into_owned();
     let notify = crate::hooks::codex_notify_arg(&d.cfg.cli_path);
-    if command.iter().any(|a| *a == full || *a == notify) {
+    let chained = |a: &str| a.starts_with("notify=") && a.contains(&format!("\"{}\"", crate::agent_args::CODEX_LAUNCH_WRAPPER));
+    if command.iter().any(|a| *a == full || *a == notify || chained(a) || crate::agent_args::is_merged_with_hooks(&d.cfg.home, a)) {
         env.push(("MIDNA_HOOKS_INJECTED".into(), "1".into()));
     }
 }
@@ -173,7 +199,11 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;
             let by_trigger = ctx.as_actor.as_ref().is_some_and(|a| a.kind == ActorKind::Trigger);
             let supervised = by_trigger && d.core().state.setting_str("triggers.agent_mode") != "inherit";
-            (agent_command(d, a, p.prompt.as_deref(), &env, supervised), Some(a))
+            // A supervised agent's permission prompts are forced on; its own arguments could undo that.
+            if supervised && !p.agent_args.is_empty() {
+                return Err(RpcError::bad_params("agent_args can't be passed to an agent a trigger starts in supervised mode"));
+            }
+            (launch_command(d, a, &p.agent_args, p.resume.as_deref(), p.prompt.as_deref(), &env, supervised, &cwd), Some(a))
         }
         _ => (p.command.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| vec![login_shell(), "-l".into()]), None),
     };
@@ -195,6 +225,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         agent,
         cwd,
         command,
+        agent_args: if agent.is_some() { p.agent_args.clone() } else { vec![] },
         pid: Some(rt.pid),
         title: String::new(),
         status: Status { state: StatusState::Idle, reason: Some("started".into()), exit_code: None, since: now.clone() },
@@ -640,7 +671,9 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
     let mut env = session_env(d, &s.id, &s.project_id);
     let command = match s.agent {
         Some(agent) if resume => {
-            let base = agent_command(d, agent, None, &env, was_supervised(&s.command));
+            // The caller's own arguments stay, minus the first prompt and conversation options.
+            let args = midna_proto::agent_cli::resume_args(agent, &midna_proto::agent_cli::Spec::builtin(agent), &s.agent_args);
+            let base = launch_command(d, agent, &args, None, None, &env, was_supervised(&s.command), &s.cwd);
             crate::agent_work::resume_command(agent, &base, &info).ok_or_else(|| RpcError::conflict(format!("session {sid} has no conversation to resume")))?
         }
         _ => s.command.clone(),

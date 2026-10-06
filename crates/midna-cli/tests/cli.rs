@@ -312,6 +312,14 @@ fn agents_get_mcp_skill_and_hint_without_global_config() {
     assert_eq!(pos("--settings"), pos("--mcp-config") + 2);
     assert!(cmd[pos("--append-system-prompt") + 1].contains("midna capabilities"));
     assert_eq!(cmd.last().unwrap(), "hi");
+    // `midna open --agent … --resume ID -- <agent args>`
+    let o = midna(&d.sock(), &["open", "--agent", "claude", "--cwd", "/tmp", "--resume", "c9", "--prompt", "go", "--json", "--", "--model", "opus"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["agent_args"], json!(["--model", "opus"]));
+    let cmd: Vec<String> = serde_json::from_value(v["command"].clone()).unwrap();
+    assert_eq!(&cmd[cmd.len() - 6..], ["--model", "opus", "--resume", "c9", "--", "go"], "{cmd:?}");
+    assert_eq!(code(&midna(&d.sock(), &["open", "--resume", "c9"], None, None)), 2, "--resume without --agent");
     let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "codex", "cwd": "/tmp" })).unwrap();
     let cmd: Vec<String> = serde_json::from_value(sess["command"].clone()).unwrap();
     let joined = cmd.join(" ");

@@ -35,7 +35,10 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 
 - `midna open [--name N] [-- argv...]` opens a shell. Use `--monitor CMD` for a long-running process
   the human should see (a failure raises a needs-you item). Use `--agent claude|codex --prompt TEXT`
-  to delegate durable work to a new agent the human can follow.
+  to delegate durable work to a new agent the human can follow. `--resume ID` reopens a
+  conversation, and words after `--` are the agent's own arguments
+  (`midna open --agent claude --resume ID -- --append-system-prompt "…" --settings s.json`).
+  midna merges a `--settings` / `--append-system-prompt` with its own, so its hooks still run.
 - Add `--background` to `open` for something that should run out of the way (a dev server, a
   watcher). It sits in the sidebar's folded Background group but is still listed, readable and
   able to raise needs-you. `midna background <id> [--off]` moves an existing terminal.

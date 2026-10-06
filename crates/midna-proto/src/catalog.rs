@@ -130,7 +130,9 @@ fn build() -> Vec<MethodSpec> {
         m::<IdParams, Session>("session.get").d("Get one terminal by id: kind, agent, cwd, command, title, status {state, reason, since, exit_code}, git info and, for agents, agent_info (conversation id, running version, update available, background work, subagents, scheduled wakeups, queued restart, and Claude's plan usage `rate_limits` {five_hour, seven_day: {used_percentage, resets_at}, observed_at}). `midna explain <id>` says why it has its status."),
         m::<SessionOpenParams, Session>("session.open").mutating().d(
             "Open a new terminal. kind=shell runs the login shell (or `command`), kind=monitor runs `command` for the human to watch, \
-             kind=agent launches Claude or Codex (agent=claude|codex) with midna's hooks and an optional initial `prompt`. \
+             kind=agent launches Claude or Codex (agent=claude|codex) with midna's hooks and an optional initial `prompt`; \
+             `resume` reopens a conversation by id and `agent_args` are the agent's own arguments (Claude `--settings` / \
+             `--append-system-prompt`, Codex `-c developer_instructions` / `-c notify` are merged with midna's own, so its hooks still run). \
              Use this to delegate durable work to a new agent the human can see. background=true opens it in the sidebar's \
              folded Background group instead (a dev server, a watcher): still listed, readable and able to raise needs-you."),
         m::<SessionSetBackgroundParams, Session>("session.set_background").mutating().d(

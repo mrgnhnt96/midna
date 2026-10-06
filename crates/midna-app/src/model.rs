@@ -449,6 +449,7 @@ mod tests {
             agent: Some(p::AgentKind::Codex),
             cwd: "/tmp".into(),
             command: vec!["codex".into()],
+            agent_args: vec![],
             pid: Some(1),
             title: String::new(),
             status: p::Status { state: p::StatusState::NeedsYou, reason: Some("x".into()), exit_code: None, since: "2026-10-03T10:00:00Z".into() },

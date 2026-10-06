@@ -222,3 +222,16 @@ fn a_restart_comes_back_in_the_worktree_the_agent_moved_into() {
     let cwds: Vec<String> = std::fs::read_to_string(d.fake.join("codex-cwd")).unwrap().lines().map(str::to_string).collect();
     assert_eq!(cwds[1], std::fs::canonicalize(&wt).unwrap().to_string_lossy(), "{cwds:?}");
 }
+
+#[test]
+fn a_typed_settings_file_is_merged_with_midnas() {
+    let d = D::start();
+    let mut h = d.human();
+    // The hint is several lines, and the fake records one launch per line.
+    call(&mut h, "settings.set", json!({ "key": "agents.system_hint", "value": false }));
+    d.shell(&mut h, r#"claude --settings '{"model":"x"}' hi"#);
+    wait_for(10, "fake claude started", || (d.launches().len() == 1).then_some(()));
+    let l = &d.launches()[0];
+    assert_eq!(l.matches("--settings ").count(), 1, "{l}");
+    assert!(l.contains("hooks/merged/claude-settings-") && l.ends_with(" hi"), "{l}");
+}

@@ -490,6 +490,17 @@ pub struct SessionOpenParams {
     /// Initial prompt passed to the agent.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// kind=agent: the agent's own arguments, after midna's flags (`["--append-system-prompt", "…",
+    /// "--settings", "board.json", "--model", "opus"]`). Claude takes one `--settings` and one
+    /// `--append-system-prompt`, so midna merges yours into its own: the settings into one file
+    /// (yours win on conflicts; hooks and permission lists from both apply), your text ahead of
+    /// midna's hint. Codex `-c developer_instructions=…` is joined the same way, and a `-c notify=…`
+    /// runs after midna's. Kept for restarts (minus the prompt and conversation options).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
+    /// kind=agent: reopen this conversation (Claude `--resume <id>`, Codex `codex resume … <id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
     #[serde(default)]
     pub cols: Option<u16>,
     #[serde(default)]
