@@ -7,8 +7,10 @@
 //! read. What Claude Code (2.1.289) draws there:
 //! - each prompt in the transcript as a row starting `❯ ` (the first line of it; continuation
 //!   rows are indented). Slash commands look the same but fire no `UserPromptSubmit`;
-//! - while scrolled back, the prompt the top of the view belongs to pinned on row 0, and
-//!   `Jump to bottom: fn+↓ to scroll` drawn over the right of the last transcript row;
+//! - while scrolled back, the prompt the top of the view belongs to pinned on row 0, and a hint
+//!   drawn over the right of the last transcript row: `Jump to bottom: fn+↓ to scroll`
+//!   (2.1.291: `Jump to bottom (click) ↓`), or `3 new messages (click) ↓` once output arrives
+//!   below the view;
 //! - the input box below the transcript, between two `─` rules, its first row also `❯ `.
 //!
 //! Codex marks prompts with `› `.
@@ -16,8 +18,22 @@
 /// Characters that start a prompt row: Claude Code's and Codex's.
 pub const MARKERS: [char; 2] = ['❯', '›'];
 
-/// Claude Code's hint while its view is scrolled back.
-const SCROLLED_HINT: &str = "Jump to bottom";
+/// Where Claude Code's scrolled-back hint starts in a row, if the row has one: `Jump to
+/// bottom…`, or `N new message(s) (click) ↓` (the count must lead, and an arrow follow, so prose
+/// saying "new message" doesn't count).
+fn scrolled_hint(line: &str) -> Option<usize> {
+    if let Some(at) = line.find("Jump to bottom") {
+        return Some(at);
+    }
+    let at = line.find(" new message")?;
+    if !line[at..].contains('↓') {
+        return None;
+    }
+    let head = &line[..at];
+    let digits = head.len() - head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    let start = at - digits;
+    (digits > 0 && line[..start].ends_with("  ")).then_some(start)
+}
 
 /// What one screen shows of the prompts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -73,7 +89,7 @@ pub fn scan(lines: &[String], cursor_row: Option<u16>) -> ScreenScan {
     let mut out = ScreenScan::default();
     for (i, line) in lines.iter().enumerate().take(end) {
         let mut text = line.as_str();
-        if let Some(at) = text.find(SCROLLED_HINT) {
+        if let Some(at) = scrolled_hint(text) {
             out.scrolled = true;
             text = &text[..at];
         }
@@ -178,6 +194,25 @@ mod tests {
         assert!(!sc.scrolled);
         assert!(sc.rows.is_empty());
         assert_eq!(here(&sc.rows, &[]), Here::Unknown);
+    }
+
+    #[test]
+    fn new_messages_hint_means_scrolled() {
+        // Claude Code 2.1.291, scrolled back while it works: the hint counts the new output.
+        let s = screen(&format!(
+            "❯ alpha: list the numbers 1 to 30, one per line, no tools\n❯ bravo: list 30 fruits one per line, no tools\n\n⏺ Apple\n  Coconut                                       1 new message (click) ↓\n\n{RULE}\n❯\n{RULE}"
+        ));
+        let sc = scan(&s, Some(7));
+        assert!(sc.scrolled);
+        assert_eq!(here(&sc.rows, &assign(&sc.rows, &prompts(), None)), Here::At(1));
+        let s = screen(&format!("  20                                  Jump to bottom (click) ↓\n\n{RULE}\n❯\n{RULE}"));
+        assert!(scan(&s, Some(3)).scrolled);
+        // a prompt row cut by the hint
+        let s = screen(&format!("❯ charlie: list 30 countries  12 new messages (click) ↓\n{RULE}\n❯\n{RULE}"));
+        assert_eq!(scan(&s, Some(2)).rows, [(0, "charlie: list 30 countries".to_string())]);
+        // prose about new messages is not the hint
+        let s = screen(&format!("⏺ The 1 new message ↓ hint, and 3 new messages here\n{RULE}\n❯\n{RULE}"));
+        assert!(!scan(&s, Some(2)).scrolled);
     }
 
     #[test]
