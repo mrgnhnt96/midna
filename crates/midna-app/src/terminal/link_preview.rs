@@ -2,8 +2,9 @@
 //! URL in the grid (or ⌘-hovering it, per `terminal.link_preview`) opens a card at the bottom
 //! right of the pane, above the queued-messages pill. It opens after `SHOW_DELAY` and stays while
 //! the pointer is on the link, on the card, or while its IDE menu is open. When the pointer
-//! leaves, a bar along the card's top drains for `GRACE` before it closes, so there's time to
-//! reach it. A key press or a click in the terminal closes it at once.
+//! leaves, the card fades out over `GRACE` (it holds near full strength, then falls away) before
+//! it closes, so there's time to reach it; reaching it eases it back in. A key press or a click
+//! in the terminal closes it at once.
 //!
 //! Files show the lines around the target line (wide lines scroll sideways), folders their
 //! entries, images the image, GitHub pull requests their state and checks (`gh`), other web
@@ -30,6 +31,10 @@ use std::time::{Duration, Instant};
 
 const SHOW_DELAY: Duration = Duration::from_millis(350);
 const GRACE: Duration = Duration::from_millis(1500);
+/// How long the card takes to come back to full when the pointer returns mid-fade.
+const RECOVER: Duration = Duration::from_millis(160);
+/// How far the card sinks as it fades.
+const SINK: f32 = 6.;
 /// Clear of the prompt rail on the right edge (as the queue pill).
 const RIGHT: f32 = 22.;
 /// Lines of a file shown, and how many of them come before the target line.
@@ -39,6 +44,12 @@ const DIR_ROWS: usize = 8;
 const CHECKS: usize = 8;
 /// Fetched pages and pull requests are reused for this long.
 const URL_TTL: Duration = Duration::from_secs(90);
+
+/// The card's opacity `x` of the way through the grace period: `cubic-bezier(.7, 0, .84, 0)`, so
+/// it's still 97% at the halfway mark and does most of its fading in the last quarter.
+fn fade(x: f32) -> f32 {
+    1. - crate::ui::setup_screen::bezier(0.7, 0., 0.84, 0., x.clamp(0., 1.))
+}
 
 /// `terminal.link_preview`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -181,8 +192,11 @@ pub(super) struct Preview {
     menu: bool,
     /// When a click outside closed the menu (so the chevron's own click doesn't reopen it).
     menu_closed: Option<Instant>,
-    /// The grace period running (its number names the bar's animation).
-    grace: Option<(u64, Task<()>)>,
+    /// The grace period running since then (its number names the fade's animation).
+    grace: Option<(u64, Instant, Task<()>)>,
+    /// The pointer came back mid-fade: the card eases back from this opacity (named by the
+    /// grace period it cut short).
+    recover: Option<(u64, f32)>,
     seq: u64,
     /// A short note in the footer ("Copied"), and whether it's an error.
     flash: Option<(String, bool)>,
@@ -247,6 +261,7 @@ impl TerminalView {
             });
         });
         self.preview.grace = None;
+        self.preview.recover = None;
         self.preview.menu = false;
         self.preview.flash = None;
         self.preview.card = Some(Card { link, is_dir, project, name, sub, body: Body::Loading, ide, _load: load });
@@ -263,7 +278,9 @@ impl TerminalView {
 
     /// The pointer came back (to the link or the card): stop the grace period.
     fn preview_hold(&mut self, cx: &mut Context<Self>) {
-        if self.preview.grace.take().is_some() {
+        if let Some((seq, at, _)) = self.preview.grace.take() {
+            let from = fade(at.elapsed().as_secs_f32() / GRACE.as_secs_f32());
+            self.preview.recover = (from < 0.99).then_some((seq, from));
             cx.notify();
         }
     }
@@ -279,15 +296,16 @@ impl TerminalView {
         let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(GRACE).await;
             let _ = this.update(cx, |t, cx| {
-                if t.preview.grace.as_ref().is_some_and(|(s, _)| *s == seq) {
-                    if let Some((_, me)) = t.preview.grace.take() {
+                if t.preview.grace.as_ref().is_some_and(|(s, _, _)| *s == seq) {
+                    if let Some((_, _, me)) = t.preview.grace.take() {
                         me.detach();
                     }
                     t.preview_close(cx);
                 }
             });
         });
-        p.grace = Some((seq, task));
+        p.grace = Some((seq, Instant::now(), task));
+        p.recover = None;
         cx.notify();
     }
 
@@ -300,6 +318,7 @@ impl TerminalView {
         let p = &mut self.preview;
         p.card = None;
         p.grace = None;
+        p.recover = None;
         p.menu = false;
         p.over = false;
         p.flash = None;
@@ -481,18 +500,6 @@ impl TerminalView {
         }
         let held = self.preview.over || self.preview.menu;
 
-        let bar = match &self.preview.grace {
-            Some((seq, _)) if !crate::ui::queue::reduce_motion() => div()
-                .h_full()
-                .rounded_full()
-                .bg(t.accent)
-                .with_animation(SharedString::from(format!("link-preview-grace-{seq}")), Animation::new(GRACE), |el, d| el.w(relative(1. - d)))
-                .into_any_element(),
-            Some(_) => div().h_full().w(relative(0.4)).rounded_full().bg(t.accent).into_any_element(),
-            None => div().h_full().w_full().rounded_full().when(held, |d| d.bg(t.accent)).into_any_element(),
-        };
-        let bar = div().mx(px(10.)).mt(px(4.)).h(px(2.)).rounded_full().bg(t.line).flex().child(bar);
-
         let icon = if c.link.url {
             if matches!(c.body, Body::Pr(_)) { Icon::Pr.el(14., t.ok) } else { Icon::Globe.el(14., t.dim) }
         } else if c.is_dir {
@@ -567,7 +574,6 @@ impl TerminalView {
             .border_1()
             .border_color(if held { t.accent } else { t.line })
             .bg(t.raised)
-            .opacity(if self.preview.grace.is_some() { 0.9 } else { 1. })
             .font_family(t.ui_font.clone())
             .text_size(px(13.))
             .text_color(t.fg)
@@ -581,11 +587,25 @@ impl TerminalView {
             // The terminal under it must not start a selection or take the click.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .child(bar)
             .child(header)
             .child(body)
             .child(footer);
-        Some(card.into_any_element())
+        // Fading out over the grace period, or easing back in from wherever it was cut short.
+        let bottom = pane_h - edge;
+        let at = move |el: Stateful<Div>, o: f32| el.opacity(o).bottom(px(bottom - SINK * (1. - o)));
+        let reduce = crate::ui::queue::reduce_motion();
+        Some(match (&self.preview.grace, self.preview.recover) {
+            (Some(_), _) if reduce => card.opacity(0.8).into_any_element(),
+            (Some((seq, _, _)), _) => {
+                card.with_animation(SharedString::from(format!("link-preview-fade-{seq}")), Animation::new(GRACE), move |el, d| at(el, fade(d))).into_any_element()
+            }
+            (None, Some((seq, from))) if !reduce => {
+                let ease = |x: f32| 1. - (1. - x).powi(3);
+                card.with_animation(SharedString::from(format!("link-preview-back-{seq}")), Animation::new(RECOVER).with_easing(ease), move |el, d| at(el, from + (1. - from) * d))
+                    .into_any_element()
+            }
+            _ => card.into_any_element(),
+        })
     }
 
     fn render_footer(&self, c: &Card, env: &PreviewEnv, t: &Theme, cx: &mut Context<Self>) -> Div {
@@ -1168,8 +1188,16 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, FILE_LINES, excerpt, fetchable, github_pr, page_meta, parse_pr, path_title, url_title};
+    use super::{Check, FILE_LINES, excerpt, fade, fetchable, github_pr, page_meta, parse_pr, path_title, url_title};
     use std::path::Path;
+
+    #[test]
+    fn fade_holds_then_falls() {
+        assert_eq!(fade(0.), 1.);
+        assert!((fade(0.5) - 0.97).abs() < 0.01);
+        assert!((fade(0.75) - 0.83).abs() < 0.01);
+        assert!(fade(1.) < 0.001);
+    }
 
     #[test]
     fn excerpt_centers_on_the_line() {
