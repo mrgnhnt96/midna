@@ -793,6 +793,13 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
         }
         let Some(s) = core.state.session_mut(sid) else { return };
         s.pid = None;
+        // An adopted agent that was the terminal's own process (`exec claude`) went with it:
+        // released here, or the reaper would mark the exited terminal idle later.
+        let adopted = s.adopted.take().is_some();
+        if adopted {
+            s.agent = None;
+            s.agent_info = None;
+        }
         if let Some(i) = s.agent_info.as_mut() {
             // Its background work went with it (crons come back with a resume); an exit is
             // not a cue to restart.
@@ -800,7 +807,11 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
             i.subagents.clear();
             i.restart = None;
         }
-        (s.kind, s.project_id.clone())
+        let out = (s.kind, s.project_id.clone());
+        if adopted {
+            core.agents.remove(sid);
+        }
+        out
     };
     emit_agent_info(d, sid);
     let (state, reason) = match (code, signal) {

@@ -224,6 +224,35 @@ fn a_restart_comes_back_in_the_worktree_the_agent_moved_into() {
 }
 
 #[test]
+fn an_execd_claude_is_adopted_and_released_with_the_terminal() {
+    let d = D::start();
+    let mut h = d.human();
+    // `exec` replaces the terminal's own process (the shell) with the shim.
+    let sid = d.shell(&mut h, "exec claude --model opus");
+    wait_for(10, "fake claude started", || (d.launches().len() == 1).then_some(()));
+    let s = wait_for(5, "adopted", || Some(call(&mut h, "session.get", json!({ "id": sid }))).filter(|s| !s["adopted"].is_null()));
+    assert_eq!(s["agent"], "claude", "{s}");
+    assert_eq!(s["adopted"]["pid"], s["pid"], "the shim is the terminal's process: {s}");
+    assert!(d.launches()[0].contains("--settings ") && d.launches()[0].ends_with("--model opus"), "{:?}", d.launches());
+
+    let mut a = midna_proto::Client::connect(d.home.join("midnad.sock")).unwrap().as_agent(Some(sid.clone()));
+    call(&mut a, "agent.hook", json!({ "agent": "claude", "event": "SessionStart", "payload": { "session_id": "conv-x", "source": "startup" } }));
+    call(&mut h, "session.restart", json!({ "id": sid }));
+    wait_for(10, "relaunch", || (d.launches().len() == 2).then_some(()));
+    assert!(d.launches()[1].ends_with("--model opus --resume conv-x"), "{:?}", d.launches());
+
+    // Claude exits: there is no shell to go back to, so the terminal exits, a shell terminal again.
+    std::fs::write(d.fake.join("quit"), "").unwrap();
+    let s = wait_for(10, "terminal exited", || Some(call(&mut h, "session.get", json!({ "id": sid }))).filter(|s| s["pid"].is_null()));
+    assert!(s["adopted"].is_null() && s["agent"].is_null(), "{s}");
+    std::thread::sleep(Duration::from_millis(2500)); // past a reap
+    let s = call(&mut h, "session.get", json!({ "id": sid }));
+    assert_eq!(s["status"]["state"], "failed", "exit code 3, not reset to idle: {s}");
+    let needs = call(&mut h, "needs_you.list", json!({}));
+    assert!(!needs.to_string().contains(&sid), "a shell's exit raises nothing: {needs}");
+}
+
+#[test]
 fn a_typed_settings_file_is_merged_with_midnas() {
     let d = D::start();
     let mut h = d.human();

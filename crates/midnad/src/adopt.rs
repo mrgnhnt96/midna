@@ -15,6 +15,9 @@
 //! - **Restart.** midna sets the next command (`AdoptedAgent.next`) and SIGHUPs the agent;
 //!   the shim sees it exit, asks `session.adopt_end` and runs the next command in the same
 //!   shell (Claude: `--resume <id>`; Codex: `codex resume … <thread-id>`).
+//! - **`exec claude`** replaces the shell with the shim, which then is the terminal's own
+//!   process: adopted the same way. When the agent exits the terminal's process ends, and the
+//!   terminal is released with it (`session::on_exit`).
 //! - **Not adopted** (the shim runs it exactly as typed): anything but an interactive session
 //!   (`agent_cli::Parsed::interactive`: subcommands, `--print`, `exec`, …), no tty, a terminal
 //!   that already runs an agent (Claude's own Bash tool calling `claude`), or anything going
@@ -233,9 +236,10 @@ pub fn adopt(d: &Arc<Daemon>, ctx: &crate::rpc::Ctx, p: SessionAdoptParams) -> R
     if s.agent.is_some() && s.adopted.as_ref().is_none_or(|a| alive(a.pid)) {
         return none;
     }
-    // Only a process in this terminal can hand its agent to midna.
+    // Only a process in this terminal can hand its agent to midna: the shell's child, or the
+    // terminal's own process when the shell `exec`ed the agent.
     let Some(rt) = d.rt(&sid) else { return none };
-    if !crate::procs::tree(rt.pid).iter().any(|x| x.pid == p.pid && x.depth > 0) {
+    if !crate::procs::tree(rt.pid).iter().any(|x| x.pid == p.pid) {
         return none;
     }
     if !spec_for(p.agent, &p.bin, false).parse(&p.args).interactive(p.agent) {
