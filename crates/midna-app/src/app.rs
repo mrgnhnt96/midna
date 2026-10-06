@@ -819,7 +819,14 @@ impl MainWindow {
             self.discovered = d;
         }
         crate::terminal::share_preview_env(self, cx);
+        // The selected terminal closing (⌘K, the header menu, its shell exiting): its neighbour
+        // in the sidebar we had, so focus stays in its project.
+        let mut closed_neighbour = None;
         if let Some(s) = r.sessions {
+            if let Some(sel) = self.selected.clone().filter(|id| self.sessions.iter().any(|x| &x.id == id) && !s.iter().any(|x| &x.id == id)) {
+                let rows = self.sidebar_rows(Some(&sel), cx);
+                closed_neighbour = neighbour(&rows, &sel, |id| s.iter().any(|x| x.id == id));
+            }
             self.sessions = s;
             // New terminals (from an agent, a trigger, the CLI) land in the home window.
             if self.is_home() {
@@ -879,12 +886,11 @@ impl MainWindow {
         let docked: Vec<&Session> = self.ordered_sessions().into_iter().filter(|s| !crate::ui::popout::is_popped(&s.id, cx)).collect();
         let pick = (!valid)
             .then(|| {
-                docked
-                    .iter()
-                    .find(|s| self.need_for_session(&s.id).is_some_and(|n| n.is_approval()))
-                    .or_else(|| docked.iter().find(|s| self.effective_state(s) == StatusState::NeedsYou))
-                    .or_else(|| docked.first())
-                    .map(|s| s.id.clone())
+                closed_neighbour
+                    .filter(|id| docked.iter().any(|s| &s.id == id))
+                    .or_else(|| docked.iter().find(|s| self.need_for_session(&s.id).is_some_and(|n| n.is_approval())).map(|s| s.id.clone()))
+                    .or_else(|| docked.iter().find(|s| self.effective_state(s) == StatusState::NeedsYou).map(|s| s.id.clone()))
+                    .or_else(|| docked.first().map(|s| s.id.clone()))
             })
             .flatten();
         if let Some(id) = pick {
@@ -968,6 +974,16 @@ impl MainWindow {
         let shown = |s: &&Session| (self.background_open && !self.background_hidden) || self.selected.as_deref() == Some(&s.id);
         out.extend(self.background_sessions().into_iter().filter(shown));
         out
+    }
+
+    /// The docked terminals in sidebar order (plus `keep`, even when popped out), each with
+    /// the group it sits in, for [`neighbour`].
+    fn sidebar_rows(&self, keep: Option<&str>, cx: &App) -> Vec<(String, RowGroup)> {
+        self.ordered_sessions()
+            .into_iter()
+            .filter(|s| keep == Some(s.id.as_str()) || !crate::ui::popout::is_popped(&s.id, cx))
+            .map(|s| (s.id.clone(), if s.background { RowGroup::Background } else { RowGroup::Project(s.project_id.clone()) }))
+            .collect()
     }
 
     /// This window's background terminals (`Session::background`), in dragged order. They sit
@@ -1487,12 +1503,10 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Select the sidebar neighbour of `id` (below, else above) that the main window can show,
-    /// or nothing.
+    /// Select the terminal to show once `id` leaves the main pane ([`neighbour`]), or nothing.
     fn select_neighbour(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| s == id || !crate::ui::popout::is_popped(s, cx)).collect();
-        let next = order.iter().position(|x| x == id).and_then(|i| order.get(i + 1).or(i.checked_sub(1).and_then(|j| order.get(j)))).cloned();
-        match next {
+        let rows = self.sidebar_rows(Some(id), cx);
+        match neighbour(&rows, id, |_| true) {
             Some(n) => self.select(n, window, cx),
             None => {
                 self.selected = None;
@@ -1740,4 +1754,62 @@ fn report_terminal_colors(backend: &Arc<dyn Backend>, def: &midna_proto::themes:
             eprintln!("midna-app: themes.report: {e:?}");
         }
     });
+}
+
+/// Which sidebar group a row sits in: its project (`None` for root terminals), or Background.
+#[derive(Clone, PartialEq, Debug)]
+enum RowGroup {
+    Project(Option<String>),
+    Background,
+}
+
+/// The terminal to show when `id` leaves: the nearest one in its own group, above first, so
+/// closing a terminal keeps you in its project; with none left there, the next row down,
+/// else up. Only rows `alive` says still exist count.
+fn neighbour(rows: &[(String, RowGroup)], id: &str, alive: impl Fn(&str) -> bool) -> Option<String> {
+    let at = rows.iter().position(|(x, _)| x == id)?;
+    let group = &rows[at].1;
+    let ok = |(x, _): &&(String, RowGroup)| x != id && alive(x);
+    let (above, below) = (&rows[..at], &rows[at + 1..]);
+    above.iter().rev().filter(|r| &r.1 == group).find(ok)
+        .or_else(|| below.iter().filter(|r| &r.1 == group).find(ok))
+        .or_else(|| below.iter().find(ok))
+        .or_else(|| above.iter().rev().find(ok))
+        .map(|(x, _)| x.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{neighbour, RowGroup};
+
+    fn rows(spec: &[(&str, Option<&str>)]) -> Vec<(String, RowGroup)> {
+        spec.iter().map(|(id, p)| (id.to_string(), match *p { Some("bg") => RowGroup::Background, p => RowGroup::Project(p.map(str::to_string)) })).collect()
+    }
+
+    #[test]
+    fn closing_stays_in_the_project_going_up_first() {
+        let r = rows(&[("a1", Some("a")), ("a2", Some("a")), ("b1", Some("b")), ("b2", Some("b")), ("b3", Some("b")), ("c1", Some("c"))]);
+        let all = |_: &str| true;
+        assert_eq!(neighbour(&r, "b2", all).as_deref(), Some("b1"));
+        // the top of its project: down, still in the project
+        assert_eq!(neighbour(&r, "b1", all).as_deref(), Some("b2"));
+        // the bottom of its project: up, not into the next project
+        assert_eq!(neighbour(&r, "b3", all).as_deref(), Some("b2"));
+        assert_eq!(neighbour(&r, "a2", all).as_deref(), Some("a1"));
+        // the project's last terminal: the next row, else the one above
+        assert_eq!(neighbour(&r, "c1", all).as_deref(), Some("b3"));
+        assert_eq!(neighbour(&rows(&[("a1", Some("a")), ("b1", Some("b"))]), "a1", all).as_deref(), Some("b1"));
+        assert_eq!(neighbour(&rows(&[("a1", Some("a"))]), "a1", all), None);
+    }
+
+    #[test]
+    fn neighbour_skips_gone_rows_and_other_groups() {
+        let r = rows(&[("r1", None), ("a1", Some("a")), ("a2", Some("a")), ("a3", Some("a")), ("g1", Some("bg"))]);
+        // a2 went too (closed together): a1
+        assert_eq!(neighbour(&r, "a3", |id| id != "a2").as_deref(), Some("a1"));
+        // a background terminal of the same project isn't "in" the project
+        let r = rows(&[("a1", Some("a")), ("b1", Some("b")), ("g1", Some("bg"))]);
+        assert_eq!(neighbour(&r, "g1", |_| true).as_deref(), Some("b1"));
+        assert_eq!(neighbour(&r, "missing", |_| true), None);
+    }
 }
