@@ -148,16 +148,10 @@ fn palette(mode: ThemeMode) -> Pal {
     }
 }
 
-/// What the opening and setup's other steps wear: Twilight Tiles' own palettes for the stock
-/// Twilight and Daylight themes (exactly as before themes), else the theme (`theme_palette`).
+/// What the opening and setup's other steps wear: Twilight Tiles' own palette for the stock
+/// Twilight theme (exactly as before themes), else the theme (`theme_palette`), Daylight included.
 pub(crate) fn world_palette(d: &ThemeDef) -> Pal {
-    if d.is_builtin("twilight") {
-        palette(ThemeMode::Dark)
-    } else if d.is_builtin("daylight") {
-        palette(ThemeMode::Light)
-    } else {
-        theme_palette(d)
-    }
+    if d.is_builtin("twilight") { palette(ThemeMode::Dark) } else { theme_palette(d) }
 }
 
 /// The setup screen wearing a theme (the theme step, ThemeStep-B): tiles in the theme's panel
