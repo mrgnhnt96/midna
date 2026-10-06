@@ -1,8 +1,10 @@
 //! In-app banner card (A on the toast + history canvas): while midna is in front, a notification
 //! that would be a macOS banner about a terminal you aren't looking at shows here instead, top
-//! right, with Go to terminal (⌘J), and Approve / Deny for an approval. It stays 8 s, longer
-//! while the pointer is on it; a long question is cut at a few lines with "Show all". It goes
-//! when its needs-you item is answered or you open its terminal. Not in front: macOS banners
+//! right, with Go to terminal (⌘J), and Approve / Deny for an approval. It stays 8 s, fading out
+//! as the link preview card does (holding near full strength, then falling away), and stays
+//! while the pointer is on it, easing back in if it had started to fade. A long question is cut
+//! at a few lines with "Show all". It goes when its needs-you item is answered or you open its
+//! terminal. Not in front: macOS banners
 //! as before (`app.rs` `on_notification`).
 use crate::app::MainWindow;
 use crate::model::*;
@@ -13,6 +15,10 @@ use midna_proto::notify::Posted;
 use std::time::{Duration, Instant};
 
 const STAY: Duration = Duration::from_secs(8);
+/// How long the card takes to come back to full when the pointer reaches it mid-fade.
+const RECOVER: Duration = Duration::from_millis(160);
+/// How far the card sinks as it fades.
+const SINK: f32 = 6.;
 /// Lines of a question shown before "Show all".
 const CLAMP_LINES: usize = 6;
 
@@ -32,9 +38,19 @@ pub struct Cards {
     pub list: Vec<Card>,
     expanded: bool,
     hovered: bool,
-    /// Bumped to restart the countdown bar's animation.
+    /// Bumped to restart the fade.
     generation: u64,
+    /// The pointer reached the card mid-fade: it eases back from this opacity (named by the
+    /// generation it cut short).
+    recover: Option<(u64, f32)>,
     ticking: bool,
+}
+
+/// The card's opacity `x` of the way through its stay: the link preview's fade
+/// (`cubic-bezier(.7, 0, .84, 0)`), still 97% at the halfway mark and mostly gone in the last
+/// quarter.
+fn fade(x: f32) -> f32 {
+    1. - super::setup_screen::bezier(0.7, 0., 0.84, 0., x.clamp(0., 1.))
 }
 
 /// Show `p` as a card (newest on top).
@@ -166,6 +182,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     let go_label = if c.posted.category == "approval" && need.is_none() { "Answer in the terminal" } else { "Go to terminal" };
     let generation = m.cards.generation;
     let hovered = m.cards.hovered;
+    let recover = m.cards.recover;
 
     let text = detail.map(|d| {
         let shown = if long && !expanded { clamp(&d) } else { d };
@@ -223,106 +240,117 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             })));
     }
 
-    let bar = div().h(px(3.)).bg(t.need).w_full();
-    let bar = if hovered {
-        bar.into_any_element()
-    } else {
-        bar.with_animation(SharedString::from(format!("toast-bar-{generation}")), Animation::new(STAY), |el, d| el.w(relative(1. - d))).into_any_element()
-    };
-
-    Some(
-        div()
-            .id("toast-card")
-            .occlude()
-            .w(px(420.))
-            .max_h(px(600.))
-            .flex()
-            .flex_col()
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.line)
-            .rounded(px(12.))
-            .shadow_lg()
-            .overflow_hidden()
-            .on_hover(cx.listener(|m, on: &bool, _, cx| {
-                m.cards.hovered = *on;
-                if !*on {
-                    // Leaving the card starts its time over.
-                    if let Some(c) = m.cards.list.first_mut() {
-                        c.until = Instant::now() + STAY;
-                    }
-                    m.cards.generation += 1;
+    let card = div()
+        .id("toast-card")
+        .relative()
+        .occlude()
+        .w(px(420.))
+        .max_h(px(600.))
+        .flex()
+        .flex_col()
+        .bg(t.raised)
+        .border_1()
+        .border_color(t.line)
+        .rounded(px(12.))
+        .shadow_lg()
+        .overflow_hidden()
+        .on_hover(cx.listener(|m, on: &bool, _, cx| {
+            m.cards.hovered = *on;
+            m.cards.recover = None;
+            if *on {
+                // Ease back in from however far it had faded.
+                if let Some(c) = m.cards.list.first() {
+                    let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32();
+                    let from = fade(1. - left / STAY.as_secs_f32());
+                    m.cards.recover = (from < 0.99).then_some((m.cards.generation, from));
                 }
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(8.))
-                    .pl(px(14.))
-                    .pr(px(8.))
-                    .pt(px(10.))
-                    .child(div().size(px(8.)).rounded_full().bg(color))
-                    .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(color).child(kind_label.to_uppercase()))
-                    .children(project.map(|p| div().text_size(px(12.)).text_color(t.dim).child(format!("{p} ›"))))
-                    .child(div().font_weight(FontWeight::BOLD).truncate().child(name))
-                    .child(div().flex_1())
-                    .child(div().text_size(px(11.5)).text_color(t.dim).child(age(c.at.elapsed())))
-                    .child(
-                        div()
-                            .id("toast-dismiss")
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(26.))
-                            .rounded(px(6.))
-                            .text_color(t.dim)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.panel))
-                            .child("✕")
-                            .on_click(cx.listener(|m, _, _, cx| dismiss_top(m, cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .id("toast-body")
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .min_h_0()
-                    .flex_shrink(1.)
-                    .overflow_y_scroll()
-                    .px(px(14.))
-                    .pt(px(4.))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(headline))
-                    .children(command.map(|cmd| {
-                        div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(cmd)
-                    }))
-                    .children(text)
-                    .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q))),
-            )
-            .child(buttons)
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .justify_between()
-                    .px(px(14.))
-                    .pb(px(8.))
-                    .text_size(px(11.5))
-                    .text_color(t.dim)
-                    .child(match more {
-                        0 => String::new(),
-                        1 => "+1 more".to_string(),
-                        n => format!("+{n} more"),
-                    })
-                    .child("Stays while you hover"),
-            )
-            .child(div().flex_none().h(px(3.)).bg(t.line).child(bar))
-            .into_any_element(),
-    )
+            } else {
+                // Leaving the card starts its time over.
+                if let Some(c) = m.cards.list.first_mut() {
+                    c.until = Instant::now() + STAY;
+                }
+                m.cards.generation += 1;
+            }
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(8.))
+                .pl(px(14.))
+                .pr(px(8.))
+                .pt(px(10.))
+                .child(div().size(px(8.)).rounded_full().bg(color))
+                .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(color).child(kind_label.to_uppercase()))
+                .children(project.map(|p| div().text_size(px(12.)).text_color(t.dim).child(format!("{p} ›"))))
+                .child(div().font_weight(FontWeight::BOLD).truncate().child(name))
+                .child(div().flex_1())
+                .child(div().text_size(px(11.5)).text_color(t.dim).child(age(c.at.elapsed())))
+                .child(
+                    div()
+                        .id("toast-dismiss")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(26.))
+                        .rounded(px(6.))
+                        .text_color(t.dim)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.panel))
+                        .child("✕")
+                        .on_click(cx.listener(|m, _, _, cx| dismiss_top(m, cx))),
+                ),
+        )
+        .child(
+            div()
+                .id("toast-body")
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .min_h_0()
+                .flex_shrink(1.)
+                .overflow_y_scroll()
+                .px(px(14.))
+                .pt(px(4.))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(headline))
+                .children(command.map(|cmd| {
+                    div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(cmd)
+                }))
+                .children(text)
+                .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q))),
+        )
+        .child(buttons)
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_between()
+                .px(px(14.))
+                .pb(px(8.))
+                .text_size(px(11.5))
+                .text_color(t.dim)
+                .child(match more {
+                    0 => String::new(),
+                    1 => "+1 more".to_string(),
+                    n => format!("+{n} more"),
+                })
+                .child("Stays while you hover"),
+        );
+    // Fading out over its stay, or easing back in from wherever the pointer caught it.
+    let at = |el: Stateful<Div>, o: f32| el.opacity(o).top(px(SINK * (1. - o)));
+    let reduce = super::queue::reduce_motion();
+    Some(match recover {
+        _ if reduce => card.into_any_element(),
+        Some((seq, from)) if hovered => {
+            let ease = |x: f32| 1. - (1. - x).powi(3);
+            card.with_animation(SharedString::from(format!("toast-back-{seq}")), Animation::new(RECOVER).with_easing(ease), move |el, d| at(el, from + (1. - from) * d))
+                .into_any_element()
+        }
+        _ if hovered => card.into_any_element(),
+        _ => card.with_animation(SharedString::from(format!("toast-fade-{generation}")), Animation::new(STAY), move |el, d| at(el, fade(d))).into_any_element(),
+    })
 }
 
 /// A question's options, numbered as in the terminal (where you pick one).
