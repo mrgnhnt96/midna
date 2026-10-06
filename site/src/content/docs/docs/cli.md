@@ -23,7 +23,9 @@ Every connection to `midnad` gets a role. The Midna app is the **human**. Everyt
 # Look around
 midna info                     # version, role, current terminal
 midna list                     # terminals and their status
+midna get <id>                 # one terminal: status, reason, cwd, agent info
 midna needs                    # what's waiting on the human
+midna needs wait <n_id>        # block until the human answers one item
 midna explain <id|topic>       # why something is the way it is
 midna events --follow          # stream everything that happens
 
@@ -35,6 +37,7 @@ midna key <id> ctrl-c
 midna read <id> --lines 100
 midna restart <id> --idle      # restart once the agent is idle
 midna close <id>
+midna close <id> --force --no-wait   # don't wait for approval: prints the needs-you id, exits 4
 midna queue add --after <id> "now run the integration tests"
 
 # Getting the human's attention

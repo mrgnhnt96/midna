@@ -18,3 +18,7 @@ The first public release.
 - **Dictation with Kass.** midna opens a real text field as soon as Kass starts listening, so dictation can read and edit what you say in a terminal.
 - **Signed updates.** midna checks for updates every few hours, verifies them, and installs them on restart without closing your terminals. Turn on the beta channel in **Settings › Updates** to get new features early.
 - **Your own agent arguments.** `midna open --agent claude --resume <id> -- --append-system-prompt "…" --settings board.json` (and `session.open {agent_args, resume}`) start an agent with its own flags and conversation. A `--settings` or `--append-system-prompt` is merged with midna's own, so midna's hooks keep working.
+- **Unattended closes.** Turn on **Settings › Agents may force-close terminals** to let an agent close working terminals and use `close --force` without asking you. Off by default.
+- **Approvals clean up after themselves.** An approval about a terminal that has since closed, or from an agent that went away, leaves Needs you on its own.
+- **Folder trust in Needs you.** When a new Claude asks "Do you trust the files in this folder?", its terminal shows as needs you and you can answer from Needs you.
+- **CLI.** `midna get <id>` shows one terminal; `--no-wait` returns a needs-you id instead of waiting for your answer (`midna needs get|wait <id>` follows it); agents may remove a project midna created for their `open --cwd` once its terminals are closed.

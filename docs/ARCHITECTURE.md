@@ -74,24 +74,26 @@ spikes/               proven prototypes; reuse code from here freely
 **Caller identity.**
 - **GUI = human.** The daemon reads the peer pid (`LOCAL_PEERPID`) and resolves its executable with `proc_pidpath`. If that is the midna-app binary (`MIDNA_APP_PATH` env override for dev), the connection's role is `human`.
 - **CLI inside a midna terminal = agent.** Calls carrying `MIDNA_SESSION` (sent as the `caller.session` field in params, see below) are `agent` with that session id.
+- **`caller.no_wait: true`** (CLI `--no-wait`, MCP `no_wait: true`) never changes the role: a mutating call runs on its own thread, and if it raises an approval the caller gets error `6` with `data.needs_you_id` at once while the call finishes when the human answers (the approval then stays open for at least a day).
 - **Anything else** is `agent` with no session.
 - **Document the limitation honestly.** Same-user processes can't be fully authenticated, so human-only actions requested over the CLI always become a needs-you confirmation in the GUI and never execute directly.
 - **Hardening (see `docs/SECURITY.md`).** Signed builds check the GUI's code signature (Team ID + identifier) instead of its name; `MIDNA_APP_PATH` is debug-only; a GUI binary running inside a midna terminal is an agent; `caller.session` must match the terminal the calling process runs in; the app's `MIDNA_DEBUG_*` drivers compile out of release builds.
 
-**Errors.** JSON-RPC error codes: `-32601` unknown method, `-32602` bad params, `1` refused by policy, `2` human-only, `3` not found, `4` conflict.
+**Errors.** JSON-RPC error codes: `-32601` unknown method, `-32602` bad params, `1` refused by policy, `2` human-only, `3` not found, `4` conflict, `6` pending (a `caller.no_wait` call is waiting on the human: `data.needs_you_id`; the call carries on when they answer and `needs_you.get` reports how it ended).
 
 ## Domain model (midna-proto)
 
 All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for projects, `r_…` for rules, `t_…` for triggers, `n_…` for needs-you items, `d_…` for deliveries. Timestamps are RFC 3339 UTC strings. The domain types use `#[serde(rename_all = "snake_case")]`.
 
-- **Project** `{ id, name, path, icon?: string, order: u32, commands: [ProjectCommand{name, run, pinned}] }`
+- **Project** `{ id, name, path, icon?: string, order: u32, commands: [ProjectCommand{name, run, pinned}], last_opened_at?, auto_created: bool }`. `auto_created`: midna added it for an agent's `session.open` with a `cwd` no project covered; agents may `project.remove` such a project once none of its terminals runs (the human adding or editing it clears the flag).
 - **Session** (a terminal)
   - Fields: `{ id, project_id, name, kind: shell|agent|monitor, agent?: claude|codex, cwd, command: [string], pid?, title, status: Status, created_at, last_activity_at, keep_on_top: bool, git?: GitInfo }`
   - **Status**: `{ state: idle|working|needs_you|done|failed|exited, reason?: string, exit_code?: i32, since }`
   - **GitInfo**: `{ branch, ahead, behind, added, removed, files, pr?: {number, url, checks: none|pending|passing|failing, failing_count} }`
 - **NeedsYou** item: `{ id, session_id?, project_id?, kind, title, detail, screen_excerpt?: [string], asked_by: Actor, created_at, bulk_safe: bool, approval?: ApprovalRequest }`
   - `kind` is one of: `approval`, `permission_prompt`, `blocked`, `note`, `failed`, `trigger_waiting`, `rule_removal`, `secret_needed`.
-  - **ApprovalRequest** `{ action: PolicyAction, matched_rule?: rule_id }`
+  - **ApprovalRequest** `{ action: PolicyAction, matched_rule?: rule_id, target_session?: session_id }`. An open approval is **withdrawn** (resolution `{kind: withdrawn, reason}`; a caller blocked on it gets deny with source `withdrawn`) when the terminal it is about (`target_session`) or the asker's terminal closes, or the asker's connection drops.
+  - An agent's folder-trust startup dialog ("Do you trust the files in this folder?") is a `permission_prompt` titled `Trust this folder? <cwd>`, raised from the screen (no hook fires while it is up); approve picks Yes, deny picks No.
   - **Resolutions**:
     - `approve{ scope: once|minutes(u32)|session|always }`
     - `deny`
@@ -132,6 +134,7 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
     - `webhooks.relay_url`
     - `agents.may_move_windows` (human_only)
     - `agents.may_close_idle` (human_only)
+    - `agents.may_force_close` (human_only, default false): agents close any terminal (working ones, `close --force`, someone else's) with no default ask; rules on `close …` still apply
     - `approve.from_cli` (human_only)
     - `keys.*` keybindings: `keys.command_bar` = cmd-k, `keys.next_needs_you` = cmd-j, `keys.new_terminal` = cmd-t, `keys.new_agent` = cmd-shift-t, `keys.new_terminal_root` = cmd-alt-t, `keys.new_agent_root` = cmd-alt-shift-t, `keys.approve` = cmd-enter, `keys.deny` = cmd-backspace, `keys.settings` = cmd-comma, `keys.rules`, `keys.triggers`, `keys.insights`. ⌘1–9 are reserved for projects.
 - **Event** `{ seq: u64, at, kind: string, actor: Actor, project_id?, session_id?, data: serde_json::Value }`
@@ -148,11 +151,11 @@ Each method has a name, a description written for agents, params/result types, `
 |---|---|
 | `rpc` | `rpc.discover` |
 | `daemon` | `daemon.info` (version, pid, uptime, home, socket), `daemon.upgrade{binary_path}` (human_only), `daemon.restart`, `daemon.stop` (human_only), `daemon.reset{keep_rules?}` (human_only) |
-| `project` | `project.list`, `project.add{path,name?}`, `project.update{id,name?,icon?,commands?}`, `project.remove{id}` (human_only) |
+| `project` | `project.list`, `project.add{path,name?}`, `project.update{id,name?,icon?,commands?}`, `project.remove{id}` (human_only, except an `auto_created` project with no running terminal) |
 | `session` | `session.list{project_id?}`, `session.get{id}`, `session.open{project_id, kind, agent?, name?, cwd?, command?, prompt?, agent_args?, resume?}`, `session.close{id, force?}`, `session.rename{id,name}`, `session.input{id, text, enter?: bool}`, `session.read{id, lines?: u32, screen?: bool}` (plain text), `session.resize`, `session.restart{id}`, `session.focus{id}` (emits `window.command`), `session.prompts{id}`, `session.jump_prompt{id, n | to}` (prompt fast travel) |
 | `stream` | `stream.attach` (see wire protocol) |
 | `events` | `events.list{since_seq?, limit?, filter?}`, `events.subscribe{since_seq?}` (connection then receives `event` notifications) |
-| `needs_you` | `needs_you.list`, `needs_you.raise{kind:blocked|note, message}` (agents: "attention"), `needs_you.resolve{id, resolution}` (human for approvals; agents get `approve` only when `approve.from_cli` allows it, and only for their own session) |
+| `needs_you` | `needs_you.list`, `needs_you.get{id, wait_secs?}` (an open item, or how it ended: resolved/withdrawn/timeout, plus a no-wait call's result or error), `needs_you.raise{kind:blocked|note, message}` (agents: "attention"), `needs_you.resolve{id, resolution}` (human for approvals; agents get `approve` only when `approve.from_cli` allows it, and only for their own session) |
 | `policy` | `policy.check{action}` (no side effects), `policy.request{action}` (check + raise approval if ask + block up to `timeout_secs` waiting for the decision; used by hooks) |
 | `rule` | `rule.list`, `rule.add{effect, matcher, scope, expires_in_secs?}`, `rule.request_removal{id, reason}`, `rule.remove{id}` (human_only), `rule.restore{rule}` (human_only) |
 | `trigger` | `trigger.list`, `trigger.add` (agents create drafts), `trigger.update`, `trigger.set_enabled` (human_only to enable), `trigger.set_secret{id, secret}` (human_only), `trigger.remove`, `trigger.deliveries{trigger_id?, limit?}`, `trigger.replay{delivery_id}`, `trigger.test{trigger_id, payload}` |

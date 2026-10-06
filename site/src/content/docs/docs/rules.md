@@ -31,7 +31,7 @@ Claude Code checks every tool call against your rules through the hooks midna st
 
 1. The narrowest scope with a matching rule wins: terminal, then project, then global.
 2. Within a scope, **deny** beats **ask**, which beats **allow**. An allow you created by approving **Always** beats an ask in the same scope, so you aren't asked again.
-3. If nothing matches, `policy.default` decides. Its default, `auto`, asks before an agent's destructive `midna` commands (`close --force`, `restart`, `project remove`, `rules remove`, `settings reset`), allows everything else, and leaves Claude Code tool calls to Claude's own permission settings.
+3. If nothing matches, `policy.default` decides. Its default, `auto`, asks before an agent's destructive `midna` commands (`close --force`, `restart`, `project remove`, `rules remove`, `settings reset`), allows everything else, and leaves Claude Code tool calls to Claude's own permission settings. Turn on **Agents may force-close terminals** (`agents.may_force_close`) to let an unattended agent, such as a task board, close any terminal without asking; a rule on `close …` still applies.
 
 ## Testing an action
 
