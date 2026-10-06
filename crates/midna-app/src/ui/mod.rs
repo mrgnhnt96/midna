@@ -288,6 +288,7 @@ impl Render for MainWindow {
                     deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|m, _, _, cx| {
+                            links::unhover(m, cx);
                             m.menu = Menu::None;
                             cx.notify();
                         }),

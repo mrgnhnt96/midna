@@ -1,7 +1,9 @@
 //! Session links (Links-A): the header's links button and its popover (⌘L). The daemon
 //! collects the links, PRs, artifacts and files that come up in an agent terminal's
 //! conversation (`links.list`); here they are filtered, opened, pinned, or found in the
-//! terminal. ↩ opens, ⌥↩ finds where it came up, ⇧↩ pins, ⇥ / ⇧⇥ switch the kind tab.
+//! terminal. ↩ opens, ⌥↩ finds where it came up, ⇧↩ pins, ⇥ / ⇧⇥ switch the kind tab. Resting on a
+//! row previews it in the terminal's link-preview card (bottom right); a row's × removes it, ⌘Z
+//! puts the last one back.
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -37,6 +39,10 @@ pub struct LinksPanel {
     seen_at: HashMap<String, String>,
     /// `seen_at` from before this opening, for the NEW badges while the popover is open.
     badge_since: String,
+    /// The row under the pointer (a link id), previewed in the terminal.
+    hover: Option<String>,
+    /// Removed links, newest last, with their terminal: ⌘Z restores them.
+    undo: Vec<(String, Link)>,
 }
 
 impl LinksPanel {
@@ -53,6 +59,8 @@ impl LinksPanel {
             by_session: HashMap::new(),
             seen_at: HashMap::new(),
             badge_since: String::new(),
+            hover: None,
+            undo: Vec::new(),
         }
     }
 }
@@ -111,6 +119,7 @@ pub fn toggle(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 }
 
 fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    unhover(m, cx);
     m.menu = Menu::None;
     m.focus_terminal(window, cx);
     cx.notify();
@@ -162,6 +171,11 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
                 open(m, &l, window, cx);
             }
         }
+        "z" if md.platform && !md.shift => {
+            if !undo_remove(m, cx) {
+                return;
+            }
+        }
         "tab" => set_tab(m, if md.shift { m.links.tab + TABS.len() - 1 } else { m.links.tab + 1 }, cx),
         "escape" => close(m, window, cx),
         // Everything else is the field's: editing keys, and typing through the IME.
@@ -200,6 +214,46 @@ fn pin(m: &mut MainWindow, l: &Link, cx: &mut Context<MainWindow>) {
     }
     m.rpc("links.pin", json!({ "session": sid, "link": l.id, "pinned": pinned }), cx, |_, _, _, _| {});
     cx.notify();
+}
+
+/// Remove a link; the daemon keeps it out even if the conversation mentions it again.
+fn remove(m: &mut MainWindow, l: &Link, cx: &mut Context<MainWindow>) {
+    let Some(sid) = m.selected.clone() else { return };
+    if m.links.hover.as_deref() == Some(l.id.as_str()) {
+        unhover(m, cx);
+    }
+    // Optimistic; `links.changed` refetches.
+    if let Some(v) = m.links.by_session.get_mut(&sid) {
+        v.retain(|x| x.id != l.id);
+    }
+    m.links.undo.push((sid.clone(), l.clone()));
+    m.rpc("links.remove", json!({ "session": sid, "link": l.id }), cx, |_, _, _, _| {});
+    cx.notify();
+}
+
+/// ⌘Z: put back the selected terminal's last removed link. false when there's none.
+fn undo_remove(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> bool {
+    let Some(sid) = m.selected.clone() else { return false };
+    let Some(i) = m.links.undo.iter().rposition(|(s, _)| *s == sid) else { return false };
+    let (_, l) = m.links.undo.remove(i);
+    // Optimistic; `links.changed` brings the daemon's order.
+    m.links.by_session.entry(sid.clone()).or_default().push(l.clone());
+    m.rpc("links.remove", json!({ "session": sid, "link": l.id, "restore": true }), cx, |_, _, _, _| {});
+    true
+}
+
+/// Preview `l` in the selected terminal's link-preview card (`None`: stop).
+fn preview(m: &MainWindow, l: Option<&Link>, cx: &mut Context<MainWindow>) {
+    let Some(view) = m.terminal.clone().filter(|v| Some(&v.read(cx).session_id) == m.selected.as_ref()) else { return };
+    let target = l.map(|l| (l.target.clone(), l.kind != LinkKind::File));
+    view.update(cx, |t, cx| t.preview_external(target, cx));
+}
+
+/// The pointer left the popover's rows (or it closed): let the preview card go.
+pub fn unhover(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if m.links.hover.take().is_some() {
+        preview(m, None, cx);
+    }
 }
 
 /// Find where the link came up in the terminal (`session.find`, newest first).
@@ -360,6 +414,7 @@ pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl 
         .child(key("↩", "open"))
         .child(key("⌥↩", "find in terminal"))
         .child(key("⇧↩", "pin"))
+        .when(m.selected.as_ref().is_some_and(|s| m.links.undo.iter().any(|(u, _)| u == s)), |d| d.child(key("⌘Z", "undo remove")))
         .child(div().flex_1())
         .child(key("⇥", "kind"));
 
@@ -409,7 +464,7 @@ pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl 
 #[allow(clippy::too_many_arguments)]
 fn row(m: &MainWindow, t: &Theme, l: &Link, i: usize, selected: bool, agent: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let fresh = !m.links.badge_since.is_empty() && l.first_at > m.links.badge_since;
-    let (open_l, pin_l) = (l.clone(), l.clone());
+    let (open_l, pin_l, hover_l, remove_l) = (l.clone(), l.clone(), l.clone(), l.clone());
     div()
         .id(SharedString::from(format!("link-{}", l.id)))
         .flex()
@@ -426,6 +481,14 @@ fn row(m: &MainWindow, t: &Theme, l: &Link, i: usize, selected: bool, agent: &st
             if m.links.sel != i {
                 m.links.sel = i;
                 cx.notify();
+            }
+        }))
+        .on_hover(cx.listener(move |m, hovered: &bool, _, cx| {
+            if *hovered {
+                m.links.hover = Some(hover_l.id.clone());
+                preview(m, Some(&hover_l), cx);
+            } else if m.links.hover.as_deref() == Some(hover_l.id.as_str()) {
+                unhover(m, cx);
             }
         }))
         .on_click(cx.listener(move |m, ev: &ClickEvent, window, cx| {
@@ -457,21 +520,33 @@ fn row(m: &MainWindow, t: &Theme, l: &Link, i: usize, selected: bool, agent: &st
         )
         .child(
             div()
-                .id(SharedString::from(format!("link-pin-{}", l.id)))
                 .flex()
+                .flex_col()
                 .flex_none()
-                .items_center()
-                .justify_center()
-                .size(px(26.))
-                .rounded(px(6.))
-                .hover(|st| st.bg(t.panel))
-                .tooltip(super::header::tip_fixed(if l.pinned { "Unpin" } else { "Pin" }, "⇧↩"))
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    cx.stop_propagation();
-                    pin(m, &pin_l, cx);
-                }))
-                .child(if l.pinned { Icon::PushPinFill.el(14., t.accent) } else { Icon::PushPin.el(14., t.dim) }),
+                .child(
+                    small_button(t, format!("link-remove-{}", l.id))
+                        .tooltip(super::header::tip("Remove"))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            cx.stop_propagation();
+                            remove(m, &remove_l, cx);
+                        }))
+                        .child(Icon::Cross.el(11., t.dim)),
+                )
+                .child(
+                    small_button(t, format!("link-pin-{}", l.id))
+                        .tooltip(super::header::tip_fixed(if l.pinned { "Unpin" } else { "Pin" }, "⇧↩"))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            cx.stop_propagation();
+                            pin(m, &pin_l, cx);
+                        }))
+                        .child(if l.pinned { Icon::PushPinFill.el(13., t.accent) } else { Icon::PushPin.el(13., t.dim) }),
+                ),
         )
+}
+
+/// The row's stacked remove and pin buttons.
+fn small_button(t: &Theme, id: String) -> Stateful<Div> {
+    div().id(SharedString::from(id)).flex().items_center().justify_center().size(px(22.)).rounded(px(6.)).hover(|st| st.bg(t.panel))
 }
 
 #[cfg(test)]

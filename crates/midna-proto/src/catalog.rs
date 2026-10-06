@@ -203,6 +203,10 @@ fn build() -> Vec<MethodSpec> {
             "Pin (or with `pinned: false` unpin) a session link by id or exact URL/path, so it stays at the top of the \
              terminal's links list in the header. Pin what the human will want to come back to: the PR, the design, the doc \
              you were sent. Defaults to your own terminal."),
+        m::<LinksRemoveParams, Link>("links.remove").mutating().d(
+            "Remove a link from a terminal's links (by id or exact URL/path) and keep it out: the transcript mentioning \
+             it again doesn't bring it back, only links.add does. `restore: true` puts a removed link back as it was (undo). Returns the link. Defaults to \
+             your own terminal."),
         m::<LinksAddParams, Link>("links.add").mutating().d(
             "Add a link (http(s) URL or absolute file path) to a terminal's links on purpose, pinned by default, with an \
              optional title and a note on why it matters. Use it for something important the transcript would not show as \

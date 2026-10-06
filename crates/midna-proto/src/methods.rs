@@ -127,6 +127,18 @@ fn yes() -> bool {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksRemoveParams {
+    /// The terminal. Defaults to the caller's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// A link id (`l_…`) or its exact target (URL or path).
+    pub link: String,
+    /// Put a removed link back as it was (undo).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LinksAddParams {
     /// The terminal. Defaults to the caller's own terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]

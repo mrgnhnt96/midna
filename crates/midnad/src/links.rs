@@ -59,6 +59,10 @@ pub struct Store {
     pub tools: HashMap<String, (String, Option<String>)>,
     #[serde(default)]
     pub links: Vec<Link>,
+    /// Links removed with links.remove, by target: the transcript mentioning them again doesn't
+    /// bring them back; links.remove with `restore` puts one back as it was.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub removed: HashMap<String, Link>,
     /// Fresh "a hook refused the prompt" warnings the last read found (see `local.rs`).
     #[serde(skip)]
     pub blocked: Vec<String>,
@@ -301,7 +305,8 @@ pub fn read_into(s: &mut Store, path: &str, cwd: &str, turn_of: &mut dyn FnMut(i
                 if let Some(b) = crate::local::blocked_notice(&v) {
                     s.blocked.push(b);
                 }
-                let found = scan_entry(&v, cwd, &mut s.tools);
+                let mut found = scan_entry(&v, cwd, &mut s.tools);
+                found.retain(|f| !s.removed.contains_key(&f.target));
                 if found.is_empty() {
                     continue;
                 }
@@ -337,7 +342,39 @@ pub fn pin(d: &Daemon, sid: &str, link: &str, pinned: bool, by: Actor) -> Result
     Ok(out)
 }
 
-/// Add (or update) a link on purpose.
+/// Remove a link by id or exact target, and keep it out of later reads.
+pub fn remove(d: &Daemon, sid: &str, link: &str) -> Result<Link, RpcError> {
+    let out = d.links.with(&d.cfg.home, sid, |s| match s.links.iter().position(|l| l.id == link || l.target == link) {
+        Some(i) => {
+            let l = s.links.remove(i);
+            s.removed.insert(l.target.clone(), l.clone());
+            (Ok(l), true)
+        }
+        None => (Err(RpcError::not_found(format!("no link {link} in terminal {sid}; see links.list"))), false),
+    })?;
+    changed(d, sid, 0);
+    Ok(out)
+}
+
+/// Put a removed link back as it was (by id or exact target).
+pub fn restore(d: &Daemon, sid: &str, link: &str) -> Result<Link, RpcError> {
+    let out = d.links.with(&d.cfg.home, sid, |s| match unremove(s, link) {
+        Some(l) => (Ok(l), true),
+        None => (Err(RpcError::not_found(format!("no removed link {link} in terminal {sid}"))), false),
+    })?;
+    changed(d, sid, 0);
+    Ok(out)
+}
+
+/// Move a removed link (by id or exact target) back into `s.links`.
+fn unremove(s: &mut Store, link: &str) -> Option<Link> {
+    let key = s.removed.iter().find(|(t, l)| l.id == link || *t == link).map(|(t, _)| t.clone())?;
+    let l = s.removed.remove(&key)?;
+    s.links.push(l.clone());
+    Some(l)
+}
+
+/// Add (or update) a link on purpose; this brings back a removed one.
 pub fn add(d: &Daemon, sid: &str, p: &LinksAddParams, by: Actor) -> Result<Link, RpcError> {
     let target = p.target.trim();
     let (kind, target, derived) = if target.starts_with("http://") || target.starts_with("https://") {
@@ -351,6 +388,7 @@ pub fn add(d: &Daemon, sid: &str, p: &LinksAddParams, by: Actor) -> Result<Link,
     let now = time::now_rfc3339();
     let turn = turn_at(&prompt_times(d, sid), time::now_unix());
     let out = d.links.with(&d.cfg.home, sid, |s| {
+        s.removed.remove(&target);
         if !s.links.iter().any(|l| l.target == target) {
             let f = Found { kind, target: target.clone(), title: derived, named: false, source: LinkSource::Added, via: None };
             record(&mut s.links, vec![f], &now, turn);
@@ -723,6 +761,29 @@ mod tests {
         std::fs::write(&other, entry("https://a.com/1")).unwrap();
         assert_eq!(read_into(&mut s, other.to_str().unwrap(), "/", &mut |_| None), 0);
         assert_eq!(s.links[0].mentions, 2, "a new conversation keeps the old links");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removed_links_stay_out() {
+        let dir = std::env::temp_dir().join(format!("midna-links-removed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let entry = |u: &str| format!("{}\n", json!({"type":"user","message":{"content":format!("look {u}")}}));
+        std::fs::write(&path, entry("https://a.com/1")).unwrap();
+        let gone = Found { kind: LinkKind::Web, target: "https://a.com/1".into(), title: "a".into(), named: false, source: LinkSource::User, via: None };
+        let mut s = Store::default();
+        record(&mut s.links, vec![gone], "2026-01-01T00:00:00Z", None);
+        s.removed.insert("https://a.com/1".into(), s.links.remove(0));
+        let p = path.to_str().unwrap();
+        assert_eq!(read_into(&mut s, p, "/", &mut |_| None), 0);
+        std::fs::write(&path, format!("{}{}", entry("https://a.com/1"), entry("https://b.com/2"))).unwrap();
+        assert_eq!(read_into(&mut s, p, "/", &mut |_| None), 1);
+        assert_eq!(s.links.iter().map(|l| l.target.as_str()).collect::<Vec<_>>(), vec!["https://b.com/2"]);
+        let back = unremove(&mut s, &link_id("https://a.com/1")).expect("restores by id");
+        assert_eq!((back.title.as_str(), back.first_at.as_str()), ("a", "2026-01-01T00:00:00Z"), "as it was");
+        assert!(s.removed.is_empty() && s.links.len() == 2);
+        assert!(unremove(&mut s, "https://a.com/1").is_none(), "only once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

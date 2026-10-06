@@ -1000,6 +1000,12 @@ fn links(a: &Args, out: OutFn) -> Res {
             let v = call("links.pin", json!({ "session": session, "link": link, "pinned": verb == "pin" }))?;
             out(&v, &|v| println!("{verb}ned {}  {}", s_(v, "id"), s_(v, "title")));
         }
+        "remove" => {
+            a.check(&["session"])?;
+            let link = a.need(2, "link id, URL or path")?;
+            let v = call("links.remove", json!({ "session": session, "link": link }))?;
+            out(&v, &|v| println!("removed {}  {}", s_(v, "id"), s_(v, "title")));
+        }
         "add" => {
             a.check(&["session", "title", "why", "no-pin"])?;
             let target = a.need(2, "URL or absolute path")?;

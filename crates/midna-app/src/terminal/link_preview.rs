@@ -11,6 +11,9 @@
 //! The footer opens a file in the IDE (`ide.rs`: real app icons, remembered per project; with
 //! nothing remembered yet the first click lists the editors), and clicking the path in the
 //! header reveals, opens or copies it (`terminal.preview_path_click`).
+//!
+//! The header's links popover (`ui/links.rs`) drives the same card: resting on one of its rows
+//! previews that link here, and the grid's own hover leaves the card alone meanwhile.
 use super::{LINE_H, PAD_Y, TerminalView};
 use crate::app::MainWindow;
 use crate::icons::Icon;
@@ -169,6 +172,8 @@ struct Card {
 pub(super) struct Preview {
     /// The link under the pointer.
     hot: Option<Link>,
+    /// `hot` is a links-popover row, not the grid: the grid's hover doesn't move the card.
+    external: bool,
     /// Waiting out `SHOW_DELAY` for `hot`.
     pending: Option<Task<()>>,
     card: Option<Card>,
@@ -185,8 +190,20 @@ pub(super) struct Preview {
 }
 
 impl TerminalView {
+    /// The pointer is on a links-popover row for `target` (a URL when `url`), or (`None`) left it.
+    pub fn preview_external(&mut self, target: Option<(String, bool)>, cx: &mut Context<Self>) {
+        self.preview.external = target.is_some();
+        self.preview_set(target.map(|(target, url)| Link { url, target, line: None }), cx);
+    }
+
     /// The pointer is on `link` (`None`: on no link, or off the grid).
     pub(super) fn preview_hover(&mut self, link: Option<Link>, cx: &mut Context<Self>) {
+        if !self.preview.external {
+            self.preview_set(link, cx);
+        }
+    }
+
+    fn preview_set(&mut self, link: Option<Link>, cx: &mut Context<Self>) {
         let link = link.filter(|_| mode(cx) != Mode::Off);
         if link == self.preview.hot {
             return;
@@ -276,6 +293,7 @@ impl TerminalView {
 
     pub(super) fn preview_close(&mut self, cx: &mut Context<Self>) {
         self.preview.pending = None;
+        self.preview.external = false;
         if self.preview.card.is_none() {
             return;
         }

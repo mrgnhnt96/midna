@@ -36,6 +36,11 @@ pub fn pin(d: &Daemon, ctx: &Ctx, p: LinksPinParams) -> R {
     ok(crate::links::pin(d, &sid, &p.link, p.pinned, ctx.actor())?)
 }
 
+pub fn remove(d: &Daemon, ctx: &Ctx, p: LinksRemoveParams) -> R {
+    let sid = session(d, ctx, p.session)?;
+    ok(if p.restore { crate::links::restore(d, &sid, &p.link)? } else { crate::links::remove(d, &sid, &p.link)? })
+}
+
 pub fn add(d: &Daemon, ctx: &Ctx, p: LinksAddParams) -> R {
     let sid = session(d, ctx, p.session.clone())?;
     ok(crate::links::add(d, &sid, &p, ctx.actor())?)
