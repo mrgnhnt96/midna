@@ -321,7 +321,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("density", en(&["comfortable", "compact"]), S("comfortable"), "appearance", false, "Spacing density of sidebar rows and headers."),
     s!("ui.header.script", en_path(&["github", "github+agent", "worktree+branch", "none"]), S("github"), "appearance", false,
         "Script that renders the terminal header line: built-in parts joined with + (github, agent, worktree, branch, sync, diff, files, pr) or an absolute path to an executable printing JSON segments (`midna explain scripts`)."),
-    s!("ui.row.script", en_path(&["worktree+diff", "worktree+branch", "diff", "none"]), S("worktree+diff"), "appearance", false,
+    s!("ui.row.script", en_path(&["diff", "worktree+diff", "worktree+branch", "none"]), S("diff"), "appearance", false,
         "Script that renders the extra text on each sidebar terminal row: built-in parts joined with + (worktree, branch, diff, …) or an executable path (`midna explain scripts`)."),
     s!("ui.header.buttons", SettingKind::ItemList { options: HEADER_BUTTONS, allow_paths: true }, L(DEFAULT_HEADER_BUTTONS), "appearance", false,
         "Header toolbar buttons, left to right (More is always last): subagents, links, ide, image, split, popout, restart, or an absolute path to your own button script (it prints the button's look and runs again with MIDNA_CLICK=1 when clicked; `midna explain scripts`). A built-in left out moves into the More (…) menu; its shortcut still works. Adding a script path is human only."),

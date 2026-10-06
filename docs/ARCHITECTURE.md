@@ -125,7 +125,7 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
     - `theme` (dark|light|system)
     - `density` (comfortable|compact)
     - `ui.header.script` (built-in parts joined with `+`, or a custom path; default `github`)
-    - `ui.row.script` (same; default `worktree+diff`)
+    - `ui.row.script` (same; default `diff`)
     - `ui.status.script` (same, run for the selected terminal; default `worktree+branch`)
     - `ui.status.items` (ordered list: daemon, policy, webhooks, triggers, hooks, accessibility, script, spacer, update, keys)
     - `updates.channel` (stable|beta)

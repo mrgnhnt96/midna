@@ -455,7 +455,7 @@ fn script_parts_show_the_worktree_and_branch() {
     let r = call(&mut h, "script.run", json!({ "session_id": in_main, "slot": "status" }));
     assert_eq!(r["segments"], json!([{ "text": "main", "tone": "accent", "icon": "branch" }]));
     let r = call(&mut h, "script.run", json!({ "session_id": in_wt, "slot": "status" }));
-    assert_eq!(r["segments"], json!([{ "text": "repo-fix", "tone": "work", "icon": "worktree" }, { "text": "fix/login", "tone": "accent", "icon": "branch" }]));
+    assert_eq!(r["segments"], json!([{ "text": "", "tone": "work", "icon": "worktree", "tooltip": "repo-fix" }, { "text": "fix/login", "tone": "accent", "icon": "branch" }]));
     // header default (github) leads with the worktree too
     let r = call(&mut h, "script.run", json!({ "session_id": in_wt, "slot": "header" }));
     assert_eq!(r["segments"][0]["icon"], "worktree");

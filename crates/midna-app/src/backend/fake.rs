@@ -115,7 +115,7 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("theme.colors", json!([]), "single-color overrides", false),
         e("density", json!("comfortable"), "comfortable | compact", false),
         e("ui.header.script", json!("github"), "github | github+agent | worktree+branch | none | custom path", false),
-        e("ui.row.script", json!("worktree+diff"), "worktree+diff | worktree+branch | diff | none | custom path", false),
+        e("ui.row.script", json!("diff"), "diff | worktree+diff | worktree+branch | none | custom path", false),
         e("ui.status.script", json!("worktree+branch"), "worktree+branch | branch | github | none | custom path", false),
         e("ui.status.looks", json!([]), "restyle built-in statuses", false),
         e("ui.header.buttons", json!(midna_proto::settings::DEFAULT_HEADER_BUTTONS), "header toolbar buttons", false),
@@ -438,12 +438,12 @@ impl FakeState {
         for part in which.split('+') {
             match part {
                 "github" => {
-                    out.extend(g.worktree.iter().map(|w| seg(w.clone(), Some(Tone::Work), Some("worktree"), false, false)));
+                    out.extend(g.worktree.iter().map(|w| Segment { tooltip: Some(w.clone()), ..seg(String::new(), Some(Tone::Work), Some("worktree"), false, false) }));
                     out.push(seg(g.branch.clone(), Some(Tone::Dim), Some("branch"), false, false));
                     stats(&mut out);
                     pr(&mut out);
                 }
-                "worktree" => out.extend(g.worktree.iter().map(|w| seg(w.clone(), Some(Tone::Work), Some("worktree"), false, false))),
+                "worktree" => out.extend(g.worktree.iter().map(|w| Segment { tooltip: Some(w.clone()), ..seg(String::new(), Some(Tone::Work), Some("worktree"), false, false) })),
                 "branch" => out.push(seg(g.branch.clone(), Some(Tone::Dim), Some("branch"), false, false)),
                 "diff" | "git-diff-stats" => stats(&mut out),
                 "pr" => pr(&mut out),

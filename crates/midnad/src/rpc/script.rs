@@ -72,7 +72,8 @@ fn built_in(script: &str, s: &Session) -> Vec<Segment> {
 
 fn git_part(part: &str, g: &GitInfo) -> Vec<Segment> {
     match part {
-        "worktree" => g.worktree.iter().map(|w| Segment::new(w.clone(), Some(Tone::Work)).icon("worktree")).collect(),
+        // icon only; the name shows on hover
+        "worktree" => g.worktree.iter().map(|w| Segment { tooltip: Some(w.clone()), ..Segment::new("", Some(Tone::Work)).icon("worktree") }).collect(),
         "branch" => vec![Segment::new(g.branch.clone(), Some(Tone::Accent)).icon("branch")],
         "sync" if g.ahead > 0 || g.behind > 0 => vec![Segment::new(format!("↑{} ↓{}", g.ahead, g.behind), Some(Tone::Dim))],
         "diff" | "git-diff-stats" => diff_stats(Some(g)),

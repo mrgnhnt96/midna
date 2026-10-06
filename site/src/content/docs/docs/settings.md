@@ -59,7 +59,7 @@ midna settings set theme.colors "accent = #FF79C6"
 
 The header, the sidebar rows and the status bar are all configurable.
 
-- `ui.header.script` (default `github`) and `ui.row.script` (default `worktree+diff`) are built-in parts joined with `+`: `worktree`, `branch`, `sync`, `diff`, `files`, `pr`, `agent`. Or `none`, or a path to your own script.
+- `ui.header.script` (default `github`) and `ui.row.script` (default `diff`) are built-in parts joined with `+`: `worktree` (an icon; the name shows on hover), `branch`, `sync`, `diff`, `files`, `pr`, `agent`. Or `none`, or a path to your own script.
 - `ui.header.buttons` orders the header buttons; built-ins left out move into the **…** menu. A path to a script adds your own button.
 - `ui.status.items` lists the status bar items. Right-click the status bar or header to toggle items.
 - `ui.status.looks` restyles built-in statuses: `needs_you = pink icon:bell label:Your turn`.
