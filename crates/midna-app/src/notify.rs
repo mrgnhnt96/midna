@@ -154,6 +154,34 @@ pub fn post(p: &Posted, session: Option<&str>) {
     }
 }
 
+/// Take every midna notification out of Notification Center (`notify.clear`, ⌘K).
+pub fn clear_all() {
+    if native() {
+        UNUserNotificationCenter::currentNotificationCenter().removeAllDeliveredNotifications();
+    }
+}
+
+/// Take `session`'s notifications out of Notification Center: you're looking at its terminal
+/// now (selected it, or brought midna forward on it). Matches the thread identifier `post` sets.
+pub fn clear(session: &str) {
+    if !native() || STATUS.load(Ordering::Relaxed) < 2 {
+        return;
+    }
+    let session = session.to_string();
+    let done = RcBlock::new(move |delivered: NonNull<NSArray<UNNotification>>| {
+        let delivered = unsafe { delivered.as_ref() };
+        let ids: Vec<Retained<NSString>> = delivered
+            .iter()
+            .filter(|n| n.request().content().threadIdentifier().to_string() == session)
+            .map(|n| n.request().identifier())
+            .collect();
+        if !ids.is_empty() {
+            UNUserNotificationCenter::currentNotificationCenter().removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(&ids));
+        }
+    });
+    UNUserNotificationCenter::currentNotificationCenter().getDeliveredNotificationsWithCompletionHandler(&done);
+}
+
 fn play_posted(p: &Posted) {
     if let (true, Some(file)) = (p.sound, p.sound_file.as_deref()) {
         play(file, p.volume.unwrap_or(100));

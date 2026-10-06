@@ -366,6 +366,21 @@ pub struct NotifyRemoveResult {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyClearParams {
+    /// Only this terminal's notifications. Omitted: every notification midna has shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyClearResult {
+    /// The app got the request (false: no app connected, nothing to clear from here).
+    pub delivered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct NotifyTestParams {
     /// The category whose sound, volume and image to use (default `approval`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

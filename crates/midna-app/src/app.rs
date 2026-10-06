@@ -253,6 +253,9 @@ impl MainWindow {
         cx.observe_window_activation(window, |m, window, cx| {
             if window.is_window_active() {
                 crate::windows::focused(m.id, cx);
+                if let Some(s) = m.selected.as_deref() {
+                    crate::notify::clear(s);
+                }
             } else {
                 crate::ui::quit_hold::cancel(m, "window inactive", cx);
             }
@@ -540,6 +543,12 @@ impl MainWindow {
                 }
                 if k == midna_proto::kinds::NOTIFY_POSTED && self.is_home() {
                     self.on_notification(&e, window, cx);
+                }
+                if k == midna_proto::kinds::NOTIFY_CLEARED && self.is_home() {
+                    match e.session_id.as_deref() {
+                        Some(s) => crate::notify::clear(s),
+                        None => crate::notify::clear_all(),
+                    }
                 }
                 if k == midna_proto::kinds::NOTIFY_SOUND && self.is_home() {
                     let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
@@ -1068,6 +1077,9 @@ impl MainWindow {
         // Showing a terminal outside the multi-selection ends it.
         if !self.marked.contains(&id) {
             self.marked.clear();
+        }
+        if window.is_window_active() {
+            crate::notify::clear(&id);
         }
         if self.selected.as_deref() != Some(&id) {
             crate::windows::save_soon(cx);

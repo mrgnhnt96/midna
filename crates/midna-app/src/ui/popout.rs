@@ -218,6 +218,13 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
             .detach();
             // The tray follows the outbox (an attach here, or the terminal sending it).
             cx.observe_global::<crate::annotate::Outbox>(|_, cx| cx.notify()).detach();
+            // Focused: its terminal's notifications are read.
+            cx.observe_window_activation(window, |p: &mut PopOut, window, _| {
+                if window.is_window_active() {
+                    crate::notify::clear(&p.session);
+                }
+            })
+            .detach();
             // Closed any way (⌘W, the traffic light, dock): the main window may show it again.
             let _release = cx.on_release(|p: &mut PopOut, cx| {
                 forget(&p.session, cx);

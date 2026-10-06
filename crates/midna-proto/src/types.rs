@@ -1195,6 +1195,9 @@ pub mod kinds {
     pub const NOTIFY_POSTED: &str = "notify.posted";
     /// `notify.play`: play a sound now (data: `notify::Played`); the app plays it.
     pub const NOTIFY_SOUND: &str = "notify.sound";
+    /// `notify.clear`: remove notifications from Notification Center (`{session?}`, none = all);
+    /// the app removes them.
+    pub const NOTIFY_CLEARED: &str = "notify.cleared";
     /// A terminal's notification overrides changed (`{notify}`, the whole map).
     pub const SESSION_NOTIFY: &str = "session.notify";
     /// A notification sound or image was imported or removed (`{action, kind, name}`).

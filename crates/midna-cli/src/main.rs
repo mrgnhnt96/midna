@@ -1121,6 +1121,15 @@ fn notify(a: &Args, out: OutFn) -> Res {
                 println!("removed {}{}", s_(v, "removed"), if reset.is_empty() { String::new() } else { format!("; reset {}", reset.join(", ")) });
             });
         }
+        "clear" => {
+            a.check(&["session"])?;
+            let v = call("notify.clear", json!({ "session": session }))?;
+            out(&v, &|v| match (v["delivered"] == true, v["session"].as_str()) {
+                (false, _) => println!("not cleared: the midna app isn't running"),
+                (true, Some(s)) => println!("cleared terminal {s}'s notifications"),
+                (true, None) => println!("cleared all notifications"),
+            });
+        }
         "test" => {
             a.check(&["session"])?;
             let v = call("notify.test", json!({ "session": session, "category": a.pos.get(2) }))?;

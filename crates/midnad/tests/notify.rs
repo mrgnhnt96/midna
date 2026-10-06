@@ -264,3 +264,19 @@ fn agents_play_sounds_by_kind_or_name() {
     assert_eq!(reasons[4], "rate_limited");
     assert_eq!(call(&mut h, "notify.play", json!({ "sound": "Pop", "session": sid }))["reason"], "no_app");
 }
+
+#[test]
+fn clear_asks_the_app_to_remove_all_or_one_terminals() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let cleared = |h: &mut Client| call(h, "events.list", json!({ "filter": { "kinds": ["notify.cleared"] }, "limit": 100 })).as_array().cloned().unwrap_or_default();
+
+    assert_eq!(call(&mut h, "notify.clear", json!({})), json!({ "delivered": false }));
+    assert_eq!(call(&mut h, "notify.clear", json!({ "session": sid })), json!({ "delivered": false, "session": sid }));
+    let c = cleared(&mut h);
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[0].get("session_id"), None, "no terminal: every notification");
+    assert_eq!(c[1]["session_id"].as_str(), Some(sid.as_str()));
+    call_err(&mut h, "notify.clear", json!({ "session": "s_nope" }));
+}

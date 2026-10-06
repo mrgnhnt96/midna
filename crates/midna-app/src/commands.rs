@@ -604,6 +604,12 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .cli("midna settings list"),
     );
     out.push(
+        Command::new("notify.clear", CmdIcon::Deny, "Clear notifications", Run::Rpc { method: "notify.clear".into(), params: json!({}) })
+            .sub("removes every midna notification from Notification Center")
+            .kw("notifications banners dismiss remove clear all notification center")
+            .cli("midna notify clear"),
+    );
+    out.push(
         Command::new("report.issue", CmdIcon::Screen, "Report an issue…", Run::ReportIssue)
             .sub("opens a new GitHub issue with your midna, macOS and Mac details filled in")
             .kw("bug issue feedback github report problem crash broken file"),

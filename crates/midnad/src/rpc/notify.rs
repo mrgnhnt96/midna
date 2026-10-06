@@ -134,6 +134,17 @@ pub fn test(d: &Daemon, ctx: &Ctx, p: NotifyTestParams) -> R {
     ok(crate::notify::test(d, sid, &category))
 }
 
+/// Ask the app to remove notifications: one terminal's, or all of them.
+pub fn clear(d: &Daemon, ctx: &Ctx, p: NotifyClearParams) -> R {
+    let project = match p.session.as_deref() {
+        Some(sid) => Some(d.core().state.session(sid).ok_or_else(|| RpcError::not_found(format!("no terminal {sid}")))?.project_id.clone()),
+        None => None,
+    };
+    let delivered = d.gui_connected();
+    d.emit(kinds::NOTIFY_CLEARED, ctx.actor(), project, p.session.clone(), json!({}));
+    ok(NotifyClearResult { delivered, session: p.session })
+}
+
 pub fn play(d: &Daemon, ctx: &Ctx, p: NotifyPlayParams) -> R {
     let sid = target(d, ctx, p.session, false)?;
     let what = p.sound.trim();

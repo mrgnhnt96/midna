@@ -299,6 +299,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "notify.import" => notify::import(d, ctx, parse(p)?),
         "notify.remove" => notify::remove(d, ctx, parse(p)?),
         "notify.test" => notify::test(d, ctx, parse(p)?),
+        "notify.clear" => notify::clear(d, ctx, parse(p)?),
         "notify.play" => notify::play(d, ctx, parse(p)?),
         "events.list" => events::list(d, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),

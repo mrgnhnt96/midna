@@ -248,7 +248,8 @@ pub static VERBS: &[Verb] = &[
                 notify mute|unmute [--session <id>]\n       \
                 notify send \"<title>\" [--detail \"<body>\"] [--sound] [--session <id>]\n       \
                 notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
-                notify play <kind>|<sound> [--volume 0-100] [--session <id>]",
+                notify play <kind>|<sound> [--volume 0-100] [--session <id>]\n       \
+                notify clear [--session <id>]",
         summary: "which macOS notifications midna posts, per terminal or globally; send the human one",
         details: "Lists each kind (approval, attention, failed, turn_done, agent, requests, background, pr_checks,\n\
                   exited, triggers, restarted), whether it's on globally and for the terminal (default: yours).\n\
@@ -269,8 +270,10 @@ pub static VERBS: &[Verb] = &[
                   queue_sent, image_added, closed (what the human does) and switched, command_bar, copied (UI cues).\n\
                   notify.sounds turns every sound off; notify.sounds_in_app off silences sounds while midna is the\n\
                   frontmost app. `play`\n\
-                  plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.",
-        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play"],
+                  plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.\n\
+                  `clear` removes every midna notification from Notification Center (--session: only that\n\
+                  terminal's); opening a terminal already removes its own.",
+        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear"],
     },
     Verb {
         name: "read",

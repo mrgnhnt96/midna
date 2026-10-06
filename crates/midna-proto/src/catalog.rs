@@ -255,6 +255,10 @@ fn build() -> Vec<MethodSpec> {
              Import what the human points you at (\"use ~/Downloads/ding.mp3 for approvals\"); don't pick sounds for them."),
         m::<NotifyRemoveParams, NotifyRemoveResult>("notify.remove").mutating().d(
             "Delete an imported sound or image. Settings that used it go back to their defaults."),
+        m::<NotifyClearParams, NotifyClearResult>("notify.clear").mutating().d(
+            "Remove midna's notifications from Notification Center: every one, or only one terminal's with `session`. \
+             The app removes them; with no app connected nothing changes (`delivered: false`). midna already removes a \
+             terminal's notifications when the human opens it. Use it when the human asks."),
         m::<NotifyTestParams, NotifySendResult>("notify.test").mutating().d(
             "Show a test notification with a category's sound, volume and image (default `approval`), even when that \
              category is off, so the human can hear and see their choice."),
