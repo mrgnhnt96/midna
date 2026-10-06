@@ -16,7 +16,7 @@
 //! (an app global, so a split or pop-out of the same terminal sees it too) and the tray under
 //! the terminal offers Edit (⌘E) and Remove. The next plain ↩ in that terminal delivers it:
 //! each image's path as its own paste (Claude Code turns a pasted image path into
-//! `[Image #N]`), then the notes as one paste, then the ↩ itself.
+//! `[Image #N]`), then a newline (Ctrl+J), then the notes as one paste, then the ↩ itself.
 //!
 //! Images are normalized into `$TMPDIR/midna-images/`: PNG, JPEG, GIF and WebP are kept as
 //! they are; anything else (HEIC, TIFF, …) is converted to PNG with `sips`.
@@ -24,6 +24,7 @@ use crate::app::{MainWindow, Overlay};
 use crate::ui::text_input::{FieldChanged, TextField};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use midna_proto::frame::ClientMsg;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -156,11 +157,16 @@ impl Outgoing {
         Outgoing { paths: d.shots.iter().map(|s| s.path.clone()).collect(), text: notes_text(&shots), notes: d.note_count(), thumbs: d.shots.iter().map(|s| s.image.clone()).collect() }
     }
 
-    /// The pastes, in order, that deliver this (the ↩ follows them).
-    pub fn pastes(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.paths.iter().map(|p| p.display().to_string()).collect();
+    /// The steps, in order, that deliver this (the ↩ follows them). The notes start on their
+    /// own line: a newline inside a paste doesn't break the line in Claude Code's prompt, so
+    /// it goes in as Ctrl+J, which does.
+    pub fn steps(&self) -> Vec<ClientMsg> {
+        let mut v: Vec<ClientMsg> = self.paths.iter().map(|p| ClientMsg::Paste(p.display().to_string())).collect();
         if !self.text.is_empty() {
-            v.push(format!("\n{}", self.text));
+            if !v.is_empty() {
+                v.push(ClientMsg::Input(b"\n".to_vec()));
+            }
+            v.push(ClientMsg::Paste(self.text.clone()));
         }
         v
     }
@@ -960,7 +966,7 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{Mark, Note, Outgoing, Source, fit_scale, load, notes_text};
+    use super::{ClientMsg, Mark, Note, Outgoing, Source, fit_scale, load, notes_text};
     use ::core::prelude::v1::test;
     use std::path::PathBuf;
 
@@ -1001,13 +1007,19 @@ mod tests {
         let a = vec![note(Mark::Pin { x: 0.1, y: 0.1 }, "")];
         assert_eq!(notes_text(&[("a.png", &a)]), "");
         let o = Outgoing { paths: vec![PathBuf::from("/t/a.png")], text: String::new(), notes: 0, thumbs: vec![] };
-        assert_eq!(o.pastes(), vec!["/t/a.png".to_string()]);
+        assert_eq!(o.steps(), vec![ClientMsg::Paste("/t/a.png".into())]);
     }
 
     #[test]
-    fn pastes_are_paths_then_notes() {
+    fn steps_are_paths_then_a_newline_then_notes() {
         let o = Outgoing { paths: vec![PathBuf::from("/t/a.png"), PathBuf::from("/t/b.png")], text: "Annotations".into(), notes: 1, thumbs: vec![] };
-        assert_eq!(o.pastes(), vec!["/t/a.png".to_string(), "/t/b.png".into(), "\nAnnotations".into()]);
+        let want = vec![
+            ClientMsg::Paste("/t/a.png".into()),
+            ClientMsg::Paste("/t/b.png".into()),
+            ClientMsg::Input(b"\n".to_vec()),
+            ClientMsg::Paste("Annotations".into()),
+        ];
+        assert_eq!(o.steps(), want);
     }
 
     #[test]

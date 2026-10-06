@@ -844,8 +844,8 @@ impl TerminalView {
         }
     }
 
-    /// ↩ with an image attachment waiting (`annotate.rs`): paste each image path, then the
-    /// notes, then press ↩. Spaced out so the app handles each paste (Claude Code turns a
+    /// ↩ with an image attachment waiting (`annotate.rs`): paste each image path, then a
+    /// newline and the notes, then press ↩. Spaced out so the app handles each paste (Claude Code turns a
     /// pasted image path into `[Image #N]` and reads the file as it does).
     fn deliver_attachment(&mut self, enter: &KeyMsg, cx: &mut Context<Self>) -> bool {
         let Some(stream) = self.stream.borrow().clone() else {
@@ -854,7 +854,7 @@ impl TerminalView {
         let Some(out) = crate::annotate::take(&self.session_id, cx) else {
             return false;
         };
-        let mut steps: Vec<ClientMsg> = out.pastes().into_iter().map(ClientMsg::Paste).collect();
+        let mut steps = out.steps();
         steps.push(ClientMsg::Key(enter.clone()));
         cx.spawn(async move |_, cx| {
             for (i, s) in steps.iter().enumerate() {
