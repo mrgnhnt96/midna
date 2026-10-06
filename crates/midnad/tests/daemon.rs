@@ -373,13 +373,21 @@ fn a_question_after_a_generic_notification_retitles_the_prompt() {
     hook(&mut a, "UserPromptSubmit", json!({ "prompt": "pick a design" }));
     hook(&mut a, "Notification", json!({ "notification_type": "permission_prompt", "message": "Claude needs your permission" }));
     assert_eq!(call(&mut h, "needs_you.list", json!({}))[0]["title"], "Claude needs your permission");
-    let ask = json!({ "tool_name": "AskUserQuestion", "tool_input": { "questions": [{ "question": "What should the bell open?" }] } });
+    let ask = json!({ "tool_name": "AskUserQuestion", "tool_input": { "questions": [{ "question": "What should the bell open?", "header": "Bell opens", "options": [{ "label": "Popover", "description": "A small list" }, { "label": "Full screen", "description": "" }] }] } });
     hook(&mut a, "PermissionRequest", ask);
     let items = call(&mut h, "needs_you.list", json!({}));
     assert_eq!(items.as_array().unwrap().len(), 1, "same item, not a second one");
     assert_eq!(items[0]["title"], "question: What should the bell open?");
+    assert_eq!(items[0]["question"], json!({ "text": "What should the bell open?", "header": "Bell opens", "multi_select": false, "options": [{ "label": "Popover", "description": "A small list" }, { "label": "Full screen", "description": "" }] }));
     let evs = call(&mut h, "events.list", json!({ "filter": { "kinds": ["needs_you.updated"] } }));
     assert_eq!(evs.as_array().unwrap().len(), 1);
+    // Answered, then asked again with the PermissionRequest first: raised with the question.
+    hook(&mut a, "PostToolUse", json!({ "tool_name": "AskUserQuestion" }));
+    assert!(call(&mut h, "needs_you.list", json!({})).as_array().unwrap().is_empty());
+    hook(&mut a, "PermissionRequest", json!({ "tool_name": "AskUserQuestion", "tool_input": { "questions": [{ "question": "Ship it?", "multiSelect": true }] } }));
+    let items = call(&mut h, "needs_you.list", json!({}));
+    assert_eq!(items[0]["question"]["text"], "Ship it?");
+    assert_eq!(items[0]["question"]["multi_select"], true);
 }
 
 #[test]

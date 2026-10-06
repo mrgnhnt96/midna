@@ -788,6 +788,30 @@ pub struct NeedsYou {
     /// The trigger this item is about (e.g. `secret_needed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<Id>,
+    /// What an agent's question dialog asks (Claude's AskUserQuestion): the full text and its
+    /// options, which the title only summarizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<NeedsYouQuestion>,
+}
+
+/// The first question of an AskUserQuestion call, as the agent wrote it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouQuestion {
+    pub text: String,
+    /// The short tab label Claude shows above the question (e.g. "Bell opens").
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 // ------------------------------------------------------------------ triggers (later phase)

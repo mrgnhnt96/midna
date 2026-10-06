@@ -1,6 +1,6 @@
 //! Agent status state machine (from spikes/agent-status, proven against real Claude Code and
 //! Codex hook traces), plus the OSC title glyph heuristic for gaps no hook covers.
-use midna_proto::StatusState;
+use midna_proto::{NeedsYouQuestion, QuestionOption, StatusState};
 use serde_json::Value;
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -29,6 +29,25 @@ pub fn prompt_label(p: &Value) -> String {
         };
     }
     format!("permission {}", tool_label(p))
+}
+
+/// The first question of an AskUserQuestion `PermissionRequest`, in full, with its options.
+pub fn question(p: &Value) -> Option<NeedsYouQuestion> {
+    if s(p, "tool_name") != "AskUserQuestion" {
+        return None;
+    }
+    let q = p.pointer("/tool_input/questions/0")?;
+    let text = s(q, "question").trim();
+    if text.is_empty() {
+        return None;
+    }
+    let options = q.get("options").and_then(Value::as_array).into_iter().flatten();
+    Some(NeedsYouQuestion {
+        text: text.to_string(),
+        header: s(q, "header").to_string(),
+        multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+        options: options.map(|o| QuestionOption { label: s(o, "label").to_string(), description: s(o, "description").to_string() }).filter(|o| !o.label.is_empty()).collect(),
+    })
 }
 
 /// Pure transition: (current state, hook event, payload) -> next (state, reason). None = no change.
@@ -305,6 +324,19 @@ mod tests {
         let p = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "What should the bell open?", "header": "Bell opens"}]}});
         assert_eq!(transition(Working, "PermissionRequest", &p).unwrap(), (NeedsYou, "question: What should the bell open?".to_string()));
         assert_eq!(prompt_label(&json!({"tool_name": "AskUserQuestion"})), "question");
+    }
+
+    #[test]
+    fn question_keeps_the_text_and_options() {
+        let long = "x".repeat(300);
+        let p = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [
+            {"question": long, "header": "Bell opens", "multiSelect": true, "options": [
+                {"label": "Popover", "description": "A small list"}, {"label": "Full screen"}, {"description": "no label"}]},
+            {"question": "Second?"}]}});
+        let q = question(&p).unwrap();
+        assert_eq!((q.text.len(), q.header.as_str(), q.multi_select), (300, "Bell opens", true));
+        assert_eq!(q.options, [QuestionOption { label: "Popover".into(), description: "A small list".into() }, QuestionOption { label: "Full screen".into(), description: String::new() }]);
+        assert_eq!(question(&json!({"tool_name": "Bash", "tool_input": {"questions": [{"question": "x"}]}})), None);
     }
 
     #[test]

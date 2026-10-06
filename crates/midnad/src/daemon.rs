@@ -367,6 +367,7 @@ impl Daemon {
             bulk_safe: false,
             approval: None,
             trigger_id: None,
+            question: None,
         }
     }
 

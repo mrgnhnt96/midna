@@ -68,14 +68,14 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             d.clear_session_needs_you(&sid, NeedsYouKind::PermissionPrompt);
         }
         if next == StatusState::NeedsYou {
-            raise_prompt(d, &sid, &actor, &reason);
+            raise_prompt(d, &sid, &actor, &reason, crate::agent_state::question(payload));
         }
         d.set_status(&sid, next, Some(reason), None, actor.clone());
         status = next;
     } else if ev == "PermissionRequest" && cur == StatusState::NeedsYou {
         // Claude's generic `Notification` ("Claude needs your permission") can open the prompt
         // first; this hook names what it actually asks.
-        retitle_prompt(d, &sid, &crate::agent_state::prompt_label(payload));
+        retitle_prompt(d, &sid, &crate::agent_state::prompt_label(payload), crate::agent_state::question(payload));
     }
     ok(AgentHookResult { ok: true, status: Some(status) })
 }
@@ -96,7 +96,7 @@ fn track(d: &Daemon, sid: &str, project: &str, agent: AgentKind, ev: &str, paylo
     }
 }
 
-fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str) {
+fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str, question: Option<NeedsYouQuestion>) {
     let open = d.core().state.needs_you.iter().any(|n| n.kind == NeedsYouKind::PermissionPrompt && n.session_id.as_deref() == Some(sid));
     if open {
         return;
@@ -104,17 +104,19 @@ fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str) {
     let title = if reason.is_empty() { "Agent is waiting for permission".to_string() } else { reason.to_string() };
     let mut item = d.new_needs_you(NeedsYouKind::PermissionPrompt, title, actor.clone(), Some(sid.to_string()));
     item.screen_excerpt = d.rt(sid).and_then(|rt| rt.read(true)).map(|(l, _, _)| super::session::tail_nonempty(l, 12));
+    item.question = question;
     d.raise_needs_you(item);
 }
 
-fn retitle_prompt(d: &Daemon, sid: &str, title: &str) {
+fn retitle_prompt(d: &Daemon, sid: &str, title: &str, question: Option<NeedsYouQuestion>) {
     let item = {
         let mut core = d.core();
         let Some(n) = core.state.needs_you.iter_mut().find(|n| n.kind == NeedsYouKind::PermissionPrompt && n.session_id.as_deref() == Some(sid)) else { return };
-        if n.title == title || crate::trust::is_trust_item(n) {
+        if (n.title == title && n.question == question) || crate::trust::is_trust_item(n) {
             return;
         }
         n.title = title.to_string();
+        n.question = question;
         n.clone()
     };
     d.mark_dirty();

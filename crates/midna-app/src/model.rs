@@ -246,6 +246,8 @@ pub struct NeedsYou {
     pub created_at: String,
     pub bulk_safe: bool,
     pub approval: Option<ApprovalRequest>,
+    /// The full question and its options when the agent's prompt is a question dialog.
+    pub question: Option<NeedsYouQuestion>,
 }
 
 impl NeedsYou {
@@ -256,7 +258,7 @@ impl NeedsYou {
 }
 
 /// Resolutions and approval scopes use the daemon's exact wire form (`{"kind":"approve",...}`).
-pub use midna_proto::{ApprovalScope, Resolution};
+pub use midna_proto::{ApprovalScope, NeedsYouQuestion, Resolution};
 
 /// One entry of `settings.list`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
