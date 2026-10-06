@@ -70,7 +70,7 @@ def tone(freq, dur, harmonics=(1, 0.3, 0.1), a=0.006, tau=0.3, detune=0.0):
 
 
 # v1 sounds the user liked: never re-rendered (their noise/randomness would change).
-KEEP = {"tw-ping", "tw-denied", "tw-sent", "tw-closed", "tw-copy", "tw-failed", "tw-tick", "tw-attention", "tw-done", "tw-portal-a", "tw-approved-c", "tw-portal-c", "tw-sparkle-b"}
+KEEP = {"tw-ping", "tw-denied", "tw-sent", "tw-copy", "tw-failed", "tw-tick", "tw-attention", "tw-done", "tw-portal-a", "tw-approved-c", "tw-portal-c", "tw-sparkle-b"}
 
 
 def seed(name):
@@ -334,12 +334,17 @@ seed("sent")
 whoosh = apply(noise_sweep(0.22, 600, 5000, q=2), env_adsr(n(0.22), 0.15, 0.0, 1, 0.05))
 write("tw-sent", reverb(mix(gain(whoosh, 0.35), bell(1760, 0.3, tau=0.09, ratio=2.0), at=[0, 0.19]), wet=0.2, tail=0.35))
 
-# closed: a portal shutting, a downward sweep collapsing into a soft thump.  (ships as Close)
-seed("closed")
-close = apply(sweep(0.25, 900, 120, shape=0.6), env_exp(n(0.25), 0.1))
-thump = apply([math.sin(2 * math.pi * 70 * i / SR) for i in range(n(0.15))], env_exp(n(0.15), 0.04))
-write("tw-closed", reverb(mix(gain(close, 0.5), thump, at=[0, 0.12]), wet=0.25, tail=0.4))
 
 # copied: two soft ticks.  (ships as Tick-tick)
 seed("copy")
 write("tw-copy", reverb(mix(bell(2637, 0.07, tau=0.015, index=1.0), bell(3520, 0.07, tau=0.015, index=1.0), at=[0, 0.06]), wet=0.15, tail=0.15))
+
+# closed, round 2: v1 was abrasive (a 900 Hz sweep with a bright 2nd harmonic and a thump, both
+# at full level from the first sample). Now Portal (approval-b) run backwards, with no thump: a
+# falling breath of noise that eases in slowly (160 ms) and trails off.  (ships as Close)
+seed("closed-a")
+A_DUR = 0.4
+fade_a = lambda: [(0.5 - 0.5 * math.cos(math.pi * min(1, u / 0.4))) * (1 - u) ** 1.5 for u in (i / n(A_DUR) for i in range(n(A_DUR)))]
+shut_a = apply(noise_sweep(A_DUR, 900, 180, q=1.8), fade_a())
+hint_a = apply(sweep(A_DUR, 380, 150, shape=1.6), fade_a())
+write("tw-closed-a", reverb(mix(gain(shut_a, 0.5), gain(hint_a, 0.08)), wet=0.3, tail=0.6), peak=0.25)
