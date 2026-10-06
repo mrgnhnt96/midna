@@ -430,7 +430,7 @@ fn run(a: &Args) -> Res {
         "secret" | "secrets" => secret::secret(a, &out),
         "settings" | "setting" => settings(a, &out),
         "commands" => commands(a, &out),
-        "updates" => updates(a, &out),
+        "updates" | "update" => updates(a, &out),
         "themes" | "theme" => themes(a, &out),
         "permissions" => permissions(a, &out),
         "hooks" => hooks(a, &out),
