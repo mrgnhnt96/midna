@@ -1166,10 +1166,14 @@ impl MainWindow {
         self.select(id, window, cx);
     }
 
-    /// A plain click: just this terminal, which also becomes the anchor for ⌘⇧-click.
+    /// A plain click: just this terminal, which also becomes the anchor for ⌘⇧-click. It
+    /// closes needs-you, even on the terminal already selected, to show the terminal.
     pub fn select_only(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_deref() != Some(&id) {
             crate::sounds::play("switched");
+        }
+        if self.overlay == Overlay::NeedsYou {
+            self.set_overlay(Overlay::None, window, cx);
         }
         self.marked.clear();
         self.mark_anchor = Some(id.clone());
