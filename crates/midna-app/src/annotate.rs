@@ -388,24 +388,29 @@ impl AnnotateView {
         cx.notify();
     }
 
-    /// Finish editing: an empty note is removed. Focus goes back to the sheet.
-    pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(i) = self.editing.take() else {
-            return;
-        };
+    /// Finish editing: an empty note is removed (its index is returned). Focus goes back to the
+    /// sheet.
+    pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<usize> {
+        let i = self.editing.take()?;
         let empty = self.shot(cx).and_then(|s| s.notes.get(i)).is_some_and(|n| n.text.trim().is_empty());
         if empty {
             self.remove_note(i, cx);
         }
         self.focus.focus(window, cx);
         cx.notify();
+        empty.then_some(i)
     }
 
     pub fn edit(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing == Some(i) {
             return;
         }
-        self.commit(window, cx);
+        // Finishing the note being edited may remove it, moving the ones after it up.
+        let i = match self.commit(window, cx) {
+            Some(r) if r == i => return,
+            Some(r) if r < i => i - 1,
+            _ => i,
+        };
         let Some(text) = self.shot(cx).and_then(|s| s.notes.get(i)).map(|n| n.text.clone()) else {
             return;
         };
@@ -604,6 +609,22 @@ impl AnnotateView {
     }
 
     // -------------------------------------------------------------- keys
+
+    /// ⌘V of an image while a note is being edited: the field would take only text, so finish
+    /// the note and add the image (it becomes the selected one).
+    pub fn capture_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        if !(ks.modifiers.platform && ks.key == "v") || !self.field.read(cx).focus.is_focused(window) {
+            return;
+        }
+        let sources = clipboard_sources(cx);
+        if sources.is_empty() {
+            return;
+        }
+        cx.stop_propagation();
+        self.commit(window, cx);
+        self.add(sources, window, cx);
+    }
 
     /// Keys the sheet handles (those the note field didn't take).
     pub fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -929,7 +950,8 @@ pub fn sweep() {
 /// Dev (`MIDNA_DEBUG_SCREEN=annotate|annotate-tray`): open the sheet on the images in
 /// `MIDNA_DEBUG_IMAGES` (comma-separated paths) with the notes in `MIDNA_DEBUG_NOTES`
 /// (`;`-separated `x,y,text` pins or `x0,y0,x1,y1,text` areas, fractions, on the first image).
-/// `annotate-tray` attaches the draft instead, to show the tray.
+/// `annotate-tray` attaches the draft instead, to show the tray. `MIDNA_DEBUG_EDIT=1` edits the
+/// last note.
 pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
     if !open(m, None, window, cx) {
         return;
@@ -961,6 +983,8 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
     m.annot.update(cx, |v, cx| {
         if screen == "annotate-tray" {
             v.attach(window, cx);
+        } else if notes > 0 && crate::dev::var("MIDNA_DEBUG_EDIT").is_ok() {
+            v.edit(notes - 1, window, cx);
         } else if notes > 0 {
             v.sel = Some(notes - 1);
         }

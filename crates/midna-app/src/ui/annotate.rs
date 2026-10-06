@@ -116,6 +116,7 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
         .id("annotate")
         .key_context("MidnaOverlay")
         .track_focus(&a.focus)
+        .capture_key_down(cx.listener(AnnotateView::capture_key))
         .on_key_down(cx.listener(AnnotateView::on_key))
         .on_action(cx.listener(|v, _: &crate::actions::Dismiss, w, cx| {
             if v.editing.is_some() {
@@ -127,7 +128,14 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
         .on_action(cx.listener(|v, _: &crate::actions::ApproveOnce, w, cx| v.attach(w, cx)))
         .on_action(cx.listener(|_, _: &an::AddImage, _, _| {}))
         .on_drop(cx.listener(|v, paths: &ExternalPaths, w, cx| v.add(paths.paths().iter().cloned().map(an::Source::Path).collect(), w, cx)))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        // A click anywhere but a note card (they stop the event) finishes the note being edited.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, _, w, cx| {
+                cx.stop_propagation();
+                v.commit(w, cx);
+            }),
+        )
         .size_full()
         .max_w(px(1240.))
         .flex()
@@ -543,6 +551,8 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                 .rounded(px(8.))
                 .cursor_pointer()
                 .map(|d| if selected { d.bg(t.raised).border_1().border_color(t.accent) } else { d.border_1().border_color(transparent_black()).hover(move |s| s.bg(raised)) })
+                // Not the sheet's click-away: `edit` finishes the other note and keeps the numbering.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |v, _, w, cx| v.edit(i, w, cx)))
                 .child(badge(t, i + 1, 22.))
                 .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text).children(kind)),
