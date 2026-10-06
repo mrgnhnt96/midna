@@ -135,6 +135,7 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
     - `agents.may_move_windows` (human_only)
     - `agents.may_close_idle` (human_only)
     - `agents.may_force_close` (human_only, default false): agents close any terminal (working ones, `close --force`, someone else's) with no default ask; rules on `close …` still apply
+    - `agents.may_install_updates` (human_only, default false): an agent's `updates.install` goes to the GUI without a needs-you approval; the app's signature checks still apply
     - `approve.from_cli` (human_only)
     - `keys.*` keybindings: `keys.command_bar` = cmd-k, `keys.next_needs_you` = cmd-j, `keys.new_terminal` = cmd-t, `keys.new_agent` = cmd-shift-t, `keys.new_terminal_root` = cmd-alt-t, `keys.new_agent_root` = cmd-alt-shift-t, `keys.approve` = cmd-enter, `keys.deny` = cmd-backspace, `keys.settings` = cmd-comma, `keys.rules`, `keys.triggers`, `keys.insights`. ⌘1–9 are reserved for projects.
 - **Event** `{ seq: u64, at, kind: string, actor: Actor, project_id?, session_id?, data: serde_json::Value }`

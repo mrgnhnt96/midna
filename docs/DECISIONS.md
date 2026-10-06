@@ -924,3 +924,10 @@ Why: a task-board integration starts Claude with its own `--append-system-prompt
 - **`Project.auto_created`**: set when an agent's (or trigger's) `session.open` with a `cwd` creates the project. Agents may call the human-only `project.remove` on such a project while none of its terminals has a process (`rpc::call` lets it through; `project::remove` re-checks). Any other agent call still becomes a needs-you approval. The human adding (`project.add`) or editing (`project.update`) it clears the flag.
 - **`midna get <id>`** (alias `show`) = `session.get`, so session.get is no longer call-only.
 - `agents.restart_on_update` keeps its `ask` default (deliberate; the board's request to change it was declined).
+
+## Close on exit and unattended installs (GitHub #1, #2; 2026-10-06)
+
+Both asked for by the task board on the user's work machine.
+
+- **`session.open {close_on_exit: true}`** (CLI `midna open --close-on-exit`), stored as `Session.close_on_exit` so it survives restarts and daemon upgrades. When the process exits with state `exited` (exit 0, ctrl-c/130, SIGHUP) `on_exit` runs `close_inner` as `Ctx::internal_system()` (event `session.closed` with actor `system`). A `failed` exit stays open with its needs-you item: closing it would hide why it failed. A per-call flag, not a global `agents.close_on_exit` setting: the caller that opened a terminal for one job is the one that knows it should go.
+- **`agents.may_install_updates`** (Bool, default false, human only): an agent's `updates.install` skips the human-only gate (`updates::agent_may_install`, next to `project::agent_may_remove`) and is forwarded to the GUI with `by: agent`. The GUI's feed signature, SHA-256 and Team ID checks are unchanged; `agents.restart_on_update` still decides when running agents restart. Settings › Agents lists it under may_force_close.

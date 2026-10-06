@@ -187,6 +187,17 @@ fn updates_are_proxied_to_the_gui() {
             }
     };
     assert_eq!((n["action"].as_str(), n["by"]["kind"].as_str()), (Some("install"), Some("human")));
+    // agents.may_install_updates (human only): the agent's install goes straight to the GUI.
+    assert_eq!(call_err(&mut a, "settings.set", json!({ "key": "agents.may_install_updates", "value": true })).code, HUMAN_ONLY);
+    call(&mut h, "settings.set", json!({ "key": "agents.may_install_updates", "value": true }));
+    assert_eq!(call(&mut a, "updates.install", json!({}))["delivered"], 1);
+    let n = loop {
+        if let Notification::Other { method, params } = gui.next_notification().unwrap()
+            && method == "updates.command" {
+                break params;
+            }
+    };
+    assert_eq!((n["action"].as_str(), n["by"]["kind"].as_str()), (Some("install"), Some("agent")));
 }
 
 #[test]

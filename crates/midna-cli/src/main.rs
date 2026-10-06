@@ -496,13 +496,13 @@ fn run(a: &Args) -> Res {
 }
 
 fn open(a: &Args, out: OutFn) -> Res {
-    a.check(&["agent", "prompt", "resume", "monitor", "name", "project", "cwd", "background"])?;
+    a.check(&["agent", "prompt", "resume", "monitor", "name", "project", "cwd", "background", "close-on-exit"])?;
     let cwd = match a.get("cwd") {
         Some(c) => Some(c.to_string()),
         None if a.get("project").is_none() => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         None => None,
     };
-    let mut p = json!({ "project_id": a.get("project"), "name": a.get("name"), "cwd": cwd, "background": a.has("background") });
+    let mut p = json!({ "project_id": a.get("project"), "name": a.get("name"), "cwd": cwd, "background": a.has("background"), "close_on_exit": a.has("close-on-exit") });
     if let Some(agent) = a.get("agent") {
         p["kind"] = json!("agent");
         p["agent"] = json!(agent);

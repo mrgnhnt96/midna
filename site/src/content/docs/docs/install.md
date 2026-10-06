@@ -49,6 +49,8 @@ midna updates status    # running and available versions
 midna updates check     # check now
 ```
 
+`midna updates install` is yours to run. An agent that asks gets a Needs you item, unless you turn on **Settings › Agents may install updates** (`agents.may_install_updates`) for one that should install and test each beta as it lands.
+
 ## Uninstall
 
 1. Quit midna.

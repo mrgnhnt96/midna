@@ -142,6 +142,11 @@ impl Ctx {
         Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None }
     }
 
+    /// midnad acting on its own (actor kind `system`), e.g. closing a `close_on_exit` terminal.
+    pub fn internal_system() -> Ctx {
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None }
+    }
+
     /// A webhook trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
         Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None }
@@ -214,7 +219,7 @@ pub fn call(d: &Arc<Daemon>, ctx: &Ctx, method: &str, mut params: Value) -> R {
         Err(RpcError::conflict("midnad is upgrading/restarting; reconnect and retry in a moment"))
     } else if spec.stub {
         Err(RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet (later phase)")))
-    } else if spec.human_only && !ctx.is_human() && !project::agent_may_remove(d, method, &params) {
+    } else if spec.human_only && !ctx.is_human() && !project::agent_may_remove(d, method, &params) && !updates::agent_may_install(d, method) {
         Err(human_only_refusal(d, ctx, method, &params))
     } else if ctx.no_wait && spec.mutating && ctx.detached.is_none() {
         call_no_wait(d, ctx, method, params.clone())

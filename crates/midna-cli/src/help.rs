@@ -117,7 +117,7 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "open",
         aliases: &["new"],
-        usage: "open [--agent claude|codex [--prompt TEXT] [--resume ID]] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [-- argv... | -- agent args...]",
+        usage: "open [--agent claude|codex [--prompt TEXT] [--resume ID]] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [--close-on-exit] [-- argv... | -- agent args...]",
         summary: "open a terminal: a shell (default), a monitor, or an agent",
         details: "Shell: the login shell, or `-- argv...`. Monitor: `--monitor CMD` runs a command the human\n\
                   should watch; a failure raises a needs-you item. Agent: `--agent claude|codex` starts a\n\
@@ -129,6 +129,8 @@ pub static VERBS: &[Verb] = &[
                   --project the terminal goes in the project containing --cwd (default: this directory).\n\
                   --background puts it in the sidebar's folded Background group instead of under its\n\
                   project (a dev server, a watcher); it is still listed, readable and can raise needs-you.\n\
+                  --close-on-exit closes the terminal when its agent or command exits normally (exit 0,\n\
+                  ctrl-c, hang-up); a failed exit stays open with its needs-you item.\n\
                   Prints the new terminal's id.",
         methods: &["session.open"],
     },

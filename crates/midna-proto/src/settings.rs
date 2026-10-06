@@ -348,6 +348,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Allow agents to close terminals that are idle, done or exited (other than their own) without asking. Human only."),
     s!("agents.may_force_close", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to close any terminal without asking, including working ones and `close --force` (an unattended task board closing tabs when usage runs out or a PR is done). A rule on `close …` still applies. Off: those closes ask you. Human only."),
+    s!("agents.may_install_updates", SettingKind::Bool, B(false), "agents", true,
+        "Allow agents to install a downloaded update (`midna updates install`) without asking, e.g. an agent that tests each beta as it lands. The update's signature is still checked, and agents.restart_on_update still decides when running agents restart. Off: an agent's install asks you. Human only."),
     s!("approve.from_cli", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to approve approval requests of their own session from the CLI. Human only."),
     s!("agents.claude.statusline", SettingKind::Bool, B(true), "agents", false,

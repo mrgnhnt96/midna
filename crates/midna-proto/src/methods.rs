@@ -514,6 +514,11 @@ pub struct SessionOpenParams {
     /// the sidebar instead of listed under its project, and never selected on open.
     #[serde(default)]
     pub background: bool,
+    /// Close the terminal when its agent (or command) exits normally: exit 0, ctrl-c or hang-up.
+    /// A failed exit stays open with its needs-you item so someone can see why. For agents that
+    /// open a terminal for one job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close_on_exit: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

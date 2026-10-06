@@ -672,3 +672,21 @@ fn background_terminals_open_and_move() {
     let mut a = d.agent(Some(&id));
     assert_eq!(call(&mut a, "session.set_background", json!({ "id": id, "background": true }))["background"], true);
 }
+
+#[test]
+fn close_on_exit_closes_a_clean_exit_and_keeps_a_failure() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let open = |h: &mut Client, script: &str| {
+        let s = call(h, "session.open", json!({ "kind": "monitor", "cwd": "/tmp", "command": ["/bin/sh", "-c", script], "close_on_exit": true }));
+        s["id"].as_str().unwrap().to_string()
+    };
+    let clean = open(&mut h, "sleep 0.3; exit 0");
+    let failed = open(&mut h, "sleep 0.3; exit 3");
+    let plain = call(&mut h, "session.open", json!({ "kind": "monitor", "cwd": "/tmp", "command": ["/bin/sh", "-c", "exit 0"] }))["id"].as_str().unwrap().to_string();
+    wait_for(10, "clean exit to close", || h.call_value("session.get", json!({ "id": clean })).is_err().then_some(()));
+    wait_for(10, "failure to be marked", || (call(&mut h, "session.get", json!({ "id": failed }))["status"]["state"] == "failed").then_some(()));
+    wait_for(10, "plain exit to be marked", || (call(&mut h, "session.get", json!({ "id": plain }))["status"]["state"] == "exited").then_some(()));
+    let closed = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.closed"] } }));
+    assert!(closed.to_string().contains(&clean) && closed.to_string().contains("\"system\""), "{closed}");
+}

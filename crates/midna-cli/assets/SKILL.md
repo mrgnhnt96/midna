@@ -43,6 +43,9 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - Add `--background` to `open` for something that should run out of the way (a dev server, a
   watcher). It sits in the sidebar's folded Background group but is still listed, readable and
   able to raise needs-you. `midna background <id> [--off]` moves an existing terminal.
+- Add `--close-on-exit` to `open` (`session.open {close_on_exit: true}`) for a terminal that does
+  one job: it closes when its agent or command exits normally, so you don't have to watch for
+  `exited`. A failed exit stays open with its needs-you item.
 - `midna send <id> <text>` types text and presses Enter. Add `--no-enter` to skip Enter. In a
   Claude Code or Codex terminal that is a chat message (multi-line text stays one message).
   `--image PATH` (repeatable) attaches an image ahead of the text, e.g. a screenshot you saved:

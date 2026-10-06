@@ -460,7 +460,8 @@ fn build() -> Vec<MethodSpec> {
              arrives as an updates.status event and in updates.status. delivered=0 means the GUI isn't running."),
         m::<NoParams, UpdatesCommandResult>("updates.install").mutating().human().d(
             "Install a downloaded update: the app swaps its bundle and relaunches (terminals keep running in midnad). \
-             Human only: an agent's call becomes a needs-you approval; tell the human why the update matters."),
+             Human only: an agent's call becomes a needs-you approval (tell the human why the update matters), unless the \
+             human turned on agents.may_install_updates."),
         m::<UpdatesReportParams, OkResult>("updates.report").mutating().human().d(
             "Internal: the GUI reports its updater state here (agents call updates.status instead)."),
         // themes

@@ -257,6 +257,10 @@ pub struct Session {
     /// `shell` again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedAgent>,
+    /// Close the terminal once its process exits normally (exit 0, ctrl-c or hang-up); a
+    /// failed exit stays open with its needs-you item. Set with `session.open`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close_on_exit: bool,
 }
 
 /// An agent typed into a shell terminal and run by `midna shim` (see `Session.adopted`).

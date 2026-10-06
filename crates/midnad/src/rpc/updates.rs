@@ -6,7 +6,7 @@
 //! - `updates.check` / `updates.install` are forwarded to every GUI connection as an
 //!   `updates.command` notification (`{action: check|install, by}`), like `window.command`.
 //!   `updates.install` is human only, so an agent's call becomes a needs-you approval and the
-//!   human's approval runs it.
+//!   human's approval runs it, unless the human turned on `agents.may_install_updates`.
 use super::{Ctx, R, ok};
 use crate::daemon::Daemon;
 use midna_proto::*;
@@ -48,6 +48,12 @@ pub fn report(d: &Daemon, ctx: &Ctx, p: UpdatesReportParams) -> R {
         d.emit(kinds::UPDATES_STATUS, ctx.actor(), None, None, serde_json::to_value(&st).unwrap_or_default());
     }
     ok(OkResult { ok: true })
+}
+
+/// `agents.may_install_updates`: an agent's `updates.install` goes straight to the GUI, which
+/// still checks the update's signature before swapping the bundle.
+pub fn agent_may_install(d: &Daemon, method: &str) -> bool {
+    method == "updates.install" && d.core().state.setting_bool("agents.may_install_updates")
 }
 
 /// Forward `check` / `install` to the GUI.

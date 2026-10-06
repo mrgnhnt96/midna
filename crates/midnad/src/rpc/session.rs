@@ -240,6 +240,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         queue: vec![],
         queue_paused: false,
         adopted: None,
+        close_on_exit: p.close_on_exit,
     };
     {
         let mut core = d.core();
@@ -806,13 +807,14 @@ pub(crate) fn wait_gone(pid: i32, max: std::time::Duration) {
 
 /// The process exited. Ignored if the session was closed or restarted since.
 pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, signal: Option<i32>) {
-    let (kind, project) = {
+    let (kind, project, close_on_exit) = {
         let mut core = d.core();
         if core.rt.get(sid).map(|r| r.generation) != Some(generation) {
             return;
         }
         let Some(s) = core.state.session_mut(sid) else { return };
         s.pid = None;
+        let close_on_exit = s.close_on_exit;
         // An adopted agent that was the terminal's own process (`exec claude`) went with it:
         // released here, or the reaper would mark the exited terminal idle later.
         let adopted = s.adopted.take().is_some();
@@ -828,7 +830,7 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
             i.subagents.clear();
             i.restart = None;
         }
-        let out = (s.kind, s.project_id.clone());
+        let out = (s.kind, s.project_id.clone(), close_on_exit);
         if adopted {
             core.agents.remove(sid);
         }
@@ -850,6 +852,10 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
     crate::rpc::agent::end_turn_if_open(d, sid, "process exited");
     d.set_status(sid, state, Some(reason.clone()), code, Actor::system());
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
+    if close_on_exit && state == StatusState::Exited {
+        close_inner(d, &Ctx::internal_system(), sid, false);
+        return;
+    }
     if state == StatusState::Failed && kind != SessionKind::Shell {
         let mut item = d.new_needs_you(NeedsYouKind::Failed, format!("Terminal failed: {reason}"), Actor::system(), Some(sid.to_string()));
         item.bulk_safe = true;

@@ -21,4 +21,6 @@ The first public release.
 - **Unattended closes.** Turn on **Settings › Agents may force-close terminals** to let an agent close working terminals and use `close --force` without asking you. Off by default.
 - **Approvals clean up after themselves.** An approval about a terminal that has since closed, or from an agent that went away, leaves Needs you on its own.
 - **Folder trust in Needs you.** When a new Claude asks "Do you trust the files in this folder?", its terminal shows as needs you and you can answer from Needs you.
+- **Terminals that close themselves.** `midna open --close-on-exit` (`session.open {close_on_exit: true}`) closes an agent's or command's terminal when it exits normally. A failed exit stays open so you can see why.
+- **Unattended updates.** Turn on **Settings › Agents may install updates** (`agents.may_install_updates`) to let an agent run `midna updates install` without asking you, e.g. one that tests each beta as it lands. Signature checks still apply. Off by default.
 - **CLI.** `midna get <id>` shows one terminal; `--no-wait` returns a needs-you id instead of waiting for your answer (`midna needs get|wait <id>` follows it); agents may remove a project midna created for their `open --cwd` once its terminals are closed.
