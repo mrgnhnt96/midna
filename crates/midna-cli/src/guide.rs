@@ -224,7 +224,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("needs-you", "Needs-you items are what the human must look at: approval, permission_prompt, blocked, note, failed, \
         trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`. The human \
         resolves: approve{scope}, deny, dismiss, done, restart. An agent's \"trust this folder?\" startup dialog is a \
-        permission_prompt too (approve = Yes, deny = No). `midna needs get <id>` says where one item stands."),
+        permission_prompt too (approve = Yes, deny = No; any Yes, here or in the terminal, adds the folder to agents.trust_folders); \
+        a folder agents.trust_folders covers is answered Yes without one. `midna needs get <id>` says where one item stands."),
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
         description. Agents may change any key not marked human only; setting a human-only key asks the human. The GUI \
         updates live on settings.changed. Keybindings are settings too (keys.*)."),

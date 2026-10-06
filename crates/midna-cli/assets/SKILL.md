@@ -112,6 +112,7 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   their own session. `--no-wait` on any verb returns the needs-you id instead of waiting.
 - A new Claude or Codex in a folder it hasn't seen asks "do you trust this folder?" before it starts;
   that shows as a needs-you item (its terminal is needs_you) the human answers. Don't type into it.
+  Folders the human listed in `agents.trust_folders` (human only) are answered Yes automatically.
 
 ## Rules: agents add, humans remove
 

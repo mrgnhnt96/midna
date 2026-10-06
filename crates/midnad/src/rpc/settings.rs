@@ -71,7 +71,7 @@ pub fn set(d: &Daemon, ctx: &Ctx, p: SettingSetParams) -> R {
         let params = json!({ "key": s.key, "value": value });
         return Err(super::defer_to_human(d, ctx, &format!("Agent asks to change {}", s.key), &cli, "settings.set", &params));
     }
-    apply(d, ctx, s, value)
+    apply(d, ctx.actor(), s, value)
 }
 
 pub fn reset(d: &Daemon, ctx: &Ctx, p: SettingKeyParams) -> R {
@@ -80,10 +80,20 @@ pub fn reset(d: &Daemon, ctx: &Ctx, p: SettingKeyParams) -> R {
         let params = json!({ "key": s.key });
         return Err(super::defer_to_human(d, ctx, &format!("Agent asks to reset {}", s.key), &format!("settings reset {}", s.key), "settings.reset", &params));
     }
-    apply(d, ctx, s, s.default.to_json())
+    apply(d, ctx.actor(), s, s.default.to_json())
 }
 
-fn apply(d: &Daemon, ctx: &Ctx, s: &SettingSpec, value: Value) -> R {
+/// Set a setting from inside midnad (no caller to authorize), e.g. a human's answer that
+/// saves a choice. Logs and ignores a value the catalog rejects.
+pub fn set_as(d: &Daemon, by: Actor, key: &str, value: Value) {
+    let Some(s) = setting(key) else { return };
+    match s.coerce(&value) {
+        Ok(v) => drop(apply(d, by, s, v)),
+        Err(e) => eprintln!("midnad: set {key}: {e}"),
+    }
+}
+
+fn apply(d: &Daemon, by: Actor, s: &SettingSpec, value: Value) -> R {
     let old = {
         let mut core = d.core();
         let old = core.state.setting(s.key);
@@ -96,7 +106,7 @@ fn apply(d: &Daemon, ctx: &Ctx, s: &SettingSpec, value: Value) -> R {
     };
     if old != value {
         d.mark_dirty();
-        d.emit(kinds::SETTINGS_CHANGED, ctx.actor(), None, None, json!({ "key": s.key, "value": value, "old": old }));
+        d.emit(kinds::SETTINGS_CHANGED, by, None, None, json!({ "key": s.key, "value": value, "old": old }));
         if s.key == "agents.claude.statusline" {
             crate::hooks::write_claude_settings(d);
         }

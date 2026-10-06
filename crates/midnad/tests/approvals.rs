@@ -171,14 +171,15 @@ fn agents_may_remove_projects_their_open_created() {
 }
 
 /// A stand-in for `claude` that draws Claude Code 2.1.288's folder-trust dialog, records every
-/// byte typed at it, and draws an input box once Enter picks a choice.
+/// byte typed at it, and once Enter picks a choice draws an input box ("Yes": a down arrow came
+/// first) or exits ("No, exit" is highlighted), as Claude does.
 struct FakeTrust {
     dir: PathBuf,
 }
 
 impl FakeTrust {
-    fn new() -> FakeTrust {
-        let dir = PathBuf::from(format!("/tmp/midna-trust-{}", std::process::id()));
+    fn new(tag: &str) -> FakeTrust {
+        let dir = PathBuf::from(format!("/tmp/midna-trust-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let fixture = format!("{}/tests/fixtures/claude-2.1.288-trust-folder.screen.txt", env!("CARGO_MANIFEST_DIR"));
@@ -193,6 +194,7 @@ impl FakeTrust {
              \x20   b = os.read(0, 64)\n\
              \x20   if not b: break\n\
              \x20   open('{d}/keys', 'ab').write(b)\n\
+             \x20   if b'\\r' in b and b'\\x1b[B' not in open('{d}/keys', 'rb').read(): break\n\
              \x20   if b'\\r' in b:\n\
              \x20       sys.stdout.write('\\x1b[H\\x1b[2J  welcome\\r\\n> '); sys.stdout.flush()\n",
             d = dir.display()
@@ -216,7 +218,7 @@ impl Drop for FakeTrust {
 
 #[test]
 fn folder_trust_dialog_is_a_needs_you_item() {
-    let fake = FakeTrust::new();
+    let fake = FakeTrust::new("item");
     let bin = fake.dir.join("claude").to_string_lossy().into_owned();
     let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
     let mut h = d.human();
@@ -237,4 +239,76 @@ fn folder_trust_dialog_is_a_needs_you_item() {
     assert_eq!(s["status"]["state"], "idle");
     std::thread::sleep(std::time::Duration::from_millis(3500));
     assert!(call(&mut h, "needs_you.list", json!({ "session_id": sid })).as_array().unwrap().is_empty(), "not raised again once answered");
+    // Trusting it saves the folder.
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "agents.trust_folders" }))["value"], json!(["/tmp"]));
+}
+
+#[test]
+fn trust_folders_answers_yes_without_asking() {
+    let fake = FakeTrust::new("auto");
+    let bin = fake.dir.join("claude").to_string_lossy().into_owned();
+    let cwd = fake.dir.to_string_lossy().into_owned();
+    let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
+    let mut h = d.human();
+    // Agents can't widen it themselves: that asks the human.
+    let err = call_err(&mut d.agent(None), "settings.set", json!({ "key": "agents.trust_folders", "value": "/tmp" }));
+    assert_eq!(err.code, HUMAN_ONLY);
+    call(&mut h, "settings.set", json!({ "key": "agents.trust_folders", "value": "/tmp/midna-trust-auto-*" }));
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": cwd }))["id"].as_str().unwrap().to_string();
+    wait_for(10, "keys typed", || (fake.keys() == b"\x1b[B\r").then_some(()));
+    let items = call(&mut h, "needs_you.list", json!({ "session_id": sid }));
+    assert!(items.as_array().unwrap().iter().all(|n| n["kind"] != "permission_prompt"), "{items}");
+    let audit = call(&mut h, "events.list", json!({ "limit": 1000 }));
+    assert!(audit.to_string().contains("folder_trusted"), "{audit}");
+}
+
+#[test]
+fn denying_trust_saves_nothing() {
+    let fake = FakeTrust::new("deny");
+    let bin = fake.dir.join("claude").to_string_lossy().into_owned();
+    let cwd = fake.dir.to_string_lossy().into_owned();
+    let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
+    let mut h = d.human();
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": cwd }))["id"].as_str().unwrap().to_string();
+    let item = wait_for(10, "trust item", || {
+        call(&mut h, "needs_you.list", json!({ "session_id": sid })).as_array().unwrap().iter().find(|n| n["kind"] == "permission_prompt").cloned()
+    });
+    call(&mut h, "needs_you.resolve", json!({ "id": item["id"], "resolution": { "kind": "deny" } }));
+    wait_for(5, "keys typed", || (fake.keys() == b"\r").then_some(()));
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "agents.trust_folders" }))["value"], json!([]));
+}
+
+/// Opens the fake in its own folder, waits for its trust item and types `keys` at it as the
+/// human, the way answering in the terminal does; returns the saved agents.trust_folders after
+/// the agent has had time to exit (or not).
+fn answer_in_terminal(tag: &str, keys: &str) -> (Value, Value) {
+    let fake = FakeTrust::new(tag);
+    let bin = fake.dir.join("claude").to_string_lossy().into_owned();
+    let cwd = fake.dir.to_string_lossy().into_owned();
+    let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
+    let mut h = d.human();
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": cwd }))["id"].as_str().unwrap().to_string();
+    wait_for(10, "trust item", || {
+        call(&mut h, "needs_you.list", json!({ "session_id": sid })).as_array().unwrap().iter().find(|n| n["kind"] == "permission_prompt").cloned()
+    });
+    for k in keys.split_inclusive('\r') {
+        call(&mut h, "session.input", json!({ "id": sid, "text": k }));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(3500));
+    let cwd = call(&mut h, "session.get", json!({ "id": sid }))["cwd"].clone();
+    (call(&mut h, "settings.get", json!({ "key": "agents.trust_folders" }))["value"].clone(), cwd)
+}
+
+#[test]
+fn yes_typed_in_the_terminal_saves_the_folder() {
+    let (saved, cwd) = answer_in_terminal("typed-yes", "\x1b[B\r");
+    assert_eq!(saved, json!([cwd]));
+}
+
+#[test]
+fn no_typed_in_the_terminal_saves_nothing() {
+    let (saved, _) = answer_in_terminal("typed-no", "\r");
+    assert_eq!(saved, json!([]));
 }

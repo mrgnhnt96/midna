@@ -620,6 +620,8 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
         let start = n.kind == NeedsYouKind::TriggerWaiting;
         let session_name = sess.map(|s| s.name.clone()).unwrap_or_else(|| "it".into());
         let scope_hint = if start { "this trigger" } else { "this command" };
+        // A folder-trust dialog (midnad's trust.rs) has no scopes: trusting saves the folder.
+        let trust = n.kind == NeedsYouKind::PermissionPrompt && n.title.starts_with("Trust this folder?");
         let options: Vec<(&str, String, ApprovalScope)> = vec![
             ("Approve once", approve_key.to_string(), ApprovalScope::Once),
             ("Approve for 15 minutes", scope_hint.into(), ApprovalScope::Minutes { minutes: 15 }),
@@ -653,6 +655,7 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
                             .h(px(38.))
                             .px(px(16.))
                             .rounded_l(px(7.))
+                            .when(start || trust, |d| d.rounded_r(px(7.)))
                             .bg(t.accent)
                             .text_color(t.accent_fg)
                             .font_weight(FontWeight::BOLD)
@@ -660,9 +663,9 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
                             .cursor_pointer()
                             .hover(|s| s.opacity(0.92))
                             .on_click(cx.listener(|m, _, _, cx| resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx)))
-                            .child(format!("{} {approve_key}", if start { "Start" } else { "Approve" })),
+                            .child(format!("{} {approve_key}", if start { "Start" } else if trust { "Trust" } else { "Approve" })),
                     )
-                    .when(!start, |d| {
+                    .when(!start && !trust, |d| {
                         d.child(
                             div()
                                 .id("ny-approve-more")

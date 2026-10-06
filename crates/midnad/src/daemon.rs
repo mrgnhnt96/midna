@@ -157,6 +157,8 @@ pub struct Daemon {
     pub waiters: Mutex<HashMap<Id, Sender<Answer>>>,
     /// How recently closed needs-you items ended (`needs_you.get`). Not persisted.
     pub answered: Mutex<crate::rpc::needs_you::Answered>,
+    /// Folder-trust dialogs being answered (`trust.rs`). Not persisted.
+    pub trust: Mutex<crate::trust::Memory>,
     next_conn: AtomicU64,
     pub next_gen: AtomicU64,
     /// Webhook receiver, secrets and delivery-path runtime state.
@@ -219,6 +221,7 @@ impl Daemon {
             gui: Mutex::new(vec![]),
             waiters: Mutex::new(HashMap::new()),
             answered: Default::default(),
+            trust: Default::default(),
             next_conn: AtomicU64::new(1),
             next_gen: AtomicU64::new(1),
             webhooks: crate::webhooks::Runtime::new(&cfg),
@@ -378,6 +381,7 @@ impl Daemon {
             crate::rpc::secret::drop_pending(self, def);
         }
         self.answered.lock().unwrap_or_else(|e| e.into_inner()).record(&item.id, &resolution, &by);
+        crate::trust::closed(self, &item, &resolution);
         self.mark_dirty();
         self.emit(
             kinds::NEEDS_YOU_RESOLVED,
