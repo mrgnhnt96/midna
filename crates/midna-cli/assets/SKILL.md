@@ -60,6 +60,10 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   to (`midna links pin <id|url>`: the PR you opened, the design you published, the doc they sent),
   and `midna links add <url|path> --title T --why "note"` for something important that never
   showed up as a link. Don't pin everything: a few pins are useful, twenty aren't.
+  Links remember the prompts they came up in: `midna links --kind file --turn last` lists the
+  files edited since the human's last prompt (`--turn N` for prompt N of `midna prompts`).
+- `midna usage` shows Claude's plan usage (5-hour and weekly windows, account-wide) and whether
+  it is limited until a reset. Check it before starting long work for someone else.
 - Prefer opening your own terminal over typing into one someone else is using. Never answer
   another agent's permission prompt unless `midna read --screen` shows that prompt.
 

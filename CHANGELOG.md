@@ -14,5 +14,6 @@ The first public release.
 - **Rules.** Allow, ask or deny commands and tools, globally or per project. Agents can add rules; only you can remove them.
 - **Triggers.** GitHub and Bitbucket webhooks can start an agent, run a command or raise your attention, delivered over Tailscale Funnel.
 - **Insights.** Turns, messages, spend and time spent waiting on you, by day, week or month.
+- **Claude plan usage for tools.** `midna usage` (and `usage.get`, `session.get` `agent_info.rate_limits`) shows the 5-hour and weekly limits Claude Code reports, and a `usage.limit_reached` event fires when one runs out. `midna links --kind file --turn last` lists the files an agent edited since your last prompt.
 - **Dictation with Kass.** midna opens a real text field as soon as Kass starts listening, so dictation can read and edit what you say in a terminal.
 - **Signed updates.** midna checks for updates every few hours, verifies them, and installs them on restart without closing your terminals. Turn on the beta channel in **Settings › Updates** to get new features early.
