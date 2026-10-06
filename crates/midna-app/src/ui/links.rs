@@ -217,14 +217,15 @@ fn jump(m: &mut MainWindow, l: &Link, window: &mut Window, cx: &mut Context<Main
 
 // ------------------------------------------------------------------ rendering
 
-/// The header button: link icon, count, and a dot while something new hasn't been seen.
+/// The header button: link icon, count, and a dot while something new hasn't been seen. Hidden until the
+/// terminal has a link, except while ⌘L has the popover open (it hangs off the button).
 pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let s = m.selected_session()?;
     let links = m.links.by_session.get(&s.id).map(Vec::as_slice).unwrap_or(&[]);
-    if links.is_empty() && s.agent.is_none() {
+    let open = m.menu == Menu::Links;
+    if links.is_empty() && !open {
         return None;
     }
-    let open = m.menu == Menu::Links;
     let fresh = !open && m.links.seen_at.get(&s.id).is_some_and(|since| new_count(links, since) > 0);
     let tip = format!("Session links ({})", links.len());
     let color = if open || fresh { t.accent } else { t.dim };

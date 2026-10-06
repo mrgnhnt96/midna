@@ -229,6 +229,8 @@ pub fn is_builtin_script(v: &str) -> bool {
 
 /// The terminal header's built-in toolbar buttons, for `ui.header.buttons` (More is always there, last).
 pub const HEADER_BUTTONS: &[&str] = &["subagents", "links", "ide", "image", "split", "popout", "restart"];
+/// `ui.header.buttons` out of the box: restart lives in the More menu.
+pub const DEFAULT_HEADER_BUTTONS: &[&str] = &["subagents", "links", "ide", "image", "split", "popout"];
 
 /// The built-in statuses `ui.status.looks` can restyle.
 pub const STATUS_STATES: &[&str] = &["idle", "working", "needs_you", "done", "failed", "exited"];
@@ -321,7 +323,7 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Script that renders the terminal header line: built-in parts joined with + (github, agent, worktree, branch, sync, diff, files, pr) or an absolute path to an executable printing JSON segments (`midna explain scripts`)."),
     s!("ui.row.script", en_path(&["worktree+diff", "worktree+branch", "diff", "none"]), S("worktree+diff"), "appearance", false,
         "Script that renders the extra text on each sidebar terminal row: built-in parts joined with + (worktree, branch, diff, …) or an executable path (`midna explain scripts`)."),
-    s!("ui.header.buttons", SettingKind::ItemList { options: HEADER_BUTTONS, allow_paths: true }, L(&["subagents", "links", "ide", "image", "split", "popout", "restart"]), "appearance", false,
+    s!("ui.header.buttons", SettingKind::ItemList { options: HEADER_BUTTONS, allow_paths: true }, L(DEFAULT_HEADER_BUTTONS), "appearance", false,
         "Header toolbar buttons, left to right (More is always last): subagents, links, ide, image, split, popout, restart, or an absolute path to your own button script (it prints the button's look and runs again with MIDNA_CLICK=1 when clicked; `midna explain scripts`). A built-in left out moves into the More (…) menu; its shortcut still works. Adding a script path is human only."),
     s!("ui.status.looks", SettingKind::RuleList, L(&[]), "appearance", false,
         "Restyle built-in statuses, one rule per status, only what you list: `<status> = <color> icon:<name> label:<text>` (each part optional). status: idle, working, needs_you, done, failed, exited, optionally for one kind of terminal (`claude.working`, `codex.done`, `shell.failed`; its fields override the plain rule's). color = the dot (red, orange, amber, yellow, green, teal, blue, purple, pink, gray or #rrggbb); icon replaces the agent icon (check, cross, bell, lock, bolt, play, …); label shows in the header and the row's second line. A trigger's custom status still wins. E.g. `needs_you = pink icon:bell label:Your turn`."),
@@ -567,7 +569,7 @@ mod tests {
         assert!(is_builtin_script(""));
         assert!(!is_builtin_script("worktree+/bin/date"));
         assert!(!is_builtin_script("/usr/local/bin/seg"));
-        assert_eq!(setting("ui.header.buttons").unwrap().default.to_json(), json!(HEADER_BUTTONS));
+        assert_eq!(setting("ui.header.buttons").unwrap().default.to_json(), json!(DEFAULT_HEADER_BUTTONS));
         for k in ["ui.header.script", "ui.row.script", "ui.status.script"] {
             let SettingKind::Enum { options, .. } = setting(k).unwrap().ty else { panic!() };
             assert!(options.iter().all(|o| is_builtin_script(o)), "{k}");

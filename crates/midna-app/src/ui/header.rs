@@ -96,7 +96,7 @@ pub fn buttons(m: &MainWindow) -> Vec<String> {
     if m.settings.contains_key("ui.header.buttons") {
         list_setting(m, "ui.header.buttons")
     } else {
-        midna_proto::settings::HEADER_BUTTONS.iter().map(|s| s.to_string()).collect()
+        midna_proto::settings::DEFAULT_HEADER_BUTTONS.iter().map(|s| s.to_string()).collect()
     }
 }
 
@@ -235,10 +235,11 @@ fn click_custom(m: &mut MainWindow, sid: String, path: String, cx: &mut Context<
 
 /// Right-click on the toolbar: a check row per built-in button and per custom one, saved to
 /// `ui.header.buttons` (a re-shown built-in goes back to its default place; unchecking a custom
-/// one removes it). Order is changed in settings (or by asking an agent).
+/// one removes it). Order is changed in settings (or by asking an agent). It stays open, so several can be
+/// toggled; it occludes so a click doesn't reach the click-away layer or start a window drag underneath.
 fn buttons_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let current = buttons(m);
-    let mut list = menu_box(t).text_size(px(12.5));
+    let mut list = menu_box(t).occlude().text_size(px(12.5));
     let all = midna_proto::settings::HEADER_BUTTONS.iter().map(|s| s.to_string()).chain(current.iter().filter(|b| b.starts_with('/')).cloned());
     for b in all {
         let on = current.iter().any(|c| *c == b);
@@ -253,7 +254,6 @@ fn buttons_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl
 }
 
 fn save_list(m: &mut MainWindow, key: &'static str, value: Vec<String>, cx: &mut Context<MainWindow>) {
-    m.menu = Menu::None;
     m.settings.insert(key.into(), serde_json::json!(value));
     m.rpc("settings.set", serde_json::json!({"key": key, "value": value}), cx, |_, _, _, _| {});
     cx.notify();

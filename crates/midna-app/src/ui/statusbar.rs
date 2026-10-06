@@ -294,17 +294,16 @@ fn script_item(m: &MainWindow, item: &str, t: &Theme, cx: &mut Context<MainWindo
 
 /// Right-click menu: a check row per built-in item and per script path in the list (saved to
 /// `ui.status.items`; unchecking a script path drops it, adding one is done by asking an agent
-/// or `midna settings set`). Opens upward from where the bar was clicked.
+/// or `midna settings set`). Opens upward from where the bar was clicked, and stays open so several can be toggled.
 fn menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let current = items(m);
-    let mut list = crate::ui::sidebar::menu_box(t).mb(px(4.)).text_size(px(12.5));
+    let mut list = crate::ui::sidebar::menu_box(t).occlude().mb(px(4.)).text_size(px(12.5));
     let all = midna_proto::settings::STATUS_ITEMS.iter().map(|s| s.to_string()).chain(current.iter().filter(|i| i.starts_with('/')).cloned());
     for item in all {
         let on = current.iter().any(|i| *i == item);
         let next = toggled(&current, &item, "ui.status.items");
         list = list.child(
             crate::ui::sidebar::menu_item(t, &format!("status-item-{item}"), item_label(&item), if item.starts_with('/') { "unchecking removes it" } else { "" }, cx.listener(move |m, _, _, cx| {
-                m.menu = Menu::None;
                 m.settings.insert("ui.status.items".into(), serde_json::json!(next));
                 m.rpc("settings.set", serde_json::json!({"key": "ui.status.items", "value": next}), cx, |_, _, _, _| {});
                 cx.notify();

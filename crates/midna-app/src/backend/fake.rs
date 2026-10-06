@@ -118,7 +118,7 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("ui.row.script", json!("worktree+diff"), "worktree+diff | worktree+branch | diff | none | custom path", false),
         e("ui.status.script", json!("worktree+branch"), "worktree+branch | branch | github | none | custom path", false),
         e("ui.status.looks", json!([]), "restyle built-in statuses", false),
-        e("ui.header.buttons", json!(midna_proto::settings::HEADER_BUTTONS), "header toolbar buttons", false),
+        e("ui.header.buttons", json!(midna_proto::settings::DEFAULT_HEADER_BUTTONS), "header toolbar buttons", false),
         e("ui.status.items", json!(midna_proto::settings::setting("ui.status.items").map(|s| s.default.to_json()).unwrap_or_default()), "status bar items", false),
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
