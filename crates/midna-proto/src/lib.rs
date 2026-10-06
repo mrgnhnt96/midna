@@ -13,6 +13,7 @@ pub mod paths;
 pub mod prompts;
 pub mod secrets;
 pub mod settings;
+pub mod themes;
 pub mod time;
 pub mod types;
 

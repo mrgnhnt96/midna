@@ -12,6 +12,28 @@ use std::os::fd::RawFd;
 mod input;
 pub use input::{FindHit, Link, detect_link, key_from_name};
 
+/// Terminal colors of the theme the app shows (`themes.report`); every engine follows them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThemeColors {
+    pub fg: [u8; 3],
+    pub bg: [u8; 3],
+    pub cursor: Option<[u8; 3]>,
+    pub ansi: [[u8; 3]; 16],
+}
+
+static THEME_COLORS: std::sync::Mutex<Option<ThemeColors>> = std::sync::Mutex::new(None);
+static THEME_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Set the colors every engine uses as its defaults (None = libghostty's own). Engines pick
+/// them up on their next frame; poke them with [`Engine::sync_colors`] to redraw idle ones.
+pub fn set_theme_colors(c: Option<ThemeColors>) {
+    let mut cur = THEME_COLORS.lock().unwrap_or_else(|e| e.into_inner());
+    if *cur != c {
+        *cur = c;
+        THEME_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub fn now_ns() -> u64 {
     unsafe extern "C" {
         fn clock_gettime_nsec_np(id: libc::clockid_t) -> u64;
@@ -44,6 +66,8 @@ pub struct Engine {
     /// Cursor (position, style) in the last frame: an app that only moves the cursor (Claude
     /// Code's word jumps) dirties no row, but the client still has to see it move.
     sent_cursor: Option<(Option<(u16, u16)>, u8)>,
+    /// The [`THEME_GEN`] this engine's default colors match.
+    colors_gen: u64,
 }
 
 impl Engine {
@@ -51,7 +75,7 @@ impl Engine {
     pub fn new(cols: u16, rows: u16, pty_fd: Option<RawFd>) -> Engine {
         let mut term = new_terminal(cols, rows);
         connect_pty(&mut term, pty_fd);
-        Engine {
+        let mut e = Engine {
             pty_fd,
             tail: Vec::new(),
             term,
@@ -68,7 +92,43 @@ impl Engine {
             has_selection: false,
             meta_dirty: false,
             sent_cursor: None,
+            colors_gen: 0,
+        };
+        e.sync_colors();
+        e
+    }
+
+    /// Follow the theme's colors ([`set_theme_colors`]) as this terminal's defaults: what a
+    /// program sets with OSC 4/10/11/12 still wins until it resets them.
+    pub fn sync_colors(&mut self) {
+        use libghostty_vt::style::RgbColor;
+        let g = THEME_GEN.load(std::sync::atomic::Ordering::SeqCst);
+        if g == self.colors_gen {
+            return;
         }
+        self.colors_gen = g;
+        let c = THEME_COLORS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let rgb = |c: [u8; 3]| RgbColor { r: c[0], g: c[1], b: c[2] };
+        match c {
+            Some(c) => {
+                if let Ok(mut pal) = self.term.default_color_palette() {
+                    for (i, a) in c.ansi.iter().enumerate() {
+                        pal.0[i] = rgb(*a);
+                    }
+                    let _ = self.term.set_default_color_palette(Some(pal));
+                }
+                let _ = self.term.set_default_fg_color(Some(rgb(c.fg)));
+                let _ = self.term.set_default_bg_color(Some(rgb(c.bg)));
+                let _ = self.term.set_default_cursor_color(c.cursor.map(rgb));
+            }
+            None => {
+                let _ = self.term.set_default_color_palette(None);
+                let _ = self.term.set_default_fg_color(None);
+                let _ = self.term.set_default_bg_color(None);
+                let _ = self.term.set_default_cursor_color(None);
+            }
+        }
+        self.force_full = true;
     }
 
     pub fn feed(&mut self, data: &[u8], read_ns: u64) {
@@ -160,6 +220,7 @@ impl Engine {
 
     /// Build a frame of dirty rows (None when clean).
     pub fn frame(&mut self) -> Option<Frame> {
+        self.sync_colors();
         let t0 = now_ns();
         let Engine { term, rs, rows_it, cells_it, .. } = self;
         let snap = rs.update(term).ok()?;
@@ -397,6 +458,11 @@ fn replay(t: &mut Terminal<'static, 'static>, s: &TermSnap) {
     }
     let cursor = if s.alt_vt.is_some() { s.alt_cursor.unwrap_or(s.primary_cursor) } else { s.primary_cursor };
     t.vt_write(cup(cursor).as_bytes());
+    // The export carries the palette as OSC 4/10/11 overrides, which would pin the theme the
+    // terminal had at upgrade time: drop them so it keeps following the theme.
+    if THEME_COLORS.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        t.vt_write(b"\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07");
+    }
     if !s.pending.is_empty() {
         t.vt_write(&s.pending);
     }
@@ -686,5 +752,28 @@ mod snapshot_tests {
         r.feed(b"\x1b[?1049l", 1);
         assert_eq!(plain(&r), plain(&e));
         assert_eq!(r.cursor(), e.cursor());
+    }
+
+    #[test]
+    fn theme_colors_recolor_existing_cells_and_osc_still_wins() {
+        let cell = |e: &mut Engine, x: usize| {
+            e.force_full();
+            let f = e.frame().unwrap();
+            let row = &f.changed.iter().find(|(y, _)| *y == 0).unwrap().1;
+            (row.cells[x].fg, f.default_fg, f.default_bg)
+        };
+        let mut e = Engine::new(20, 3, None);
+        e.feed(b"\x1b[31mR\x1b[0mx", 1);
+        let mut ansi = [[0u8; 3]; 16];
+        ansi[1] = [1, 2, 3];
+        set_theme_colors(Some(ThemeColors { fg: [9, 9, 9], bg: [7, 7, 7], cursor: None, ansi }));
+        assert_eq!(cell(&mut e, 0), ([1, 2, 3], [9, 9, 9], [7, 7, 7]));
+        // A program's OSC 4 override beats the theme; OSC 104 hands it back.
+        e.feed(b"\x1b]4;1;rgb:ff/00/00\x07", 1);
+        assert_eq!(cell(&mut e, 0).0, [255, 0, 0]);
+        e.feed(b"\x1b]104\x07", 1);
+        assert_eq!(cell(&mut e, 0).0, [1, 2, 3]);
+        set_theme_colors(None);
+        assert_ne!(cell(&mut e, 0).0, [1, 2, 3]);
     }
 }

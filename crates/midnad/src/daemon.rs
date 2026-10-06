@@ -184,6 +184,7 @@ impl Daemon {
         std::fs::create_dir_all(&cfg.home)?;
         let _ = std::fs::set_permissions(&cfg.home, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         crate::notify_media::install_twilight(&cfg.home);
+        crate::rpc::themes::load(&cfg.home);
         let log = EventLog::open(&paths::events_path(&cfg.home))?;
         let mut state = State::load(&paths::state_path(&cfg.home));
         // PTYs don't survive a daemon restart (yet): mark leftover sessions exited.

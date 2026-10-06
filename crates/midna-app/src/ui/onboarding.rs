@@ -81,6 +81,61 @@ pub struct Onboarding {
     pub card_seq: u64,
     /// The `card_seq` the launch opening brought in (no second entrance for it).
     pub card_seq_opened: u64,
+    /// The theme step's choice while browsing (None: not touched yet, read from settings).
+    /// Browsing only previews; "Finish setup" writes it.
+    pub theme_pick: Option<ThemePick>,
+}
+
+/// What the theme step has picked: one theme (linked), or a dark and a light one that follow
+/// macOS (unlinked).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThemePick {
+    /// Unlinked: follow macOS (theme = system, theme.dark / theme.light).
+    pub sys: bool,
+    /// Matching macOS: the dark slot is the one being browsed.
+    pub dark_slot: bool,
+    pub one: String,
+    pub dark: String,
+    pub light: String,
+}
+
+impl ThemePick {
+    /// The theme being browsed.
+    pub fn current(&self) -> &str {
+        match (self.sys, self.dark_slot) {
+            (false, _) => &self.one,
+            (true, true) => &self.dark,
+            (true, false) => &self.light,
+        }
+    }
+
+    pub fn set_current(&mut self, id: String) {
+        match (self.sys, self.dark_slot) {
+            (false, _) => self.one = id,
+            (true, true) => self.dark = id,
+            (true, false) => self.light = id,
+        }
+    }
+}
+
+/// The theme step's pick: what the human browsed to, else what the settings say now.
+pub fn theme_pick(m: &MainWindow, system_dark: bool) -> ThemePick {
+    if let Some(p) = &m.onboarding.theme_pick {
+        return p.clone();
+    }
+    use midna_proto::themes::choose;
+    let s = |k: &str| m.setting_str(k).unwrap_or_default();
+    let (theme, dark, light) = (s("theme"), s("theme.dark"), s("theme.light"));
+    // Linked is the default: `system` with the stock pair (the untouched default) shows as one
+    // theme; a pair the human chose shows unlinked.
+    let stock = choose("system", &dark, &light, true) == midna_proto::themes::DEFAULT_DARK && choose("system", &dark, &light, false) == midna_proto::themes::DEFAULT_LIGHT;
+    ThemePick {
+        sys: (theme.is_empty() || theme == "system") && !stock,
+        dark_slot: system_dark,
+        one: choose(&theme, &dark, &light, system_dark),
+        dark: choose("system", &dark, &light, true),
+        light: choose("system", &dark, &light, false),
+    }
 }
 
 pub fn load(backend: &std::sync::Arc<dyn crate::backend::Backend>) -> Onboarding {
@@ -262,11 +317,20 @@ fn poll_permission(cx: &mut Context<MainWindow>) {
     .detach();
 }
 
-pub(crate) fn set_theme(m: &mut MainWindow, theme: &'static str, cx: &mut Context<MainWindow>) {
+/// "Finish setup" on the theme step: save what was picked (one theme, or system with a dark
+/// and a light one).
+pub(crate) fn save_theme(m: &mut MainWindow, p: &ThemePick, cx: &mut Context<MainWindow>) {
     m.onboarding.theme_done = true;
+    let sets: Vec<(&str, String)> = if p.sys {
+        vec![("theme.dark", p.dark.clone()), ("theme.light", p.light.clone()), ("theme", "system".into())]
+    } else {
+        vec![("theme", p.one.clone())]
+    };
     let backend = m.backend.clone();
     std::thread::spawn(move || {
-        let _ = backend.call("settings.set", json!({ "key": "theme", "value": theme }));
+        for (k, v) in sets {
+            let _ = backend.call("settings.set", json!({ "key": k, "value": v }));
+        }
     });
     cx.notify();
 }

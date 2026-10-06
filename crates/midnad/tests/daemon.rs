@@ -243,7 +243,9 @@ fn settings_human_only_enforced() {
     // Agents can read it and change normal settings (with coercion).
     assert_eq!(call(&mut a, "settings.get", json!({ "key": "agents.may_move_windows" }))["human_only"], true);
     assert_eq!(call(&mut a, "settings.set", json!({ "key": "webhooks.port", "value": "9000" }))["value"], 9000);
-    assert_eq!(call_err(&mut a, "settings.set", json!({ "key": "theme", "value": "neon" })).code, -32602);
+    // Any theme id is accepted (a custom theme file may come later); a malformed one is not.
+    assert_eq!(call_err(&mut a, "settings.set", json!({ "key": "theme", "value": "Neon Lights!" })).code, -32602);
+    assert_eq!(call_err(&mut a, "settings.set", json!({ "key": "theme.colors", "value": ["accent = pink"] })).code, -32602);
     // The human approving the confirmation applies it.
     call(&mut h, "needs_you.resolve", json!({ "id": nid, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     assert_eq!(call(&mut h, "settings.get", json!({ "key": "agents.may_move_windows" }))["value"], true);

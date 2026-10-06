@@ -16,6 +16,7 @@ pub mod script;
 pub mod secret;
 pub mod session;
 pub mod settings;
+pub mod themes;
 pub mod trigger;
 pub mod ui;
 pub mod updates;
@@ -155,6 +156,8 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "ui.commands.list" => ui::list(d),
         "ui.commands.add" => ui::add(d, ctx, parse(p)?),
         "ui.commands.remove" => ui::remove(d, ctx, parse(p)?),
+        "themes.list" => themes::list(d),
+        "themes.report" => themes::report(d, parse(p)?),
         "updates.status" => updates::get(d),
         "updates.check" => updates::command(d, ctx, "check"),
         "updates.install" => updates::command(d, ctx, "install"),

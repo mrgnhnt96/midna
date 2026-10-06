@@ -138,6 +138,9 @@ impl SettingSpec {
                     if self.key == "ui.status.looks" {
                         check_status_look(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                     }
+                    if self.key == "theme.colors" {
+                        crate::themes::check_override(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
+                    }
                     let rule = format!("{m} = {val}");
                     if !out.contains(&rule) {
                         out.push(rule);
@@ -164,6 +167,10 @@ impl SettingSpec {
                 }
                 Ok(json!(out))
             }
+            SettingKind::Enum { .. } if self.key.starts_with("theme") => match as_text.map(|t| t.trim().to_string()) {
+                Some(t) if crate::themes::valid_id(&t) => Ok(json!(t)),
+                _ => Err(format!("{} expects a theme id: system, {} or a custom theme's id (`midna themes`)", self.key, crate::themes::BUILTIN_IDS.join(", "))),
+            },
             SettingKind::Enum { options, allow_other } => match as_text {
                 Some(t) if options.contains(&t.as_str()) || (allow_other && !t.is_empty()) => Ok(json!(t)),
                 _ => Err(format!("{} expects one of: {}", self.key, options.join(", "))),
@@ -293,12 +300,22 @@ pub fn status_look(rules: &[String], who: &str, state: &str) -> StatusLook {
 /// segments for the selected terminal; `spacer` pushes what follows to the right.
 pub const STATUS_ITEMS: &[&str] = &["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "script", "spacer", "update", "keys"];
 
+/// `theme`'s listed choices (any custom theme id is accepted too).
+pub const THEME_CHOICES: &[&str] = &["system", "twilight", "nord", "dracula", "gruvbox", "tokyo-night", "daylight", "solarized-light", "latte"];
+
 /// Where the app looks for updates by default: the manifests the release workflow
 /// (.github/workflows/release.yml) keeps on the `channels` GitHub release.
 pub const DEFAULT_FEED_URL: &str = "https://github.com/mrgnhnt96/midna/releases/download/channels/{channel}.json";
 
 pub static SETTINGS: &[SettingSpec] = &[
-    s!("theme", en(&["dark", "light", "system"]), S("system"), "appearance", false, "Color theme of the midna UI."),
+    s!("theme", en_path(THEME_CHOICES), S("system"), "appearance", false,
+        "Color theme of the midna UI and its terminals: system (follow macOS with theme.dark / theme.light), a built-in theme (twilight, nord, dracula, gruvbox, tokyo-night, daylight, solarized-light, latte) or a custom theme's id ($MIDNA_HOME/themes/<id>.json; `midna themes`). dark and light still mean twilight and daylight."),
+    s!("theme.dark", en_path(&crate::themes::BUILTIN_IDS), S("twilight"), "appearance", false,
+        "The theme used while macOS is in dark mode, when theme is system: a theme id (`midna themes`)."),
+    s!("theme.light", en_path(&crate::themes::BUILTIN_IDS), S("daylight"), "appearance", false,
+        "The theme used while macOS is in light mode, when theme is system: a theme id (`midna themes`)."),
+    s!("theme.colors", SettingKind::RuleList, L(&[]), "appearance", false,
+        "Change single colors on top of the theme, like VS Code's colorCustomizations: `<color> = #RRGGBB` for every theme, or `<theme id>:<color> = #RRGGBB` for one. Colors: bg, panel, raised, line, fg, dim, accent, accent-fg, need, ok, err, work, term, and the terminal's black … white, bright-black … bright-white (or ansi0–ansi15). E.g. `accent = #FF79C6`, `nord:need = #EBCB8B`."),
     s!("density", en(&["comfortable", "compact"]), S("comfortable"), "appearance", false, "Spacing density of sidebar rows and headers."),
     s!("ui.header.script", en_path(&["github", "github+agent", "worktree+branch", "none"]), S("github"), "appearance", false,
         "Script that renders the terminal header line: built-in parts joined with + (github, agent, worktree, branch, sync, diff, files, pr) or an absolute path to an executable printing JSON segments (`midna explain scripts`)."),

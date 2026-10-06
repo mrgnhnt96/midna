@@ -1,6 +1,10 @@
-//! Color tokens from the design boards (`.t-dark` / `.t-light` in docs/design/*.dc.html)
-//! and font families.
+//! The UI's colors, resolved from a `midna_proto::themes` theme (built-in, custom file, plus
+//! `theme.colors` overrides), and font families.
 use gpui_kit::*;
+use midna_proto::themes::{self, ThemeDef};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 pub const UI_FONT: &str = "Atkinson Hyperlegible Next";
 pub const MONO_FONT: &str = "JetBrains Mono";
@@ -16,6 +20,12 @@ pub enum ThemeMode {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Theme {
+    /// The resolved theme this was built from (`theme.colors` applied).
+    pub def: ThemeDef,
+    /// The theme's id (`midna_proto::themes`) and display name.
+    pub id: SharedString,
+    pub name: SharedString,
+    /// Dark or light kind; mode-dependent styling (scrims, chart palettes) keys off this.
     pub mode: ThemeMode,
     pub bg: Hsla,
     pub panel: Hsla,
@@ -33,8 +43,12 @@ pub struct Theme {
     pub err: Hsla,
     pub work: Hsla,
     pub term: Hsla,
-    /// Text on the need-colored badge (design: #15111C in both themes).
+    /// Text on the need-colored badge (the theme's bg in dark themes, white in light ones).
     pub badge_fg: Hsla,
+    /// Selected text in a terminal.
+    pub selection: Hsla,
+    /// The terminal's 16 ANSI colors (also pushed to midnad, which owns the engines).
+    pub ansi: [Hsla; 16],
     pub ui_font: SharedString,
     pub mono_font: SharedString,
     pub compact: bool,
@@ -46,59 +60,42 @@ fn hex(s: u32) -> Hsla {
     rgb(s).into()
 }
 
-fn rgba_(r: u8, g: u8, b: u8, a: f32) -> Hsla {
-    Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a }.into()
+pub fn rgb3(c: [u8; 3], a: f32) -> Hsla {
+    Rgba { r: c[0] as f32 / 255., g: c[1] as f32 / 255., b: c[2] as f32 / 255., a }.into()
 }
 
 impl Theme {
-    pub fn new(mode: ThemeMode, ui_font: SharedString, mono_font: SharedString) -> Theme {
-        match mode {
-            ThemeMode::Dark => Theme {
-                mode,
-                bg: hex(0x0F1117),
-                panel: hex(0x151821),
-                raised: hex(0x1D2130),
-                line: hex(0x282D3B),
-                fg: hex(0xE4E7EE),
-                dim: hex(0x9AA2B3),
-                accent: hex(0xB79AE8),
-                accent_fg: hex(0x15111C),
-                accent_soft: rgba_(183, 154, 232, 0.12),
-                need: hex(0xF2A93B),
-                need_ring: rgba_(242, 169, 59, 0.22),
-                need_soft: rgba_(242, 169, 59, 0.10),
-                ok: hex(0x4CC38A),
-                err: hex(0xF2665C),
-                work: hex(0x6EA2FF),
-                term: hex(0x0B0D12),
-                badge_fg: hex(0x15111C),
-                ui_font,
-                mono_font,
-                compact: false,
-            },
-            ThemeMode::Light => Theme {
-                mode,
-                bg: hex(0xE6E9EF),
-                panel: hex(0xF5F6F8),
-                raised: hex(0xFFFFFF),
-                line: hex(0xD3D8E0),
-                fg: hex(0x151922),
-                dim: hex(0x535D6E),
-                accent: hex(0x6237A0),
-                accent_fg: hex(0xFFFFFF),
-                accent_soft: rgba_(98, 55, 160, 0.08),
-                need: hex(0x9A5300),
-                need_ring: rgba_(154, 83, 0, 0.20),
-                need_soft: rgba_(154, 83, 0, 0.08),
-                ok: hex(0x1B7346),
-                err: hex(0xAE2219),
-                work: hex(0x2758B8),
-                term: hex(0xFCFCFD),
-                badge_fg: hex(0xFFFFFF),
-                ui_font,
-                mono_font,
-                compact: false,
-            },
+    pub fn from_def(d: &ThemeDef, ui_font: SharedString, mono_font: SharedString) -> Theme {
+        let c = |k: &str| rgb3(d.get(k).unwrap_or([255, 0, 255]), 1.);
+        let a = themes::alphas(d.dark);
+        let soft = |k: &str, al: f32| rgb3(d.get(k).unwrap_or([255, 0, 255]), al);
+        Theme {
+            def: d.clone(),
+            id: d.id.clone().into(),
+            name: d.name.clone().into(),
+            mode: if d.dark { ThemeMode::Dark } else { ThemeMode::Light },
+            bg: c("bg"),
+            panel: c("panel"),
+            raised: c("raised"),
+            line: c("line"),
+            fg: c("fg"),
+            dim: c("dim"),
+            accent: c("accent"),
+            accent_fg: c("accent-fg"),
+            accent_soft: soft("accent", a.accent_soft),
+            need: c("need"),
+            need_ring: soft("need", a.need_ring),
+            need_soft: soft("need", a.need_soft),
+            ok: c("ok"),
+            err: c("err"),
+            work: c("work"),
+            term: c("term"),
+            badge_fg: rgb3(themes::badge_fg(d), 1.),
+            selection: soft("accent", a.selection),
+            ansi: d.ansi.map(|x| rgb3(x, 1.)),
+            ui_font,
+            mono_font,
+            compact: false,
         }
     }
 
@@ -134,6 +131,69 @@ impl Theme {
             _ => self.fg,
         }
     }
+}
+
+/// The theme for the first frames, before the daemon's settings arrive: the one shown last
+/// (`app-state.json` "theme", written by `MainWindow::show_theme`), else Twilight or Daylight
+/// by the macOS appearance. No flash of the wrong colors on launch.
+pub fn startup_def(backend: &std::sync::Arc<dyn crate::backend::Backend>, system_dark: bool) -> ThemeDef {
+    let cached: serde_json::Value = crate::ui::statusbar::load_state(backend, "theme");
+    ThemeDef::from_cache(&cached).unwrap_or_else(|| themes::builtin(if system_dark { themes::DEFAULT_DARK } else { themes::DEFAULT_LIGHT }).expect("built-in"))
+}
+
+/// Remember `def` for the next launch's first frames (only when it changed).
+pub fn cache_def(backend: &std::sync::Arc<dyn crate::backend::Backend>, def: &ThemeDef) {
+    static LAST: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+    let v = def.to_cache();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref() == Some(&v) {
+        return;
+    }
+    *last = Some(v.clone());
+    crate::ui::statusbar::update_state(backend, "theme", v);
+}
+
+/// Custom theme files are re-read only when the folder's listing or a file's mtime changes.
+type Sig = Vec<(PathBuf, Option<SystemTime>)>;
+static CACHE: Mutex<Option<(PathBuf, Sig, Vec<ThemeDef>, Vec<String>)>> = Mutex::new(None);
+
+fn signature(dir: &Path) -> Sig {
+    let mut v: Sig = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| (e.path(), e.metadata().and_then(|m| m.modified()).ok())).filter(|(p, _)| p.extension().is_some_and(|x| x == "json")).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// Every theme (built-ins, then `$MIDNA_HOME/themes/*.json`) and the files that failed to load.
+pub fn all_themes(home: &Path) -> (Vec<ThemeDef>, Vec<String>) {
+    let dir = themes::themes_dir(home);
+    let sig = signature(&dir);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, s, t, e)) = c.as_ref()
+        && *d == dir
+        && *s == sig
+    {
+        return (t.clone(), e.clone());
+    }
+    let (t, e) = themes::load_all(&dir);
+    for err in &e {
+        eprintln!("midna-app: theme {err}");
+    }
+    *c = Some((dir, sig, t.clone(), e.clone()));
+    (t, e)
+}
+
+/// The themes [`all_themes`] last loaded (built-ins only before the first load).
+pub fn cached_themes() -> Vec<ThemeDef> {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.2.clone()).unwrap_or_else(themes::builtins)
+}
+
+/// True when a theme file was added, removed or edited since the last [`all_themes`].
+pub fn themes_changed(home: &Path) -> bool {
+    let dir = themes::themes_dir(home);
+    let c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    c.as_ref().is_none_or(|(d, s, _, _)| *d != dir || *s != signature(&dir))
 }
 
 /// Load the bundled OFL fonts; returns the (ui, mono) family names to use, falling back to

@@ -424,6 +424,8 @@ enum Control {
     Volume { key: String },
     /// An image picker: `notify.image` (cat None) or a kind's `notify.image.<kind>`.
     Image { key: String, cat: Option<&'static str> },
+    /// `theme` / `theme.dark` / `theme.light`: swatch chips for every theme (customs too).
+    Theme { key: String, current: String },
 }
 
 #[derive(Clone)]
@@ -459,6 +461,9 @@ struct Group {
 fn label_for(key: &str) -> String {
     match key {
         "theme" => "Theme",
+        "theme.dark" => "When macOS is dark",
+        "theme.light" => "When macOS is light",
+        "theme.colors" => "Color overrides",
         "density" => "Sidebar density",
         "ui.header.script" => "Terminal header line",
         "ui.row.script" => "Sidebar row line",
@@ -569,6 +574,7 @@ impl SettingsWindow {
         let who = if spec.human_only { Who::Human } else { Who::Agents };
         let text = value_text(&value);
         let control = match spec.ty {
+            SettingKind::Enum { .. } if matches!(key, "theme" | "theme.dark" | "theme.light") => Control::Theme { key: key.into(), current: text.clone() },
             SettingKind::Enum { options, .. } => {
                 let mut opts: Vec<(String, String)> = options.iter().map(|o| (o.to_string(), option_label(key, o))).collect();
                 if !options.contains(&text.as_str()) {
@@ -601,6 +607,67 @@ impl SettingsWindow {
             note.push_str(&format!(" (default: {})", value_text(&spec.default.to_json())));
         }
         Some(RowSpec { label: label_for(key), note: Some((note, Hsla::default())), control, cli: format!("midna settings set {key} {cli_value}"), who, warn: false })
+    }
+
+    /// Theme chips: a mini swatch (background, panel, accent) and the name, dark themes then
+    /// light ones. `theme` also offers "Follow macOS"; `theme.dark` / `theme.light` list one kind.
+    fn theme_control(&self, t: &Theme, key: String, current: String, cx: &mut Context<Self>) -> impl IntoElement {
+        use midna_proto::themes;
+        let current = if key == "theme" && current != "system" { themes::choose(&current, "", "", true) } else { current };
+        let all = crate::theme::cached_themes();
+        let only = match key.as_str() {
+            "theme.dark" => Some(true),
+            "theme.light" => Some(false),
+            _ => None,
+        };
+        let chip = |id: String, name: String, swatch: Option<[Hsla; 3]>, on: bool, cx: &mut Context<Self>| {
+            let k = key.clone();
+            div()
+                .id(SharedString::from(format!("theme-{key}-{id}")))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .h(px(28.))
+                .pl(px(5.))
+                .pr(px(10.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(if on { t.accent } else { t.line })
+                .when(on, |d| d.bg(t.accent_soft))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .whitespace_nowrap()
+                .text_color(if on { t.fg } else { t.dim })
+                .when(on, |d| d.font_weight(FontWeight::BOLD))
+                .hover(|s| s.text_color(t.fg))
+                .children(swatch.map(|[bg, panel, accent]| {
+                    div().w(px(26.)).h(px(18.)).rounded(px(4.)).overflow_hidden().flex().border_1().border_color(t.line).child(div().w(px(8.)).h_full().bg(panel)).child(
+                        div().flex_1().h_full().bg(bg).flex().items_center().justify_center().child(div().w(px(7.)).h(px(7.)).rounded_full().bg(accent)),
+                    )
+                }))
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if !on {
+                        s.set(&k, json!(id), cx);
+                    }
+                }))
+                .child(name)
+        };
+        let mut col = div().flex().flex_col().gap(px(6.));
+        if key == "theme" {
+            col = col.child(div().flex().child(chip("system".into(), "Follow macOS".into(), None, current == "system", cx)));
+        }
+        for dark in [true, false] {
+            if only.is_some_and(|o| o != dark) {
+                continue;
+            }
+            let mut row = div().flex().flex_wrap().gap(px(6.));
+            for d in all.iter().filter(|d| d.dark == dark) {
+                let c = |k: &str| crate::theme::rgb3(d.get(k).unwrap_or([0; 3]), 1.);
+                row = row.child(chip(d.id.clone(), d.name.clone(), Some([c("term"), c("panel"), c("accent")]), d.id == current, cx));
+            }
+            col = col.child(row);
+        }
+        col
     }
 
     /// "Claude Code hooks" / "Codex hooks": midna's global install (`hooks.status`), with a
@@ -747,7 +814,8 @@ impl SettingsWindow {
             }
         }
         // Look
-        let look = vec![row("theme"), row("density"), row("ui.header.script"), row("ui.row.script"), row("ui.status.script"), row("ui.status.items")];
+        let system = self.value("theme") == json!("system");
+        let look = vec![row("theme"), row("theme.dark").filter(|_| system), row("theme.light").filter(|_| system), row("theme.colors"), row("density"), row("ui.header.script"), row("ui.row.script"), row("ui.status.script"), row("ui.status.items")];
         // Terminal: link previews (the card a hovered path or link opens)
         let mut terminal: Vec<RowSpec> = [row("terminal.link_preview"), row("terminal.preview_path_click")].into_iter().flatten().collect();
         if self.value("terminal.link_preview") == json!("off")
@@ -1298,6 +1366,7 @@ impl SettingsWindow {
                 .child(div().text_color(t.dim).child(if on { on_text } else { off_text }))
                 .into_any_element(),
             Control::Sound { cat } => self.sound_control(t, cat, cx),
+            Control::Theme { key, current } => self.theme_control(t, key, current, cx).into_any_element(),
             Control::Volume { key } => self.volume_stepper(t, &key, None, cx).into_any_element(),
             Control::Image { key, cat } => self.image_control(t, &key, cat, cx),
             Control::Text { dot, text, color, action } => {

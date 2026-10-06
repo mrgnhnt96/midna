@@ -439,6 +439,16 @@ fn build() -> Vec<MethodSpec> {
              Human only: an agent's call becomes a needs-you approval; tell the human why the update matters."),
         m::<UpdatesReportParams, OkResult>("updates.report").mutating().human().d(
             "Internal: the GUI reports its updater state here (agents call updates.status instead)."),
+        // themes
+        m::<NoParams, ThemesListResult>("themes.list").d(
+            "List the color themes: the eight built-ins and the human's custom themes ($MIDNA_HOME/themes/<id>.json), \
+             each with its UI colors and 16 terminal colors, plus files that failed to load, the `theme` / `theme.dark` / \
+             `theme.light` settings and the theme the app shows now. To switch: settings.set theme <id> (or system). To \
+             tweak one color: settings.set theme.colors [\"accent = #FF79C6\"]. To make a theme: write a file in `dir` \
+             in the shape `format` describes; the app picks it up live."),
+        m::<ThemesReportParams, OkResult>("themes.report").mutating().human().d(
+            "Internal: the GUI reports the theme it shows and its terminal colors, which midnad applies to every terminal \
+             (agents switch themes with settings.set theme)."),
         // permissions
         m::<NoParams, PermissionsStatus>("permissions.status").d(
             "macOS permissions midna uses (accessibility, notifications, login-items) as far as the daemon can see them, \

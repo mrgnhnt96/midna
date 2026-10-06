@@ -431,6 +431,7 @@ fn run(a: &Args) -> Res {
         "settings" | "setting" => settings(a, &out),
         "commands" => commands(a, &out),
         "updates" => updates(a, &out),
+        "themes" | "theme" => themes(a, &out),
         "permissions" => permissions(a, &out),
         "hooks" => hooks(a, &out),
         "events" => events(a),
@@ -631,6 +632,40 @@ fn commands(a: &Args, out: OutFn) -> Res {
             out(&v, &|_| println!("removed {id}"));
         }
         other => return Err(Fail::Usage(format!("unknown commands subcommand `{other}`"))),
+    }
+    Ok(())
+}
+
+fn themes(a: &Args, out: OutFn) -> Res {
+    match a.pos.get(1).map(String::as_str).unwrap_or("list") {
+        "list" | "ls" => {
+            let v = call("themes.list", json!({}))?;
+            out(&v, &|v| {
+                let showing = v["showing"].as_str().unwrap_or("");
+                for t in v["themes"].as_array().into_iter().flatten() {
+                    let id = t["id"].as_str().unwrap_or("");
+                    let mark = if id == showing { "*" } else { " " };
+                    let src = t["path"].as_str().unwrap_or("built-in");
+                    println!("{mark} {id:<18} {:<5} {:<20} {src}", t["kind"].as_str().unwrap_or(""), t["name"].as_str().unwrap_or(""));
+                }
+                println!("theme = {} (dark: {}, light: {})", v["setting"].as_str().unwrap_or(""), v["dark"].as_str().unwrap_or(""), v["light"].as_str().unwrap_or(""));
+                for e in v["errors"].as_array().into_iter().flatten() {
+                    println!("error {}", e.as_str().unwrap_or(""));
+                }
+            });
+        }
+        "use" | "set" => {
+            let id = a.need(2, "theme id (or system)")?;
+            let v = call("settings.set", json!({ "key": "theme", "value": id }))?;
+            out(&v, &|_| println!("theme = {id}"));
+        }
+        "format" => {
+            let v = call("themes.list", json!({}))?;
+            out(&json!({ "dir": v["dir"], "format": v["format"] }), &|v| {
+                println!("{}\n\n{}", v["dir"].as_str().unwrap_or(""), v["format"].as_str().unwrap_or(""));
+            });
+        }
+        other => return Err(Fail::Usage(format!("unknown themes subcommand `{other}`"))),
     }
     Ok(())
 }

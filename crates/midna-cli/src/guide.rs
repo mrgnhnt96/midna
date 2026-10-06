@@ -231,6 +231,17 @@ const TOPICS: &[(&str, &str)] = &[
         Agents may pick built-ins and hide, show or reorder items directly. Pointing a setting at a script path, or \
         adding a path to ui.status.items or ui.header.buttons, asks the human: write the script, make it executable, test it by running it, \
         then `midna settings set …`. `midna settings reset ui.status.items` restores the default bar."),
+    ("themes", "Colors come from a theme: `midna themes` lists them (8 built-ins: twilight, nord, dracula, gruvbox, \
+        tokyo-night dark; daylight, solarized-light, latte light; plus the human's custom ones) and which one shows. \
+        Switch with `midna themes use <id>` (setting theme; system follows macOS using theme.dark / theme.light). One \
+        color on top of any theme: setting theme.colors, rules `<color> = #RRGGBB` or `<theme id>:<color> = #RRGGBB` \
+        (e.g. `accent = #FF79C6`). A theme covers the UI (bg, panel, raised, line, fg, dim, accent, accent-fg, need, ok, \
+        err, work, term) and the terminal's 16 ANSI colors.\n\
+        To make one, write $MIDNA_HOME/themes/<id>.json (the file name is the id): {\"name\": \"My Night\", \"kind\": \
+        \"dark\", \"extends\": \"nord\", \"colors\": {\"accent\": \"#FF79C6\"}, \"terminal\": {\"red\": \"#FF5555\"}}. \
+        Everything left out comes from extends; terminal keys are black … white, bright-black … bright-white, or \
+        \"ansi\": [16 colors]. The app picks the file up within seconds; check `midna themes` for load errors, then \
+        `midna themes use <id>`. `midna themes format` prints the shape."),
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),
@@ -647,7 +658,7 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
     let Some(target) = args.first().map(String::as_str) else {
         return Err(RpcError::bad_params(
             "explain what? pass an id (terminal, r_…, t_…, n_…, p_…, d_…), a method, a setting key, a topic \
-             (status, rules, approvals, triggers, needs-you, settings, scripts, windows, human-only, mcp), or <kind> <value>",
+             (status, rules, approvals, triggers, needs-you, settings, scripts, themes, windows, human-only, mcp), or <kind> <value>",
         ));
     };
     if matches!(target, "command" | "tool" | "path" | "cli" | "window") && args.len() > 1 {

@@ -39,7 +39,7 @@ mod windows;
 
 use actions::*;
 use gpui_kit::*;
-use theme::{Theme, ThemeMode};
+use theme::Theme;
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
@@ -57,7 +57,8 @@ fn main() {
     app.on_open_urls(move |urls| drop(otx.try_send(urls)));
     app.run(move |cx| {
         let (ui_font, mono_font) = theme::load_fonts(cx);
-        cx.set_global(Theme::new(ThemeMode::Dark, ui_font, mono_font));
+        let system_dark = matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        cx.set_global(Theme::from_def(&theme::startup_def(&backend, system_dark), ui_font, mono_font));
         bind_keys(cx, |_| None);
         // First-launch install / login item / CLI link / auto-update (dev mode: spawn midnad).
         lifecycle::start(backend.clone(), cx);

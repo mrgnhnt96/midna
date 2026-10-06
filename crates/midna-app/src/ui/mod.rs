@@ -186,7 +186,17 @@ impl Render for MainWindow {
         // see-through). Over the main window, the app draws as usual, masked (the tile window keeps the mask).
         twilight::first_frame(self, window, cx);
         if twilight::over_setup(self) {
-            let root = div().id("midna-main").key_context(CTX_MAIN).track_focus(&self.focus).size_full().children(setup_screen::render(self, &t, window, cx));
+            let root = div()
+                .id("midna-main")
+                .key_context(CTX_MAIN)
+                .track_focus(&self.focus)
+                .size_full()
+                .capture_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
+                    if setup_screen::on_key(m, ev, w, cx) {
+                        cx.stop_propagation();
+                    }
+                }))
+                .children(setup_screen::render(self, &t, window, cx));
             return crate::composer::register(MainWindow::register_actions(root, cx), cx);
         }
         twilight::sync_lights(self, window);
@@ -245,6 +255,12 @@ impl Render for MainWindow {
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
             .when(self.overlay == Overlay::Annotate, |d| d.child(self.annot.clone()))
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
+            // Setup's theme step browses with ← and → wherever focus is.
+            .capture_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
+                if setup_screen::on_key(m, ev, w, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             // ⌘Q hold: releasing ⌘ (or Q, when macOS reports it) cancels
             .on_modifiers_changed(cx.listener(|m, ev: &ModifiersChangedEvent, _, cx| {
                 if !ev.modifiers.platform {

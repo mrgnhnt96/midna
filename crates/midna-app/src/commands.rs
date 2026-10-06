@@ -678,15 +678,28 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
 
     // ---- App
     let theme = (s.setting)("theme").unwrap_or_else(|| "system".into());
-    for (v, label) in [("dark", "Dark theme"), ("light", "Light theme"), ("system", "Theme follows the system")] {
-        if theme == v {
+    let current = midna_proto::themes::choose(&theme, "", "", true);
+    let themes = crate::theme::cached_themes();
+    let name = |id: &str| themes.iter().find(|t| t.id == id).map(|t| t.name.clone()).unwrap_or_else(|| id.to_string());
+    let shown = if theme == "system" { "theme follows macOS".to_string() } else { format!("theme is {}", name(&current)) };
+    for t in &themes {
+        if theme != "system" && t.id == current {
             continue;
         }
+        let kind = if t.dark { "dark" } else { "light" };
         out.push(
-            Command::new(format!("theme:{v}"), CmdIcon::Screen, label, Run::Rpc { method: "settings.set".into(), params: json!({"key": "theme", "value": v}) })
-                .sub(format!("theme is {theme}"))
-                .kw("theme appearance toggle color dark light mode")
-                .cli(format!("midna settings set theme {v}")),
+            Command::new(format!("theme:{}", t.id), CmdIcon::Screen, format!("Theme: {}", t.name), Run::Rpc { method: "settings.set".into(), params: json!({"key": "theme", "value": t.id}) })
+                .sub(format!("{kind} · {shown}"))
+                .kw(&format!("theme appearance color colour {kind} mode {}", t.id))
+                .cli(format!("midna themes use {}", t.id)),
+        );
+    }
+    if theme != "system" {
+        out.push(
+            Command::new("theme:system", CmdIcon::Screen, "Theme: follow macOS", Run::Rpc { method: "settings.set".into(), params: json!({"key": "theme", "value": "system"}) })
+                .sub(format!("dark and light themes switch with macOS · {shown}"))
+                .kw("theme appearance toggle color dark light mode system auto")
+                .cli("midna themes use system"),
         );
     }
     let sounds_on = (s.setting)("notify.sounds").as_deref() != Some("false");
@@ -1388,8 +1401,11 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // the current theme is not offered
-        assert!(cmds.iter().all(|c| c.id != "theme:dark"));
-        assert!(cmds.iter().any(|c| c.id == "theme:light"));
+        // theme = dark (legacy) is Twilight: every other theme, and "follow macOS", is offered.
+        assert!(cmds.iter().all(|c| c.id != "theme:twilight"));
+        assert!(cmds.iter().any(|c| c.id == "theme:daylight"));
+        assert!(cmds.iter().any(|c| c.id == "theme:nord"));
+        assert!(cmds.iter().any(|c| c.id == "theme:system"));
     }
 
     #[test]

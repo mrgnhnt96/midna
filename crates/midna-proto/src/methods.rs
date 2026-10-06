@@ -1721,3 +1721,43 @@ pub struct PermissionEntry {
 pub struct PermissionsStatus {
     pub permissions: Vec<PermissionEntry>,
 }
+
+// ---------------------------------------------------------------- themes
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ThemesListResult {
+    /// Built-in themes (dark ones first), then custom ones.
+    pub themes: Vec<crate::themes::ThemeInfo>,
+    /// Custom theme files that failed to load: `<file>: <why>`.
+    pub errors: Vec<String>,
+    /// Where custom theme files go.
+    pub dir: String,
+    /// The `theme` setting (system, or a theme id).
+    pub setting: String,
+    /// The theme used in dark mode / light mode when `setting` is system.
+    pub dark: String,
+    pub light: String,
+    /// The theme the app is showing right now, as it last reported (None: no GUI yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub showing: Option<String>,
+    /// How to write a custom theme file.
+    pub format: String,
+}
+
+/// The terminal colors of the theme the app shows, as #RRGGBB.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TerminalColors {
+    /// The theme id these come from.
+    pub theme: String,
+    pub foreground: String,
+    pub background: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// ANSI 0–15.
+    pub ansi: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ThemesReportParams {
+    pub colors: TerminalColors,
+}

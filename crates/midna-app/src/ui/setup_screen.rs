@@ -23,6 +23,7 @@ use crate::app::MainWindow;
 use crate::icons::Icon;
 use crate::theme::{Theme, ThemeMode};
 use crate::ui::onboarding::{self as ob, STEPS, Step};
+use midna_proto::themes::ThemeDef;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::cell::Cell;
@@ -63,9 +64,17 @@ thread_local! {
     static CARD_H: Cell<f32> = const { Cell::new(362.) };
 }
 
+/// Record the card content's height; when it changed, draw again so the card (sized from the
+/// last measurement) fits it.
+fn measure(h: f32, window: &mut Window) {
+    if (CARD_H.with(|c| c.replace(h)) - h).abs() > 0.5 {
+        window.refresh();
+    }
+}
+
 // ------------------------------------------------------------------ palette
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Pal {
     bg: [f32; 3],
     pub(crate) tile: [f32; 3],
@@ -78,8 +87,21 @@ pub(crate) struct Pal {
     line: [f32; 3],
     fg: [f32; 3],
     dim: [f32; 3],
-    halo: Hsla,
-    wash: Hsla,
+    /// Text on the primary (glow) button.
+    glow_fg: [f32; 3],
+    /// The card's halo and the opening wave's fill: glow at these alphas.
+    halo_a: f32,
+    wash_a: f32,
+}
+
+impl Pal {
+    fn halo(&self) -> Hsla {
+        rgb(self.glow, self.halo_a)
+    }
+
+    fn wash(&self) -> Hsla {
+        rgb(self.glow, self.wash_a)
+    }
 }
 
 fn hex(v: u32) -> [f32; 3] {
@@ -104,8 +126,9 @@ fn palette(mode: ThemeMode) -> Pal {
             line: hex(0x1E2A2B),
             fg: hex(0xE8ECEF),
             dim: hex(0x9AA6AE),
-            halo: rgb(hex(0x3FE0C0), 0.06),
-            wash: rgb(hex(0x3FE0C0), 0.14),
+            glow_fg: hex(0x04130F),
+            halo_a: 0.06,
+            wash_a: 0.14,
         },
         ThemeMode::Light => Pal {
             bg: hex(0xEAE3D2),
@@ -118,10 +141,79 @@ fn palette(mode: ThemeMode) -> Pal {
             line: hex(0xCBBD9C),
             fg: hex(0x1D1A14),
             dim: hex(0x574F41),
-            halo: rgb(hex(0x1F8A76), 0.08),
-            wash: rgb(hex(0x1F8A76), 0.12),
+            glow_fg: hex(0x04130F),
+            halo_a: 0.08,
+            wash_a: 0.12,
         },
     }
+}
+
+/// What the opening and setup's other steps wear: Twilight Tiles' own palettes for the stock
+/// Twilight and Daylight themes (exactly as before themes), else the theme (`theme_palette`).
+pub(crate) fn world_palette(d: &ThemeDef) -> Pal {
+    if d.is_builtin("twilight") {
+        palette(ThemeMode::Dark)
+    } else if d.is_builtin("daylight") {
+        palette(ThemeMode::Light)
+    } else {
+        theme_palette(d)
+    }
+}
+
+/// The setup screen wearing a theme (the theme step, ThemeStep-B): tiles in the theme's panel
+/// (raised in light themes), glow = accent, ember = need.
+fn theme_palette(d: &ThemeDef) -> Pal {
+    let c = |k: &str| d.get(k).unwrap_or([255, 0, 255]).map(f32::from);
+    Pal {
+        bg: c("bg"),
+        tile: if d.dark { c("panel") } else { c("raised") },
+        glow: c("accent"),
+        ember: c("need"),
+        panel: c("panel"),
+        guide: c("panel"),
+        toast: c("raised"),
+        line: c("line"),
+        fg: c("fg"),
+        dim: c("dim"),
+        glow_fg: if d.dark { c("bg") } else { [255.; 3] },
+        halo_a: 0.08,
+        wash_a: 0.14,
+    }
+}
+
+fn mix3(a: [f32; 3], b: [f32; 3], k: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * k)
+}
+
+fn mix_pal(a: &Pal, b: &Pal, k: f32) -> Pal {
+    let m = |x: [f32; 3], y: [f32; 3]| mix3(x, y, k);
+    Pal {
+        bg: m(a.bg, b.bg),
+        tile: m(a.tile, b.tile),
+        glow: m(a.glow, b.glow),
+        ember: m(a.ember, b.ember),
+        panel: m(a.panel, b.panel),
+        guide: m(a.guide, b.guide),
+        toast: m(a.toast, b.toast),
+        line: m(a.line, b.line),
+        fg: m(a.fg, b.fg),
+        dim: m(a.dim, b.dim),
+        glow_fg: m(a.glow_fg, b.glow_fg),
+        halo_a: a.halo_a + (b.halo_a - a.halo_a) * k,
+        wash_a: a.wash_a + (b.wash_a - a.wash_a) * k,
+    }
+}
+
+fn mix_def(a: &ThemeDef, b: &ThemeDef, k: f32) -> ThemeDef {
+    let m = |x: [u8; 3], y: [u8; 3]| mix3(x.map(f32::from), y.map(f32::from), k).map(|v| v.round() as u8);
+    let mut out = b.clone();
+    for i in 0..out.ui.len() {
+        out.ui[i] = m(a.ui[i], b.ui[i]);
+    }
+    for i in 0..16 {
+        out.ansi[i] = m(a.ansi[i], b.ansi[i]);
+    }
+    out
 }
 
 // ------------------------------------------------------------------ motion (CSS, exactly)
@@ -213,7 +305,13 @@ enum Action {
     Primary,
     Later,
     Jump(Step),
-    Theme(&'static str),
+    /// The theme step: browse by ±1, pick dot `i` of the shown pool, One theme / Match macOS,
+    /// which macOS slot is being picked, and Back.
+    ThemeStep(i32),
+    ThemeTo(usize),
+    ThemeMatch(bool),
+    ThemeSlot(bool),
+    Back,
     Replay,
 }
 
@@ -263,8 +361,8 @@ fn copy(s: Step) -> Copy {
         Step::Theme => Copy {
             name: "Theme",
             kicker: "JUMP 05 / 05",
-            title: "Twilight, or the light world?",
-            body: "It applies right away. You can switch whenever you like.",
+            title: "Pick your colors",
+            body: "Browse with ← and →. What you see is what you get, terminal included.",
             human: false,
             ask: None,
         },
@@ -299,7 +397,8 @@ fn origin(a: Action) -> (f32, f32) {
             let i = STEPS.iter().position(|x| *x == s).unwrap_or(0) as f32;
             ((PIPS_X + PIP_W / 2. + i * pip_step()) / CELL, 2.3)
         }
-        Action::Theme(_) => (6., 10.),
+        Action::ThemeStep(_) | Action::ThemeTo(_) | Action::ThemeMatch(_) | Action::ThemeSlot(_) => SHIFT_ORIGIN,
+        Action::Back => (8.5, 12.),
         Action::Replay => OPEN_ORIGIN,
     }
 }
@@ -312,6 +411,50 @@ struct RailRow {
     done: bool,
     later: bool,
     here: bool,
+}
+
+/// The theme step's left column.
+#[derive(Clone)]
+struct ThemeUi {
+    pick: ob::ThemePick,
+    /// The themes being browsed (all, or one kind while matching macOS): id, name, bg, accent.
+    pool: Vec<(String, String, [f32; 3], [f32; 3])>,
+    /// "3 OF 8", "2 OF 5 DARK".
+    pos: String,
+    /// Names for the slot cards: the one theme, the dark one, the light one.
+    one: String,
+    dark: String,
+    light: String,
+}
+
+fn system_dark(window: &Window) -> bool {
+    matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+/// The themes the theme step browses: every theme, or only one kind while matching macOS.
+fn theme_pool<'a>(all: &'a [ThemeDef], p: &ob::ThemePick) -> Vec<&'a ThemeDef> {
+    all.iter().filter(|d| !p.sys || d.dark == p.dark_slot).collect()
+}
+
+/// Fill the theme step's controls; returns the theme being browsed (with `theme.colors`).
+fn theme_ui(m: &MainWindow, window: &Window, md: &mut Model) -> ThemeDef {
+    let pick = ob::theme_pick(m, system_dark(window));
+    let all = crate::theme::cached_themes();
+    let def = m.theme_def(pick.current(), if pick.sys { pick.dark_slot } else { system_dark(window) });
+    let pool = theme_pool(&all, &pick);
+    let at = pool.iter().position(|d| d.id == def.id).map(|i| (i + 1).to_string()).unwrap_or_else(|| "–".into());
+    let slot = if !pick.sys { "" } else if pick.dark_slot { " DARK" } else { " LIGHT" };
+    let name = |id: &str| all.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_else(|| id.to_string());
+    let f = |c: Option<[u8; 3]>| c.unwrap_or([0; 3]).map(f32::from);
+    md.pick = Some(ThemeUi {
+        pos: format!("{at} OF {}{slot}", pool.len()),
+        pool: pool.iter().map(|d| (d.id.clone(), d.name.clone(), f(d.get("bg")), f(d.get("accent")))).collect(),
+        one: name(&pick.one),
+        dark: name(&pick.dark),
+        light: name(&pick.light),
+        pick,
+    });
+    def
 }
 
 /// Everything the screen shows, owned, so the opening can draw it inside an animation.
@@ -334,7 +477,9 @@ pub(crate) struct Model {
     status: Option<(String, bool)>,
     human: bool,
     ask: Option<String>,
-    theme: Option<String>,
+    /// The theme step's controls, and the theme its preview (and the whole screen) wears.
+    pick: Option<ThemeUi>,
+    preview: Option<ThemeDef>,
     primary: String,
     buttons_top: f32,
     can_later: bool,
@@ -366,7 +511,7 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
         })
         .collect();
     let mut md = Model {
-        pal: palette(t.mode),
+        pal: world_palette(&t.def),
         s: (w / DESIGN_W).min(h / DESIGN_H),
         w,
         h,
@@ -383,7 +528,8 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
         status: None,
         human: false,
         ask: None,
-        theme: None,
+        pick: None,
+        preview: None,
         primary: String::new(),
         buttons_top: 34.,
         can_later: false,
@@ -414,7 +560,11 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
             md.status = v.status;
             md.human = c.human && !done;
             md.ask = c.ask.filter(|_| !done).map(|a| format!("or {} → “{a}”", m.key_label("keys.command_bar")));
-            md.theme = (s == Step::Theme).then(|| m.setting_str("theme").unwrap_or_else(|| "system".into()));
+            if s == Step::Theme {
+                let def = theme_ui(m, window, &mut md);
+                md.pal = theme_palette(&def);
+                md.preview = Some(def);
+            }
             md.primary = v.action.map(str::to_string).unwrap_or_else(|| if s == Step::Theme { "Finish setup".into() } else { "Next".into() });
             md.can_later = s != Step::Theme && !done;
         }
@@ -467,7 +617,8 @@ fn run(m: &mut MainWindow, a: Action, window: &mut Window, cx: &mut Context<Main
                     ob::act(m, s, window, cx);
                 } else {
                     if s == Step::Theme {
-                        m.onboarding.theme_done = true;
+                        let p = ob::theme_pick(m, system_dark(window));
+                        ob::save_theme(m, &p, cx);
                     }
                     ob::next(m, s, cx);
                 }
@@ -479,10 +630,73 @@ fn run(m: &mut MainWindow, a: Action, window: &mut Window, cx: &mut Context<Main
             }
         }
         Action::Jump(s) => ob::pick(m, s, cx),
-        Action::Theme(key) => ob::set_theme(m, key, cx),
+        Action::ThemeStep(_) | Action::ThemeTo(_) | Action::ThemeMatch(_) | Action::ThemeSlot(_) => {
+            // No click ripple: the tiles ripple into the new colors instead (`Shift`).
+            browse(m, a, window);
+            cx.notify();
+            return;
+        }
+        Action::Back => {
+            if let Stage::At(s) = stage(m)
+                && let Some(i) = STEPS.iter().position(|x| *x == s).filter(|i| *i > 0)
+            {
+                ob::pick(m, STEPS[i - 1], cx);
+            }
+        }
         Action::Replay => m.onboarding.card_seq += 1,
     }
     ripple(m, origin(a), cx);
+}
+
+/// The theme step's controls change what is browsed; nothing is saved until "Finish setup".
+fn browse(m: &mut MainWindow, a: Action, window: &Window) {
+    let mut p = ob::theme_pick(m, system_dark(window));
+    let all = crate::theme::cached_themes();
+    match a {
+        Action::ThemeMatch(on) if on != p.sys => {
+            if on {
+                // Keep what was picked: it fills the slot of its own kind.
+                let one = p.one.clone();
+                p.dark_slot = all.iter().find(|d| d.id == one).map_or(p.dark_slot, |d| d.dark);
+                p.sys = true;
+                p.set_current(one);
+            } else {
+                p.one = p.current().to_string();
+                p.sys = false;
+            }
+        }
+        Action::ThemeSlot(dark) if p.sys => p.dark_slot = dark,
+        Action::ThemeTo(i) => {
+            if let Some(d) = theme_pool(&all, &p).get(i) {
+                p.set_current(d.id.clone());
+            }
+        }
+        Action::ThemeStep(d) => {
+            let pool = theme_pool(&all, &p);
+            let n = pool.len() as i32;
+            if n > 0 {
+                let i = pool.iter().position(|t| t.id == p.current()).map_or(if d > 0 { -1 } else { 0 }, |i| i as i32);
+                p.set_current(pool[(((i + d) % n + n) % n) as usize].id.clone());
+            }
+        }
+        _ => {}
+    }
+    m.onboarding.theme_pick = Some(p);
+}
+
+/// ← and → browse themes while the theme step shows.
+pub fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    let k = &ev.keystroke;
+    if !active(m) || stage(m) != Stage::At(Step::Theme) || k.modifiers.modified() {
+        return false;
+    }
+    let d = match k.key.as_str() {
+        "left" => -1,
+        "right" => 1,
+        _ => return false,
+    };
+    run(m, Action::ThemeStep(d), window, cx);
+    true
 }
 
 /// Live: clickable. Inside the opening (`cx` = None): just drawn.
@@ -497,9 +711,9 @@ fn clickable(el: Div, id: impl Into<ElementId>, a: Action, cx: Option<&mut Conte
 
 impl Model {
     /// Just the geometry and palette: for drawing tiles over the main window (`twilight.rs`).
-    pub(crate) fn bare(mode: ThemeMode, w: f32, h: f32) -> Model {
+    pub(crate) fn bare(def: &ThemeDef, w: f32, h: f32) -> Model {
         Model {
-            pal: palette(mode),
+            pal: world_palette(def),
             s: (w / DESIGN_W).min(h / DESIGN_H),
             w,
             h,
@@ -516,7 +730,8 @@ impl Model {
             status: None,
             human: false,
             ask: None,
-            theme: None,
+            pick: None,
+            preview: None,
             primary: String::new(),
             buttons_top: 38.,
             can_later: false,
@@ -535,9 +750,10 @@ impl Model {
         ((self.w / (cw * self.s)).ceil() as usize, (self.h / (ch * self.s)).ceil() as usize)
     }
 
-    /// The card's full height (design units): content, padding 52/48, border.
+    /// The card's full height (design units): content, padding (52/48; the theme card 44/44), border.
     fn card_h(&self) -> f32 {
-        (CARD_H.with(Cell::get) + 52. + 48. + 2.).max(CARD_MIN_H)
+        let pad = if self.preview.is_some() { 88. } else { 100. };
+        (CARD_H.with(Cell::get) + pad + 2.).max(CARD_MIN_H)
     }
 }
 
@@ -554,9 +770,9 @@ fn diamond(md: &Model, size: f32, icon: Icon, color: Hsla) -> Svg {
 }
 
 /// One tile: at rest, or (scale, rotation, colour) mid-ripple. Its runes turn with it.
-fn tile(md: &Model, mut el: Div, c: usize, r: usize, v: Option<(f32, f32, [f32; 3])>) -> Div {
+fn tile(md: &Model, pal: &Pal, mut el: Div, c: usize, r: usize, v: Option<(f32, f32, [f32; 3])>) -> Div {
     let (x, y) = (c as f32 * CELL, r as f32 * CELL);
-    let (sc, rot, col) = v.unwrap_or((1., 0., md.pal.tile));
+    let (sc, rot, col) = v.unwrap_or((1., 0., pal.tile));
     let size = (CELL - 2.) * sc;
     if size <= 0.05 {
         return el;
@@ -567,9 +783,9 @@ fn tile(md: &Model, mut el: Div, c: usize, r: usize, v: Option<(f32, f32, [f32; 
         Some(_) => el.child(place(Icon::Tile.el(size * md.s, rgb(col, 1.)))),
     };
     let rune = match (c * 73 + r * 151 + c * r) % 31 {
-        0 => Some((Icon::Rune1, md.pal.ember, 0.34)),
-        9 => Some((Icon::Rune2, md.pal.glow, 0.3)),
-        17 => Some((Icon::Rune3, md.pal.glow, 0.22)),
+        0 => Some((Icon::Rune1, pal.ember, 0.34)),
+        9 => Some((Icon::Rune2, pal.glow, 0.3)),
+        17 => Some((Icon::Rune3, pal.glow, 0.22)),
         _ => None,
     };
     if let Some((icon, tint, alpha)) = rune {
@@ -590,7 +806,7 @@ fn grid(md: &Model, ripple: Option<(f32, f32, f32)>, unreached_bare: bool) -> Di
                 continue;
             }
             let v = p.and_then(|p| (p > 0. && p < 1.).then(|| ripple_at(p, &md.pal)));
-            el = tile(md, el, c, r, v);
+            el = tile(md, &md.pal, el, c, r, v);
         }
     }
     el
@@ -616,7 +832,7 @@ pub(crate) fn wave(md: &Model, ms: f32) -> Div {
                     .absolute()
                     .left(md.u(x))
                     .top(md.u(y))
-                    .child(svg().path(Icon::WaveFill.path()).w(md.u(bw)).h(md.u(bh)).text_color(Hsla { a: md.pal.wash.a * op, ..md.pal.wash }).with_transformation(t))
+                    .child(svg().path(Icon::WaveFill.path()).w(md.u(bw)).h(md.u(bh)).text_color(Hsla { a: md.pal.wash().a * op, ..md.pal.wash() }).with_transformation(t))
                     .child(div().absolute().left_0().top_0().child(svg().path(Icon::WaveLine.path()).w(md.u(bw)).h(md.u(bh)).text_color(Hsla { a: op, ..line }).with_transformation(t))),
             );
         }
@@ -628,7 +844,7 @@ fn button(md: &Model, label: &str, primary: bool) -> Div {
     let (glow, ember) = (rgb(md.pal.glow, 1.), rgb(md.pal.ember, 1.));
     let d = div().h(md.u(48.)).px(md.u(22.)).flex().items_center().rounded(md.u(3.)).border_1().font_family(PLEX).text_size(md.u(15.)).font_weight(FontWeight::SEMIBOLD).child(label.to_string());
     if primary {
-        d.bg(glow).border_color(glow).text_color(rgb(hex(0x04130F), 1.)).hover(move |s| s.bg(ember).border_color(ember))
+        d.bg(glow).border_color(glow).text_color(rgb(md.pal.glow_fg, 1.)).hover(move |s| s.bg(ember).border_color(ember))
     } else {
         d.border_color(rgb(md.pal.line, 1.)).text_color(rgb(md.pal.fg, 1.)).hover(move |s| s.border_color(glow))
     }
@@ -636,7 +852,7 @@ fn button(md: &Model, label: &str, primary: bool) -> Div {
 
 /// The card's content column.
 fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
-    let (fg, dim, ember, glow, line) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.ember, 1.), rgb(md.pal.glow, 1.), rgb(md.pal.line, 1.));
+    let (fg, dim, ember, glow) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.ember, 1.), rgb(md.pal.glow, 1.));
     let mut col = div()
         .relative()
         .flex()
@@ -645,30 +861,6 @@ fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
         .child(tracked(md, &md.kicker, MONO, 13., FontWeight::SEMIBOLD, 0.24, ember))
         .child(div().mt(md.u(18.)).font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(md.title_size)).line_height(md.u(md.title_size * md.title_lh)).text_color(fg).children(md.title.iter().map(|l| div().child(l.clone()))));
     col = col.child(div().mt(md.u(md.body_top)).max_w(md.u(md.body_max)).font_family(PLEX).text_size(md.u(md.body_size)).line_height(md.u(md.body_size * 1.55)).text_color(dim).child(md.body.clone()));
-    if let Some(cur) = &md.theme {
-        let chips: Vec<AnyElement> = [("dark", "Twilight"), ("light", "Light world"), ("system", "Match macOS")]
-            .into_iter()
-            .map(|(key, label)| {
-                let on = cur == key;
-                let chip = div()
-                    .h(md.u(44.))
-                    .px(md.u(18.))
-                    .flex()
-                    .items_center()
-                    .rounded(md.u(22.))
-                    .border_1()
-                    .border_color(if on { glow } else { line })
-                    .when(on, |d| d.bg(md.pal.halo))
-                    .font_family(PLEX)
-                    .text_size(md.u(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(fg)
-                    .child(label);
-                clickable(chip, SharedString::from(format!("setup-theme-{key}")), Action::Theme(key), cx.as_deref_mut())
-            })
-            .collect();
-        col = col.child(div().mt(md.u(28.)).flex().gap(md.u(10.)).children(chips));
-    }
     if let Some((text, ok)) = &md.status {
         let color = if *ok { glow } else { ember };
         col = col.child(div().mt(md.u(26.)).flex().items_center().gap(md.u(10.)).font_family(PLEX).text_size(md.u(14.)).text_color(color).child(diamond(md, 8., Icon::Tile, color)).child(text.clone()));
@@ -685,7 +877,7 @@ fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
     }
     // Measure the natural height; the entrance opens the card to it.
     let s = md.s;
-    col.child(row).child(canvas(move |b, _, _| CARD_H.with(|h| h.set(f32::from(b.size.height) / s)), |_, _, _, _| {}).absolute().inset_0())
+    col.child(row).child(canvas(move |b, window, _| measure(f32::from(b.size.height) / s, window), |_, _, _, _| {}).absolute().inset_0())
 }
 
 /// The card (and its halo ring) at entrance progress `e`: fade in, rise 20px, open from the top.
@@ -694,6 +886,9 @@ fn card_style<E: Styled>(md: &Model, el: E, e: f32) -> E {
 }
 
 fn card(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    if md.preview.is_some() {
+        return theme_card(md, cx);
+    }
     div()
         .absolute()
         .left(md.u(CARD_X))
@@ -708,9 +903,264 @@ fn card(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
         .child(guide_panel(md, cx))
 }
 
+// ------------------------------------------------------------------ the theme step (ThemeStep-B)
+
+/// The theme step's card: browsing on the left, a big live preview of midna on the right.
+fn theme_card(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    div()
+        .absolute()
+        .left(md.u(CARD_X))
+        .w(md.u(CARD_W))
+        .overflow_hidden()
+        .flex()
+        // Not stretched: the left column measures its natural height (the entrance opens to it).
+        .items_start()
+        .gap(md.u(40.))
+        .pt(md.u(44.))
+        .pr(md.u(44.))
+        .pb(md.u(44.))
+        .pl(md.u(48.))
+        .bg(rgb(md.pal.panel, 1.))
+        .border_1()
+        .border_color(rgb(md.pal.line, 1.))
+        .rounded(md.u(4.))
+        .child(theme_body(md, cx.as_deref_mut()))
+        .children(md.preview.as_ref().map(|d| div().flex_1().min_w_0().self_center().child(preview(md, d))))
+}
+
+fn theme_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    let Some(ui) = &md.pick else { return div() };
+    let (fg, dim, ember, glow, line) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.ember, 1.), rgb(md.pal.glow, 1.), rgb(md.pal.line, 1.));
+    let square = |label: &'static str| {
+        div().size(md.u(44.)).flex().items_center().justify_center().rounded(md.u(3.)).border_1().border_color(line).font_family(PLEX).text_size(md.u(18.)).text_color(fg).hover(move |s| s.border_color(glow)).child(label)
+    };
+    let browse = div()
+        .mt(md.u(22.))
+        .flex()
+        .items_center()
+        .gap(md.u(10.))
+        .child(clickable(square("‹"), "setup-theme-prev", Action::ThemeStep(-1), cx.as_deref_mut()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(div().font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(22.)).text_color(fg).whitespace_nowrap().child(md.preview.as_ref().map(|d| d.name.clone()).unwrap_or_default()))
+                .child(tracked(md, &ui.pos, MONO, 11., FontWeight::MEDIUM, 0.16, dim)),
+        )
+        .child(clickable(square("›"), "setup-theme-next", Action::ThemeStep(1), cx.as_deref_mut()));
+    let cur = md.preview.as_ref().map(|d| d.id.clone()).unwrap_or_default();
+    let mut dots = div().mt(md.u(14.)).flex().flex_wrap().justify_center().gap(md.u(8.));
+    for (i, (id, _, bg, accent)) in ui.pool.iter().enumerate() {
+        let on = *id == cur;
+        let d = div()
+            .size(md.u(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border(md.u(2.))
+            .border_color(if on { glow } else { line })
+            .bg(rgb(*bg, 1.))
+            .when(on, |d| d.shadow(vec![BoxShadow { color: rgb(md.pal.glow, 0.18), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: md.u(3.), inset: false }]))
+            .child(div().size(md.u(12.)).rounded_full().bg(rgb(*accent, 1.)));
+        dots = dots.child(clickable(d, SharedString::from(format!("setup-theme-dot-{i}")), Action::ThemeTo(i), cx.as_deref_mut()));
+    }
+    let ask = div()
+        .mt(md.u(20.))
+        .font_family(MONO)
+        .text_size(md.u(13.5))
+        .line_height(md.u(13.5 * 1.6))
+        .text_color(dim)
+        .child(div().child("Want your own? Ask an agent:"))
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(fg).child("“make me a theme like Nord with a pink accent”"));
+    let buttons = div()
+        .mt(md.u(26.))
+        .flex()
+        .gap(md.u(12.))
+        .child(clickable(button(md, &md.primary, true), "setup-primary", Action::Primary, cx.as_deref_mut()))
+        .child(clickable(button(md, "Back", false), "setup-back", Action::Back, cx.as_deref_mut()));
+    let s = md.s;
+    div()
+        .relative()
+        .w(md.u(360.))
+        .flex_none()
+        .min_h(md.u(420.))
+        .flex()
+        .flex_col()
+        .child(tracked(md, &md.kicker, MONO, 13., FontWeight::SEMIBOLD, 0.24, ember))
+        .child(div().mt(md.u(16.)).font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(40.)).line_height(md.u(40. * 1.06)).text_color(fg).children(md.title.iter().map(|l| div().child(l.clone()))))
+        .child(div().mt(md.u(16.)).font_family(PLEX).text_size(md.u(16.)).line_height(md.u(16. * 1.55)).text_color(dim).child(md.body.clone()))
+        .child(mode_control(md, ui, cx.as_deref_mut()))
+        .child(browse)
+        .child(dots)
+        .child(ask)
+        .child(div().flex_1())
+        .child(buttons)
+        .child(canvas(move |b, window, _| measure(f32::from(b.size.height) / s, window), |_, _, _, _| {}).absolute().inset_0())
+}
+
+/// Linked (one theme, day and night) or a theme per macOS mode (ThemeStep-B·2): a fixed 58px
+/// row of ☾ DARK MODE card · chain button · ☀ LIGHT MODE card, and one hint line under it.
+/// Linked, both cards show the one theme, both lit. Unlinked, a card picks which mode ← → and
+/// the dots browse.
+fn mode_control(md: &Model, ui: &ThemeUi, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    let (fg, dim, glow, line) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.glow, 1.), rgb(md.pal.line, 1.));
+    let p = &ui.pick;
+    let mut row = div().mt(md.u(22.)).h(md.u(58.)).flex().items_center().gap(md.u(6.));
+    let card = |dark: bool| {
+        let on = !p.sys || p.dark_slot == dark;
+        let name = if !p.sys { &ui.one } else if dark { &ui.dark } else { &ui.light };
+        let (icon, label) = if dark { (Icon::Moon, "DARK MODE") } else { (Icon::Sun, "LIGHT MODE") };
+        div()
+            .flex_1()
+            .min_w_0()
+            .h(md.u(58.))
+            .flex()
+            .flex_col()
+            .justify_center()
+            .gap(md.u(2.))
+            .px(md.u(12.))
+            .rounded(md.u(3.))
+            .border_1()
+            .border_color(if on { glow } else { line })
+            .when(on, |d| d.bg(md.pal.halo()))
+            .child(div().flex().items_center().gap(md.u(6.)).child(icon.el(13. * md.s, dim)).child(tracked(md, label, MONO, 10.5, FontWeight::SEMIBOLD, 0.16, dim)))
+            .child(div().font_family(PLEX).text_size(md.u(14.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).whitespace_nowrap().overflow_hidden().text_ellipsis().child(name.to_string()))
+    };
+    row = row.child(clickable(card(true), "setup-theme-slot-dark", Action::ThemeSlot(true), cx.as_deref_mut()));
+    let chain = div()
+        .flex_none()
+        .size(md.u(36.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_1()
+        .when(!p.sys, |d| d.border_color(glow).bg(rgb(md.pal.glow, 0.18)))
+        .when(p.sys, |d| d.border_dashed().border_color(line))
+        .child(if p.sys { Icon::ChainBroken.el(16. * md.s, dim) } else { Icon::Chain.el(16. * md.s, fg) });
+    row = row.child(clickable(chain, "setup-theme-link", Action::ThemeMatch(!p.sys), cx.as_deref_mut()));
+    row = row.child(clickable(card(false), "setup-theme-slot-light", Action::ThemeSlot(false), cx.as_deref_mut()));
+    let hint = if p.sys { "Unlinked: midna switches when macOS does. Tap the chain to use one." } else { "Linked: one theme, day and night. Tap the chain to follow macOS." };
+    div().flex().flex_col().child(row).child(div().mt(md.u(8.)).font_family(PLEX).text_size(md.u(13.)).text_color(dim).child(hint))
+}
+
+/// midna in theme `d`: sidebar rows with status dots, a header with branch and diff stats, a
+/// terminal in the theme's ANSI colors with its 16-color strip, and the status bar.
+fn preview(md: &Model, d: &ThemeDef) -> Div {
+    let c = |k: &str| crate::theme::rgb3(d.get(k).unwrap_or([255, 0, 255]), 1.);
+    let a = |i: usize| crate::theme::rgb3(d.ansi[i], 1.);
+    let (fg, dim, line, panel) = (c("fg"), c("dim"), c("line"), c("panel"));
+    let dot = |state: &str| {
+        let el = div().size(md.u(7.)).rounded_full();
+        match state {
+            "needs" => el.bg(c("need")),
+            "working" => el.bg(c("work")),
+            "done" => el.bg(c("ok")),
+            "failed" => el.bg(c("err")),
+            _ => el.border(md.u(1.5)).border_color(dim),
+        }
+    };
+    let rows = [("api", "working"), ("migrate", "needs"), ("tests", "done"), ("build", "failed"), ("zsh", "idle")];
+    let mut side = div()
+        .w(md.u(150.))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .bg(panel)
+        .border_r_1()
+        .border_color(line)
+        .child(div().flex().gap(md.u(6.)).px(md.u(10.)).py(md.u(12.)).children([0xFF5F57, 0xFEBC2E, 0x28C840].map(|x| div().size(md.u(9.)).rounded_full().bg(rgb(hex(x), 1.)))))
+        .child(div().mx(md.u(8.)).mb(md.u(6.)).px(md.u(8.)).py(md.u(5.)).border_1().border_color(c("need")).rounded(md.u(6.)).text_color(c("need")).font_weight(FontWeight::SEMIBOLD).text_size(md.u(11.)).child("● 2 need you"))
+        .child(div().px(md.u(10.)).pt(md.u(6.)).pb(md.u(2.)).text_size(md.u(9.5)).font_weight(FontWeight::BOLD).text_color(dim).child("ZONAI"));
+    for (i, (name, state)) in rows.into_iter().enumerate() {
+        side = side.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(md.u(7.))
+                .px(md.u(10.))
+                .py(md.u(5.))
+                .when(i == 0, |r| r.bg(c("raised")).border_l(md.u(2.)).border_color(c("accent")))
+                .child(dot(state))
+                .child(name),
+        );
+    }
+    let seg = |t: &str, color: Hsla, bold: bool| div().text_color(color).when(bold, |d| d.font_weight(FontWeight::BOLD)).child(t.to_string());
+    let lines: Vec<Vec<Div>> = vec![
+        vec![seg("~/zonai", a(4), true), seg(" on ", fg, false), seg("feat/auth", a(5), true), seg(" ❯ ", a(2), true), seg("ls", fg, false)],
+        vec![seg("src/", a(4), true), seg("  build.sh", a(2), true), seg("  current", a(6), false), seg("  notes.md", a(8), false)],
+        vec![seg("⏺ ", a(2), false), seg("Update(src/auth/session.rs)", fg, false)],
+        vec![seg("  + pub fn refresh(&mut self)", a(2), false)],
+        vec![seg("  - pub fn refresh(&self)", a(1), false)],
+        vec![seg("  warning", a(3), true), seg(": unused variable `token`", fg, false)],
+        vec![seg("  test auth::refresh ... ", fg, false), seg("ok", a(2), true)],
+        vec![seg("  test auth::expiry ... ", fg, false), seg("FAILED", a(1), true)],
+        vec![seg("✻ Wiring refresh… ", a(5), false), seg("(4m 12s)", a(8), false)],
+    ];
+    let term = div()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .px(md.u(12.))
+        .py(md.u(10.))
+        .bg(c("term"))
+        .font_family(MONO)
+        .text_size(md.u(11.))
+        .line_height(md.u(11. * 1.65))
+        .text_color(fg)
+        .children(lines.into_iter().map(|l| div().flex().whitespace_nowrap().children(l)))
+        .child(div().mt(md.u(6.)).flex().children((0..16).map(|i| div().flex_1().h(md.u(10.)).bg(a(i)))));
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(md.u(8.))
+        .h(md.u(32.))
+        .px(md.u(12.))
+        .border_b_1()
+        .border_color(line)
+        .child(div().size(md.u(7.)).rounded_full().bg(c("work")))
+        .child(div().font_weight(FontWeight::BOLD).child("api"))
+        .child(div().text_color(dim).child("feat/auth"))
+        .child(div().flex().font_family(MONO).text_size(md.u(11.)).child(seg("+48", c("ok"), false)).child(seg(" −12", c("err"), false)));
+    let status = div()
+        .flex()
+        .items_center()
+        .gap(md.u(12.))
+        .h(md.u(22.))
+        .px(md.u(10.))
+        .bg(panel)
+        .border_t_1()
+        .border_color(line)
+        .text_size(md.u(10.))
+        .text_color(dim)
+        .child(div().flex().child(seg("●", c("ok"), false)).child(" midnad · 7 terminals"))
+        .child(div().flex_1())
+        .child("⌘K commands");
+    div()
+        .w_full()
+        .h(md.u(420.))
+        .flex()
+        .flex_col()
+        .rounded(md.u(10.))
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgb(hex(0x2A3540), 1.))
+        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.6), offset: point(px(0.), md.u(30.)), blur_radius: md.u(80.), spread_radius: px(0.), inset: false }])
+        .bg(c("bg"))
+        .text_color(fg)
+        .font_family(PLEX)
+        .text_size(md.u(12.))
+        .child(div().flex_1().min_h_0().flex().child(side).child(div().flex_1().min_w_0().flex().flex_col().child(header).child(term)))
+        .child(status)
+}
+
 /// `box-shadow: 0 0 0 10px` around the card, clipped with it.
 fn halo(md: &Model) -> Div {
-    div().absolute().left(md.u(CARD_X)).w(md.u(CARD_W)).h(md.u(md.card_h())).rounded(md.u(4.)).shadow(vec![BoxShadow { color: md.pal.halo, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: md.u(10.), inset: false }])
+    div().absolute().left(md.u(CARD_X)).w(md.u(CARD_W)).h(md.u(md.card_h())).rounded(md.u(4.)).shadow(vec![BoxShadow { color: md.pal.halo(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: md.u(10.), inset: false }])
 }
 
 /// Horizontal distance between jump diamonds (design units).
@@ -788,14 +1238,15 @@ fn guide_panel(md: &Model, cx: Option<&mut Context<MainWindow>>) -> Div {
         .child(guide(md, cx))
 }
 
-fn guide(md: &Model, cx: Option<&mut Context<MainWindow>>) -> AnyElement {
+fn guide(md: &Model, _cx: Option<&mut Context<MainWindow>>) -> AnyElement {
     match md.stage {
         Stage::Intro => guide_arrival(md).into_any_element(),
         Stage::At(Step::Daemon) => guide_daemon(md).into_any_element(),
         Stage::At(Step::Notifications) => guide_notifications(md).into_any_element(),
         Stage::At(Step::Project) => guide_project(md).into_any_element(),
         Stage::At(Step::Webhooks) => guide_webhooks(md).into_any_element(),
-        Stage::At(Step::Theme) => guide_theme(md, cx).into_any_element(),
+        // The theme step draws its own card (`theme_card`).
+        Stage::At(Step::Theme) => div().into_any_element(),
         Stage::Done => guide_done(md).into_any_element(),
     }
 }
@@ -932,36 +1383,6 @@ fn guide_webhooks(md: &Model) -> Div {
     col
 }
 
-/// Theme: the two worlds; click one to apply it.
-fn guide_theme(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
-    let cur = md.theme.clone().unwrap_or_default();
-    let mut row = div().flex().gap(md.u(18.));
-    for (key, label, bg, side, fg) in [("dark", "Twilight", 0x0B0E13, 0x151A22, 0xE8ECEF), ("light", "Light world", 0xEAE3D2, 0xF7F2E6, 0x1D1A14)] {
-        let on = cur == key;
-        let line = |w: f32, a: f32| div().h(md.u(8.)).w(relative(w)).rounded(md.u(4.)).bg(rgb(hex(fg), a));
-        let swatch = div()
-            .flex()
-            .flex_col()
-            .gap(md.u(10.))
-            .child(
-                div()
-                    .w(md.u(190.))
-                    .h(md.u(130.))
-                    .rounded(md.u(8.))
-                    .overflow_hidden()
-                    .border_2()
-                    .border_color(if on { rgb(md.pal.glow, 1.) } else { rgb(md.pal.line, 1.) })
-                    .bg(rgb(hex(bg), 1.))
-                    .flex()
-                    .child(div().w(md.u(54.)).h_full().bg(rgb(hex(side), 1.)))
-                    .child(div().flex_1().p(md.u(12.)).flex().flex_col().gap(md.u(8.)).child(line(0.7, 0.6)).child(line(0.5, 0.35)).child(line(0.62, 0.35))),
-            )
-            .child(gtext(md, label, 15., FontWeight::SEMIBOLD, rgb(md.pal.fg, 1.)));
-        row = row.child(clickable(swatch, SharedString::from(format!("setup-swatch-{key}")), Action::Theme(key), cx.as_deref_mut()));
-    }
-    row
-}
-
 /// Done: the jumps made in one line, then each one left, where to finish it and what to ask.
 fn guide_done(md: &Model) -> Div {
     let (glow, dim, fg, ember) = (rgb(md.pal.glow, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.), rgb(md.pal.ember, 1.));
@@ -1045,7 +1466,7 @@ fn content(md: &Model, card_e: f32, animate: Option<u64>, mut cx: Option<&mut Co
                 .w(md.u(DESIGN_W - 80.))
                 .flex()
                 .justify_between()
-                .child(tracked(md, "↩ CONTINUE · ESC LATER · ⌘K ASK AN AGENT", MONO, 12., FontWeight::NORMAL, 0.12, dim))
+                .child(tracked(md, if md.preview.is_some() { "← → BROWSE THEMES · ⌘K ASK AN AGENT" } else { "↩ CONTINUE · ESC LATER · ⌘K ASK AN AGENT" }, MONO, 12., FontWeight::NORMAL, 0.12, dim))
                 .child(clickable(div().child(tracked(md, "REPLAY INTRO", MONO, 12., FontWeight::NORMAL, 0.12, dim)), "setup-replay", Action::Replay, cx)),
         )
 }
@@ -1095,6 +1516,119 @@ fn opening_reduced(md: &Model, ms: f32) -> Div {
     el.child(crate::ui::twilight::squares(md, cols, rows, &lit))
 }
 
+// ------------------------------------------------------------------ changing colors
+
+/// Where the tiles' color ripple starts (the theme step's browse controls), its pace, and the
+/// fade everything else takes (ThemeStep-B: CSS transitions .45s, tiles .4s + 26ms per cell;
+/// Reduce motion: everything .2s, no ripple).
+const SHIFT_ORIGIN: (f32, f32) = (8., 9.);
+const SHIFT_PER_CELL_MS: f32 = 26.;
+const SHIFT_TILE_MS: f32 = 400.;
+const SHIFT_FADE_MS: f32 = 450.;
+const SHIFT_REDUCED_MS: f32 = 200.;
+
+/// What the screen wears: its palette and (theme step) the preview's theme.
+#[derive(Clone, PartialEq)]
+struct Look {
+    pal: Pal,
+    preview: Option<ThemeDef>,
+}
+
+/// A change of colors in flight.
+#[derive(Clone)]
+struct Shift {
+    seq: u64,
+    from: Look,
+    to: Look,
+    start: std::time::Instant,
+    reduced: bool,
+    /// Both looks are the theme step (browsing): the content fades too. Otherwise the step
+    /// changed and the card makes its own entrance.
+    content: bool,
+    total: f32,
+}
+
+thread_local! {
+    static SHOWN: std::cell::RefCell<Option<Look>> = const { std::cell::RefCell::new(None) };
+    static SHIFT: std::cell::RefCell<Option<Shift>> = const { std::cell::RefCell::new(None) };
+}
+
+/// CSS `ease`.
+fn ease(k: f32) -> f32 {
+    bezier(0.25, 0.1, 0.25, 1., k.clamp(0., 1.))
+}
+
+impl Shift {
+    /// Everything but the tiles: one fade.
+    fn k(&self, ms: f32) -> f32 {
+        ease(ms / if self.reduced { SHIFT_REDUCED_MS } else { SHIFT_FADE_MS })
+    }
+
+    fn look(&self, ms: f32) -> Look {
+        let k = self.k(ms);
+        let preview = match (&self.from.preview, &self.to.preview) {
+            (Some(a), Some(b)) => Some(mix_def(a, b, k)),
+            (_, b) => b.clone(),
+        };
+        Look { pal: mix_pal(&self.from.pal, &self.to.pal, k), preview }
+    }
+
+    /// Tile (c, r): rippling out from the browse controls, or the plain fade with Reduce motion.
+    fn tile_k(&self, ms: f32, c: usize, r: usize) -> f32 {
+        if self.reduced {
+            return self.k(ms);
+        }
+        let d = (c as f32 - SHIFT_ORIGIN.0).hypot(r as f32 - SHIFT_ORIGIN.1);
+        ease((ms - d * SHIFT_PER_CELL_MS) / SHIFT_TILE_MS)
+    }
+}
+
+/// Note what the screen wears now; a change starts a [`Shift`] from whatever is showing.
+/// Returns the shift in flight, if any.
+fn track_look(md: &Model, cx: &mut Context<MainWindow>) -> Option<Shift> {
+    let to = Look { pal: md.pal, preview: md.preview.clone() };
+    let now = std::time::Instant::now();
+    let ms = |sh: &Shift| now.duration_since(sh.start).as_secs_f32() * 1000.;
+    let prev = SHOWN.with(|c| c.replace(Some(to.clone())));
+    if let Some(prev) = prev
+        && prev != to
+    {
+        let running = SHIFT.with(|c| c.borrow().clone()).filter(|sh| ms(sh) < sh.total);
+        let from = running.as_ref().map_or(prev.clone(), |sh| sh.look(ms(sh)));
+        let reduced = crate::ui::twilight::reduce_motion();
+        let total = if reduced {
+            SHIFT_REDUCED_MS
+        } else {
+            let (cols, rows) = md.cells(CELL, CELL);
+            let far = [(0., 0.), (cols as f32, 0.), (0., rows as f32), (cols as f32, rows as f32)].iter().map(|(x, y)| (x - SHIFT_ORIGIN.0).hypot(y - SHIFT_ORIGIN.1)).fold(0., f32::max);
+            (far * SHIFT_PER_CELL_MS + SHIFT_TILE_MS).max(SHIFT_FADE_MS)
+        };
+        let seq = running.map_or(0, |sh| sh.seq) + 1;
+        let content = prev.preview.is_some() && to.preview.is_some();
+        SHIFT.with(|c| *c.borrow_mut() = Some(Shift { seq, from, to, start: now, reduced, content, total }));
+        // Draw once more when it's over, without the fading copy.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(total as u64 + 30)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+    SHIFT.with(|c| c.borrow().clone()).filter(|sh| ms(sh) < sh.total)
+}
+
+/// The background and tiles mid-shift, `ms` in.
+fn shifting_tiles(md: &Model, sh: &Shift, ms: f32) -> Div {
+    let (cols, rows) = md.cells(CELL, CELL);
+    let mut el = div().absolute().inset_0().bg(rgb(mix3(sh.from.pal.bg, sh.to.pal.bg, sh.k(ms)), 1.));
+    for r in 0..rows {
+        for c in 0..cols {
+            let pal = mix_pal(&sh.from.pal, &sh.to.pal, sh.tile_k(ms, c, r));
+            el = tile(md, &pal, el, c, r, None);
+        }
+    }
+    el
+}
+
 /// The opening (while `twilight` plays it) or the live screen. `None` when setup isn't showing.
 pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     if !visible(m) {
@@ -1124,10 +1658,40 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
             div().absolute().inset_0().with_animation(SharedString::from(format!("setup-ripple-{seq}")), Animation::new(Duration::from_millis(total as u64)), move |el, d| el.child(grid(&md2, Some((d * total, ox, oy)), false))).into_any_element()
         }
     };
+    // A change of colors (browsing themes, or entering and leaving the theme step) ripples the
+    // tiles into the new palette; while browsing, a fading copy of the content (drawn only, on
+    // top, clicks pass through) covers the live one.
+    let shift = track_look(&md, cx);
+    let (ripple_el, cover): (AnyElement, Option<AnyElement>) = match shift {
+        Some(sh) => {
+            let (md2, sh2) = (md.clone(), sh.clone());
+            let total = sh.total;
+            let tiles = div()
+                .absolute()
+                .inset_0()
+                .with_animation(SharedString::from(format!("setup-shift-{}", sh.seq)), Animation::new(Duration::from_millis(total as u64)), move |el, d| el.child(shifting_tiles(&md2, &sh2, d * total)))
+                .into_any_element();
+            let cover = sh.content.then(|| {
+                let (md3, sh3) = (md.clone(), sh.clone());
+                div()
+                    .absolute()
+                    .inset_0()
+                    .with_animation(SharedString::from(format!("setup-shift-cover-{}", sh.seq)), Animation::new(Duration::from_millis(total as u64)), move |el, d| {
+                        let look = sh3.look(d * total);
+                        let lerped = Model { pal: look.pal, preview: look.preview, ..md3.clone() };
+                        el.child(content(&lerped, 1., None, None))
+                    })
+                    .into_any_element()
+            });
+            (tiles, cover)
+        }
+        _ => (ripple_el, None),
+    };
     // The card replays its entrance on step changes; the opening already played the first one.
     let seq = m.onboarding.card_seq;
     let animate = (seq != m.onboarding.card_seq_opened).then_some(seq);
-    let el = div().id("setup-screen").absolute().inset_0().occlude().bg(rgb(md.pal.bg, 1.)).child(ripple_el).child(content(&md, 1., animate, Some(cx)));
+    let live = content(&md, 1., animate, Some(cx)).when(cover.is_some(), |d| d.opacity(0.));
+    let el = div().id("setup-screen").absolute().inset_0().occlude().bg(rgb(md.pal.bg, 1.)).child(ripple_el).child(live).children(cover);
     Some(el.into_any_element())
 }
 

@@ -45,7 +45,7 @@ pub static VERBS: &[Verb] = &[
                   t_… trigger = what it does, what it is waiting for, recent deliveries;\n\
                   n_… needs-you item = what it asks and who can answer it; p_… project; d_… delivery.\n\
                   Also a method (`session.open` or `session_open`), a setting key (`theme`), or a topic:\n\
-                  status, rules, approvals, triggers, needs-you, settings, scripts, windows, human-only, mcp.\n\
+                  status, rules, approvals, triggers, needs-you, settings, scripts, themes, windows, human-only, mcp.\n\
                   With a kind and a value it explains which rule decides that action and why\n\
                   (e.g. `midna explain command -- git push --force`).",
         methods: &["session.get", "rule.list", "trigger.list", "needs_you.list", "events.list", "policy.check", "settings.get"],
@@ -466,6 +466,17 @@ pub static VERBS: &[Verb] = &[
         methods: &["ui.commands.list", "ui.commands.add", "ui.commands.remove"],
     },
     Verb {
+        name: "themes",
+        aliases: &["theme"],
+        usage: "themes [list] | use <id|system> | format",
+        summary: "color themes: the eight built-ins and custom ones in $MIDNA_HOME/themes",
+        details: "list shows every theme (* = showing now) and custom theme files that failed to load. use <id>\n\
+                  switches (settings theme; system follows macOS with theme.dark / theme.light). format prints\n\
+                  the custom theme file shape. One color on top of any theme: setting theme.colors\n\
+                  (`midna settings set theme.colors \"accent = #FF79C6\"`).",
+        methods: &["themes.list"],
+    },
+    Verb {
         name: "updates",
         aliases: &["update"],
         usage: "updates [status] | check | install   (install: human only)",
@@ -626,7 +637,7 @@ mod tests {
         // method has to be placed deliberately.
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
-            "session.get", "stream.attach", "script.run", "script.click", "updates.report", "session.clear",
+            "session.get", "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

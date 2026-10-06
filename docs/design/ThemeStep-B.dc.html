@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Theme step B2, linked pair</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#3FE0C0}a:hover{color:#E8ECEF}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid #F29A38;outline-offset:3px}
+.lv,.lv *,.wc,.wc *{transition:background-color .45s ease,color .45s ease,border-color .45s ease}
+.wc.rm,.wc.rm *{transition-duration:.2s}
+</style>
+</helmet>
+<div class="{{wcClass}}" style="position: relative; width: 1440px; height: 900px; overflow: hidden; background: {{p.bg}}; color: {{p.fg}}; font-family: 'IBM Plex Sans', system-ui, sans-serif">
+  <div aria-hidden="true" style="position: absolute; inset: 0; display: grid; grid-template-columns: repeat(30, 48px); grid-auto-rows: 48px">
+    <sc-for list="{{cells}}" as="c" hint-placeholder-count="570"><i style="margin: 1px; border-radius: 2px; background: {{c.bg}}; transition: background-color {{c.dur}} ease {{c.delay}}"></i></sc-for>
+  </div>
+
+  <div style="position: absolute; top: 28px; left: 40px; right: 40px; display: flex; justify-content: space-between; align-items: center">
+    <span style="display: flex; align-items: center; gap: 14px; font: 700 20px 'Chakra Petch', sans-serif; letter-spacing: .32em"><span style="width: 12px; height: 12px; border: 2px solid {{p.glow}}; transform: rotate(45deg)"></span>MIDNA</span>
+    <span style="display: flex; align-items: center; gap: 18px">
+      <button type="button" onClick="{{toggleRm}}" aria-pressed="{{rmPressed}}" style="display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px dashed {{p.line}}; border-radius: 15px; background: transparent; cursor: pointer; font: 500 11px 'JetBrains Mono', monospace; letter-spacing: .1em; color: {{p.dim}}">DEMO · REDUCE MOTION {{rmLabel}}</button>
+      <span style="font: 600 12px 'JetBrains Mono', monospace; letter-spacing: .22em; color: {{p.dim}}">SETUP</span>
+    </span>
+  </div>
+
+  <nav aria-label="Setup jumps" style="position: absolute; left: 220px; top: 104px; width: 1000px; display: flex; justify-content: space-between">
+    <sc-for list="{{pips}}" as="p" hint-placeholder-count="5">
+      <span style="width: 150px; display: flex; flex-direction: column; align-items: center; gap: 10px">
+        <span style="width: 14px; height: 14px; transform: rotate(45deg); border-radius: 2px; {{p.style}}"></span>
+        <span style="font: 600 11px 'JetBrains Mono', monospace; letter-spacing: .18em; text-transform: uppercase; color: {{p.color}}">{{p.name}}</span>
+      </span>
+    </sc-for>
+  </nav>
+
+  <section style="position: absolute; left: 190px; top: 196px; width: 1060px; min-height: 470px; box-sizing: border-box; padding: 44px 44px 44px 48px; display: flex; gap: 40px; background: {{p.panel}}; border: 1px solid {{p.line}}; border-radius: 4px">
+    <div style="flex: 0 0 360px; display: flex; flex-direction: column">
+      <span style="font: 600 13px 'JetBrains Mono', monospace; letter-spacing: .24em; color: {{p.ember}}">JUMP 05 / 05</span>
+      <h1 style="margin: 16px 0 0; font: 700 40px/1.06 'Chakra Petch', sans-serif">Pick your colors</h1>
+      <p style="margin: 16px 0 0; font-size: 16px; line-height: 1.55; color: {{p.dim}}">Browse with ← and →. What you see is what you get, terminal included.</p>
+
+      <div style="display: flex; align-items: center; gap: 6px; height: 58px; margin-top: 22px">
+        <sc-for list="{{pair.left}}" as="s" hint-placeholder-count="1">
+          <button type="button" onClick="{{s.pick}}" aria-pressed="{{s.selected}}" style="flex: 1; min-width: 0; height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 12px; border-radius: 3px; cursor: pointer; text-align: left; {{s.style}}">
+            <span style="display: flex; align-items: center; gap: 6px; font: 600 10.5px 'JetBrains Mono', monospace; letter-spacing: .16em; color: {{p.dim}}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 10A6 6 0 0 1 6 2.5a6 6 0 1 0 7.5 7.5z"></path></svg>DARK MODE</span>
+            <span style="font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{s.name}}</span>
+          </button>
+        </sc-for>
+        <button type="button" onClick="{{toggleLink}}" aria-pressed="{{linkPressed}}" aria-label="{{linkLabel}}" title="{{linkLabel}}" style="flex: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; {{linkStyle}}">
+          <sc-if value="{{linked}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2M9 11.5l-1.2 1.2a2.6 2.6 0 0 1-3.7-3.7L5.3 7.8"></path></svg></sc-if>
+          <sc-if value="{{unlinked}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M7 4.5l1.2-1.2a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2M9 11.5l-1.2 1.2a2.6 2.6 0 0 1-3.7-3.7L5.3 7.8M2.5 2.5l1.5 1.5M12 12l1.5 1.5"></path></svg></sc-if>
+        </button>
+        <sc-for list="{{pair.right}}" as="s" hint-placeholder-count="1">
+          <button type="button" onClick="{{s.pick}}" aria-pressed="{{s.selected}}" style="flex: 1; min-width: 0; height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 12px; border-radius: 3px; cursor: pointer; text-align: left; {{s.style}}">
+            <span style="display: flex; align-items: center; gap: 6px; font: 600 10.5px 'JetBrains Mono', monospace; letter-spacing: .16em; color: {{p.dim}}"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.8"></circle><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"></path></svg>LIGHT MODE</span>
+            <span style="font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{s.name}}</span>
+          </button>
+        </sc-for>
+      </div>
+      <span style="margin-top: 8px; font-size: 13px; color: {{p.dim}}">{{linkHint}}</span>
+      <div style="display: flex; align-items: center; gap: 10px; margin-top: 22px">
+        <button type="button" onClick="{{prev}}" aria-label="Previous theme" style="width: 44px; height: 44px; border-radius: 3px; border: 1px solid {{p.line}}; background: transparent; cursor: pointer; font-size: 18px">‹</button>
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center">
+          <span style="font: 700 22px 'Chakra Petch', sans-serif; letter-spacing: .02em">{{cur.name}}</span>
+          <span style="font: 500 11px 'JetBrains Mono', monospace; letter-spacing: .16em; color: {{p.dim}}">{{cur.pos}}</span>
+        </div>
+        <button type="button" onClick="{{next}}" aria-label="Next theme" style="width: 44px; height: 44px; border-radius: 3px; border: 1px solid {{p.line}}; background: transparent; cursor: pointer; font-size: 18px">›</button>
+      </div>
+      <div role="radiogroup" aria-label="Theme" style="display: flex; justify-content: center; gap: 8px; margin-top: 14px">
+        <sc-for list="{{dots}}" as="d" hint-placeholder-count="8">
+          <button type="button" role="radio" aria-checked="{{d.checked}}" aria-label="{{d.name}}" title="{{d.name}}" onClick="{{d.pick}}" style="width: 32px; height: 32px; padding: 0; border-radius: 50%; cursor: pointer; background: {{d.bg}}; {{d.ring}}">
+            <span style="display: block; width: 12px; height: 12px; margin: auto; border-radius: 50%; background: {{d.accent}}"></span>
+          </button>
+        </sc-for>
+      </div>
+
+
+      <p style="margin: 20px 0 0; font: 400 13.5px/1.6 'JetBrains Mono', monospace; color: {{p.dim}}">Want your own? Ask an agent:<br><b style="color: {{p.fg}}; font-weight: 500">“make me a theme like Nord with a pink accent”</b></p>
+
+      <div style="flex: 1"></div>
+      <div style="display: flex; gap: 12px; margin-top: 26px">
+        <button type="button" style="height: 48px; padding: 0 22px; border-radius: 3px; border: 1px solid {{p.glow}}; background: {{p.glow}}; color: {{p.glowFg}}; font-weight: 600; font-size: 15px; cursor: pointer">Finish setup</button>
+        <button type="button" style="height: 48px; padding: 0 22px; border-radius: 3px; border: 1px solid {{p.line}}; background: transparent; font-weight: 600; font-size: 15px; cursor: pointer">Back</button>
+      </div>
+    </div>
+
+    <div class="lv" aria-label="Preview of midna in {{cur.name}}" role="img" style="flex: 1; min-width: 0; align-self: center; height: 420px; display: flex; flex-direction: column; border-radius: 10px; overflow: hidden; border: 1px solid #2A3540; box-shadow: 0 30px 80px rgba(0,0,0,.6); background: {{c.bg}}; color: {{c.fg}}; font-family: 'IBM Plex Sans', sans-serif; font-size: 12px">
+      <div style="flex: 1; display: flex; min-height: 0">
+        <div style="flex: 0 0 150px; display: flex; flex-direction: column; background: {{c.panel}}; border-right: 1px solid {{c.line}}">
+          <div style="display: flex; gap: 6px; padding: 12px 10px"><span style="width: 9px; height: 9px; border-radius: 50%; background: #FF5F57"></span><span style="width: 9px; height: 9px; border-radius: 50%; background: #FEBC2E"></span><span style="width: 9px; height: 9px; border-radius: 50%; background: #28C840"></span></div>
+          <div style="margin: 0 8px 6px; padding: 5px 8px; border: 1px solid {{c.need}}; border-radius: 6px; color: {{c.need}}; font-weight: 600; font-size: 11px">● 2 need you</div>
+          <div style="padding: 6px 10px 2px; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; color: {{c.dim}}">ZONAI</div>
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+            <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; {{r.sel}}"><span style="width: 7px; height: 7px; border-radius: 50%; {{r.dot}}"></span><span style="flex: 1">{{r.name}}</span></div>
+          </sc-for>
+        </div>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-bottom: 1px solid {{c.line}}">
+            <span style="width: 7px; height: 7px; border-radius: 50%; background: {{c.work}}"></span><b>api</b>
+            <span style="color: {{c.dim}}">feat/auth</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px"><span style="color: {{c.ok}}">+48</span> <span style="color: {{c.err}}">−12</span></span>
+          </div>
+          <div style="flex: 1; padding: 10px 12px; background: {{c.term}}; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.65; overflow: hidden">
+            <sc-for list="{{lines}}" as="ln" hint-placeholder-count="10">
+              <div style="white-space: pre; min-height: 18px"><sc-for list="{{ln.segs}}" as="s" hint-placeholder-count="3"><span style="{{s.style}}">{{s.t}}</span></sc-for></div>
+            </sc-for>
+            <div style="display: flex; gap: 0; margin-top: 6px"><sc-for list="{{strip}}" as="h" hint-placeholder-count="16"><span style="flex: 1; height: 10px; background: {{h.c}}"></span></sc-for></div>
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; height: 22px; padding: 0 10px; background: {{c.panel}}; border-top: 1px solid {{c.line}}; font-size: 10px; color: {{c.dim}}"><span><span style="color: {{c.ok}}">●</span> midnad · 7 terminals</span><span style="flex: 1"></span><span>⌘K commands</span></div>
+    </div>
+  </section>
+
+  <div style="position: absolute; left: 40px; right: 40px; bottom: 28px; display: flex; justify-content: space-between; font: 400 12px 'JetBrains Mono', monospace; letter-spacing: .12em; color: {{p.dim}}">
+    <span>B·2 · LINKED PAIR</span><span>{{footHint}}</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+const THEMES = [
+  ['twilight', 'Midna Twilight', 'dark', ['#0F1117', '#151821', '#1D2130', '#282D3B', '#E4E7EE', '#9AA2B3', '#B79AE8', '#F2A93B', '#4CC38A', '#F2665C', '#6EA2FF', '#0B0D12'], ['#1D2130', '#F2665C', '#4CC38A', '#F2A93B', '#6EA2FF', '#B79AE8', '#3FC4C0', '#C9CEDA', '#4A5168', '#FF8A80', '#6FDBA6', '#FFC56B', '#93BBFF', '#CDB6F2', '#6ADBD6', '#FFFFFF']],
+  ['daylight', 'Midna Daylight', 'light', ['#E6E9EF', '#F5F6F8', '#FFFFFF', '#D3D8E0', '#151922', '#535D6E', '#6237A0', '#9A5300', '#1B7346', '#AE2219', '#2758B8', '#FCFCFD'], ['#151922', '#AE2219', '#1B7346', '#8A5A00', '#2758B8', '#6237A0', '#0E7A78', '#8A93A3', '#535D6E', '#D23B2F', '#23915A', '#B86A00', '#3B72D9', '#7B4FC0', '#12918E', '#D3D8E0']],
+  ['nord', 'Nord', 'dark', ['#262B35', '#2E3440', '#3B4252', '#434C5E', '#ECEFF4', '#A7B1C2', '#88C0D0', '#EBCB8B', '#A3BE8C', '#BF616A', '#81A1C1', '#2B303B'], ['#3B4252', '#BF616A', '#A3BE8C', '#EBCB8B', '#81A1C1', '#B48EAD', '#88C0D0', '#E5E9F0', '#4C566A', '#D0777F', '#B5CE9E', '#F2D89E', '#93B3D2', '#C5A1BF', '#8FBCBB', '#ECEFF4']],
+  ['dracula', 'Dracula', 'dark', ['#1E1F29', '#282A36', '#343746', '#44475A', '#F8F8F2', '#A9AFCC', '#BD93F9', '#FFB86C', '#50FA7B', '#FF5555', '#8BE9FD', '#22232E'], ['#21222C', '#FF5555', '#50FA7B', '#F1FA8C', '#BD93F9', '#FF79C6', '#8BE9FD', '#F8F8F2', '#6272A4', '#FF6E6E', '#69FF94', '#FFFFA5', '#D6ACFF', '#FF92DF', '#A4FFFF', '#FFFFFF']],
+  ['gruvbox', 'Gruvbox', 'dark', ['#1D2021', '#282828', '#3C3836', '#504945', '#EBDBB2', '#A89984', '#D3869B', '#FABD2F', '#B8BB26', '#FB4934', '#83A598', '#232323'], ['#282828', '#CC241D', '#98971A', '#D79921', '#458588', '#B16286', '#689D6A', '#A89984', '#928374', '#FB4934', '#B8BB26', '#FABD2F', '#83A598', '#D3869B', '#8EC07C', '#EBDBB2']],
+  ['tokyo-night', 'Tokyo Night', 'dark', ['#13141C', '#1A1B26', '#24283B', '#2F334D', '#C0CAF5', '#959FC9', '#BB9AF7', '#E0AF68', '#9ECE6A', '#F7768E', '#7AA2F7', '#16161E'], ['#15161E', '#F7768E', '#9ECE6A', '#E0AF68', '#7AA2F7', '#BB9AF7', '#7DCFFF', '#A9B1D6', '#414868', '#FF8FA3', '#B3E085', '#EBC284', '#94B6FA', '#CCB0F9', '#9AD9FF', '#C0CAF5']],
+  ['solarized-light', 'Solarized Light', 'light', ['#EEE8D5', '#FDF6E3', '#FFFBF0', '#DDD6C1', '#073642', '#586E75', '#5A5FB0', '#A9420F', '#5F7000', '#C0282A', '#1F6FAE', '#FDF6E3'], ['#073642', '#DC322F', '#859900', '#B58900', '#268BD2', '#D33682', '#2AA198', '#EEE8D5', '#002B36', '#CB4B16', '#586E75', '#657B83', '#839496', '#6C71C4', '#93A1A1', '#FDF6E3']],
+  ['latte', 'Catppuccin Latte', 'light', ['#DCE0E8', '#E6E9EF', '#EFF1F5', '#CCD0DA', '#4C4F69', '#5C5F77', '#8839EF', '#B3600F', '#2D7D1E', '#C20E35', '#1E66F5', '#EFF1F5'], ['#5C5F77', '#D20F39', '#40A02B', '#DF8E1D', '#1E66F5', '#EA76CB', '#179299', '#ACB0BE', '#6C6F85', '#E2304F', '#4FB33A', '#E9A03F', '#4A82F7', '#EE8FD4', '#1FAAB2', '#BCC0CC']]
+];
+const KEYS = ['bg', 'panel', 'raised', 'line', 'fg', 'dim', 'accent', 'need', 'ok', 'err', 'work', 'term'];
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sys: false, slot: 'dark', one: 'twilight', dark: 'twilight', light: 'daylight', rm: false };
+  }
+
+  rgba(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+
+  pool() {
+    const st = this.state;
+    return st.sys ? THEMES.filter((t) => t[2] === st.slot) : THEMES;
+  }
+
+  curId() {
+    const st = this.state;
+    return st.sys ? st[st.slot] : st.one;
+  }
+
+  choose(id) {
+    const st = this.state;
+    this.setState(st.sys ? { [st.slot]: id } : { one: id });
+  }
+
+  step(d) {
+    const pool = this.pool();
+    const i = Math.max(0, pool.findIndex((t) => t[0] === this.curId()));
+    this.choose(pool[(i + d + pool.length) % pool.length][0]);
+  }
+
+  renderVals() {
+    const st = this.state;
+    const pool = this.pool();
+    const id = this.curId();
+    const t = THEMES.find((x) => x[0] === id) || THEMES[0];
+    const c = {};
+    KEYS.forEach((k, i) => { c[k] = t[3][i]; });
+    const a = t[4];
+    const S = (txt, col, extra) => ({ t: txt, style: 'color: ' + col + ';' + (extra || '') });
+    const B = 'font-weight: 700;';
+    const lines = [
+      [S('~/zonai', a[4], B), S(' on ', c.fg), S('feat/auth', a[5], B), S(' ❯ ', a[2], B), S('ls', c.fg)],
+      [S('src/', a[4], B), S('  build.sh', a[2], B), S('  current', a[6]), S('  notes.md', a[8])],
+      [S('⏺ ', a[2]), S('Update(src/auth/session.rs)', c.fg)],
+      [S('  + pub fn refresh(&mut self)', a[2])],
+      [S('  - pub fn refresh(&self)', a[1])],
+      [S('  warning', a[3], B), S(': unused variable `token`', c.fg)],
+      [S('  test auth::refresh ... ', c.fg), S('ok', a[2], B)],
+      [S('  test auth::expiry ... ', c.fg), S('FAILED', a[1], B)],
+      [S('✻ Wiring refresh… ', a[5]), S('(4m 12s)', a[8])]
+    ].map((segs) => ({ segs }));
+    const dot = (s) => ({ needs: 'background: ' + c.need, working: 'background: ' + c.work, done: 'background: ' + c.ok, failed: 'background: ' + c.err })[s] || 'border: 1.5px solid ' + c.dim + '; box-sizing: border-box';
+    const rows = [['api', 'working'], ['migrate', 'needs'], ['tests', 'done'], ['build', 'failed'], ['zsh', 'idle']].map((r, i) => ({
+      name: r[0], dot: dot(r[1]), sel: i === 0 ? 'background: ' + c.raised + '; box-shadow: inset 2px 0 0 ' + c.accent : ''
+    }));
+    const pips = ['Daemon', 'Notifications', 'Project', 'Webhooks', 'Theme'].map((name, i) => ({
+      name, color: i === 4 ? c.need : c.accent,
+      style: i === 4 ? 'background: ' + c.need + '; box-shadow: 0 0 0 5px ' + this.rgba(c.need, 0.18) : 'background: ' + c.accent
+    }));
+    const dark = t[2] === 'dark';
+    const p = { bg: c.bg, tile: dark ? c.panel : c.raised, panel: c.panel, line: c.line, fg: c.fg, dim: c.dim, glow: c.accent, glowFg: dark ? c.bg : '#FFFFFF', ember: c.need,
+      halo: this.rgba(c.accent, 0.08), haloStrong: this.rgba(c.accent, 0.18), emberRing: this.rgba(c.need, 0.18) };
+    const nameOf = (x) => (THEMES.find((y) => y[0] === x) || THEMES[0])[1];
+    return {
+      cells: Array.from({ length: 570 }, (_, i) => {
+        const d = Math.hypot((i % 30) - 8, Math.floor(i / 30) - 9);
+        return { bg: p.tile, delay: st.rm ? '0ms' : Math.round(d * 26) + 'ms', dur: st.rm ? '.2s' : '.4s' };
+      }),
+      p,
+      wcClass: st.rm ? 'wc rm' : 'wc',
+      rmPressed: st.rm ? 'true' : 'false',
+      rmLabel: st.rm ? 'ON' : 'OFF',
+      toggleRm: () => this.setState({ rm: !st.rm }),
+      footHint: st.rm ? 'REDUCE MOTION · A QUICK FADE, NO RIPPLE' : '← → OR TAP A DOT · THE TILES RIPPLE INTO IT',
+      pips, c, lines, rows,
+      strip: a.map((h) => ({ c: h })),
+      cur: { name: t[1], pos: (pool.findIndex((x) => x[0] === id) + 1) + ' OF ' + pool.length + (st.sys ? ' ' + st.slot.toUpperCase() : '') },
+      prev: () => this.step(-1),
+      next: () => this.step(1),
+      dots: pool.map((x) => ({
+        name: x[1], bg: x[3][0], accent: x[3][6], checked: x[0] === id ? 'true' : 'false',
+        ring: x[0] === id ? 'border: 2px solid ' + p.glow + '; box-shadow: 0 0 0 3px ' + p.haloStrong : 'border: 2px solid ' + p.line,
+        pick: () => this.choose(x[0])
+      })),
+      sys: st.sys,
+      linked: !st.sys, unlinked: st.sys,
+      linkPressed: st.sys ? 'false' : 'true',
+      linkLabel: st.sys ? 'Use one theme in both modes' : 'Follow macOS: a theme for each mode',
+      linkStyle: st.sys ? 'border: 1px dashed ' + p.line + '; background: transparent; color: ' + p.dim : 'border: 1px solid ' + p.glow + '; background: ' + p.haloStrong + '; color: ' + p.fg,
+      toggleLink: () => st.sys ? this.setState({ sys: false, one: st[st.slot] }) : this.setState({ sys: true, slot: (THEMES.find((x) => x[0] === st.one) || THEMES[0])[2], [(THEMES.find((x) => x[0] === st.one) || THEMES[0])[2]]: st.one }),
+      linkHint: st.sys ? 'Unlinked: midna switches when macOS does. Tap the chain to use one.' : 'Linked: one theme, day and night. Tap the chain to follow macOS.',
+      pair: ['dark', 'light'].reduce((o, k) => {
+        const on = !st.sys || st.slot === k;
+        o[k === 'dark' ? 'left' : 'right'] = [{
+          name: nameOf(st.sys ? st[k] : st.one), selected: on ? 'true' : 'false',
+          style: on ? 'border: 1px solid ' + p.glow + '; background: ' + p.halo : 'border: 1px solid ' + p.line + '; background: transparent',
+          pick: () => st.sys && this.setState({ slot: k })
+        }];
+        return o;
+      }, {}),
+    };
+  }
+}
+</script>
+</body>
+</html>

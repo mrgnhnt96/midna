@@ -18,7 +18,8 @@
 //! overrides the system setting, `MIDNA_DEBUG_SCREEN=twilight` replays it.
 use crate::app::MainWindow;
 use crate::icons::Icon;
-use crate::theme::{Theme, ThemeMode};
+use crate::theme::Theme;
+use midna_proto::themes::ThemeDef;
 use crate::ui::setup_screen::{self as ss, CELL, EXPOSE_AT, Model, OPEN_ORIGIN, PER_CELL_MS, RIPPLE_MS, rgb};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -203,7 +204,8 @@ fn revealed(cols: usize, rows: usize, ms: f32, reduced_motion: bool) -> Vec<(usi
 struct Overlay {
     clock: Rc<Clock>,
     reduced: bool,
-    mode: ThemeMode,
+    /// The theme the tiles wear (`setup_screen::world_palette`).
+    def: ThemeDef,
     main: AnyWindowHandle,
     /// The main window's NSView (only touched while `main` is open).
     main_view: usize,
@@ -215,7 +217,7 @@ impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
         let size = window.viewport_size();
-        let md = Model::bare(self.mode, f32::from(size.width), f32::from(size.height));
+        let md = Model::bare(&self.def, f32::from(size.width), f32::from(size.height));
         let Some(ms) = self.clock.ms() else { return div().size_full() };
         if self.clock.masked.get() && cx.windows().contains(&self.main) {
             let (cols, rows) = md.cells(CELL, CELL);
@@ -237,7 +239,7 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
     m.twilight_setup = ss::active(m);
     m.twilight_clock = Rc::new(Clock::default());
     let size = window.viewport_size();
-    let md = Model::bare(cx.global::<Theme>().mode, f32::from(size.width), f32::from(size.height));
+    let md = Model::bare(&cx.global::<Theme>().def, f32::from(size.width), f32::from(size.height));
     let (cols, rows) = md.cells(CELL, CELL);
     m.twilight_total = if m.twilight_reduced {
         REDUCED_MS
@@ -275,9 +277,9 @@ pub fn first_frame(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
     let (revealed_at, length) = (Duration::from_secs_f32(m.twilight_revealed / 1000. / speed()), length(m));
     cx.spawn_in(window, async move |this, cx| {
         cx.background_executor().timer(revealed_at).await;
-        let _ = this.update_in(cx, |m, window, _| {
+        let _ = this.update_in(cx, |m, window, cx| {
             if m.twilight_seq == seq {
-                restore(m, window);
+                restore(m, window, cx.global::<Theme>().bg);
             }
         });
         cx.background_executor().timer(length.saturating_sub(revealed_at)).await;
@@ -301,7 +303,7 @@ pub fn sync_lights(m: &mut MainWindow, window: &Window) {
 }
 
 /// The whole window shows: back to an ordinary window (opaque, shadow, traffic lights).
-fn restore(m: &mut MainWindow, window: &Window) {
+fn restore(m: &mut MainWindow, window: &Window, bg: Hsla) {
     if !m.twilight_masked {
         return;
     }
@@ -309,13 +311,14 @@ fn restore(m: &mut MainWindow, window: &Window) {
     m.twilight_clock.masked.set(false);
     clear_mask(window);
     window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+    native_bg(window, bg);
     chrome(window, true);
     m.twilight_lights = true;
     sync_lights(m, window);
 }
 
 fn finish(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    restore(m, window);
+    restore(m, window, cx.global::<Theme>().bg);
     m.twilight_phase = Phase::Off;
     // The opening already brought the card in.
     m.onboarding.card_seq_opened = m.onboarding.card_seq;
@@ -347,14 +350,22 @@ fn open_overlay(m: &MainWindow, window: &Window, cx: &mut Context<MainWindow>) -
         inactive_frame_interval: None,
         ..Default::default()
     };
-    let (clock, reduced, mode, main) = (m.twilight_clock.clone(), m.twilight_reduced, cx.global::<Theme>().mode, window.window_handle());
+    let (clock, reduced, def, main) = (m.twilight_clock.clone(), m.twilight_reduced, cx.global::<Theme>().def.clone(), window.window_handle());
     let main_view = ns_view_ptr(window)? as usize;
     cx.open_window(opts, |window, cx| {
         click_through(window);
-        cx.new(|_| Overlay { clock, reduced, mode, main, main_view, last_runs: vec![] })
+        cx.new(|_| Overlay { clock, reduced, def, main, main_view, last_runs: vec![] })
     })
     .ok()
     .map(|h| h.into())
+}
+
+/// The NSWindow's own background: what shows before (or around) GPUI's first paint.
+pub fn native_bg(window: &Window, c: Hsla) {
+    let Some(w) = ns_window(window) else { return };
+    let c = Rgba::from(c);
+    let color = objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(c.r as f64, c.g as f64, c.b as f64, 1.);
+    w.setBackgroundColor(Some(&color));
 }
 
 fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {

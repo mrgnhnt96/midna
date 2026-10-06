@@ -1529,7 +1529,7 @@ impl Render for TerminalView {
         // Dev runs (MIDNA_DEBUG_TERM) don't activate the window; count it as active.
         let active = window.is_window_active() || crate::dev::var_os("MIDNA_DEBUG_TERM").is_some();
         self.report_focus(focused && active);
-        let pal = Palette { fg: theme.fg, cursor: theme.fg.opacity(0.55), selection: theme.accent.opacity(0.32) };
+        let pal = Palette { fg: theme.fg, cursor: theme.fg.opacity(0.55), selection: theme.selection };
         let term_bg = theme.term;
         let dim = theme.dim;
         let grid = self.grid.clone();

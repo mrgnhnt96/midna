@@ -3,7 +3,7 @@ use crate::actions::*;
 use crate::backend::{Backend, BackendEvent, ConnState};
 use crate::model::*;
 use crate::terminal::TerminalView;
-use crate::theme::{Theme, ThemeMode};
+use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::ROOT_PROJECT_ID;
@@ -208,6 +208,7 @@ impl MainWindow {
         let intro = crate::ui::twilight::wanted();
         if !intro {
             window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+            crate::ui::twilight::native_bg(window, cx.global::<Theme>().bg);
         }
         let id = cx.entity_id();
         let windows = crate::windows::register(cx.weak_entity(), id, window.window_handle(), cx);
@@ -235,6 +236,20 @@ impl MainWindow {
             }
         }));
         cx.observe_window_appearance(window, |m, window, cx| m.apply_theme(window, cx)).detach();
+        // Custom theme files ($MIDNA_HOME/themes) are edited by hand or by agents: follow them live.
+        tasks.push(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                let gone = this.update_in(cx, |m, window, cx| {
+                    if crate::theme::themes_changed(&m.home()) {
+                        m.apply_theme(window, cx);
+                    }
+                });
+                if gone.is_err() {
+                    break;
+                }
+            }
+        }));
         cx.observe_window_activation(window, |m, window, cx| {
             if window.is_window_active() {
                 crate::windows::focused(m.id, cx);
@@ -359,19 +374,47 @@ impl MainWindow {
         self.setting_str("density").as_deref() == Some("compact")
     }
 
-    pub fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = match self.setting_str("theme").as_deref() {
-            Some("light") => ThemeMode::Light,
-            Some("dark") => ThemeMode::Dark,
-            _ => match window.appearance() {
-                WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
-                _ => ThemeMode::Light,
-            },
+    /// The theme the settings pick right now (`theme`, or `theme.dark` / `theme.light` by the
+    /// window's appearance), with `theme.colors` applied.
+    pub fn resolve_theme(&self, window: &Window) -> midna_proto::themes::ThemeDef {
+        let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        let s = |k: &str| self.setting_str(k).unwrap_or_default();
+        let id = midna_proto::themes::choose(&s("theme"), &s("theme.dark"), &s("theme.light"), system_dark);
+        self.theme_def(&id, system_dark)
+    }
+
+    /// Theme `id` (built-in or custom; unknown falls back by appearance) with `theme.colors` applied.
+    pub fn theme_def(&self, id: &str, system_dark: bool) -> midna_proto::themes::ThemeDef {
+        let rules: Vec<String> = match self.settings.get("theme.colors") {
+            Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            _ => vec![],
         };
+        midna_proto::themes::resolve(&crate::theme::cached_themes(), id, system_dark, &rules)
+    }
+
+    /// `$MIDNA_HOME` (where the daemon's socket lives).
+    pub fn home(&self) -> std::path::PathBuf {
+        self.backend.socket_path().parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf()).unwrap_or_else(midna_proto::paths::midna_home)
+    }
+
+    pub fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Re-reads custom theme files when they changed (`theme_def` then uses the cache).
+        crate::theme::all_themes(&self.home());
+        let def = self.resolve_theme(window);
+        self.show_theme(&def, window, cx);
+    }
+
+    fn show_theme(&mut self, def: &midna_proto::themes::ThemeDef, window: &mut Window, cx: &mut Context<Self>) {
         let old = cx.global::<Theme>().clone();
-        let mut t = Theme::new(mode, old.ui_font.clone(), old.mono_font.clone());
+        let mut t = Theme::from_def(def, old.ui_font.clone(), old.mono_font.clone());
         t.compact = self.compact();
+        let bg = t.bg;
         cx.set_global(t);
+        report_terminal_colors(&self.backend, def);
+        crate::theme::cache_def(&self.backend, def);
+        if !self.twilight_masked {
+            crate::ui::twilight::native_bg(window, bg);
+        }
         window.refresh();
         cx.notify();
     }
@@ -1671,4 +1714,30 @@ pub struct Group<'a> {
     pub project: Option<&'a Project>,
     pub name: String,
     pub sessions: Vec<&'a Session>,
+}
+
+/// Tell midnad the terminal colors of the theme on screen (`themes.report`), so every engine
+/// uses them as its defaults. Only when they change, off the UI thread.
+fn report_terminal_colors(backend: &Arc<dyn Backend>, def: &midna_proto::themes::ThemeDef) {
+    use midna_proto::themes::to_hex;
+    static LAST: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+    let colors = json!({
+        "theme": def.id,
+        "foreground": to_hex(def.get("fg").unwrap_or([255; 3])),
+        "background": to_hex(def.get("term").unwrap_or([0; 3])),
+        "ansi": def.ansi.iter().map(|c| to_hex(*c)).collect::<Vec<_>>(),
+    });
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_ref() == Some(&colors) {
+            return;
+        }
+        *last = Some(colors.clone());
+    }
+    let backend = backend.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = backend.call("themes.report", json!({ "colors": colors })) {
+            eprintln!("midna-app: themes.report: {e:?}");
+        }
+    });
 }

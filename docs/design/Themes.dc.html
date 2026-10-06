@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Midna theme picker</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid #6EA2FF;outline-offset:2px}
+.sw input[type=color]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0}
+@keyframes mpulse{50%{box-shadow:0 0 0 5px var(--need-soft)}}
+@keyframes blink{50%{opacity:0}}
+</style>
+</helmet>
+<div style="width: 1280px; min-height: 1180px; box-sizing: border-box; padding: 28px 32px 32px; display: flex; flex-direction: column; gap: 20px; background: #F1F2F5; color: #151922; font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+
+  <div style="display: flex; flex-direction: column; gap: 12px">
+    <div style="display: flex; align-items: baseline; gap: 14px">
+      <h1 style="margin: 0; font-size: 22px; font-weight: 700">Pick a theme</h1>
+      <span style="color: #535D6E">Tap a theme to recolor the whole window, terminal colors included.</span>
+    </div>
+    <div role="radiogroup" aria-label="Theme" style="display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 10px">
+      <sc-for list="{{chips}}" as="c" hint-placeholder-count="8">
+        <button type="button" role="radio" aria-checked="{{c.checked}}" onClick="{{c.pick}}" style="{{c.style}}">
+          <span style="display: flex; height: 46px; border-radius: 7px; overflow: hidden; background: {{c.bg}}; border: 1px solid {{c.line}}">
+            <span style="width: 30%; background: {{c.panel}}; border-right: 1px solid {{c.line}}"></span>
+            <span style="flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 0 8px; background: {{c.term}}">
+              <span style="display: flex; gap: 4px"><span style="width: 18px; height: 4px; border-radius: 2px; background: {{c.accent}}"></span><span style="width: 26px; height: 4px; border-radius: 2px; background: {{c.fg}}"></span></span>
+              <span style="display: flex; gap: 4px"><span style="width: 12px; height: 4px; border-radius: 2px; background: {{c.ok}}"></span><span style="width: 16px; height: 4px; border-radius: 2px; background: {{c.need}}"></span><span style="width: 10px; height: 4px; border-radius: 2px; background: {{c.err}}"></span></span>
+            </span>
+          </span>
+          <span style="display: flex; align-items: center; gap: 6px; padding: 7px 2px 1px">
+            <span style="flex: 1; font-weight: 700; font-size: 12.5px; text-align: left; white-space: nowrap">{{c.name}}</span>
+            <span style="font-size: 11px; color: #535D6E">{{c.kind}}</span>
+          </span>
+        </button>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="{{rootVars}}; display: flex; flex-direction: column; height: 640px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,.18); box-shadow: 0 18px 50px rgba(15,17,23,.22); background: var(--bg); color: var(--fg)">
+    <div style="flex: 1; display: flex; min-height: 0">
+      <nav aria-label="Projects and terminals" style="flex: 0 0 248px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+        <div style="display: flex; align-items: center; height: 42px; padding: 0 14px">
+          <span aria-hidden="true" style="display: flex; gap: 8px">
+            <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+            <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+            <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+          </span>
+        </div>
+        <button type="button" style="display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; height: 32px; padding: 0 12px; border: 1px solid var(--need); border-radius: 8px; background: var(--need-soft); color: var(--need); font-weight: 700; cursor: pointer">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--need)"></span><span style="flex: 1; text-align: left">2 need you</span><kbd style="font-family: 'JetBrains Mono', monospace; font-size: 11px">⌘J</kbd>
+        </button>
+        <div style="flex: 1; padding: 4px 0; overflow: hidden">
+          <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+            <div style="margin-bottom: 8px">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px 2px 14px">
+                <span style="flex: 1; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">{{g.name}}</span>
+                <sc-if value="{{g.hasNeed}}" hint-placeholder-val="{{ false }}"><span style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--need); color: var(--badge-fg); font-size: 11px; font-weight: 700; text-align: center; line-height: 18px">{{g.needText}}</span></sc-if>
+              </div>
+              <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+                <button type="button" onClick="{{row.pick}}" aria-pressed="{{row.pressed}}" style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px; align-items: center; width: 100%; padding: 7px 14px; border: 0; background: transparent; text-align: left; cursor: pointer; {{row.rowStyle}}">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; {{row.dotStyle}}"></span>
+                  <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{row.name}}</span>
+                  <span style="display: inline-flex; color: var(--dim)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{row.icon}}"></path></svg></span>
+                  <sc-if value="{{row.hasSub}}" hint-placeholder-val="{{ false }}">
+                    <span style="grid-column: 2 / 4; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: {{row.subColor}}">{{row.sub}}</span>
+                  </sc-if>
+                </button>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+        <div style="margin: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised)">
+          <div style="display: flex; align-items: baseline"><span style="flex: 1; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim)">Today</span><span style="font-size: 11px; color: var(--dim)">Insights ›</span></div>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6px">
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px">38</b><span style="font-size: 11px; color: var(--dim)">agent turns</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px">52</b><span style="font-size: 11px; color: var(--dim)">messages</span></span>
+            <span style="display: flex; flex-direction: column"><b style="font-size: 15px">$4.12</b><span style="font-size: 11px; color: var(--dim)">spent</span></span>
+          </div>
+        </div>
+      </nav>
+
+      <main style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+        <header style="display: flex; align-items: center; gap: 14px; height: 42px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--line); background: var(--bg)">
+          <span style="width: 9px; height: 9px; border-radius: 50%; {{cur.dotStyle}}"></span>
+          <b style="font-size: 15px">{{cur.name}}</b>
+          <span style="display: inline-flex; color: var(--dim)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{cur.icon}}"></path></svg></span>
+          <span aria-hidden="true" style="width: 1px; height: 18px; background: var(--line)"></span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; color: var(--dim)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8"></circle><circle cx="4.5" cy="12.5" r="1.8"></circle><circle cx="11.5" cy="5.5" r="1.8"></circle><path d="M4.5 5.3v5.4M11.5 7.3c0 3-7 2-7 3.4"></path></svg>feat/auth</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px"><span style="color: var(--ok)">+48</span> <span style="color: var(--err)">−12</span> <span style="color: var(--dim)">×6</span></span>
+          <a href="#pr" style="display: inline-flex; align-items: center; gap: 6px; color: var(--fg); text-decoration: none">#231 <span style="display: inline-flex; align-items: center; gap: 5px; color: var(--need)"><span style="width: 7px; height: 7px; border-radius: 50%; background: var(--need)"></span>checks running</span></a>
+          <div style="flex: 1"></div>
+          <button type="button" aria-label="Open in IDE" style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); cursor: pointer; font-size: 12px">Open in IDE ▾</button>
+          <button type="button" aria-label="Split right" style="width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2"></rect><path d="M8 2.5v11"></path></svg></button>
+          <button type="button" aria-label="More actions" style="width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg></button>
+        </header>
+
+        <section aria-label="Terminal" style="position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term)">
+          <div style="flex: 1; padding: 12px 18px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 1.62; overflow: hidden; color: var(--fg)">
+            <sc-for list="{{lines}}" as="ln" hint-placeholder-count="14">
+              <div style="white-space: pre; min-height: 20px"><sc-for list="{{ln.segs}}" as="s" hint-placeholder-count="3"><span style="{{s.style}}">{{s.t}}</span></sc-for></div>
+            </sc-for>
+          </div>
+          <div role="group" aria-label="Approval needed" style="display: flex; align-items: center; gap: 12px; margin: 0 16px 14px; padding: 11px 14px; border: 1.5px solid var(--need); border-radius: 10px; background: var(--panel)">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+              <b>Codex wants to run this on staging</b>
+              <code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--dim)">pnpm db:migrate --env staging · asked by your rule “ask when env = staging”</code>
+            </div>
+            <span style="display: inline-flex">
+              <button type="button" style="height: 30px; padding: 0 12px; border: 0; border-radius: 7px 0 0 7px; background: var(--accent); color: var(--accent-fg); font-weight: 700; cursor: pointer">Approve ⌘↩</button>
+              <button type="button" aria-label="More ways to approve" style="width: 28px; height: 30px; border: 0; border-left: 1px solid rgba(0,0,0,.25); border-radius: 0 7px 7px 0; background: var(--accent); color: var(--accent-fg); cursor: pointer">▾</button>
+            </span>
+            <button type="button" style="height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; background: transparent; cursor: pointer">Deny ⌘⌫</button>
+          </div>
+        </section>
+      </main>
+    </div>
+    <footer style="display: flex; align-items: center; gap: 18px; height: 28px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim)">
+      <span><span style="color: var(--ok)">●</span> midnad · 7 terminals</span>
+      <span>Policy <span style="color: var(--fg)">unsupervised</span></span>
+      <span><span style="color: var(--ok)">●</span> Webhooks via Tailscale Funnel</span>
+      <span style="color: var(--need)">● Reinstall hooks</span>
+      <div style="flex: 1"></div>
+      <span>⌘K commands · ⌘J next</span>
+    </footer>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border-radius: 12px; background: #FFFFFF; border: 1px solid #D3D8E0">
+    <div style="display: flex; align-items: center; gap: 12px">
+      <b style="font-size: 14px">{{themeName}} colors</b>
+      <span style="flex: 1; color: #535D6E">Tap any swatch to change it. This is how a custom theme works: start from one of these and override what you like.</span>
+      <sc-if value="{{edited}}" hint-placeholder-val="{{ false }}">
+        <button type="button" onClick="{{reset}}" style="height: 30px; padding: 0 12px; border: 1px solid #D3D8E0; border-radius: 7px; background: #F5F6F8; cursor: pointer">Reset {{themeName}}</button>
+      </sc-if>
+    </div>
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #535D6E">Window</div>
+    <div style="display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 8px">
+      <sc-for list="{{uiTokens}}" as="k" hint-placeholder-count="13">
+        <label class="sw" style="position: relative; display: flex; flex-direction: column; gap: 4px; cursor: pointer">
+          <span style="height: 34px; border-radius: 7px; background: {{k.hex}}; border: 1px solid rgba(0,0,0,.14); {{k.ring}}"></span>
+          <span style="font-size: 11.5px; font-weight: 700">{{k.name}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #535D6E">{{k.hex}}</span>
+          <input type="color" value="{{k.hex}}" onInput="{{k.set}}" aria-label="{{k.name}} color">
+        </label>
+      </sc-for>
+    </div>
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #535D6E">Terminal (ANSI 0–15)</div>
+    <div style="display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 8px">
+      <sc-for list="{{ansiTokens}}" as="k" hint-placeholder-count="16">
+        <label class="sw" style="position: relative; display: flex; flex-direction: column; gap: 4px; cursor: pointer">
+          <span style="height: 28px; border-radius: 6px; background: {{k.hex}}; border: 1px solid rgba(0,0,0,.14); {{k.ring}}"></span>
+          <span style="font-size: 11px; font-weight: 700; white-space: nowrap">{{k.name}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #535D6E">{{k.hex}}</span>
+          <input type="color" value="{{k.hex}}" onInput="{{k.set}}" aria-label="{{k.name}} terminal color">
+        </label>
+      </sc-for>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1180}}'>
+const UI_KEYS = ['bg', 'panel', 'raised', 'line', 'fg', 'dim', 'accent', 'accent-fg', 'need', 'ok', 'err', 'work', 'term'];
+const ANSI_NAMES = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'br black', 'br red', 'br green', 'br yellow', 'br blue', 'br magenta', 'br cyan', 'br white'];
+
+const THEMES = [
+  { id: 'twilight', name: 'Midna Twilight', kind: 'dark',
+    ui: ['#0F1117', '#151821', '#1D2130', '#282D3B', '#E4E7EE', '#9AA2B3', '#B79AE8', '#15111C', '#F2A93B', '#4CC38A', '#F2665C', '#6EA2FF', '#0B0D12'],
+    ansi: ['#1D2130', '#F2665C', '#4CC38A', '#F2A93B', '#6EA2FF', '#B79AE8', '#3FC4C0', '#C9CEDA', '#4A5168', '#FF8A80', '#6FDBA6', '#FFC56B', '#93BBFF', '#CDB6F2', '#6ADBD6', '#FFFFFF'] },
+  { id: 'daylight', name: 'Midna Daylight', kind: 'light',
+    ui: ['#E6E9EF', '#F5F6F8', '#FFFFFF', '#D3D8E0', '#151922', '#535D6E', '#6237A0', '#FFFFFF', '#9A5300', '#1B7346', '#AE2219', '#2758B8', '#FCFCFD'],
+    ansi: ['#151922', '#AE2219', '#1B7346', '#8A5A00', '#2758B8', '#6237A0', '#0E7A78', '#8A93A3', '#535D6E', '#D23B2F', '#23915A', '#B86A00', '#3B72D9', '#7B4FC0', '#12918E', '#D3D8E0'] },
+  { id: 'nord', name: 'Nord', kind: 'dark',
+    ui: ['#262B35', '#2E3440', '#3B4252', '#434C5E', '#ECEFF4', '#A7B1C2', '#88C0D0', '#2E3440', '#EBCB8B', '#A3BE8C', '#BF616A', '#81A1C1', '#2B303B'],
+    ansi: ['#3B4252', '#BF616A', '#A3BE8C', '#EBCB8B', '#81A1C1', '#B48EAD', '#88C0D0', '#E5E9F0', '#4C566A', '#D0777F', '#B5CE9E', '#F2D89E', '#93B3D2', '#C5A1BF', '#8FBCBB', '#ECEFF4'] },
+  { id: 'dracula', name: 'Dracula', kind: 'dark',
+    ui: ['#1E1F29', '#282A36', '#343746', '#44475A', '#F8F8F2', '#A9AFCC', '#BD93F9', '#1E1F29', '#FFB86C', '#50FA7B', '#FF5555', '#8BE9FD', '#22232E'],
+    ansi: ['#21222C', '#FF5555', '#50FA7B', '#F1FA8C', '#BD93F9', '#FF79C6', '#8BE9FD', '#F8F8F2', '#6272A4', '#FF6E6E', '#69FF94', '#FFFFA5', '#D6ACFF', '#FF92DF', '#A4FFFF', '#FFFFFF'] },
+  { id: 'gruvbox', name: 'Gruvbox', kind: 'dark',
+    ui: ['#1D2021', '#282828', '#3C3836', '#504945', '#EBDBB2', '#A89984', '#D3869B', '#1D2021', '#FABD2F', '#B8BB26', '#FB4934', '#83A598', '#232323'],
+    ansi: ['#282828', '#CC241D', '#98971A', '#D79921', '#458588', '#B16286', '#689D6A', '#A89984', '#928374', '#FB4934', '#B8BB26', '#FABD2F', '#83A598', '#D3869B', '#8EC07C', '#EBDBB2'] },
+  { id: 'tokyo-night', name: 'Tokyo Night', kind: 'dark',
+    ui: ['#13141C', '#1A1B26', '#24283B', '#2F334D', '#C0CAF5', '#959FC9', '#BB9AF7', '#13141C', '#E0AF68', '#9ECE6A', '#F7768E', '#7AA2F7', '#16161E'],
+    ansi: ['#15161E', '#F7768E', '#9ECE6A', '#E0AF68', '#7AA2F7', '#BB9AF7', '#7DCFFF', '#A9B1D6', '#414868', '#FF8FA3', '#B3E085', '#EBC284', '#94B6FA', '#CCB0F9', '#9AD9FF', '#C0CAF5'] },
+  { id: 'solarized-light', name: 'Solarized Light', kind: 'light',
+    ui: ['#EEE8D5', '#FDF6E3', '#FFFBF0', '#DDD6C1', '#073642', '#586E75', '#5A5FB0', '#FFFFFF', '#A9420F', '#5F7000', '#C0282A', '#1F6FAE', '#FDF6E3'],
+    ansi: ['#073642', '#DC322F', '#859900', '#B58900', '#268BD2', '#D33682', '#2AA198', '#EEE8D5', '#002B36', '#CB4B16', '#586E75', '#657B83', '#839496', '#6C71C4', '#93A1A1', '#FDF6E3'] },
+  { id: 'latte', name: 'Catppuccin Latte', kind: 'light',
+    ui: ['#DCE0E8', '#E6E9EF', '#EFF1F5', '#CCD0DA', '#4C4F69', '#5C5F77', '#8839EF', '#FFFFFF', '#B3600F', '#2D7D1E', '#C20E35', '#1E66F5', '#EFF1F5'],
+    ansi: ['#5C5F77', '#D20F39', '#40A02B', '#DF8E1D', '#1E66F5', '#EA76CB', '#179299', '#ACB0BE', '#6C6F85', '#E2304F', '#4FB33A', '#E9A03F', '#4A82F7', '#EE8FD4', '#1FAAB2', '#BCC0CC'] }
+];
+
+const ICONS = {
+  claude: 'M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2',
+  codex: 'M8 1.5 14 5v6l-6 3.5L2 11V5z',
+  monitor: 'M1.5 8h3l2-4 3 8 2-4h3',
+  shell: 'M3 4.5 6.5 8 3 11.5M8 12h5'
+};
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { theme: 'twilight', selected: 'api', over: {} };
+  }
+
+  rgba(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+
+  colors(t) {
+    const o = this.state.over[t.id] || {};
+    const ui = {};
+    UI_KEYS.forEach((k, i) => { ui[k] = o[k] || t.ui[i]; });
+    const ansi = t.ansi.map((h, i) => o['a' + i] || h);
+    return { ui, ansi };
+  }
+
+  setColor(id, key, e) {
+    const v = e && e.target ? e.target.value : e;
+    const cur = this.state.over[id] || {};
+    this.setState({ over: { ...this.state.over, [id]: { ...cur, [key]: v.toUpperCase() } } });
+  }
+
+  dot(s) {
+    if (s === 'needs') return 'background: var(--need); box-shadow: 0 0 0 3px var(--need-ring); animation: mpulse 2.4s ease-in-out infinite';
+    if (s === 'working') return 'background: var(--work)';
+    if (s === 'done') return 'background: var(--ok)';
+    if (s === 'failed') return 'background: var(--err)';
+    return 'background: transparent; border: 1.5px solid var(--dim); box-sizing: border-box';
+  }
+
+  terminals() {
+    return [
+      { id: 'api', project: 'zonai', name: 'api', agent: 'claude', status: 'working' },
+      { id: 'migrate', project: 'zonai', name: 'migrate', agent: 'codex', status: 'needs', sub: 'Approve db:migrate on staging? · 4m' },
+      { id: 'tests', project: 'zonai', name: 'tests', agent: 'monitor', status: 'done' },
+      { id: 'zsh', project: 'zonai', name: 'zsh', agent: 'shell', status: 'idle' },
+      { id: 'golden', project: 'drops-app', name: 'golden', agent: 'claude', status: 'needs', sub: 'Asked a question · 12m' },
+      { id: 'build', project: 'drops-app', name: 'flutter build', agent: 'shell', status: 'failed', sub: 'exit 1 · 9m' },
+      { id: 'spike', project: 'midna', name: 'spike', agent: 'claude', status: 'working' }
+    ];
+  }
+
+  lines(a) {
+    const S = (t, c, extra) => ({ t, style: 'color: ' + c + ';' + (extra || '') });
+    const B = 'font-weight: 700;';
+    const fg = 'var(--fg)';
+    const sel = 'background: var(--selection);';
+    const strip = a.map((h, i) => ({ t: '   ', style: 'background: ' + h + ';' + (i === 7 ? 'margin-right: 10px;' : '') }));
+    return [
+      [S('~/Development/zonai', a[4], B), S(' on ', fg), S('feat/auth', a[5], B), S(' ❯ ', a[2], B), S('ls -la', fg)],
+      [S('drwxr-xr-x  ', fg), S('src/', a[4], B), S('     ', fg), S('lrwxr-xr-x  ', fg), S('current', a[6]), S(' -> ', fg), S('v0.4.2', a[6])],
+      [S('-rwxr-xr-x  ', fg), S('build.sh', a[2], B), S(' ', fg), S('-rw-r--r--  ', fg), S('Cargo.toml', fg), S('   ', fg), S('-rw-r--r--  ', fg), S('notes.md', a[8])],
+      [S(' ', fg)],
+      [S('⏺ ', a[2]), S('Update(', fg), S('src/auth/session.rs', fg, B), S(')', fg)],
+      [S('    ⎿  ', a[8]), S('Updated src/auth/session.rs with 4 additions and 1 removal', a[8])],
+      [S('      41 ', a[8]), S('+ pub fn refresh(&mut self) -> Result<Token> {', a[2], 'background: ' + this.rgba(a[2], 0.12) + ';')],
+      [S('      42 ', a[8]), S('+     let next = self.issuer.renew(&self.token)?;', a[2], 'background: ' + this.rgba(a[2], 0.12) + ';')],
+      [S('      43 ', a[8]), S('- pub fn refresh(&self) -> Token', a[1], 'background: ' + this.rgba(a[1], 0.12) + ';')],
+      [S(' ', fg)],
+      [S('⏺ ', a[2]), S('Bash(', fg), S('cargo test auth::', fg, B), S(')', fg)],
+      [S('    ', fg), S('warning', a[3], B), S(': unused variable `token` in ', fg), S('src/auth/mod.rs:88', fg, 'text-decoration: underline; text-decoration-color: var(--accent); color: var(--accent);')],
+      [S('    test auth::refresh ... ', fg), S('ok', a[2], B), S('    test auth::expiry ... ', fg), S('FAILED', a[1], B)],
+      [S('    Read the failure in ', fg), S('the expiry test', fg, sel), S(' and fix it next', fg)],
+      [S(' ', fg)],
+      [S('✻ ', a[5]), S('Wiring refresh into the middleware… ', a[5]), S('(4m 12s · esc to interrupt)', a[8])],
+      [S('❯ ', fg), S(' ', fg, 'background: var(--fg); animation: blink 1.1s steps(1) infinite;')],
+      [S(' ', fg)],
+      strip
+    ].map((segs) => ({ segs }));
+  }
+
+  renderVals() {
+    const t = THEMES.find((x) => x.id === this.state.theme) || THEMES[0];
+    const { ui, ansi } = this.colors(t);
+    const dark = t.kind === 'dark';
+    const vars = UI_KEYS.map((k) => '--' + k + ':' + ui[k]).join(';')
+      + ';--accent-soft:' + this.rgba(ui.accent, dark ? 0.12 : 0.08)
+      + ';--need-soft:' + this.rgba(ui.need, dark ? 0.10 : 0.08)
+      + ';--need-ring:' + this.rgba(ui.need, dark ? 0.22 : 0.20)
+      + ';--selection:' + this.rgba(ui.accent, 0.32)
+      + ';--badge-fg:' + (dark ? ui.bg : '#FFFFFF');
+
+    const chips = THEMES.map((x) => {
+      const c = this.colors(x).ui;
+      const on = x.id === t.id;
+      return {
+        name: x.name, kind: x.kind, checked: on ? 'true' : 'false',
+        bg: c.bg, panel: c.panel, term: c.term, line: c.line, fg: c.fg, accent: c.accent, ok: c.ok, need: c.need, err: c.err,
+        style: 'display: flex; flex-direction: column; padding: 6px; border-radius: 10px; background: #FFFFFF; cursor: pointer; text-align: left; '
+          + (on ? 'border: 2px solid #151922; box-shadow: 0 4px 14px rgba(15,17,23,.16);' : 'border: 2px solid transparent; box-shadow: 0 1px 3px rgba(15,17,23,.12);'),
+        pick: () => this.setState({ theme: x.id })
+      };
+    });
+
+    const terms = this.terminals();
+    const sel = terms.find((x) => x.id === this.state.selected) || terms[0];
+    const names = [];
+    terms.forEach((x) => { if (!names.includes(x.project)) names.push(x.project); });
+    const groups = names.map((name) => {
+      const own = terms.filter((x) => x.project === name);
+      const n = own.filter((x) => x.status === 'needs').length;
+      return {
+        name, hasNeed: n > 0, needText: String(n),
+        rows: own.map((x) => ({
+          name: x.name, icon: ICONS[x.agent], dotStyle: this.dot(x.status),
+          pressed: x.id === sel.id ? 'true' : 'false',
+          rowStyle: x.id === sel.id ? 'background: var(--raised); box-shadow: inset 2px 0 0 var(--accent)' : '',
+          hasSub: !!x.sub, sub: x.sub || '', subColor: x.status === 'failed' ? 'var(--err)' : 'var(--need)',
+          pick: () => this.setState({ selected: x.id })
+        }))
+      };
+    });
+
+    const over = this.state.over[t.id] || {};
+    const ring = (k) => over[k] ? 'box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 4px #151922;' : '';
+    return {
+      chips, groups,
+      rootVars: vars,
+      cur: { name: sel.name, icon: ICONS[sel.agent], dotStyle: this.dot(sel.status) },
+      lines: this.lines(ansi),
+      themeName: t.name,
+      edited: Object.keys(over).length > 0,
+      reset: () => this.setState({ over: { ...this.state.over, [t.id]: {} } }),
+      uiTokens: UI_KEYS.map((k) => ({ name: k, hex: ui[k], ring: ring(k), set: (e) => this.setColor(t.id, k, e) })),
+      ansiTokens: ansi.map((h, i) => ({ name: ANSI_NAMES[i], hex: h, ring: ring('a' + i), set: (e) => this.setColor(t.id, 'a' + i, e) }))
+    };
+  }
+}
+</script>
+</body>
+</html>

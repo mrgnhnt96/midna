@@ -109,7 +109,10 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         cli: String::new(),
     };
     let mut v = vec![
-        e("theme", json!("dark"), "dark | light | system", false),
+        e("theme", json!("dark"), "system | a theme id (dark = twilight, light = daylight)", false),
+        e("theme.dark", json!("twilight"), "theme in macOS dark mode", false),
+        e("theme.light", json!("daylight"), "theme in macOS light mode", false),
+        e("theme.colors", json!([]), "single-color overrides", false),
         e("density", json!("comfortable"), "comfortable | compact", false),
         e("ui.header.script", json!("github"), "github | github+agent | worktree+branch | none | custom path", false),
         e("ui.row.script", json!("worktree+diff"), "worktree+diff | worktree+branch | diff | none | custom path", false),
