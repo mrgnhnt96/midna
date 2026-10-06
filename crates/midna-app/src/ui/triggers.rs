@@ -407,8 +407,8 @@ const PATHS: [(&str, &str, &str, &str); 4] = [
     ("off", "Off", "", "Stop receiving webhooks. Triggers stay, nothing fires."),
 ];
 
-/// Paths listed in the menu but not yet pickable.
-const SOON: [&str; 1] = ["midna_relay"];
+/// Paths listed in the menu (and Settings) but not yet pickable.
+pub const SOON: [&str; 1] = ["midna_relay"];
 
 fn path_meta(path: &str) -> (&'static str, &'static str) {
     PATHS.iter().find(|p| p.0 == path).map(|p| (p.1, p.2)).unwrap_or(("Webhooks", ""))
@@ -1625,7 +1625,7 @@ fn cooldown_text(secs: u64) -> String {
 }
 
 /// The "Coming soon" pill on paths that aren't pickable yet.
-fn soon_pill(t: &Theme) -> Div {
+pub fn soon_pill(t: &Theme) -> Div {
     kit::chip(t, "Coming soon").h(px(18.)).rounded_full().text_size(px(10.5)).border_color(t.accent).text_color(t.accent).bg(t.accent_soft)
 }
 

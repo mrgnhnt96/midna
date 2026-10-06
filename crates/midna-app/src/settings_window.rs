@@ -1343,6 +1343,7 @@ impl SettingsWindow {
                 let mut seg = div().flex().flex_wrap().p(px(2.)).gap(px(1.)).rounded(px(7.)).border_1().border_color(t.line).bg(t.panel);
                 for (i, (v, label)) in options.into_iter().enumerate() {
                     let on = v == current;
+                    let soon = key == "webhooks.path" && crate::ui::triggers::SOON.contains(&v.as_str());
                     let k = key.clone();
                     seg = seg.child(
                         div()
@@ -1354,7 +1355,8 @@ impl SettingsWindow {
                             .rounded(px(5.))
                             .text_size(px(12.))
                             .whitespace_nowrap()
-                            .cursor_pointer()
+                            .gap(px(6.))
+                            .when(!soon, |d| d.cursor_pointer())
                             .when(on, |d| {
                                 d.bg(t.raised).text_color(t.fg).font_weight(FontWeight::BOLD).shadow(vec![BoxShadow {
                                     color: hsla(0., 0., 0., 0.2),
@@ -1364,13 +1366,15 @@ impl SettingsWindow {
                                     inset: false,
                                 }])
                             })
-                            .when(!on, |d| d.text_color(t.dim).hover(|s| s.text_color(t.fg)))
+                            .when(!on && !soon, |d| d.text_color(t.dim).hover(|s| s.text_color(t.fg)))
+                            .when(soon && !on, |d| d.text_color(t.dim).opacity(0.6))
                             .on_click(cx.listener(move |s, _, _, cx| {
-                                if !on {
+                                if !on && !soon {
                                     s.set(&k, json!(v), cx);
                                 }
                             }))
-                            .child(label),
+                            .child(label)
+                            .when(soon, |d| d.child(crate::ui::triggers::soon_pill(t))),
                     );
                 }
                 seg.into_any_element()
