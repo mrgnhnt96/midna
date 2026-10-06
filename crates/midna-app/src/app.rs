@@ -97,11 +97,15 @@ pub struct MainWindow {
     pub twilight_phase: crate::ui::twilight::Phase,
     pub twilight_reduced: bool,
     pub twilight_setup: bool,
-    pub twilight_started: std::time::Instant,
+    pub twilight_clock: std::rc::Rc<crate::ui::twilight::Clock>,
+    /// When (design ms) every cell shows the window.
+    pub twilight_revealed: f32,
     pub twilight_total: f32,
     pub twilight_overlay: Option<AnyWindowHandle>,
     /// Whether the traffic lights are showing (hidden during the opening and on the setup screen).
     pub twilight_lights: bool,
+    /// The opening hasn't revealed the whole window yet (see-through, masked, no chrome).
+    pub twilight_masked: bool,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -285,10 +289,12 @@ impl MainWindow {
             twilight_phase: crate::ui::twilight::Phase::Off,
             twilight_reduced: false,
             twilight_setup: false,
-            twilight_started: std::time::Instant::now(),
+            twilight_clock: Default::default(),
+            twilight_revealed: 0.,
             twilight_total: 0.,
             twilight_overlay: None,
             twilight_lights: true,
+            twilight_masked: false,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             id,
             windows,

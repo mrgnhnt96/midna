@@ -7,6 +7,10 @@
 //!   its layer) to the cells the opening has reached, and a click-through window on top draws the
 //!   tiles: each one runs the design's ripple to its orange diamond, where midna shows under it,
 //!   then keeps turning and shrinks away. The teal wave crosses on top.
+//! - The window gets its shadow, corners and traffic lights back (opaque, unmasked) the moment
+//!   every cell shows it, while the tiles are still moving over the edges, so the change hides in
+//!   the motion; the tiles then finish on top. Doing it at the very end showed as a pause, then a
+//!   one-frame pop of the shadow and corners.
 //! - Reduce motion (macOS Accessibility): still teal squares light up from the centre, each cell
 //!   showing midna once lit, then all fade out together. 1.5s; no scaling, turning or wave.
 //!
@@ -18,6 +22,8 @@ use crate::theme::{Theme, ThemeMode};
 use crate::ui::setup_screen::{self as ss, CELL, EXPOSE_AT, Model, OPEN_ORIGIN, PER_CELL_MS, RIPPLE_MS, rgb};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,11 +77,6 @@ pub fn over_setup(m: &MainWindow) -> bool {
     m.twilight_phase == Phase::Intro && m.twilight_setup
 }
 
-/// The opening is playing over the main window.
-pub fn over_app(m: &MainWindow) -> bool {
-    m.twilight_phase == Phase::Intro && !m.twilight_setup
-}
-
 /// How long this opening runs, in design time (ms at 1×).
 pub fn design_ms(m: &MainWindow) -> f32 {
     m.twilight_total
@@ -86,9 +87,20 @@ pub fn length(m: &MainWindow) -> Duration {
     Duration::from_secs_f32(m.twilight_total / 1000. / speed())
 }
 
-/// Design time since the opening started.
-fn now_ms(started: Instant) -> f32 {
-    started.elapsed().as_secs_f32() * 1000. * speed()
+/// One play of the opening, shared by the main window and the tile window. Time starts at the
+/// main window's first drawn frame (it is created well before it shows).
+#[derive(Default)]
+pub struct Clock {
+    started: Cell<Option<Instant>>,
+    /// The main window is still masked to the revealed cells.
+    masked: Cell<bool>,
+}
+
+impl Clock {
+    /// Design ms since the first frame (None: not drawn yet).
+    fn ms(&self) -> Option<f32> {
+        self.started.get().map(|t| t.elapsed().as_secs_f32() * 1000. * speed())
+    }
 }
 
 /// The farthest cell from the opening's origin, in cells.
@@ -186,19 +198,34 @@ fn revealed(cols: usize, rows: usize, ms: f32, reduced_motion: bool) -> Vec<(usi
     runs(cols, rows, |c, r| (ms - dist(c, r) * PER_CELL_MS) / RIPPLE_MS >= EXPOSE_AT)
 }
 
-/// The click-through window over the main window that draws the tiles.
+/// The click-through window over the main window that draws the tiles. It also keeps the main
+/// window's mask in step, so the app doesn't redraw every frame of the opening.
 struct Overlay {
-    started: Instant,
+    clock: Rc<Clock>,
     reduced: bool,
     mode: ThemeMode,
+    main: AnyWindowHandle,
+    /// The main window's NSView (only touched while `main` is open).
+    main_view: usize,
+    /// The mask last set: only rebuilt when the revealed cells change.
+    last_runs: Vec<(usize, usize, usize)>,
 }
 
 impl Render for Overlay {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
         let size = window.viewport_size();
         let md = Model::bare(self.mode, f32::from(size.width), f32::from(size.height));
-        div().size_full().child(tiles(&md, now_ms(self.started), self.reduced))
+        let Some(ms) = self.clock.ms() else { return div().size_full() };
+        if self.clock.masked.get() && cx.windows().contains(&self.main) {
+            let (cols, rows) = md.cells(CELL, CELL);
+            let runs = revealed(cols, rows, ms, self.reduced);
+            if runs != self.last_runs {
+                set_mask(self.main_view as *mut objc2::runtime::AnyObject, f64::from(size.height), &runs, CELL * md.s);
+                self.last_runs = runs;
+            }
+        }
+        div().size_full().child(tiles(&md, ms, self.reduced))
     }
 }
 
@@ -208,7 +235,7 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
     m.twilight_phase = Phase::Intro;
     m.twilight_reduced = reduce_motion();
     m.twilight_setup = ss::active(m);
-    m.twilight_started = Instant::now();
+    m.twilight_clock = Rc::new(Clock::default());
     let size = window.viewport_size();
     let md = Model::bare(cx.global::<Theme>().mode, f32::from(size.width), f32::from(size.height));
     let (cols, rows) = md.cells(CELL, CELL);
@@ -221,17 +248,39 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
         let (wc, wr) = md.cells(96., 100.);
         (farthest(cols, rows) * PER_CELL_MS + RIPPLE_MS).max(120. + (wc + wr) as f32 * 52. + 520.)
     };
+    // Every cell shows the window from here.
+    m.twilight_revealed = if m.twilight_reduced { REDUCED_LIT_BY } else { farthest(cols, rows) * PER_CELL_MS + EXPOSE_AT * RIPPLE_MS };
     window.set_background_appearance(WindowBackgroundAppearance::Transparent);
     chrome(window, false);
     m.twilight_lights = false;
+    m.twilight_masked = true;
+    m.twilight_clock.masked.set(true);
     if !m.twilight_setup {
-        set_mask(window, &[], 0.);
+        if let Some(view) = ns_view_ptr(window) {
+            set_mask(view, f64::from(f32::from(size.height)), &[], 0.);
+        }
         m.twilight_overlay = open_overlay(m, window, cx);
     }
+    cx.notify();
+}
+
+/// The main window's first drawn frame of an opening: start the clock, and the timers that
+/// restore the window and end the opening. Call from every main-window render.
+pub fn first_frame(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if m.twilight_phase != Phase::Intro || m.twilight_clock.started.get().is_some() {
+        return;
+    }
+    m.twilight_clock.started.set(Some(Instant::now()));
     let seq = m.twilight_seq;
-    let length = length(m);
+    let (revealed_at, length) = (Duration::from_secs_f32(m.twilight_revealed / 1000. / speed()), length(m));
     cx.spawn_in(window, async move |this, cx| {
-        cx.background_executor().timer(length).await;
+        cx.background_executor().timer(revealed_at).await;
+        let _ = this.update_in(cx, |m, window, _| {
+            if m.twilight_seq == seq {
+                restore(m, window);
+            }
+        });
+        cx.background_executor().timer(length.saturating_sub(revealed_at)).await;
         let _ = this.update_in(cx, |m, window, cx| {
             if m.twilight_seq == seq {
                 finish(m, window, cx);
@@ -239,43 +288,40 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
         });
     })
     .detach();
-    cx.notify();
-}
-
-/// Each main-window frame of an opening over the app: keep drawing, and mask to the revealed cells.
-pub fn frame(m: &MainWindow, window: &mut Window, cx: &App) {
-    if !over_app(m) {
-        return;
-    }
-    window.request_animation_frame();
-    let size = window.viewport_size();
-    let md = Model::bare(cx.global::<Theme>().mode, f32::from(size.width), f32::from(size.height));
-    let (cols, rows) = md.cells(CELL, CELL);
-    set_mask(window, &revealed(cols, rows, now_ms(m.twilight_started), m.twilight_reduced), CELL * md.s);
 }
 
 /// The setup screen has no window controls: hide the traffic lights while it shows (and while
 /// the opening plays). Call each main-window frame.
 pub fn sync_lights(m: &mut MainWindow, window: &Window) {
-    let show = m.twilight_phase == Phase::Off && !ss::active(m);
+    let show = !m.twilight_masked && !ss::active(m);
     if show != m.twilight_lights {
         m.twilight_lights = show;
         traffic_lights(window, show);
     }
 }
 
+/// The whole window shows: back to an ordinary window (opaque, shadow, traffic lights).
+fn restore(m: &mut MainWindow, window: &Window) {
+    if !m.twilight_masked {
+        return;
+    }
+    m.twilight_masked = false;
+    m.twilight_clock.masked.set(false);
+    clear_mask(window);
+    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+    chrome(window, true);
+    m.twilight_lights = true;
+    sync_lights(m, window);
+}
+
 fn finish(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    restore(m, window);
     m.twilight_phase = Phase::Off;
     // The opening already brought the card in.
     m.onboarding.card_seq_opened = m.onboarding.card_seq;
     if let Some(h) = m.twilight_overlay.take() {
         let _ = h.update(cx, |_, w, _| w.remove_window());
     }
-    clear_mask(window);
-    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-    chrome(window, true);
-    m.twilight_lights = true;
-    sync_lights(m, window);
     cx.notify();
 }
 
@@ -297,12 +343,15 @@ fn open_overlay(m: &MainWindow, window: &Window, cx: &mut Context<MainWindow>) -
         is_movable: false,
         display_id: window.display(cx).map(|d| d.id()),
         window_background: WindowBackgroundAppearance::Transparent,
+        // It never takes focus; unfocused windows are otherwise drawn at a reduced rate.
+        inactive_frame_interval: None,
         ..Default::default()
     };
-    let (started, reduced, mode) = (m.twilight_started, m.twilight_reduced, cx.global::<Theme>().mode);
+    let (clock, reduced, mode, main) = (m.twilight_clock.clone(), m.twilight_reduced, cx.global::<Theme>().mode, window.window_handle());
+    let main_view = ns_view_ptr(window)? as usize;
     cx.open_window(opts, |window, cx| {
         click_through(window);
-        cx.new(|_| Overlay { started, reduced, mode })
+        cx.new(|_| Overlay { clock, reduced, mode, main, main_view, last_runs: vec![] })
     })
     .ok()
     .map(|h| h.into())
@@ -390,13 +439,11 @@ unsafe extern "C" {
     fn CGPathRelease(path: *const std::ffi::c_void);
 }
 
-/// Mask the window's layer to `runs` (row, first column, last column) of `cell`-pixel cells.
-/// Empty: nothing shows.
-fn set_mask(window: &Window, runs: &[(usize, usize, usize)], cell: f32) {
+/// Mask `view`'s layer (`h` points tall) to `runs` (row, first column, last column) of
+/// `cell`-point cells. Empty: nothing shows.
+fn set_mask(view: *mut objc2::runtime::AnyObject, h: f64, runs: &[(usize, usize, usize)], cell: f32) {
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
-    let Some(view) = ns_view_ptr(window) else { return };
-    let h = f64::from(f32::from(window.viewport_size().height));
     unsafe {
         let layer: *mut AnyObject = msg_send![view, layer];
         if layer.is_null() {

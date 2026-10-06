@@ -183,12 +183,12 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         // The launch opening over setup: only the setup screen, over the desktop (the window is
-        // see-through). Over the main window, the app draws as usual, masked (`twilight::frame`).
+        // see-through). Over the main window, the app draws as usual, masked (the tile window keeps the mask).
+        twilight::first_frame(self, window, cx);
         if twilight::over_setup(self) {
             let root = div().id("midna-main").key_context(CTX_MAIN).track_focus(&self.focus).size_full().children(setup_screen::render(self, &t, window, cx));
             return crate::composer::register(MainWindow::register_actions(root, cx), cx);
         }
-        twilight::frame(self, window, cx);
         twilight::sync_lights(self, window);
         crate::composer::sync(self);
         let sidebar = sidebar::render(self, &t, window, cx);
