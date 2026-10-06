@@ -15,6 +15,10 @@
 //! Codex has no transcript path in its hooks; its notify carries the turn's prompts and last
 //! reply, which are scanned for URLs.
 //!
+//! Each link remembers the prompts it came up in (`turn`, `turns`: `n` from `session.prompts`),
+//! by time: an entry belongs to the latest prompt sent at or before its timestamp (both are
+//! whole seconds).
+//!
 //! Each terminal's links live in `$MIDNA_HOME/links/<session>.json` with the read offset, so a
 //! daemon restart neither loses pins nor counts a mention twice.
 use crate::daemon::Daemon;
@@ -66,6 +70,9 @@ pub struct Links {
     stores: Mutex<HashMap<Id, Store>>,
     /// Terminals with a read already scheduled.
     pending: Mutex<HashSet<Id>>,
+    /// Per terminal: when each prompt was sent (unix secs, session.prompts' order) and the event
+    /// log seq read up to, so only newer events are read next time.
+    prompts: Mutex<HashMap<Id, (u64, Vec<i64>)>>,
 }
 
 fn dir(home: &Path) -> PathBuf {
@@ -97,8 +104,32 @@ impl Links {
     /// Drop a closed terminal's links.
     pub fn forget(&self, home: &Path, sid: &str) {
         self.stores.lock().unwrap_or_else(|e| e.into_inner()).remove(sid);
+        self.prompts.lock().unwrap_or_else(|e| e.into_inner()).remove(sid);
         let _ = std::fs::remove_file(file(home, sid));
     }
+}
+
+/// When each prompt was sent to `sid` (unix secs), oldest first: prompt `n` is index `n - 1`,
+/// as in `session.prompts`.
+pub fn prompt_times(d: &Daemon, sid: &str) -> Vec<i64> {
+    let mut cache = d.links.prompts.lock().unwrap_or_else(|e| e.into_inner());
+    let (seen, times) = cache.entry(sid.to_string()).or_default();
+    let upto = d.log.seq();
+    if *seen < upto {
+        let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
+        for e in d.log.list(*seen, crate::prompts::MAX_PROMPTS, &filter) {
+            times.push(time::parse_rfc3339(&e.at).unwrap_or(0));
+            *seen = (*seen).max(e.seq);
+        }
+        *seen = (*seen).max(upto);
+    }
+    times.clone()
+}
+
+/// The prompt an entry at unix time `t` belongs to (`n`), given `prompt_times`.
+pub fn turn_at(times: &[i64], t: i64) -> Option<u32> {
+    let n = times.iter().filter(|&&p| p <= t).count();
+    (n > 0).then_some(n as u32)
 }
 
 fn save(home: &Path, sid: &str, store: &Store) {
@@ -125,8 +156,8 @@ pub fn link_id(target: &str) -> Id {
     format!("l_{:02x}{:02x}{:02x}{:02x}", h[0], h[1], h[2], h[3])
 }
 
-/// Merge what one entry mentioned. Returns how many links are new.
-pub fn record(links: &mut Vec<Link>, found: Vec<Found>, at: &str) -> usize {
+/// Merge what one entry mentioned (in prompt `turn`). Returns how many links are new.
+pub fn record(links: &mut Vec<Link>, found: Vec<Found>, at: &str, turn: Option<u32>) -> usize {
     let mut added = 0;
     let mut seen = HashSet::new();
     for f in found {
@@ -141,6 +172,7 @@ pub fn record(links: &mut Vec<Link>, found: Vec<Found>, at: &str) -> usize {
             if f.named && l.title != f.title && l.source != LinkSource::Added {
                 l.title = f.title;
             }
+            add_turn(l, turn);
             continue;
         }
         added += 1;
@@ -154,12 +186,23 @@ pub fn record(links: &mut Vec<Link>, found: Vec<Found>, at: &str) -> usize {
             mentions: 1,
             first_at: at.to_string(),
             last_at: at.to_string(),
+            turn,
+            turns: turn.into_iter().collect(),
             pinned: false,
             pinned_by: None,
             note: None,
         });
     }
     added
+}
+
+fn add_turn(l: &mut Link, turn: Option<u32>) {
+    let Some(t) = turn else { return };
+    if !l.turns.contains(&t) {
+        l.turns.push(t);
+        l.turns.sort_unstable();
+    }
+    l.turn = l.turns.last().copied();
 }
 
 // ------------------------------------------------------------------ reading transcripts
@@ -187,8 +230,11 @@ pub fn after_hook(d: &std::sync::Arc<Daemon>, sid: &str, agent: AgentKind, hook:
                 found.extend(urls_in(m, LinkSource::Agent, None, true));
             }
             let now = time::now_rfc3339();
+            // This notify's prompts are logged right after this (rpc::agent::hook): count them in.
+            let prompts = prompt_times(d, sid).len() + payload.get("input-messages").and_then(Value::as_array).map_or(0, Vec::len);
+            let turn = (prompts > 0).then_some(prompts as u32);
             let added = d.links.with(&d.cfg.home, sid, |s| {
-                let n = record(&mut s.links, found, &now);
+                let n = record(&mut s.links, found, &now, turn);
                 (n, n > 0)
             });
             if added > 0 {
@@ -207,9 +253,11 @@ pub fn read_transcript(d: &std::sync::Arc<Daemon>, sid: &str) {
         (s.agent_info.as_ref().and_then(|i| i.transcript_path.clone()), s.cwd.clone())
     };
     let Some(path) = path else { return };
+    let mut times: Option<Vec<i64>> = None;
+    let mut turn_of = |t: i64| turn_at(times.get_or_insert_with(|| prompt_times(d, sid)), t);
     let (added, blocked) = d.links.with(&d.cfg.home, sid, |s| {
         let before = s.offset;
-        let n = read_into(s, &path, &cwd);
+        let n = read_into(s, &path, &cwd, &mut turn_of);
         ((n, std::mem::take(&mut s.blocked)), n > 0 || s.offset != before)
     });
     if added > 0 {
@@ -220,8 +268,9 @@ pub fn read_transcript(d: &std::sync::Arc<Daemon>, sid: &str) {
     }
 }
 
-/// Read complete new lines of `path` into `s`. Returns how many links are new.
-pub fn read_into(s: &mut Store, path: &str, cwd: &str) -> usize {
+/// Read complete new lines of `path` into `s`; `turn_of` maps an entry's time (unix secs) to
+/// its prompt. Returns how many links are new.
+pub fn read_into(s: &mut Store, path: &str, cwd: &str, turn_of: &mut dyn FnMut(i64) -> Option<u32>) -> usize {
     if s.transcript.as_deref() != Some(path) {
         // A new conversation in the same terminal (`/clear`, a fresh start): read it from the
         // top and keep what the old one found.
@@ -256,8 +305,8 @@ pub fn read_into(s: &mut Store, path: &str, cwd: &str) -> usize {
                 if found.is_empty() {
                     continue;
                 }
-                let at = v.get("timestamp").and_then(Value::as_str).and_then(time::parse_rfc3339).map(time::format_unix).unwrap_or_else(time::now_rfc3339);
-                added += record(&mut s.links, found, &at);
+                let t = v.get("timestamp").and_then(Value::as_str).and_then(time::parse_rfc3339).unwrap_or_else(time::now_unix);
+                added += record(&mut s.links, found, &time::format_unix(t), turn_of(t));
             }
         }
     }
@@ -300,10 +349,13 @@ pub fn add(d: &Daemon, sid: &str, p: &LinksAddParams, by: Actor) -> Result<Link,
         return Err(RpcError::bad_params("target must be an http(s) URL or an absolute path"));
     };
     let now = time::now_rfc3339();
+    let turn = turn_at(&prompt_times(d, sid), time::now_unix());
     let out = d.links.with(&d.cfg.home, sid, |s| {
         if !s.links.iter().any(|l| l.target == target) {
             let f = Found { kind, target: target.clone(), title: derived, named: false, source: LinkSource::Added, via: None };
-            record(&mut s.links, vec![f], &now);
+            record(&mut s.links, vec![f], &now, turn);
+        } else if let Some(l) = s.links.iter_mut().find(|l| l.target == target) {
+            add_turn(l, turn);
         }
         let l = s.links.iter_mut().find(|l| l.target == target).expect("just recorded");
         if let Some(t) = p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -616,7 +668,7 @@ mod tests {
         let mut links = vec![];
         for (i, l) in lines.iter().enumerate() {
             let f = scan_entry(l, "/p", &mut tools);
-            record(&mut links, f, &format!("2026-10-04T10:00:0{i}Z"));
+            record(&mut links, f, &format!("2026-10-04T10:00:0{i}Z"), None);
         }
         let got: Vec<(&str, LinkSource, u32, &str)> = links.iter().map(|l| (l.target.as_str(), l.source, l.mentions, l.title.as_str())).collect();
         assert_eq!(
@@ -661,24 +713,43 @@ mod tests {
         std::fs::write(&path, format!("{}{}", entry("https://a.com/1"), &entry("https://b.com/2")[..10])).unwrap();
         let mut s = Store::default();
         let p = path.to_str().unwrap();
-        assert_eq!(read_into(&mut s, p, "/"), 1);
+        assert_eq!(read_into(&mut s, p, "/", &mut |_| None), 1);
         std::fs::write(&path, format!("{}{}", entry("https://a.com/1"), entry("https://b.com/2"))).unwrap();
-        assert_eq!(read_into(&mut s, p, "/"), 1);
-        assert_eq!(read_into(&mut s, p, "/"), 0, "nothing new, nothing counted twice");
+        assert_eq!(read_into(&mut s, p, "/", &mut |_| None), 1);
+        assert_eq!(read_into(&mut s, p, "/", &mut |_| None), 0, "nothing new, nothing counted twice");
         assert_eq!(s.links.iter().map(|l| l.mentions).collect::<Vec<_>>(), vec![1, 1]);
 
         let other = dir.join("u.jsonl");
         std::fs::write(&other, entry("https://a.com/1")).unwrap();
-        assert_eq!(read_into(&mut s, other.to_str().unwrap(), "/"), 0);
+        assert_eq!(read_into(&mut s, other.to_str().unwrap(), "/", &mut |_| None), 0);
         assert_eq!(s.links[0].mentions, 2, "a new conversation keeps the old links");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn links_remember_the_prompts_they_came_up_in() {
+        let times = [100, 200, 300];
+        assert_eq!((turn_at(&times, 50), turn_at(&times, 100), turn_at(&times, 250), turn_at(&times, 999)), (None, Some(1), Some(2), Some(3)));
+        let dir = std::env::temp_dir().join(format!("midna-links-turns-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let edit = |file: &str, at: &str| {
+            format!("{}\n", json!({"type":"assistant","timestamp":at,"message":{"content":[{"type":"tool_use","id":file,"name":"Edit","input":{"file_path":file}}]}}))
+        };
+        let lines = [edit("/p/a.rs", "1970-01-01T00:02:30.500Z"), edit("/p/b.rs", "1970-01-01T00:03:20Z"), edit("/p/a.rs", "1970-01-01T00:05:10Z")];
+        std::fs::write(&path, lines.concat()).unwrap();
+        let mut s = Store::default();
+        read_into(&mut s, path.to_str().unwrap(), "/p", &mut |t| turn_at(&times, t));
+        let got: Vec<(&str, Option<u32>, &[u32])> = s.links.iter().map(|l| (l.title.as_str(), l.turn, l.turns.as_slice())).collect();
+        assert_eq!(got, vec![("a.rs", Some(3), &[1, 3][..]), ("b.rs", Some(2), &[2][..])]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn pinned_sort_first() {
         let mut links = vec![];
-        record(&mut links, urls_in("https://a.com/x https://b.com/y", LinkSource::User, None, true), "2026-10-04T10:00:00Z");
-        record(&mut links, urls_in("https://c.com/z", LinkSource::User, None, true), "2026-10-04T10:05:00Z");
+        record(&mut links, urls_in("https://a.com/x https://b.com/y", LinkSource::User, None, true), "2026-10-04T10:00:00Z", None);
+        record(&mut links, urls_in("https://c.com/z", LinkSource::User, None, true), "2026-10-04T10:05:00Z", None);
         links[0].pinned = true;
         let order: Vec<String> = sorted(&links).into_iter().map(|l| l.title).collect();
         assert_eq!(order, ["a.com/x", "c.com/z", "b.com/y"]);

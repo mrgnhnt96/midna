@@ -79,11 +79,28 @@ pub struct LinksListParams {
     /// Only pinned links.
     #[serde(default)]
     pub pinned: bool,
+    /// Only links that came up in this turn: a prompt number (`n` from `session.prompts`) or
+    /// `"last"` for the latest prompt. E.g. `{kind: file, turn: "last"}` = the files the agent
+    /// created or edited since the human's last prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<TurnRef>,
+}
+
+/// A prompt number, or `"last"` (also `"latest"`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TurnRef {
+    N(u32),
+    Name(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LinksListResult {
     pub session: Id,
+    /// The prompt number `turn` resolved to (absent when no turn was asked for, or when the
+    /// terminal has no prompts yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
     /// Pinned first (most recently pinned first), then the rest, most recent first.
     pub links: Vec<Link>,
 }

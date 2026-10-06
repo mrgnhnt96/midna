@@ -490,6 +490,8 @@ mod tests {
             mentions,
             first_at: "2026-10-04T10:00:00Z".into(),
             last_at: "2026-10-04T10:00:00Z".into(),
+            turn: None,
+            turns: vec![],
             pinned: false,
             pinned_by: None,
             note: None,

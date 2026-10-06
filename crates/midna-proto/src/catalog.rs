@@ -190,7 +190,9 @@ fn build() -> Vec<MethodSpec> {
             "The links, pull requests, artifacts and files that came up in an agent terminal's conversation, collected \
              from the agent's transcript as it runs: URLs the human pasted or the agent wrote or fetched, PRs and artifacts \
              that tools printed, and files the agent created or edited. Each has where it came up first (`source`, `via`), \
-             how often, and whether it is pinned. Pinned links come first. Defaults to your own terminal."),
+             how often, whether it is pinned, and the prompts it came up in (`turn` = the latest, `turns` = all, numbered \
+             as in session.prompts). `turn: N | \"last\"` keeps only what came up in that turn, e.g. {kind: file, turn: \
+             last} = the files edited since the human's last prompt. Pinned links come first. Defaults to your own terminal."),
         m::<LinksPinParams, Link>("links.pin").mutating().d(
             "Pin (or with `pinned: false` unpin) a session link by id or exact URL/path, so it stays at the top of the \
              terminal's links list in the header. Pin what the human will want to come back to: the PR, the design, the doc \

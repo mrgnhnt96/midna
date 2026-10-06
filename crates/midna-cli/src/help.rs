@@ -176,7 +176,7 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "links",
         aliases: &[],
-        usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned]\n       \
+        usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned] [--turn N|last]\n       \
                 links pin|unpin <link-id|url|path> [--session <id>]\n       \
                 links add <url|path> [--title T] [--why <note>] [--no-pin] [--session <id>]",
         summary: "the links, PRs, artifacts and files that came up in an agent terminal's conversation",
@@ -184,7 +184,9 @@ pub static VERBS: &[Verb] = &[
                   fetched, PRs and artifacts your tools printed, files you created or edited. The human sees them\n\
                   under the header's links button (⌘L). Pin what they will want to come back to (the PR, the\n\
                   design, the doc they sent); `add` puts in something the transcript wouldn't show as a link, pinned\n\
-                  unless --no-pin, with an optional title and --why it matters (shown under it). Defaults to your own terminal.",
+                  unless --no-pin, with an optional title and --why it matters (shown under it). Each link knows the\n\
+                  prompts it came up in (numbered as in `midna prompts`); --turn keeps one, e.g.\n\
+                  `midna links --kind file --turn last` = the files edited since the last prompt. Defaults to your own terminal.",
         methods: &["links.list", "links.pin", "links.add"],
     },
     Verb {

@@ -900,17 +900,22 @@ fn links(a: &Args, out: OutFn) -> Res {
     let session = a.get("session");
     match a.pos.get(1).map(String::as_str).unwrap_or("list") {
         "list" | "ls" => {
-            a.check(&["session", "kind", "pinned"])?;
-            let v = call("links.list", json!({ "session": session, "kind": a.get("kind"), "pinned": a.has("pinned") }))?;
+            a.check(&["session", "kind", "pinned", "turn"])?;
+            let turn = a.get("turn").map(|t| t.parse::<u32>().map_or_else(|_| json!(t), |n| json!(n)));
+            let v = call("links.list", json!({ "session": session, "kind": a.get("kind"), "pinned": a.has("pinned"), "turn": turn }))?;
             out(&v, &|v| {
                 let list = v["links"].as_array().cloned().unwrap_or_default();
-                if list.is_empty() {
-                    println!("no links yet in {}", s_(v, "session"));
+                match (list.is_empty(), turn.is_some(), v["turn"].as_u64()) {
+                    (true, true, Some(n)) => println!("no links from prompt {n} in {}", s_(v, "session")),
+                    (true, true, None) => println!("no prompts yet in {}", s_(v, "session")),
+                    (true, ..) => println!("no links yet in {}", s_(v, "session")),
+                    _ => {}
                 }
                 for l in list {
                     let pin = if l["pinned"] == true { "*" } else { " " };
                     let via = l["via"].as_str().map(|v| format!(" via {v}")).unwrap_or_default();
-                    println!("{pin} {}  {:<8} {}  ({}{}, {}×)", s_(&l, "id"), s_(&l, "kind"), s_(&l, "title"), s_(&l, "source"), via, print::plain(&l["mentions"]));
+                    let turn = l["turn"].as_u64().map(|n| format!(", prompt {n}")).unwrap_or_default();
+                    println!("{pin} {}  {:<8} {}  ({}{}, {}×{turn})", s_(&l, "id"), s_(&l, "kind"), s_(&l, "title"), s_(&l, "source"), via, print::plain(&l["mentions"]));
                     println!("    {}", s_(&l, "target"));
                     if let Some(n) = l["note"].as_str() {
                         println!("    {n}");

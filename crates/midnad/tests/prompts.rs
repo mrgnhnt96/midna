@@ -40,6 +40,54 @@ fn prompts_list_marks_the_ones_before_a_clear() {
 }
 
 #[test]
+fn links_know_the_prompt_they_came_up_in() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let dir = std::env::temp_dir().join(format!("midna-turns-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.jsonl");
+    std::fs::write(&path, "").unwrap();
+    let edit = |file: &str| {
+        let e = json!({"type": "assistant", "timestamp": midna_proto::time::now_rfc3339(), "message": {"content": [{"type": "tool_use", "id": file, "name": "Edit", "input": {"file_path": file}}]}});
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut f, format!("{e}\n").as_bytes()).unwrap();
+    };
+    let files = |h: &mut Client, turn: Value| -> Vec<(String, Value)> {
+        let r = call(h, "links.list", json!({ "session": sid, "kind": "file", "turn": turn }));
+        r["links"].as_array().unwrap().iter().map(|l| (l["target"].as_str().unwrap().to_string(), l["turns"].clone())).collect()
+    };
+    let ctx = json!({ "session_id": "c1", "transcript_path": path.to_str().unwrap() });
+    let submit = |a: &mut Client, prompt: &str| {
+        let mut p = ctx.clone();
+        p["prompt"] = json!(prompt);
+        hook(a, "UserPromptSubmit", p);
+    };
+
+    submit(&mut a, "fix a");
+    edit("/p/a.rs");
+    hook(&mut a, "PostToolUse", ctx.clone());
+    wait_for(10, "a.rs", || (files(&mut h, Value::Null).len() == 1).then_some(()));
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // timestamps are whole seconds
+    submit(&mut a, "now b");
+    edit("/p/b.rs");
+    edit("/p/a.rs");
+    hook(&mut a, "PostToolUse", ctx.clone());
+    wait_for(10, "b.rs", || (files(&mut h, Value::Null).len() == 2).then_some(()));
+
+    let mut last = files(&mut h, json!("last"));
+    last.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(last, [("/p/a.rs".to_string(), json!([1, 2])), ("/p/b.rs".to_string(), json!([2]))]);
+    assert_eq!(files(&mut h, json!(1)), [("/p/a.rs".to_string(), json!([1, 2]))]);
+    let r = call(&mut h, "links.list", json!({ "session": sid, "turn": "last" }));
+    assert_eq!(r["turn"], 2);
+    assert!(r["links"].as_array().unwrap().iter().all(|l| l["turn"] == 2));
+    assert!(call_err(&mut h, "links.list", json!({ "session": sid, "turn": "first" })).message.contains("prompt number"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn jumps_drive_a_full_screen_agent_view() {
     let d = TestDaemon::start();
     let mut h = d.human();

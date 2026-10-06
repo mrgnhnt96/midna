@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Most prompts listed for one terminal.
-const MAX_PROMPTS: usize = 2000;
+pub const MAX_PROMPTS: usize = 2000;
 /// A jump gives up after this long.
 const JUMP_DEADLINE: Duration = Duration::from_secs(12);
 

@@ -1183,6 +1183,13 @@ pub struct Link {
     pub mentions: u32,
     pub first_at: Timestamp,
     pub last_at: Timestamp,
+    /// The latest prompt it came up in: `n` from `session.prompts` (by time; absent before the
+    /// first prompt and for links collected before midna tracked turns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    /// Every prompt (`n` from `session.prompts`) it came up in, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<u32>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

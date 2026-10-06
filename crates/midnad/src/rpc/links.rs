@@ -14,8 +14,21 @@ fn session(d: &Daemon, ctx: &Ctx, sid: Option<Id>) -> Result<Id, RpcError> {
 
 pub fn list(d: &Daemon, ctx: &Ctx, p: LinksListParams) -> R {
     let sid = session(d, ctx, p.session)?;
-    let links = d.links.list(&d.cfg.home, &sid).into_iter().filter(|l| p.kind.is_none_or(|k| l.kind == k) && (!p.pinned || l.pinned)).collect();
-    ok(LinksListResult { session: sid, links })
+    let turn = match &p.turn {
+        None => None,
+        Some(TurnRef::N(n)) => Some(*n),
+        Some(TurnRef::Name(s)) => match s.trim() {
+            "last" | "latest" => Some(crate::links::prompt_times(d, &sid).len() as u32).filter(|n| *n > 0),
+            n => Some(n.parse::<u32>().map_err(|_| RpcError::bad_params(format!("turn must be a prompt number or \"last\", not `{n}`")))?),
+        },
+    };
+    let links = d
+        .links
+        .list(&d.cfg.home, &sid)
+        .into_iter()
+        .filter(|l| p.kind.is_none_or(|k| l.kind == k) && (!p.pinned || l.pinned) && (p.turn.is_none() || turn.is_some_and(|t| l.turns.contains(&t))))
+        .collect();
+    ok(LinksListResult { session: sid, turn, links })
 }
 
 pub fn pin(d: &Daemon, ctx: &Ctx, p: LinksPinParams) -> R {
