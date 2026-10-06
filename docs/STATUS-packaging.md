@@ -44,14 +44,14 @@ Midna.app/Contents/MacOS/midna-app --uninstall | --login-item-status
 - **UI**:
   - The status bar shows "↻ Update ready (v) · restart to apply" (click applies).
   - Settings ▸ Updates has Update (Check now / Restart to apply / failure text) and Feed.
-  - Permissions ▸ Login item comes from SMAppService (Fix opens Login Items, or re-registers), and Accessibility offers Fix, then Relaunch.
+  - Permissions ▸ Login item comes from SMAppService (Fix opens Login Items, or re-registers), and Accessibility offers Fix (opens the pane; no relaunch needed).
   - Agents ▸ midna CLI shows "Install to ~/.local/bin" with the PATH line when it isn't on PATH.
 
 ## Changes outside the new modules (small, additive)
 
 - `midna-proto`: `VERSION` const; `DaemonInfo.binary`; setting `updates.feed_url` (human only).
 - `midnad`: `--launchd` mode (`main.rs`); `install::running_binary`; `daemon.info` fills `binary`; `CARGO_PKG_VERSION` → `midna_proto::VERSION`.
-- `midna-app`: `main.rs` (mods, `lifecycle::start`, headless args); `statusbar.rs` (update item); `settings_window.rs` (rows, `Act::Life` / `Act::AxFix`); `Cargo.toml` (+objc2-service-management, ureq, ring, base64, semver).
+- `midna-app`: `main.rs` (mods, `lifecycle::start`, headless args); `statusbar.rs` (update item); `settings_window.rs` (rows, `Act::Life`); `Cargo.toml` (+objc2-service-management, ureq, ring, base64, semver).
 - `.gitignore`: `*.key`, `packaging/release-tool/target`, `packaging/e2e/work`.
 
 ## Not done / gaps

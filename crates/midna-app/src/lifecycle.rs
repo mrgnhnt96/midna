@@ -38,8 +38,6 @@ pub enum Cmd {
     OpenLoginItems,
     /// Settings: link the CLI even if the dir isn't on PATH yet.
     InstallCli,
-    /// Relaunch the app (e.g. after an Accessibility grant, which a running process never sees).
-    Relaunch,
 }
 
 enum Msg {
@@ -59,8 +57,6 @@ pub struct Snapshot {
     pub cli: CliLink,
     pub install_error: Option<String>,
     pub update: UpdateState,
-    /// The human pressed Fix on Accessibility: offer a relaunch (grants need a fresh process).
-    pub ax_fix_clicked: bool,
 }
 
 static SNAP: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
@@ -77,10 +73,6 @@ fn edit(f: impl FnOnce(&mut Snapshot)) {
     }
 }
 
-pub fn note_ax_fix() {
-    edit(|s| s.ax_fix_clicked = true);
-}
-
 /// The command channel to the lifecycle thread.
 pub struct Lifecycle {
     tx: Option<mpsc::Sender<Cmd>>,
@@ -90,14 +82,6 @@ impl Global for Lifecycle {}
 
 /// Run a command from UI code (status bar / Settings).
 pub fn command(cmd: Cmd, cx: &mut App) {
-    if matches!(cmd, Cmd::Relaunch)
-        && let Mode::Installed { bundle } = &install::mode()
-    {
-        if install::relaunch_after_exit(bundle).is_ok() {
-            cx.quit();
-        }
-        return;
-    }
     if let Some(tx) = cx.try_global::<Lifecycle>().and_then(|l| l.tx.as_ref()) {
         let _ = tx.send(cmd);
     }
@@ -116,7 +100,6 @@ pub fn start(backend: Arc<dyn Backend>, cx: &mut App) {
         cli: CliLink::Dev,
         install_error: None,
         update: if installed { UpdateState::Idle } else { UpdateState::Off("development build".into()) },
-        ax_fix_clicked: false,
     });
     cx.set_global(Lifecycle { tx: Some(cmd_tx) });
     let reporter = backend.clone();
@@ -355,7 +338,6 @@ impl Worker {
                     let cli = self.link_cli(&home, true);
                     self.send(Msg::Cli(cli));
                 }
-                Ok(Cmd::Relaunch) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }

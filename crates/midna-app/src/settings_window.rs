@@ -436,8 +436,6 @@ enum Act {
     ResetDaemon,
     /// Install / login item / update commands (lifecycle.rs).
     Life(crate::lifecycle::Cmd),
-    /// Accessibility "Fix": open the pane and offer a relaunch (a running app never sees a new grant).
-    AxFix(String),
     /// Agent hooks: open the main window's hooks sheet (the diff, then install or remove).
     Hooks { uninstall: bool },
 }
@@ -759,7 +757,7 @@ impl SettingsWindow {
                 warn: ok == Some(false),
             }
         };
-        let mut ax_row = perm(
+        let ax_row = perm(
             "Accessibility",
             Some(ax),
             if ax { "Granted" } else { "Missing" },
@@ -767,13 +765,6 @@ impl SettingsWindow {
             PANE_AX,
             "permissions.accessibility",
         );
-        if let Control::Text { action: Some(a), .. } = &mut ax_row.control {
-            // macOS only shows a new grant to a fresh process, so after Fix offer a relaunch.
-            *a = if life.ax_fix_clicked { ("Relaunch".into(), Act::Life(crate::lifecycle::Cmd::Relaunch), true) } else { ("Fix".into(), Act::AxFix(PANE_AX.into()), true) };
-            if life.ax_fix_clicked {
-                ax_row.note = Some(("Granted it? macOS shows a new grant only after midna restarts. Terminals keep running.".into(), Hsla::default()));
-            }
-        }
         use crate::notify::Permission as NP;
         let (n_ok, n_state, n_why) = match crate::notify::permission() {
             NP::Allowed => (Some(true), "Allowed", "midna shows approvals, failures and finished turns as macOS notifications."),
@@ -927,7 +918,6 @@ struct LifeRows {
     update: RowSpec,
     login: RowSpec,
     cli: RowSpec,
-    ax_fix_clicked: bool,
 }
 
 /// Rows for the install / update state (lifecycle.rs).
@@ -1058,7 +1048,7 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
         }
         Some(CliLink::Dev) | None => row("midna CLI", t.dim, "Checking…".into(), t.dim, None, why_cli.into(), "", Who::Human, false),
     };
-    LifeRows { update, login, cli, ax_fix_clicked: snap.is_some_and(|s| s.ax_fix_clicked) }
+    LifeRows { update, login, cli }
 }
 
 /// Placeholder color for plain text values (resolved to `t.fg` at render).
@@ -1433,11 +1423,6 @@ impl SettingsWindow {
                                         cx.notify();
                                     }
                                     Act::Life(c) => crate::lifecycle::command(c.clone(), cx),
-                                    Act::AxFix(u) => {
-                                        cx.open_url(u);
-                                        crate::lifecycle::note_ax_fix();
-                                        cx.notify();
-                                    }
                                     &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
                                         window.activate_window();
                                         crate::ui::hooks::open(m, uninstall, window, cx);

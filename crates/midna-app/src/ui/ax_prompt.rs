@@ -60,12 +60,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     if !m.ax_prompt {
         return None;
     }
-    let asked = crate::lifecycle::snapshot().is_some_and(|s| s.ax_fix_clicked);
-    let (body, primary) = if asked {
-        ("Switched midna on? macOS applies the change only to a new process, so midna relaunches. Your terminals keep running.", "Relaunch midna")
-    } else {
-        ("Kass is dictating here. Switch midna on under Privacy & Security ▸ Accessibility so Kass can read and edit what you type.", "Open Accessibility")
-    };
+    let body = "Kass is dictating here. Switch midna on under Privacy & Security ▸ Accessibility so Kass can read and edit what you type.";
     Some(
         div()
             .id("ax-prompt")
@@ -91,15 +86,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                     .justify_end()
                     .gap(px(8.))
                     .child(btn(t, "ax-later", "Not now").on_click(cx.listener(|m, _, _, cx| dismiss(m, cx))))
-                    .child(btn_primary(t, "ax-go", primary).on_click(cx.listener(move |_, _, _, cx| {
-                        if asked {
-                            crate::lifecycle::command(crate::lifecycle::Cmd::Relaunch, cx);
-                        } else {
-                            cx.open_url(PANE_AX);
-                            crate::lifecycle::note_ax_fix();
-                            cx.notify();
-                        }
-                    }))),
+                    .child(btn_primary(t, "ax-go", "Open Accessibility").on_click(cx.listener(|_, _, _, cx| cx.open_url(PANE_AX)))),
             )
             .into_any_element(),
     )
