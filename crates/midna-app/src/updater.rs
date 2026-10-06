@@ -21,7 +21,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const PUBKEY: Option<&str> = option_env!("MIDNA_UPDATE_PUBKEY");
+/// Midna Dev never updates itself, whatever key it was built with.
+pub const PUBKEY: Option<&str> = match midna_proto::paths::DEV_HOME {
+    Some(_) => None,
+    None => option_env!("MIDNA_UPDATE_PUBKEY"),
+};
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -30,6 +30,7 @@ pub fn install_self(home: &Path) -> std::io::Result<PathBuf> {
     let hash: String = Sha256::digest(&bytes).iter().take(4).map(|b| format!("{b:02x}")).collect();
     let name = format!("{}-{hash}", midna_proto::VERSION);
     let root = bin_root(home);
+    midna_proto::paths::guard_write(&root)?;
     let dir = root.join(&name);
     std::fs::create_dir_all(&dir)?;
     copy_exec(&exe, &dir.join("midnad"))?;

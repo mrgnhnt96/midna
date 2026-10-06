@@ -84,6 +84,11 @@ fn main() {
             _ => usage(),
         }
     }
+    // Midna Dev's daemon never serves, installs into or upgrades the installed Midna's home.
+    if let Err(e) = midna_proto::paths::guard_write(&cfg.home).and_then(|()| midna_proto::paths::guard_write(&cfg.socket)) {
+        eprintln!("midnad: {e}");
+        std::process::exit(2);
+    }
     if install {
         match midnad::install::install_self(&cfg.home) {
             Ok(dir) => println!("installed {} (bin/current -> {})", dir.join("midnad").display(), dir.display()),

@@ -15,6 +15,9 @@
 #     --name NAME         CFBundleName / CFBundleDisplayName (default Midna)
 #     --icon FILE         .icns to ship (default packaging/assets/Midna.icns)
 #     --no-update-key     embed no update key: the build never updates itself
+#     --dev-home DIR      build Midna Dev: every binary always uses DIR as its home (MIDNA_HOME and
+#                         MIDNA_SOCKET are ignored), never updates, and refuses to write the
+#                         installed Midna's files (midna_proto::paths::guard_write)
 #     --dev-drivers       honour the MIDNA_DEBUG_* / updater-override env vars (cargo feature
 #                         midna-app/dev-drivers). Test bundles only: those drivers act as the human.
 #
@@ -26,7 +29,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="" OUT="" ADHOC=0 BUILD=1 TARGET_DIR="$ROOT/target/package"
-BUNDLE_ID="com.mrgnhnt.midna" LABEL="com.mrgnhnt.midna.daemon" NAME="Midna" ICON="" UPDATE_KEY=1 EXTRA_ENV=() FEATURES=()
+BUNDLE_ID="com.mrgnhnt.midna" LABEL="com.mrgnhnt.midna.daemon" NAME="Midna" ICON="" UPDATE_KEY=1 EXTRA_ENV=() FEATURES=() DEV_HOME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
@@ -40,8 +43,9 @@ while [ $# -gt 0 ]; do
     --icon) ICON="$2"; shift 2 ;;
     --no-update-key) UPDATE_KEY=0; shift ;;
     --env) EXTRA_ENV+=("$2"); shift 2 ;;
+    --dev-home) DEV_HOME="$2"; shift 2 ;;
     --dev-drivers) FEATURES=(--features midna-app/dev-drivers); shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "build-app.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -50,6 +54,13 @@ if [ -z "$VERSION" ]; then
   VERSION="$(awk '/^\[workspace.package\]/{p=1} p && /^version *=/{gsub(/[" ]/,"",$0); sub(/version=/,""); print; exit}' Cargo.toml)"
 fi
 OUT="${OUT:-$ROOT/dist/$VERSION}"
+if [ -n "$DEV_HOME" ]; then
+  case "$DEV_HOME" in /*) ;; *) echo "build-app.sh: --dev-home must be absolute" >&2; exit 2 ;; esac
+  case "${DEV_HOME%/}/" in "$HOME/Library/Application Support/com.mrgnhnt.midna/"*)
+    echo "build-app.sh: --dev-home can't be the installed Midna's home" >&2; exit 2 ;;
+  esac
+  [ "$UPDATE_KEY" = 0 ] || { echo "build-app.sh: --dev-home needs --no-update-key" >&2; exit 2; }
+fi
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 APP="$OUT/Midna.app"
 
@@ -67,7 +78,7 @@ if [ "$BUILD" = 1 ]; then
   . "$ROOT/env.sh"
   echo "==> cargo build --release (midna $VERSION, target $TARGET_DIR)"
   if [ -n "$PUBKEY" ]; then export MIDNA_UPDATE_PUBKEY="$PUBKEY"; else unset MIDNA_UPDATE_PUBKEY; fi
-  MIDNA_BUILD_VERSION="$VERSION" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" \
+  MIDNA_DEV_HOME="$DEV_HOME" MIDNA_BUILD_VERSION="$VERSION" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" \
     cargo build --release -p midna-app -p midnad -p midna-cli --bin midna-app --bin midnad --bin midna ${FEATURES[@]+"${FEATURES[@]}"}
 fi
 for b in midna-app midnad midna; do [ -x "$BIN/$b" ] || { echo "missing $BIN/$b" >&2; exit 1; }; done

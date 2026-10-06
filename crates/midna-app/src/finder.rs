@@ -32,7 +32,7 @@ pub fn sync(enabled: bool) {
         // Only the real app owns the Quick Action; a side-by-side flavor (Midna Dev, the e2e
         // test bundle) would point it at itself, or remove the real app's.
         let id = bundle_id(&bundle);
-        if id != "com.mrgnhnt.midna" {
+        if id != "com.mrgnhnt.midna" || midna_proto::paths::is_dev() {
             return;
         }
         let changed = if enabled { install(&dir, &bundle, &id) } else { uninstall(&dir) };

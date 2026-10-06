@@ -2,9 +2,11 @@
 # Build "Midna Dev" from this checkout, install it to ~/Applications/Midna Dev.app and (re)start
 # it. It runs side by side with your real Midna and never touches it: its own bundle id
 # (com.mrgnhnt.midna.dev, so its own Accessibility/notification grants), its own daemon
-# (label com.mrgnhnt.midna.dev.daemon), its own MIDNA_HOME, and its own CLI link. It has no
-# update key, so it never updates itself, an inverted icon and the Gruvbox theme. Its terminals
-# survive a rerun (daemon upgraded in place).
+# (label com.mrgnhnt.midna.dev.daemon), its own home and its own CLI link. The home is built
+# in (--dev-home), so the MIDNA_HOME / MIDNA_SOCKET a Midna terminal exports can't point it at
+# the real daemon, and it refuses to write the real Midna's files. It never updates itself, and
+# has an inverted icon and the Gruvbox theme. Its terminals survive a rerun (daemon upgraded in
+# place).
 #
 #   scripts/dev-app.sh [--test] [--no-build]
 #     --test       run `cargo test --workspace` first and stop if it fails
@@ -28,7 +30,7 @@ for a in "$@"; do
     --test) TEST=1 ;;
     --no-build) BUILD=0 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "dev-app.sh: unknown option $a" >&2; exit 2 ;;
   esac
 done
@@ -71,7 +73,7 @@ if [ "$BUILD" = 1 ]; then
   # Own target dir, so dev and release builds don't rebuild each other (different update key).
   packaging/build-app.sh --out "$OUT" --target-dir "$ROOT/target/dev-app" \
     --bundle-id "$ID" --label "$LABEL" --name "Midna Dev" --icon packaging/assets/MidnaDev.icns --no-update-key \
-    --env "MIDNA_HOME=$DEV_HOME" --env "MIDNA_CLI_LINK_DIR=$DEV_HOME/cli" 2>&1 | grep -E "==> built|^error" || true
+    --dev-home "$DEV_HOME" --env "MIDNA_HOME=$DEV_HOME" 2>&1 | grep -E "==> built|^error" || true
 fi
 [ -d "$OUT/Midna.app" ] || { echo "no app at $OUT/Midna.app (run without --no-build)" >&2; exit 1; }
 

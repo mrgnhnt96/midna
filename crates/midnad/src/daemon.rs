@@ -46,7 +46,7 @@ impl Config {
     /// Resolve from the environment (MIDNA_HOME, MIDNA_SOCKET, MIDNA_APP_PATH, MIDNA_CLI_PATH).
     pub fn from_env() -> Config {
         let home = paths::midna_home();
-        let socket = std::env::var_os("MIDNA_SOCKET").map(PathBuf::from).unwrap_or_else(|| home.join("midnad.sock"));
+        let socket = paths::socket_path();
         Config {
             home,
             socket,

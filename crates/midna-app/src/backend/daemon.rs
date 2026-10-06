@@ -16,11 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// `MIDNA_SOCKET` (set inside midna terminals; honoured for dev setups), else under the home.
+/// Midna Dev always uses its own home's.
 pub fn socket_path() -> PathBuf {
-    // MIDNA_SOCKET is set inside midna terminals; honor it for dev setups.
-    if let Some(s) = std::env::var_os("MIDNA_SOCKET") {
-        return PathBuf::from(s);
-    }
     midna_proto::paths::socket_path()
 }
 

@@ -341,6 +341,10 @@ pub fn preview(d: &Daemon, p: HooksPreviewParams) -> HooksPreview {
 /// Write the planned change for each target. Errors name the files that couldn't be changed;
 /// the others are still written.
 pub fn apply(d: &Daemon, agents: &[AgentKind], uninstall: bool) -> Result<HooksStatus, RpcError> {
+    // ~/.claude and ~/.codex are shared with the installed Midna, whose hooks they hold.
+    if midna_proto::paths::is_dev() && (d.cfg.claude_dir == agent_home(".claude") || d.cfg.codex_dir == agent_home(".codex")) {
+        return Err(RpcError::new(midna_proto::error::REFUSED, "Midna Dev doesn't change global agent hooks: ~/.claude and ~/.codex belong to the installed Midna"));
+    }
     let mut errors = vec![];
     for a in targets(d, agents) {
         if !uninstall && !dir_of(d, a).is_dir() {
@@ -384,6 +388,10 @@ fn write(path: &Path, before: Option<&str>, after: &str) -> std::io::Result<()> 
 
 /// Line diff (LCS) with `context` unchanged lines around each change; longer unchanged runs
 /// collapse to one `…` line.
+fn agent_home(dir: &str) -> std::path::PathBuf {
+    std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join(dir)
+}
+
 pub fn diff(before: &str, after: &str, context: usize) -> Vec<DiffLine> {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();

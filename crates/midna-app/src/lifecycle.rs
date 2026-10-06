@@ -355,7 +355,7 @@ impl Worker {
         if !force && std::fs::read_link(&link).is_ok_and(|t| t == home.join("bin/current/midna")) {
             return CliLink::Linked { link };
         }
-        let shell_path = if std::env::var_os("MIDNA_CLI_LINK_DIR").is_some() { None } else { install::login_shell_path() };
+        let shell_path = if install::cli_link_dir_pinned() { None } else { install::login_shell_path() };
         let r = install::link_cli(home, shell_path.as_deref(), force);
         log(&format!("cli: {r:?}"));
         r

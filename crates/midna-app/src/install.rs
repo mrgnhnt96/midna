@@ -176,6 +176,9 @@ fn legacy_register(plist: &Path) -> LoginItem {
         o.insert("ProgramArguments".into(), serde_json::json!([program, "--launchd"]));
     }
     let dest = legacy_plist_path(&label);
+    if let Err(e) = midna_proto::paths::guard_write(&dest) {
+        return LoginItem::Failed(e.to_string());
+    }
     let _ = std::fs::create_dir_all(dest.parent().unwrap());
     let tmp = dest.with_extension("json.tmp");
     if std::fs::write(&tmp, serde_json::to_vec(&v).unwrap_or_default()).is_err() {
@@ -223,6 +226,7 @@ pub fn current_daemon(home: &Path) -> PathBuf {
 
 /// Make `bin/current` the bundled midnad (and CLI). Skips the copy when it already is.
 pub fn install_daemon(bundle: &Path, home: &Path) -> Result<PathBuf, String> {
+    midna_proto::paths::guard_write(home).map_err(|e| e.to_string())?;
     let bundled = bundle.join("Contents/MacOS/midnad");
     if !bundled.is_file() {
         return Err(format!("{} is missing", bundled.display()));
@@ -302,9 +306,17 @@ pub enum CliLink {
     Failed(String),
 }
 
-/// `MIDNA_CLI_LINK_DIR` (tests), else `~/.local/bin`.
+/// Midna Dev: `<its home>/cli`. Else `MIDNA_CLI_LINK_DIR` (tests), else `~/.local/bin`.
 pub fn cli_link_dir() -> PathBuf {
+    if let Some(h) = midna_proto::paths::DEV_HOME {
+        return Path::new(h).join("cli");
+    }
     std::env::var_os("MIDNA_CLI_LINK_DIR").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".local/bin"))
+}
+
+/// The link dir was chosen for us (Midna Dev, tests): link there whether or not it's on PATH.
+pub fn cli_link_dir_pinned() -> bool {
+    midna_proto::paths::is_dev() || std::env::var_os("MIDNA_CLI_LINK_DIR").is_some()
 }
 
 /// The user's PATH as their login shell sets it (the app's own PATH from launchd is minimal).
@@ -351,7 +363,7 @@ pub fn link_cli(home: &Path, shell_path: Option<&str>, force_dir: bool) -> CliLi
     let dir = cli_link_dir();
     let link = dir.join("midna");
     let target = home.join("bin/current/midna");
-    let on_path = std::env::var_os("MIDNA_CLI_LINK_DIR").is_some() || shell_path.is_some_and(|p| dir_on_path(&dir, p));
+    let on_path = cli_link_dir_pinned() || shell_path.is_some_and(|p| dir_on_path(&dir, p));
     if std::fs::symlink_metadata(&link).is_ok() {
         if !is_our_link(&link) {
             return CliLink::Conflict { link };
@@ -363,7 +375,7 @@ pub fn link_cli(home: &Path, shell_path: Option<&str>, force_dir: bool) -> CliLi
     if !on_path && !force_dir {
         return CliLink::NotOnPath { dir };
     }
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    if let Err(e) = midna_proto::paths::guard_write(&link).and_then(|()| std::fs::create_dir_all(&dir)) {
         return CliLink::Failed(format!("{}: {e}", dir.display()));
     }
     let tmp = dir.join(format!(".midna.{}", std::process::id()));
