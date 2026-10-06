@@ -13,6 +13,8 @@ pub mod onboarding;
 pub mod links;
 pub mod queue;
 pub mod needs_you;
+pub mod notifications;
+pub mod toast;
 pub mod popout;
 pub mod quit_hold;
 pub mod rename;
@@ -236,6 +238,7 @@ impl Render for MainWindow {
             (_, Screen::Rules) => rules::render(self, window, cx),
             (_, Screen::Triggers) => triggers::render(self, window, cx),
             (_, Screen::Insights) => insights::render(self, window, cx),
+            (_, Screen::Notifications) => notifications::render(self, &t, window, cx),
         };
 
         let root = div()
@@ -277,7 +280,7 @@ impl Render for MainWindow {
             .children(hooks::render(self, &t, cx))
             .child(
                 // Cards over the terminal pane's top-right corner: Kass's Accessibility ask, then the setup step.
-                div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)),
+                div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)).children(toast::render(self, &t, cx)),
             )
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
             // Setup's Twilight Tiles screen covers the whole window while setup is open.

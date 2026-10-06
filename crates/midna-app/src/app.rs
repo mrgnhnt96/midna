@@ -24,6 +24,8 @@ pub enum Screen {
     Rules,
     Triggers,
     Insights,
+    /// Every notification midna recorded (`ui/notifications.rs`); the status bar's bell.
+    Notifications,
 }
 
 /// Modal layers over the main window (CommandBar-A, NeedsYou-C, the image sheet).
@@ -165,6 +167,10 @@ pub struct MainWindow {
     pub focus: FocusHandle,
     pub overlay_focus: FocusHandle,
     pub toast: Option<(String, Instant)>,
+    /// Notification history and the unread count (`ui/notifications.rs`).
+    pub inbox: crate::ui::notifications::Inbox,
+    /// In-app banner cards while midna is in front (`ui/toast.rs`).
+    pub cards: crate::ui::toast::Cards,
     /// Rules-B / Triggers-A screens, created the first time they are shown.
     pub rules_view: Option<Entity<crate::ui::rules::RulesView>>,
     pub triggers_view: Option<Entity<crate::ui::triggers::TriggersView>>,
@@ -339,6 +345,8 @@ impl MainWindow {
             focus,
             overlay_focus: cx.focus_handle(),
             toast: None,
+            inbox: Default::default(),
+            cards: Default::default(),
             rules_view: None,
             triggers_view: None,
             insights: None,
@@ -457,6 +465,7 @@ impl MainWindow {
                         self.dropped_at = None;
                         self.restart_expected = false;
                         crate::ui::command_bar::reload_user_commands(self, cx);
+                        crate::ui::notifications::fetch(self, cx);
                         if !was_connected {
                             // re-attach after a reconnect (the split pane and pop-outs
                             // re-attach themselves, see TerminalView::watch_stream)
@@ -548,6 +557,9 @@ impl MainWindow {
                 {
                     crate::ui::links::fetch(self, sid, cx);
                 }
+                if k == midna_proto::kinds::NOTIFY_POSTED || k == midna_proto::kinds::NOTIFY_READ {
+                    crate::ui::notifications::on_event(self, &e, cx);
+                }
                 if k == midna_proto::kinds::NOTIFY_POSTED && self.is_home() {
                     self.on_notification(&e, window, cx);
                 }
@@ -612,9 +624,10 @@ impl MainWindow {
 
     /// midnad's `notify.posted`: a banner when its kind pushes (`push` for a terminal you aren't
     /// looking at, `push_focused` for the one you are). Looking at it without `push_focused`,
-    /// only its sound plays (see `crate::sounds`), and only if it would push elsewhere. Old ones
+    /// only its sound plays (see `crate::sounds`), and only if it would push elsewhere. While
+    /// midna is in front, a banner is a card in the window instead (`ui/toast.rs`). Old ones
     /// (replayed after a reconnect) are dropped.
-    fn on_notification(&self, e: &Event, window: &Window, cx: &App) {
+    fn on_notification(&mut self, e: &Event, window: &Window, cx: &mut Context<Self>) {
         let Ok(p) = serde_json::from_value::<midna_proto::notify::Posted>(e.data.clone()) else { return };
         let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
         if p.via != "app" || !fresh {
@@ -631,6 +644,13 @@ impl MainWindow {
                 return;
             }
             crate::notify::Show::Nothing => return,
+        }
+        if !p.test && crate::sounds::app_active() {
+            if let (true, Some(file), true) = (p.sound, p.sound_file.as_deref(), crate::sounds::allowed_now()) {
+                crate::sounds::play_file(file, p.volume.unwrap_or(100));
+            }
+            crate::ui::toast::push(self, e.seq, e.session_id.clone(), p, cx);
+            return;
         }
         let mut p = p;
         // notify.sounds_in_app off: a banner shown while midna is frontmost stays quiet.
@@ -669,6 +689,7 @@ impl MainWindow {
                     "rules" => Screen::Rules,
                     "triggers" => Screen::Triggers,
                     "insights" => Screen::Insights,
+                    "notifications" => Screen::Notifications,
                     _ => Screen::Terminal,
                 };
                 // Opening is idempotent (set_screen toggles a screen that is already showing).
@@ -959,8 +980,10 @@ impl MainWindow {
                     "rules" => self.screen = Screen::Rules,
                     "triggers" => self.screen = Screen::Triggers,
                     "insights" => self.screen = Screen::Insights,
+                    "notifications" => self.set_screen(Screen::Notifications, window, cx),
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
+                    "toast" | "toast-long" => crate::ui::toast::debug(self, &s, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
                     "background-menu" => self.menu = Menu::Background,
@@ -1261,7 +1284,13 @@ impl MainWindow {
     }
 
     pub fn set_screen(&mut self, s: Screen, window: &mut Window, cx: &mut Context<Self>) {
+        let was = self.screen;
         self.screen = if self.screen == s { Screen::Terminal } else { s };
+        if was == Screen::Notifications && self.screen != Screen::Notifications {
+            crate::ui::notifications::closed(self);
+        } else if was != Screen::Notifications && self.screen == Screen::Notifications {
+            crate::ui::notifications::opened(self, cx);
+        }
         self.menu = Menu::None;
         crate::ui::queue::hide(self, cx);
         if self.screen == Screen::Terminal {
@@ -1364,7 +1393,10 @@ impl MainWindow {
     /// ⌘J / the sidebar "N need you" button: open the needs-you card stack (NeedsYou-C).
     /// Inside the stack ⌘J skips to the next card (handled by the stack).
     pub fn next_needs_you(&mut self, _: &NextNeedsYou, window: &mut Window, cx: &mut Context<Self>) {
-        if self.overlay == Overlay::NeedsYou {
+        // A banner card showing: ⌘J is its "Go to terminal".
+        if self.overlay == Overlay::None && crate::ui::toast::top_session(self).is_some() {
+            crate::ui::toast::go(self, window, cx);
+        } else if self.overlay == Overlay::NeedsYou {
             crate::ui::needs_you::skip(self, cx);
         } else {
             self.set_overlay(Overlay::NeedsYou, window, cx);

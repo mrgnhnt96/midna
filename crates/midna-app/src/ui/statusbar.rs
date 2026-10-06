@@ -210,6 +210,10 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
                 cx.notify();
             }),
         );
+    // The bell is always first, like VS Code's: notifications and how many are unread.
+    if connected {
+        bar = bar.child(crate::ui::notifications::bell(m, t, cx));
+    }
     for item in items(m) {
         // The daemon-backed items need midnad; the rest always show.
         let el = match item.as_str() {

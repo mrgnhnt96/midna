@@ -598,6 +598,12 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .cli("midna insights"),
     );
     out.push(
+        Command::new("open.notifications", CmdIcon::Screen, "Open Notifications", Run::Screen { screen: "notifications".into() })
+            .sub("everything midna told you; the status bar's bell")
+            .kw("notifications history inbox bell unread alerts screen")
+            .cli("midna call notify.history"),
+    );
+    out.push(
         Command::new("open.settings", CmdIcon::Screen, "Open Settings", Run::Screen { screen: "settings".into() })
             .sub("scripts, keys, permissions, secrets")
             .kw("preferences config screen")

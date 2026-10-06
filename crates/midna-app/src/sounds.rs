@@ -79,7 +79,7 @@ fn resolve(setting: &dyn Fn(&str) -> Value, home: &Path, kind: &str, active: boo
     (volume > 0).then_some((file, volume as u8))
 }
 
-fn app_active() -> bool {
+pub fn app_active() -> bool {
     let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
     objc2_app_kit::NSApplication::sharedApplication(mtm).isActive()
 }

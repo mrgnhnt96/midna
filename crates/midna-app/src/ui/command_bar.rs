@@ -393,6 +393,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                     "rules" => Screen::Rules,
                     "triggers" => Screen::Triggers,
                     "insights" => Screen::Insights,
+                    "notifications" => Screen::Notifications,
                     _ => Screen::Terminal,
                 };
                 if m.screen != target {

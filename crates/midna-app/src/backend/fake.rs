@@ -273,6 +273,7 @@ impl FakeBackend {
                 detail: "Which should I take?".into(),
                 asked_by: Actor { kind: "agent".into(), session: Some("a1f00005".into()), name: Some("claude".into()) },
                 created_at: ago(12),
+                question: Some(fake_question()),
                 ..Default::default()
             },
             NeedsYou {
@@ -480,6 +481,11 @@ impl Backend for FakeBackend {
             "session.list" => serde_json::to_value(&st.sessions)?,
             "session.subagent_log" => fake_subagent_log(&p("agent").unwrap_or_default(), params.get("from").and_then(Value::as_u64).unwrap_or(0)),
             "needs_you.list" => serde_json::to_value(&st.needs)?,
+            "notify.history" => fake_history(),
+            "notify.read" => {
+                FAKE_READ.store(true, std::sync::atomic::Ordering::Relaxed);
+                json!({ "read_seq": 900, "unread": 0 })
+            }
             "settings.list" => serde_json::to_value(&st.settings)?,
             "notify.media" => {
                 // The repo's copies of midna's own sounds, so previews play in dev.
@@ -945,4 +951,51 @@ fn fake_subagent_log(agent: &str, from: u64) -> Value {
     };
     let finished = agent == "a0000000000000000";
     json!({ "running": !finished, "entries": entries, "next": 4096, "model": "claude-haiku-4-5" })
+}
+
+/// The golden-test terminal's question (`MIDNA_DEBUG_SCREEN=toast-long`): long, with options.
+pub fn fake_question() -> NeedsYouQuestion {
+    let o = |label: &str, description: &str| midna_proto::QuestionOption { label: label.into(), description: description.into() };
+    NeedsYouQuestion {
+        text: "The feed golden test fails on CI but passes locally, and I found two causes that both look real.\n\n\
+               The CI image has Flutter 3.24.1 while you have 3.24.3 locally. 3.24.3 changed how text baselines round, \
+               so every golden with a caption moves by one pixel. Updating the goldens on CI's version fixes CI but \
+               breaks them for you; pinning Flutter in .fvmrc fixes both but touches every developer's setup.\n\n\
+               Separately, the feed's shimmer animation isn't paused in tests, so the golden captures a random frame. \
+               That one is a real bug in the test, and fixing it is safe either way.\n\n\
+               I can do one of these, or both. Which should I take?"
+            .into(),
+        header: "Golden test fix".into(),
+        multi_select: false,
+        options: vec![
+            o("Pin Flutter 3.24.3", "Add .fvmrc and bump the CI image; goldens stay as they are"),
+            o("Regenerate on CI's version", "Update the goldens to 3.24.1; yours break until you downgrade"),
+            o("Only fix the shimmer", "Pause the animation in tests and leave the version question for later"),
+        ],
+    }
+}
+
+static FAKE_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the Notifications screen lists in the fake backend: three unread until it's opened.
+fn fake_history() -> Value {
+    let at = |s: i64| midna_proto::time::format_unix(midna_proto::time::now_unix() - s);
+    let read = FAKE_READ.load(std::sync::atomic::Ordering::Relaxed);
+    let item = |seq: u64, ago: i64, session: &str, category: &str, body: &str, push: bool, need: Option<&str>| {
+        json!({
+            "seq": seq, "at": at(ago), "session_id": session, "unread": !read && seq > 890,
+            "notification": { "category": category, "title": "", "body": body, "push": push, "via": "app", "needs_you_id": need },
+        })
+    };
+    let items = vec![
+        item(899, 120, "a1f00002", "approval", "Permission: command · pnpm db:migrate --env staging", true, Some("n_migrat")),
+        item(897, 240, "a1f00008", "attention", "Prompt blocked: Context is full. Compact first, then resend.", true, Some("n_blockd")),
+        item(893, 720, "a1f00005", "approval", "Asked a question: Golden test fix", true, Some("n_golden")),
+        item(880, 1500, "a1f00001", "turn_done", "Finished in 6m 12s: The PDF renders with the new totals table.", false, None),
+        item(870, 2400, "a1f00009", "failed", "Exited with status 1", false, None),
+        item(850, 3600, "a1f00003", "agent", "Build is green\nmain @ 3f2a", false, None),
+        item(700, 90_000, "a1f00002", "turn_done", "Finished in 14m 2s: Drafted 0042_ledger.sql and its rollback.", false, None),
+        item(650, 95_000, "a1f00001", "failed", "Turn failed: API error (overloaded)", false, None),
+    ];
+    json!({ "items": items, "unread": if read { 0 } else { 3 }, "read_seq": if read { 900 } else { 890 } })
 }
