@@ -43,6 +43,16 @@ pub(crate) const EXPOSE_AT: f32 = 0.38;
 /// The card's entrance: wait, then open.
 const CARD_WAIT_MS: f32 = 460.;
 const CARD_OPEN_MS: f32 = 900.;
+/// Concept E: the jumps across the top, one card centred under them (copy left, guide right).
+const PIPS_X: f32 = 220.;
+const PIPS_W: f32 = 1000.;
+const PIPS_TOP: f32 = 104.;
+const PIP_W: f32 = 150.;
+const CARD_X: f32 = 190.;
+const CARD_W: f32 = 1060.;
+const CARD_TOP: f32 = 196.;
+const CARD_MIN_H: f32 = 470.;
+const GUIDE_W: f32 = 500.;
 const CHAKRA: &str = "Chakra Petch";
 const PLEX: &str = "IBM Plex Sans";
 const MONO: &str = crate::theme::MONO_FONT;
@@ -62,6 +72,9 @@ pub(crate) struct Pal {
     pub(crate) glow: [f32; 3],
     pub(crate) ember: [f32; 3],
     panel: [f32; 3],
+    /// The card's guide panel, and the sample notifications in it.
+    guide: [f32; 3],
+    toast: [f32; 3],
     line: [f32; 3],
     fg: [f32; 3],
     dim: [f32; 3],
@@ -86,6 +99,8 @@ fn palette(mode: ThemeMode) -> Pal {
             glow: hex(0x3FE0C0),
             ember: hex(0xF29A38),
             panel: hex(0x0A0D12),
+            guide: hex(0x080B10),
+            toast: hex(0x282E38),
             line: hex(0x1E2A2B),
             fg: hex(0xE8ECEF),
             dim: hex(0x9AA6AE),
@@ -98,6 +113,8 @@ fn palette(mode: ThemeMode) -> Pal {
             glow: hex(0x1F8A76),
             ember: hex(0xB5561A),
             panel: hex(0xF7F2E6),
+            guide: hex(0xEFE8D8),
+            toast: hex(0xFFFDF8),
             line: hex(0xCBBD9C),
             fg: hex(0x1D1A14),
             dim: hex(0x574F41),
@@ -207,7 +224,6 @@ struct Copy {
     body: &'static str,
     human: bool,
     ask: Option<&'static str>,
-    optional: bool,
 }
 
 fn copy(s: Step) -> Copy {
@@ -219,7 +235,6 @@ fn copy(s: Step) -> Copy {
             body: "Install midnad and your terminals survive quitting midna and updating it. macOS then asks you to allow it under Login Items.",
             human: true,
             ask: None,
-            optional: false,
         },
         Step::Notifications => Copy {
             name: "Notifications",
@@ -228,7 +243,6 @@ fn copy(s: Step) -> Copy {
             body: "Approvals, questions and failures. Clicking one jumps straight to that terminal.",
             human: true,
             ask: None,
-            optional: true,
         },
         Step::Project => Copy {
             name: "First project",
@@ -237,7 +251,6 @@ fn copy(s: Step) -> Copy {
             body: "A project is a folder. It gets ⌘1, a shell, and git status in the header. Dropping a folder anywhere works too.",
             human: false,
             ask: Some("add ~/Development/my-app as a project"),
-            optional: false,
         },
         Step::Webhooks => Copy {
             name: "Webhooks",
@@ -246,7 +259,6 @@ fn copy(s: Step) -> Copy {
             body: "A pull request or a comment can start an agent here. Tailscale Funnel gives midnad a public URL for free, with nothing to host.",
             human: false,
             ask: Some("start Claude on every PR opened in my repo"),
-            optional: true,
         },
         Step::Theme => Copy {
             name: "Theme",
@@ -255,12 +267,20 @@ fn copy(s: Step) -> Copy {
             body: "It applies right away. You can switch whenever you like.",
             human: false,
             ask: None,
-            optional: true,
         },
     }
 }
 
 fn stage(m: &MainWindow) -> Stage {
+    // Dev: open a given screen (intro, daemon, notifications, project, webhooks, theme, done).
+    if let Ok(v) = crate::dev::var("MIDNA_DEBUG_SETUP_STEP") {
+        let step = [Step::Daemon, Step::Notifications, Step::Project, Step::Webhooks, Step::Theme].into_iter().find(|s| format!("{s:?}").eq_ignore_ascii_case(&v));
+        return match (v.as_str(), step) {
+            (_, Some(s)) => Stage::At(s),
+            ("done", _) => Stage::Done,
+            _ => Stage::Intro,
+        };
+    }
     if !m.onboarding.intro_seen {
         return Stage::Intro;
     }
@@ -273,11 +293,11 @@ fn stage(m: &MainWindow) -> Stage {
 /// The design's ripple origin for each control (design grid cells).
 fn origin(a: Action) -> (f32, f32) {
     match a {
-        Action::Primary => (4., 13.),
-        Action::Later => (7., 13.),
+        Action::Primary => (5.5, 12.),
+        Action::Later => (8.5, 12.),
         Action::Jump(s) => {
             let i = STEPS.iter().position(|x| *x == s).unwrap_or(0) as f32;
-            (21., 4. + (i * 1.25).round())
+            ((PIPS_X + PIP_W / 2. + i * pip_step()) / CELL, 2.3)
         }
         Action::Theme(_) => (6., 10.),
         Action::Replay => OPEN_ORIGIN,
@@ -287,9 +307,7 @@ fn origin(a: Action) -> (f32, f32) {
 #[derive(Clone)]
 struct RailRow {
     step: Step,
-    num: String,
     name: &'static str,
-    tag: &'static str,
     result: &'static str,
     done: bool,
     later: bool,
@@ -321,7 +339,8 @@ pub(crate) struct Model {
     buttons_top: f32,
     can_later: bool,
     rail: Vec<RailRow>,
-    done_n: usize,
+    /// The command bar's shortcut, as shown (⌘K).
+    command_key: String,
 }
 
 fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
@@ -334,20 +353,8 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
     };
     let rail = STEPS
         .iter()
-        .enumerate()
-        .map(|(i, &s)| {
+        .map(|&s| {
             let (done, later, here) = (ob::done(m, s), ob::later(m, s), cur == Some(s));
-            let tag = if done {
-                "DONE"
-            } else if later && !here {
-                "LATER"
-            } else if here {
-                "HERE"
-            } else if copy(s).optional {
-                "OPTIONAL"
-            } else {
-                ""
-            };
             let result = if done {
                 "DONE"
             } else if later {
@@ -355,7 +362,7 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
             } else {
                 "SKIPPED"
             };
-            RailRow { step: s, num: format!("0{}", i + 1), name: copy(s).name, tag, result, done, later, here }
+            RailRow { step: s, name: copy(s).name, result, done, later, here }
         })
         .collect();
     let mut md = Model {
@@ -367,35 +374,34 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
         code: String::new(),
         kicker: String::new(),
         title: vec![],
-        title_size: 48.,
-        title_lh: 1.05,
+        title_size: 40.,
+        title_lh: 1.06,
         body: String::new(),
-        body_size: 18.,
-        body_top: 22.,
-        body_max: 540.,
+        body_size: 17.,
+        body_top: 20.,
+        body_max: 440.,
         status: None,
         human: false,
         ask: None,
         theme: None,
         primary: String::new(),
-        buttons_top: 38.,
+        buttons_top: 34.,
         can_later: false,
         rail,
-        done_n: STEPS.iter().filter(|s| ob::done(m, **s)).count(),
+        command_key: m.key_label("keys.command_bar"),
     };
     match st {
         Stage::Intro => {
             md.code = "ARRIVAL".into();
             md.kicker = "TWILIGHT IS FALLING".into();
             md.title = vec!["Your terminals,".into(), "wherever you go.".into()];
-            md.title_size = 64.;
-            md.title_lh = 1.;
+            md.title_size = 50.;
+            md.title_lh = 1.04;
             md.body = "Five quick jumps and midna can carry your shells and agents across quits, updates and webhooks. Every jump can wait.".into();
-            md.body_size = 19.;
-            md.body_top = 24.;
-            md.body_max = 520.;
+            md.body_size = 18.;
+            md.body_top = 20.;
             md.primary = "Begin ↩".into();
-            md.buttons_top = 40.;
+            md.buttons_top = 34.;
         }
         Stage::At(s) => {
             let c = copy(s);
@@ -415,9 +421,9 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
         Stage::Done => {
             md.code = "ALL JUMPS MADE".into();
             md.kicker = "ALL SET".into();
-            md.title = vec!["You made it through".into(), "the twilight.".into()];
-            md.title_size = 56.;
-            md.title_lh = 1.02;
+            md.title = vec!["midna is ready.".into()];
+            md.title_size = 44.;
+            md.title_lh = 1.04;
             md.body = "Anything you put off waits in Settings. Agents can do the rest when you ask.".into();
             md.body_size = 16.;
             md.body_top = 24.;
@@ -515,7 +521,7 @@ impl Model {
             buttons_top: 38.,
             can_later: false,
             rail: vec![],
-            done_n: 0,
+            command_key: "⌘K".into(),
         }
     }
 
@@ -531,7 +537,7 @@ impl Model {
 
     /// The card's full height (design units): content, padding 52/48, border.
     fn card_h(&self) -> f32 {
-        CARD_H.with(Cell::get) + 52. + 48. + 2.
+        (CARD_H.with(Cell::get) + 52. + 48. + 2.).max(CARD_MIN_H)
     }
 }
 
@@ -638,12 +644,6 @@ fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
         .flex_none()
         .child(tracked(md, &md.kicker, MONO, 13., FontWeight::SEMIBOLD, 0.24, ember))
         .child(div().mt(md.u(18.)).font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(md.title_size)).line_height(md.u(md.title_size * md.title_lh)).text_color(fg).children(md.title.iter().map(|l| div().child(l.clone()))));
-    if md.stage == Stage::Done {
-        col = col.child(div().mt(md.u(30.)).flex().gap(md.u(10.)).children(md.rail.iter().map(|r| {
-            let color = if r.done { glow } else { ember };
-            div().flex_1().px(md.u(12.)).py(md.u(14.)).border_1().border_color(line).rounded(md.u(3.)).child(tracked(md, r.result, MONO, 11., FontWeight::SEMIBOLD, 0.16, color)).child(div().mt(md.u(8.)).font_family(PLEX).text_size(md.u(14.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).child(r.name))
-        })));
-    }
     col = col.child(div().mt(md.u(md.body_top)).max_w(md.u(md.body_max)).font_family(PLEX).text_size(md.u(md.body_size)).line_height(md.u(md.body_size * 1.55)).text_color(dim).child(md.body.clone()));
     if let Some(cur) = &md.theme {
         let chips: Vec<AnyElement> = [("dark", "Twilight"), ("light", "Light world"), ("system", "Match macOS")]
@@ -690,69 +690,318 @@ fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
 
 /// The card (and its halo ring) at entrance progress `e`: fade in, rise 20px, open from the top.
 fn card_style<E: Styled>(md: &Model, el: E, e: f32) -> E {
-    el.top(md.u(176. + 20. * (1. - e))).max_h(md.u(md.card_h() * e)).opacity(e)
+    el.top(md.u(CARD_TOP + 20. * (1. - e))).max_h(md.u(md.card_h() * e)).opacity(e)
 }
 
-fn card(md: &Model, cx: Option<&mut Context<MainWindow>>) -> Div {
+fn card(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
     div()
         .absolute()
-        .left(md.u(144.))
-        .w(md.u(672.))
+        .left(md.u(CARD_X))
+        .w(md.u(CARD_W))
         .overflow_hidden()
-        .pt(md.u(52.))
-        .px(md.u(52.))
-        .pb(md.u(48.))
+        .flex()
         .bg(rgb(md.pal.panel, 1.))
         .border_1()
         .border_color(rgb(md.pal.line, 1.))
         .rounded(md.u(4.))
-        .child(card_body(md, cx))
+        .child(div().flex_1().min_w_0().pt(md.u(52.)).px(md.u(52.)).pb(md.u(48.)).child(card_body(md, cx.as_deref_mut())))
+        .child(guide_panel(md, cx))
 }
 
 /// `box-shadow: 0 0 0 10px` around the card, clipped with it.
 fn halo(md: &Model) -> Div {
-    div().absolute().left(md.u(144.)).w(md.u(672.)).h(md.u(md.card_h())).rounded(md.u(4.)).shadow(vec![BoxShadow { color: md.pal.halo, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: md.u(10.), inset: false }])
+    div().absolute().left(md.u(CARD_X)).w(md.u(CARD_W)).h(md.u(md.card_h())).rounded(md.u(4.)).shadow(vec![BoxShadow { color: md.pal.halo, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: md.u(10.), inset: false }])
 }
 
-fn rail(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
-    let (dim, ember, glow, fg) = (rgb(md.pal.dim, 1.), rgb(md.pal.ember, 1.), rgb(md.pal.glow, 1.), rgb(md.pal.fg, 1.));
-    let mut col = div().absolute().left(md.u(912.)).top(md.u(176.)).w(md.u(384.)).flex().flex_col().gap(md.u(6.)).child(div().px(md.u(16.)).pb(md.u(12.)).child(tracked(md, &format!("JUMPS · {} OF 5", md.done_n), MONO, 12., FontWeight::SEMIBOLD, 0.22, dim)));
+/// Horizontal distance between jump diamonds (design units).
+fn pip_step() -> f32 {
+    (PIPS_W - PIP_W) / (STEPS.len() as f32 - 1.)
+}
+
+/// The jumps across the top: a diamond each (made, put off, here, to do), joined by a line.
+fn pips(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    let (dim, ember, glow, fg, line) = (rgb(md.pal.dim, 1.), rgb(md.pal.ember, 1.), rgb(md.pal.glow, 1.), rgb(md.pal.fg, 1.), rgb(md.pal.line, 1.));
+    let step = pip_step();
+    let mut el = div().absolute().left(md.u(PIPS_X)).top(md.u(PIPS_TOP)).w(md.u(PIPS_W)).h(md.u(40.));
+    // The line runs between the first and last diamond, behind them.
+    el = el.child(div().absolute().left(md.u(PIP_W / 2.)).top(md.u(8.)).w(md.u(PIPS_W - PIP_W)).h(md.u(1.)).bg(line));
     for (i, r) in md.rail.iter().enumerate() {
         let pip: AnyElement = if r.done {
-            diamond(md, 14., Icon::Tile, glow).into_any_element()
+            diamond(md, 16., Icon::Tile, glow).into_any_element()
         } else if r.here {
             // Filled and outlined in ember, blinking (steps(2), 1.6s).
-            let d = div().child(diamond(md, 14., Icon::Tile, ember)).child(div().absolute().left_0().top_0().child(diamond(md, 14., Icon::TileOutline, ember)));
+            let d = div().child(diamond(md, 16., Icon::Tile, ember)).child(div().absolute().left_0().top_0().child(diamond(md, 16., Icon::TileOutline, ember)));
             if cx.is_some() {
                 d.with_animation(SharedString::from(format!("setup-blink-{i}")), Animation::new(Duration::from_millis(1600)).repeat(), |el, t| el.opacity(if t < 0.5 { 1. } else { 0.25 })).into_any_element()
             } else {
                 d.into_any_element()
             }
         } else if r.later {
-            diamond(md, 14., Icon::TileDashed, ember).into_any_element()
+            diamond(md, 16., Icon::TileDashed, ember).into_any_element()
         } else {
-            diamond(md, 14., Icon::TileOutline, dim).into_any_element()
+            diamond(md, 16., Icon::TileOutline, dim).into_any_element()
         };
-        let row = div()
-            .h(md.u(56.))
-            .px(md.u(16.))
+        let col = div()
+            .absolute()
+            .left(md.u(i as f32 * step))
+            .top_0()
+            .w(md.u(PIP_W))
             .flex()
+            .flex_col()
             .items_center()
-            .gap(md.u(16.))
-            .rounded(md.u(3.))
+            .gap(md.u(10.))
+            // Hide the line under the diamond.
+            .child(div().relative().size(md.u(18.)).flex().items_center().justify_center().bg(rgb(md.pal.bg, 1.)).child(pip))
+            .child(tracked(md, &r.name.to_uppercase(), MONO, 11., FontWeight::SEMIBOLD, 0.14, if r.here { fg } else { dim }));
+        el = el.child(clickable(col, SharedString::from(format!("setup-jump-{i}")), Action::Jump(r.step), cx.as_deref_mut()));
+    }
+    el
+}
+
+/// Where to finish a step later, and what to ask an agent (if one can do it).
+fn finish_later(s: Step) -> (&'static str, Option<&'static str>) {
+    match s {
+        Step::Daemon | Step::Notifications => ("Settings ▸ Permissions", None),
+        Step::Project => ("Settings ▸ Projects", copy(s).ask),
+        Step::Webhooks => ("Settings ▸ Webhooks", copy(s).ask),
+        Step::Theme => ("Settings ▸ Look", None),
+    }
+}
+
+/// The card's right side: a drawing of what the step does (Done: what's left).
+fn guide_panel(md: &Model, cx: Option<&mut Context<MainWindow>>) -> Div {
+    let glow = md.pal.glow;
+    div()
+        .relative()
+        .w(md.u(GUIDE_W))
+        .flex_none()
+        .min_h(md.u(CARD_MIN_H - 2.))
+        .border_l_1()
+        .border_color(rgb(md.pal.line, 1.))
+        .bg(rgb(md.pal.guide, 1.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .p(md.u(40.))
+        // The panel's soft teal light.
+        .child(div().absolute().left(md.u(GUIDE_W / 2. - 60.)).top(md.u(CARD_MIN_H / 2. - 60.)).size(md.u(120.)).rounded_full().shadow(vec![BoxShadow { color: rgb(glow, 0.07), offset: point(px(0.), px(0.)), blur_radius: md.u(160.), spread_radius: md.u(80.), inset: false }]))
+        .child(guide(md, cx))
+}
+
+fn guide(md: &Model, cx: Option<&mut Context<MainWindow>>) -> AnyElement {
+    match md.stage {
+        Stage::Intro => guide_arrival(md).into_any_element(),
+        Stage::At(Step::Daemon) => guide_daemon(md).into_any_element(),
+        Stage::At(Step::Notifications) => guide_notifications(md).into_any_element(),
+        Stage::At(Step::Project) => guide_project(md).into_any_element(),
+        Stage::At(Step::Webhooks) => guide_webhooks(md).into_any_element(),
+        Stage::At(Step::Theme) => guide_theme(md, cx).into_any_element(),
+        Stage::Done => guide_done(md).into_any_element(),
+    }
+}
+
+/// A bordered box in the guide's style.
+fn gbox(md: &Model, lit: bool) -> Div {
+    div().border_1().border_color(if lit { rgb(md.pal.glow, 0.5) } else { rgb(md.pal.line, 1.) }).rounded(md.u(4.)).bg(rgb(md.pal.panel, 1.))
+}
+
+fn gtext(md: &Model, text: impl Into<SharedString>, size: f32, weight: FontWeight, color: Hsla) -> Div {
+    div().font_family(PLEX).text_size(md.u(size)).font_weight(weight).text_color(color).child(text.into())
+}
+
+fn gmono(md: &Model, text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+    div().font_family(MONO).text_size(md.u(size)).text_color(color).child(text.into())
+}
+
+/// Arrival: the five jumps on an arc, and how long they take.
+fn guide_arrival(md: &Model) -> Div {
+    let (glow, dim, fg, ember) = (rgb(md.pal.glow, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.), rgb(md.pal.ember, 1.));
+    let (w, h, k) = (400., 340., 0.82);
+    let mut el = div().relative().w(md.u(w)).h(md.u(h));
+    for i in 0..STEPS.len() {
+        let a = std::f32::consts::PI * (0.15 + i as f32 * 0.175);
+        let (x, y) = (w / 2. - a.cos() * 200. * k, 250. - a.sin() * 200. * k);
+        el = el
+            .child(div().absolute().left(md.u(x - 22.)).top(md.u(y - 22.)).child(diamond(md, 44., Icon::TileOutline, glow)))
+            .child(div().absolute().left(md.u(x - 20.)).top(md.u(y + 32.)).w(md.u(40.)).flex().justify_center().child(gmono(md, format!("0{}", i + 1), 11., dim)));
+    }
+    el.child(div().absolute().left_0().top(md.u(214.)).w(md.u(w)).flex().flex_col().items_center().gap(md.u(4.)).child(tracked(md, "FIVE JUMPS", MONO, 12., FontWeight::SEMIBOLD, 0.22, ember)).child(div().font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(36.)).text_color(fg).child("~2 min")))
+}
+
+/// Background daemon: midna quits, midnad keeps the shells running.
+fn guide_daemon(md: &Model) -> Div {
+    let (glow, dim, fg, ember) = (rgb(md.pal.glow, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.), rgb(md.pal.ember, 1.));
+    let row = |name: &str, tag: &str, color: Hsla| div().flex().justify_between().items_center().child(gtext(md, name.to_string(), 16., FontWeight::SEMIBOLD, fg)).child(tracked(md, tag, MONO, 11., FontWeight::SEMIBOLD, 0.14, color));
+    div()
+        .w(md.u(400.))
+        .flex()
+        .flex_col()
+        .child(gbox(md, false).px(md.u(18.)).py(md.u(16.)).child(row("midna", "QUIT · UPDATING", ember)))
+        .child(div().ml(md.u(36.)).h(md.u(36.)).border_l_2().border_dashed().border_color(rgb(md.pal.line, 1.)))
+        .child(
+            gbox(md, true)
+                .px(md.u(18.))
+                .py(md.u(16.))
+                .flex()
+                .flex_col()
+                .gap(md.u(10.))
+                .child(row("midnad", "● KEEPS RUNNING", glow))
+                .children(["api · claude", "migrate · waiting for you", "tests · npm run watch"].map(|t| gmono(md, format!("▸ {t}"), 13., dim))),
+        )
+}
+
+/// Notifications: three examples, fading.
+fn guide_notifications(md: &Model) -> Div {
+    let (dim, fg) = (rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.));
+    let card = |i: usize, title: &str, sub: &str, when: &str| {
+        let fade = 1. - i as f32 * 0.28;
+        div()
+            .flex()
+            .gap(md.u(12.))
+            .px(md.u(16.))
+            .py(md.u(14.))
+            .rounded(md.u(14.))
+            .bg(rgb(md.pal.toast, 0.95 - i as f32 * 0.25))
             .border_1()
-            .border_color(if r.here { rgb(md.pal.line, 1.) } else { Hsla::transparent_black() })
-            .when(r.here, |d| d.bg(rgb(md.pal.panel, 1.)))
-            .child(div().relative().size(md.u(14.)).flex_none().flex().items_center().justify_center().child(pip))
-            .child(div().font_family(MONO).text_size(md.u(13.)).font_weight(FontWeight::SEMIBOLD).text_color(dim).child(r.num.clone()))
-            .child(div().flex_1().font_family(PLEX).text_size(md.u(16.)).font_weight(FontWeight::SEMIBOLD).text_color(if r.done { dim } else { fg }).child(r.name))
-            .child(tracked(md, r.tag, MONO, 11., FontWeight::SEMIBOLD, 0.14, if r.done { glow } else { ember }));
-        col = col.child(clickable(row, SharedString::from(format!("setup-jump-{i}")), Action::Jump(r.step), cx.as_deref_mut()));
+            .border_color(rgb(md.pal.line, 1.))
+            .opacity(fade)
+            .child(div().size(md.u(34.)).flex_none().rounded(md.u(8.)).bg(rgb(md.pal.panel, 1.)).border_1().border_color(rgb(md.pal.line, 1.)).flex().items_center().justify_center().child(diamond(md, 9., Icon::Tile, rgb(md.pal.glow, 1.))))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(div().flex().justify_between().child(gtext(md, "midna", 13., FontWeight::SEMIBOLD, fg)).child(gtext(md, when.to_string(), 13., FontWeight::NORMAL, dim)))
+                    .child(gtext(md, title.to_string(), 14., FontWeight::SEMIBOLD, fg))
+                    .child(gtext(md, sub.to_string(), 13., FontWeight::NORMAL, dim)),
+            )
+    };
+    div()
+        .w(md.u(390.))
+        .flex()
+        .flex_col()
+        .gap(md.u(12.))
+        .child(card(0, "Approve db:migrate on staging?", "migrate · zonai", "now"))
+        .child(card(1, "Asked a question", "golden · drops-app", "12m"))
+        .child(card(2, "exit 1", "flutter build · drops-app", "9m"))
+        .child(div().mt(md.u(6.)).child(tracked(md, "CLICK ONE → THAT TERMINAL", MONO, 11., FontWeight::SEMIBOLD, 0.1, dim)))
+}
+
+/// First project: a folder dropped in.
+fn guide_project(md: &Model) -> Div {
+    let (glow, dim, fg) = (rgb(md.pal.glow, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.));
+    let folder = div()
+        .relative()
+        .w(md.u(64.))
+        .h(md.u(50.))
+        .mt(md.u(10.))
+        .border_2()
+        .border_color(glow)
+        .rounded(md.u(4.))
+        .child(div().absolute().left(md.u(-2.)).top(md.u(-12.)).w(md.u(28.)).h(md.u(12.)).border_2().border_b_0().border_color(glow).rounded_t(md.u(3.)));
+    div()
+        .w(md.u(400.))
+        .h(md.u(290.))
+        .border_2()
+        .border_dashed()
+        .border_color(rgb(md.pal.glow, 0.5))
+        .rounded(md.u(6.))
+        .bg(rgb(md.pal.glow, 0.03))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(md.u(14.))
+        .child(folder)
+        .child(div().font_family(CHAKRA).font_weight(FontWeight::BOLD).text_size(md.u(20.)).text_color(fg).child("Drop a folder"))
+        .child(gmono(md, "~/Development/my-app", 13., dim))
+        .child(tracked(md, "⌘1 · SHELL · GIT STATUS", MONO, 11., FontWeight::SEMIBOLD, 0.12, glow))
+}
+
+/// Webhooks: a pull request starts an agent.
+fn guide_webhooks(md: &Model) -> Div {
+    let (dim, fg) = (rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.));
+    let steps = [("GitHub", "PR #212 opened · drops-app"), ("Tailscale Funnel", "midnad’s public URL, free"), ("midnad", "matches your trigger"), ("claude", "starts in a new terminal")];
+    let mut col = div().w(md.u(410.)).flex().flex_col();
+    for (i, (name, what)) in steps.iter().enumerate() {
+        if i > 0 {
+            col = col.child(div().ml(md.u(26.)).h(md.u(14.)).border_l_2().border_color(rgb(md.pal.line, 1.)));
+        }
+        col = col.child(gbox(md, i == steps.len() - 1).px(md.u(18.)).py(md.u(13.)).flex().justify_between().items_center().child(gtext(md, *name, 15., FontWeight::SEMIBOLD, fg)).child(gtext(md, *what, 13., FontWeight::NORMAL, dim)));
     }
     col
 }
 
-/// Top bar, card, rail and footer: the window's content above the tiles. The card is at
+/// Theme: the two worlds; click one to apply it.
+fn guide_theme(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
+    let cur = md.theme.clone().unwrap_or_default();
+    let mut row = div().flex().gap(md.u(18.));
+    for (key, label, bg, side, fg) in [("dark", "Twilight", 0x0B0E13, 0x151A22, 0xE8ECEF), ("light", "Light world", 0xEAE3D2, 0xF7F2E6, 0x1D1A14)] {
+        let on = cur == key;
+        let line = |w: f32, a: f32| div().h(md.u(8.)).w(relative(w)).rounded(md.u(4.)).bg(rgb(hex(fg), a));
+        let swatch = div()
+            .flex()
+            .flex_col()
+            .gap(md.u(10.))
+            .child(
+                div()
+                    .w(md.u(190.))
+                    .h(md.u(130.))
+                    .rounded(md.u(8.))
+                    .overflow_hidden()
+                    .border_2()
+                    .border_color(if on { rgb(md.pal.glow, 1.) } else { rgb(md.pal.line, 1.) })
+                    .bg(rgb(hex(bg), 1.))
+                    .flex()
+                    .child(div().w(md.u(54.)).h_full().bg(rgb(hex(side), 1.)))
+                    .child(div().flex_1().p(md.u(12.)).flex().flex_col().gap(md.u(8.)).child(line(0.7, 0.6)).child(line(0.5, 0.35)).child(line(0.62, 0.35))),
+            )
+            .child(gtext(md, label, 15., FontWeight::SEMIBOLD, rgb(md.pal.fg, 1.)));
+        row = row.child(clickable(swatch, SharedString::from(format!("setup-swatch-{key}")), Action::Theme(key), cx.as_deref_mut()));
+    }
+    row
+}
+
+/// Done: the jumps made in one line, then each one left, where to finish it and what to ask.
+fn guide_done(md: &Model) -> Div {
+    let (glow, dim, fg, ember) = (rgb(md.pal.glow, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.fg, 1.), rgb(md.pal.ember, 1.));
+    let made: Vec<&str> = md.rail.iter().filter(|r| r.done).map(|r| r.name).collect();
+    let left: Vec<&RailRow> = md.rail.iter().filter(|r| !r.done).collect();
+    let mut col = div().w_full().flex().flex_col().gap(md.u(12.));
+    col = col.child(
+        div()
+            .flex()
+            .items_center()
+            .gap(md.u(12.))
+            .child(diamond(md, 9., Icon::Tile, glow))
+            .child(gtext(md, if made.len() == 1 { "1 jump made".to_string() } else { format!("{} jumps made", made.len()) }, 15., FontWeight::SEMIBOLD, fg))
+            .child(div().flex_1().min_w_0().child(gtext(md, made.join(" · "), 13., FontWeight::NORMAL, dim))),
+    );
+    if left.is_empty() {
+        return col.child(div().mt(md.u(10.)).child(gtext(md, "Nothing left to do.", 15., FontWeight::NORMAL, dim)));
+    }
+    col = col.child(div().mt(md.u(12.)).child(tracked(md, "WAITING FOR YOU", MONO, 11., FontWeight::SEMIBOLD, 0.2, dim)));
+    for r in left {
+        let (place, ask) = finish_later(r.step);
+        col = col.child(
+            div()
+                .px(md.u(18.))
+                .py(md.u(14.))
+                .border_1()
+                .border_color(rgb(md.pal.line, 1.))
+                .rounded(md.u(4.))
+                .flex()
+                .flex_col()
+                .gap(md.u(5.))
+                .child(div().flex().justify_between().child(gtext(md, r.name, 15., FontWeight::SEMIBOLD, fg)).child(tracked(md, r.result, MONO, 11., FontWeight::SEMIBOLD, 0.14, ember)))
+                .child(gtext(md, place, 13., FontWeight::NORMAL, dim))
+                .children(ask.map(|a| gmono(md, format!("or {} → “{a}”", md.command_key), 12., dim))),
+        );
+    }
+    col
+}
+
+/// Top bar, jumps, card and footer: the window's content above the tiles. The card is at
 /// entrance progress `card_e`, or (live, `animate`) runs its entrance as an animation.
 fn content(md: &Model, card_e: f32, animate: Option<u64>, mut cx: Option<&mut Context<MainWindow>>) -> Div {
     let (fg, dim, glow) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.glow, 1.));
@@ -787,7 +1036,7 @@ fn content(md: &Model, card_e: f32, animate: Option<u64>, mut cx: Option<&mut Co
         )
         .child(halo_el)
         .child(card_el)
-        .child(rail(md, cx.as_deref_mut()))
+        .child(pips(md, cx.as_deref_mut()))
         .child(
             div()
                 .absolute()
