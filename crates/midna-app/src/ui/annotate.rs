@@ -205,6 +205,14 @@ fn strip(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                 .gap(px(4.))
                 .cursor_pointer()
                 .on_click(cx.listener(move |v, _, w, cx| v.select_image(i, w, cx)))
+                .on_hover(cx.listener(move |v, on: &bool, _, cx| {
+                    if *on {
+                        v.hover_thumb = Some(i);
+                    } else if v.hover_thumb == Some(i) {
+                        v.hover_thumb = None;
+                    }
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .w(px(THUMB_W))
@@ -236,7 +244,7 @@ fn strip(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                             .child(count.to_string()),
                     )
                 })
-                .when(on, |d| {
+                .when(on || a.hover_thumb == Some(i), |d| {
                     d.child(
                         div()
                             .id(("annot-thumb-remove", i))
