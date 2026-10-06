@@ -1224,6 +1224,8 @@ pub mod kinds {
     /// `notify.clear`: remove notifications from Notification Center (`{session?}`, none = all);
     /// the app removes them.
     pub const NOTIFY_CLEARED: &str = "notify.cleared";
+    /// `notify.read`: notifications up to `read_seq` are read (`{read_seq, unread}`).
+    pub const NOTIFY_READ: &str = "notify.read";
     /// A terminal's notification overrides changed (`{notify}`, the whole map).
     pub const SESSION_NOTIFY: &str = "session.notify";
     /// A notification sound or image was imported or removed (`{action, kind, name}`).

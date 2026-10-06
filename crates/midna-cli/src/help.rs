@@ -275,7 +275,7 @@ pub static VERBS: &[Verb] = &[
                   plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.\n\
                   `clear` removes every midna notification from Notification Center (--session: only that\n\
                   terminal's); opening a terminal already removes its own.",
-        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear"],
+        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.history", "notify.read"],
     },
     Verb {
         name: "read",
@@ -457,7 +457,7 @@ pub static VERBS: &[Verb] = &[
         usage: "window <front|keep_on_top|pop_out|snap|close|open_screen> [target] [value]\n       \
                 window split <terminal-id> [side|stacked] | window split close\n       window list",
         summary: "ask the GUI to act on a window",
-        details: "front, open_screen (rules|triggers|insights|settings|needs_you) and split (show a terminal\n\
+        details: "front, open_screen (rules|triggers|insights|notifications|settings|needs_you) and split (show a terminal\n\
                   beside the selected one) are always allowed; the rest need the human-only setting\n\
                   agents.may_move_windows. Rules can still deny `window` actions (e.g. `split*`).",
         methods: &["window.list", "window.command"],

@@ -393,6 +393,53 @@ pub struct NotifyClearResult {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyHistoryParams {
+    /// At most this many, newest first (default 200, at most 1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Only this terminal's notifications.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+}
+
+/// One notification midna recorded (a `notify.posted` event).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyHistoryItem {
+    pub seq: u64,
+    pub at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Id>,
+    /// Posted after the human last opened the notifications (`notify.read`).
+    pub unread: bool,
+    pub notification: crate::notify::Posted,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyHistoryResult {
+    /// Newest first. Test notifications are left out.
+    pub items: Vec<NotifyHistoryItem>,
+    /// How many notifications are unread in all (not only the ones listed).
+    pub unread: u32,
+    /// Notifications up to this event seq are read.
+    pub read_seq: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyReadParams {
+    /// Mark notifications up to this event seq read. Omitted: every one so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyReadResult {
+    pub read_seq: u64,
+    pub unread: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct NotifyTestParams {
     /// The category whose sound, volume and image to use (default `approval`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1455,7 +1502,7 @@ impl WindowAction {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WindowCommandParams {
     pub action: WindowAction,
-    /// Usually a session id; for open_screen a screen name (rules, triggers, insights, settings, needs_you).
+    /// Usually a session id; for open_screen a screen name (rules, triggers, insights, notifications, settings, needs_you).
     #[serde(default)]
     pub target: Option<String>,
     /// Action-specific value, e.g. `true`/`false` for keep_on_top, `left`/`right` for snap.
@@ -1710,7 +1757,7 @@ pub enum UiCommandRun {
     Focus { session: Id },
     /// Select project N (sidebar order, 0-based).
     Project { index: usize },
-    /// Show a screen: rules | triggers | insights | settings | needs_you.
+    /// Show a screen: rules | triggers | insights | notifications | settings | needs_you.
     Screen { screen: String },
     /// Open a terminal in its own always-on-top window.
     PopOut { session: Id },

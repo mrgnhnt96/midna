@@ -145,6 +145,57 @@ pub fn clear(d: &Daemon, ctx: &Ctx, p: NotifyClearParams) -> R {
     ok(NotifyClearResult { delivered, session: p.session })
 }
 
+/// Notifications posted after `since`, newest first (tests left out).
+fn posted_since(d: &Daemon, since: u64, limit: usize, session: Option<Id>) -> Vec<Event> {
+    let filter = EventFilter { kinds: Some(vec![kinds::NOTIFY_POSTED.into()]), session_id: session, project_id: None };
+    let mut v: Vec<Event> = d.log.list(since, limit, &filter).into_iter().filter(|e| e.data.get("test") != Some(&json!(true))).collect();
+    v.reverse();
+    v
+}
+
+/// The read marker, started at the log's end the first time it's needed.
+fn read_seq(d: &Daemon) -> u64 {
+    let mut core = d.core();
+    if let Some(s) = core.state.notify_read_seq {
+        return s;
+    }
+    let s = d.log.seq();
+    core.state.notify_read_seq = Some(s);
+    drop(core);
+    d.mark_dirty();
+    s
+}
+
+fn unread(d: &Daemon, read: u64) -> u32 {
+    posted_since(d, read, 10_000, None).len() as u32
+}
+
+pub fn history(d: &Daemon, p: NotifyHistoryParams) -> R {
+    let read = read_seq(d);
+    let limit = p.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let items = posted_since(d, 0, limit, p.session)
+        .into_iter()
+        .filter_map(|e| {
+            let notification = serde_json::from_value(e.data).ok()?;
+            Some(NotifyHistoryItem { seq: e.seq, at: e.at, session_id: e.session_id, project_id: e.project_id, unread: e.seq > read, notification })
+        })
+        .collect();
+    ok(NotifyHistoryResult { items, unread: unread(d, read), read_seq: read })
+}
+
+pub fn read(d: &Daemon, ctx: &Ctx, p: NotifyReadParams) -> R {
+    let before = read_seq(d);
+    // Never moves back: an older seq (another window's stale view) changes nothing.
+    let read = p.seq.unwrap_or_else(|| d.log.seq()).min(d.log.seq()).max(before);
+    let unread = unread(d, read);
+    if read != before {
+        d.core().state.notify_read_seq = Some(read);
+        d.mark_dirty();
+        d.emit(kinds::NOTIFY_READ, ctx.actor(), None, None, json!({ "read_seq": read, "unread": unread }));
+    }
+    ok(NotifyReadResult { read_seq: read, unread })
+}
+
 pub fn play(d: &Daemon, ctx: &Ctx, p: NotifyPlayParams) -> R {
     let sid = target(d, ctx, p.session, false)?;
     let what = p.sound.trim();

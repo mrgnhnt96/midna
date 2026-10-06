@@ -263,6 +263,14 @@ fn build() -> Vec<MethodSpec> {
             "Remove midna's notifications from Notification Center: every one, or only one terminal's with `session`. \
              The app removes them; with no app connected nothing changes (`delivered: false`). midna already removes a \
              terminal's notifications when the human opens it. Use it when the human asks."),
+        m::<NotifyHistoryParams, NotifyHistoryResult>("notify.history").d(
+            "What midna recorded as notifications, newest first: each one's category, title, text, terminal, whether it \
+             was a banner (`push`) and whether the human has seen it (`unread`), plus how many are unread in all. \
+             Recorded kinds that aren't pushed (failures, finished turns, …) only show up here and in the app's \
+             Notifications screen."),
+        m::<NotifyReadParams, NotifyReadResult>("notify.read").mutating().d(
+            "Mark notifications read (all so far, or up to `seq`). The app does this when the human opens its \
+             Notifications screen; only do it when the human asks."),
         m::<NotifyTestParams, NotifySendResult>("notify.test").mutating().d(
             "Show a test notification with a category's sound, volume and image (default `approval`), even when that \
              category is off, so the human can hear and see their choice."),

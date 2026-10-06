@@ -290,3 +290,33 @@ fn clear_asks_the_app_to_remove_all_or_one_terminals() {
     assert_eq!(c[1]["session_id"].as_str(), Some(sid.as_str()));
     call_err(&mut h, "notify.clear", json!({ "session": "s_nope" }));
 }
+
+#[test]
+fn history_lists_newest_first_and_reading_clears_unread() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    // Nothing before the first look counts as unread.
+    let r = call(&mut h, "notify.history", json!({}));
+    assert_eq!((r["items"].as_array().map(Vec::len), r["unread"].as_u64()), (Some(0), Some(0)), "{r}");
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    call(&mut a, "notify.send", json!({ "title": "first" }));
+    call(&mut a, "notify.send", json!({ "title": "second" }));
+    call(&mut h, "notify.test", json!({ "session": sid }));
+    wait_posted(&mut h, 3);
+    let r = call(&mut h, "notify.history", json!({}));
+    let items = r["items"].as_array().unwrap();
+    // Tests are left out; newest first.
+    assert_eq!(items.iter().map(|i| i["notification"]["body"].as_str().unwrap_or("")).collect::<Vec<_>>(), ["second", "first"], "{r}");
+    assert!(items.iter().all(|i| i["unread"] == true && i["session_id"] == json!(sid)), "{r}");
+    assert_eq!(r["unread"], 2);
+
+    let done = call(&mut h, "notify.read", json!({}));
+    assert_eq!(done["unread"], 0);
+    let r = call(&mut h, "notify.history", json!({}));
+    assert!(r["items"].as_array().unwrap().iter().all(|i| i["unread"] == false), "{r}");
+    assert_eq!(r["read_seq"], done["read_seq"]);
+    // An older seq never marks things unread again.
+    assert_eq!(call(&mut h, "notify.read", json!({ "seq": 1 }))["read_seq"], done["read_seq"]);
+    assert_eq!(call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.read"] } })).as_array().map(Vec::len), Some(1));
+}

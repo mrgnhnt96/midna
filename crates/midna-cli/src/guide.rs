@@ -33,7 +33,7 @@ WHAT YOU CAN DO
   secrets    [secret:NAME] = a stored secret: midna secret exec NAME -- <cmd> ($NAME set, output masked) · write NAME .env · list
              save a token a command produced: <cmd> | midna secret save NAME (stdin only; never echo it)
   settings   midna settings list | get | set | reset   (human-only keys: setting one asks the human)
-  windows    midna focus <id> · window open_screen <rules|triggers|insights|settings|needs_you>
+  windows    midna focus <id> · window open_screen <rules|triggers|insights|notifications|settings|needs_you>
   projects   midna projects add <path> · update <id> --name/--icon · add-command <id> --name N -- <cmd>
   learn      midna help · midna <verb> --help · midna schema [method|--list] · midna skill · midna explain <topic>
 

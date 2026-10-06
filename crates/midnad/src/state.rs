@@ -48,6 +48,10 @@ pub struct State {
     /// The latest plan usage limits any agent reported (`usage.get`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::StoredUsage>,
+    /// Notifications up to this event seq are read (`notify.read`). None until first asked:
+    /// it then starts at the log's end, so an upgrade doesn't flag every old one unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_read_seq: Option<u64>,
 }
 
 impl State {

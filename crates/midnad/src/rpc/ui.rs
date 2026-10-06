@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 const MAX_COMMANDS: usize = 200;
-const SCREENS: &[&str] = &["rules", "triggers", "insights", "settings", "needs_you"];
+const SCREENS: &[&str] = &["rules", "triggers", "insights", "notifications", "settings", "needs_you"];
 const ICONS: &[&str] = &["claude", "codex", "monitor", "shell", "project", "run", "screen", "approve", "deny", "rule", "pin", "new", "trigger", "restart"];
 
 pub fn path(d: &Daemon) -> PathBuf {
