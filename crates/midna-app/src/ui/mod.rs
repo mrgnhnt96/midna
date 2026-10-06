@@ -189,6 +189,7 @@ impl Render for MainWindow {
             return crate::composer::register(MainWindow::register_actions(root, cx), cx);
         }
         twilight::frame(self, window, cx);
+        twilight::sync_lights(self, window);
         crate::composer::sync(self);
         let sidebar = sidebar::render(self, &t, window, cx);
         let main: AnyElement = match (&self.conn, self.screen) {

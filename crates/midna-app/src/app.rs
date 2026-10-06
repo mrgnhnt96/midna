@@ -100,6 +100,8 @@ pub struct MainWindow {
     pub twilight_started: std::time::Instant,
     pub twilight_total: f32,
     pub twilight_overlay: Option<AnyWindowHandle>,
+    /// Whether the traffic lights are showing (hidden during the opening and on the setup screen).
+    pub twilight_lights: bool,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -286,6 +288,7 @@ impl MainWindow {
             twilight_started: std::time::Instant::now(),
             twilight_total: 0.,
             twilight_overlay: None,
+            twilight_lights: true,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             id,
             windows,

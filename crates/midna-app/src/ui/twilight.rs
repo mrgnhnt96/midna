@@ -223,6 +223,7 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
     };
     window.set_background_appearance(WindowBackgroundAppearance::Transparent);
     chrome(window, false);
+    m.twilight_lights = false;
     if !m.twilight_setup {
         set_mask(window, &[], 0.);
         m.twilight_overlay = open_overlay(m, window, cx);
@@ -253,6 +254,16 @@ pub fn frame(m: &MainWindow, window: &mut Window, cx: &App) {
     set_mask(window, &revealed(cols, rows, now_ms(m.twilight_started), m.twilight_reduced), CELL * md.s);
 }
 
+/// The setup screen has no window controls: hide the traffic lights while it shows (and while
+/// the opening plays). Call each main-window frame.
+pub fn sync_lights(m: &mut MainWindow, window: &Window) {
+    let show = m.twilight_phase == Phase::Off && !ss::active(m);
+    if show != m.twilight_lights {
+        m.twilight_lights = show;
+        traffic_lights(window, show);
+    }
+}
+
 fn finish(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     m.twilight_phase = Phase::Off;
     // The opening already brought the card in.
@@ -263,6 +274,8 @@ fn finish(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     clear_mask(window);
     window.set_background_appearance(WindowBackgroundAppearance::Opaque);
     chrome(window, true);
+    m.twilight_lights = true;
+    sync_lights(m, window);
     cx.notify();
 }
 
@@ -313,9 +326,14 @@ fn ns_view_ptr(window: &Window) -> Option<*mut objc2::runtime::AnyObject> {
 
 /// Show or hide the native window's shadow and traffic lights.
 fn chrome(window: &Window, visible: bool) {
-    use objc2_app_kit::NSWindowButton;
     let Some(ns) = ns_window(window) else { return };
     ns.setHasShadow(visible);
+    traffic_lights(window, visible);
+}
+
+fn traffic_lights(window: &Window, visible: bool) {
+    use objc2_app_kit::NSWindowButton;
+    let Some(ns) = ns_window(window) else { return };
     for b in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton] {
         if let Some(button) = ns.standardWindowButton(b) {
             button.setHidden(!visible);
