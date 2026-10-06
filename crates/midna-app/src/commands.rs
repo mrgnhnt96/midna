@@ -437,10 +437,11 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         out.push(c);
     }
     // Projects with terminals are in the sidebar (⌘1–9 in that order); the rest are closed and
-    // "Go to project" reopens them with a new terminal. The most recently opened closed ones are
-    // listed under "Recent" before anything is typed; folders under projects.roots only show
-    // up when searched for.
-    let open_projects: Vec<&str> = s.projects.iter().filter(|p| s.sessions.iter().any(|x| x.project_id.as_deref() == Some(p.id.as_str()))).map(|p| p.id.as_str()).collect();
+    // "Go to project" reopens them with a new terminal. Background terminals don't count: they
+    // sit in their own group, so a project with only those is closed too. The most recently
+    // opened closed ones are listed under "Recent" before anything is typed; folders under
+    // projects.roots only show up when searched for.
+    let open_projects: Vec<&str> = s.projects.iter().filter(|p| s.sessions.iter().any(|x| !x.background && x.project_id.as_deref() == Some(p.id.as_str()))).map(|p| p.id.as_str()).collect();
     let recent: Vec<String> = recent_projects(s.projects, &open_projects).into_iter().take(RECENT_MAX).map(|r| r.path).collect();
     let featured = |c: Command, path: &str| if recent.iter().any(|r| r == path) { c.featured("Recent") } else { c };
     // recent ones first, most recent first, so "Recent" reads in that order
@@ -1362,6 +1363,36 @@ mod tests {
         // Nothing to hide: no sidebar row. Hidden: the row to bring it back, always.
         assert_eq!(title(&build_with(vec![&fg], false), "background"), None);
         assert_eq!(title(&build_with(vec![], true), "background").as_deref(), Some("Show background terminals in the sidebar"));
+    }
+
+    #[test]
+    fn project_with_only_background_terminals_is_closed() {
+        let key = |_: &str| String::new();
+        let setting = |_: &str| None;
+        let projects = [Project { id: "p1".into(), name: "api".into(), path: "/src/api".into(), ..Default::default() }];
+        let bg = Session { id: "b1".into(), project_id: Some("p1".into()), background: true, ..Default::default() };
+        let fg = Session { id: "f1".into(), project_id: Some("p1".into()), ..Default::default() };
+        let sub = |sessions: Vec<&Session>| {
+            let cmds = build(&Snapshot {
+                projects: &projects,
+                discovered: &[],
+                sessions,
+                needs: &[],
+                selected: None,
+                current_project: None,
+                key: &key,
+                setting: &setting,
+                rules_count: 0,
+                last_agent: AgentKind::Claude,
+                policy: &|_| None,
+                sidebar_collapsed: false,
+                background_hidden: false,
+                name_note: &|_| None,
+            });
+            cmds.into_iter().find(|c| c.id == "project:p1").map(|c| (c.sub, c.keys)).unwrap()
+        };
+        assert_eq!(sub(vec![&bg]), ("/src/api · closed, opens a terminal".to_string(), None));
+        assert_eq!(sub(vec![&bg, &fg]), ("/src/api".to_string(), Some("⌘1".to_string())));
     }
 
     #[test]

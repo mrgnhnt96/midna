@@ -1381,14 +1381,14 @@ impl MainWindow {
     }
 
     /// Add `path` as a project (a no-op if it already is one), then go to it: its first
-    /// terminal, or a new shell there when it has none.
+    /// terminal outside the Background group, or a new shell there when it has none.
     pub fn add_project(&mut self, path: String, _window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("project.add", json!({ "path": path }), cx, |m, v, window, cx| {
             let Some(pid) = v.get("id").and_then(|x| x.as_str()).map(str::to_string) else {
                 return;
             };
             m.request_refresh(refresh::PROJECTS, cx);
-            match m.sessions.iter().find(|s| s.project_id.as_deref() == Some(pid.as_str())).map(|s| s.id.clone()) {
+            match m.sessions.iter().find(|s| !s.background && s.project_id.as_deref() == Some(pid.as_str())).map(|s| s.id.clone()) {
                 Some(id) => m.select(id, window, cx),
                 None => m.open_session(Some(pid), None, cx),
             }
