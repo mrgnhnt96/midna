@@ -477,6 +477,8 @@ pub(crate) struct Model {
     primary: String,
     buttons_top: f32,
     can_later: bool,
+    /// The second button: "Later", or "Add folder…" on a project step that is already done.
+    later_label: &'static str,
     rail: Vec<RailRow>,
     /// The command bar's shortcut, as shown (⌘K).
     command_key: String,
@@ -527,6 +529,7 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
         primary: String::new(),
         buttons_top: 34.,
         can_later: false,
+        later_label: "Later",
         rail,
         command_key: m.key_label("keys.command_bar"),
     };
@@ -561,6 +564,11 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
             }
             md.primary = v.action.map(str::to_string).unwrap_or_else(|| if s == Step::Theme { "Finish setup".into() } else { "Next".into() });
             md.can_later = s != Step::Theme && !done;
+            if s == Step::Project && done {
+                // Projects can exist before setup (an agent's `open --cwd`); still offer the picker.
+                md.can_later = true;
+                md.later_label = "Add folder…";
+            }
         }
         Stage::Done => {
             md.code = "ALL JUMPS MADE".into();
@@ -618,11 +626,11 @@ fn run(m: &mut MainWindow, a: Action, window: &mut Window, cx: &mut Context<Main
                 }
             }
         },
-        Action::Later => {
-            if let Stage::At(s) = stage(m) {
-                ob::put_off(m, s, cx);
-            }
-        }
+        Action::Later => match stage(m) {
+            Stage::At(Step::Project) if ob::done(m, Step::Project) => m.pick_project(cx),
+            Stage::At(s) => ob::put_off(m, s, cx),
+            _ => {}
+        },
         Action::Jump(s) => ob::pick(m, s, cx),
         Action::ThemeStep(_) | Action::ThemeTo(_) | Action::ThemeMatch(_) | Action::ThemeSlot(_) => {
             // No click ripple: the tiles ripple into the new colors instead (`Shift`).
@@ -729,6 +737,7 @@ impl Model {
             primary: String::new(),
             buttons_top: 38.,
             can_later: false,
+        later_label: "Later",
             rail: vec![],
             command_key: "⌘K".into(),
         }
@@ -867,7 +876,7 @@ fn card_body(md: &Model, mut cx: Option<&mut Context<MainWindow>>) -> Div {
     }
     let mut row = div().mt(md.u(md.buttons_top)).flex().gap(md.u(12.)).child(clickable(button(md, &md.primary, true), "setup-primary", Action::Primary, cx.as_deref_mut()));
     if md.can_later {
-        row = row.child(clickable(button(md, "Later", false), "setup-later", Action::Later, cx));
+        row = row.child(clickable(button(md, md.later_label, false), "setup-later", Action::Later, cx));
     }
     // Measure the natural height; the entrance opens the card to it.
     let s = md.s;

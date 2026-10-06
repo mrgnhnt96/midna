@@ -14,7 +14,7 @@ unsafe extern "C" {
 pub fn pane_url(name: &str) -> Option<&'static str> {
     Some(match name {
         "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "notifications" => "x-apple.systempreferences:com.apple.preference.notifications",
+        "notifications" => midna_proto::paths::NOTIFICATIONS_PANE,
         "login-items" => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
         _ => return None,
     })

@@ -564,7 +564,7 @@ pub(crate) fn accessibility_trusted() -> bool {
 }
 
 const PANE_AX: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
-const PANE_NOTIF: &str = "x-apple.systempreferences:com.apple.preference.notifications";
+const PANE_NOTIF: &str = midna_proto::paths::NOTIFICATIONS_PANE;
 
 impl SettingsWindow {
     fn spec_row(&self, key: &str) -> Option<RowSpec> {

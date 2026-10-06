@@ -7,7 +7,12 @@
 //! Accessibility and agent hooks are deliberately not steps: Accessibility is asked for when
 //! Kass first dictates (`ax_prompt.rs`), hooks live in the status bar (`hooks.rs`).
 //!
-//! Remembered in `app-state.json` as `onboarding: {"finished": bool, "later": [step ids]}`.
+//! The setup screen walks the steps in order: one already done (a project an agent opened, a
+//! daemon from an earlier install) still shows, with its result and Next, rather than being
+//! skipped over. Only Next or Later moves past a step.
+//!
+//! Remembered in `app-state.json` as
+//! `onboarding: {"finished": bool, "later": [step ids], "passed": [step ids]}`.
 use crate::app::{MainWindow, Screen};
 use crate::install::LoginItem;
 use crate::notify::Permission;
@@ -61,6 +66,9 @@ pub struct Saved {
     pub finished: bool,
     #[serde(default)]
     pub later: Vec<String>,
+    /// Steps the human moved past with Next.
+    #[serde(default)]
+    pub passed: Vec<String>,
 }
 
 /// On `MainWindow.onboarding`.
@@ -176,9 +184,14 @@ pub fn done_count(m: &MainWindow) -> usize {
     STEPS.iter().filter(|s| done(m, **s)).count()
 }
 
-/// The step the card shows: the picked one, else the first not done and not put off.
+fn passed(m: &MainWindow, s: Step) -> bool {
+    m.onboarding.saved.passed.iter().any(|l| l == s.id())
+}
+
+/// The step the card shows: the picked one, else the first the human hasn't moved past (Next)
+/// or put off (Later). Done steps are not skipped: they show their result and Next.
 pub(crate) fn current(m: &MainWindow) -> Option<Step> {
-    m.onboarding.picked.or_else(|| STEPS.into_iter().find(|s| !done(m, *s) && !later(m, *s)))
+    m.onboarding.picked.or_else(|| STEPS.into_iter().find(|s| !passed(m, *s) && !later(m, *s)))
 }
 
 pub fn active(m: &MainWindow) -> bool {
@@ -223,6 +236,9 @@ pub(crate) fn put_off(m: &mut MainWindow, s: Step, cx: &mut Context<MainWindow>)
 
 pub(crate) fn next(m: &mut MainWindow, s: Step, cx: &mut Context<MainWindow>) {
     m.onboarding.saved.later.retain(|l| l != s.id());
+    if !passed(m, s) {
+        m.onboarding.saved.passed.push(s.id().into());
+    }
     m.onboarding.picked = None;
     m.onboarding.card_seq += 1;
     save(m);
@@ -256,15 +272,20 @@ pub(crate) fn view(m: &MainWindow, s: Step) -> View {
             let (status, action) = match crate::notify::permission() {
                 Permission::Allowed => (Some(("Allowed.".to_string(), true)), None),
                 Permission::Dev => (Some(("Dev build: notifications go through osascript.".to_string(), true)), None),
-                Permission::Denied => (Some(("Off in System Settings ▸ Notifications.".to_string(), false)), Some("Open Notifications")),
+                Permission::Denied => (Some(("Off in System Settings ▸ Notifications ▸ midna.".to_string(), false)), Some("Open Notifications")),
                 Permission::NotAsked | Permission::Unknown => (None, Some("Allow notifications")),
             };
             View { status, action }
         }
         Step::Project => {
-            let first = m.projects.iter().find(|p| p.id != midna_proto::ROOT_PROJECT_ID);
+            let added: Vec<_> = m.projects.iter().filter(|p| p.id != midna_proto::ROOT_PROJECT_ID).collect();
+            let status = match added.as_slice() {
+                [] => None,
+                [p] => Some(format!("Added {} · {}", p.name, p.path)),
+                [p, rest @ ..] => Some(format!("Added {} · {} and {} more", p.name, p.path, rest.len())),
+            };
             View {
-                status: first.map(|p| (format!("Added {} · {}", p.name, p.path), true)),
+                status: status.map(|t| (t, true)),
                 action: (!d).then_some("Choose folder…"),
             }
         }
@@ -284,7 +305,8 @@ pub(crate) fn act(m: &mut MainWindow, s: Step, window: &mut Window, cx: &mut Con
         },
         Step::Notifications => {
             if crate::notify::permission() == Permission::Denied {
-                cx.open_url("x-apple.systempreferences:com.apple.preference.notifications");
+                cx.open_url(midna_proto::paths::NOTIFICATIONS_PANE);
+                poll_permission(cx);
             } else {
                 crate::notify::request_permission();
                 poll_permission(cx);
@@ -302,14 +324,15 @@ pub(crate) fn act(m: &mut MainWindow, s: Step, window: &mut Window, cx: &mut Con
     cx.notify();
 }
 
-/// macOS answers the notification prompt asynchronously; re-render for a while so the step
-/// ticks as soon as it does.
+/// macOS answers the notification prompt (or the switch in System Settings) asynchronously;
+/// re-render for a while so the step ticks as soon as the answer changes.
 fn poll_permission(cx: &mut Context<MainWindow>) {
+    let start = crate::notify::permission();
     cx.spawn(async move |this, cx| {
-        for _ in 0..60 {
+        for _ in 0..240 {
             cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
             crate::notify::refresh_permission();
-            if this.update(cx, |_, cx| cx.notify()).is_err() || crate::notify::permission() != Permission::NotAsked {
+            if this.update(cx, |_, cx| cx.notify()).is_err() || crate::notify::permission() != start {
                 break;
             }
         }

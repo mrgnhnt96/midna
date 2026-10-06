@@ -758,7 +758,7 @@ fn permissions(a: &Args, out: OutFn) -> Res {
 fn permission_pane(name: &str) -> Option<&'static str> {
     Some(match name {
         "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "notifications" => "x-apple.systempreferences:com.apple.preference.notifications",
+        "notifications" => midna_proto::paths::NOTIFICATIONS_PANE,
         "login-items" | "login" => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
         _ => return None,
     })

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 pub const BUNDLE_ID: &str = "com.mrgnhnt.midna";
 pub const DAEMON_LABEL: &str = "com.mrgnhnt.midna.daemon";
+/// System Settings ▸ Notifications opened on midna's own page (not the list of every app).
+pub const NOTIFICATIONS_PANE: &str = "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.mrgnhnt.midna";
 
 pub fn midna_home() -> PathBuf {
     if let Some(h) = std::env::var_os("MIDNA_HOME").filter(|h| !h.is_empty()) {
