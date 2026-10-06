@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 dir=packaging/assets/dmg
-font=site/node_modules/@fontsource-variable/bricolage-grotesque
+font=site/node_modules/@fontsource-variable/inter
 [ -d "$font" ] || { echo "Missing $font. Run: cd site && npm install" >&2; exit 1; }
 
 chrome="${CHROME:-}"
