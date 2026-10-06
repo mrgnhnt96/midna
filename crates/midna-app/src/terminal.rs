@@ -179,6 +179,36 @@ fn key_msg(ks: &Keystroke, held: bool, option_as_meta: bool) -> Option<KeyMsg> {
     Some(KeyMsg { action: if held { KeyAction::Repeat } else { KeyAction::Press }, mods, key: ks.key.clone(), text })
 }
 
+/// Does the key event being handled carry text other than what its key types? Apps that type
+/// text for you (Kass, when it can't write through Accessibility) post key events whose
+/// characters are replaced with a chunk of the text, on keycode 0 (A). GPUI names keys from
+/// the keycode, so `ks` says "a". Left unhandled, the event goes to the input handler, which
+/// gets its real text (the path option characters take).
+fn carries_other_text(ks: &Keystroke) -> bool {
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType};
+    let m = &ks.modifiers;
+    if m.control || m.platform || m.function {
+        return false;
+    }
+    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
+    let Some(ev) = NSApplication::sharedApplication(mtm).currentEvent() else { return false };
+    if !matches!(ev.r#type(), NSEventType::KeyDown | NSEventType::KeyUp) {
+        return false;
+    }
+    let chars = ev.characters().map(|s| s.to_string()).unwrap_or_default();
+    other_text(ks.key_char.as_deref(), &chars, ev.modifierFlags().contains(NSEventModifierFlags::CapsLock))
+}
+
+/// [`carries_other_text`] once the event's `chars` are read. Caps Lock changes the case of
+/// what a key types without GPUI knowing; dead keys carry no characters.
+fn other_text(key_char: Option<&str>, chars: &str, caps_lock: bool) -> bool {
+    let Some(key_char) = key_char else { return false };
+    if chars.is_empty() || chars.chars().any(|c| c.is_control()) || chars == key_char {
+        return false;
+    }
+    !(caps_lock && chars.to_lowercase() == key_char.to_lowercase())
+}
+
 impl TerminalView {
     pub fn new(session_id: String, backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_sized(session_id, backend, (0, 0), window, cx)
@@ -518,6 +548,9 @@ impl TerminalView {
             return;
         }
         self.preview_close(cx);
+        if carries_other_text(ks) {
+            return; // typed for us; the input handler gets the event's real text
+        }
         if self.find.is_some() && self.find_key(ks, window, cx) {
             cx.stop_propagation();
             return;
@@ -834,7 +867,7 @@ impl TerminalView {
 
     fn on_key_up(&mut self, ev: &KeyUpEvent, _w: &mut Window, _cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
-        if ks.modifiers.platform || self.find.is_some() || self.ext.kitty_flags & KITTY_REPORT_EVENTS == 0 {
+        if ks.modifiers.platform || self.find.is_some() || self.ext.kitty_flags & KITTY_REPORT_EVENTS == 0 || carries_other_text(ks) {
             return;
         }
         // Releases only matter to apps that asked for kitty event reporting.
@@ -1896,7 +1929,7 @@ fn paint_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::{key_msg, link_span};
+    use super::{key_msg, link_span, other_text};
 
     #[test]
     fn link_spans() {
@@ -1936,5 +1969,20 @@ mod tests {
         assert_eq!(key_msg(&ks("enter", Some("\n")), false, true).unwrap().text, "");
         assert_eq!(key_msg(&ks("escape", None), false, true).unwrap().key, "escape");
         assert_eq!(key_msg(&ks("cmd-c", None), false, true).unwrap().mods, 0, "super never reaches the app");
+    }
+
+    #[test]
+    fn typed_for_us() {
+        // Kass types on keycode 0: GPUI says "a", the event carries the text.
+        assert!(other_text(Some("a"), "hello world", false));
+        assert!(other_text(Some("a"), "A", false));
+        // A key typing itself, with or without Caps Lock.
+        assert!(!other_text(Some("a"), "a", false));
+        assert!(!other_text(Some("a"), "A", true));
+        assert!(!other_text(Some("∫"), "∫", false));
+        // Dead keys, control characters and named keys stay keys.
+        assert!(!other_text(Some("e"), "", false));
+        assert!(!other_text(Some("\n"), "\r", false));
+        assert!(!other_text(None, "x", false));
     }
 }
