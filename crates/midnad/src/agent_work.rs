@@ -3,7 +3,8 @@
 //! Claude Code (verified on 2.1.289) reports:
 //! - its conversation id (`session_id`) and `permission_mode` in every main-thread hook
 //!   (hooks fired inside a subagent carry `agent_id`; those ids are not the conversation);
-//! - the running `version` and `model.id` in its status line;
+//! - the running `version` and `model.id` in its status line, and on subscription plans the
+//!   account's usage limits (`rate_limits.five_hour|seven_day {used_percentage, resets_at: unix secs}`);
 //! - a full snapshot of background work, `background_tasks`, and of scheduled wakeups,
 //!   `session_crons`, in every `Stop` and `SubagentStop` (REPLACE semantics);
 //! - subagents as `SubagentStart` / `SubagentStop`. Its internal prompt-suggestion agent fires
@@ -16,7 +17,7 @@
 //! background shells and agents do not.
 //!
 //! Codex reports its thread id in notify (`thread-id`).
-use midna_proto::{AgentCron, AgentInfo, AgentKind, BackgroundTask, PendingAgent, Subagent};
+use midna_proto::{AgentCron, AgentInfo, AgentKind, BackgroundTask, PendingAgent, RateLimitWindow, RateLimits, Subagent, time};
 use serde_json::Value;
 
 /// Stopped subagents kept for the header popover and their windows.
@@ -72,6 +73,9 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
             }
             if let Some(m) = str_at(p, "/model/id") {
                 info.model = Some(m);
+            }
+            if let Some(r) = rate_limits(p, now) {
+                info.rate_limits = Some(r);
             }
         }
         "SessionStart" => {
@@ -203,6 +207,24 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
         }
         _ => {}
     }
+}
+
+/// Claude's plan usage limits from a status line payload (none for API-key accounts).
+/// `resets_at` comes as unix seconds (2.1.288); an RFC 3339 string is taken too.
+pub fn rate_limits(p: &Value, now: &str) -> Option<RateLimits> {
+    let rl = p.get("rate_limits")?;
+    let window = |k: &str| {
+        let w = rl.get(k)?;
+        let used_percentage = w.get("used_percentage")?.as_f64()?;
+        let resets_at = match w.get("resets_at") {
+            Some(Value::Number(n)) => n.as_f64().map(|t| time::format_unix(t as i64)),
+            Some(Value::String(s)) => time::parse_rfc3339(s).map(time::format_unix),
+            _ => None,
+        };
+        Some(RateLimitWindow { used_percentage, resets_at, expired: false })
+    };
+    let (five_hour, seven_day) = (window("five_hour"), window("seven_day"));
+    (five_hour.is_some() || seven_day.is_some()).then(|| RateLimits { five_hour, seven_day, observed_at: now.to_string() })
 }
 
 fn background_task(v: &Value) -> Option<BackgroundTask> {
@@ -531,6 +553,23 @@ mod tests {
         assert_eq!(at[48].4, 0, "nothing in flight after the resume");
         assert_eq!(i.conversation_id.as_deref(), Some(lines[1]["payload"]["session_id"].as_str().unwrap()), "resume keeps the session id");
         assert_eq!(i.version.as_deref(), Some("2.1.289"));
+    }
+
+    #[test]
+    fn statusline_rate_limits_are_kept_without_being_news() {
+        let mut i = AgentInfo::default();
+        let p = json!({"session_id": "c1", "rate_limits": {"five_hour": {"used_percentage": 16, "resets_at": 1791077400}, "seven_day": {"used_percentage": 8.5, "resets_at": 1791651600}}});
+        hook(&mut i, "statusline", p.clone());
+        let r = i.rate_limits.clone().unwrap();
+        assert_eq!(r.five_hour.as_ref().map(|w| (w.used_percentage, w.resets_at.as_deref())), Some((16.0, Some("2026-10-04T01:30:00Z"))));
+        assert_eq!(r.seven_day.as_ref().unwrap().used_percentage, 8.5);
+        assert!(!hook(&mut i, "statusline", p), "usage churn is not a session.agent change");
+        hook(&mut i, "statusline", json!({"session_id": "c1"}));
+        assert!(i.rate_limits.is_some(), "a status line without limits keeps the last known");
+        let s = json!({"rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": "2026-10-04T03:00:00+01:00"}}});
+        let r = rate_limits(&s, "t").unwrap();
+        assert_eq!((r.five_hour.unwrap().resets_at.as_deref(), r.seven_day), (Some("2026-10-04T02:00:00Z"), None));
+        assert!(rate_limits(&json!({"rate_limits": {}}), "t").is_none());
     }
 
     #[test]

@@ -201,3 +201,40 @@ pub fn prompts(v: &Value) {
     }
     println!("{}", if v["scrolled"].as_bool() == Some(true) { "(scrolled back)" } else { "(live)" });
 }
+
+/// `in 2h 5m` / `5m ago` for an RFC 3339 time.
+fn relative(ts: &str) -> String {
+    let Some(t) = midna_proto::time::parse_rfc3339(ts) else { return ts.to_string() };
+    let d = t - midna_proto::time::now_unix();
+    let span = |s: i64| match s {
+        s if s < 90 => format!("{s}s"),
+        s if s < 5400 => format!("{}m", s / 60),
+        s if s < 172_800 => format!("{}h {}m", s / 3600, s % 3600 / 60),
+        s => format!("{}d {}h", s / 86400, s % 86400 / 3600),
+    };
+    if d >= 0 { format!("in {}", span(d)) } else { format!("{} ago", span(-d)) }
+}
+
+/// `midna usage`.
+pub fn usage(v: &Value) {
+    let Some(c) = v.get("claude").filter(|c| c.is_object()) else {
+        println!("no usage limits reported yet (Claude's status line reports them on Pro/Max plans; setting agents.claude.statusline)");
+        return;
+    };
+    println!("claude plan usage, observed {} in {}", relative(&s(c, "observed_at")), s(c, "session"));
+    for (key, label) in [("five_hour", "5-hour"), ("seven_day", "weekly")] {
+        let w = &c[key];
+        if !w.is_object() {
+            continue;
+        }
+        let resets = w["resets_at"].as_str().map(|r| format!("  resets {r} ({})", relative(r))).unwrap_or_default();
+        let stale = if w["expired"] == true { "  (reset since: out of date)" } else { "" };
+        let used = w["used_percentage"].as_f64().unwrap_or(0.0);
+        let used = if used.fract() == 0.0 { format!("{used:.0}") } else { format!("{used:.1}") };
+        println!("  {label:<7} {used:>5}%{resets}{stale}");
+    }
+    if c["limited"] == true {
+        let until = c["limited_until"].as_str().map(|u| format!(" until {u} ({})", relative(u))).unwrap_or_default();
+        println!("  LIMITED{until}");
+    }
+}

@@ -24,7 +24,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 `midna call <method> <json>`. Everything you do is logged (`midna events`).
 
 WHAT YOU CAN DO
-  see        midna list | projects | needs | read <id> | explain <id> | events | insights
+  see        midna list | projects | needs | read <id> | explain <id> | events | insights | usage
   terminals  midna open [--agent claude|codex --prompt T | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
@@ -242,6 +242,13 @@ const TOPICS: &[(&str, &str)] = &[
         Everything left out comes from extends; terminal keys are black … white, bright-black … bright-white, or \
         \"ansi\": [16 colors]. The app picks the file up within seconds; check `midna themes` for load errors, then \
         `midna themes use <id>`. `midna themes format` prints the shape."),
+    ("usage", "Claude's plan usage limits are account-wide; Claude Code's status line reports them on Pro/Max plans \
+        (midna's status line, setting agents.claude.statusline). `midna usage` (usage.get) has the latest any terminal \
+        reported: five_hour and seven_day {used_percentage 0-100, resets_at}, observed_at and the terminal. limited = a \
+        window is at 100% and has not reset (new turns fail until limited_until); a window whose resets_at passed is \
+        marked expired. Each terminal's own last report is in session.get agent_info.rate_limits. Event \
+        usage.limit_reached {agent, window, used_percentage, resets_at} fires once per window when it hits 100%: \
+        subscribe to it (or a local trigger on it) instead of polling."),
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),

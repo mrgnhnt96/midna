@@ -436,6 +436,11 @@ fn run(a: &Args) -> Res {
         "hooks" => hooks(a, &out),
         "events" => events(a),
         "insights" => insights(a, &out),
+        "usage" => {
+            a.check(&[])?;
+            out(&call("usage.get", json!({}))?, &print::usage);
+            Ok(())
+        }
         "window" if a.pos.get(1).map(String::as_str) == Some("list") => {
             let v = call("window.list", json!({}))?;
             out(&v, &print::kv);

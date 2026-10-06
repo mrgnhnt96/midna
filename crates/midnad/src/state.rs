@@ -45,6 +45,9 @@ pub struct State {
     /// Built-ins already added once (e.g. `prompt_blocked_status`); removing one keeps it gone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seeded: Vec<String>,
+    /// The latest plan usage limits any agent reported (`usage.get`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::usage::StoredUsage>,
 }
 
 impl State {

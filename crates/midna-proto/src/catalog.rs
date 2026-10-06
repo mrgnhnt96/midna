@@ -127,7 +127,7 @@ fn build() -> Vec<MethodSpec> {
         // sessions
         m::<SessionListParams, Vec<Session>>("session.list").d(
             "List terminals (shells, monitors, agents) with status, title and git info. Filter by project_id."),
-        m::<IdParams, Session>("session.get").d("Get one terminal by id: kind, agent, cwd, command, title, status {state, reason, since, exit_code}, git info and, for agents, agent_info (conversation id, running version, update available, background work, subagents, scheduled wakeups, queued restart). `midna explain <id>` says why it has its status."),
+        m::<IdParams, Session>("session.get").d("Get one terminal by id: kind, agent, cwd, command, title, status {state, reason, since, exit_code}, git info and, for agents, agent_info (conversation id, running version, update available, background work, subagents, scheduled wakeups, queued restart, and Claude's plan usage `rate_limits` {five_hour, seven_day: {used_percentage, resets_at}, observed_at}). `midna explain <id>` says why it has its status."),
         m::<SessionOpenParams, Session>("session.open").mutating().d(
             "Open a new terminal. kind=shell runs the login shell (or `command`), kind=monitor runs `command` for the human to watch, \
              kind=agent launches Claude or Codex (agent=claude|codex) with midna's hooks and an optional initial `prompt`. \
@@ -410,6 +410,15 @@ fn build() -> Vec<MethodSpec> {
              (oldest first, empty ones included), the groups largest first with labels, the total and the previous period's total."),
         m::<InsightsActivityParams, Vec<Event>>("insights.activity").d(
             "Recent meaningful activity (status changes, turns, approvals, rules, needs-you), newest first. Use events.list for the raw log."),
+        // usage
+        m::<NoParams, UsageGetResult>("usage.get").d(
+            "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \
+             the latest any Claude terminal's status line reported, with when (`observed_at`) and which terminal. \
+             `limited` = a window is at 100% and has not reset (new turns fail until `limited_until`); a window whose \
+             resets_at has passed is marked `expired` (its percentage is out of date). A usage.limit_reached event fires \
+             once when a window hits 100%. Each terminal's own last report is in session.get agent_info.rate_limits. \
+             Empty until a Claude terminal has drawn its status line (setting agents.claude.statusline; API-key accounts \
+             never report limits)."),
         // window
         m::<NoParams, WindowList>("window.list").d("Whether the midna GUI is connected (window commands only reach a running GUI) and which terminals are kept on top."),
         m::<WindowCommandParams, WindowCommandResult>("window.command").mutating().d(

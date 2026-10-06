@@ -32,6 +32,7 @@ pub mod stream;
 pub mod subagent_log;
 pub mod term;
 pub mod upgrade;
+pub mod usage;
 pub mod webhooks;
 
 pub use daemon::Config;

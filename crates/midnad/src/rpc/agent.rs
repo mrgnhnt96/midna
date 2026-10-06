@@ -25,6 +25,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     match ev {
         "statusline" => {
             record_cost(d, &sid, &project, &actor, payload);
+            if p.agent == AgentKind::Claude {
+                crate::usage::observe(d, &sid, &project, payload);
+            }
             return ok(AgentHookResult { ok: true, status: Some(cur) });
         }
         "UserPromptSubmit" => {

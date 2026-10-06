@@ -1778,3 +1778,33 @@ pub struct TerminalColors {
 pub struct ThemesReportParams {
     pub colors: TerminalColors,
 }
+
+// ------------------------------------------------------------------ usage
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct UsageGetResult {
+    /// Claude's plan usage limits, the latest any Claude terminal's status line reported (they
+    /// are account-wide). Absent until one has: API-key accounts never report them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<AgentUsage>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AgentUsage {
+    /// The rolling 5-hour window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<RateLimitWindow>,
+    /// The weekly window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<RateLimitWindow>,
+    /// When a status line last reported them.
+    pub observed_at: Timestamp,
+    /// The terminal whose status line reported them (it may be closed since).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Id>,
+    /// A window is at 100% and has not reset yet: new turns will be refused until `limited_until`.
+    pub limited: bool,
+    /// When the last limiting window resets (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited_until: Option<Timestamp>,
+}

@@ -144,7 +144,7 @@ fn extra_tools() -> Vec<Value> {
             "description": "Explain one thing in plain words: a terminal id (why it has its status, recent status events, what \
                 it waits on), a rule r_… (what it matches, who added it, when it fired, how to get it removed), a trigger t_… \
                 (what it does, what it waits for), a needs-you item n_…, a project p_…, a delivery d_…, a method or tool name, a \
-                setting key, or a topic (status, rules, approvals, triggers, needs-you, settings, scripts, themes, windows, human-only, mcp). \
+                setting key, or a topic (status, rules, approvals, triggers, needs-you, settings, scripts, themes, usage, windows, human-only, mcp). \
                 With `value` set, `target` is an action kind (command|tool|path|cli|window) and it explains which rule decides \
                 that action.",
             "inputSchema": {

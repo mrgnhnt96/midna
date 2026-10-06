@@ -387,6 +387,56 @@ pub struct AgentInfo {
     /// A restart waiting for the agent to be idle with nothing in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<QueuedRestart>,
+    /// Claude's plan usage limits as its status line last reported them (subscription plans
+    /// only; absent for API keys and Codex). Account-wide: `usage.get` has the latest of any terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<RateLimits>,
+}
+
+/// One of Claude's plan usage windows (status line `rate_limits.five_hour` / `seven_day`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RateLimitWindow {
+    /// Share of the window's limit used, 0–100. At 100 the agent is limited until `resets_at`.
+    pub used_percentage: f64,
+    /// When the window starts over (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<Timestamp>,
+    /// `resets_at` has passed since it was observed: the window started over and
+    /// `used_percentage` is out of date (set by `usage.get` only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expired: bool,
+}
+
+impl RateLimitWindow {
+    /// At its limit and not reset yet (`now` = unix seconds).
+    pub fn limited(&self, now: i64) -> bool {
+        self.used_percentage >= 100.0 && self.resets_at.as_deref().and_then(crate::time::parse_rfc3339).is_none_or(|r| r > now)
+    }
+}
+
+/// Claude's plan usage limits, account-wide, as one terminal's status line reported them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RateLimits {
+    /// The rolling 5-hour window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<RateLimitWindow>,
+    /// The weekly window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seven_day: Option<RateLimitWindow>,
+    /// When the status line reported them.
+    pub observed_at: Timestamp,
+}
+
+impl RateLimits {
+    /// (name, window) for each window present.
+    pub fn windows(&self) -> impl Iterator<Item = (&'static str, &RateLimitWindow)> {
+        [("five_hour", self.five_hour.as_ref()), ("seven_day", self.seven_day.as_ref())].into_iter().filter_map(|(n, w)| Some((n, w?)))
+    }
+
+    /// The same numbers (ignoring when they were observed).
+    pub fn same_as(&self, o: &RateLimits) -> bool {
+        self.five_hour == o.five_hour && self.seven_day == o.seven_day
+    }
 }
 
 impl AgentInfo {
@@ -1117,6 +1167,9 @@ pub mod kinds {
     pub const DAEMON_RESET: &str = "daemon.reset";
     /// A terminal's session links changed (`{count, added, pinned}`); read them with `links.list`.
     pub const LINKS_CHANGED: &str = "links.changed";
+    /// A Claude plan usage window reached 100% (`{agent, window: five_hour|seven_day,
+    /// used_percentage, resets_at}`), once per window and reset time; see `usage.get`.
+    pub const USAGE_LIMIT_REACHED: &str = "usage.limit_reached";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.
     pub const NOTIFY_POSTED: &str = "notify.posted";
     /// `notify.play`: play a sound now (data: `notify::Played`); the app plays it.
