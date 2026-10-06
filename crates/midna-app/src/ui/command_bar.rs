@@ -426,7 +426,11 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             if m.selected.as_deref() != Some(session.as_str()) && m.sessions.iter().any(|s| s.id == session) {
                 m.select(session.clone(), window, cx);
             }
-            m.rpc("session.jump_prompt", json!({ "id": session, "n": n, "wait": false }), cx, |_, _, _, _| {});
+            let params = match n {
+                Some(n) => json!({ "id": session, "n": n, "wait": false }),
+                None => json!({ "id": session, "to": "live", "wait": false }),
+            };
+            m.rpc("session.jump_prompt", params, cx, |_, _, _, _| {});
         }
     }
 }

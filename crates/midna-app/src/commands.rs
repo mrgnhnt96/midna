@@ -45,8 +45,9 @@ pub enum Run {
         #[serde(default)]
         path: Option<String>,
     },
-    /// Scroll an agent terminal to one of the human's prompts (`session.jump_prompt`).
-    JumpPrompt { session: String, n: u32 },
+    /// Scroll an agent terminal to one of the human's prompts (`session.jump_prompt`), or to
+    /// the live end (None) to write a new one.
+    JumpPrompt { session: String, n: Option<u32> },
     /// Open a terminal's queued messages (the pill's panel).
     Queue { session: String },
     /// Open a folder in an installed IDE (`ide.rs`), remembered for its project.
@@ -1047,11 +1048,19 @@ pub fn prompt_rows(session: &str, agent: Option<AgentKind>, v: &Value) -> Vec<Co
     let icon = if agent == Some(AgentKind::Codex) { CmdIcon::Codex } else { CmdIcon::Claude };
     let here = v.get("here").and_then(Value::as_u64);
     let list = v.get("prompts").and_then(Value::as_array).cloned().unwrap_or_default();
-    list.iter()
-        .rev()
-        .filter_map(|p| {
+    let live = (!list.is_empty()).then(|| Command {
+        id: "prompt:live".into(),
+        icon,
+        title: "End of the conversation".into(),
+        sub: if scrolled { "↓ live · write a new prompt".into() } else { "↓ live · you're here".into() },
+        run: Some(Run::JumpPrompt { session: session.into(), n: None }),
+        ..Default::default()
+    });
+    live.into_iter()
+        .chain(list.iter().rev().filter_map(|p| {
             let n = p.get("n")?.as_u64()? as u32;
             let text = p.get("text").and_then(Value::as_str).unwrap_or("");
+    let scrolled = v.get("scrolled").and_then(Value::as_bool).unwrap_or(false);
             let on_screen = p.get("on_screen").and_then(Value::as_bool).unwrap_or(true);
             let at = p.get("at").and_then(Value::as_str).unwrap_or("");
             let mut sub = format!("#{n} · {}", crate::ui::screen_kit::clock_or_day(at));
@@ -1063,10 +1072,10 @@ pub fn prompt_rows(session: &str, agent: Option<AgentKind>, v: &Value) -> Vec<Co
             }
             let mut c = Command { id: format!("prompt:{n}"), icon, title: midna_proto::prompts::key(text), sub, ..Default::default() };
             if on_screen {
-                c.run = Some(Run::JumpPrompt { session: session.into(), n });
+                c.run = Some(Run::JumpPrompt { session: session.into(), n: Some(n) });
             }
             Some(c)
-        })
+        }))
         .collect()
 }
 
