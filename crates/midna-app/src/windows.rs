@@ -5,7 +5,7 @@
 //! notifications and takes `window.command`s and update commands, so a second window
 //! doesn't double them. Sidebar rows dragged onto another window move there; dropped
 //! outside every window they get a new one.
-use crate::app::{MainWindow, Screen};
+use crate::app::{MainWindow, Overlay, Screen};
 use crate::backend::Backend;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -205,6 +205,12 @@ pub fn name_note(m: &MainWindow, s: &crate::model::Session) -> Option<&'static s
 
 /// Bring `session` forward wherever it lives: its pop-out, or its main window (selected there).
 pub fn reveal(session: String, cx: &mut App) {
+    reveal_need(session, None, cx)
+}
+
+/// `reveal`, for a clicked notification: about a needs-you item (`need`), open the stack on
+/// that card, or its terminal when the card can't show the whole question (`needs_you::too_long`).
+pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {
     if crate::ui::popout::activate(&session, cx) {
         return;
     }
@@ -224,6 +230,12 @@ pub fn reveal(session: String, cx: &mut App) {
                 m.set_screen(Screen::Terminal, window, cx);
             }
             m.select(session, window, cx);
+            match need.and_then(|id| m.needs.iter().find(|n| n.id == id).cloned()) {
+                Some(n) if !crate::ui::needs_you::too_long(&n) => crate::ui::needs_you::show(m, n.id, window, cx),
+                // A stack left open would hide the terminal you asked for.
+                _ if m.overlay == Overlay::NeedsYou => m.set_overlay(Overlay::None, window, cx),
+                _ => {}
+            }
         });
     });
 }

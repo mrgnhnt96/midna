@@ -104,7 +104,7 @@ fn main() {
             while let Ok(c) = nrx.recv().await {
                 cx.update(|cx| {
                     cx.activate(true);
-                    windows::reveal(c.session, cx);
+                    windows::reveal_need(c.session, c.needs_you, cx);
                 });
             }
         })

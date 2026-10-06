@@ -11,7 +11,7 @@ actions!(
         ToggleCommandBar,
         /// Jump to the next needs-you item.
         NextNeedsYou,
-        /// Open the needs-you card stack (NeedsYou-C). Placeholder overlay for now.
+        /// Open the needs-you inbox (`ui/needs_you.rs`).
         OpenNeedsYou,
         NewTerminal,
         NewAgent,

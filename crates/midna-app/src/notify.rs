@@ -31,9 +31,11 @@ use std::ptr::NonNull;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI8, Ordering};
 
-/// A notification was clicked: select this terminal (empty = none).
+/// A notification was clicked: select this terminal (empty = none), and show this needs-you
+/// item if it was about one.
 pub struct Clicked {
     pub session: String,
+    pub needs_you: Option<String>,
 }
 
 static CLICKS: OnceLock<async_channel::Sender<Clicked>> = OnceLock::new();
@@ -134,6 +136,10 @@ pub fn post(p: &Posted, session: Option<&str>) {
     }
     if let Some(s) = session {
         content.setThreadIdentifier(&NSString::from_str(s));
+    }
+    // The needs-you item it's about, so a click opens that card rather than the oldest one.
+    if let Some(n) = p.needs_you_id.as_deref() {
+        content.setTargetContentIdentifier(Some(&NSString::from_str(n)));
     }
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = format!("{}-{}-{}", session.unwrap_or("midna"), midna_proto::time::now_unix(), N.fetch_add(1, Ordering::Relaxed));
@@ -262,9 +268,11 @@ define_class!(
 
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
         fn did_receive(&self, _center: &UNUserNotificationCenter, response: &UNNotificationResponse, done: &DynBlock<dyn Fn()>) {
-            let session = response.notification().request().content().threadIdentifier().to_string();
+            let content = response.notification().request().content();
+            let session = content.threadIdentifier().to_string();
+            let needs_you = content.targetContentIdentifier().map(|n| n.to_string()).filter(|n| !n.is_empty());
             if let Some(tx) = CLICKS.get() {
-                let _ = tx.try_send(Clicked { session });
+                let _ = tx.try_send(Clicked { session, needs_you });
             }
             done.call(());
         }

@@ -1,5 +1,6 @@
-//! Needs-you card stack (docs/design/NeedsYou-C.dc.html): one item at a time, keyboard
-//! driven. Replaces the terminal pane (the sidebar stays). Data is `MainWindow::needs`
+//! Needs-you inbox: every waiting item in a list (oldest first, filterable by kind), the
+//! selected one in full beside it, keyboard driven. Replaces the terminal pane (the sidebar
+//! stays). Data is `MainWindow::needs`
 //! (`needs_you.list`, refreshed on `needs_you.*` events); every action is `needs_you.resolve`.
 use super::border_w;
 use crate::app::{MainWindow, Overlay, Screen};
@@ -19,14 +20,39 @@ enum Outcome {
     Dismissed,
 }
 
+/// The list's kind chips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Filter {
+    All,
+    Approvals,
+    Blocked,
+    Failed,
+    Other,
+}
+
+const FILTERS: [(Filter, &str); 5] = [(Filter::All, "All"), (Filter::Approvals, "Approvals"), (Filter::Blocked, "Blocked"), (Filter::Failed, "Failed"), (Filter::Other, "Other")];
+
+fn filter_of(n: &NeedsYou) -> Filter {
+    match n.kind {
+        NeedsYouKind::Blocked | NeedsYouKind::SecretNeeded => Filter::Blocked,
+        NeedsYouKind::Failed => Filter::Failed,
+        _ if approves(n) => Filter::Approvals,
+        _ => Filter::Other,
+    }
+}
+
 pub struct Stack {
     pub focus: FocusHandle,
-    /// The card on top. When it disappears (resolved here or elsewhere) the item now at
+    /// The selected item. When it disappears (resolved here or elsewhere) the item now at
     /// `pos` takes its place.
     cur: Option<String>,
     pos: usize,
     pub menu: bool,
-    /// Handled during this pass, for the progress bar and the "All clear" summary.
+    filter: Filter,
+    /// The item a clicked notification opened ("from your notification").
+    clicked: Option<String>,
+    scroll: ScrollHandle,
+    /// Handled during this pass, for the "All clear" summary.
     log: Vec<(String, Outcome)>,
     /// Live screen tails for items without a `screen_excerpt` (None while loading).
     excerpts: HashMap<String, Option<Vec<String>>>,
@@ -37,7 +63,18 @@ pub struct Stack {
 
 impl Stack {
     pub fn new(cx: &mut App) -> Stack {
-        Stack { focus: cx.focus_handle(), cur: None, pos: 0, menu: false, log: vec![], excerpts: HashMap::new(), gone: HashMap::new() }
+        Stack {
+            focus: cx.focus_handle(),
+            cur: None,
+            pos: 0,
+            menu: false,
+            filter: Filter::All,
+            clicked: None,
+            scroll: ScrollHandle::new(),
+            log: vec![],
+            excerpts: HashMap::new(),
+            gone: HashMap::new(),
+        }
     }
 }
 
@@ -47,6 +84,8 @@ pub fn on_open(m: &mut MainWindow) {
     s.cur = None;
     s.pos = 0;
     s.menu = false;
+    s.filter = Filter::All;
+    s.clicked = None;
     s.log.clear();
     s.excerpts.clear();
     s.gone.clear();
@@ -57,10 +96,19 @@ pub fn on_open(m: &mut MainWindow) {
     }
 }
 
-/// Oldest first.
-fn ordered(m: &MainWindow) -> Vec<&NeedsYou> {
+/// Every item still waiting, oldest first.
+fn waiting(m: &MainWindow) -> Vec<&NeedsYou> {
     let mut v: Vec<&NeedsYou> = m.needs.iter().filter(|n| !m.stack.gone.contains_key(&n.id)).collect();
     v.sort_by_key(|n| parse_rfc3339(&n.created_at).unwrap_or(i64::MAX));
+    v
+}
+
+/// The list as shown: `waiting`, through the kind filter.
+fn ordered(m: &MainWindow) -> Vec<&NeedsYou> {
+    let mut v = waiting(m);
+    if m.stack.filter != Filter::All {
+        v.retain(|n| filter_of(n) == m.stack.filter);
+    }
     v
 }
 
@@ -97,9 +145,12 @@ fn meta(t: &Theme, n: &NeedsYou) -> Meta {
         NeedsYouKind::SecretNeeded => ("Secret needed", t.accent),
         NeedsYouKind::Other => ("Needs you", t.need),
     };
-    let approve =
-        matches!(n.kind, NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt | NeedsYouKind::TriggerWaiting) || (n.approval.is_some() && n.kind == NeedsYouKind::Other);
-    Meta { label, color, approve }
+    Meta { label, color, approve: approves(n) }
+}
+
+/// Answered with approve / deny.
+fn approves(n: &NeedsYou) -> bool {
+    matches!(n.kind, NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt | NeedsYouKind::TriggerWaiting) || (n.approval.is_some() && n.kind == NeedsYouKind::Other)
 }
 
 /// The two buttons a non-approval card offers: (primary label, resolution or None for
@@ -121,6 +172,17 @@ fn session_of<'a>(m: &'a MainWindow, n: &NeedsYou) -> Option<&'a Session> {
 
 fn project_name(m: &MainWindow, pid: Option<&str>) -> String {
     pid.and_then(|p| m.projects.iter().find(|x| x.id == p)).map(|p| p.name.clone()).unwrap_or_else(|| "root".into())
+}
+
+/// Its terminal's name (the project is in the list row), else its project.
+fn terminal_of(m: &MainWindow, n: &NeedsYou) -> String {
+    match session_of(m, n) {
+        Some(s) => match crate::windows::name_note(m, s) {
+            Some(w) => format!("{} ({w})", s.name),
+            None => s.name.clone(),
+        },
+        None => project_name(m, n.project_id.as_deref()),
+    }
 }
 
 fn where_of(m: &MainWindow, n: &NeedsYou) -> String {
@@ -211,16 +273,51 @@ fn approve_all(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
-/// ⌘J inside the stack: next card (wraps).
+/// ⌘J inside the list: next item (wraps).
 pub fn skip(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let order = ordered(m);
-    if let Some(i) = current_index(m, &order) {
-        let next = (i + 1) % order.len();
-        m.stack.cur = Some(order[next].id.clone());
-        m.stack.pos = next;
-        m.stack.menu = false;
+    let len = ordered(m).len();
+    if let Some(i) = current_index(m, &ordered(m)) {
+        select_at(m, (i + 1) % len, cx);
     }
+}
+
+/// ↑ / ↓: the item above or below (stops at the ends).
+fn step(m: &mut MainWindow, down: bool, cx: &mut Context<MainWindow>) {
+    let len = ordered(m).len();
+    if let Some(i) = current_index(m, &ordered(m)) {
+        select_at(m, if down { (i + 1).min(len - 1) } else { i.saturating_sub(1) }, cx);
+    }
+}
+
+fn select_at(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
+    let Some(id) = ordered(m).get(i).map(|n| n.id.clone()) else { return };
+    m.stack.cur = Some(id);
+    m.stack.pos = i;
+    m.stack.menu = false;
+    m.stack.scroll.scroll_to_item(i);
     cx.notify();
+}
+
+/// Open the list on item `id` (a clicked notification), keeping it open if it already is.
+pub fn show(m: &mut MainWindow, id: String, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if m.overlay != Overlay::NeedsYou {
+        m.set_overlay(Overlay::NeedsYou, window, cx);
+    }
+    m.stack.filter = Filter::All;
+    m.stack.clicked = Some(id.clone());
+    let i = ordered(m).iter().position(|n| n.id == id);
+    match i {
+        Some(i) => select_at(m, i, cx),
+        None => go_to(m, id, cx),
+    }
+}
+
+/// More than a card shows: its request is longer than one line, or its question takes more
+/// screen than the card's last `TAIL` lines. A notification click opens the terminal instead.
+pub fn too_long(n: &NeedsYou) -> bool {
+    let request = n.approval.as_ref().map(|a| a.action.value.as_str()).unwrap_or("");
+    let excerpt = n.screen_excerpt.as_ref().map(|e| e.iter().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    request.contains('\n') || request.chars().count() > 160 || n.detail.chars().count() > 280 || n.detail.lines().count() > 4 || excerpt > TAIL
 }
 
 fn go_to(m: &mut MainWindow, id: String, cx: &mut Context<MainWindow>) {
@@ -229,7 +326,7 @@ fn go_to(m: &mut MainWindow, id: String, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
-/// ⌘O: leave the stack and open the card's terminal.
+/// ⌘O: leave the list and open the item's terminal.
 fn open_terminal(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(sid) = current(m).and_then(|n| n.session_id) else {
         return;
@@ -249,7 +346,15 @@ fn back(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
 
 fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
     let ks = &ev.keystroke;
-    if !ks.modifiers.platform {
+    let md = &ks.modifiers;
+    if !md.platform && !md.shift && !md.alt && !md.control && matches!(ks.key.as_str(), "up" | "down") {
+        if !m.stack.menu {
+            step(m, ks.key == "down", cx);
+        }
+        cx.stop_propagation();
+        return;
+    }
+    if !md.platform {
         return;
     }
     match ks.key.as_str() {
@@ -260,7 +365,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
     cx.stop_propagation();
 }
 
-/// Fetch the live screen tail for the current card when the item carries no excerpt.
+/// Fetch the live screen tail for the selected item when the item carries no excerpt.
 fn ensure_excerpt(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     let Some(n) = current(m) else { return };
     if n.screen_excerpt.as_ref().is_some_and(|e| !e.is_empty()) || m.stack.excerpts.contains_key(&n.id) {
@@ -283,13 +388,16 @@ fn ensure_excerpt(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
-/// The last 8 lines, without trailing blanks.
+/// How many lines of screen a card shows.
+const TAIL: usize = 8;
+
+/// The last `TAIL` lines, without trailing blanks.
 fn tail(text: &str) -> Vec<String> {
     let mut lines: Vec<String> = text.lines().map(|l| l.trim_end().to_string()).collect();
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    let skip = lines.len().saturating_sub(8);
+    let skip = lines.len().saturating_sub(TAIL);
     lines.split_off(skip)
 }
 
@@ -299,24 +407,12 @@ fn kbd(t: &Theme, s: impl Into<SharedString>) -> Div {
     div().font_family(t.mono_font.clone()).text_size(px(11.)).child(s.into())
 }
 
-fn ghost_button(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, key: String) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(8.))
-        .h(px(38.))
-        .px(px(12.))
-        .rounded(px(7.))
-        .cursor_pointer()
-        .hover(|s| s.bg(t.raised))
-        .child(label.into())
-        .when(!key.is_empty(), |d| d.child(kbd(t, key)))
-}
-
 pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     m.stack.gone.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(5));
+    // The last item of a kind went: back to all of them.
+    if m.stack.filter != Filter::All && ordered(m).is_empty() {
+        m.stack.filter = Filter::All;
+    }
     ensure_excerpt(m, cx);
     let m = &*m;
     let order = ordered(m);
@@ -324,97 +420,25 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
     let back_name = m.selected_session().map(|s| s.name.clone()).unwrap_or_else(|| "terminal".into());
     let approve_key = m.key_label("keys.approve");
     let deny_key = m.key_label("keys.deny");
-    let next_key = m.key_label("keys.next_needs_you");
-
-    // ---- header: title, N left, progress
-    let mut progress = div().flex().gap(px(3.)).w(px(280.));
-    for (_, o) in &m.stack.log {
-        progress = progress.child(div().flex_1().h(px(5.)).rounded(px(3.)).bg(if *o == Outcome::Denied { t.err } else { t.ok }));
-    }
-    for (i, _) in order.iter().enumerate() {
-        progress = progress.child(div().flex_1().h(px(5.)).rounded(px(3.)).bg(if Some(i) == cur_i { t.accent } else { t.line }));
-    }
-    let header = div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(14.))
-        .min_h(px(44.))
-        .pl(px(18.))
-        .pr(px(12.))
-        .border_b_1()
-        .border_color(t.line)
-        .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Needs you"))
-        .when(!order.is_empty(), |d| d.child(div().text_color(t.dim).child(format!("{} left", order.len()))).child(progress))
-        .child(div().flex_1())
-        .child(
-            div()
-                .id("ny-back")
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .h(px(30.))
-                .px(px(10.))
-                .rounded(px(7.))
-                .text_color(t.dim)
-                .cursor_pointer()
-                .hover(|s| s.bg(t.raised))
-                .on_click(cx.listener(|m, _, w, cx| back(m, w, cx)))
-                .child(format!("Back to {back_name}"))
-                .child(kbd(t, "esc")),
-        );
 
     let body: AnyElement = match cur_i {
         None => empty_state(m, t, &back_name, cx).into_any_element(),
         Some(i) => {
             let n = order[i].clone();
-            let after: Vec<NeedsYou> = (1..order.len()).map(|k| order[(i + k) % order.len()].clone()).collect();
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
-                .flex_col()
+                .child(list(m, t, &order, i, &approve_key, &deny_key, cx))
                 .child(
                     div()
-                        .id("ny-scroll")
                         .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
+                        .min_w_0()
+                        .h_full()
                         .flex()
                         .flex_col()
-                        .items_center()
-                        .px(px(24.))
-                        .pt(px(34.))
-                        .pb(px(16.))
-                        .child(
-                            div()
-                                .relative()
-                                .w_full()
-                                .max_w(px(760.))
-                                .mt(px(14.))
-                                .when(after.len() > 1, |d| d.child(behind(t, 36., -20., 0.45)))
-                                .when(!after.is_empty(), |d| d.child(behind(t, 18., -10., 0.75)))
-                                .child(card(m, t, &n, &approve_key, &deny_key, &next_key, cx)),
-                        )
-                        .when(!after.is_empty(), |d| d.child(up_next(m, t, &after, cx))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .flex_wrap()
-                        .justify_center()
-                        .gap(px(18.))
-                        .px(px(16.))
-                        .py(px(10.))
-                        .border_t_1()
-                        .border_color(t.line)
-                        .text_size(px(12.))
-                        .text_color(t.dim)
-                        .children(key_hints(t, &n, &approve_key, &deny_key))
-                        .child(hint(t, &next_key, "skip"))
-                        .child(hint(t, "⌘O", "open terminal"))
-                        .child(hint(t, "esc", "back")),
+                        .child(div().id("ny-detail").flex_1().min_h_0().overflow_y_scroll().px(px(32.)).pt(px(26.)).pb(px(16.)).child(card(m, t, &n, cx)))
+                        .child(div().flex_none().px(px(32.)).pt(px(12.)).pb(px(24.)).child(actions(m, t, &n, &approve_key, &deny_key, cx))),
                 )
                 .into_any_element()
         }
@@ -442,48 +466,172 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
         .flex()
         .flex_col()
         .bg(t.bg)
-        .child(
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .bg(linear_gradient(180., linear_color_stop(t.accent_soft, 0.), linear_color_stop(t.accent_soft.opacity(0.), 0.55)))
-                .child(header)
-                .child(body),
-        )
+        .child(body)
 }
 
-/// Footer hints for the card's own actions ("⌘↩ approve once", "⌘↩ got it", ...).
-fn key_hints(t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &str) -> Vec<Div> {
-    if meta(t, n).approve {
-        return vec![hint(t, approve_key, "approve once"), hint(t, deny_key, "deny")];
+/// The left column: title and count, kind chips, one row per item, key hints.
+fn list(m: &MainWindow, t: &Theme, order: &[&NeedsYou], cur: usize, approve_key: &str, deny_key: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let all = waiting(m);
+    let mut chips = div().flex().flex_none().flex_wrap().gap(px(6.)).px(px(18.)).pb(px(12.));
+    for (f, label) in FILTERS {
+        let count = if f == Filter::All { all.len() } else { all.iter().filter(|n| filter_of(n) == f).count() };
+        if f != Filter::All && count == 0 {
+            continue;
+        }
+        let on = m.stack.filter == f;
+        chips = chips.child(
+            div()
+                .id(SharedString::from(format!("ny-filter-{label}")))
+                .flex()
+                .items_center()
+                .h(px(26.))
+                .px(px(10.))
+                .rounded(px(13.))
+                .border_1()
+                .border_color(if on { t.accent } else { t.line })
+                .when(on, |d| d.bg(t.accent_soft))
+                .text_color(if on { t.fg } else { t.dim })
+                .cursor_pointer()
+                .hover(|s| s.bg(t.raised))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    m.stack.filter = f;
+                    m.stack.cur = None;
+                    m.stack.pos = 0;
+                    m.stack.menu = false;
+                    cx.notify();
+                }))
+                .child(if f == Filter::All { label.to_string() } else { format!("{label} {count}") }),
+        );
     }
-    let (p, s) = other_actions(n);
-    let mut out = vec![];
-    if let Some((label, _)) = p {
-        out.push(hint(t, approve_key, &label.to_lowercase()));
+
+    let mut rows = div().id("ny-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&m.stack.scroll).flex().flex_col();
+    for (i, n) in order.iter().enumerate() {
+        let mt = meta(t, n);
+        let on = i == cur;
+        let id = n.id.clone();
+        rows = rows.child(
+            div()
+                .id(("ny-row", i))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(12.))
+                .px(px(16.))
+                .py(px(9.))
+                .border_l_2()
+                .border_color(if on { t.accent } else { transparent_black() })
+                .when(on, |d| d.bg(t.raised))
+                .cursor_pointer()
+                .hover(|s| s.bg(t.raised))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    let i = ordered(m).iter().position(|n| n.id == id).unwrap_or(0);
+                    select_at(m, i, cx);
+                }))
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(mt.color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(n.title.clone()))
+                                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.dim).child(since_short(&n.created_at))),
+                        )
+                        .child(div().truncate().text_size(px(12.)).text_color(t.dim).child(format!("{} · {}", mt.label, where_of(m, n)))),
+                ),
+        );
     }
-    if let Some((label, _)) = s {
-        out.push(hint(t, deny_key, &label.to_lowercase()));
-    }
-    out
+
+    div()
+        .w(px(360.))
+        .flex_none()
+        .h_full()
+        .flex()
+        .flex_col()
+        .border_r_1()
+        .border_color(t.line)
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(10.))
+                .pl(px(18.))
+                .pr(px(10.))
+                .pt(px(14.))
+                .pb(px(12.))
+                .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).child("Needs you"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(20.))
+                        .min_w(px(20.))
+                        .px(px(6.))
+                        .rounded(px(10.))
+                        .bg(t.need.opacity(0.16))
+                        .text_color(t.need)
+                        .font_family(t.mono_font.clone())
+                        .text_size(px(11.))
+                        .child(all.len().to_string()),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("ny-back")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .h(px(28.))
+                        .px(px(8.))
+                        .rounded(px(7.))
+                        .text_color(t.dim)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.raised))
+                        .on_click(cx.listener(|m, _, w, cx| back(m, w, cx)))
+                        .child("Back")
+                        .child(kbd(t, "esc")),
+                ),
+        )
+        .child(chips)
+        .child(rows)
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .flex_wrap()
+                .gap_x(px(14.))
+                .gap_y(px(4.))
+                .px(px(18.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(t.line)
+                .text_size(px(11.5))
+                .text_color(t.dim)
+                .child(hint(t, "↑↓", "move"))
+                .child(hint(t, approve_key, "approve"))
+                .child(hint(t, deny_key, "deny"))
+                .child(hint(t, "⌘O", "terminal")),
+        )
 }
 
 fn hint(t: &Theme, key: &str, label: &str) -> Div {
     div().flex().gap(px(5.)).child(kbd(t, key.to_string()).text_color(t.fg)).child(label.to_string())
 }
 
-fn behind(t: &Theme, inset: f32, top: f32, opacity: f32) -> Div {
-    div().absolute().left(px(inset)).right(px(inset)).top(px(top)).h(px(60.)).rounded(px(14.)).border_1().border_color(t.line).bg(t.panel).opacity(opacity)
-}
-
-fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &str, next_key: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// The selected item in full: kind, terminal, title, why, the request, its screen.
+fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let mt = meta(t, n);
     let sess = session_of(m, n);
     let who = commands::who(n, sess);
-    let where_ = where_of(m, n);
-    let icon =
-        if n.asked_by.kind == "trigger" || n.kind == NeedsYouKind::TriggerWaiting { Icon::Triggers } else { sess.map(|s| Icon::from_glyph(s.glyph())).unwrap_or(Icon::Shell) };
+    let where_ = terminal_of(m, n);
     let request = n
         .approval
         .as_ref()
@@ -556,24 +704,6 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
                     .text_size(px(11.5))
                     .text_color(t.dim)
                     .child(div().flex_1().truncate().child(if lines.len() == 1 { format!("{where_} · last line") } else { format!("{where_} · last {} lines", lines.len()) }))
-                    .when(sess.is_some(), |d| {
-                        d.child(
-                            div()
-                                .id("peek-open")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .h(px(24.))
-                                .px(px(8.))
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(t.raised))
-                                .on_click(cx.listener(|m, _, w, cx| open_terminal(m, w, cx)))
-                                .child(Icon::PopOut.el(12., t.dim))
-                                .child("Open terminal")
-                                .child(kbd(t, "⌘O")),
-                        )
-                    }),
             )
             .child(body)
     });
@@ -614,7 +744,83 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
             )
     });
 
-    // actions
+    let long = too_long(n).then(|| {
+        div().flex().items_center().gap(px(8.)).text_size(px(12.)).text_color(t.dim).child(Icon::PopOut.el(12., t.dim)).child("This one's longer than fits here: answer it in its terminal (⌘O).")
+    });
+
+    let open = sess.is_some().then(|| {
+        div()
+            .id("ny-open")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.))
+            .h(px(32.))
+            .px(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.line)
+            .bg(t.raised)
+            .cursor_pointer()
+            .hover(|s| s.bg(t.line))
+            .on_click(cx.listener(|m, _, w, cx| open_terminal(m, w, cx)))
+            .child(Icon::PopOut.el(13., t.fg))
+            .child("Open terminal")
+            .child(kbd(t, "⌘O").text_color(t.dim))
+    });
+    let clicked = m.stack.clicked.as_deref() == Some(n.id.as_str());
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .h(px(22.))
+                                        .px(px(9.))
+                                        .rounded(px(11.))
+                                        .bg(mt.color.opacity(0.14))
+                                        .text_color(mt.color)
+                                        .text_size(px(11.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(mt.label),
+                                )
+                                .child(div().text_color(t.dim).child(where_.clone())),
+                        )
+                        .when(clicked, |d| d.child(div().text_size(px(11.)).text_color(t.dim.opacity(0.7)).child("from your notification"))),
+                )
+                .child(div().flex_1())
+                .children(open),
+        )
+        .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
+        .child(grid)
+        .children(long)
+        .children(peek)
+        .children(bulk)
+}
+
+/// The selected item's buttons, along the bottom of the detail column.
+fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let mt = meta(t, n);
+    let sess = session_of(m, n);
     let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
     if mt.approve {
         let start = n.kind == NeedsYouKind::TriggerWaiting;
@@ -751,81 +957,7 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key: &s
             );
         }
     }
-    actions = actions
-        .child(div().flex_1())
-        .when(sess.is_some(), |d| d.child(ghost_button(t, "ny-open", "Open terminal", "⌘O".into()).text_color(t.dim).on_click(cx.listener(|m, _, w, cx| open_terminal(m, w, cx)))))
-        .child(ghost_button(t, "ny-skip", "Skip", next_key.to_string()).border_1().border_color(t.line).on_click(cx.listener(|m, _, _, cx| skip(m, cx))));
-
-    let since = since_short(&n.created_at);
-    div()
-        .relative()
-        .flex()
-        .flex_col()
-        .gap(px(14.))
-        .px(px(22.))
-        .py(px(20.))
-        .rounded(px(14.))
-        .overflow_hidden()
-        .border_1()
-        .border_color(t.line)
-        .bg(t.panel)
-        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.3), offset: point(px(0.), px(18.)), blur_radius: px(50.), spread_radius: px(0.), inset: false }])
-        .child(div().absolute().top_0().left_0().right_0().h(px(3.)).bg(mt.color))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .h(px(22.))
-                        .px(px(8.))
-                        .rounded(px(6.))
-                        .bg(mt.color.opacity(0.14))
-                        .text_color(mt.color)
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::BOLD)
-                        .child(mt.label.to_uppercase()),
-                )
-                .when(!since.is_empty(), |d| d.child(div().text_color(t.dim).child(if since == "now" { "just now".to_string() } else { format!("{since} ago") })))
-                .child(div().flex_1())
-                .child(div().flex().items_center().gap(px(7.)).text_color(t.dim).child(icon.el(14., t.dim)).child(format!("{who} · {where_}"))),
-        )
-        .child(div().text_size(px(24.)).line_height(px(29.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
-        .child(grid)
-        .children(peek)
-        .children(bulk)
-        .child(actions)
-}
-
-fn up_next(m: &MainWindow, t: &Theme, after: &[NeedsYou], cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
-    let mut d = div().w_full().max_w(px(760.)).mt(px(22.)).child(div().px(px(4.)).pb(px(6.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim).child("UP NEXT"));
-    for (i, n) in after.iter().take(3).enumerate() {
-        let mt = meta(t, n);
-        let id = n.id.clone();
-        d = d.child(
-            div()
-                .id(("ny-next", i))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .w_full()
-                .px(px(10.))
-                .py(px(7.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .hover(|s| s.bg(t.raised))
-                .on_click(cx.listener(move |m, _, _, cx| go_to(m, id.clone(), cx)))
-                .child(div().size(px(7.)).flex_none().rounded_full().bg(mt.color))
-                .child(div().w(px(130.)).flex_none().text_size(px(12.)).text_color(t.dim).child(mt.label))
-                .child(div().flex_1().min_w_0().truncate().child(n.title.clone()))
-                .child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(where_of(m, n))),
-        );
-    }
-    d
+    actions
 }
 
 fn empty_state(m: &MainWindow, t: &Theme, back_name: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
@@ -840,7 +972,7 @@ fn empty_state(m: &MainWindow, t: &Theme, back_name: &str, cx: &mut Context<Main
     let (title, sub) = if log.is_empty() {
         (
             "Nothing needs you",
-            "When a rule asks, an agent hits a permission prompt or raises a flag, a terminal exits non-zero, or a webhook waits on your gate, it shows up here one card at a time.".to_string(),
+            "When a rule asks, an agent hits a permission prompt or raises a flag, a terminal exits non-zero, or a webhook waits on your gate, it shows up here.".to_string(),
         )
     } else {
         ("All clear", format!("This pass: {}. Nothing else needs you right now.", parts.join(" · ")))
@@ -883,5 +1015,14 @@ mod tests {
         assert_eq!(t.len(), 8);
         assert_eq!(t.first().unwrap(), "l5");
         assert_eq!(t.last().unwrap(), "l12");
+    }
+
+    #[test]
+    fn too_long_when_the_card_cant_show_the_question() {
+        use crate::model::NeedsYou;
+        assert!(!super::too_long(&NeedsYou { detail: "Run the migration?".into(), screen_excerpt: Some(vec!["a".into(); 8]), ..Default::default() }));
+        assert!(super::too_long(&NeedsYou { screen_excerpt: Some(vec!["a".into(); 9]), ..Default::default() }));
+        assert!(super::too_long(&NeedsYou { detail: "x".repeat(281), ..Default::default() }));
+        assert!(super::too_long(&NeedsYou { detail: "1\n2\n3\n4\n5".into(), ..Default::default() }));
     }
 }
