@@ -123,6 +123,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.composer", crate::composer::OpenComposer, MAIN),
     shortcut!("keys.add_image", crate::annotate::AddImage, MAIN),
     shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, MAIN),
+    shortcut!("keys.note_newline", crate::ui::text_input::Newline, Some(crate::ui::text_input::CTX_WRAP)),
     shortcut!("keys.links", crate::ui::links::ToggleLinks, MAIN),
     shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, MAIN),
     shortcut!("keys.queue", crate::ui::queue::ToggleQueue, MAIN),

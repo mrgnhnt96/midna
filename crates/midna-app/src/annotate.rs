@@ -253,7 +253,11 @@ impl EventEmitter<AnnotateEvent> for AnnotateView {}
 
 impl AnnotateView {
     pub fn new(cx: &mut Context<Self>) -> AnnotateView {
-        let field = cx.new(|cx| TextField::new(cx, false, "Add a note…"));
+        let field = cx.new(|cx| {
+            let mut f = TextField::new(cx, false, "Add a note…");
+            f.wrap = true;
+            f
+        });
         cx.subscribe(&field, |v, _, _: &FieldChanged, cx| v.field_changed(cx)).detach();
         // Another window's sheet, or a terminal sending the attachment, changed a draft.
         cx.observe_global::<Drafts>(|_, cx| cx.notify()).detach();

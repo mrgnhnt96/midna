@@ -511,6 +511,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.pop_out", KB, S("cmd-shift-o"), "keys", false, "Pop the selected terminal out into its own window (in a pop-out: back to the main window)."),
     s!("keys.keep_on_top", KB, S("cmd-alt-o"), "keys", false, "In a pop-out window, keep it on top of other windows (or stop)."),
     s!("keys.edit_attachment", KB, S("cmd-e"), "keys", false, "Edit the images added to the selected terminal but not sent yet."),
+    s!("keys.note_newline", KB, S("shift-enter"), "keys", false, "In the image sheet, start a new line in the note you're editing (enter saves the note)."),
     s!("keys.close", KB, S("cmd-w"), "keys", false, "Close the selected terminal (in Settings or a pop-out: that window)."),
     s!("keys.quit", KB, S("cmd-q"), "keys", false, "Quit midna (hold it in the main window). Terminals keep running in midnad."),
     s!("kass.auto_send", SettingKind::Bool, B(false), "kass", false,

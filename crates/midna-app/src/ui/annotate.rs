@@ -502,6 +502,8 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
         let selected = editing || a.sel == Some(i);
         let raised = t.raised;
         let text: AnyElement = if editing {
+            let nl = crate::actions::label(cx, "keys.note_newline");
+            let hint = if nl.is_empty() { "↩ save · esc done".to_string() } else { format!("↩ save · {nl} new line · esc done") };
             div().flex().flex_col().gap(px(6.)).child(div().min_h(px(20.)).child(a.field.clone())).child(
                 div()
                     .flex()
@@ -509,7 +511,7 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                     .gap(px(8.))
                     .text_size(px(11.))
                     .text_color(t.dim)
-                    .child(div().flex_1().child("↩ save · esc done"))
+                    .child(div().flex_1().child(hint))
                     .child(
                         div()
                             .id(("annot-note-remove", i))
