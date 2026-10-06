@@ -18,6 +18,7 @@ mod composer;
 mod dev;
 mod finder;
 mod frame;
+mod haptics;
 mod icons;
 mod ide;
 mod install;
@@ -60,6 +61,8 @@ fn main() {
         bind_keys(cx, |_| None);
         // First-launch install / login item / CLI link / auto-update (dev mode: spawn midnad).
         lifecycle::start(backend.clone(), cx);
+        // A trackpad tap on every click of something clickable (haptics.rs, `ui.haptics`).
+        haptics::start();
         let b = backend.clone();
         cx.on_action(move |_: &Quit, cx| {
             lifecycle::log("quit: Quit action");

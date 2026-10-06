@@ -858,3 +858,9 @@ The user asked for default worktree and branch indicators in the header, sidebar
 - **Header buttons are one ordered list** (the user then said reordering is fine): `ui.header.buttons` holds built-in names and script paths left to right (default: all built-ins). A built-in left out is hidden and moves into More. This replaced the short-lived `ui.header.hidden`.
 - **Status looks** (`ui.status.looks`, a RuleList): restyle a built-in status, one rule per status and only the parts listed (the user: "they don't have to do all of them"). `<status> = <color> icon:<name> label:<text>`; `<agent>.<status>` rules (claude, codex, shell, monitor) override the plain rule field by field (`settings::status_look`). Color = the dot (ringed for needs_you), icon = in place of the agent icon, label = the header chip and the row's second line. A trigger's custom status still wins. Validated on set (unknown status or color is an error).
 - **Not editable yet:** the name, and the rows' attention line when no look/label applies.
+
+## Trackpad haptics on clicks (midna-app `haptics.rs`; setting `ui.haptics`; 2026-10-05)
+
+- **One AppKit local monitor, not a call in each click handler.** There are ~250 `on_click`s, and new ones would have to remember the call. `haptics::start` (at launch) adds an `NSEvent` local monitor for left-mouse-down that covers every window and passes the event through unchanged.
+- **"Clickable" = the pointing-hand cursor.** Every button, row and link sets `cursor_pointer()`, which GPUI hands to `NSCursor`. So the monitor taps (`NSHapticFeedbackManager`, pattern Generic, time Now) only when `NSCursor.currentCursor` is `pointingHandCursor`. Clicks on text, terminals or empty space (I-beam / arrow) stay quiet. A mouse, or a trackpad without Force Touch, ignores the request.
+- **`ui.haptics`** (Bool, default on, appearance). The main window calls `haptics::sync` on every settings change. Missing from an old midnad = on.

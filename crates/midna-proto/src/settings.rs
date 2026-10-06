@@ -312,6 +312,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Script behind the status bar's `script` item, run for the selected terminal: built-in parts joined with + or an executable path (`midna explain scripts`)."),
     s!("ui.status.items", SettingKind::ItemList { options: STATUS_ITEMS, allow_paths: true }, L(&["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "spacer", "script", "update", "keys"]), "appearance", false,
         "What the status bar shows, left to right: daemon, policy, webhooks, triggers, hooks, accessibility, script (ui.status.script), spacer (the rest goes right), update, keys, or an absolute path to your own script (one item each; see `midna explain scripts`). Leave one out to hide it. Adding a script path is human only."),
+    s!("ui.haptics", SettingKind::Bool, B(true), "appearance", false,
+        "A light tap on a Force Touch trackpad when you click a button, row or link anywhere in the app. A mouse or an older trackpad ignores it."),
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
         "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
