@@ -1,6 +1,6 @@
 //! Prompt fast travel in an agent terminal: a bar pinned over the top row while the agent's
-//! view is scrolled back (which prompt you're reading, ‹ › to step, the title opens the
-//! searchable list in the command bar, Live to go back), a rail of ticks on the right edge (one
+//! view is scrolled back (which prompt you're reading, ‹ › to step, the title scrolls to that
+//! prompt, ▾ opens the searchable list in the command bar, Live to go back), a rail of ticks on the right edge (one
 //! per prompt; hover for the text, click to jump), and ⌥⌘↑ ⌥⌘↓.
 //!
 //! The prompts come from `session.prompts`, fetched when the view opens and again whenever the
@@ -208,17 +208,29 @@ impl TerminalView {
             .font_family(t.ui_font.clone())
             .child(btn("prompt-prev").when(!can_prev, |d| d.opacity(0.35)).child("‹").on_click(cx.listener(|v, _, w, cx| v.on_prev_prompt(&PrevPrompt, w, cx))))
             .child(
-                btn("prompt-title")
+                div()
                     .flex_1()
                     .min_w(px(0.))
-                    .justify_start()
-                    .gap(px(10.))
-                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.))
                     .bg(t.raised)
-                    .child(div().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.accent).child(num))
-                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
-                    .child(div().text_color(t.dim).child("▾"))
-                    .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx)),
+                    .child(
+                        btn("prompt-title")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .justify_start()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .child(div().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.accent).child(num))
+                            .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                            .on_click(cx.listener(move |v, _, w, cx| match shown {
+                                // Scroll so the prompt itself is in view, not just its reply.
+                                Some(i) => v.jump_to(Some(i), w, cx),
+                                None => w.dispatch_action(Box::new(OpenPrompts), cx),
+                            })),
+                    )
+                    .child(btn("prompt-list").text_color(t.dim).child("▾").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx))),
             )
             .child(div().px(px(6.)).text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(meta))
             .child(btn("prompt-next").child("›").on_click(cx.listener(|v, _, w, cx| v.on_next_prompt(&NextPrompt, w, cx))))
