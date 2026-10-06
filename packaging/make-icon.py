@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""PLACEHOLDER app icon for Midna, drawn in code (no image tools needed).
+"""Midna's app icon, drawn in code (no image tools needed): "Twilight tiles".
 
-A dark plum rounded square with a lavender (#B79AE8, the UI accent) crescent and a block
-cursor: "a terminal at twilight". Replace with a designed icon before a public release.
+Midna's own window as tiles on a dark squircle: a sidebar with three status dots (teal,
+orange, lavender), the main pane holding a lavender crescent, a teal split pane with a
+block cursor, and an orange status bar. The colors are the setup screen's Twilight Tiles.
 
 Usage: packaging/make-icon.py packaging/assets/Midna.icns
 Writes a 1024px PNG with the stdlib only, then uses sips + iconutil for the .icns sizes.
+The design is on a 100-unit grid (the body is 9..91, the macOS 824px icon body).
 """
 import math, os, struct, subprocess, sys, tempfile, zlib
 
 N = 1024
-ACCENT = (0xB7, 0x9A, 0xE8)
-TOP, BOTTOM = (0x2A, 0x21, 0x38), (0x12, 0x0E, 0x19)
+U = 10.24  # px per design unit
+BODY = (0x14, 0x12, 0x20)
+TILE = (0x2A, 0x25, 0x40)
+BAR = (0x4B, 0x44, 0x66)
+LAVENDER = (0xB7, 0x9A, 0xE8)
+TEAL = (0x3F, 0xC4, 0xC0)
+ORANGE = (0xF2, 0x8A, 0x4B)
+CURSOR = (0xE4, 0xE7, 0xEE)
 
 
 def rrect_sdf(x, y, cx, cy, hw, hh, r):
@@ -27,6 +35,32 @@ def blend(dst, src, a):
     return tuple(d + (s - d) * a for d, s in zip(dst, src))
 
 
+def box(x, y, left, top, w, h, r):
+    """Distance in px to a rounded rect given in design units."""
+    return rrect_sdf(x, y, (left + w / 2) * U, (top + h / 2) * U, w / 2 * U, h / 2 * U, r * U)
+
+
+def disc(x, y, cx, cy, r):
+    return math.hypot(x - cx * U, y - cy * U) - r * U
+
+
+# (shape, color, opacity), painted in order.
+SHAPES = [
+    (lambda x, y: box(x, y, 19, 19, 20, 55, 5), TILE, 1.0),  # sidebar
+    (lambda x, y: disc(x, y, 25, 27, 2), TEAL, 1.0),
+    (lambda x, y: disc(x, y, 25, 35, 2), ORANGE, 1.0),
+    (lambda x, y: disc(x, y, 25, 43, 2), LAVENDER, 1.0),
+    (lambda x, y: box(x, y, 29, 26, 6, 2, 1), BAR, 1.0),
+    (lambda x, y: box(x, y, 29, 34, 6, 2, 1), BAR, 1.0),
+    (lambda x, y: box(x, y, 29, 42, 6, 2, 1), BAR, 1.0),
+    (lambda x, y: box(x, y, 43, 19, 38, 32, 5), TILE, 1.0),  # main pane
+    (lambda x, y: max(disc(x, y, 62, 35, 9), -disc(x, y, 66.5, 31.5, 7.5)), LAVENDER, 1.0),  # crescent
+    (lambda x, y: box(x, y, 43, 55, 38, 19, 5), TEAL, 0.4),  # split pane
+    (lambda x, y: box(x, y, 49, 60, 4, 9, 1), CURSOR, 1.0),
+    (lambda x, y: box(x, y, 19, 78, 62, 4, 2), ORANGE, 1.0),  # status bar
+]
+
+
 def pixel(x, y):
     # macOS icon grid: 824px body, centred, ~185px corners, soft shadow below
     body = rrect_sdf(x, y, 512, 512, 412, 412, 185)
@@ -38,22 +72,14 @@ def pixel(x, y):
     a = cov(body)
     if a <= 0:
         return out
-    t = (y - 100) / 824
-    bg = blend(TOP, BOTTOM, min(max(t, 0), 1))
-    # faint accent glow upper-left
-    g = max(0.0, 1.0 - math.hypot(x - 420, y - 380) / 520) ** 2 * 0.22
-    bg = blend(bg, ACCENT, g)
+    bg = BODY
     # inner hairline
     if -6 < body <= 0:
         bg = blend(bg, (255, 255, 255), 0.06 * cov(abs(body + 3) - 2))
-    # crescent: big disc minus offset disc
-    d1 = math.hypot(x - 470, y - 488) - 250
-    d2 = math.hypot(x - 562, y - 418) - 222
-    crescent = max(d1, -d2)
-    bg = blend(bg, ACCENT, cov(crescent))
-    # block cursor in the crescent's opening
-    cur = rrect_sdf(x, y, 676, 452, 38, 54, 9)
-    bg = blend(bg, ACCENT, cov(cur) * 0.92)
+    for shape, color, opacity in SHAPES:
+        c = cov(shape(x, y))
+        if c > 0:
+            bg = blend(bg, color, c * opacity)
     # composite over the shadow
     oa = out[3]
     ra = a + oa * (1 - a)
@@ -94,7 +120,7 @@ def main():
         subprocess.run(["iconutil", "-c", "icns", iconset, "-o", out], check=True)
         png_out = os.path.splitext(out)[0] + ".png"
         subprocess.run(["sips", "-z", "512", "512", master, "--out", png_out], check=True, capture_output=True)
-    print(f"wrote {out} (placeholder icon)")
+    print(f"wrote {out}")
 
 
 if __name__ == "__main__":

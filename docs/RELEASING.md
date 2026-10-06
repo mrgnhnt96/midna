@@ -70,7 +70,7 @@ Midna.app/Contents/
   MacOS/midnad                   the daemon (copied to MIDNA_HOME/bin on first launch)
   MacOS/midna                    the CLI (copied next to midnad)
   Library/LaunchAgents/com.mrgnhnt.midna.daemon.plist
-  Resources/Midna.icns           PLACEHOLDER icon (packaging/make-icon.py draws it)
+  Resources/Midna.icns           the app icon (packaging/make-icon.py draws it)
   Resources/Fonts/               Atkinson Hyperlegible Next + JetBrains Mono and their OFL
                                  licenses (the app embeds the same files with include_bytes!)
 ```
