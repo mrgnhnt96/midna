@@ -191,6 +191,11 @@ pub struct MainWindow {
     pub restart_expected: bool,
     pending_refresh: u32,
     refresh_scheduled: bool,
+    /// Refreshes started so far. Each one's `session.list` is only taken if it started at or
+    /// after `sessions_floor`: refreshes overlap (header and row scripts can take a second),
+    /// and one fetched before a terminal opened or closed must not undo it.
+    refresh_seq: u64,
+    sessions_floor: u64,
     loaded: bool,
     _tasks: Vec<Task<()>>,
 }
@@ -349,6 +354,8 @@ impl MainWindow {
             restart_expected: false,
             pending_refresh: 0,
             refresh_scheduled: false,
+            refresh_seq: 0,
+            sessions_floor: 0,
             loaded: false,
             _tasks: tasks,
         };
@@ -718,6 +725,8 @@ impl MainWindow {
         if self.conn != ConnState::Connected {
             return;
         }
+        self.refresh_seq += 1;
+        let seq = self.refresh_seq;
         let backend = self.backend.clone();
         let header_for = self.selected.clone();
         let row_ids: Vec<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
@@ -728,7 +737,7 @@ impl MainWindow {
             let res = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut r = RefreshResult::default();
+                    let mut r = RefreshResult { seq, ..Default::default() };
                     let call = |m: &str, p: Value| match backend.call(m, p) {
                         Ok(v) => Some(v),
                         Err(e) => {
@@ -837,7 +846,10 @@ impl MainWindow {
         // The selected terminal closing (⌘K, the header menu, its shell exiting): its neighbour
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
-        if let Some(s) = r.sessions {
+        // An older list than the one we have (or than a terminal we just opened or closed) would
+        // drop the new tab, or move the selection off it, until the next session event.
+        if let Some(s) = r.sessions.filter(|_| r.seq >= self.sessions_floor) {
+            self.sessions_floor = r.seq + 1;
             if let Some(sel) = self.selected.clone().filter(|id| self.sessions.iter().any(|x| &x.id == id) && !s.iter().any(|x| &x.id == id)) {
                 let rows = self.sidebar_rows(Some(&sel), cx);
                 closed_neighbour = neighbour(&rows, &sel, |id| s.iter().any(|x| x.id == id));
@@ -1363,7 +1375,13 @@ impl MainWindow {
         }
         self.rpc("session.open", p, cx, |m, v, window, cx| {
             let id = v.get("id").and_then(|x| x.as_str()).or_else(|| v.get("session").and_then(|s| s.get("id")).and_then(|x| x.as_str())).map(str::to_string);
-            m.request_refresh(refresh::SESSIONS, cx);
+            m.sessions_changed(cx);
+            // Show it now: until the refetch lands, a refresh would find it missing and select another.
+            if let Ok(s) = serde_json::from_value::<Session>(v.get("session").unwrap_or(&v).clone())
+                && !m.sessions.iter().any(|x| x.id == s.id)
+            {
+                m.sessions.push(s);
+            }
             if let Some(id) = id {
                 m.windows.borrow_mut().claim(&id, m.id);
                 m.selected = Some(id);
@@ -1487,8 +1505,15 @@ impl MainWindow {
         self.select_neighbour(&id, window, cx);
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
-        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+        self.sessions_floor = self.refresh_seq + 1;
+        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
         cx.notify();
+    }
+
+    /// We opened or closed a terminal: lists fetched before now are stale. Refetch.
+    fn sessions_changed(&mut self, cx: &mut Context<Self>) {
+        self.sessions_floor = self.refresh_seq + 1;
+        self.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx);
     }
 
     /// ⌘W with several terminals selected: close them all and select the nearest one left
@@ -1521,8 +1546,9 @@ impl MainWindow {
         self.sessions.retain(|s| !ids.contains(&s.id));
         self.menu = Menu::None;
         crate::sounds::play("closed");
+        self.sessions_floor = self.refresh_seq + 1;
         for id in ids {
-            self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+            self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
         }
         cx.notify();
     }
@@ -1732,6 +1758,8 @@ impl MainWindow {
 
 #[derive(Default)]
 struct RefreshResult {
+    /// `MainWindow::refresh_seq` when it started.
+    seq: u64,
     settings: Option<Vec<SettingEntry>>,
     projects: Option<Vec<Project>>,
     discovered: Option<Vec<ProjectCandidate>>,
