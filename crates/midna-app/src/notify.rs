@@ -13,10 +13,11 @@
 //! shows up next to something that explains it.
 //!
 //! Sounds: `UNNotificationSound` has no volume, so midnad renders each sound at its volume
-//! (`Posted::notification_sound`) and the notification names that file. macOS plays it with the
-//! banner, so Focus, "Deliver quietly" and midna's sound switch in System Settings all apply
-//! (`soundNamed` takes an absolute path; checked in spikes/notify-sound). Only when that file is
-//! missing, and in dev builds, does midna play `sound_file` itself with NSSound.
+//! into `~/Library/Sounds` (`Posted::notification_sound`) and the notification names that file.
+//! macOS plays it with the banner, so Focus, "Deliver quietly" and midna's sound switch in System
+//! Settings all apply. `soundNamed` needs a name it can find there: given a full path it plays
+//! the default sound. Only when there's no file, and in dev builds, does midna play
+//! `sound_file` itself with NSSound.
 //!
 //! Images: `UNNotificationAttachment` moves the file it's given into its own store, so each
 //! notification attaches a fresh copy of the imported image.

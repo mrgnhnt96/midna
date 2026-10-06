@@ -251,9 +251,11 @@ pub struct Posted {
     pub sound_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
-    /// `sound_file` rendered at `volume` (a WAV in `MIDNA_HOME/notify/cache`): the app names it
-    /// in the notification so macOS plays it with the banner, under Focus and its sound
-    /// settings. None when rendering failed; the app then plays `sound_file` itself.
+    /// The file name of `sound_file` rendered at `volume`, a WAV in `~/Library/Sounds`
+    /// (`Midna Strum.wav`): the app names it in the notification so macOS plays it with the
+    /// banner, under Focus and its sound settings. Older daemons sent a full path, which
+    /// macOS ignores (it plays its default sound). None when rendering failed; the app then plays
+    /// `sound_file` itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_sound: Option<String>,
     /// An image to attach (absolute path to an imported image).

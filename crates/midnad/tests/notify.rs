@@ -160,10 +160,11 @@ fn each_kind_has_its_sound_and_volume() {
     let n = &p[1]["data"];
     assert_eq!((n["category"].as_str(), n["sound"].as_bool(), n["volume"].as_u64()), (Some("turn_done"), Some(true), Some(25)), "{n}");
     assert_eq!(n["sound_file"], "/System/Library/Sounds/Submarine.aiff");
-    // What macOS plays with the banner: that sound rendered at 25%, in the daemon's home.
-    let file = n["notification_sound"].as_str().unwrap_or_default();
-    assert!(std::path::Path::new(file).starts_with(d.home.join("notify/cache")) && file.ends_with("-25.wav"), "{n}");
-    assert!(std::fs::read(file).is_ok_and(|b| b.starts_with(b"RIFF")), "{file}");
+    // What macOS plays with the banner: that sound rendered at 25%, named (a full path plays the
+    // default sound). Tests keep it in the daemon's home rather than ~/Library/Sounds.
+    assert_eq!(n["notification_sound"], "Midna Submarine 25.wav", "{n}");
+    let file = d.home.join("notify/banner/Midna Submarine 25.wav");
+    assert!(std::fs::read(&file).is_ok_and(|b| b.starts_with(b"RIFF")), "{}", file.display());
 
     // Master at 0: silent everywhere.
     call(&mut h, "settings.set", json!({ "key": "notify.volume", "value": 0 }));

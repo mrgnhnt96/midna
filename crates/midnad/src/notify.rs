@@ -5,7 +5,8 @@
 //! (`Session::notify`). The app shows `via: app` notifications (and skips the terminal you're
 //! looking at); with no app connected midnad shows them itself (`via: system`). Each carries
 //! its category's sound file, volume and image (`style`, see `crate::notify_media`), and that
-//! sound rendered at its volume for macOS to play with the banner (`notify_media::rendered`).
+//! sound rendered at its volume, in `~/Library/Sounds`, for macOS to play with the banner
+//! (`notify_media::banner_sound`).
 //! Its title and text are midna's own unless `notify.title.<key>` / `notify.body.<key>` hold
 //! a template (`texts`).
 //!
@@ -478,7 +479,10 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         title: truncate(&title, TITLE_MAX),
         body: truncate(&text, BODY_MAX),
         sound: sound.is_some(),
-        notification_sound: sound.as_ref().and_then(|(f, v)| crate::notify_media::rendered(&d.cfg.home, f, *v)).map(|p| p.to_string_lossy().into_owned()),
+        notification_sound: sound.as_ref().and_then(|(f, v)| {
+            let dir = crate::notify_media::banner_dir(&d.cfg.home, system_allowed(d));
+            crate::notify_media::banner_sound(&d.cfg.home, &dir, f, *v)
+        }),
         volume: sound.as_ref().map(|s| s.1),
         sound_file: sound.map(|s| s.0),
         image,

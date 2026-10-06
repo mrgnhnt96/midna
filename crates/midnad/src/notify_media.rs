@@ -141,9 +141,48 @@ pub fn rendered(home: &Path, file: &str, volume: u8) -> Option<PathBuf> {
     done.map(|_| out)
 }
 
+/// Where banner sounds go: `~/Library/Sounds` for the real daemon, `notify/banner` in the home
+/// otherwise (tests). macOS looks a notification's sound up by file name there; given a full
+/// path to a file elsewhere it plays its default sound instead.
+pub fn banner_dir(home: &Path, system: bool) -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) if system => PathBuf::from(h).join("Library/Sounds"),
+        _ => dir(home).join("banner"),
+    }
+}
+
+/// The name a notification gives macOS for `file` at `volume`: `rendered` copied into `dir` as
+/// `Midna <sound>.wav` (`Midna <sound> <volume>.wav` below 100), rewritten when it changed. These
+/// show in System Settings' alert sounds, hence the readable names. None if rendering fails.
+pub fn banner_sound(home: &Path, dir: &Path, file: &str, volume: u8) -> Option<String> {
+    let src = rendered(home, file, volume)?;
+    let stem = Path::new(file).file_stem()?.to_string_lossy().replace(['/', ':'], "-");
+    let name = if volume >= 100 { format!("Midna {stem}.wav") } else { format!("Midna {stem} {volume}.wav") };
+    let out = dir.join(&name);
+    let bytes = std::fs::read(&src).ok()?;
+    if std::fs::read(&out).ok().as_deref() == Some(&bytes[..]) {
+        let _ = std::fs::File::options().append(true).open(&out).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Some(name);
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    prune_banner(dir);
+    let tmp = dir.join(format!(".midna-{}.wav", std::process::id()));
+    std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &out)).map_err(|_| std::fs::remove_file(&tmp)).ok()?;
+    Some(name)
+}
+
+/// Our banner sounds unused for `CACHE_DAYS` (the folder is shared with the human's own).
+fn prune_banner(dir: &Path) {
+    prune_where(dir, |name| name.starts_with("Midna ") && name.ends_with(".wav"));
+}
+
 fn prune(cache: &Path) {
+    prune_where(cache, |_| true);
+}
+
+fn prune_where(dir: &Path, ours: impl Fn(&str) -> bool) {
     let old = std::time::Duration::from_secs(CACHE_DAYS * 24 * 3600);
-    for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| ours(&e.file_name().to_string_lossy())) {
         if e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age > old) {
             let _ = std::fs::remove_file(e.path());
         }
@@ -372,6 +411,23 @@ mod tests {
         assert!(std::fs::read(&a).unwrap().starts_with(b"RIFF"));
         assert_ne!(rendered(&home, "/System/Library/Sounds/Glass.aiff", 80), Some(a));
         assert_eq!(rendered(&home, "/nonexistent.wav", 40), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn banner_sounds_are_named_files_in_one_folder() {
+        let home = std::env::temp_dir().join(format!("midna-banner-{}", std::process::id()));
+        let dir = home.join("Sounds");
+        assert_eq!(banner_dir(&home, false), home.join("notify/banner"));
+        assert_eq!(banner_sound(&home, &dir, "/System/Library/Sounds/Glass.aiff", 100).as_deref(), Some("Midna Glass.wav"));
+        assert_eq!(banner_sound(&home, &dir, "/System/Library/Sounds/Glass.aiff", 40).as_deref(), Some("Midna Glass 40.wav"));
+        let a = std::fs::read(dir.join("Midna Glass 40.wav")).unwrap();
+        assert_eq!(a, std::fs::read(rendered(&home, "/System/Library/Sounds/Glass.aiff", 40).unwrap()).unwrap());
+        // A stale copy (a retuned sound) is replaced.
+        std::fs::write(dir.join("Midna Glass.wav"), b"old").unwrap();
+        banner_sound(&home, &dir, "/System/Library/Sounds/Glass.aiff", 100);
+        assert!(std::fs::read(dir.join("Midna Glass.wav")).unwrap().starts_with(b"RIFF"));
+        assert_eq!(banner_sound(&home, &dir, "/nonexistent.wav", 40), None);
         let _ = std::fs::remove_dir_all(home);
     }
 
