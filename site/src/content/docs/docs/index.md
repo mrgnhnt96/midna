@@ -1,32 +1,36 @@
 ---
-title: Midna docs
-description: What midna is, how it fits together, and where to start.
+title: Overview
+description: What midna is, how it fits together, and how to get started.
 ---
 
-Midna is a terminal for macOS built for working with AI agents like Claude Code and Codex. You open projects and terminals as you would in any terminal. The difference is that agents can drive midna too: they can open terminals you can watch, read other terminals, add rules and draft webhook triggers. The few things that should stay yours (approving, removing rules, setting secrets) come to you as **Needs you** items.
+midna is a macOS terminal for working with AI agents like Claude Code and Codex. You use it like any terminal: projects in a sidebar, tabs, splits. Agents can use it too. Through the `midna` CLI or its MCP server they can open terminals you can watch, read other terminals, add rules and draft triggers. The few decisions that stay yours, like approving a request or removing a rule, come to you in one queue called **Needs you**.
 
-![The midna main window: projects and terminals in the sidebar, a shell, and an approval waiting at the bottom](../../../assets/screens/live-main-dark.png)
+![The midna window: projects and terminals in the sidebar, a Codex terminal asking to run a migration, and the approval along the bottom](../../../assets/screens/main.png)
 
 ## How it fits together
 
-**A daemon owns your terminals.** A background process called `midnad` runs every shell, along with your projects, rules, triggers and settings. The Midna app is a window onto it. Quitting the app, restarting it or updating it never kills a shell. When you open midna again, your terminals are where you left them.
+**A daemon owns your terminals.** `midnad` runs in the background and holds every shell, along with your projects, rules, triggers and settings. The Midna app is a window onto it, so quitting, relaunching or updating the app never kills a shell.
 
-**Projects group terminals.** A project is a folder. Each terminal in it runs one of three things:
+**Projects group terminals.** A project is a folder. Each terminal in it is one of:
 
-- a **shell**, like any terminal
-- a **monitor**, a long-running command you want to keep an eye on. If it fails, it tells you.
-- an **agent**, Claude Code or Codex, started by midna so it can report its status, ask for approvals and track cost
+- a **shell**
+- a **monitor**: a long-running command such as a dev server or test watcher. If it exits with an error, it tells you.
+- an **agent**: Claude Code or Codex, with its status, approvals and cost tracked by midna
 
-**Agents may add, humans may remove.** Agents control midna through the [`midna` CLI](/docs/cli/) or its [MCP server](/docs/mcp/). They can open terminals, add rules, draft triggers and change most settings. Only you can approve a request, remove a rule, paste a webhook secret, switch a trigger on or change a human-only setting. When an agent asks for one of those, nothing happens until you answer.
+**Agents may add; you remove.** Agents can open terminals, add rules, draft triggers and change most settings. Approving requests, removing rules, setting webhook secrets, switching triggers on and changing human-only settings are yours. When an agent tries one of those, it becomes a Needs you item and nothing happens until you answer. See the [security model](/docs/security/) for what this does and doesn't protect against.
 
-**Needs you is your inbox.** Anything waiting on you shows up there: an approval, an agent's permission prompt, an agent that's blocked, a monitor that failed, a rule an agent wants removed. Press <kbd>⌘</kbd> <kbd>J</kbd> to go through them. See [Needs you](/docs/needs-you/).
+**Everything is logged.** Every change is written to an event log. `midna events --follow` streams it, and **Insights** (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>I</kbd>) charts agent turns, messages, spend and time spent waiting on you.
 
-**Everything is logged.** Every change and every call that acts is written to an event log. [Insights](/docs/insights/) draws its charts from it, and `midna events` shows it raw.
+## Quick start
 
-## Where to start
+1. [Install midna](/docs/install/) and open it.
+2. Press <kbd>⌘</kbd> <kbd>O</kbd> and pick a project folder. midna opens a shell in it.
+3. Press <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> to start an agent there (Claude Code by default), or press <kbd>⌘</kbd> <kbd>K</kbd>, type what you want done and press <kbd>⇧</kbd> <kbd>↩</kbd>.
+4. When the agent needs you, its row in the sidebar turns orange. Press <kbd>⌘</kbd> <kbd>↩</kbd> to approve or <kbd>⌘</kbd> <kbd>⌫</kbd> to deny, or <kbd>⌘</kbd> <kbd>J</kbd> to go through everything that's waiting.
 
-- New here? [Install midna](/docs/install/), then take your [first steps](/docs/first-steps/).
-- Using agents? Read [Claude Code and Codex in midna](/docs/agents/) and [Rules](/docs/rules/).
-- Want GitHub or Bitbucket events to start agents? See [Triggers and webhooks](/docs/triggers/).
-- Wondering what an agent can and can't do? Read the [security model](/docs/security/).
-- Something not working? See [Troubleshooting](/docs/troubleshooting/).
+## Next
+
+- [Terminals and projects](/docs/terminals/): splits, find, links, the command bar
+- [Agents and approvals](/docs/agents/): how midna runs Claude Code and Codex
+- [Rules](/docs/rules/): what agents may do without asking
+- [CLI and MCP](/docs/cli/): driving midna from an agent or a script

@@ -1,65 +1,77 @@
 ---
-title: Claude Code and Codex
-description: How midna launches agents, tracks their status and cost, routes their approvals, and lets them drive midna.
+title: Agents and approvals
+description: How midna runs Claude Code and Codex, what reaches Needs you, and how approving works.
 ---
-
-Midna runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) in its terminals. Install them the usual way; midna finds them through your login shell.
 
 ## Starting an agent
 
-- <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> opens a new agent in the current project, using the agent you last started there.
+- <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> opens an agent in the current project, using the one you last used there (Claude Code by default).
 - In <kbd>⌘</kbd> <kbd>K</kbd>, type a request and press <kbd>⇧</kbd> <kbd>↩</kbd> to start an agent with it as the first prompt.
-- Agents can start other agents for you to follow: `midna open --agent claude --prompt "…"`.
+- Typing `claude` or `codex` in a midna shell works too: midna picks it up as an agent terminal in place.
+- Agents can start other agents: `midna open --agent claude --prompt "…"`.
 - [Triggers](/docs/triggers/) can start agents from GitHub and Bitbucket events.
-
-If you start `claude` or `codex` yourself in a plain shell, it runs, but without midna's hooks, so midna knows less about it.
 
 ## What midna adds
 
-Midna passes everything on the command line when it launches an agent. **It never edits your global Claude or Codex config.**
+When midna starts an agent, it passes everything on the command line. Your global Claude Code and Codex config isn't touched.
 
-**Claude Code** gets:
+- **Claude Code** gets `--settings` with midna's hooks (turn start and end, tool calls, permission dialogs, and a [rules](/docs/rules/) check before each tool call), midna's status line for cost tracking, the [MCP server](/docs/cli/#mcp-server), and a two-line system prompt hint that it's running in midna.
+- **Codex** gets `-c notify=…` so midna hears when a turn ends, plus the MCP server and the same hint.
+- Every terminal gets `MIDNA_SESSION`, `MIDNA_PROJECT` and `MIDNA_SOCKET` in its environment and the `midna` CLI on its `PATH`.
 
-- `--settings` pointing at a file in midna's data folder that registers midna's hooks. They report when a turn starts and ends, when a tool runs and when a permission dialog opens, and they check each tool call against your [rules](/docs/rules/).
-- midna's status line, which reports cost to [Insights](/docs/insights/) (setting `agents.claude.statusline`). It replaces your own status line inside midna; turn it off to get yours back, at the cost of spend tracking.
-- `--mcp-config` with the [midna MCP server](/docs/mcp/) (setting `agents.mcp`).
-- `--append-system-prompt` with a two-line hint that it's running in midna and can run `midna capabilities` (setting `agents.system_hint`).
+If you'd rather have the hooks in your global config, the **Hooks** item in the status bar can install them (shown as a diff first, `midna hooks preview`). They do nothing outside a midna terminal.
 
-**Codex** gets `-c notify=…` so midna hears when a turn ends, plus the MCP server and the same hint through `-c` options. Midna doesn't use Codex's hooks, because they need you to trust them first.
+## Needs you
 
-Every terminal also gets `MIDNA_SESSION`, `MIDNA_PROJECT` and `MIDNA_SOCKET` in its environment, `TERM_PROGRAM=midna`, the `midna` CLI on its `PATH`, and `MIDNA_SKILL` pointing at a short guide for agents (`midna skill` prints it).
+Anything only you can answer goes to **Needs you**. The terminal's row turns orange with a line saying why, the **N need you** button shows at the top of the sidebar, and midna can post a notification.
 
-Changes to these settings apply to agents started afterwards.
+- The terminal you're looking at shows its approval along the bottom. <kbd>⌘</kbd> <kbd>↩</kbd> approves, <kbd>⌘</kbd> <kbd>⌫</kbd> denies.
+- <kbd>⌘</kbd> <kbd>J</kbd> goes through everything waiting, one card at a time, oldest first.
 
-## Status
+![A Needs you card for an agent's question, with the remaining items listed below](../../../assets/screens/needs-you.png)
 
-Midna shows an agent as **working**, **needs you**, **done** (finished, and you haven't looked yet) or **idle**. It reads that from the hooks, the agent's terminal title and, for permission dialogs, what's on screen. When Esc or <kbd>⌃</kbd> <kbd>C</kbd> interrupts a turn, the status follows.
+| Item | What it is | <kbd>⌘</kbd> <kbd>↩</kbd> | <kbd>⌘</kbd> <kbd>⌫</kbd> |
+| --- | --- | --- | --- |
+| Approval | A rule said **ask**, or an agent asked for a human-only action | Approve | Deny |
+| Permission prompt | Claude Code or Codex is showing its own permission dialog | Approve | Deny |
+| Blocked | An agent can't continue without you (`midna attention`) | I've done it | Dismiss |
+| Failed | A monitor or agent exited with an error | Restart | Dismiss |
+| Rule removal | An agent asked you to remove a rule | Remove | Keep |
+| Trigger | A trigger needs its secret, or is waiting to start | Open / Start | Dismiss / Deny |
 
-## Approvals
+Answering a permission prompt from midna presses the key in the agent's dialog for you, after midna has seen the dialog on screen.
 
-Two kinds of approval reach [Needs you](/docs/needs-you/):
+### Approving for longer
 
-- **Midna approvals.** A rule said **ask** for a Claude Code tool call. Claude waits until you answer in midna.
-- **Permission prompts.** The agent is showing its own permission dialog, because no rule decided and its own settings say ask. Approving or denying in midna presses the answer in the dialog for you.
+The arrow next to **Approve** has longer options. Each adds an **allow** [rule](/docs/rules/) for exactly what was asked:
 
-Codex has no hook before tool calls, so midna rules don't apply to it; its own approval prompts still show up as permission prompts.
+![The approve menu: once, 15 minutes, 1 hour, this session, always](../../../assets/screens/approve-menu.png)
 
-Startup dialogs, like Claude's folder trust question or Codex's hooks review, don't become needs-you items yet. Answer them in the terminal.
+| Option | Rule it adds |
+| --- | --- |
+| Once | None |
+| 15 minutes, 1 hour | An expiring rule for this terminal |
+| This session | A rule for this terminal |
+| Always | A rule for the whole project |
 
-## Cost
+### Human-only requests
 
-Claude Code's spend shows per turn in Insights and on the **Today** card. Codex doesn't report cost, so its spend shows as zero.
+When an agent calls something only you may do, like removing a rule or enabling a trigger, the card shows the exact call that approving will run. If what it points at has changed before you answer, approving fails rather than running the new version.
 
-## Sending messages
+Agents can't approve requests unless you turn on `approve.from_cli`, and even then only their own terminal's, never a human-only action. An agent blocked on an approval waits up to 5 minutes (`policy.request_timeout_secs`).
 
-Type in the terminal as usual, use the [composer](/docs/kass/) (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>D</kbd>) for long prompts, or attach images with <kbd>⌘</kbd> <kbd>I</kbd>. Agents can message other agents with `midna send <id> "…"`, which arrives as one message even across lines, and `--image` attaches a picture.
+## Long sessions
 
-## Restarting into the same conversation
+- **Prompt history.** Claude Code and Codex draw their own screen, so their conversation isn't in the scrollback. <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>↑</kbd> / <kbd>↓</kbd> scrolls the agent's view to your previous or next prompt, and <kbd>⌘</kbd> <kbd>P</kbd> lists them to jump to.
+- **Queued messages.** Queue a follow-up and midna types it once the agent is ready: idle, not waiting on you, nothing in its input box. A message can also wait for a time or for another terminal to finish (`midna queue add --after <id> "…"`).
+- **Images.** <kbd>⌘</kbd> <kbd>I</kbd>, or pasting a screenshot, attaches images to the next message. Click to drop numbered pins or drag to mark an area, with a note for each.
+- **Session links.** <kbd>⌘</kbd> <kbd>L</kbd> lists the URLs, pull requests and files that came up in the conversation.
+- **Restart into the same conversation.** The restart button (or `midna restart <id>`) reopens the agent with `claude --resume` / `codex resume`. When a newer Claude Code is installed, midna restarts idle terminals into the same conversation (`agents.restart_on_update`).
 
-The terminal's restart button, or `midna restart <id>`, reopens the agent in the same conversation (`claude --resume`, `codex resume`). Midna refuses while the agent has background shells or subagents running, because a restart would lose them. In <kbd>⌘</kbd> <kbd>K</kbd>, **Restart … when idle** waits until the agent is idle with nothing in flight.
+## Cost and Insights
 
-When a newer Claude Code is installed than a terminal is running, midna restarts that terminal into the same conversation once it's idle. Setting `agents.restart_on_update`: `when_idle` (the default), `ask` to get a needs-you note instead, or `off`.
+Claude Code's spend comes from midna's status line and shows per turn. Codex doesn't report cost. **Insights** (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>I</kbd>) charts turns, messages, spend, approvals, and how long each agent worked versus waited on you, by day, week or month, with an activity log you can filter.
 
-## Letting agents drive midna
-
-Inside midna, agents use the [`midna` CLI](/docs/cli/) or the [MCP server](/docs/mcp/) to see other terminals, open shells and monitors you can watch, get your attention, add rules, draft triggers and change settings. What they can't do is in the [security model](/docs/security/).
+```bash
+midna insights --range week --by project
+```

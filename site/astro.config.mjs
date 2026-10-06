@@ -5,6 +5,16 @@ import { defineConfig } from 'astro/config';
 
 export default defineConfig({
   site: 'https://midna.mrgnhnt.com',
+  // Pages merged in the October 2026 docs rewrite.
+  redirects: {
+    '/docs/first-steps': '/docs/',
+    '/docs/projects-and-terminals': '/docs/terminals/',
+    '/docs/needs-you': '/docs/agents/',
+    '/docs/insights': '/docs/agents/',
+    '/docs/kass': '/docs/terminals/',
+    '/docs/updates': '/docs/install/',
+    '/docs/mcp': '/docs/cli/',
+  },
   integrations: [
     starlight({
       title: 'midna',
@@ -22,49 +32,28 @@ export default defineConfig({
           label: 'Start here',
           items: [
             { label: 'Overview', slug: 'docs' },
-            { label: 'Install', slug: 'docs/install' },
-            { label: 'First steps', slug: 'docs/first-steps' },
+            { label: 'Install and update', slug: 'docs/install' },
           ],
         },
         {
           label: 'Using midna',
           items: [
-            { label: 'Projects and terminals', slug: 'docs/projects-and-terminals' },
-            { label: 'Needs you', slug: 'docs/needs-you' },
+            { label: 'Terminals and projects', slug: 'docs/terminals' },
+            { label: 'Agents and approvals', slug: 'docs/agents' },
             { label: 'Rules', slug: 'docs/rules' },
-            { label: 'Triggers and webhooks', slug: 'docs/triggers' },
-            { label: 'Insights', slug: 'docs/insights' },
-            { label: 'Dictation with Kass', slug: 'docs/kass' },
+            { label: 'Triggers', slug: 'docs/triggers' },
             { label: 'Keyboard shortcuts', slug: 'docs/shortcuts' },
-          ],
-        },
-        {
-          label: 'For agents',
-          items: [
-            { label: 'Claude Code and Codex', slug: 'docs/agents' },
-            { label: 'The midna CLI', slug: 'docs/cli' },
-            { label: 'MCP server', slug: 'docs/mcp' },
-          ],
-        },
-        {
-          label: 'Setup',
-          items: [
-            { label: 'Settings', slug: 'docs/settings' },
-            { label: 'Updates', slug: 'docs/updates' },
-            { label: 'Security model', slug: 'docs/security' },
-            { label: 'Troubleshooting', slug: 'docs/troubleshooting' },
           ],
         },
         {
           label: 'Reference',
           items: [
+            { label: 'CLI and MCP', slug: 'docs/cli' },
+            { label: 'Settings and themes', slug: 'docs/settings' },
+            { label: 'Security model', slug: 'docs/security' },
+            { label: 'Troubleshooting', slug: 'docs/troubleshooting' },
             { label: 'Build from source', slug: 'docs/build-from-source' },
             { label: 'Changelog', link: '/changelog/' },
-            {
-              label: 'Report an issue',
-              link: 'https://github.com/mrgnhnt96/midna/issues/new/choose',
-              attrs: { target: '_blank' },
-            },
           ],
         },
       ],

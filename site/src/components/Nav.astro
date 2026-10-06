@@ -1,0 +1,82 @@
+---
+import { DOWNLOAD, REPO } from '../site';
+---
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/icon.png" alt="" width="28" height="28" />
+      <span>midna</span>
+    </a>
+    <nav class="links">
+      <a href="/docs/">Docs</a>
+      <a href="/changelog/">Changelog</a>
+      <a href={REPO}>GitHub</a>
+    </nav>
+    <a class="btn btn-accent nav-cta" href={DOWNLOAD}>Download</a>
+  </div>
+</header>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(14px);
+    background: rgba(15, 17, 23, 0.8);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    height: 64px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 650;
+    font-size: 1.08rem;
+    text-decoration: none;
+  }
+
+  .brand img {
+    border-radius: 7px;
+  }
+
+  .links {
+    display: flex;
+    gap: 24px;
+    margin-left: auto;
+  }
+
+  .links a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-size: 0.94rem;
+  }
+
+  .links a:hover {
+    color: var(--ink);
+  }
+
+  .nav-cta {
+    padding: 8px 16px;
+    font-size: 0.92rem;
+  }
+
+  @media (max-width: 560px) {
+    .links {
+      gap: 16px;
+    }
+    .links a:last-child {
+      display: none;
+    }
+    .nav-inner {
+      gap: 16px;
+    }
+  }
+</style>

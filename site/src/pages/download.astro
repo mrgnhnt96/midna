@@ -1,6 +1,5 @@
 ---
 import '../styles/site.css';
-import StarButton from '../components/StarButton.astro';
 import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
 ---
 
@@ -11,7 +10,7 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Download midna</title>
     <meta name="description" content="Download midna, the macOS terminal built for working with AI agents." />
-    <link rel="icon" href="/icon.png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta name="theme-color" content="#0f1117" />
   </head>
   <body>
@@ -33,10 +32,6 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
       </p>
 
       <ol class="steps">
-        <li class="star-step">
-          <span><b>Star midna on GitHub.</b> It’s free and open source, and a star helps other people find it.</span>
-          <StarButton label="Star" size="sm" />
-        </li>
         <li data-install><b>Open the DMG</b> from your Downloads folder.</li>
         <li data-install><b>Drag Midna into Applications.</b> It updates itself in place there.</li>
         <li data-install>
@@ -68,8 +63,7 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
     display: flex;
     align-items: center;
     gap: 10px;
-    font-family: var(--font-display);
-    font-weight: 700;
+    font-weight: 650;
     font-size: 1.1rem;
     text-decoration: none;
   }
@@ -81,7 +75,6 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
   .icon {
     margin: 64px 0 28px;
     border-radius: 24px;
-    box-shadow: 0 20px 60px -20px rgba(183, 154, 232, 0.45);
   }
 
   h1 {
@@ -117,14 +110,6 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
 
   .steps li[hidden] {
     display: none;
-  }
-
-  .star-step {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 12px 16px;
   }
 
   .steps li {
@@ -177,7 +162,7 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
       if (response.status === 404) {
         fail(
           'midna isn’t out yet',
-          'The first release is on its way. Star the repository to hear when it lands.',
+          'There’s no release to download yet. Watch the GitHub repository to hear when there is.',
         );
         return;
       }

@@ -54,7 +54,7 @@ MIDNA_BACKEND=fake target/debug/midna-app     # the GUI with sample data, no dae
 packaging/build-app.sh       # -> dist/<version>/Midna.app
 ```
 
-The app is signed with the first Developer ID Application certificate in your keychain, or ad hoc if there isn't one. An ad-hoc build is a new app to macOS each time, so permissions like Accessibility don't carry over between builds. It also falls back to recognizing the app by name, which is weaker than the [signature check](/docs/security/#signed-builds-only) signed builds get.
+The app is signed with the first Developer ID Application certificate in your keychain, or ad hoc if there isn't one. An ad-hoc build is a new app to macOS each time, so permissions like Accessibility don't carry over between builds. It also falls back to recognizing the app by name, which is weaker than the [signature check](/docs/security/#files-and-builds) signed builds get.
 
 A build you make yourself doesn't carry midna's release update key, so it won't install updates from the official feed.
 

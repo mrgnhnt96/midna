@@ -1,4 +1,3 @@
-@import "@fontsource-variable/bricolage-grotesque";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
 
@@ -14,13 +13,11 @@
   --accent: #b79ae8;
   --accent-bright: #d4c1f5;
   --accent-deep: #7b5cc0;
-  --accent-glow: rgba(183, 154, 232, 0.18);
   --need: #f2a93b;
   --ok: #4cc38a;
   --work: #6ea2ff;
   --err: #f2665c;
 
-  --font-display: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
 
@@ -44,7 +41,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-body);
-  font-size: 17px;
+  font-size: 16.5px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
@@ -75,44 +72,34 @@ img {
 h1,
 h2,
 h3 {
-  font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.02;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
   margin: 0;
 }
 
 h2 {
-  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-size: clamp(1.7rem, 3.4vw, 2.3rem);
 }
 
 h3 {
-  font-size: 1.3rem;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
+  font-size: 1.08rem;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
 }
 
 p {
   margin: 0;
 }
 
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--accent);
-  margin-bottom: 18px;
-}
-
 .lede {
   color: var(--ink-soft);
-  font-size: 1.15rem;
-  max-width: 44ch;
-}
-
-.accent {
-  color: var(--accent);
+  font-size: 1.12rem;
 }
 
 .btn {
@@ -120,7 +107,7 @@ p {
   align-items: center;
   gap: 10px;
   padding: 14px 22px;
-  border-radius: 999px;
+  border-radius: 10px;
   font-weight: 600;
   font-size: 0.98rem;
   text-decoration: none;
@@ -131,16 +118,13 @@ p {
   white-space: nowrap;
 }
 
-.btn:hover {
-  transform: translateY(-1px);
+.btn-accent:hover {
+  background: var(--accent-bright);
 }
 
 .btn-accent {
-  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  background: var(--accent);
   color: #15111c;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.35) inset,
-    0 10px 30px -10px rgba(183, 154, 232, 0.55);
 }
 
 .btn-ghost {
@@ -170,12 +154,12 @@ kbd,
 }
 
 section {
-  padding: 120px 0;
+  padding: 96px 0;
 }
 
 @media (max-width: 720px) {
   section {
-    padding: 80px 0;
+    padding: 64px 0;
   }
 }
 

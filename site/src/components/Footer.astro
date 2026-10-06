@@ -1,0 +1,66 @@
+---
+import { NEW_ISSUE, REPO } from '../site';
+---
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <div class="brand">
+      <img src="/icon.png" alt="" width="22" height="22" />
+      <span>midna</span>
+    </div>
+    <nav>
+      <a href="/docs/">Docs</a>
+      <a href="/docs/security/">Security</a>
+      <a href="/changelog/">Changelog</a>
+      <a href={REPO}>GitHub</a>
+      <a href={NEW_ISSUE}>Report an issue</a>
+    </nav>
+    <p>MIT licensed. Terminal engine by <a href="https://ghostty.org">Ghostty</a>.</p>
+  </div>
+</footer>
+
+<style>
+  .foot {
+    border-top: 1px solid var(--line);
+    padding: 36px 0 48px;
+    color: var(--ink-faint);
+    font-size: 0.92rem;
+  }
+
+  .foot-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 32px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--ink);
+    font-weight: 650;
+  }
+
+  .brand img {
+    border-radius: 6px;
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  nav a {
+    text-decoration: none;
+  }
+
+  nav a:hover {
+    color: var(--ink);
+  }
+
+  p {
+    width: 100%;
+  }
+</style>

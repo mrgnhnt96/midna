@@ -1,8 +1,7 @@
-@import "@fontsource-variable/bricolage-grotesque";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
 
-/* Dark: graphite and lavender, matching the landing page and the app. */
+/* Dark: graphite and lavender, matching the landing page and the app's Twilight theme. */
 :root {
   --sl-font: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   --sl-font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
@@ -35,12 +34,10 @@
   --sl-color-black: #fcfcfd;
 }
 
-.sl-markdown-content h1,
 .sl-markdown-content h2,
 .sl-markdown-content h3,
 h1#_top {
-  font-family: "Bricolage Grotesque Variable", var(--sl-font);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.015em;
 }
 
 .site-title img {
@@ -61,4 +58,5 @@ h1#_top {
 .sl-markdown-content img {
   border-radius: 10px;
   border: 1px solid var(--sl-color-gray-5);
+  box-shadow: 0 16px 40px -24px rgba(0, 0, 0, 0.6);
 }
