@@ -1,6 +1,7 @@
 //! Main window rendering, laid out after docs/design/Main.dc.html.
 pub mod annotate;
 pub mod ax_prompt;
+pub mod badge;
 pub mod banner;
 pub mod update_banner;
 pub mod charts;

@@ -368,7 +368,7 @@ pub fn native_bg(window: &Window, c: Hsla) {
     w.setBackgroundColor(Some(&color));
 }
 
-fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+pub(crate) fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
     use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let handle = HasWindowHandle::window_handle(window).ok()?;

@@ -128,9 +128,12 @@ fn main() {
         if crate::dev::var("MIDNA_DEBUG_SETTINGS").is_ok() {
             settings_window::open(backend.clone(), cx);
         }
+        // The floating badge (hidden until there's something to show).
+        ui::badge::init(backend.clone(), cx);
         let b = backend.clone();
         cx.on_window_closed(move |cx, _| {
-            if cx.windows().is_empty() {
+            // The badge alone doesn't keep midna running.
+            if cx.windows().into_iter().all(|w| ui::badge::is_badge(w, cx)) {
                 backend::fake::shutdown(&*b);
                 cx.quit();
             }

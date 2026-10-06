@@ -635,6 +635,16 @@ impl MainWindow {
         }
         let on_screen = e.session_id.as_deref().is_some_and(|s| crate::windows::on_screen(s, window, self.id, self.selected.as_deref(), cx));
         let looking = crate::notify::looking_at(on_screen, e.session_id.as_deref(), e.session_id.as_deref());
+        // The floating badge takes every notification (not only banners) while it's up: its
+        // capsule instead of a macOS banner, with the sound a banner would have had.
+        if (!looking || p.test) && crate::ui::badge::takes(cx) {
+            let banner = matches!(crate::notify::show(&p, looking), crate::notify::Show::Banner);
+            if let (true, true, Some(file)) = (banner, p.sound, p.sound_file.as_deref()) {
+                crate::sounds::play_file(file, p.volume.unwrap_or(100));
+            }
+            crate::ui::badge::push(self, e.seq, e.session_id.clone(), p, cx);
+            return;
+        }
         match crate::notify::show(&p, looking) {
             crate::notify::Show::Banner => {}
             crate::notify::Show::SoundOnly => {
@@ -844,6 +854,8 @@ impl MainWindow {
     }
 
     fn apply_refresh(&mut self, r: RefreshResult, window: &mut Window, cx: &mut Context<Self>) {
+        // The floating badge counts needs-you items, names terminals and follows settings.
+        let badge = r.needs.is_some() || r.settings.is_some() || r.sessions.is_some();
         if let Some(s) = r.settings {
             let new: HashMap<String, Value> = s.into_iter().map(|e| (e.key, e.value)).collect();
             if new != self.settings {
@@ -898,6 +910,9 @@ impl MainWindow {
         }
         if let Some(n) = r.needs {
             self.needs = n;
+        }
+        if badge && self.is_home() {
+            crate::ui::badge::sync(self, cx);
         }
         if let Some(t) = r.today {
             self.today = t;

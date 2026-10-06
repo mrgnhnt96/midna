@@ -884,7 +884,7 @@ fn option_label(key: &str, v: &str) -> String {
         ("terminal.preview_path_click", "reveal") => "Reveal in Finder".into(),
         ("terminal.preview_path_click", "ide") => "Open in IDE".into(),
         ("terminal.preview_path_click", "copy") => "Copy path".into(),
-        ("notify.badge", "background") => "When midna is in the background".into(),
+        ("notify.badge", "background") => "In the background".into(),
         ("notify.badge", "always") => "Always".into(),
         ("notify.badge", "off") => "Off".into(),
         // script names are names: keep them as typed
@@ -1245,6 +1245,7 @@ impl SettingsWindow {
                         options.push((current.clone(), stay_label(current.parse().unwrap_or(0))));
                     }
                     r.label = label.clone();
+                    r.note = None;
                     r.control = Control::Seg { key, options, current };
                     rows.push(r);
                 }
@@ -1256,6 +1257,7 @@ impl SettingsWindow {
                     let key = color_key(k);
                     let Some(mut r) = self.spec_row(&key) else { continue };
                     r.label = label.clone();
+                    r.note = None;
                     r.control = Control::Color { current: self.value(&key).as_str().unwrap_or("").to_string(), key };
                     rows.push(r);
                 }
@@ -1269,7 +1271,7 @@ impl SettingsWindow {
                     .map(|k| RowSpec {
                         label: k.label.clone(),
                         note: Some((
-                            format!("`{}`: agents send it with `midna notify send --kind {}`, triggers with their notify action's kind. ↩ saves a new name; Remove drops its settings too.", k.key, k.key),
+                            format!("Agents send it with “midna notify send --kind {}”. ↩ saves a new name; Remove drops its settings too.", k.key),
                             Hsla::default(),
                         )),
                         control: Control::Edit { key: format!("label:{}", k.key), actions: vec![("Test".into(), Act::TestKind(k.key.clone())), ("Remove".into(), Act::RemoveKind(k.key.clone()))] },
@@ -1337,7 +1339,14 @@ impl SettingsWindow {
                     .filter(|(s, ..)| *s == sec)
                     .map(|&(_, name, items)| Group {
                         name,
-                        note: (name == "Built in").then_some("Keys a screen handles itself. Not settings, so they can't be changed."),
+                        note: match name {
+                            "Built in" => Some("Keys a screen handles itself. Not settings, so they can't be changed."),
+                            "Floating badge" => Some("Counts what needs you in a corner of the screen. Drag it to move it."),
+                            "How long each kind stays on screen" => Some("Until handled: until you answer, open or dismiss it."),
+                            "Colors" => Some("In the badge, the in-app card and the notifications list."),
+                            "Your kinds" => Some("Kinds agents and triggers can send as."),
+                            _ => None,
+                        },
                         rows: items.iter().flat_map(|i| if i.starts_with('@') { self.special_rows(t, i) } else { self.key_row(t, i).into_iter().collect() }).collect(),
                     })
                     .filter(|g| !g.rows.is_empty())
