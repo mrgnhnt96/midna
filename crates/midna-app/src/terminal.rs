@@ -143,6 +143,9 @@ enum StreamStatus {
     Attaching,
     Live,
     Ended,
+    /// The session exists but has no process (midnad restarted since, killing its shell):
+    /// a card offering Restart and Close. Holds the line saying why.
+    NotRunning(String),
     Failed(String),
 }
 
@@ -278,7 +281,7 @@ impl TerminalView {
                     if t.sink.is_ended() && t.status == StreamStatus::Live {
                         t.status = StreamStatus::Ended;
                     }
-                    matches!(t.status, StreamStatus::Ended | StreamStatus::Failed(_)).then(|| (t.backend.clone(), t.session_id.clone()))
+                    matches!(t.status, StreamStatus::Ended | StreamStatus::NotRunning(_) | StreamStatus::Failed(_)).then(|| (t.backend.clone(), t.session_id.clone()))
                 }) else {
                     break;
                 };
@@ -290,7 +293,7 @@ impl TerminalView {
                     continue;
                 }
                 let r = this.update_in(cx, |t, window, cx| {
-                    if matches!(t.status, StreamStatus::Ended | StreamStatus::Failed(_)) {
+                    if matches!(t.status, StreamStatus::Ended | StreamStatus::NotRunning(_) | StreamStatus::Failed(_)) {
                         if let Some(old) = t.stream.borrow_mut().take() {
                             old.close();
                         }
@@ -382,7 +385,7 @@ impl TerminalView {
 
     /// A screen has arrived (drawn or waiting in the sink), or the stream gave up.
     pub fn has_frame(&self) -> bool {
-        !self.grid.is_empty() || self.sink.frame.lock().map(|f| f.is_some()).unwrap_or(false) || matches!(self.status, StreamStatus::Ended | StreamStatus::Failed(_))
+        !self.grid.is_empty() || self.sink.frame.lock().map(|f| f.is_some()).unwrap_or(false) || matches!(self.status, StreamStatus::Ended | StreamStatus::NotRunning(_) | StreamStatus::Failed(_))
     }
 
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -399,7 +402,17 @@ impl TerminalView {
         }
         let (cw, ch) = (self.cell_w.round() as u32, LINE_H as u32);
         let task = cx.spawn_in(window, async move |this, cx| {
-            let res = cx.background_executor().spawn(async move { backend.attach(AttachRequest { session: &sid, cols, rows, cell_w: cw, cell_h: ch }, sink) }).await;
+            let (res, gone) = cx
+                .background_executor()
+                .spawn(async move {
+                    let res = backend.attach(AttachRequest { session: &sid, cols, rows, cell_w: cw, cell_h: ch }, sink);
+                    let gone = match &res {
+                        Err(e) if format!("{e:#}").contains("no running session") => Some(not_running_detail(&backend.call("session.get", json!({ "id": sid })).unwrap_or_default())),
+                        _ => None,
+                    };
+                    (res, gone)
+                })
+                .await;
             let _ = this.update(cx, |t, cx| {
                 match res {
                     Ok(stream) => {
@@ -411,12 +424,94 @@ impl TerminalView {
                         t.status = StreamStatus::Live;
                         t.reported_focus = None;
                     }
-                    Err(e) => t.status = StreamStatus::Failed(format!("{e:#}")),
+                    Err(e) => {
+                        t.status = match gone {
+                            Some(why) => StreamStatus::NotRunning(why),
+                            None => StreamStatus::Failed(format!("Could not attach: {e:#}")),
+                        }
+                    }
                 }
                 cx.notify();
             });
         });
         self._tasks.push(task);
+    }
+
+    /// The not-running card's Restart: restart this pane's own session (not the selected one,
+    /// which differs in a split or pop-out) and attach to the new process.
+    fn restart_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.status = StreamStatus::Attaching;
+        let backend = self.backend.clone();
+        let sid = self.session_id.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let res = cx.background_executor().spawn(async move { backend.call("session.restart", json!({ "id": sid })) }).await;
+            let _ = this.update_in(cx, |t, window, cx| {
+                match res {
+                    Ok(_) => {
+                        if let Some(old) = t.stream.borrow_mut().take() {
+                            old.close();
+                        }
+                        t.sink.reset();
+                        t.attach(window, cx);
+                    }
+                    Err(e) => t.status = StreamStatus::Failed(format!("Could not restart: {e:#}")),
+                }
+                cx.notify();
+            });
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    /// The not-running card's Close. The window moves off it when the session list drops it.
+    fn close_session(&mut self, cx: &mut Context<Self>) {
+        crate::sounds::play("closed");
+        let backend = self.backend.clone();
+        let sid = self.session_id.clone();
+        cx.background_executor().spawn(async move { backend.call("session.close", json!({ "id": sid, "force": true })) }).detach();
+    }
+
+    fn render_not_running(&self, t: &Theme, why: &str, cx: &mut Context<Self>) -> Div {
+        let key = |label: String, color: Hsla| (!label.is_empty()).then(|| div().text_color(color).font_weight(FontWeight::NORMAL).child(label));
+        let restart = crate::ui::screen_kit::btn_primary(t, "nr-restart", "Restart")
+            .h(px(32.))
+            .px(px(14.))
+            .text_size(px(13.))
+            .children(key(crate::actions::label(cx, "keys.restart"), t.accent_fg.opacity(0.7)))
+            .on_click(cx.listener(|v, _, window, cx| v.restart_session(window, cx)));
+        let close = crate::ui::screen_kit::btn(t, "nr-close", "Close")
+            .h(px(32.))
+            .px(px(14.))
+            .text_size(px(13.))
+            .text_color(t.fg)
+            .children(key(crate::actions::label(cx, "keys.close"), t.dim))
+            .on_click(cx.listener(|v, _, _, cx| v.close_session(cx)));
+        div().absolute().top_0().left_0().size_full().flex().items_center().justify_center().child(
+            div()
+                .w(px(380.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(14.))
+                .pt(px(28.))
+                .pb(px(24.))
+                .px(px(28.))
+                .bg(t.panel)
+                .border_1()
+                .border_color(t.line)
+                .rounded(px(12.))
+                .child(div().size(px(40.)).rounded(px(10.)).bg(t.raised).flex().items_center().justify_center().child(crate::icons::Icon::Shell.el(20., t.dim)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.fg).child("This terminal isn’t running"))
+                        .child(div().text_size(px(12.5)).line_height(px(18.)).text_color(t.dim).text_center().child(why.to_string())),
+                )
+                .child(div().flex().gap(px(8.)).mt(px(4.)).child(restart).child(close)),
+        )
     }
 
     fn stream(&self) -> Option<Arc<dyn TermStream>> {
@@ -1606,10 +1701,15 @@ impl Render for TerminalView {
         let overlay = match &self.status {
             StreamStatus::Attaching => Some(("Attaching…".to_string(), dim)),
             StreamStatus::Ended => Some(("Stream ended. The session closed or midnad went away.".to_string(), dim)),
-            StreamStatus::Failed(e) => Some((format!("Could not attach: {e}"), theme.err)),
+            StreamStatus::NotRunning(_) => None,
+            StreamStatus::Failed(e) => Some((e.clone(), theme.err)),
             StreamStatus::Live => None,
         };
-        let below_chip = !at_bottom && below > 0 && overlay.is_none();
+        let not_running = match &self.status {
+            StreamStatus::NotRunning(why) => Some(self.render_not_running(&theme, why, cx)),
+            _ => None,
+        };
+        let below_chip = !at_bottom && below > 0 && overlay.is_none() && not_running.is_none();
         let pill = self.render_queue_pill(&theme, below_chip, window, cx);
         let preview = self.render_link_preview(&theme, pill.is_some(), below_chip, cx);
         let chip = |d: Div| d.px(px(10.)).py(px(4.)).rounded(px(6.)).bg(theme.panel).border_1().border_color(theme.line).text_size(px(11.5));
@@ -1739,10 +1839,33 @@ impl Render for TerminalView {
                         .child(div().text_color(dim).child("↩ older · ⇧↩ newer · esc")),
                 )
             })
+            .children(not_running)
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
             .children(nav)
             .children(menu)
             .children(secret_sheet)
+    }
+}
+
+/// The not-running card's line, from `session.get`: why its process is gone, when, and where
+/// a restart starts it.
+fn not_running_detail(s: &Value) -> String {
+    let status = &s["status"];
+    let reason = status["reason"].as_str().unwrap_or_default();
+    let when = status["since"].as_str().map(|t| crate::ui::screen_kit::ago(Some(t))).filter(|a| a != "never");
+    let when = when.map(|a| format!(" {a}")).unwrap_or_default();
+    let what = if s["kind"].as_str() == Some("shell") { "shell" } else { "process" };
+    let why = if reason.contains("daemon restarted") {
+        format!("Its {what} ended when midnad restarted{when}.")
+    } else if let Some(code) = status["exit_code"].as_i64() {
+        format!("Its {what} exited with code {code}{when}.")
+    } else {
+        format!("Its {what} ended{when}.")
+    };
+    match s["cwd"].as_str().filter(|c| !c.is_empty()) {
+        Some(cwd) if what == "shell" => format!("{why} Restart it for a fresh shell in {}.", crate::commands::tilde(cwd)),
+        Some(cwd) => format!("{why} Restart it to run it again in {}.", crate::commands::tilde(cwd)),
+        None => format!("{why} Restart it to run it again."),
     }
 }
 
@@ -1929,7 +2052,18 @@ fn paint_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::{key_msg, link_span, other_text};
+    use super::{key_msg, link_span, not_running_detail, other_text};
+    use serde_json::json;
+
+    #[test]
+    fn not_running_says_why_and_where() {
+        let home = std::env::var("HOME").unwrap();
+        let shell = json!({"kind": "shell", "cwd": home, "status": {"state": "exited", "reason": "daemon restarted"}});
+        assert_eq!(not_running_detail(&shell), "Its shell ended when midnad restarted. Restart it for a fresh shell in ~.");
+        let agent = json!({"kind": "agent", "cwd": "/tmp/x", "status": {"state": "exited", "exit_code": 2}});
+        assert_eq!(not_running_detail(&agent), "Its process exited with code 2. Restart it to run it again in /tmp/x.");
+        assert_eq!(not_running_detail(&json!(null)), "Its process ended. Restart it to run it again.");
+    }
 
     #[test]
     fn link_spans() {
