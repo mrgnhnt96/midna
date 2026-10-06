@@ -70,8 +70,11 @@ pub fn openrpc() -> Value {
             "title": "midna",
             "version": crate::VERSION,
             "description": "midna daemon API: newline-delimited JSON-RPC 2.0 over the Unix socket at $MIDNA_SOCKET \
-                (default $MIDNA_HOME/midnad.sock). Agents: params may include `caller: {session}` (the CLI adds MIDNA_SESSION). \
-                Errors: -32601 unknown method, -32602 bad params, 1 refused by policy, 2 human only, 3 not found, 4 conflict.",
+                (default $MIDNA_HOME/midnad.sock). Agents: params may include `caller: {session}` (the CLI adds MIDNA_SESSION); \
+                `caller: {no_wait: true}` makes a call that needs an approval answer at once (error 6, data.needs_you_id) and \
+                finish when the human answers (needs_you.get reports how). \
+                Errors: -32601 unknown method, -32602 bad params, 1 refused by policy, 2 human only, 3 not found, 4 conflict, \
+                6 pending on the human (no_wait).",
         },
         "methods": methods,
         "components": { "schemas": Value::Object(defs) },

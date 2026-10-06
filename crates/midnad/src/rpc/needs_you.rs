@@ -4,11 +4,101 @@ use super::{Ctx, R, ok};
 use crate::agent_state::screen_shows_prompt;
 use crate::daemon::Daemon;
 use midna_proto::*;
+use serde_json::Value;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub fn list(d: &Daemon, p: NeedsYouListParams) -> R {
     let core = d.core();
     ok(core.state.needs_you.iter().filter(|n| p.session_id.is_none() || n.session_id == p.session_id).cloned().collect::<Vec<_>>())
+}
+
+/// Most closed items `needs_you.get` remembers.
+const ANSWERED_MAX: usize = 500;
+
+struct Entry {
+    r: NeedsYouGetResult,
+    /// A `caller.no_wait` call is still finishing after the answer.
+    call_running: bool,
+}
+
+/// How recently closed needs-you items ended, oldest first (`needs_you.get`). In memory only.
+#[derive(Default)]
+pub struct Answered {
+    recent: VecDeque<Entry>,
+    /// Open approvals a `caller.no_wait` call is blocked on.
+    no_wait: HashSet<Id>,
+}
+
+impl Answered {
+    /// Called by `close_needs_you` for every item that closes.
+    pub fn record(&mut self, id: &str, resolution: &Value, by: &Actor) {
+        let state = match resolution.get("kind").and_then(Value::as_str) {
+            Some("withdrawn") => NeedsYouState::Withdrawn,
+            Some("timeout") => NeedsYouState::Timeout,
+            _ => NeedsYouState::Resolved,
+        };
+        if self.recent.len() >= ANSWERED_MAX {
+            self.recent.pop_front();
+        }
+        let r = NeedsYouGetResult {
+            id: id.into(),
+            state,
+            item: None,
+            resolution: Some(resolution.clone()),
+            resolved_by: Some(by.clone()),
+            resolved_at: Some(time::now_rfc3339()),
+            result: None,
+            error: None,
+        };
+        self.recent.push_back(Entry { r, call_running: self.no_wait.remove(id) });
+    }
+
+    /// A `caller.no_wait` call is blocked on approval `id`.
+    pub fn expect_call(&mut self, id: &str) {
+        self.no_wait.insert(id.to_string());
+    }
+
+    /// What the `caller.no_wait` call behind `id` ended with.
+    pub fn finish(&mut self, id: &str, res: &Result<Value, RpcError>) {
+        self.no_wait.remove(id);
+        if let Some(e) = self.recent.iter_mut().rev().find(|e| e.r.id == id) {
+            match res {
+                Ok(v) => e.r.result = Some(v.clone()),
+                Err(err) => e.r.error = serde_json::to_value(err).ok(),
+            }
+            e.call_running = false;
+        }
+    }
+
+    fn get(&self, id: &str) -> Option<(NeedsYouGetResult, bool)> {
+        self.recent.iter().rev().find(|e| e.r.id == id).map(|e| (e.r.clone(), e.call_running))
+    }
+}
+
+/// `needs_you.get`: an open item, or how a closed one ended. `wait_secs` waits for the answer
+/// (and for a no-wait call behind it to finish).
+pub fn get(d: &Daemon, p: NeedsYouGetParams) -> R {
+    let deadline = Instant::now() + Duration::from_secs(p.wait_secs.unwrap_or(0).min(600));
+    loop {
+        let waiting = Instant::now() < deadline;
+        let open = d.core().state.needs_you.iter().find(|n| n.id == p.id).cloned();
+        if let Some(item) = open {
+            if waiting {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            let r = NeedsYouGetResult { id: p.id, state: NeedsYouState::Open, item: Some(item), resolution: None, resolved_by: None, resolved_at: None, result: None, error: None };
+            return ok(r);
+        }
+        let answered = d.answered.lock().unwrap_or_else(|e| e.into_inner()).get(&p.id);
+        match answered {
+            Some((_, true)) if waiting => std::thread::sleep(Duration::from_millis(100)),
+            Some((r, _)) => return ok(r),
+            None => return Err(RpcError::not_found(format!("no needs-you item {} (unknown, or closed before midnad last restarted)", p.id))),
+        }
+    }
 }
 
 pub fn raise(d: &Daemon, ctx: &Ctx, p: NeedsYouRaiseParams) -> R {
@@ -87,6 +177,9 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
             }
             d.mark_dirty();
         }
+        (Resolution::Approve { .. } | Resolution::Deny, NeedsYouKind::PermissionPrompt) if crate::trust::is_trust_item(&item) => {
+            crate::trust::answer(d, &item, matches!(p.resolution, Resolution::Approve { .. }))
+        }
         (Resolution::Approve { .. } | Resolution::Deny, NeedsYouKind::PermissionPrompt) => answer_prompt(d, &item, &p.resolution),
         (Resolution::Restart, _) => {
             let sid = item.session_id.clone().ok_or_else(|| RpcError::bad_params("item has no session to restart"))?;
@@ -99,7 +192,7 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     }
     d.close_needs_you(&item.id, serde_json::to_value(&p.resolution).unwrap_or_default(), ctx.actor());
     if let Some(tx) = d.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&item.id) {
-        let _ = tx.send(p.resolution.clone());
+        let _ = tx.send(crate::daemon::Answer::Resolved(p.resolution.clone()));
     }
     ok(ResolveResult { ok: true, rule })
 }

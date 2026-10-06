@@ -12,6 +12,9 @@ pub const HUMAN_ONLY: i64 = 2;
 pub const NOT_FOUND: i64 = 3;
 pub const CONFLICT: i64 = 4;
 pub const NOT_IMPLEMENTED: i64 = 5;
+/// `caller.no_wait`: the call waits on the human (data.needs_you_id) and carries on without
+/// the caller; needs_you.get reports how it ended.
+pub const PENDING: i64 = 6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RpcError {

@@ -92,6 +92,24 @@ impl OutTx {
             }
     }
 
+    /// The client hung up (or was cut off). Peeks at the socket without consuming anything, so
+    /// a handler blocked on the human can notice its caller is gone. A connection with no
+    /// socket (internal contexts, tests) never is.
+    pub fn peer_gone(&self) -> bool {
+        if self.closed.load(Ordering::Acquire) {
+            return true;
+        }
+        let Some(s) = &self.sock else { return false };
+        let mut b = [0u8; 1];
+        // SAFETY: a one-byte peek into a local buffer on a socket we own.
+        let n = unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+        match n {
+            0 => true,
+            n if n > 0 => false,
+            _ => matches!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECONNRESET | libc::ENOTCONN | libc::EPIPE | libc::EBADF)),
+        }
+    }
+
     /// Bytes queued and not yet written (tests).
     pub fn pending(&self) -> usize {
         self.pending.load(Ordering::Acquire)

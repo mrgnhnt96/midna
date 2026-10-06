@@ -62,7 +62,7 @@ impl Client {
         let caller = std::env::var("MIDNA_SESSION")
             .ok()
             .filter(|s| !s.is_empty())
-            .map(|session| Caller { session: Some(session), role: None });
+            .map(|session| Caller { session: Some(session), ..Default::default() });
         Ok(Client { reader: BufReader::new(s.try_clone()?), writer: s, next_id: 1, caller, queued: VecDeque::new() })
     }
 
@@ -78,7 +78,14 @@ impl Client {
 
     /// Voluntarily act as an agent (optionally for a session), even from a human binary.
     pub fn as_agent(mut self, session: Option<String>) -> Client {
-        self.caller = Some(Caller { session, role: Some("agent".into()) });
+        self.caller = Some(Caller { session, role: Some("agent".into()), ..Default::default() });
+        self
+    }
+
+    /// Ask the daemon not to block on the human (`caller.no_wait`): a call that needs an
+    /// approval fails at once with error 6 (`PENDING`, data.needs_you_id) and finishes later.
+    pub fn no_wait(mut self) -> Client {
+        self.caller.get_or_insert_with(Default::default).no_wait = true;
         self
     }
 

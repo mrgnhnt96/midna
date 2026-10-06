@@ -346,6 +346,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Allow agents to move, pop out, snap, keep-on-top or close windows via window.command. Human only."),
     s!("agents.may_close_idle", SettingKind::Bool, B(true), "agents", true,
         "Allow agents to close terminals that are idle, done or exited (other than their own) without asking. Human only."),
+    s!("agents.may_force_close", SettingKind::Bool, B(false), "agents", true,
+        "Allow agents to close any terminal without asking, including working ones and `close --force` (an unattended task board closing tabs when usage runs out or a PR is done). A rule on `close …` still applies. Off: those closes ask you. Human only."),
     s!("approve.from_cli", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to approve approval requests of their own session from the CLI. Human only."),
     s!("agents.claude.statusline", SettingKind::Bool, B(true), "agents", false,

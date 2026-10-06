@@ -19,17 +19,32 @@ fn normalize(path: &str) -> String {
 
 /// Find the project containing `path` (deepest match) or add one for it.
 pub fn find_or_add(d: &Daemon, actor: Actor, path: &str, name: Option<String>) -> Result<Project, RpcError> {
+    add_inner(d, actor, path, name, false)
+}
+
+/// Like [`find_or_add`] for `session.open --cwd` in a folder no project covers: a project an
+/// agent's open creates is marked `auto_created`, so that agent may remove it again.
+pub fn find_or_add_for_open(d: &Daemon, actor: Actor, path: &str) -> Result<Project, RpcError> {
+    let auto = actor.kind != ActorKind::Human;
+    add_inner(d, actor, path, None, auto)
+}
+
+fn add_inner(d: &Daemon, actor: Actor, path: &str, name: Option<String>, auto_created: bool) -> Result<Project, RpcError> {
     let path = normalize(path);
     if !std::path::Path::new(&path).is_dir() {
         return Err(RpcError::bad_params(format!("{path} is not a directory")));
     }
     let mut core = d.core();
-    if let Some(p) = core.state.projects.iter().find(|p| p.path == path) {
+    if let Some(p) = core.state.projects.iter_mut().find(|p| p.path == path) {
+        // The human adding it themselves makes it theirs.
+        if actor.kind == ActorKind::Human && std::mem::take(&mut p.auto_created) {
+            d.mark_dirty();
+        }
         return Ok(p.clone());
     }
     let name = name.unwrap_or_else(|| path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("root").to_string());
     let order = core.state.projects.iter().map(|p| p.order + 1).max().unwrap_or(0);
-    let p = Project { id: format!("p_{}", hex_id(6)), name, path, icon: None, order, commands: vec![], last_opened_at: None };
+    let p = Project { id: format!("p_{}", hex_id(6)), name, path, icon: None, order, commands: vec![], last_opened_at: None, auto_created };
     core.state.projects.push(p.clone());
     d.mark_dirty();
     d.emit(kinds::PROJECT_ADDED, actor, Some(p.id.clone()), None, serde_json::to_value(&p).unwrap_or_default());
@@ -118,16 +133,38 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: ProjectUpdateParams) -> R {
     if let Some(c) = p.commands {
         proj.commands = c;
     }
+    if ctx.is_human() {
+        // Renamed or given commands by the human: theirs now, not an agent's leftover.
+        proj.auto_created = false;
+    }
     let out = proj.clone();
     d.mark_dirty();
     d.emit(kinds::PROJECT_UPDATED, ctx.actor(), Some(out.id.clone()), None, serde_json::to_value(&out).unwrap_or_default());
     ok(out)
 }
 
+/// Agents may call the human-only `project.remove` on a project midna created for an agent's
+/// `session.open` (`auto_created`) while none of its terminals is running. Anything else
+/// takes the usual human-only path (a needs-you approval).
+pub fn agent_may_remove(d: &Daemon, method: &str, params: &serde_json::Value) -> bool {
+    if method != "project.remove" {
+        return false;
+    }
+    let Some(id) = params.get("id").and_then(serde_json::Value::as_str) else { return false };
+    let core = d.core();
+    let auto = core.state.project(id).is_some_and(|p| p.auto_created);
+    auto && !core.state.sessions.iter().any(|s| s.project_id == id && s.pid.is_some())
+}
+
 pub fn remove(d: &Arc<Daemon>, ctx: &Ctx, p: IdParams) -> R {
     let sessions: Vec<Id> = {
         let core = d.core();
-        core.state.project(&p.id).ok_or_else(|| RpcError::not_found(format!("no project {}", p.id)))?;
+        let proj = core.state.project(&p.id).ok_or_else(|| RpcError::not_found(format!("no project {}", p.id)))?;
+        let live = core.state.sessions.iter().filter(|s| s.project_id == p.id && s.pid.is_some()).count();
+        // Checked again here: a terminal may have started since the catalog check.
+        if !ctx.is_human() && (!proj.auto_created || live > 0) {
+            return Err(RpcError::human_only(format!("project {} has {live} running terminal(s); agents may only remove a project midna created for their open, once its terminals are closed", p.id)));
+        }
         core.state.sessions.iter().filter(|s| s.project_id == p.id).map(|s| s.id.clone()).collect()
     };
     for sid in sessions {

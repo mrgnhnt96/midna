@@ -113,13 +113,18 @@ impl RtHandle {
 pub enum Key {
     Enter,
     Escape,
+    Up,
+    Down,
 }
 
 /// Legacy bytes, or the kitty CSI-u form once the app has enabled the kitty keyboard protocol.
 /// Claude Code 2.1.288 enables it as soon as the terminal answers the query (libghostty does):
 /// from then on a bare `\r` inserts a newline instead of submitting, and only `CSI 13 u` submits.
+/// Unmodified arrows are the same `CSI A` / `CSI B` in both modes.
 pub fn encode_key(k: Key, kitty_flags: u8) -> Vec<u8> {
     match (k, kitty_flags != 0) {
+        (Key::Up, _) => b"\x1b[A".to_vec(),
+        (Key::Down, _) => b"\x1b[B".to_vec(),
         (Key::Enter, false) => b"\r".to_vec(),
         (Key::Enter, true) => b"\x1b[13u".to_vec(),
         (Key::Escape, false) => b"\x1b".to_vec(),

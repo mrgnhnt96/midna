@@ -24,7 +24,7 @@ pub mod window;
 
 use crate::conn::OutTx;
 use crate::daemon::Daemon;
-use midna_proto::error::{HUMAN_ONLY, NOT_IMPLEMENTED, REFUSED, UNKNOWN_METHOD};
+use midna_proto::error::{HUMAN_ONLY, NOT_IMPLEMENTED, PENDING, REFUSED, UNKNOWN_METHOD};
 use midna_proto::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -45,6 +45,86 @@ pub struct Ctx {
     pub pid: Option<i32>,
     /// Acting identity when not the connection's (e.g. a webhook trigger).
     pub as_actor: Option<Actor>,
+    /// The caller passed `caller.no_wait` (see [`call_no_wait`]).
+    pub no_wait: bool,
+    /// Set on the detached copy of a `caller.no_wait` call: approvals it raises are reported
+    /// here instead of blocking the caller.
+    pub detached: Option<Arc<NoWait>>,
+}
+
+/// What a detached `caller.no_wait` call reports back to the connection that made it.
+pub enum NoWaitMsg {
+    /// It is waiting on this approval.
+    Pending(Id),
+    /// It finished without needing the human.
+    Done(R),
+}
+
+pub struct NoWait {
+    tx: std::sync::Mutex<std::sync::mpsc::Sender<NoWaitMsg>>,
+    /// Approvals the call raised (their `needs_you.get` gets its result).
+    raised: std::sync::Mutex<Vec<Id>>,
+}
+
+impl NoWait {
+    /// The call is about to raise approval `id` and wait on it.
+    pub fn raising(&self, d: &Daemon, id: &str) {
+        d.answered.lock().unwrap_or_else(|e| e.into_inner()).expect_call(id);
+        self.raised.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
+    }
+
+    /// Approval `id` is up: let the caller go.
+    pub fn raised(&self, id: &str) {
+        let _ = self.tx.lock().unwrap_or_else(|e| e.into_inner()).send(NoWaitMsg::Pending(id.to_string()));
+    }
+}
+
+/// How long a `caller.no_wait` call keeps its approval open at least (nobody is blocked on it).
+pub const NO_WAIT_TIMEOUT_SECS: u64 = 24 * 3600;
+
+/// `caller.no_wait`: run the call on its own thread. If it finishes without the human, answer
+/// with its result. If it raises an approval first, answer at once with error 6 (`PENDING`,
+/// data.needs_you_id) and let it finish when the human answers; `needs_you.get` reports how it
+/// ended (resolution, and the call's result or error).
+fn call_no_wait(d: &Arc<Daemon>, ctx: &Ctx, method: &str, params: Value) -> R {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let nw = Arc::new(NoWait { tx: std::sync::Mutex::new(tx), raised: Default::default() });
+    let bg = Ctx {
+        role: ctx.role,
+        session: ctx.session.clone(),
+        conn_id: ctx.conn_id,
+        out: OutTx::detached(),
+        pid: ctx.pid,
+        as_actor: ctx.as_actor.clone(),
+        no_wait: true,
+        detached: Some(nw.clone()),
+    };
+    let (d2, m) = (d.clone(), method.to_string());
+    let spawned = std::thread::Builder::new().name("no-wait".into()).spawn(move || {
+        let res = dispatch(&d2, &bg, &m, params.clone());
+        let raised = std::mem::take(&mut *nw.raised.lock().unwrap_or_else(|e| e.into_inner()));
+        if raised.is_empty() {
+            let _ = nw.tx.lock().unwrap_or_else(|e| e.into_inner()).send(NoWaitMsg::Done(res));
+            return;
+        }
+        for id in &raised {
+            d2.answered.lock().unwrap_or_else(|e| e.into_inner()).finish(id, &res);
+        }
+        // The caller's own audit entry said "pending"; this one says how it ended.
+        audit(&d2, &bg, &m, &params, &res);
+    });
+    if spawned.is_err() {
+        return Err(RpcError::internal("could not start the no-wait call"));
+    }
+    match rx.recv() {
+        Ok(NoWaitMsg::Done(r)) => r,
+        Ok(NoWaitMsg::Pending(id)) => Err(RpcError::new(
+            PENDING,
+            format!("{method} is waiting on the human (needs-you {id}); it carries on when they answer. Check it with needs_you.get {{\"id\":\"{id}\"}}"),
+        )
+        .with_data(json!({ "needs_you_id": id, "pending": true }))),
+        Err(_) => Err(RpcError::internal(format!("internal error in {method}"))),
+    }
 }
 
 impl Ctx {
@@ -54,17 +134,17 @@ impl Ctx {
         let caller: Caller = params.get("caller").cloned().and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
         let downgrade = caller.session.is_some() || caller.role.as_deref() == Some("agent");
         let role = if downgrade { Role::Agent } else { base };
-        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None }
+        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None }
     }
 
     /// A human context for executing approved deferred actions (no connection).
     pub fn internal_human() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None }
     }
 
     /// A webhook trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
-        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor) }
+        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None }
     }
 
     pub fn is_human(&self) -> bool {
@@ -134,8 +214,10 @@ pub fn call(d: &Arc<Daemon>, ctx: &Ctx, method: &str, mut params: Value) -> R {
         Err(RpcError::conflict("midnad is upgrading/restarting; reconnect and retry in a moment"))
     } else if spec.stub {
         Err(RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet (later phase)")))
-    } else if spec.human_only && !ctx.is_human() {
+    } else if spec.human_only && !ctx.is_human() && !project::agent_may_remove(d, method, &params) {
         Err(human_only_refusal(d, ctx, method, &params))
+    } else if ctx.no_wait && spec.mutating && ctx.detached.is_none() {
+        call_no_wait(d, ctx, method, params.clone())
     } else {
         dispatch(d, ctx, method, params.clone())
     };
@@ -216,6 +298,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "events.list" => events::list(d, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),
         "needs_you.list" => needs_you::list(d, parse(p)?),
+        "needs_you.get" => needs_you::get(d, parse(p)?),
         "needs_you.raise" => needs_you::raise(d, ctx, parse(p)?),
         "needs_you.resolve" => needs_you::resolve(d, ctx, parse(p)?),
         "policy.check" => policy::check(d, ctx, parse(p)?),
@@ -297,6 +380,7 @@ fn audit(d: &Daemon, ctx: &Ctx, method: &str, params: &Value, res: &R) {
     let outcome = match res {
         Ok(_) => "ok",
         Err(e) if e.code == REFUSED || e.code == HUMAN_ONLY => "denied",
+        Err(e) if e.code == PENDING => "pending",
         Err(_) => "error",
     };
     let mut data = json!({ "method": method, "params_summary": summarize(method, params), "outcome": outcome });
@@ -353,6 +437,7 @@ pub fn defer_to_human(d: &Daemon, ctx: &Ctx, title: &str, cli: &str, method: &st
     item.approval = Some(ApprovalRequest {
         action: PolicyAction { kind: ActionKind::Cli, value: cli.to_string(), session: ctx.session.clone(), project: item.project_id.clone() },
         matched_rule: None,
+        target_session: None,
     });
     d.core().state.deferred.insert(item.id.clone(), crate::state::Deferred { method: method.into(), params: params.clone(), guard });
     let item = d.raise_needs_you(item);

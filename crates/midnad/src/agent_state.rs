@@ -126,6 +126,76 @@ pub fn screen_shows_prompt(lines: &[String]) -> bool {
     claude || codex
 }
 
+/// An agent's "do you trust this folder?" startup dialog, as found on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustDialog {
+    /// Position of the "Yes …" and "No …" choices in the list, and of the highlighted one.
+    pub yes: usize,
+    pub no: Option<usize>,
+    pub cursor: Option<usize>,
+}
+
+/// Screen check for the folder-trust dialog Claude Code (and Codex) show before they start in a
+/// folder they haven't seen. No hook fires while it is up, so only the screen shows that the
+/// agent waits on the human. The wording changes between versions ("Do you trust the files in
+/// this folder?" over `1. Yes, proceed` / `2. No, exit`; 2.1.288: "Is this a project you created
+/// or one you trust?" over `❯ No, exit` / `Yes, I trust this folder`), so this looks for a
+/// trust question about a folder/files/directory above a Yes/No choice list, in the bottom of
+/// the screen only.
+pub fn screen_shows_trust(lines: &[String]) -> Option<TrustDialog> {
+    let tail: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let tail = &tail[tail.len().saturating_sub(25)..];
+    let asks = tail.iter().any(|l| {
+        let l = l.to_lowercase();
+        l.contains("trust") && (l.contains("folder") || l.contains("files") || l.contains("directory") || l.contains("project you created"))
+    });
+    if !asks {
+        return None;
+    }
+    let (mut yes, mut no, mut cursor, mut n) = (None, None, None, 0usize);
+    for l in tail {
+        let marked = l.starts_with(['❯', '›', '>']);
+        let rest = l.trim_start_matches(['❯', '›', '>', ' ']);
+        // An optional `1.` before the choice.
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let rest = if digits > 0 && rest[digits..].starts_with('.') { rest[digits + 1..].trim_start() } else { rest };
+        let is_yes = rest.starts_with("Yes");
+        let is_no = rest == "No" || rest.starts_with("No,") || rest.starts_with("No ");
+        if !is_yes && !is_no {
+            continue;
+        }
+        if is_yes && yes.is_none() {
+            yes = Some(n);
+        }
+        if is_no && no.is_none() {
+            no = Some(n);
+        }
+        if marked {
+            cursor = Some(n);
+        }
+        n += 1;
+    }
+    Some(TrustDialog { yes: yes?, no, cursor })
+}
+
+/// Keys that pick "Yes" (`approve`) or "No" in a trust dialog: arrows from the highlighted
+/// choice, then Enter. With no "No" choice on screen, deny is Esc.
+pub fn trust_keys(t: &TrustDialog, approve: bool) -> Vec<crate::term::Key> {
+    use crate::term::Key;
+    let Some(to) = (if approve { Some(t.yes) } else { t.no }) else { return vec![Key::Escape] };
+    let from = t.cursor.unwrap_or(0);
+    let step = if to < from { Key::Up } else { Key::Down };
+    let mut keys = vec![step; from.abs_diff(to)];
+    keys.push(Key::Enter);
+    keys
+}
+
+/// The screen shows something only the human should answer: a permission prompt or a
+/// folder-trust dialog. Queued messages and title heuristics hold off while it is up.
+pub fn screen_waits_on_human(lines: &[String]) -> bool {
+    screen_shows_prompt(lines) || screen_shows_trust(lines).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +232,34 @@ mod tests {
         quoted.extend(screen("claude-2.1.288-interrupted.screen.txt"));
         quoted.extend((0..30).map(|i| format!("line {i}")));
         assert!(!screen_shows_prompt(&quoted));
+    }
+
+    #[test]
+    fn trust_dialogs() {
+        use crate::term::Key::*;
+        // Claude Code 2.1.288: "No, exit" first and highlighted.
+        let t = screen_shows_trust(&screen("claude-2.1.288-trust-folder.screen.txt")).expect("trust dialog");
+        assert_eq!(t, TrustDialog { yes: 1, no: Some(0), cursor: Some(0) });
+        assert_eq!(trust_keys(&t, true), vec![Down, Enter]);
+        assert_eq!(trust_keys(&t, false), vec![Enter]);
+        assert!(screen_waits_on_human(&screen("claude-2.1.288-trust-folder.screen.txt")));
+        // Older wording: numbered, "Yes, proceed" first.
+        let old: Vec<String> = ["Do you trust the files in this folder?", "", "/tmp/x", "", "❯ 1. Yes, proceed", "  2. No, exit", "", "Enter to confirm · Esc to exit"]
+            .map(str::to_string)
+            .to_vec();
+        let t = screen_shows_trust(&old).expect("old trust dialog");
+        assert_eq!(t, TrustDialog { yes: 0, no: Some(1), cursor: Some(0) });
+        assert_eq!(trust_keys(&t, true), vec![Enter]);
+        assert_eq!(trust_keys(&t, false), vec![Down, Enter]);
+        // Not a trust dialog: permission prompts, idle screens, the words without a choice list.
+        assert!(screen_shows_trust(&screen("claude-2.1.288-permission.screen.txt")).is_none());
+        assert!(screen_shows_trust(&screen("claude-2.1.288-interrupted.screen.txt")).is_none());
+        assert!(screen_shows_trust(&screen("codex-0.160.0-idle.screen.txt")).is_none());
+        assert!(screen_shows_trust(&["I trust the files in this folder now".to_string(), "> ".to_string()]).is_none());
+        // Quoted far above the input box: not live.
+        let mut quoted = old.clone();
+        quoted.extend((0..30).map(|i| format!("line {i}")));
+        assert!(screen_shows_trust(&quoted).is_none());
     }
 
     #[test]

@@ -74,6 +74,11 @@ pub struct Project {
     /// When a terminal last opened in it (RFC 3339). Orders "Recent" projects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_opened_at: Option<String>,
+    /// midna added it because an agent opened a terminal in a folder no project covered
+    /// (`session.open` with `cwd`). Agents may remove such a project once none of its
+    /// terminals is running; any other project.remove is human only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_created: bool,
 }
 
 /// A folder under one of the `projects.roots` settings that could be opened as a project.
@@ -700,6 +705,9 @@ pub enum DecisionSource {
     Human,
     /// Nobody answered within the timeout.
     Timeout,
+    /// The approval was withdrawn before anyone answered: the terminal it was about closed,
+    /// or the caller that asked went away (its connection or its terminal).
+    Withdrawn,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -733,6 +741,10 @@ pub struct ApprovalRequest {
     pub action: PolicyAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_rule: Option<Id>,
+    /// The terminal the action is about (`close --force <id>`), when not the asker's own. The
+    /// approval is withdrawn if it closes first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_session: Option<Id>,
 }
 
 /// How a needs-you item was resolved. Wire form: `{"kind":"approve","scope":{"kind":"once"}}`, `{"kind":"deny"}`.

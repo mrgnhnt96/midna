@@ -26,7 +26,7 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
     for id in &items {
         d.close_needs_you(id, json!({ "kind": "dismiss", "reason": "daemon reset" }), ctx.actor());
         if let Some(tx) = d.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
-            let _ = tx.send(Resolution::Deny);
+            let _ = tx.send(crate::daemon::Answer::Resolved(Resolution::Deny));
         }
     }
     out.needs_you_cleared = items.len() as u32;

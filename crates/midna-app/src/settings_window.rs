@@ -478,6 +478,7 @@ fn label_for(key: &str) -> String {
         "webhooks.relay_url" => "Relay URL",
         "agents.may_move_windows" => "Agents may move windows",
         "agents.may_close_idle" => "Agents may close idle terminals",
+        "agents.may_force_close" => "Agents may force-close terminals",
         "approve.from_cli" => "Agents may approve their own requests",
         "agents.claude.statusline" => "Claude status line (cost)",
         "agents.mcp" => "Give agents the midna MCP tools",
@@ -858,6 +859,7 @@ impl SettingsWindow {
         let allow = vec![
             row("agents.may_move_windows"),
             row("agents.may_close_idle"),
+            row("agents.may_force_close"),
             row("approve.from_cli"),
             row("policy.default"),
             row("policy.request_timeout_secs"),

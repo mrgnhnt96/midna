@@ -200,7 +200,7 @@ pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool) -> Result<Option<
     {
         return Ok(Some(WORKING.into()));
     }
-    if rt.read(true).is_some_and(|(screen, _, _)| crate::agent_state::screen_shows_prompt(&screen)) {
+    if rt.read(true).is_some_and(|(screen, _, _)| crate::agent_state::screen_waits_on_human(&screen)) {
         return Ok(Some("a prompt on screen to be answered".into()));
     }
     // Never type on top of a draft. (No input box found = can't tell, e.g. a shell: go.)

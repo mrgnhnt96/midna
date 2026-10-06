@@ -32,6 +32,7 @@ pub mod state;
 pub mod stream;
 pub mod subagent_log;
 pub mod term;
+pub mod trust;
 pub mod upgrade;
 pub mod usage;
 pub mod webhooks;

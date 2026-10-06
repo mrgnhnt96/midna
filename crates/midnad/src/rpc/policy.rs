@@ -1,6 +1,6 @@
 //! policy.* and rule.* handlers, the approval wait, and the gate used for agent CLI/window verbs.
 use super::{Ctx, R, ok};
-use crate::daemon::Daemon;
+use crate::daemon::{Answer, Daemon};
 use crate::policy::{escape_glob, evaluate, is_expired};
 use crate::state::hex_id;
 use midna_proto::*;
@@ -77,11 +77,18 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
         return ok(decided(&res));
     }
     let timeout = p.timeout_secs.unwrap_or_else(|| d.core().state.setting_i64("policy.request_timeout_secs").max(1) as u64);
-    ok(ask_human(d, ctx, &a, res.rule.map(|r| r.id), p.detail, timeout))
+    ok(ask_human(d, ctx, &a, res.rule.map(|r| r.id), p.detail, timeout, None))
 }
 
-/// Raise an approval and block until the human answers or `timeout_secs` passes.
-pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<Id>, detail: Option<String>, timeout_secs: u64) -> PolicyRequestResult {
+/// How often a blocked approval checks that its caller is still connected.
+const PEER_CHECK: Duration = Duration::from_millis(500);
+
+/// Raise an approval and block until the human answers or `timeout_secs` passes. `target` is
+/// the terminal the action is about, when not the asker's own. The approval is withdrawn (and
+/// this returns deny, source `withdrawn`) if the caller disconnects, or if its terminal or the
+/// target closes first (`session::close_inner`). A `caller.no_wait` call lets its caller go
+/// as soon as the item is up and keeps it open for at least a day.
+pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<Id>, detail: Option<String>, timeout_secs: u64, target: Option<Id>) -> PolicyRequestResult {
     let title = match a.kind {
         ActionKind::Tool => format!("Allow {}?", a.value),
         _ => format!("Allow `{}`?", a.value),
@@ -89,9 +96,14 @@ pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<I
     let mut item = d.new_needs_you(NeedsYouKind::Approval, title, ctx.actor(), a.session.clone());
     item.project_id = item.project_id.or(a.project.clone());
     item.detail = detail.unwrap_or_default();
-    item.approval = Some(ApprovalRequest { action: a.clone(), matched_rule });
+    let target = target.filter(|t| a.session.as_ref() != Some(t));
+    item.approval = Some(ApprovalRequest { action: a.clone(), matched_rule, target_session: target });
+    let timeout_secs = if ctx.detached.is_some() { timeout_secs.max(super::NO_WAIT_TIMEOUT_SECS) } else { timeout_secs };
     let (tx, rx) = std::sync::mpsc::channel();
     d.waiters.lock().unwrap_or_else(|e| e.into_inner()).insert(item.id.clone(), tx);
+    if let Some(nw) = &ctx.detached {
+        nw.raising(d, &item.id);
+    }
     // The asking agent is blocked on the human until this returns (Claude's PreToolUse hook
     // keeps its title spinning meanwhile, so nothing else would show it is waiting).
     // "Agent" = launched as one, or a terminal whose agent has been sending hooks.
@@ -103,7 +115,27 @@ pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<I
         d.set_status(sid, StatusState::NeedsYou, Some(format!("approval {}", a.value)), None, Actor::system());
     }
     let item = d.raise_needs_you(item);
-    let answer = rx.recv_timeout(Duration::from_secs(timeout_secs));
+    if let Some(nw) = &ctx.detached {
+        nw.raised(&item.id);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let answer = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break None;
+        }
+        match rx.recv_timeout(left.min(PEER_CHECK)) {
+            Ok(a) => break Some(a),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
+            // Nobody is left to act on the answer: take the question back.
+            Err(_) if ctx.detached.is_none() && ctx.out.peer_gone() => {
+                let why = "the caller that asked disconnected";
+                d.withdraw_needs_you(&item.id, why);
+                break Some(Answer::Withdrawn(why.into()));
+            }
+            Err(_) => {}
+        }
+    };
     d.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&item.id);
     if let Some(sid) = &agent_sid {
         let waiting = d.core().state.session(sid).is_some_and(|s| s.status.state == StatusState::NeedsYou);
@@ -113,12 +145,16 @@ pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<I
     }
     let mut r = PolicyRequestResult { decision: Effect::Deny, source: DecisionSource::Human, rule: None, needs_you_id: Some(item.id.clone()), reason: None };
     match answer {
-        Ok(Resolution::Approve { scope }) => {
+        Some(Answer::Resolved(Resolution::Approve { scope })) => {
             r.decision = Effect::Allow;
             r.reason = Some(format!("approved by the human ({})", scope_name(&scope)));
         }
-        Ok(other) => r.reason = Some(format!("{} by the human", resolution_name(&other))),
-        Err(_) => {
+        Some(Answer::Resolved(other)) => r.reason = Some(format!("{} by the human", resolution_name(&other))),
+        Some(Answer::Withdrawn(why)) => {
+            r.source = DecisionSource::Withdrawn;
+            r.reason = Some(format!("approval withdrawn: {why}"));
+        }
+        None => {
             d.close_needs_you(&item.id, json!({ "kind": "timeout" }), Actor::system());
             r.decision = Effect::Ask;
             r.source = DecisionSource::Timeout;
@@ -149,12 +185,22 @@ fn resolution_name(r: &Resolution) -> &'static str {
 
 /// Policy gate for agent-initiated CLI/window verbs. `force_ask` turns a default allow into ask.
 pub fn gate(d: &Daemon, ctx: &Ctx, kind: ActionKind, value: &str, target: Option<&Session>, force_ask: bool) -> Result<(), RpcError> {
+    gate_with(d, ctx, kind, value, target, force_ask.then_some(Effect::Ask))
+}
+
+/// [`gate`] with the decision to use when no rule matches (`None` = `policy.default` and its
+/// defaults table). A matching rule always wins. An approval it raises names `target`, so it
+/// is withdrawn if that terminal closes first.
+pub fn gate_with(d: &Daemon, ctx: &Ctx, kind: ActionKind, value: &str, target: Option<&Session>, default: Option<Effect>) -> Result<(), RpcError> {
     let mut a = complete(d, ctx, PolicyAction { kind, value: value.to_string(), session: None, project: None });
     if a.project.is_none() {
         a.project = target.map(|s| s.project_id.clone());
     }
     let res = evaluate_and_fire(d, &a, &ctx.actor());
-    let decision = if res.source == DecisionSource::Default && force_ask { Effect::Ask } else { res.decision };
+    let decision = match default {
+        Some(e) if res.source == DecisionSource::Default => e,
+        _ => res.decision,
+    };
     match decision {
         Effect::Allow => Ok(()),
         Effect::Deny => Err(RpcError::refused(format!(
@@ -163,12 +209,12 @@ pub fn gate(d: &Daemon, ctx: &Ctx, kind: ActionKind, value: &str, target: Option
         ))),
         Effect::Ask => {
             let timeout = d.core().state.setting_i64("policy.request_timeout_secs").max(1) as u64;
-            let r = ask_human(d, ctx, &a, res.rule.map(|r| r.id), None, timeout);
+            let r = ask_human(d, ctx, &a, res.rule.map(|r| r.id), None, timeout, target.map(|s| s.id.clone()));
             if r.decision == Effect::Allow {
                 Ok(())
             } else {
                 Err(RpcError::refused(format!("`{value}`: {}", r.reason.unwrap_or_default()))
-                    .with_data(json!({ "needs_you_id": r.needs_you_id })))
+                    .with_data(json!({ "needs_you_id": r.needs_you_id, "source": r.source })))
             }
         }
     }

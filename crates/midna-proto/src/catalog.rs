@@ -123,7 +123,9 @@ fn build() -> Vec<MethodSpec> {
         m::<ProjectUpdateParams, Project>("project.update").mutating().d(
             "Change a project's name, icon, or saved commands. Saved commands ({name, run, pinned}) show up in the human's command bar as \"Run <name>\"; pinned ones are suggested. `commands` replaces the whole list."),
         m::<IdParams, OkResult>("project.remove").mutating().human().d(
-            "Remove a project and close its terminals. Human only: an agent's call becomes a needs-you approval the human answers."),
+            "Remove a project and close its terminals. Human only: an agent's call becomes a needs-you approval the human answers. \
+             Exception: agents may remove a project midna created for one of their session.open calls (`auto_created`) once \
+             none of its terminals is running."),
         // sessions
         m::<SessionListParams, Vec<Session>>("session.list").d(
             "List terminals (shells, monitors, agents) with status, title and git info. Filter by project_id."),
@@ -139,7 +141,9 @@ fn build() -> Vec<MethodSpec> {
             "Move a terminal to the sidebar's folded Background group (background=true) or back to its project (false). \
              Its process, status and needs-you items are unchanged."),
         m::<SessionCloseParams, OkResult>("session.close").mutating().d(
-            "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`)."),
+            "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`): \
+             it asks the human unless they turned on agents.may_force_close (or a rule allows it). Closing another idle terminal asks unless \
+             agents.may_close_idle is on. An approval still pending when its terminal closes is withdrawn."),
         m::<SessionRenameParams, Session>("session.rename").mutating().d("Rename a terminal (the sidebar label the human sees). Give terminals you open a short, task-describing name."),
         m::<SessionInputParams, OkResult>("session.input").mutating().d(
             "Type text into a terminal, optionally followed by Enter; to an agent (Claude Code, Codex) this is a chat message. \
@@ -283,6 +287,10 @@ fn build() -> Vec<MethodSpec> {
         // needs-you
         m::<NeedsYouListParams, Vec<NeedsYou>>("needs_you.list").d(
             "List open needs-you items: approvals, permission prompts, blocked agents, notes, failures, rule-removal requests."),
+        m::<NeedsYouGetParams, NeedsYouGetResult>("needs_you.get").d(
+            "Where one needs-you item stands: open (with the item), resolved (resolution, by whom), withdrawn (its terminal or its \
+             asker went away) or timeout. wait_secs blocks until it is answered (max 600). For a call made with caller.no_wait, \
+             also the result or error that call ended with. Items closed before midnad last restarted are not found."),
         m::<NeedsYouRaiseParams, NeedsYou>("needs_you.raise").mutating().d(
             "Get the human's attention. kind=blocked when you cannot continue without them, kind=note for an FYI. Keep message to one short line (details in `detail`); don't raise one per step."),
         m::<NeedsYouResolveParams, ResolveResult>("needs_you.resolve").mutating().d(
@@ -293,7 +301,10 @@ fn build() -> Vec<MethodSpec> {
             "Evaluate an action against rules without side effects. Returns the decision, the winning rule and a full trace. \
              Most specific scope wins (session > project > global); within a scope deny > ask > allow."),
         m::<PolicyRequestParams, PolicyRequestResult>("policy.request").mutating().d(
-            "Check an action and, if a rule says ask, raise an approval for the human and block until they answer or timeout_secs passes."),
+            "Check an action and, if a rule says ask, raise an approval for the human and block until they answer or timeout_secs passes \
+             (default setting policy.request_timeout_secs). With caller.no_wait it answers at once with error 6 and data.needs_you_id \
+             instead; poll needs_you.get. The approval is withdrawn (decision deny, source withdrawn) if the caller disconnects or its \
+             terminal closes first."),
         // rules
         m::<NoParams, Vec<Rule>>("rule.list").d(
             "List rules (allow/ask/deny matchers) with fire counts and pending removal requests. Expired rules are removed (rule.expired event)."),

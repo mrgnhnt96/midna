@@ -1,6 +1,6 @@
 //! session.* handlers, plus the engine/reaper callbacks (`on_title`, `on_exit`).
 use super::{Ctx, R, ok};
-use crate::agent_state::{TitleHint, agent_title_hint, screen_shows_prompt, title_text};
+use crate::agent_state::{TitleHint, agent_title_hint, screen_waits_on_human, title_text};
 use crate::daemon::Daemon;
 use crate::state::hex_id;
 use crate::term::{self, EngineMsg, Launch};
@@ -177,13 +177,13 @@ pub(crate) fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, 
 pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     // Resolve the project: explicit, the caller's, the one containing cwd, or a new one for cwd.
     // With none of those the terminal opens at root: no project, starting in $HOME.
-    let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None };
+    let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false };
     let project = match (&p.project_id, &p.cwd) {
         (Some(id), _) if id == ROOT_PROJECT_ID => root(),
         (Some(id), _) => d.core().state.project(id).cloned().ok_or_else(|| RpcError::not_found(format!("no project {id}")))?,
         (None, Some(cwd)) => match super::project::containing(d, cwd) {
             Some(pr) => pr,
-            None => super::project::find_or_add(d, ctx.actor(), cwd, None)?,
+            None => super::project::find_or_add_for_open(d, ctx.actor(), cwd)?,
         },
         (None, None) => match super::session_project(d, ctx.session.as_deref()) {
             Some(id) if id == ROOT_PROJECT_ID => root(),
@@ -266,11 +266,16 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
             return Err(RpcError::conflict(format!("session {} is {}; pass force to close it anyway", s.id, s.status.state.as_str())));
         }
         let own = ctx.session.as_deref() == Some(s.id.as_str());
-        let may_close_idle = d.core().state.setting_bool("agents.may_close_idle");
+        let (may_close_idle, may_force_close) = {
+            let core = d.core();
+            (core.state.setting_bool("agents.may_close_idle"), core.state.setting_bool("agents.may_force_close"))
+        };
         let value = if p.force { "close --force" } else { "close" };
-        // Closing someone else's terminal without the setting is treated as an ask.
-        let force_ask = !own && !may_close_idle;
-        super::policy::gate(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), force_ask)?;
+        // agents.may_force_close: no default ask at all (`close --force`, a working terminal,
+        // someone else's); a rule on `close …` still decides. Otherwise closing someone else's
+        // terminal without agents.may_close_idle is treated as an ask.
+        let default = if may_force_close { Some(Effect::Allow) } else { (!own && !may_close_idle).then_some(Effect::Ask) };
+        super::policy::gate_with(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), default)?;
     }
     close_inner(d, ctx, &p.id, p.force);
     ok(OkResult { ok: true })
@@ -290,9 +295,24 @@ pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool) {
         rt.kill(force);
         let _ = rt.tx.send(EngineMsg::Stop);
     }
-    let open: Vec<Id> = d.core().state.needs_you.iter().filter(|n| n.session_id.as_deref() == Some(sid)).map(|n| n.id.clone()).collect();
-    for id in open {
-        d.close_needs_you(&id, json!({ "kind": "dismiss", "reason": "session closed" }), Actor::system());
+    // Its own items go with it. Approvals are withdrawn, waking whoever is blocked on them:
+    // the ones it asked for, and other terminals' asks about it (`close --force <sid>`).
+    let open: Vec<(Id, bool)> = d
+        .core()
+        .state
+        .needs_you
+        .iter()
+        .filter_map(|n| {
+            let target = n.approval.as_ref().and_then(|a| a.target_session.as_deref()) == Some(sid);
+            (target || n.session_id.as_deref() == Some(sid)).then(|| (n.id.clone(), n.kind == NeedsYouKind::Approval))
+        })
+        .collect();
+    for (id, approval) in open {
+        if approval {
+            d.withdraw_needs_you(&id, &format!("terminal {sid} closed"));
+        } else {
+            d.close_needs_you(&id, json!({ "kind": "dismiss", "reason": "session closed" }), Actor::system());
+        }
     }
     d.links.forget(&d.cfg.home, sid);
     d.mark_dirty();
@@ -341,7 +361,7 @@ fn refuse_prompt_answer(d: &Daemon, ctx: &Ctx, sid: &str, rt: &term::RtHandle) -
         let pending = core.state.needs_you.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.kind == NeedsYouKind::PermissionPrompt).map(|n| n.id.clone());
         (is_agent, pending)
     };
-    let on_screen = is_agent && rt.read(true).is_some_and(|(l, _, _)| screen_shows_prompt(&l));
+    let on_screen = is_agent && rt.read(true).is_some_and(|(l, _, _)| screen_waits_on_human(&l));
     if pending.is_some() || on_screen {
         let what = pending.map(|n| format!(" (needs-you {n})")).unwrap_or_default();
         return Err(RpcError::human_only(format!(
@@ -875,7 +895,7 @@ pub fn on_title(d: &Arc<Daemon>, sid: &str, generation: u64, title: &str, screen
             // A midna approval blocks inside the PreToolUse hook while the title keeps spinning;
             // only an on-screen prompt can be answered behind midna's back.
             let midna_approval = d.core().state.needs_you.iter().any(|n| n.kind == NeedsYouKind::Approval && n.session_id.as_deref() == Some(sid));
-            if !midna_approval && !screen_shows_prompt(&screen()) {
+            if !midna_approval && !screen_waits_on_human(&screen()) {
                 d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
                 d.set_status(sid, StatusState::Working, Some("prompt answered (title)".into()), None, Actor::system());
             }
@@ -927,7 +947,7 @@ fn settle_loop(d: &Arc<Daemon>, sid: &str, generation: u64) {
             return;
         }
         let Some((screen, _, _)) = rt.read(true) else { return };
-        if screen_shows_prompt(&screen) {
+        if screen_waits_on_human(&screen) {
             continue;
         }
         if state == StatusState::Working {

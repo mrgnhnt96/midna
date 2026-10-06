@@ -13,6 +13,11 @@ pub struct Caller {
     pub session: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Don't block on the human: if the call needs an approval, answer at once with error 6
+    /// (`pending`, data.needs_you_id) while the call carries on and finishes when the human
+    /// answers. Poll it with needs_you.get.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_wait: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -803,6 +808,53 @@ pub struct ResolveResult {
     /// The rule created by an approval with scope minutes/session/always.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<Rule>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouGetParams {
+    pub id: Id,
+    /// Block up to this many seconds while the item is still open (0 or absent = answer now;
+    /// capped at 600). Returns as soon as it is answered or withdrawn.
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
+}
+
+/// Where a needs-you item stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsYouState {
+    /// Still waiting on the human.
+    Open,
+    /// Answered (approve, deny, dismiss, done, restart) or auto-resolved; see `resolution`.
+    Resolved,
+    /// Taken back before anyone answered: the terminal it was about closed, or the caller that
+    /// asked went away.
+    Withdrawn,
+    /// Nobody answered within the asking call's timeout.
+    Timeout,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NeedsYouGetResult {
+    pub id: Id,
+    pub state: NeedsYouState,
+    /// The item, while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<NeedsYou>,
+    /// How it ended, e.g. `{"kind":"approve","scope":{"kind":"once"}}`, `{"kind":"deny"}`,
+    /// `{"kind":"withdrawn","reason":"…"}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<Timestamp>,
+    /// For a call made with `caller.no_wait`: what that call returned once it finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    /// For a call made with `caller.no_wait`: its error, if it failed (a denial included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
 }
 
 // ------------------------------------------------------------------ policy / rules

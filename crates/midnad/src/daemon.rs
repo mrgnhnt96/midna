@@ -129,6 +129,14 @@ pub struct AgentRt {
     pub restarting: bool,
 }
 
+/// What a caller blocked on an approval (`waiters`) is woken with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    Resolved(Resolution),
+    /// The item was taken back before anyone answered (why, for the caller's error).
+    Withdrawn(String),
+}
+
 pub struct Core {
     pub state: State,
     pub rt: HashMap<Id, RtHandle>,
@@ -146,7 +154,9 @@ pub struct Daemon {
     /// Human connections that subscribed (receive `window.command`).
     gui: Mutex<Vec<(u64, OutTx)>>,
     /// policy.request callers blocked on a needs-you id.
-    pub waiters: Mutex<HashMap<Id, Sender<Resolution>>>,
+    pub waiters: Mutex<HashMap<Id, Sender<Answer>>>,
+    /// How recently closed needs-you items ended (`needs_you.get`). Not persisted.
+    pub answered: Mutex<crate::rpc::needs_you::Answered>,
     next_conn: AtomicU64,
     pub next_gen: AtomicU64,
     /// Webhook receiver, secrets and delivery-path runtime state.
@@ -208,6 +218,7 @@ impl Daemon {
             shutting_down: AtomicBool::new(false),
             gui: Mutex::new(vec![]),
             waiters: Mutex::new(HashMap::new()),
+            answered: Default::default(),
             next_conn: AtomicU64::new(1),
             next_gen: AtomicU64::new(1),
             webhooks: crate::webhooks::Runtime::new(&cfg),
@@ -366,6 +377,7 @@ impl Daemon {
         if let Some(def) = &deferred {
             crate::rpc::secret::drop_pending(self, def);
         }
+        self.answered.lock().unwrap_or_else(|e| e.into_inner()).record(&item.id, &resolution, &by);
         self.mark_dirty();
         self.emit(
             kinds::NEEDS_YOU_RESOLVED,
@@ -375,6 +387,16 @@ impl Daemon {
             json!({ "id": item.id, "kind": item.kind, "resolution": resolution }),
         );
         Some(item)
+    }
+
+    /// Take back an open item nobody answered (its terminal closed, its asker went away): close
+    /// it as `{"kind":"withdrawn","reason":…}` and wake a caller blocked on it with the reason.
+    pub fn withdraw_needs_you(&self, id: &str, reason: &str) -> Option<NeedsYou> {
+        let item = self.close_needs_you(id, json!({ "kind": "withdrawn", "reason": reason }), Actor::system());
+        if let Some(tx) = self.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
+            let _ = tx.send(Answer::Withdrawn(reason.to_string()));
+        }
+        item
     }
 
     /// Auto-resolve open items of `kind` for a session (e.g. a permission prompt the agent moved past).
