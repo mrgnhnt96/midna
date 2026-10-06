@@ -69,6 +69,17 @@ pub fn top_session(m: &MainWindow) -> Option<String> {
     m.cards.list.first().and_then(|c| c.session.clone())
 }
 
+/// The top card's open needs-you item, when it has no terminal to go to: "Go" opens its card.
+fn top_need(m: &MainWindow) -> Option<String> {
+    let c = m.cards.list.first().filter(|c| c.session.as_ref().is_none_or(|s| !m.sessions.iter().any(|x| x.id == *s)))?;
+    c.posted.needs_you_id.clone().filter(|id| m.needs.iter().any(|n| n.id == *id))
+}
+
+/// The top card has somewhere to go (its terminal, or its needs-you card).
+pub fn can_go(m: &MainWindow) -> bool {
+    top_need(m).is_some() || top_session(m).is_some()
+}
+
 pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     if !m.cards.list.is_empty() {
         m.cards.list.remove(0);
@@ -78,8 +89,12 @@ pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
-/// Open the top card's terminal (and drop the card).
+/// Open the top card's terminal, or its needs-you card when it has none (and drop the card).
 pub fn go(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if let Some(id) = top_need(m) {
+        dismiss_top(m, cx);
+        return super::needs_you::show(m, id, window, cx);
+    }
     let Some(sid) = top_session(m) else { return };
     dismiss_top(m, cx);
     if m.screen != crate::app::Screen::Terminal {
@@ -179,7 +194,11 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     let need = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id)).filter(|n| n.approval.is_some()).map(|n| n.id.clone());
     let go_key = m.key_label("keys.next_needs_you");
     let question = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id)).and_then(|n| n.question.clone());
-    let go_label = if c.posted.category == "approval" && need.is_none() { "Answer in the terminal" } else { "Go to terminal" };
+    let go_label = match () {
+        _ if top_need(m).is_some() => "Open",
+        _ if c.posted.category == "approval" && need.is_none() => "Answer in the terminal",
+        _ => "Go to terminal",
+    };
     let generation = m.cards.generation;
     let hovered = m.cards.hovered;
     let recover = m.cards.recover;

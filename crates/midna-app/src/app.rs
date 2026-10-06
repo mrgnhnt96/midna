@@ -1394,7 +1394,7 @@ impl MainWindow {
     /// Inside the stack ⌘J skips to the next card (handled by the stack).
     pub fn next_needs_you(&mut self, _: &NextNeedsYou, window: &mut Window, cx: &mut Context<Self>) {
         // A banner card showing: ⌘J is its "Go to terminal".
-        if self.overlay == Overlay::None && crate::ui::toast::top_session(self).is_some() {
+        if self.overlay == Overlay::None && crate::ui::toast::can_go(self) {
             crate::ui::toast::go(self, window, cx);
         } else if self.overlay == Overlay::NeedsYou {
             crate::ui::needs_you::skip(self, cx);

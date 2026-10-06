@@ -224,6 +224,10 @@ pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {
         window.activate_window();
         let _ = t.entity.update(cx, |m, cx| {
             if !m.sessions.iter().any(|s| s.id == session) {
+                // No terminal (none behind it, or it's closed): its needs-you card, if still open.
+                if let Some(id) = need.filter(|id| m.needs.iter().any(|n| n.id == *id)) {
+                    crate::ui::needs_you::show(m, id, window, cx);
+                }
                 return;
             }
             if m.screen != Screen::Terminal {
