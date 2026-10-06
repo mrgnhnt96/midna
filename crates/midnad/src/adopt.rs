@@ -15,6 +15,8 @@
 //! - **Restart.** midna sets the next command (`AdoptedAgent.next`) and SIGHUPs the agent;
 //!   the shim sees it exit, asks `session.adopt_end` and runs the next command in the same
 //!   shell (Claude: `--resume <id>`; Codex: `codex resume … <thread-id>`).
+//! - **Kind.** While adopted the terminal reports `kind: agent` (with `agent`, `agent_info` and
+//!   `adopted`); released, it is `shell` again. `adopted` is what says a shell is underneath.
 //! - **`exec claude`** replaces the shell with the shim, which then is the terminal's own
 //!   process: adopted the same way. When the agent exits the terminal's process ends, and the
 //!   terminal is released with it (`session::on_exit`).
@@ -229,7 +231,8 @@ pub fn adopt(d: &Arc<Daemon>, ctx: &crate::rpc::Ctx, p: SessionAdoptParams) -> R
     let sid = sid_of(ctx, &p.session)?;
     let none = Ok(SessionAdoptResult::default());
     let s = d.core().state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no session {sid}")))?;
-    if s.kind != SessionKind::Shell || !d.core().state.setting_bool("agents.adopt_typed") {
+    // A shell terminal, or one an adopted agent holds (kind `agent` until it is released).
+    if (s.kind != SessionKind::Shell && s.adopted.is_none()) || !d.core().state.setting_bool("agents.adopt_typed") {
         return none;
     }
     // An agent already runs here (say, Claude's Bash tool running `claude`): leave this one be.
@@ -250,6 +253,7 @@ pub fn adopt(d: &Arc<Daemon>, ctx: &crate::rpc::Ctx, p: SessionAdoptParams) -> R
         let mut core = d.core();
         let Some(sess) = core.state.session_mut(&sid) else { return none };
         sess.adopted = Some(AdoptedAgent { agent: p.agent, pid: p.pid, bin: p.bin, args: p.args, since: time::now_rfc3339(), next: None, next_cwd: None });
+        sess.kind = SessionKind::Agent;
         sess.agent = Some(p.agent);
         sess.agent_info = Some(AgentInfo::default());
         core.agents.insert(sid.clone(), Default::default());
@@ -286,6 +290,7 @@ fn release(d: &Daemon, sid: &str, why: &str) {
         if s.adopted.take().is_none() {
             return;
         }
+        s.kind = SessionKind::Shell;
         s.agent = None;
         s.agent_info = None;
         core.agents.remove(sid);

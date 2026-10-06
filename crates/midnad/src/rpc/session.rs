@@ -797,6 +797,7 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
         // released here, or the reaper would mark the exited terminal idle later.
         let adopted = s.adopted.take().is_some();
         if adopted {
+            s.kind = SessionKind::Shell;
             s.agent = None;
             s.agent_info = None;
         }

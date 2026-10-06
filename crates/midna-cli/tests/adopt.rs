@@ -111,7 +111,7 @@ fn typed_claude_runs_under_midna_and_restarts_in_the_same_shell() {
     let first = &d.launches()[0];
     assert!(first.contains("--settings ") && first.ends_with("--model opus hello there"), "{first}");
     let s = call(&mut h, "session.get", json!({ "id": sid }));
-    assert_eq!((s["kind"].as_str(), s["agent"].as_str()), (Some("shell"), Some("claude")), "{s}");
+    assert_eq!((s["kind"].as_str(), s["agent"].as_str()), (Some("agent"), Some("claude")), "{s}");
     assert!(s["adopted"]["pid"].as_i64().is_some(), "{s}");
 
     // Claude reports its conversation through midna's hooks (sent here by hand).
@@ -133,7 +133,7 @@ fn typed_claude_runs_under_midna_and_restarts_in_the_same_shell() {
         let s = call(&mut h, "session.get", json!({ "id": sid }));
         s["adopted"].is_null().then_some(s)
     });
-    assert!(s["agent"].is_null() && s["agent_info"].is_null(), "{s}");
+    assert!(s["agent"].is_null() && s["agent_info"].is_null() && s["kind"] == "shell", "{s}");
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn an_execd_claude_is_adopted_and_released_with_the_terminal() {
     let sid = d.shell(&mut h, "exec claude --model opus");
     wait_for(10, "fake claude started", || (d.launches().len() == 1).then_some(()));
     let s = wait_for(5, "adopted", || Some(call(&mut h, "session.get", json!({ "id": sid }))).filter(|s| !s["adopted"].is_null()));
-    assert_eq!(s["agent"], "claude", "{s}");
+    assert_eq!((s["kind"].as_str(), s["agent"].as_str()), (Some("agent"), Some("claude")), "{s}");
     assert_eq!(s["adopted"]["pid"], s["pid"], "the shim is the terminal's process: {s}");
     assert!(d.launches()[0].contains("--settings ") && d.launches()[0].ends_with("--model opus"), "{:?}", d.launches());
 
@@ -244,7 +244,7 @@ fn an_execd_claude_is_adopted_and_released_with_the_terminal() {
     // Claude exits: there is no shell to go back to, so the terminal exits, a shell terminal again.
     std::fs::write(d.fake.join("quit"), "").unwrap();
     let s = wait_for(10, "terminal exited", || Some(call(&mut h, "session.get", json!({ "id": sid }))).filter(|s| s["pid"].is_null()));
-    assert!(s["adopted"].is_null() && s["agent"].is_null(), "{s}");
+    assert!(s["adopted"].is_null() && s["agent"].is_null() && s["kind"] == "shell", "{s}");
     std::thread::sleep(Duration::from_millis(2500)); // past a reap
     let s = call(&mut h, "session.get", json!({ "id": sid }));
     assert_eq!(s["status"]["state"], "failed", "exit code 3, not reset to idle: {s}");

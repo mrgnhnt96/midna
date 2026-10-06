@@ -247,8 +247,9 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub queue_paused: bool,
     /// A `claude` typed into this shell terminal, running under midna (`session.adopt`). While
-    /// it runs, `agent` is set and the terminal works like an agent terminal; a restart
-    /// relaunches it inside the same shell.
+    /// it runs, `kind` is `agent` and `agent` is set, and the terminal works like an agent
+    /// terminal; a restart relaunches it inside the same shell. When it exits the terminal is a
+    /// `shell` again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedAgent>,
 }
