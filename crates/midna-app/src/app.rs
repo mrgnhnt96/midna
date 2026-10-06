@@ -1070,11 +1070,17 @@ impl MainWindow {
         self.needs.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.is_approval() && n.kind != NeedsYouKind::PermissionPrompt)
     }
 
+    /// The project heading's badge. A background terminal's items don't count: they belong to the
+    /// Background group, which shows its own.
     pub fn needs_in_project(&self, pid: Option<&str>) -> usize {
         self.needs
             .iter()
             .filter(|n| {
-                let p = n.project_id.clone().or_else(|| n.session_id.as_ref().and_then(|sid| self.sessions.iter().find(|s| &s.id == sid)).and_then(|s| s.project_id.clone()));
+                let session = n.session_id.as_ref().and_then(|sid| self.sessions.iter().find(|s| &s.id == sid));
+                if session.is_some_and(|s| s.background) {
+                    return false;
+                }
+                let p = n.project_id.clone().or_else(|| session.and_then(|s| s.project_id.clone()));
                 p.as_deref() == pid
             })
             .count()
