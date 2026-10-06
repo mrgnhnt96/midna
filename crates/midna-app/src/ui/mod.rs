@@ -182,11 +182,13 @@ pub fn caps_label(t: &Theme, text: &str) -> Div {
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
-        // The launch opening: only the setup screen, over the desktop (the window is see-through).
-        if self.twilight_phase == twilight::Phase::Intro {
+        // The launch opening over setup: only the setup screen, over the desktop (the window is
+        // see-through). Over the main window, the app draws as usual, masked (`twilight::frame`).
+        if twilight::over_setup(self) {
             let root = div().id("midna-main").key_context(CTX_MAIN).track_focus(&self.focus).size_full().children(setup_screen::render(self, &t, window, cx));
             return crate::composer::register(MainWindow::register_actions(root, cx), cx);
         }
+        twilight::frame(self, window, cx);
         crate::composer::sync(self);
         let sidebar = sidebar::render(self, &t, window, cx);
         let main: AnyElement = match (&self.conn, self.screen) {

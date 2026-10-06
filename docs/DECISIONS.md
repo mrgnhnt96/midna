@@ -783,6 +783,15 @@ Five steps from the board: background daemon, notifications, first project, webh
 - **Done-ness** is read from real state (login item, notification permission, a non-root project, `webhooks.path`, the theme step confirmed), so doing a step elsewhere ticks it.
 - **Layout.** A card at the top right of the terminal pane shows the current step: Step k of 5, the status, "Only you can do this one" on the macOS steps, the ⌘K phrasing on agent-doable steps, and Hide / Later / the action. The sidebar shows "Setup N of 5" above Today, with Continue setup / Finish once the card is hidden.
 - **Persistence.** `app-state.json` `onboarding: {finished, later}`. Dev: `MIDNA_DEBUG_SCREEN=onboarding` reopens it; `MIDNA_DEBUG_ONBOARDING=1` makes the fake backend show the daemon step as not installed.
+- **Screen.** Setup is now the full-window Twilight Tiles screen (`ui/setup_screen.rs`), ported from the design canvas, replacing the card.
+
+## The opening (midna-app `ui/twilight.rs`; 2026-10-05)
+Every launch, the first main window comes in with Twilight Tiles over the desktop: see-through, no shadow or traffic lights, until it ends.
+- **Before the ripple** a cell shows only the desktop; no grid at rest. The ripple runs from cell (15, 9) of the 1440×900 design grid (44ms a cell, 1450ms a tile).
+- **Over setup** the setup screen draws it: each cell shows the screen from its orange diamond (38%), tiles settle into the grid, the card comes in.
+- **Over the main window** the app draws once, masked by a `CAShapeLayer` on its layer to the revealed cells; a click-through PopUp window at the same frame draws the tiles and the teal wave. After the orange the tile keeps turning to 90° and shrinks to nothing, so the app is clear. Rendering the app in strips like setup would draw its views more than once a frame.
+- **Reduce motion** (`accessibilityDisplayShouldReduceMotion`): still teal squares light from the centre (400ms each, the last by 925ms), each cell shows midna once lit, then all fade together (950–1500ms). One colour only; no scaling, turning or wave.
+- Dev: `MIDNA_INTRO=0` skips it, `MIDNA_INTRO_SPEED=0.25`, `MIDNA_REDUCE_MOTION=1|0`, `MIDNA_DEBUG_SCREEN=twilight` replays.
 
 ## Sound effects (midna-proto `notify::EFFECTS`; midna-app `sounds.rs`; midnad `notify::play`; 2026-10-05)
 The user asked for Saggar-style sound effects that can be turned on, turned off and changed. Saggar has one tone per state change (needs you, finished, failed, ready, select = Pop), a master switch, volume, "Play sounds while using Saggar" and "Mute until relaunch". The user picked all four kinds of moments (agent state changes, their own actions, UI cues, agent-triggered) and chose to **merge them into the notification sounds** rather than add a separate `sounds.*` family.

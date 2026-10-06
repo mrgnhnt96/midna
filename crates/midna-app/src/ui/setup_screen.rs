@@ -11,6 +11,11 @@
 //! - the see-through teal wave sweeps diagonally from the top left;
 //! - the card comes in (460ms wait, then 900ms: fade, rise 20px, open from the top).
 //!
+//! With Reduce motion on, the opening is `opening_reduced` instead (`twilight.rs` has the timing):
+//! still teal squares light up from the centre, each cell showing the screen once lit, then all
+//! fade together. When setup isn't open, the opening plays over the main window instead
+//! (`twilight.rs`), with the tile drawing below.
+//!
 //! After that it is a normal screen: clicks ripple from the design's fixed origins, and the card
 //! replays its entrance on every step change. The steps are `onboarding.rs`: what is done is
 //! read from the real state, and the buttons do the real thing.
@@ -26,15 +31,15 @@ use std::time::Duration;
 /// The design's canvas; everything is laid out in these units and scaled to the window.
 const DESIGN_W: f32 = 1440.;
 const DESIGN_H: f32 = 900.;
-const CELL: f32 = 48.;
-const RIPPLE_MS: f32 = 1450.;
-const PER_CELL_MS: f32 = 44.;
+pub(crate) const CELL: f32 = 48.;
+pub(crate) const RIPPLE_MS: f32 = 1450.;
+pub(crate) const PER_CELL_MS: f32 = 44.;
 /// The opening ripple's origin (design grid cell).
-const OPEN_ORIGIN: (f32, f32) = (15., 9.);
+pub(crate) const OPEN_ORIGIN: (f32, f32) = (15., 9.);
 /// The opening, from first frame to the card fully in and the grid settled.
 pub const INTRO_MS: f32 = 2600.;
 /// From this point of its ripple a cell shows the window instead of the desktop.
-const EXPOSE_AT: f32 = 0.38;
+pub(crate) const EXPOSE_AT: f32 = 0.38;
 /// The card's entrance: wait, then open.
 const CARD_WAIT_MS: f32 = 460.;
 const CARD_OPEN_MS: f32 = 900.;
@@ -51,11 +56,11 @@ thread_local! {
 // ------------------------------------------------------------------ palette
 
 #[derive(Clone, Copy)]
-struct Pal {
+pub(crate) struct Pal {
     bg: [f32; 3],
-    tile: [f32; 3],
-    glow: [f32; 3],
-    ember: [f32; 3],
+    pub(crate) tile: [f32; 3],
+    pub(crate) glow: [f32; 3],
+    pub(crate) ember: [f32; 3],
     panel: [f32; 3],
     line: [f32; 3],
     fg: [f32; 3],
@@ -68,7 +73,7 @@ fn hex(v: u32) -> [f32; 3] {
     [((v >> 16) & 0xff) as f32, ((v >> 8) & 0xff) as f32, (v & 0xff) as f32]
 }
 
-fn rgb(c: [f32; 3], a: f32) -> Hsla {
+pub(crate) fn rgb(c: [f32; 3], a: f32) -> Hsla {
     Rgba { r: c[0] / 255., g: c[1] / 255., b: c[2] / 255., a }.into()
 }
 
@@ -105,7 +110,7 @@ fn palette(mode: ThemeMode) -> Pal {
 // ------------------------------------------------------------------ motion (CSS, exactly)
 
 /// CSS `cubic-bezier(x1, y1, x2, y2)` at `x` (Newton, then bisection), as the browser does it.
-fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+pub(crate) fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
     let (cx, cy) = (3. * x1, 3. * y1);
     let (bx, by) = (3. * (x2 - x1) - cx, 3. * (y2 - y1) - cy);
     let (ax, ay) = (1. - cx - bx, 1. - cy - by);
@@ -142,7 +147,7 @@ fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
 
 /// The keyframe segment `p` is in, and the eased progress through it (CSS applies the timing
 /// function per segment).
-fn segment(stops: &[f32], p: f32, ease: impl Fn(f32) -> f32) -> (usize, f32) {
+pub(crate) fn segment(stops: &[f32], p: f32, ease: impl Fn(f32) -> f32) -> (usize, f32) {
     let mut i = 0;
     while i < stops.len() - 2 && p > stops[i + 1] {
         i += 1;
@@ -293,9 +298,9 @@ struct RailRow {
 
 /// Everything the screen shows, owned, so the opening can draw it inside an animation.
 #[derive(Clone)]
-struct Model {
-    pal: Pal,
-    s: f32,
+pub(crate) struct Model {
+    pub(crate) pal: Pal,
+    pub(crate) s: f32,
     w: f32,
     h: f32,
     stage: Stage,
@@ -424,7 +429,12 @@ fn model(m: &MainWindow, t: &Theme, window: &Window) -> Model {
 }
 
 pub fn visible(m: &MainWindow) -> bool {
-    m.twilight_phase == crate::ui::twilight::Phase::Intro || (ob::active(m) && !m.onboarding.card_hidden)
+    crate::ui::twilight::over_setup(m) || active(m)
+}
+
+/// Setup is open and showing (the opening then plays over this screen, not the main window).
+pub fn active(m: &MainWindow) -> bool {
+    ob::active(m) && !m.onboarding.card_hidden
 }
 
 // ------------------------------------------------------------------ actions
@@ -480,13 +490,42 @@ fn clickable(el: Div, id: impl Into<ElementId>, a: Action, cx: Option<&mut Conte
 // ------------------------------------------------------------------ drawing
 
 impl Model {
+    /// Just the geometry and palette: for drawing tiles over the main window (`twilight.rs`).
+    pub(crate) fn bare(mode: ThemeMode, w: f32, h: f32) -> Model {
+        Model {
+            pal: palette(mode),
+            s: (w / DESIGN_W).min(h / DESIGN_H),
+            w,
+            h,
+            stage: Stage::Done,
+            code: String::new(),
+            kicker: String::new(),
+            title: vec![],
+            title_size: 48.,
+            title_lh: 1.05,
+            body: String::new(),
+            body_size: 18.,
+            body_top: 22.,
+            body_max: 540.,
+            status: None,
+            human: false,
+            ask: None,
+            theme: None,
+            primary: String::new(),
+            buttons_top: 38.,
+            can_later: false,
+            rail: vec![],
+            done_n: 0,
+        }
+    }
+
     /// Design units to window pixels.
-    fn u(&self, v: f32) -> Pixels {
+    pub(crate) fn u(&self, v: f32) -> Pixels {
         px(v * self.s)
     }
 
     /// How many `cw`×`ch` (design units) cells cover the window.
-    fn cells(&self, cw: f32, ch: f32) -> (usize, usize) {
+    pub(crate) fn cells(&self, cw: f32, ch: f32) -> (usize, usize) {
         ((self.w / (cw * self.s)).ceil() as usize, (self.h / (ch * self.s)).ceil() as usize)
     }
 
@@ -552,7 +591,7 @@ fn grid(md: &Model, ripple: Option<(f32, f32, f32)>, unreached_bare: bool) -> Di
 }
 
 /// The see-through teal wave at `ms`: 96×100 cells, 120ms + 52ms per diagonal, 520ms each.
-fn wave(md: &Model, ms: f32) -> Div {
+pub(crate) fn wave(md: &Model, ms: f32) -> Div {
     let (cols, rows) = md.cells(96., 100.);
     let mut el = div().absolute().inset_0();
     let line = rgb(md.pal.glow, 1.);
@@ -792,6 +831,21 @@ fn opening(md: &Model, ms: f32) -> Div {
     el.child(wave(md, ms))
 }
 
+/// The Reduce motion opening at `ms`: cells show the screen (at rest, card in) once their still
+/// teal square is lit; the squares fade together at the end.
+fn opening_reduced(md: &Model, ms: f32) -> Div {
+    let (cols, rows) = md.cells(CELL, CELL);
+    let cell = CELL * md.s;
+    let lit = crate::ui::twilight::reduced(cols, rows, ms);
+    let mut el = div().absolute().inset_0();
+    for (r, c0, c1) in crate::ui::twilight::runs(cols, rows, |c, r| lit(c, r).0) {
+        let (x, y) = (c0 as f32 * cell, r as f32 * cell);
+        let screen = div().absolute().left(px(-x)).top(px(-y)).w(px(md.w)).h(px(md.h)).bg(rgb(md.pal.bg, 1.)).child(grid(md, None, false)).child(content(md, 1., None, None));
+        el = el.child(div().absolute().left(px(x)).top(px(y)).w(px((c1 - c0 + 1) as f32 * cell)).h(px(cell + 1.)).overflow_hidden().child(screen));
+    }
+    el.child(crate::ui::twilight::squares(md, cols, rows, &lit))
+}
+
 /// The opening (while `twilight` plays it) or the live screen. `None` when setup isn't showing.
 pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     if !visible(m) {
@@ -799,12 +853,16 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     }
     let md = model(m, t, window);
     if m.twilight_phase == crate::ui::twilight::Phase::Intro {
+        let reduced = m.twilight_reduced;
+        let total = crate::ui::twilight::design_ms(m);
         let el = div()
             .id("setup-screen")
             .absolute()
             .inset_0()
             .occlude()
-            .with_animation(SharedString::from(format!("setup-opening-{}", m.twilight_seq)), Animation::new(crate::ui::twilight::length()), move |el, d| el.child(opening(&md, d * INTRO_MS)));
+            .with_animation(SharedString::from(format!("setup-opening-{}", m.twilight_seq)), Animation::new(crate::ui::twilight::length(m)), move |el, d| {
+                el.child(if reduced { opening_reduced(&md, d * total) } else { opening(&md, d * total) })
+            });
         return Some(el.into_any_element());
     }
     let ripple_el: AnyElement = match m.onboarding.ripple {

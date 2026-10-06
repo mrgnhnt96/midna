@@ -90,9 +90,16 @@ pub struct MainWindow {
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
     pub onboarding: crate::ui::onboarding::Onboarding,
-    /// The twilight tiles entrance (`ui/twilight.rs`): which play, and its phase.
+    /// The opening (`ui/twilight.rs`): which play, its phase, whether it runs with Reduce motion
+    /// and over the setup screen, when it started, how long it runs (design ms), and the window
+    /// drawing its tiles over the main window.
     pub twilight_seq: u64,
     pub twilight_phase: crate::ui::twilight::Phase,
+    pub twilight_reduced: bool,
+    pub twilight_setup: bool,
+    pub twilight_started: std::time::Instant,
+    pub twilight_total: f32,
+    pub twilight_overlay: Option<AnyWindowHandle>,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -191,11 +198,9 @@ impl MainWindow {
         let background_open = crate::ui::statusbar::load_state(&backend, "background_open");
         let background_hidden = crate::ui::statusbar::load_state(&backend, "background_hidden");
         let onboarding = crate::ui::onboarding::load(&backend);
-        // Main windows open see-through; only the launch entrance keeps it that way for a moment.
-        let intro = crate::ui::twilight::wanted(&onboarding);
-        if intro {
-            crate::ui::twilight::start(1, window, cx);
-        } else {
+        // Main windows open see-through; only the launch opening keeps it that way for a moment.
+        let intro = crate::ui::twilight::wanted();
+        if !intro {
             window.set_background_appearance(WindowBackgroundAppearance::Opaque);
         }
         let id = cx.entity_id();
@@ -247,7 +252,7 @@ impl MainWindow {
         let annot = crate::annotate::new_for_main(window, cx);
         crate::ui::links::wire(&links, cx);
         crate::ide::detect(cx);
-        MainWindow {
+        let mut this = MainWindow {
             backend,
             conn: ConnState::Connecting,
             projects: vec![],
@@ -274,8 +279,13 @@ impl MainWindow {
             hooks_sheet: None,
             ax_prompt: false,
             onboarding,
-            twilight_seq: u64::from(intro),
-            twilight_phase: if intro { crate::ui::twilight::Phase::Intro } else { crate::ui::twilight::Phase::Off },
+            twilight_seq: 0,
+            twilight_phase: crate::ui::twilight::Phase::Off,
+            twilight_reduced: false,
+            twilight_setup: false,
+            twilight_started: std::time::Instant::now(),
+            twilight_total: 0.,
+            twilight_overlay: None,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             id,
             windows,
@@ -314,7 +324,11 @@ impl MainWindow {
             refresh_scheduled: false,
             loaded: false,
             _tasks: tasks,
+        };
+        if intro {
+            crate::ui::twilight::start(&mut this, window, cx);
         }
+        this
     }
 
     // ------------------------------------------------------------------ settings
