@@ -142,7 +142,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Shortcuts, "", &["@shortcuts"]),
     (Sec::Shortcuts, "Built in", &["@built_in"]),
     (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.system_hint"]),
-    (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.resume_after_sleep", "agents.resume_after_sleep_prompt"]),
+    (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.resume_after_sleep", "agents.resume_after_network", "agents.resume_after_sleep_prompt"]),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
         Sec::Limits,
@@ -696,6 +696,7 @@ fn label_for(key: &str) -> String {
         "agents.restart_idle_secs" => "Idle before a restart (seconds)",
         "agents.adopt_typed" => "Adopt agents typed in a shell",
         "agents.resume_after_sleep" => "Resume after sleep",
+        "agents.resume_after_network" => "Resume after network loss",
         "agents.resume_after_sleep_prompt" => "Resume message",
         "triggers.agent_mode" => "Agents started by triggers",
         "projects.roots" => "Project folders",
