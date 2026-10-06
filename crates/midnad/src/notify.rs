@@ -428,7 +428,7 @@ pub fn play(d: &Daemon, session: Option<Id>, what: &str, volume: Option<u8>, rat
 /// Check the settings, dedupe, and emit `notify.posted` (showing it from midnad when no app
 /// is connected).
 fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
-    let (title, text, (sound, image), when_app_closed) = {
+    let (title, text, (sound, image), (push, push_focused), when_app_closed) = {
         let core = d.core();
         let st = &core.state;
         let session = draft.session.as_deref().and_then(|s| st.session(s));
@@ -446,7 +446,10 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         };
         let templates = (st.setting_str(&notify::title_key(draft.category)), st.setting_str(&notify::body_key(draft.category)));
         let (title, text) = texts((&templates.0, &templates.1), &draft, session, project.as_deref(), heading);
-        (title, text, style(&d.cfg.home, &|k| st.setting(k), draft.category), st.setting_bool("notify.when_app_closed") || draft.test)
+        // A test shows everywhere; otherwise only kinds set to push become banners.
+        let push = draft.test || st.setting_bool(&notify::push_key(draft.category));
+        let push_focused = draft.test || st.setting_bool(&notify::push_focused_key(draft.category));
+        (title, text, style(&d.cfg.home, &|k| st.setting(k), draft.category), (push, push_focused), st.setting_bool("notify.when_app_closed") || draft.test)
     };
     if !draft.test {
         let mut st = d.notify();
@@ -465,7 +468,7 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
     let sound = sound.filter(|_| draft.sound != Some(false));
     let via = if d.gui_connected() {
         "app"
-    } else if when_app_closed && system_allowed(d) {
+    } else if push && when_app_closed && system_allowed(d) {
         "system"
     } else {
         "none"
@@ -479,6 +482,8 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         volume: sound.as_ref().map(|s| s.1),
         sound_file: sound.map(|s| s.0),
         image,
+        push,
+        push_focused,
         test: draft.test,
         via: via.into(),
         needs_you_id: draft.needs_you_id,

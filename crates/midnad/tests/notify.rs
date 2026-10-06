@@ -26,7 +26,7 @@ fn settle(h: &mut Client) -> Vec<Value> {
 }
 
 #[test]
-fn defaults_notify_what_needs_you_and_finished_turns() {
+fn defaults_record_everything_important_but_push_only_what_needs_you() {
     let d = TestDaemon::start();
     let mut h = d.human();
     call(&mut h, "settings.set", json!({ "key": "notify.turn_done_min_secs", "value": 0 }));
@@ -38,22 +38,32 @@ fn defaults_notify_what_needs_you_and_finished_turns() {
     let n = &p[0]["data"];
     assert_eq!((n["category"].as_str(), n["via"].as_str()), (Some("turn_done"), Some("none")), "{n}");
     assert_eq!(n["body"], "Finished: All 12 tests pass now.");
+    // Recorded, but not a banner anywhere.
+    assert_eq!((n["push"].as_bool(), n.get("push_focused")), (Some(false), None), "{n}");
     // Every kind plays one of midna's own (Twilight) sounds out of the box.
     assert_eq!(n["sound_file"].as_str(), d.home.join("notify/twilight/Strum.wav").to_str(), "{n}");
     assert_eq!(p[0]["session_id"].as_str(), Some(sid.as_str()));
 
-    // A permission prompt is important (sound) and carries its needs-you id.
+    // A permission prompt is important (sound), pushed, and carries its needs-you id.
     hook(&mut a, "PermissionRequest", json!({ "session_id": "c1", "tool_name": "Bash", "tool_input": { "command": "rm -rf build" } }));
     let p = wait_posted(&mut h, 2);
     let n = &p[1]["data"];
     assert_eq!(n["category"], "approval");
-    assert_eq!(n["sound"], true);
+    assert_eq!((n["sound"].as_bool(), n["push"].as_bool()), (Some(true), Some(true)), "{n}");
     assert!(n["needs_you_id"].as_str().is_some_and(|i| i.starts_with("n_")), "{n}");
+
+    // Pushing for the terminal in front of you is its own switch (another terminal: dedupe).
+    call(&mut h, "settings.set", json!({ "key": "notify.push_focused.turn_done", "value": true }));
+    let mut a2 = d.agent(Some(&open_sh(&mut h)));
+    hook(&mut a2, "UserPromptSubmit", json!({ "session_id": "c2", "prompt": "again" }));
+    hook(&mut a2, "Stop", json!({ "session_id": "c2", "last_assistant_message": "Done." }));
+    let p = wait_posted(&mut h, 3);
+    assert_eq!((p[2]["data"]["push"].as_bool(), p[2]["data"]["push_focused"].as_bool()), (Some(false), Some(true)), "{}", p[2]);
 
     // Off by default: a clean exit.
     call(&mut h, "session.input", json!({ "id": sid, "text": "exit 0", "enter": true }));
     wait_for(5, "exit", || (call(&mut h, "session.get", json!({ "id": sid }))["status"]["state"] == "exited").then_some(()));
-    assert_eq!(settle(&mut h).len(), 2);
+    assert_eq!(settle(&mut h).len(), 3);
 }
 
 #[test]

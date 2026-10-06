@@ -603,21 +603,27 @@ impl MainWindow {
         self.windows.borrow().shows(session, self.id)
     }
 
-    /// midnad's `notify.posted`: show it unless you're looking at that terminal (then only its
-    /// sound plays, see `crate::sounds`). Old ones (replayed after a reconnect) are dropped.
+    /// midnad's `notify.posted`: a banner when its kind pushes (`push` for a terminal you aren't
+    /// looking at, `push_focused` for the one you are). Looking at it without `push_focused`,
+    /// only its sound plays (see `crate::sounds`), and only if it would push elsewhere. Old ones
+    /// (replayed after a reconnect) are dropped.
     fn on_notification(&self, e: &Event, window: &Window, cx: &App) {
         let Ok(p) = serde_json::from_value::<midna_proto::notify::Posted>(e.data.clone()) else { return };
         let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
         if p.via != "app" || !fresh {
             return;
         }
-        let when_focused = self.settings.get("notify.when_focused").and_then(Value::as_bool).unwrap_or(false);
         let on_screen = e.session_id.as_deref().is_some_and(|s| crate::windows::on_screen(s, window, self.id, self.selected.as_deref(), cx));
-        if !p.test && crate::notify::looking_at(on_screen, e.session_id.as_deref(), e.session_id.as_deref(), when_focused) {
-            if let (true, Some(file)) = (p.sound, p.sound_file.as_deref()) {
-                crate::sounds::play_file(file, p.volume.unwrap_or(100));
+        let looking = crate::notify::looking_at(on_screen, e.session_id.as_deref(), e.session_id.as_deref());
+        match crate::notify::show(&p, looking) {
+            crate::notify::Show::Banner => {}
+            crate::notify::Show::SoundOnly => {
+                if let (true, Some(file)) = (p.sound, p.sound_file.as_deref()) {
+                    crate::sounds::play_file(file, p.volume.unwrap_or(100));
+                }
+                return;
             }
-            return;
+            crate::notify::Show::Nothing => return,
         }
         let mut p = p;
         // notify.sounds_in_app off: a banner shown while midna is frontmost stays quiet.

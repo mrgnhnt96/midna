@@ -506,7 +506,6 @@ fn label_for(key: &str) -> String {
         "notify.sounds" => "Play sounds",
         "notify.sounds_in_app" => "While you're using midna",
         "notify.image" => "Every notification",
-        "notify.when_focused" => "Also for the terminal in front of you",
         "notify.when_app_closed" => "When the app isn't running",
         k if k.starts_with("notify.") => {
             let kind = k.rsplit('.').next().unwrap_or(k);
@@ -803,7 +802,11 @@ impl SettingsWindow {
         // overrides any of these with `midna notify set` (or mutes itself from its … menu).
         let mut notifications = vec![row("notify.enabled")];
         notifications.extend(midna_proto::notify::CATEGORIES.iter().map(|c| row(&midna_proto::notify::setting_key(c.key))));
-        notifications.extend(["notify.turn_done_min_secs", "notify.when_focused", "notify.when_app_closed"].map(row));
+        notifications.extend(["notify.turn_done_min_secs", "notify.when_app_closed"].map(row));
+        // Which kinds become macOS banners: for other terminals, and for the one in front of you.
+        let banners: Vec<RowSpec> = midna_proto::notify::CATEGORIES.iter().filter_map(|c| row(&midna_proto::notify::push_key(c.key))).collect();
+        let banners_focused: Vec<RowSpec> = midna_proto::notify::CATEGORIES.iter().filter_map(|c| row(&midna_proto::notify::push_focused_key(c.key))).collect();
+        let (mut banners, mut banners_focused) = (banners, banners_focused);
         let notify_off = self.value("notify.enabled") == Value::Bool(false);
         let mut notifications: Vec<RowSpec> = notifications.into_iter().flatten().collect();
         // Sounds: on/off and in-app first, then every notification kind; effects get their own group.
@@ -829,7 +832,7 @@ impl SettingsWindow {
             }
         }
         if notify_off {
-            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()).chain(texts.iter_mut()) {
+            for r in notifications.iter_mut().skip(1).chain(banners.iter_mut()).chain(banners_focused.iter_mut()).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()).chain(texts.iter_mut()) {
                 r.note = Some(("No effect while notifications are off".into(), t.dim));
             }
         }
@@ -931,6 +934,8 @@ impl SettingsWindow {
             Group { name: "Permissions", danger: false, badge: missing, rows: perms },
             Group { name: "Webhooks", danger: false, badge: 0, rows: webhooks.into_iter().flatten().collect() },
             Group { name: "Notifications", danger: false, badge: 0, rows: notifications },
+            Group { name: "Banners for other terminals", danger: false, badge: 0, rows: banners },
+            Group { name: "Banners for the terminal in front of you", danger: false, badge: 0, rows: banners_focused },
             Group { name: "Sounds", danger: false, badge: 0, rows: sounds },
             Group { name: "Sound effects", danger: false, badge: 0, rows: effects },
             Group { name: "Notification images", danger: false, badge: 0, rows: images },

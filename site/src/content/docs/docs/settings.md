@@ -68,7 +68,7 @@ The header, the sidebar rows and the status bar are all configurable.
 
 ## Notifications
 
-midna posts macOS notifications for things you'd want to know while you're elsewhere: an approval or question, a blocked agent, a failure, and a long turn finishing (`notify.turn_done`, after 30 seconds). Others, like trigger firings and PR checks finishing, are off by default. `notify.enabled` turns them all off. Each kind has its own switch, sound and volume under `notify.*`, and a single terminal can be muted from its header's **…** menu.
+midna records what you'd want to know: an approval or question, a blocked agent, a failure, a long turn finishing (`notify.turn_done`, after 30 seconds), and notifications agents and triggers send. Others, like PR checks finishing and trigger firings, are off by default. Out of the box only what needs you (approvals, questions and blocked agents) becomes a macOS banner, and only for a terminal you aren't looking at; for the one in front of you, you hear its sound. Each kind's `notify.push.<kind>` turns banners on for other terminals, and `notify.push_focused.<kind>` for the one you're looking at. `notify.enabled` turns everything off. Each kind has its own switch, sound and volume under `notify.*`, and a single terminal can be muted from its header's **…** menu.
 
 ## Keyboard shortcuts
 

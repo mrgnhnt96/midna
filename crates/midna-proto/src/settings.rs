@@ -216,6 +216,18 @@ macro_rules! txt {
                 "Every kind also has {{text}} (midna's own text), {{heading}} (midna's own title), {{project}}, {{session.name}} and the event's data ({{data.<path>}})."))
     };
 }
+macro_rules! push {
+    ($cat:literal, $def:literal) => {
+        s!(concat!("notify.push.", $cat), SettingKind::Bool, B($def), "notifications", false,
+            concat!("Show “notify.", $cat, "” as a macOS banner (with its sound) for a terminal you aren't looking at. Off: it's still recorded, just not pushed."))
+    };
+}
+macro_rules! pushf {
+    ($cat:literal) => {
+        s!(concat!("notify.push_focused.", $cat), SettingKind::Bool, B(false), "notifications", false,
+            concat!("Show “notify.", $cat, "” as a macOS banner for the terminal you're looking at too. Off: only its sound plays, and only when notify.push.", $cat, " is on."))
+    };
+}
 macro_rules! ttl {
     ($cat:literal) => {
         s!(concat!("notify.title.", $cat), SettingKind::String, S(""), "notifications", false,
@@ -434,18 +446,18 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
     s!("notify.image", SettingKind::String, S(""), "notifications", false,
         "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
-    snd!("approval", "Portal"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "),
-    snd!("attention", "Call"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "),
-    snd!("failed", "Uh-oh"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "),
-    snd!("turn_done", "Strum"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "),
-    snd!("agent", "Hm"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "),
-    snd!("from_trigger", "Hm"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "),
-    snd!("requests", "none"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "),
-    snd!("background", "none"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "),
-    snd!("pr_checks", "none"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "),
-    snd!("exited", "none"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""),
-    snd!("triggers", "none"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "),
-    snd!("restarted", "none"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "),
+    snd!("approval", "Portal"), push!("approval", true), pushf!("approval"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "),
+    snd!("attention", "Call"), push!("attention", true), pushf!("attention"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "),
+    snd!("failed", "Uh-oh"), push!("failed", false), pushf!("failed"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "),
+    snd!("turn_done", "Strum"), push!("turn_done", false), pushf!("turn_done"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "),
+    snd!("agent", "Hm"), push!("agent", false), pushf!("agent"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "),
+    snd!("from_trigger", "Hm"), push!("from_trigger", false), pushf!("from_trigger"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "),
+    snd!("requests", "none"), push!("requests", false), pushf!("requests"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "),
+    snd!("background", "none"), push!("background", false), pushf!("background"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "),
+    snd!("pr_checks", "none"), push!("pr_checks", false), pushf!("pr_checks"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "),
+    snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""),
+    snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "),
+    snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "),
     snd!("approved", "Rise"), vol!("approved"),
     snd!("denied", "Nn-nn"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),
@@ -458,8 +470,6 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Play sounds at all: notification sounds and sound effects (approve, deny, a queued message sent, switching terminals, …). ⌘K “Mute sounds” turns this off."),
     s!("notify.sounds_in_app", SettingKind::Bool, B(true), "notifications", false,
         "Play sounds while midna is the frontmost app: sound effects for what you do, and a notification's sound when its banner is skipped because you're looking at that terminal. Off: midna is quiet while you use it, and you hear only what happens while you're in another app."),
-    s!("notify.when_focused", SettingKind::Bool, B(false), "notifications", false,
-        "Also notify about the terminal you're looking at while midna is the frontmost app."),
     s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
         "When the midna app isn't running, midnad posts the notification itself (shown as a system notification; clicking it doesn't open midna)."),
     s!("keys.command_bar", KB, S("cmd-k"), "keys", false, "Open the command bar."),
@@ -546,6 +556,10 @@ mod tests {
             assert_eq!(snd.default.to_json(), json!(c.sound), "{}", c.key);
             assert!(setting(&crate::notify::volume_key(c.key)).is_some_and(|v| v.range == Some((0, 100))), "{}", c.key);
             assert!(setting(&crate::notify::image_key(c.key)).is_some(), "{}", c.key);
+            let push = setting(&crate::notify::push_key(c.key)).unwrap_or_else(|| panic!("no push setting for {}", c.key));
+            assert_eq!(push.default.to_json(), json!(c.push), "{}", c.key);
+            let focused = setting(&crate::notify::push_focused_key(c.key)).unwrap_or_else(|| panic!("no push_focused setting for {}", c.key));
+            assert_eq!(focused.default.to_json(), json!(false), "{}", c.key);
         }
         for e in crate::notify::EFFECTS {
             let snd = setting(&crate::notify::sound_key(e.key)).unwrap_or_else(|| panic!("no sound setting for {}", e.key));

@@ -27,8 +27,13 @@ pub struct NotifyCategory {
     pub key: &'static str,
     /// Short name for the Settings window and menus.
     pub label: &'static str,
-    /// On out of the box. Only what a human must act on, or would hate to miss, is on.
+    /// On out of the box: midna records it (and the app can show it). Only what a human must
+    /// act on, or would hate to miss, is on.
     pub default: bool,
+    /// A macOS banner out of the box for a terminal you aren't looking at (`notify.push.<key>`).
+    /// Only what needs you is pushed; a banner for the terminal in front of you
+    /// (`notify.push_focused.<key>`) is off for every kind.
+    pub push: bool,
     /// Its sound out of the box (`notify.sound.<key>`): a macOS sound name, or `none`.
     pub sound: &'static str,
     pub description: &'static str,
@@ -39,7 +44,10 @@ pub struct NotifyCategory {
 
 macro_rules! c {
     ($key:literal, $label:literal, $default:literal, $sound:literal, $desc:literal, $vars:expr) => {
-        NotifyCategory { key: $key, label: $label, default: $default, sound: $sound, description: $desc, vars: $vars }
+        NotifyCategory { key: $key, label: $label, default: $default, push: false, sound: $sound, description: $desc, vars: $vars }
+    };
+    (push $key:literal, $label:literal, $default:literal, $sound:literal, $desc:literal, $vars:expr) => {
+        NotifyCategory { push: true, ..c!($key, $label, $default, $sound, $desc, $vars) }
     };
 }
 
@@ -53,9 +61,9 @@ pub const NO_BODY: &str = "none";
 const NEEDS_YOU: &[&str] = &["title", "detail", "kind"];
 
 pub static CATEGORIES: &[NotifyCategory] = &[
-    c!("approval", "Approvals and questions", true, "Portal",
+    c!(push "approval", "Approvals and questions", true, "Portal",
         "An agent waits on you: an approval request, a permission prompt or a question it asked in its terminal.", &["title", "detail", "kind", "action"]),
-    c!("attention", "Agent asks for you", true, "Call", "An agent raised a needs-you note or said it's blocked (`midna attention`).", NEEDS_YOU),
+    c!(push "attention", "Agent asks for you", true, "Call", "An agent raised a needs-you note or said it's blocked (`midna attention`).", NEEDS_YOU),
     c!("failed", "Failures", true, "Uh-oh", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error.", &["title", "detail", "kind", "reason"]),
     c!("turn_done", "Agent finished", true, "Strum",
         "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply.", &["elapsed", "secs", "reply", "message"]),
@@ -115,6 +123,18 @@ pub fn category(key: &str) -> Option<&'static NotifyCategory> {
 /// The global setting behind a category (or `enabled`, the master switch).
 pub fn setting_key(key: &str) -> String {
     format!("notify.{key}")
+}
+
+/// Whether a category shows as a macOS banner for a terminal you aren't looking at
+/// (`notify.push.<key>`). Off: it's still recorded, just not pushed.
+pub fn push_key(key: &str) -> String {
+    format!("notify.push.{key}")
+}
+
+/// Whether a category shows as a macOS banner for the terminal you're looking at
+/// (`notify.push_focused.<key>`). Off: only its sound plays, and only if it would push.
+pub fn push_focused_key(key: &str) -> String {
+    format!("notify.push_focused.{key}")
 }
 
 /// A category's sound (`notify.sound.<key>`): `none`, a macOS sound, or an imported file name.
@@ -239,6 +259,13 @@ pub struct Posted {
     /// An image to attach (absolute path to an imported image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Show a banner for a terminal you aren't looking at (`notify.push.<category>`). Daemons
+    /// from before it pushed everything they posted.
+    #[serde(default = "yes")]
+    pub push: bool,
+    /// Show a banner for the terminal you're looking at too (`notify.push_focused.<category>`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub push_focused: bool,
     /// A test notification (`notify.test`): shown even for the terminal you're looking at.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub test: bool,
@@ -246,4 +273,8 @@ pub struct Posted {
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you_id: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }

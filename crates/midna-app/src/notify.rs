@@ -1,9 +1,10 @@
 //! Native macOS notifications for midnad's `notify.posted` events (`midna_proto::notify`).
 //!
 //! midnad decides *what* to notify; the app decides only whether you're already looking at it
-//! (the selected terminal while midna is frontmost, unless `notify.when_focused`) and shows the
-//! rest through `UNUserNotificationCenter`. Each notification's thread identifier is its
-//! terminal id, so Notification Center groups them per terminal and a click selects it.
+//! (the selected terminal while midna is frontmost) and shows banners, as each kind's
+//! `notify.push.*` / `notify.push_focused.*` says, through `UNUserNotificationCenter`. Each
+//! notification's thread identifier is its terminal id, so Notification Center groups them per
+//! terminal and a click selects it.
 //!
 //! `UNUserNotificationCenter` needs a real app bundle (it raises without one), so a dev build
 //! run from `target/` posts through `osascript` instead (shown as Script Editor, no click).
@@ -279,9 +280,29 @@ define_class!(
     }
 );
 
-/// Whether the app should skip a notification: you're looking at its terminal.
-pub fn looking_at(window_active: bool, selected: Option<&str>, session: Option<&str>, when_focused: bool) -> bool {
-    !when_focused && window_active && session.is_some() && selected == session
+/// Whether you're looking at a notification's terminal.
+pub fn looking_at(window_active: bool, selected: Option<&str>, session: Option<&str>) -> bool {
+    window_active && session.is_some() && selected == session
+}
+
+/// What the app does with a posted notification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Show {
+    Banner,
+    SoundOnly,
+    Nothing,
+}
+
+/// `push` covers terminals you aren't looking at, `push_focused` the one you are; looking at it
+/// without `push_focused`, a kind that would push plays only its sound. Tests always show.
+pub fn show(p: &Posted, looking: bool) -> Show {
+    match (p.test, looking) {
+        (true, _) => Show::Banner,
+        (false, false) if p.push => Show::Banner,
+        (false, true) if p.push_focused => Show::Banner,
+        (false, true) if p.push => Show::SoundOnly,
+        _ => Show::Nothing,
+    }
 }
 
 #[cfg(test)]
@@ -289,11 +310,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skips_only_the_terminal_in_front_of_you() {
-        assert!(looking_at(true, Some("a"), Some("a"), false));
-        assert!(!looking_at(true, Some("a"), Some("a"), true));
-        assert!(!looking_at(false, Some("a"), Some("a"), false));
-        assert!(!looking_at(true, Some("a"), Some("b"), false));
-        assert!(!looking_at(true, None, None, false));
+    fn looking_only_at_the_terminal_in_front_of_you() {
+        assert!(looking_at(true, Some("a"), Some("a")));
+        assert!(!looking_at(false, Some("a"), Some("a")));
+        assert!(!looking_at(true, Some("a"), Some("b")));
+        assert!(!looking_at(true, None, None));
+    }
+
+    #[test]
+    fn push_settings_pick_banner_sound_or_nothing() {
+        let p = |push, push_focused| Posted { push, push_focused, ..serde_json::from_value(serde_json::json!({ "category": "approval", "title": "t", "via": "app" })).unwrap() };
+        // approval/attention out of the box: banner elsewhere, sound only in front of you.
+        assert_eq!((show(&p(true, false), false), show(&p(true, false), true)), (Show::Banner, Show::SoundOnly));
+        // Recorded only (failed, turn_done, … out of the box): nothing either way.
+        assert_eq!((show(&p(false, false), false), show(&p(false, false), true)), (Show::Nothing, Show::Nothing));
+        assert_eq!(show(&p(false, true), true), Show::Banner);
+        assert_eq!(show(&Posted { test: true, ..p(false, false) }, true), Show::Banner);
+        // A daemon from before push pushed everything.
+        assert!(serde_json::from_value::<Posted>(serde_json::json!({ "category": "x", "title": "t", "via": "app" })).unwrap().push);
     }
 }
