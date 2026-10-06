@@ -24,19 +24,43 @@ pub fn socket_path() -> PathBuf {
 
 pub struct DaemonBackend {
     socket: PathBuf,
-    control: Mutex<Option<Client>>,
+    /// Idle control connections. A call takes one (or opens a new one) and puts it back when
+    /// done, so a slow call never holds up the others behind a shared connection.
+    idle: Mutex<Vec<Client>>,
 }
+
+/// Idle control connections kept open; more are opened while calls overlap.
+const MAX_IDLE: usize = 4;
 
 impl DaemonBackend {
     pub fn new(socket: PathBuf) -> Self {
-        DaemonBackend { socket, control: Mutex::new(None) }
+        DaemonBackend { socket, idle: Mutex::new(Vec::new()) }
     }
 
     fn connect(&self) -> std::io::Result<Client> {
         let mut c = Client::connect(&self.socket)?;
         // The GUI is human by peer-executable check; never forward an inherited MIDNA_SESSION.
         c.set_caller(None);
+        // If the daemon ever takes the GUI for an agent (launched from a midna terminal), a call
+        // needing approval answers at once (PENDING) instead of freezing it until the human does.
+        let c = c.no_wait();
+        c.set_read_timeout(Some(Duration::from_secs(30)))?;
         Ok(c)
+    }
+
+    fn take(&self) -> std::io::Result<Client> {
+        let idle = self.idle.lock().unwrap().pop();
+        match idle {
+            Some(c) => Ok(c),
+            None => self.connect(),
+        }
+    }
+
+    fn give_back(&self, c: Client) {
+        let mut idle = self.idle.lock().unwrap();
+        if idle.len() < MAX_IDLE {
+            idle.push(c);
+        }
     }
 }
 
@@ -55,48 +79,49 @@ impl Backend for DaemonBackend {
     }
 
     fn call(&self, method: &str, params: Value) -> anyhow::Result<Value> {
-        let mut guard = self.control.lock().unwrap();
         // One retry after a transport error: the call in flight when midnad re-execs itself
         // (upgrade/restart) loses its connection; the new image is listening ~1s later.
         // Calls refused because a handoff is in progress ("upgrading; retry") are retried too.
         let mut io_retry = true;
         let mut busy_retries = 6;
         loop {
-            if guard.is_none() {
-                let c = match self.connect() {
-                    Ok(c) => c,
-                    Err(e) if io_retry => {
-                        io_retry = false;
-                        drop(guard);
-                        std::thread::sleep(Duration::from_millis(700));
-                        guard = self.control.lock().unwrap();
-                        let _ = e;
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                c.set_read_timeout(Some(Duration::from_secs(30)))?;
-                *guard = Some(c);
-            }
-            match guard.as_mut().unwrap().call_value(method, params.clone()) {
-                Ok(v) => return Ok(v),
-                Err(ClientError::Rpc(e)) if busy_retries > 0 && e.code == midna_proto::error::CONFLICT && e.message.contains("upgrading") => {
-                    busy_retries -= 1;
-                    drop(guard);
-                    std::thread::sleep(Duration::from_millis(400));
-                    guard = self.control.lock().unwrap();
+            let mut c = match self.take() {
+                Ok(c) => c,
+                Err(_) if io_retry => {
+                    io_retry = false;
+                    std::thread::sleep(Duration::from_millis(700));
+                    continue;
                 }
-                Err(ClientError::Rpc(e)) => return Err(anyhow!("{e}")),
+                Err(e) => return Err(e.into()),
+            };
+            match c.call_value(method, params.clone()) {
+                Ok(v) => {
+                    self.give_back(c);
+                    return Ok(v);
+                }
+                Err(ClientError::Rpc(e)) if busy_retries > 0 && e.code == midna_proto::error::CONFLICT && e.message.contains("upgrading") => {
+                    self.give_back(c);
+                    busy_retries -= 1;
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                Err(ClientError::Rpc(e)) if e.code == midna_proto::error::PENDING => {
+                    self.give_back(c);
+                    let id = e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).unwrap_or("?").to_string();
+                    return Err(anyhow!("waiting for your approval (needs-you {id}); it goes ahead once you approve"));
+                }
+                Err(ClientError::Rpc(e)) => {
+                    self.give_back(c);
+                    return Err(anyhow!("{e}"));
+                }
+                // The transport broke: the idle connections went with the same daemon image.
                 Err(ClientError::Io(e)) if io_retry => {
-                    *guard = None;
+                    self.idle.lock().unwrap().clear();
                     io_retry = false;
                     eprintln!("midna-app: {method}: {e}; reconnecting and retrying once");
-                    drop(guard);
                     std::thread::sleep(Duration::from_millis(300));
-                    guard = self.control.lock().unwrap();
                 }
                 Err(e) => {
-                    *guard = None; // transport broke; reconnect next time
+                    self.idle.lock().unwrap().clear();
                     return Err(anyhow!("{e}"));
                 }
             }
@@ -262,5 +287,84 @@ impl TermStream for DaemonStream {
 impl Drop for DaemonStream {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::time::Instant;
+
+    /// A stand-in midnad: `slow` answers after 1.5 s, `pending` answers like a call waiting on
+    /// approval, anything else answers at once with the params it got.
+    fn fake_daemon() -> (PathBuf, Arc<Mutex<usize>>) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("mdb-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("s");
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        let conns = Arc::new(Mutex::new(0));
+        let counted = conns.clone();
+        std::thread::spawn(move || {
+            for s in listener.incoming().flatten() {
+                *counted.lock().unwrap() += 1;
+                std::thread::spawn(move || {
+                    let mut w = s.try_clone().unwrap();
+                    for line in BufReader::new(s).lines().map_while(Result::ok) {
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        let res = match req["method"].as_str() {
+                            Some("slow") => {
+                                std::thread::sleep(Duration::from_millis(1500));
+                                serde_json::json!({ "result": "slow" })
+                            }
+                            Some("pending") => serde_json::json!({ "error": { "code": midna_proto::error::PENDING, "message": "waiting", "data": { "needs_you_id": "n_abc" } } }),
+                            _ => serde_json::json!({ "result": req["params"] }),
+                        };
+                        let mut out = serde_json::json!({ "jsonrpc": "2.0", "id": req["id"] });
+                        out.as_object_mut().unwrap().extend(res.as_object().unwrap().clone());
+                        let _ = writeln!(w, "{out}");
+                    }
+                });
+            }
+        });
+        (sock, conns)
+    }
+
+    #[test]
+    fn a_slow_call_does_not_hold_up_the_others() {
+        let (sock, _) = fake_daemon();
+        let b = Arc::new(DaemonBackend::new(sock));
+        let slow = {
+            let b = b.clone();
+            std::thread::spawn(move || b.call("slow", Value::Null).unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        let t0 = Instant::now();
+        b.call("fast", serde_json::json!({})).unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(500), "fast call waited {:?} behind the slow one", t0.elapsed());
+        assert_eq!(slow.join().unwrap(), "slow");
+    }
+
+    #[test]
+    fn connections_are_reused_and_calls_never_wait_on_the_human() {
+        let (sock, conns) = fake_daemon();
+        let b = DaemonBackend::new(sock);
+        for _ in 0..5 {
+            let echoed = b.call("echo", serde_json::json!({})).unwrap();
+            assert_eq!(echoed["caller"], serde_json::json!({ "no_wait": true }), "no session forwarded, and no_wait set");
+        }
+        assert_eq!(*conns.lock().unwrap(), 1, "sequential calls share one connection");
+    }
+
+    #[test]
+    fn a_pending_approval_comes_back_at_once_as_a_readable_error() {
+        let (sock, _) = fake_daemon();
+        let b = DaemonBackend::new(sock);
+        let e = b.call("pending", Value::Null).unwrap_err().to_string();
+        assert!(e.contains("waiting for your approval") && e.contains("n_abc"), "{e}");
+        assert!(b.call("echo", serde_json::json!({})).is_ok(), "the connection is still usable");
     }
 }
