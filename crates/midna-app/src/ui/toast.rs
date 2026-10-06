@@ -1,11 +1,11 @@
 //! In-app banner card (A on the toast + history canvas): while midna is in front, a notification
 //! that would be a macOS banner about a terminal you aren't looking at shows here instead, top
-//! right, with Go to terminal (⌘J), and Approve / Deny for an approval. It stays 8 s, fading out
-//! as the link preview card does (holding near full strength, then falling away), and stays
-//! while the pointer is on it, easing back in if it had started to fade. A long question is cut
-//! at a few lines with "Show all". It goes when its needs-you item is answered or you open its
-//! terminal. Not in front: macOS banners
-//! as before (`app.rs` `on_notification`).
+//! right, with Go to terminal (⌘J), and Approve / Deny for an approval. It stays its kind's
+//! `notify.stay.<kind>` (0: until it's answered, opened or dismissed), fading out as the link
+//! preview card does (holding near full strength, then falling away), and stays while the
+//! pointer is on it, easing back in if it had started to fade. A long question is cut at a few
+//! lines with "Show all". It goes when its needs-you item is answered or you open its terminal.
+//! Not in front: the floating badge (`ui/badge.rs`) or macOS banners (`app.rs` `on_notification`).
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::theme::Theme;
@@ -27,8 +27,10 @@ pub struct Card {
     pub session: Option<String>,
     pub posted: Posted,
     pub at: Instant,
-    /// When it goes (pushed back while hovered).
-    until: Instant,
+    /// How long it shows (`notify.stay.<kind>`); None = until it's handled or dismissed.
+    stay: Option<Duration>,
+    /// When it goes (pushed back while hovered); None = it stays.
+    until: Option<Instant>,
     /// Its needs-you item was seen open: when it's gone, so is the card.
     need_seen: bool,
 }
@@ -53,11 +55,22 @@ fn fade(x: f32) -> f32 {
     1. - super::setup_screen::bezier(0.7, 0., 0.84, 0., x.clamp(0., 1.))
 }
 
+/// How long a notification shows (`notify.stay.<kind>`, 0 = until handled or dismissed; a
+/// daemon from before it: `STAY`).
+pub fn stay_of(p: &Posted) -> Option<Duration> {
+    match p.stay_secs {
+        Some(0) => None,
+        Some(s) => Some(Duration::from_secs(s.into())),
+        None => Some(STAY),
+    }
+}
+
 /// Show `p` as a card (newest on top).
 pub fn push(m: &mut MainWindow, seq: u64, session: Option<String>, p: Posted, cx: &mut Context<MainWindow>) {
     let now = Instant::now();
     m.cards.list.retain(|c| c.session != session || c.posted.category != p.category);
-    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, until: now + STAY, need_seen: false });
+    let stay = stay_of(&p);
+    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need_seen: false });
     m.cards.expanded = false;
     m.cards.generation += 1;
     tick(m, cx);
@@ -119,7 +132,7 @@ fn prune(m: &mut MainWindow) -> bool {
     m.cards.list.retain(|c| {
         let answered = c.need_seen && !c.posted.needs_you_id.as_ref().is_some_and(|id| needs.contains(id));
         let opened = c.session.is_some() && c.session == selected;
-        let expired = now >= c.until && !(hovered && Some(c.seq) == top);
+        let expired = c.until.is_some_and(|u| now >= u) && !(hovered && Some(c.seq) == top);
         !(answered || opened || expired)
     });
     if m.cards.list.first().map(|c| c.seq) != top {
@@ -175,7 +188,7 @@ fn texts(m: &MainWindow, c: &Card) -> (String, Option<String>, Option<String>) {
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let c = m.cards.list.first()?;
-    let (label, color) = super::notifications::kind(t, &c.posted.category);
+    let (label, color) = super::notifications::kind(t, &c.posted);
     let needs = matches!(c.posted.category.as_str(), "approval" | "attention");
     let kind_label = if needs { "Needs you".to_string() } else { label.to_string() };
     let name = super::notifications::source(m, c.session.as_deref(), None);
@@ -200,6 +213,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         _ => "Go to terminal",
     };
     let generation = m.cards.generation;
+    let stay = c.stay;
     let hovered = m.cards.hovered;
     let recover = m.cards.recover;
 
@@ -278,15 +292,17 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             m.cards.recover = None;
             if *on {
                 // Ease back in from however far it had faded.
-                if let Some(c) = m.cards.list.first() {
-                    let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32();
-                    let from = fade(1. - left / STAY.as_secs_f32());
+                if let Some(c) = m.cards.list.first()
+                    && let (Some(until), Some(stay)) = (c.until, c.stay)
+                {
+                    let left = until.saturating_duration_since(Instant::now()).as_secs_f32();
+                    let from = fade(1. - left / stay.as_secs_f32());
                     m.cards.recover = (from < 0.99).then_some((m.cards.generation, from));
                 }
             } else {
                 // Leaving the card starts its time over.
                 if let Some(c) = m.cards.list.first_mut() {
-                    c.until = Instant::now() + STAY;
+                    c.until = c.stay.map(|s| Instant::now() + s);
                 }
                 m.cards.generation += 1;
             }
@@ -355,11 +371,12 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                     1 => "+1 more".to_string(),
                     n => format!("+{n} more"),
                 })
-                .child("Stays while you hover"),
+                .child(if stay.is_some() { "Stays while you hover" } else { "Stays until you're done with it" }),
         );
     // Fading out over its stay, or easing back in from wherever the pointer caught it.
     let at = |el: Stateful<Div>, o: f32| el.opacity(o).top(px(SINK * (1. - o)));
     let reduce = super::queue::reduce_motion();
+    let Some(stay) = stay else { return Some(card.into_any_element()) };
     Some(match recover {
         _ if reduce => card.into_any_element(),
         Some((seq, from)) if hovered => {
@@ -368,7 +385,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                 .into_any_element()
         }
         _ if hovered => card.into_any_element(),
-        _ => card.with_animation(SharedString::from(format!("toast-fade-{generation}")), Animation::new(STAY), move |el, d| at(el, fade(d))).into_any_element(),
+        _ => card.with_animation(SharedString::from(format!("toast-fade-{generation}")), Animation::new(stay), move |el, d| at(el, fade(d))).into_any_element(),
     })
 }
 

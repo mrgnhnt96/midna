@@ -340,10 +340,14 @@ fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result
         return Ok(Some(json!({ "kind": "clear_status" })));
     }
     if let Some(title) = a.get("notify") {
-        return Ok(Some(json!({ "kind": "notify", "title": title, "body": a.get("notify-body").unwrap_or(""), "sound": !a.has("silent") })));
+        let mut action = json!({ "kind": "notify", "title": title, "body": a.get("notify-body").unwrap_or(""), "sound": !a.has("silent") });
+        if let Some(k) = a.get("notify-kind") {
+            action["category"] = json!(k);
+        }
+        return Ok(Some(action));
     }
-    if a.has("notify-body") || a.has("silent") {
-        return Err(Fail::Usage("--notify-body and --silent go with --notify TITLE".into()));
+    if a.has("notify-body") || a.has("notify-kind") || a.has("silent") {
+        return Err(Fail::Usage("--notify-body, --notify-kind and --silent go with --notify TITLE".into()));
     }
     Ok(None)
 }
@@ -420,7 +424,7 @@ fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
 const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
     "session", "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on",
-    "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "silent",
+    "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "silent",
 ];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).

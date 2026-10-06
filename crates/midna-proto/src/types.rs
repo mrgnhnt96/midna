@@ -945,6 +945,10 @@ pub enum TriggerAction {
         /// Play the category's sound (`notify.sound.from_trigger`).
         #[serde(default = "yes")]
         sound: bool,
+        /// A kind the human added (`notify.kinds.list`) to post it as, instead of
+        /// `from_trigger`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
     },
 }
 
@@ -1255,6 +1259,9 @@ pub mod kinds {
     pub const SESSION_NOTIFY: &str = "session.notify";
     /// A notification sound or image was imported or removed (`{action, kind, name}`).
     pub const NOTIFY_MEDIA: &str = "notify.media";
+    /// A notification kind was added, changed or removed (`{action, key}`); see
+    /// `notify.kinds.list`.
+    pub const NOTIFY_KINDS_CHANGED: &str = "notify.kinds_changed";
 }
 
 // ------------------------------------------------------------------ session links

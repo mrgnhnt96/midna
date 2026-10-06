@@ -208,7 +208,7 @@ const TOPICS: &[(&str, &str)] = &[
         hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
         order, each waits until the agent is ready), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \
         clear_on: prompt|turn|status|never} (shown instead of the built-in status, which still drives sorting and \
-        Needs You), clear_status, notify {title, body?, sound} (a macOS notification, category from_trigger); also attention, run_command, start_agent. Templates: {{last_prompt}} (the terminal's \
+        Needs You), clear_status, notify {title, body?, sound, category?} (a macOS notification, category from_trigger or a kind the human added); also attention, run_command, start_agent. Templates: {{last_prompt}} (the terminal's \
         latest full prompt), {{event}}, {{session.id|name|project_id|agent|status}}, {{data.<path>}} or bare {{<path>}} \
         like {{message}}; run_command shell-quotes values. cooldown_secs (default 60) per terminal. Events caused by a trigger never fire triggers. Agents may \
         add, enable and pause local triggers directly (no approval) when the human asked for one (`--enable` on add). Built in: \

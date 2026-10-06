@@ -1039,7 +1039,12 @@ fn notify(a: &Args, out: OutFn) -> Res {
                 "" => String::new(),
                 i => format!(" · {i}"),
             };
-            println!("  {mark}  {:<11} {:<26} {sound}{image}{here}", s_(&c, "key"), s_(&c, "label"));
+            let stay = match c["stay"].as_i64() {
+                Some(0) => "stays".to_string(),
+                Some(s) => format!("{s}s"),
+                None => String::new(),
+            };
+            println!("  {mark}  {:<11} {:<26} {stay:<6} {:<8} {sound}{image}{here}", s_(&c, "key"), s_(&c, "label"), s_(&c, "color"));
         }
     };
     let session = a.get("session");
@@ -1070,13 +1075,63 @@ fn notify(a: &Args, out: OutFn) -> Res {
             out(&v, &print_list);
         }
         "send" => {
-            a.check(&["session", "detail", "sound"])?;
+            a.check(&["session", "detail", "sound", "kind"])?;
             let title = a.need(2, "title")?;
-            let v = call("notify.send", json!({ "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound") }))?;
+            let p = json!({ "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound"), "category": a.get("kind") });
+            let v = call("notify.send", p)?;
             out(&v, &|v| match v["reason"].as_str() {
                 None => println!("sent"),
                 Some(r) => println!("not sent: {r}"),
             });
+        }
+        "kinds" | "kind" => {
+            let print_kinds = |v: &Value| {
+                let kinds = v["kinds"].as_array().cloned().unwrap_or_default();
+                if kinds.is_empty() {
+                    println!("no kinds added (built-in kinds: midna notify; add one: midna notify kinds add <key> --label …)");
+                }
+                for k in kinds {
+                    let stay = match k["stay"].as_i64() {
+                        Some(0) => "stays".to_string(),
+                        Some(s) => format!("{s}s"),
+                        None => String::new(),
+                    };
+                    let on = if k["enabled"] == true { "on " } else { "off" };
+                    println!("  {on}  {:<14} {:<22} {stay:<6} {:<8} {}", s_(&k, "key"), s_(&k, "label"), s_(&k, "color"), s_(&k, "sound"));
+                }
+            };
+            match a.pos.get(2).map(String::as_str).unwrap_or("list") {
+                "list" | "ls" => {
+                    a.check(&[])?;
+                    let v = call("notify.kinds.list", json!({}))?;
+                    out(&v, &print_kinds);
+                }
+                verb @ ("add" | "update" | "edit") => {
+                    a.check(&["label", "description", "color", "stay", "set"])?;
+                    let key = a.need(3, "a kind key (deploys)")?;
+                    // --stay 0 = stays until handled; --set field=value for the rest (sound=Glass, push=false, …)
+                    let mut settings = serde_json::Map::new();
+                    for (f, v) in [("color", a.get("color")), ("stay", a.get("stay"))] {
+                        if let Some(v) = v {
+                            settings.insert(f.into(), json!(v));
+                        }
+                    }
+                    for s in a.all("set") {
+                        let (f, v) = s.split_once('=').ok_or_else(|| Fail::Usage(format!("--set `{s}`: expected field=value (stay=0, sound=Glass, push=false)")))?;
+                        settings.insert(f.trim().into(), json!(v.trim()));
+                    }
+                    let p = json!({ "key": key, "label": a.get("label"), "description": a.get("description"), "settings": settings, "replace": verb != "add" });
+                    let v = call("notify.kinds.add", p)?;
+                    out(&v, &|v| println!("{} kind {} ({})", if verb == "add" { "added" } else { "updated" }, s_(v, "key"), s_(v, "label")));
+                }
+                "remove" | "rm" => {
+                    a.check(&[])?;
+                    let key = a.need(3, "a kind key you added (see midna notify kinds)")?;
+                    let v = call("notify.kinds.remove", json!({ "key": key }))?;
+                    out(&v, &|_| println!("removed kind {key}"));
+                }
+                other => return Err(Fail::Usage(format!("unknown `notify kinds {other}`; list, add, update or rm"))),
+            }
         }
         "media" | "sounds" | "images" => {
             a.check(&[])?;

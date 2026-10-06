@@ -276,6 +276,15 @@ pub struct NotifyCategoryInfo {
     /// `notify.image.<key>`, or `notify.image` when that's empty (empty = none).
     #[serde(default)]
     pub image: String,
+    /// `notify.stay.<key>`: seconds on screen, 0 = until handled or dismissed.
+    #[serde(default)]
+    pub stay: i64,
+    /// `notify.color.<key>`: a theme color name or `#rrggbb`.
+    #[serde(default)]
+    pub color: String,
+    /// A kind the human added (`notify.kinds.*`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -316,6 +325,57 @@ pub struct NotifySendParams {
     /// Play the human's sound for agent notifications (`notify.sound.agent`, at its volume).
     #[serde(default)]
     pub sound: bool,
+    /// A kind the human added (`notify.kinds.list`) to send it as, with that kind's sound,
+    /// color and duration. Omitted: `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyKindsList {
+    /// The kinds the human added, with each one's settings resolved (as in notify.list).
+    pub kinds: Vec<NotifyKindInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyKindInfo {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// `notify.<key>`.
+    pub enabled: bool,
+    /// `notify.stay.<key>`: seconds on screen, 0 = until handled or dismissed.
+    pub stay: i64,
+    /// `notify.color.<key>`.
+    pub color: String,
+    /// `notify.sound.<key>`.
+    pub sound: String,
+    /// `notify.push.<key>`.
+    pub push: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyKindsAddParams {
+    /// 1–32 lowercase letters, digits and `_` (`deploys`); not a built-in kind.
+    pub key: String,
+    /// Shown in Settings and the notifications screen. Defaults to the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Starting settings, by field (`stay`, `color`, `sound`, `volume`, `push`, `title`,
+    /// `body`, …), same values as `notify.<field>.<key>` takes.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub settings: serde_json::Map<String, serde_json::Value>,
+    /// Update the kind if it exists (its label and description; settings given are set).
+    #[serde(default)]
+    pub replace: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyKindsRemoveParams {
+    pub key: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

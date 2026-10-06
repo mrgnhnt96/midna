@@ -618,7 +618,7 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
             set_custom(d, &s.id, cs, actor.clone());
             (None, format!("Status “{label}” on {}", s.name))
         }),
-        TriggerAction::Notify { title, body, sound } => Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound))),
+        TriggerAction::Notify { title, body, sound, category } => Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref()))),
         TriggerAction::ClearStatus {} => target().map(|s| {
             let had = clear_custom(d, &s.id, actor.clone(), "clear_status", true);
             (None, if had { format!("Cleared the status on {}", s.name) } else { format!("{} had no custom status", s.name) })
@@ -628,9 +628,11 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
 }
 
 /// A trigger's `notify` action (local and webhook): one line saying what happened.
-pub fn notify(d: &Daemon, t: &Trigger, session: Option<Id>, title: &str, body: &str, sound: bool) -> String {
+pub fn notify(d: &Daemon, t: &Trigger, session: Option<Id>, title: &str, body: &str, sound: bool, category: Option<&str>) -> String {
     let title = if title.trim().is_empty() { t.name.as_str() } else { title };
-    let r = crate::notify::send_as(d, "from_trigger", session, title, body, sound, false);
+    // A kind the human added, while it still exists; else `from_trigger`.
+    let category = category.filter(|k| d.core().state.notify_kind(k).is_some()).unwrap_or("from_trigger");
+    let r = crate::notify::send_as(d, category, session, title, body, sound, false);
     match r.reason {
         None => format!("Notified “{}”", clip(title, 60)),
         Some(why) => format!("Notification not shown ({why})"),

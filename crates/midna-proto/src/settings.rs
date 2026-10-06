@@ -101,6 +101,10 @@ impl SettingSpec {
                 },
                 _ => Err(format!("{} expects an integer", self.key)),
             },
+            SettingKind::String if self.key.starts_with("notify.color.") => match as_text.map(|t| t.trim().to_ascii_lowercase()) {
+                Some(t) if crate::notify::valid_color(&t) => Ok(json!(t)),
+                _ => Err(format!("{} expects a theme color ({}) or #rrggbb", self.key, crate::notify::COLOR_TOKENS.join(", "))),
+            },
             SettingKind::String | SettingKind::Keybinding => match as_text {
                 Some(t) => Ok(json!(t)),
                 None => Err(format!("{} expects a string", self.key)),
@@ -236,7 +240,42 @@ macro_rules! ttl {
     };
 }
 
+macro_rules! stay {
+    ($cat:literal, $def:literal) => {
+        SettingSpec { range: Some((0, 3600)), ..s!(concat!("notify.stay.", $cat), SettingKind::Int, I($def), "notifications", false,
+            concat!("How long “notify.", $cat, "” stays on screen in the floating badge and the in-app card, in seconds. 0 = it stays until it's handled or dismissed.")) }
+    };
+}
+macro_rules! color {
+    ($cat:literal, $def:literal) => {
+        s!(concat!("notify.color.", $cat), SettingKind::String, S($def), "notifications", false,
+            concat!("Color of “notify.", $cat, "” notifications in the floating badge, the in-app card and the notifications screen: a theme color (need, ok, err, work, accent, dim) or #rrggbb."))
+    };
+}
+
 use DefaultValue::{Bool as B, Int as I, List as L, Str as S};
+
+/// A per-kind setting of a kind you added (`notify::CustomKind`), by its field
+/// (`notify::KIND_FIELDS`): the type and default its `notify.<field>.<key>` key has. These
+/// specs' `key` is a pattern; the real key is the one asked for.
+pub fn custom_kind_spec(field: &str) -> Option<&'static SettingSpec> {
+    CUSTOM_KIND.iter().find(|s| s.key.strip_prefix("notify.").and_then(|k| k.strip_suffix("<kind>")).is_some_and(|f| f.trim_end_matches('.') == field))
+}
+
+static CUSTOM_KIND: &[SettingSpec] = &[
+    s!("notify.<kind>", SettingKind::Bool, B(true), "notifications", false, "Show notifications of this kind you added."),
+    s!("notify.push.<kind>", SettingKind::Bool, B(true), "notifications", false,
+        "Show this kind as a macOS banner (with its sound) for a terminal you aren't looking at. Off: it's still recorded, just not pushed."),
+    s!("notify.push_focused.<kind>", SettingKind::Bool, B(false), "notifications", false, "Show this kind as a macOS banner for the terminal you're looking at too."),
+    s!("notify.sound.<kind>", SOUNDS, S("Hm"), "notifications", false, "Sound for this kind: none, a Twilight sound, a macOS sound or an imported sound."),
+    SettingSpec { range: Some((0, 100)), ..s!("notify.volume.<kind>", SettingKind::Int, I(100), "notifications", false, "How loud this kind plays, 0–100 (scaled by notify.volume).") },
+    s!("notify.image.<kind>", SettingKind::String, S(""), "notifications", false, "Image on this kind's notifications: empty = notify.image, none, or an imported image."),
+    s!("notify.title.<kind>", SettingKind::String, S(""), "notifications", false, "Title of this kind's notifications, as a template: empty = midna's own ({{heading}}: the terminal · its project). {{title}} and {{body}} are what was sent."),
+    s!("notify.body.<kind>", SettingKind::String, S(""), "notifications", false, "Text of this kind's notifications, as a template: empty = what was sent, none = no text. {{title}} and {{body}} are what was sent."),
+    SettingSpec { range: Some((0, 3600)), ..s!("notify.stay.<kind>", SettingKind::Int, I(6), "notifications", false,
+        "How long this kind stays on screen, in seconds. 0 = it stays until it's handled or dismissed.") },
+    s!("notify.color.<kind>", SettingKind::String, S("accent"), "notifications", false, "Color of this kind: a theme color (need, ok, err, work, accent, dim) or #rrggbb."),
+];
 const fn en(options: &'static [&'static str]) -> SettingKind {
     SettingKind::Enum { options, allow_other: false }
 }
@@ -454,18 +493,18 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
     s!("notify.image", SettingKind::String, S(""), "notifications", false,
         "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
-    snd!("approval", "Portal"), push!("approval", true), pushf!("approval"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "),
-    snd!("attention", "Call"), push!("attention", true), pushf!("attention"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "),
-    snd!("failed", "Uh-oh"), push!("failed", false), pushf!("failed"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "),
-    snd!("turn_done", "Strum"), push!("turn_done", false), pushf!("turn_done"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "),
-    snd!("agent", "Hm"), push!("agent", false), pushf!("agent"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "),
-    snd!("from_trigger", "Hm"), push!("from_trigger", false), pushf!("from_trigger"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "),
-    snd!("requests", "none"), push!("requests", false), pushf!("requests"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "),
-    snd!("background", "none"), push!("background", false), pushf!("background"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "),
-    snd!("pr_checks", "none"), push!("pr_checks", false), pushf!("pr_checks"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "),
-    snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""),
-    snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "),
-    snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "),
+    snd!("approval", "Portal"), push!("approval", true), pushf!("approval"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "), stay!("approval", 0), color!("approval", "need"),
+    snd!("attention", "Call"), push!("attention", true), pushf!("attention"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "), stay!("attention", 0), color!("attention", "need"),
+    snd!("failed", "Uh-oh"), push!("failed", false), pushf!("failed"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "), stay!("failed", 0), color!("failed", "err"),
+    snd!("turn_done", "Strum"), push!("turn_done", false), pushf!("turn_done"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "), stay!("turn_done", 6), color!("turn_done", "ok"),
+    snd!("agent", "Hm"), push!("agent", false), pushf!("agent"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "), stay!("agent", 6), color!("agent", "accent"),
+    snd!("from_trigger", "Hm"), push!("from_trigger", false), pushf!("from_trigger"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "), stay!("from_trigger", 6), color!("from_trigger", "work"),
+    snd!("requests", "none"), push!("requests", false), pushf!("requests"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "), stay!("requests", 0), color!("requests", "accent"),
+    snd!("background", "none"), push!("background", false), pushf!("background"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "), stay!("background", 6), color!("background", "ok"),
+    snd!("pr_checks", "none"), push!("pr_checks", false), pushf!("pr_checks"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "), stay!("pr_checks", 6), color!("pr_checks", "ok"),
+    snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""), stay!("exited", 6), color!("exited", "dim"),
+    snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "), stay!("triggers", 6), color!("triggers", "work"),
+    snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "), stay!("restarted", 6), color!("restarted", "work"),
     snd!("approved", "Rise"), vol!("approved"),
     snd!("denied", "Nn-nn"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),
@@ -478,6 +517,10 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Play sounds at all: notification sounds and sound effects (approve, deny, a queued message sent, switching terminals, …). ⌘K “Mute sounds” turns this off."),
     s!("notify.sounds_in_app", SettingKind::Bool, B(true), "notifications", false,
         "Play sounds while midna is the frontmost app: sound effects for what you do, and a notification's sound when its banner is skipped because you're looking at that terminal. Off: midna is quiet while you use it, and you hear only what happens while you're in another app."),
+    s!("notify.badge", en(&["background", "always", "off"]), S("background"), "notifications", false,
+        "The floating badge in a corner of the screen: it counts what needs you, and a line springs out beside it when a notification comes in. background = only while midna isn't the app in front (in front, the in-app cards show instead), always, or off."),
+    s!("notify.badge.corner", en(&["top_right", "top_left", "bottom_right", "bottom_left"]), S("top_right"), "notifications", false,
+        "Which corner of the screen the floating badge sits in. Drag the badge to move it; it snaps to the nearest corner."),
     s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
         "When the midna app isn't running, midnad posts the notification itself (shown as a system notification; clicking it doesn't open midna)."),
     s!("keys.command_bar", KB, S("cmd-k"), "keys", false, "Open the command bar."),
@@ -568,6 +611,12 @@ mod tests {
             assert_eq!(push.default.to_json(), json!(c.push), "{}", c.key);
             let focused = setting(&crate::notify::push_focused_key(c.key)).unwrap_or_else(|| panic!("no push_focused setting for {}", c.key));
             assert_eq!(focused.default.to_json(), json!(false), "{}", c.key);
+            assert!(setting(&crate::notify::stay_key(c.key)).is_some_and(|v| v.range == Some((0, 3600))), "{}", c.key);
+            let color = setting(&crate::notify::color_key(c.key)).unwrap_or_else(|| panic!("no color setting for {}", c.key));
+            assert!(crate::notify::valid_color(color.default.to_json().as_str().unwrap()), "{}", c.key);
+        }
+        for f in crate::notify::KIND_FIELDS {
+            assert!(custom_kind_spec(f).is_some(), "no custom kind spec for `{f}`");
         }
         for e in crate::notify::EFFECTS {
             let snd = setting(&crate::notify::sound_key(e.key)).unwrap_or_else(|| panic!("no sound setting for {}", e.key));
@@ -579,6 +628,30 @@ mod tests {
         let SettingKind::Enum { options, .. } = setting("notify.sound.approval").unwrap().ty else { panic!() };
         let builtin: Vec<&str> = crate::notify::TWILIGHT.iter().chain(crate::notify::SYSTEM_SOUNDS).copied().collect();
         assert_eq!(&options[1..], builtin.as_slice());
+    }
+
+    #[test]
+    fn notify_colors_take_theme_names_or_hex() {
+        let s = setting("notify.color.approval").unwrap();
+        assert_eq!(s.coerce(&json!("ERR")), Ok(json!("err")));
+        assert_eq!(s.coerce(&json!(" #A1b2C3 ")), Ok(json!("#a1b2c3")));
+        assert!(s.coerce(&json!("pink")).is_err());
+        assert!(s.coerce(&json!("#12345")).is_err());
+        assert!(custom_kind_spec("color").unwrap().coerce(&json!("#00ff00")).is_ok());
+    }
+
+    #[test]
+    fn kind_keys_split_into_field_and_kind() {
+        use crate::notify::{reserved_kind_key, split_kind_key};
+        assert_eq!(split_kind_key("notify.stay.deploys"), Some(("stay", "deploys")));
+        assert_eq!(split_kind_key("notify.push_focused.deploys"), Some(("push_focused", "deploys")));
+        assert_eq!(split_kind_key("notify.deploys"), Some(("", "deploys")));
+        assert_eq!(split_kind_key("notify.stay.Deploys"), None);
+        assert_eq!(split_kind_key("theme.deploys"), None);
+        for k in ["approval", "copied", "enabled", "volume", "badge", "stay", "kinds"] {
+            assert!(reserved_kind_key(k), "{k}");
+        }
+        assert!(!reserved_kind_key("deploys"));
     }
 
     #[test]

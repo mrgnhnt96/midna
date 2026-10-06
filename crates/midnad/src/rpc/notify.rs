@@ -24,26 +24,31 @@ fn listing(d: &Daemon, sid: Option<Id>) -> NotifyListResult {
     let overrides = sid.as_deref().and_then(|s| st.session(s)).map(|s| s.notify.clone()).unwrap_or_default();
     let enabled = st.setting_bool("notify.enabled");
     let muted = overrides.get("enabled") == Some(&false);
-    let categories = CATEGORIES
-        .iter()
-        .map(|c| {
-            let global = st.setting_bool(&setting_key(c.key));
-            let session = overrides.get(c.key).copied();
+    let builtin = CATEGORIES.iter().map(|c| (c.key, c.label, c.description, c.default));
+    let custom = st.notify_kinds.iter().map(|k| (k.key.as_str(), k.label.as_str(), k.description.as_str(), true));
+    let categories = builtin
+        .chain(custom)
+        .map(|(key, label, description, default)| {
+            let global = st.setting_bool(&setting_key(key));
+            let session = overrides.get(key).copied();
             NotifyCategoryInfo {
-                key: c.key.into(),
-                label: c.label.into(),
-                description: c.description.into(),
-                default: c.default,
+                key: key.into(),
+                label: label.into(),
+                description: description.into(),
+                default,
                 global,
                 session,
                 effective: enabled && !muted && session.unwrap_or(global),
-                sound: st.setting_str(&notify::sound_key(c.key)),
-                volume: st.setting_i64(&notify::volume_key(c.key)),
-                image: match st.setting_str(&notify::image_key(c.key)).as_str() {
+                sound: st.setting_str(&notify::sound_key(key)),
+                volume: st.setting_i64(&notify::volume_key(key)),
+                image: match st.setting_str(&notify::image_key(key)).as_str() {
                     "" => st.setting_str("notify.image"),
                     "none" => String::new(),
                     v => v.to_string(),
                 },
+                stay: st.setting_i64(&notify::stay_key(key)),
+                color: st.setting_str(&notify::color_key(key)),
+                custom: notify::category(key).is_none(),
             }
         })
         .collect();
@@ -56,8 +61,10 @@ pub fn list(d: &Daemon, ctx: &Ctx, p: NotifyListParams) -> R {
 }
 
 pub fn set(d: &Daemon, ctx: &Ctx, p: NotifySetParams) -> R {
-    if !is_override_key(&p.key) {
-        let keys: Vec<&str> = std::iter::once("enabled").chain(CATEGORIES.iter().map(|c| c.key)).collect();
+    if !is_override_key(&p.key) && d.core().state.notify_kind(&p.key).is_none() {
+        let core = d.core();
+        let custom = core.state.notify_kinds.iter().map(|k| k.key.as_str());
+        let keys: Vec<&str> = std::iter::once("enabled").chain(CATEGORIES.iter().map(|c| c.key)).chain(custom).collect();
         return Err(RpcError::bad_params(format!("unknown notification key `{}`; one of: {}", p.key, keys.join(", "))));
     }
     let Some(sid) = target(d, ctx, p.session, p.global)? else {
@@ -94,8 +101,117 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: NotifySendParams) -> R {
     if p.title.trim().is_empty() {
         return Err(RpcError::bad_params("title is empty"));
     }
+    let category = match p.category.as_deref() {
+        None | Some("agent") => "agent".to_string(),
+        Some(k) if d.core().state.notify_kind(k).is_some() => k.to_string(),
+        Some(k) => {
+            let core = d.core();
+            let keys: Vec<&str> = core.state.notify_kinds.iter().map(|k| k.key.as_str()).collect();
+            let known = if keys.is_empty() { "none added yet (notify.kinds.add)".into() } else { keys.join(", ") };
+            return Err(RpcError::bad_params(format!("no kind `{k}` to send as; kinds you can send to: agent, {known}")));
+        }
+    };
     let sid = target(d, ctx, p.session, false)?;
-    ok(crate::notify::send(d, sid, &p.title, &p.body, p.sound, !ctx.is_human()))
+    ok(crate::notify::send_as(d, &category, sid, &p.title, &p.body, p.sound, !ctx.is_human()))
+}
+
+/// At most this many kinds you added.
+const MAX_KINDS: usize = 32;
+
+fn kind_info(st: &crate::state::State, k: &notify::CustomKind) -> NotifyKindInfo {
+    let field = |f: &str| st.setting(&notify::kind_key(f, &k.key));
+    NotifyKindInfo {
+        key: k.key.clone(),
+        label: k.label.clone(),
+        description: k.description.clone(),
+        enabled: field("").as_bool().unwrap_or(true),
+        stay: field("stay").as_i64().unwrap_or(0),
+        color: field("color").as_str().unwrap_or("").into(),
+        sound: field("sound").as_str().unwrap_or("").into(),
+        push: field("push").as_bool().unwrap_or(false),
+    }
+}
+
+pub fn kinds_list(d: &Daemon) -> R {
+    let core = d.core();
+    ok(NotifyKindsList { kinds: core.state.notify_kinds.iter().map(|k| kind_info(&core.state, k)).collect() })
+}
+
+/// Add a kind (or with `replace` update one), then set the settings it came with.
+pub fn kinds_add(d: &Daemon, ctx: &Ctx, p: NotifyKindsAddParams) -> R {
+    let key = p.key.trim().to_ascii_lowercase();
+    if !notify::valid_kind_key(&key) {
+        return Err(RpcError::bad_params(format!("`{key}` isn't a kind key: 1–32 lowercase letters, digits and _, starting with a letter")));
+    }
+    if notify::reserved_kind_key(&key) {
+        return Err(RpcError::bad_params(format!("`{key}` is a built-in kind or setting; pick another key")));
+    }
+    // `enabled` names the kind's own switch (`notify.<key>`, field "").
+    let field = |f: &str| if f == "enabled" { "" } else { f }.to_string();
+    for f in p.settings.keys() {
+        if f.is_empty() || !notify::KIND_FIELDS.contains(&field(f).as_str()) {
+            let names: Vec<&str> = notify::KIND_FIELDS.iter().map(|f| if f.is_empty() { "enabled" } else { f }).collect();
+            return Err(RpcError::bad_params(format!("unknown kind setting `{f}`; one of: {}", names.join(", "))));
+        }
+    }
+    // Check every value before adding anything, so a bad one leaves no half-made kind.
+    for (f, v) in &p.settings {
+        let k = notify::kind_key(&field(f), &key);
+        let s = midna_proto::settings::custom_kind_spec(&field(f)).expect("checked above");
+        let v = s.coerce(v).map_err(|e| RpcError::bad_params(e.replace(s.key, &k)))?;
+        crate::notify_media::check_setting(&d.cfg.home, &k, &v).map_err(RpcError::bad_params)?;
+    }
+    let label = p.label.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or(&key).chars().take(40).collect::<String>();
+    let description = p.description.as_deref().unwrap_or("").trim().chars().take(200).collect::<String>();
+    let action = {
+        let mut core = d.core();
+        let kinds = &mut core.state.notify_kinds;
+        let full = kinds.len() >= MAX_KINDS;
+        match kinds.iter_mut().find(|k| k.key == key) {
+            Some(_) if !p.replace => return Err(RpcError::bad_params(format!("kind `{key}` exists; pass replace=true to update it"))),
+            Some(k) => {
+                k.label = label;
+                if p.description.is_some() {
+                    k.description = description;
+                }
+                "updated"
+            }
+            None if full => return Err(RpcError::bad_params(format!("at most {MAX_KINDS} kinds; remove one first"))),
+            None => {
+                kinds.push(notify::CustomKind { key: key.clone(), label, description });
+                "added"
+            }
+        }
+    };
+    d.mark_dirty();
+    for (f, v) in &p.settings {
+        super::settings::set(d, ctx, SettingSetParams { key: notify::kind_key(&field(f), &key), value: v.clone() })?;
+    }
+    d.emit(kinds::NOTIFY_KINDS_CHANGED, ctx.actor(), None, None, json!({ "action": action, "key": key }));
+    let core = d.core();
+    ok(kind_info(&core.state, core.state.notify_kind(&key).expect("just added")))
+}
+
+/// Remove a kind you added, its settings, and every terminal's override for it.
+pub fn kinds_remove(d: &Daemon, ctx: &Ctx, p: NotifyKindsRemoveParams) -> R {
+    {
+        let mut core = d.core();
+        let st = &mut core.state;
+        let Some(i) = st.notify_kinds.iter().position(|k| k.key == p.key) else {
+            let why = if notify::category(&p.key).is_some() { format!("`{}` is built in: turn it off with notify.{} false", p.key, p.key) } else { format!("no kind `{}`", p.key) };
+            return Err(RpcError::not_found(why));
+        };
+        st.notify_kinds.remove(i);
+        for k in notify::kind_keys(&p.key) {
+            st.settings.remove(&k);
+        }
+        for s in &mut st.sessions {
+            s.notify.remove(&p.key);
+        }
+    }
+    d.mark_dirty();
+    d.emit(kinds::NOTIFY_KINDS_CHANGED, ctx.actor(), None, None, json!({ "action": "removed", "key": p.key }));
+    ok(OkResult { ok: true })
 }
 
 pub fn media(d: &Daemon, p: NotifyMediaParams) -> R {
@@ -126,8 +242,9 @@ pub fn remove(d: &Daemon, ctx: &Ctx, p: NotifyRemoveParams) -> R {
 
 pub fn test(d: &Daemon, ctx: &Ctx, p: NotifyTestParams) -> R {
     let category = p.category.unwrap_or_else(|| "approval".into());
-    if notify::category(&category).is_none() {
-        let keys: Vec<&str> = CATEGORIES.iter().map(|c| c.key).collect();
+    if !d.core().state.is_notify_kind(&category) {
+        let core = d.core();
+        let keys: Vec<&str> = CATEGORIES.iter().map(|c| c.key).chain(core.state.notify_kinds.iter().map(|k| k.key.as_str())).collect();
         return Err(RpcError::bad_params(format!("unknown category `{category}`; one of: {}", keys.join(", "))));
     }
     let sid = target(d, ctx, p.session, false)?;

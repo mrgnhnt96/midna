@@ -248,7 +248,8 @@ pub static VERBS: &[Verb] = &[
         usage: "notify [--session <id> | --global]\n       \
                 notify set <key> on|off|default [--session <id> | --global]\n       \
                 notify mute|unmute [--session <id>]\n       \
-                notify send \"<title>\" [--detail \"<body>\"] [--sound] [--session <id>]\n       \
+                notify send \"<title>\" [--detail \"<body>\"] [--sound] [--kind <kind>] [--session <id>]\n       \
+                notify kinds [list | add|update <key> [--label L] [--description D] [--color C] [--stay S] [--set field=value]… | rm <key>]\n       \
                 notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
                 notify play <kind>|<sound> [--volume 0-100] [--session <id>]\n       \
                 notify clear [--session <id>]",
@@ -260,6 +261,13 @@ pub static VERBS: &[Verb] = &[
                   when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
                   a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
                   turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
+                  `kinds` lists the kinds the human added (deploys, ci, …); `send --kind <key>` sends as one, with its\n\
+                  own sound, color and switch. `kinds add` makes one when the human asks (--stay 0 = it stays on\n\
+                  screen until handled; --color a theme color need|ok|err|work|accent|dim or #rrggbb; --set\n\
+                  sound=Glass, push=false, …); `kinds rm` removes it and its settings.\n\
+                  Every kind also has notify.stay.<kind> (seconds on screen in the floating badge and the in-app\n\
+                  card, 0 = until handled) and notify.color.<kind>. notify.badge (background|always|off) shows or\n\
+                  hides the floating badge; notify.badge.corner says which corner it sits in.\n\
                   Each kind has a sound, a volume and an image: settings notify.sound.<kind> (none, one of midna's\n\
                   Twilight sounds, the defaults: Portal, Call, Uh-oh, Strum, Hm, Rise, Nn-nn, Whoosh, Fwip, Close,\n\
                   Tick, Thump, Tick-tick; a macOS sound like Glass; or an imported file), notify.volume.<kind>\n\
@@ -275,7 +283,7 @@ pub static VERBS: &[Verb] = &[
                   plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.\n\
                   `clear` removes every midna notification from Notification Center (--session: only that\n\
                   terminal's); opening a terminal already removes its own.",
-        methods: &["notify.list", "notify.set", "notify.send", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.history", "notify.read"],
+        methods: &["notify.list", "notify.set", "notify.send", "notify.kinds.list", "notify.kinds.add", "notify.kinds.remove", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.history", "notify.read"],
     },
     Verb {
         name: "read",
@@ -389,7 +397,7 @@ pub static VERBS: &[Verb] = &[
                 [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
                 [--match path=glob]...\n            \
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
-                [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--silent]\n             \
+                [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--silent]\n             \
                 | --attention MSG | --run CMD --project P)\n            \
                 [--cooldown 60s] [--enable]\n       \
                 triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \

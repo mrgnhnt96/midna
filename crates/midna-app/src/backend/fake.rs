@@ -90,7 +90,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
                 "t_lstandup",
                 "Morning standup",
                 p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() },
-                p::TriggerAction::Notify { title: "Standup in 5".into(), body: "{{local_time}}".into(), sound: true },
+                p::TriggerAction::Notify { title: "Standup in 5".into(), body: "{{local_time}}".into(), sound: true, category: None },
                 None,
                 0,
             )

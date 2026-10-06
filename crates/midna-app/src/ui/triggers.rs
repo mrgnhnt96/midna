@@ -1723,7 +1723,7 @@ mod tests {
 
         tr.event = "schedule".into();
         tr.filter = p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() };
-        tr.action = p::TriggerAction::Notify { title: "Standup".into(), body: String::new(), sound: true };
+        tr.action = p::TriggerAction::Notify { title: "Standup".into(), body: String::new(), sound: true, category: None };
         let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
         assert_eq!(g.scope(&names), "no terminal");
         let text = g.filter_text().unwrap();

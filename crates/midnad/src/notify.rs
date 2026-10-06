@@ -68,7 +68,7 @@ pub fn start(d: &Arc<Daemon>) {
 
 /// A notification to consider: category, terminal, text, and an optional dedupe key.
 struct Draft {
-    category: &'static str,
+    category: String,
     session: Option<Id>,
     project: Option<Id>,
     /// midna's own text (`{{text}}`).
@@ -87,10 +87,10 @@ struct Draft {
 }
 
 impl Draft {
-    fn new(category: &'static str, e: &Event, body: impl Into<String>) -> Draft {
+    fn new(category: &str, e: &Event, body: impl Into<String>) -> Draft {
         let vars = if e.data.is_object() { e.data.clone() } else { json!({}) };
         Draft {
-            category,
+            category: category.into(),
             session: e.session_id.clone(),
             project: e.project_id.clone(),
             body: body.into(),
@@ -273,7 +273,7 @@ pub fn send(d: &Daemon, session: Option<Id>, title: &str, body: &str, sound: boo
 
 /// A notification in `category` ("agent" for `notify.send`, "from_trigger" for a trigger's
 /// `notify` action). `rate_limit`: at most AGENT_PER_MINUTE a minute per terminal.
-pub fn send_as(d: &Daemon, category: &'static str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool) -> NotifySendResult {
+pub fn send_as(d: &Daemon, category: &str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool) -> NotifySendResult {
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
     if rate_limit && let Some(sid) = &session {
         let prefix = format!("{category}:{sid}:");
@@ -286,7 +286,7 @@ pub fn send_as(d: &Daemon, category: &'static str, session: Option<Id>, title: &
     }
     let text = if body.trim().is_empty() { title.trim().to_string() } else { format!("{}\n{}", title.trim(), body.trim()) };
     let draft = Draft {
-        category,
+        category: category.into(),
         key: Some(format!("{category}:{}:{}", session.as_deref().unwrap_or(""), text)),
         session,
         project,
@@ -305,17 +305,19 @@ pub fn send_as(d: &Daemon, category: &'static str, session: Option<Id>, title: &
 
 /// A test notification with a category's sound, volume and image (`notify.test`).
 pub fn test(d: &Daemon, session: Option<Id>, category: &str) -> NotifySendResult {
-    let Some(c) = notify::category(category) else {
-        return NotifySendResult { posted: false, reason: Some("unknown_category".into()) };
+    let label = match (notify::category(category), d.core().state.notify_kind(category)) {
+        (Some(c), _) => c.label.to_string(),
+        (None, Some(k)) => k.label.clone(),
+        (None, None) => return NotifySendResult { posted: false, reason: Some("unknown_category".into()) },
     };
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
     let draft = Draft {
-        category: c.key,
+        category: category.into(),
         session,
         project,
-        body: format!("Test: {}", c.label),
+        body: format!("Test: {label}"),
         event: String::new(),
-        vars: sample_vars(c.key),
+        vars: sample_vars(category),
         needs_you_id: None,
         sound: None,
         key: None,
@@ -340,7 +342,8 @@ fn sample_vars(category: &str) -> Value {
         "pr_checks" => json!({ "number": 42, "checks": "failing", "failing": 2 }),
         "triggers" => json!({ "name": "Review PRs", "outcome": "started an agent" }),
         "restarted" => json!({ "reason": "Claude Code updated" }),
-        _ => json!({}),
+        // A kind you added gets what was sent, like `agent`.
+        _ => json!({ "title": "Deploy finished", "body": "staging is on f568837" }),
     }
 }
 
@@ -429,12 +432,12 @@ pub fn play(d: &Daemon, session: Option<Id>, what: &str, volume: Option<u8>, rat
 /// Check the settings, dedupe, and emit `notify.posted` (showing it from midnad when no app
 /// is connected).
 fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
-    let (title, text, (sound, image), (push, push_focused), when_app_closed) = {
+    let (title, text, (sound, image), (push, push_focused), when_app_closed, look) = {
         let core = d.core();
         let st = &core.state;
         let session = draft.session.as_deref().and_then(|s| st.session(s));
         if !draft.test
-            && let Some(r) = blocked(&|k| st.setting_bool(k), session.map(|s| &s.notify), draft.category)
+            && let Some(r) = blocked(&|k| st.setting_bool(k), session.map(|s| &s.notify), &draft.category)
         {
             return Err(r);
         }
@@ -445,12 +448,19 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
             (None, Some(p)) => p.to_string(),
             (None, None) => "midna".into(),
         };
-        let templates = (st.setting_str(&notify::title_key(draft.category)), st.setting_str(&notify::body_key(draft.category)));
+        let templates = (st.setting_str(&notify::title_key(&draft.category)), st.setting_str(&notify::body_key(&draft.category)));
         let (title, text) = texts((&templates.0, &templates.1), &draft, session, project.as_deref(), heading);
         // A test shows everywhere; otherwise only kinds set to push become banners.
-        let push = draft.test || st.setting_bool(&notify::push_key(draft.category));
-        let push_focused = draft.test || st.setting_bool(&notify::push_focused_key(draft.category));
-        (title, text, style(&d.cfg.home, &|k| st.setting(k), draft.category), (push, push_focused), st.setting_bool("notify.when_app_closed") || draft.test)
+        let push = draft.test || st.setting_bool(&notify::push_key(&draft.category));
+        let push_focused = draft.test || st.setting_bool(&notify::push_focused_key(&draft.category));
+        // How long it stays on screen, its color and (a kind you added) its label.
+        let look = (
+            st.setting(&notify::stay_key(&draft.category)).as_u64().map(|s| s.min(3600) as u32),
+            Some(st.setting_str(&notify::color_key(&draft.category))).filter(|c| !c.is_empty()),
+            st.notify_kind(&draft.category).map(|k| k.label.clone()),
+        );
+        let style = style(&d.cfg.home, &|k| st.setting(k), &draft.category);
+        (title, text, style, (push, push_focused), st.setting_bool("notify.when_app_closed") || draft.test, look)
     };
     if !draft.test {
         let mut st = d.notify();
@@ -475,7 +485,7 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         "none"
     };
     let posted = Posted {
-        category: draft.category.into(),
+        category: draft.category.clone(),
         title: truncate(&title, TITLE_MAX),
         body: truncate(&text, BODY_MAX),
         sound: sound.is_some(),
@@ -491,6 +501,9 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         test: draft.test,
         via: via.into(),
         needs_you_id: draft.needs_you_id,
+        stay_secs: look.0,
+        color: look.1,
+        label: look.2,
     };
     d.emit(kinds::NOTIFY_POSTED, Actor::system(), draft.project, draft.session, serde_json::to_value(&posted).unwrap_or_default());
     if via == "system" {

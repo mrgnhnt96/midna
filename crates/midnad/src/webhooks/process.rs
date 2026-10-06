@@ -429,10 +429,10 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value) -> (
             let item = d.raise_needs_you(item);
             (None, format!("Raised attention ({})", item.id))
         }
-        TriggerAction::Notify { title, body, sound } => {
+        TriggerAction::Notify { title, body, sound, category } => {
             let (title, body) = (payload::render(title, f, payload, false), payload::render(body, f, payload, false));
             let body = if body.trim().is_empty() { [f.subject.clone(), f.url.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ") } else { body };
-            (None, crate::local::notify(d, t, None, &title, &body, *sound))
+            (None, crate::local::notify(d, t, None, &title, &body, *sound, category.as_deref()))
         }
         a => (None, format!("Skipped: {} needs a local trigger", crate::local::action_name(a))),
     }

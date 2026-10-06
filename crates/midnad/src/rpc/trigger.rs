@@ -97,9 +97,14 @@ fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             }
         }
         TriggerAction::ClearStatus {} => {}
-        TriggerAction::Notify { title, .. } => {
+        TriggerAction::Notify { title, category, .. } => {
             if title.trim().is_empty() {
                 return Err(RpcError::bad_params("notify needs a title"));
+            }
+            if let Some(k) = category.as_deref().filter(|k| *k != "from_trigger")
+                && d.core().state.notify_kind(k).is_none()
+            {
+                return Err(RpcError::bad_params(format!("no notification kind `{k}`; add it with notify.kinds.add, or leave category out")));
             }
         }
     }

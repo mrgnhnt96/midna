@@ -165,6 +165,78 @@ pub fn title_key(key: &str) -> String {
     format!("notify.title.{key}")
 }
 
+/// How long a category's notification stays on screen in the floating badge and the in-app
+/// card (`notify.stay.<key>`), in seconds: 0 = it stays until it's handled or dismissed.
+pub fn stay_key(key: &str) -> String {
+    format!("notify.stay.{key}")
+}
+
+/// A category's color (`notify.color.<key>`): a theme color (`COLOR_TOKENS`) or `#rrggbb`.
+pub fn color_key(key: &str) -> String {
+    format!("notify.color.{key}")
+}
+
+/// Theme colors a `notify.color.<key>` may name; they follow the theme.
+pub static COLOR_TOKENS: &[&str] = &["need", "ok", "err", "work", "accent", "dim"];
+
+/// A `notify.color.<key>` value: a theme color or `#rrggbb`.
+pub fn valid_color(v: &str) -> bool {
+    COLOR_TOKENS.contains(&v) || (v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// A notification kind you added (`notify.kinds.add`): agents send to it with
+/// `midna notify send --kind <key>`, triggers with their `notify` action's `kind`. Its
+/// switches, sound, text, duration and color are settings like a built-in kind's
+/// (`notify.<key>`, `notify.sound.<key>`, …; see `settings::custom_kind_spec`), stored with the
+/// rest and dropped when the kind is removed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CustomKind {
+    /// Lowercase letters, digits and `_`; not a built-in kind or sound effect.
+    pub key: String,
+    /// Short name for Settings and the notifications screen.
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// The per-kind settings every kind has, by field: `""` is the kind's own switch
+/// (`notify.<key>`), the rest are `notify.<field>.<key>`.
+pub static KIND_FIELDS: &[&str] = &["", "push", "push_focused", "sound", "volume", "image", "title", "body", "stay", "color"];
+
+/// A kind's setting for one of `KIND_FIELDS`: `notify.<key>` for `""`, else
+/// `notify.<field>.<key>`.
+pub fn kind_key(field: &str, kind: &str) -> String {
+    if field.is_empty() { setting_key(kind) } else { format!("notify.{field}.{kind}") }
+}
+
+/// Every per-kind setting key of a kind.
+pub fn kind_keys(kind: &str) -> impl Iterator<Item = String> + '_ {
+    KIND_FIELDS.iter().map(move |f| kind_key(f, kind))
+}
+
+/// Split a per-kind setting key into (field, kind): `notify.stay.deploys` -> ("stay",
+/// "deploys"), `notify.deploys` -> ("", "deploys"). Says nothing about whether the kind exists.
+pub fn split_kind_key(key: &str) -> Option<(&'static str, &str)> {
+    let rest = key.strip_prefix("notify.")?;
+    for f in KIND_FIELDS.iter().filter(|f| !f.is_empty()) {
+        if let Some(kind) = rest.strip_prefix(f).and_then(|r| r.strip_prefix('.')) {
+            return valid_kind_key(kind).then_some((f, kind));
+        }
+    }
+    valid_kind_key(rest).then_some(("", rest))
+}
+
+/// A kind's key: 1–32 lowercase letters, digits and `_`, starting with a letter.
+pub fn valid_kind_key(k: &str) -> bool {
+    (1..=32).contains(&k.len()) && k.starts_with(|c: char| c.is_ascii_lowercase()) && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A key a custom kind can't take: a built-in kind, a sound effect, a per-kind field name or
+/// a global `notify.<key>` setting (`notify.enabled`, `notify.volume`, …).
+pub fn reserved_kind_key(k: &str) -> bool {
+    category(k).is_some() || effect(k).is_some() || KIND_FIELDS.contains(&k) || k == "kinds" || crate::settings::setting(&setting_key(k)).is_some()
+}
+
 /// The sounds in /System/Library/Sounds, by name (no extension). A sound setting's value is
 /// one of these, `none`, or an imported sound's file name (which has an extension).
 pub static SYSTEM_SOUNDS: &[&str] = &["Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"];
@@ -275,6 +347,16 @@ pub struct Posted {
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you_id: Option<String>,
+    /// Seconds it stays on screen (`notify.stay.<category>`): 0 = until it's handled or
+    /// dismissed. None from daemons before it (the app's own default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stay_secs: Option<u32>,
+    /// Its color (`notify.color.<category>`): a theme color name or `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// A kind you added: its label (built-in kinds are named by the app).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 fn yes() -> bool {

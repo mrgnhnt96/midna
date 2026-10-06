@@ -4,7 +4,7 @@
 //! midna (`notify.import`) and uses it; the rows are ordinary `notify.sound.<kind>`,
 //! `notify.volume.<kind>` and `notify.image[.<kind>]` settings, so agents can set them too.
 use super::*;
-use midna_proto::notify::{CATEGORIES, EFFECTS, image_key, setting_key, sound_key, volume_key};
+use midna_proto::notify::{EFFECTS, image_key, setting_key, sound_key, volume_key};
 use std::path::PathBuf;
 
 /// One entry in a sound or image picker.
@@ -80,21 +80,21 @@ impl SettingsWindow {
             who: Who::Agents,
             warn: false,
         }];
-        for c in CATEGORIES {
-            let on = self.value(&setting_key(c.key)) != Value::Bool(false);
-            let sound = self.text_of(&sound_key(c.key));
+        for (key, label) in self.kinds() {
+            let on = self.value(&setting_key(&key)) != Value::Bool(false);
+            let sound = self.text_of(&sound_key(&key));
             let note = if !on {
-                Some((format!("“{}” notifications are off", c.label), t.dim))
-            } else if c.key == "agent" {
+                Some((format!("“{label}” notifications are off"), t.dim))
+            } else if key == "agent" {
                 Some(("Plays only when the agent asks for a sound".into(), Hsla::default()))
             } else {
                 None
             };
             rows.push(RowSpec {
-                label: c.label.into(),
+                label: label.clone(),
                 note,
-                control: Control::Sound { cat: c.key },
-                cli: format!("midna settings set {} {}", sound_key(c.key), if sound.contains(' ') { format!("\"{sound}\"") } else { sound.clone() }),
+                control: Control::Sound { cat: key.clone() },
+                cli: format!("midna settings set {} {}", sound_key(&key), if sound.contains(' ') { format!("\"{sound}\"") } else { sound.clone() }),
                 who: Who::Agents,
                 warn: false,
             });
@@ -112,7 +112,7 @@ impl SettingsWindow {
                 RowSpec {
                     label: e.label.into(),
                     note: Some((e.description.into(), Hsla::default())),
-                    control: Control::Sound { cat: e.key },
+                    control: Control::Sound { cat: e.key.into() },
                     cli: format!("midna settings set {} {}", sound_key(e.key), if sound.contains(' ') { format!("\"{sound}\"") } else { sound.clone() }),
                     who: Who::Agents,
                     warn: false,
@@ -147,14 +147,14 @@ impl SettingsWindow {
             who: Who::Agents,
             warn: false,
         }];
-        for c in CATEGORIES {
-            let key = image_key(c.key);
+        for (kind, label) in self.kinds() {
+            let key = image_key(&kind);
             let v = self.text_of(&key);
-            let note = (self.value(&setting_key(c.key)) == Value::Bool(false)).then(|| (format!("“{}” notifications are off", c.label), t.dim));
+            let note = (self.value(&setting_key(&kind)) == Value::Bool(false)).then(|| (format!("“{label}” notifications are off"), t.dim));
             rows.push(RowSpec {
-                label: c.label.into(),
+                label: label.clone(),
                 note,
-                control: Control::Image { key: key.clone(), cat: Some(c.key) },
+                control: Control::Image { key: key.clone(), cat: Some(kind) },
                 cli: format!("midna settings set {key} {}", if v.is_empty() { "''".to_string() } else { v }),
                 who: Who::Agents,
                 warn: false,
@@ -164,10 +164,10 @@ impl SettingsWindow {
     }
 
     /// − 70% + : steps of 10.
-    pub(super) fn volume_stepper(&self, t: &Theme, key: &str, cat: Option<&'static str>, cx: &mut Context<Self>) -> Div {
+    pub(super) fn volume_stepper(&self, t: &Theme, key: &str, cat: Option<String>, cx: &mut Context<Self>) -> Div {
         let v = self.int(key);
         let step = |id: &str, label: &'static str, to: i64, enabled: bool| {
-            let k = key.to_string();
+            let (k, cat) = (key.to_string(), cat.clone());
             div()
                 .id(SharedString::from(format!("{id}-{key}")))
                 .size(px(22.))
@@ -180,7 +180,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(move |s, _, _, cx| {
                     if enabled {
                         s.set(&k, json!(to), cx);
-                        if let Some(c) = cat {
+                        if let Some(c) = &cat {
                             s.preview(c);
                         }
                     }
@@ -227,8 +227,8 @@ impl SettingsWindow {
             .child(Icon::Chevron.el(10., t.dim))
     }
 
-    pub(super) fn sound_control(&self, t: &Theme, cat: &'static str, cx: &mut Context<Self>) -> AnyElement {
-        let key = sound_key(cat);
+    pub(super) fn sound_control(&self, t: &Theme, cat: String, cx: &mut Context<Self>) -> AnyElement {
+        let key = sound_key(&cat);
         let value = self.text_of(&key);
         let silent = value == "none";
         let label = if silent { "None".to_string() } else { value.clone() };
@@ -254,7 +254,7 @@ impl SettingsWindow {
                     .child(self.picker_button(t, &key, label, 104., cx))
                     .when(open, |d| d.child(self.picker_menu(t, &key, "sound", &value, picks, cx))),
             )
-            .child(self.volume_stepper(t, &volume_key(cat), Some(cat), cx).when(silent, |d| d.opacity(0.5)))
+            .child(self.volume_stepper(t, &volume_key(&cat), Some(cat.clone()), cx).when(silent, |d| d.opacity(0.5)))
             .child(
                 div()
                     .id(SharedString::from(format!("play-{cat}")))
@@ -265,21 +265,21 @@ impl SettingsWindow {
                     .justify_center()
                     .rounded(px(6.))
                     .when(!silent, |d| d.cursor_pointer().hover(|s| s.bg(t.raised)))
-                    .on_click(cx.listener(move |s, _, _, _| s.preview(cat)))
+                    .on_click(cx.listener(move |s, _, _, _| s.preview(&cat)))
                     .child(Icon::Play.el(12., if silent { t.line } else { t.dim })),
             )
             .into_any_element()
     }
 
-    pub(super) fn image_control(&self, t: &Theme, key: &str, cat: Option<&'static str>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn image_control(&self, t: &Theme, key: &str, cat: Option<String>, cx: &mut Context<Self>) -> AnyElement {
         let value = self.text_of(key);
         // What a kind shows: its own, or the one every notification uses.
-        let shown = match (value.as_str(), cat) {
+        let shown = match (value.as_str(), cat.as_deref()) {
             ("", Some(_)) => self.text_of("notify.image"),
             ("none", _) => String::new(),
             (v, _) => v.to_string(),
         };
-        let label = match (value.as_str(), cat) {
+        let label = match (value.as_str(), cat.as_deref()) {
             ("", Some(_)) if shown.is_empty() => "Same (none)".to_string(),
             ("", Some(_)) => format!("Same ({shown})"),
             ("" | "none", _) => "None".to_string(),
@@ -335,7 +335,7 @@ impl SettingsWindow {
                         .text_color(t.dim)
                         .cursor_pointer()
                         .hover(|s| s.bg(t.raised).text_color(t.fg))
-                        .on_click(cx.listener(move |s, _, _, cx| s.test_notification(c, cx)))
+                        .on_click(cx.listener(move |s, _, _, cx| s.test_notification(c.clone(), cx)))
                         .child("Test"),
                 )
             })
@@ -369,7 +369,7 @@ impl SettingsWindow {
                         s.picker = None;
                         s.set(&k, json!(v), cx);
                         // Hear the choice (sound effects as well as notification kinds).
-                        if let Some(kind) = k.strip_prefix("notify.sound.").filter(|k| midna_proto::notify::has_sound(k)) {
+                        if let Some(kind) = k.strip_prefix("notify.sound.").filter(|k| midna_proto::notify::has_sound(k) || s.custom.iter().any(|c| c.key == *k)) {
                             s.preview(kind);
                         }
                     }))
@@ -493,10 +493,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn test_notification(&mut self, cat: &'static str, cx: &mut Context<Self>) {
+    pub(super) fn test_notification(&mut self, cat: String, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx.background_executor().spawn(async move { backend.call("notify.test", json!({ "category": cat })) }).await;
+            let c = cat.clone();
+            let r = cx.background_executor().spawn(async move { backend.call("notify.test", json!({ "category": c })) }).await;
             let _ = this.update(cx, |s, cx| {
                 let reason = r.as_ref().ok().and_then(|v| v["reason"].as_str()).map(str::to_string);
                 s.last = Some(Last {

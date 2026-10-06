@@ -52,6 +52,10 @@ pub struct State {
     /// it then starts at the log's end, so an upgrade doesn't flag every old one unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_read_seq: Option<u64>,
+    /// Notification kinds the human added (`notify.kinds.*`). Their settings live in
+    /// `settings` under the same per-kind keys as a built-in kind's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notify_kinds: Vec<midna_proto::notify::CustomKind>,
 }
 
 impl State {
@@ -110,13 +114,39 @@ impl State {
         self.sessions.iter_mut().find(|s| s.id == id)
     }
 
-    /// Current value of a setting (stored or catalog default).
+    /// Current value of a setting (stored or catalog default; a kind you added has its
+    /// per-kind settings' defaults too).
     pub fn setting(&self, key: &str) -> Value {
         self.settings
             .get(key)
             .cloned()
-            .or_else(|| settings::setting(key).map(|s| s.default.to_json()))
+            .or_else(|| self.setting_spec(key).map(|s| s.default.to_json()))
             .unwrap_or(Value::Null)
+    }
+
+    /// A setting's spec: the catalog's, or for a per-kind key of a kind you added
+    /// (`notify.stay.deploys`) the pattern spec of its field.
+    pub fn setting_spec(&self, key: &str) -> Option<&'static settings::SettingSpec> {
+        settings::setting(key).or_else(|| {
+            let (field, kind) = midna_proto::notify::split_kind_key(key)?;
+            self.notify_kind(kind)?;
+            settings::custom_kind_spec(field)
+        })
+    }
+
+    /// Every setting key: the catalog's, then the per-kind keys of the kinds you added.
+    pub fn setting_keys(&self) -> Vec<String> {
+        let custom = self.notify_kinds.iter().flat_map(|k| midna_proto::notify::kind_keys(&k.key));
+        settings::SETTINGS.iter().map(|s| s.key.to_string()).chain(custom).collect()
+    }
+
+    pub fn notify_kind(&self, key: &str) -> Option<&midna_proto::notify::CustomKind> {
+        self.notify_kinds.iter().find(|k| k.key == key)
+    }
+
+    /// A built-in notification category or a kind you added.
+    pub fn is_notify_kind(&self, key: &str) -> bool {
+        midna_proto::notify::category(key).is_some() || self.notify_kind(key).is_some()
     }
     pub fn setting_bool(&self, key: &str) -> bool {
         self.setting(key).as_bool().unwrap_or(false)

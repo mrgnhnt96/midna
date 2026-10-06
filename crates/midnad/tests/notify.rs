@@ -321,3 +321,83 @@ fn history_lists_newest_first_and_reading_clears_unread() {
     assert_eq!(call(&mut h, "notify.read", json!({ "seq": 1 }))["read_seq"], done["read_seq"]);
     assert_eq!(call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.read"] } })).as_array().map(Vec::len), Some(1));
 }
+
+#[test]
+fn each_post_carries_how_long_it_stays_and_its_color() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let mut a = d.agent(Some(&open_sh(&mut h)));
+    call(&mut a, "notify.send", json!({ "title": "one" }));
+    let n = &wait_posted(&mut h, 1)[0]["data"];
+    assert_eq!((n["stay_secs"].as_u64(), n["color"].as_str(), n.get("label")), (Some(6), Some("accent"), None), "{n}");
+
+    call(&mut h, "settings.set", json!({ "key": "notify.stay.agent", "value": 0 }));
+    call(&mut h, "settings.set", json!({ "key": "notify.color.agent", "value": "#FF8800" }));
+    call(&mut a, "notify.send", json!({ "title": "two" }));
+    let n = &wait_posted(&mut h, 2)[1]["data"];
+    assert_eq!((n["stay_secs"].as_u64(), n["color"].as_str()), (Some(0), Some("#ff8800")), "{n}");
+    assert_eq!(call_err(&mut h, "settings.set", json!({ "key": "notify.color.agent", "value": "pink" })).code, -32602);
+    assert_eq!(call_err(&mut h, "settings.set", json!({ "key": "notify.stay.agent", "value": 4000 })).code, -32602);
+}
+
+#[test]
+fn kinds_you_add_get_their_own_settings_and_can_be_sent_to() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    // Built-in keys, global setting names and bad keys are refused.
+    for key in ["approval", "enabled", "badge", "9lives", "has space", ""] {
+        assert_eq!(call_err(&mut h, "notify.kinds.add", json!({ "key": key })).code, -32602, "{key}");
+    }
+    // A bad starting setting leaves no half-made kind behind.
+    assert_eq!(call_err(&mut h, "notify.kinds.add", json!({ "key": "deploys", "settings": { "color": "pink" } })).code, -32602);
+    assert_eq!(call(&mut h, "notify.kinds.list", json!({}))["kinds"], json!([]));
+
+    let k = call(&mut a, "notify.kinds.add", json!({ "key": "deploys", "label": "Deploys", "settings": { "stay": 0, "color": "ok", "sound": "Glass" } }));
+    assert_eq!(k, json!({ "key": "deploys", "label": "Deploys", "description": "", "enabled": true, "stay": 0, "color": "ok", "sound": "Glass", "push": true }));
+    assert_eq!(call_err(&mut a, "notify.kinds.add", json!({ "key": "deploys" })).code, -32602);
+    assert_eq!(call(&mut a, "notify.kinds.add", json!({ "key": "deploys", "label": "Ships", "replace": true }))["label"], "Ships");
+    let changed = call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.kinds_changed"] } }));
+    assert_eq!(changed.as_array().map(Vec::len), Some(2));
+
+    // Its settings are ordinary settings: listed, typed and defaulted like a built-in kind's.
+    let all = call(&mut h, "settings.list", json!({}));
+    let entry = |k: &str| all.as_array().unwrap().iter().find(|e| e["key"] == k).cloned().unwrap_or_else(|| panic!("no {k} in settings.list"));
+    assert_eq!((entry("notify.deploys")["value"].clone(), entry("notify.stay.deploys")["value"].clone()), (json!(true), json!(0)));
+    assert_eq!(entry("notify.volume.deploys")["value"], 100);
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "notify.sound.deploys" }))["value"], "Glass");
+    assert_eq!(call_err(&mut h, "settings.set", json!({ "key": "notify.volume.deploys", "value": 101 })).code, -32602);
+    let unknown = call_err(&mut h, "settings.get", json!({ "key": "notify.stay.nope" })).code;
+    let listed = call(&mut h, "notify.list", json!({ "global": true }));
+    assert!(listed["categories"].as_array().unwrap().iter().any(|c| c["key"] == "deploys" && c["custom"] == true), "{listed}");
+
+    // Agents send to it by name; unknown kinds are refused.
+    assert_eq!(call(&mut a, "notify.send", json!({ "title": "staging is up", "category": "deploys" })), json!({ "posted": true }));
+    let n = &wait_posted(&mut h, 1)[0]["data"];
+    assert_eq!((n["category"].as_str(), n["label"].as_str(), n["color"].as_str(), n["stay_secs"].as_u64()), (Some("deploys"), Some("Ships"), Some("ok"), Some(0)), "{n}");
+    assert_eq!(call_err(&mut a, "notify.send", json!({ "title": "x", "category": "nope" })).code, -32602);
+    assert_eq!(call(&mut h, "notify.test", json!({ "category": "deploys", "session": sid }))["posted"], true);
+
+    // Its switch turns it off; a terminal can override it.
+    call(&mut h, "settings.set", json!({ "key": "notify.deploys", "value": false }));
+    assert_eq!(call(&mut a, "notify.send", json!({ "title": "prod is up", "category": "deploys" }))["reason"], "category_off");
+    call(&mut h, "notify.set", json!({ "session": sid, "key": "deploys", "value": true }));
+    assert_eq!(call(&mut a, "notify.send", json!({ "title": "prod is up", "category": "deploys" }))["posted"], true);
+
+    // A trigger's notify action can post as it; an unknown kind is refused up front.
+    let action = |k: &str| json!({ "kind": "notify", "title": "Shipped", "category": k });
+    let trigger = |action: Value| json!({ "name": "Ship", "source": "local", "event": "agent.prompt_blocked", "action": action, "enabled": false });
+    assert!(call(&mut h, "trigger.add", trigger(action("deploys")))["id"].is_string());
+    assert_eq!(call_err(&mut h, "trigger.add", trigger(action("nope"))).code, -32602);
+
+    // Removing it drops its settings and overrides; built-in kinds can't be removed.
+    assert_eq!(call_err(&mut h, "notify.kinds.remove", json!({ "key": "approval" })).code, unknown);
+    call(&mut h, "notify.kinds.remove", json!({ "key": "deploys" }));
+    assert_eq!(call(&mut h, "notify.kinds.list", json!({}))["kinds"], json!([]));
+    assert_eq!(call_err(&mut h, "settings.get", json!({ "key": "notify.deploys" })).code, unknown);
+    assert!(call(&mut h, "session.get", json!({ "id": sid }))["notify"].get("deploys").is_none());
+    // Added again, it starts from the defaults.
+    call(&mut h, "notify.kinds.add", json!({ "key": "deploys" }));
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "notify.deploys" }))["value"], true);
+}

@@ -3,7 +3,6 @@
 //! (`notify.sound.<kind>`, `notify.image[.<kind>]`); the notifier resolves names to paths.
 use crate::daemon::Daemon;
 use midna_proto::notify::{IMAGE_EXTS, SOUND_EXTS, SYSTEM_SOUNDS, TWILIGHT, is_builtin_sound, system_sound_path, twilight_path};
-use midna_proto::settings::SETTINGS;
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -251,11 +250,11 @@ pub fn check_setting(home: &Path, key: &str, value: &Value) -> Result<(), String
 /// Settings whose value is `name`.
 pub fn used_by(d: &Daemon, kind: &str, name: &str) -> Vec<String> {
     let core = d.core();
-    SETTINGS
-        .iter()
-        .filter(|s| if kind == "sound" { s.key.starts_with("notify.sound.") } else { s.key == "notify.image" || s.key.starts_with("notify.image.") })
-        .filter(|s| core.state.setting(s.key).as_str() == Some(name))
-        .map(|s| s.key.to_string())
+    core.state
+        .setting_keys()
+        .into_iter()
+        .filter(|k| if kind == "sound" { k.starts_with("notify.sound.") } else { k == "notify.image" || k.starts_with("notify.image.") })
+        .filter(|k| core.state.setting(k).as_str() == Some(name))
         .collect()
 }
 

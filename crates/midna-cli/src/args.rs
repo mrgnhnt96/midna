@@ -7,10 +7,10 @@ const VALUE_FLAGS: &[&str] = &[
     "kind", "detail", "socket", "timeout", "session", "value", "target",
     "source", "event", "repo", "branch", "action", "label", "run", "attention", "hook-id", "session-name", "trigger", "payload",
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",
-    "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn",
+    "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn", "stay", "description", "set",
     // local triggers
     "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
-    "action-json", "filter-json", "notify", "notify-body",
+    "action-json", "filter-json", "notify", "notify-body", "notify-kind",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).

@@ -153,6 +153,10 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     ),
     (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
     (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
+    (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner"]),
+    (Sec::Notifications, "How long each kind stays on screen", &["@stay"]),
+    (Sec::Notifications, "Colors", &["@colors"]),
+    (Sec::Notifications, "Your kinds", &["@custom_kinds"]),
     (Sec::Notifications, "Banners for other terminals", &["@banners"]),
     (Sec::Notifications, "Banners for the terminal in front of you", &["@banners_focused"]),
     (Sec::Notifications, "Images", &["@images"]),
@@ -191,6 +195,13 @@ pub struct SettingsWindow {
     hooks: Value,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
+    /// `notify.kinds.list`: the notification kinds you added.
+    custom: Vec<midna_proto::NotifyKindInfo>,
+    /// The text fields of editable rows (a kind's title and text, a kind's name), by row key,
+    /// with the value each was last filled from (so a reload doesn't clobber typing).
+    edits: std::collections::HashMap<String, (LineInput, String)>,
+    /// "Add a kind": its name.
+    new_kind: LineInput,
     /// The sound/image picker that's open (its setting key).
     picker: Option<String>,
     error: Option<String>,
@@ -260,6 +271,9 @@ impl SettingsWindow {
             webhooks: Value::Null,
             hooks: Value::Null,
             media: Value::Null,
+            custom: vec![],
+            edits: Default::default(),
+            new_kind: LineInput::new(cx, false, "Name, e.g. Deploys"),
             picker: None,
             error: None,
             view,
@@ -318,7 +332,7 @@ impl SettingsWindow {
                 self.note_change(&e);
                 self.load(cx);
             }
-            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" => self.load(cx),
+            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" => self.load(cx),
             BackendEvent::Event(e) if e.kind == "hooks.changed" => {
                 self.hooks = e.data.clone();
                 cx.notify();
@@ -365,10 +379,12 @@ impl SettingsWindow {
                     let webhooks = backend.call("webhooks.status", json!({})).unwrap_or(Value::Null);
                     let media = backend.call("notify.media", json!({})).unwrap_or(Value::Null);
                     let hooks = backend.call("hooks.status", json!({})).unwrap_or(Value::Null);
-                    (list, info, webhooks, media, hooks)
+                    let kinds = backend.call("notify.kinds.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::NotifyKindsList>(v).ok());
+                    (list, info, webhooks, media, hooks, kinds)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
+                s.custom = r.5.map(|k| k.kinds).unwrap_or_default();
                 match r.0 {
                     Ok(v) => {
                         s.entries = parse_list(&v);
@@ -380,6 +396,7 @@ impl SettingsWindow {
                 s.webhooks = r.2;
                 s.media = r.3;
                 s.hooks = r.4;
+                s.sync_edits(cx);
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
                     s.picker = Some(k);
@@ -400,7 +417,99 @@ impl SettingsWindow {
     }
 
     fn value(&self, key: &str) -> Value {
-        self.entries.iter().find(|e| e.key == key).map(|e| e.value.clone()).or_else(|| midna_proto::settings::setting(key).map(|s| s.default.to_json())).unwrap_or(Value::Null)
+        self.entries.iter().find(|e| e.key == key).map(|e| e.value.clone()).or_else(|| self.spec_of(key).map(|s| s.default.to_json())).unwrap_or(Value::Null)
+    }
+
+    /// A setting's spec: the catalog's, or for a kind you added the pattern spec of its field.
+    fn spec_of(&self, key: &str) -> Option<&'static midna_proto::settings::SettingSpec> {
+        midna_proto::settings::setting(key).or_else(|| {
+            let (field, kind) = midna_proto::notify::split_kind_key(key)?;
+            self.custom.iter().any(|k| k.key == kind).then(|| midna_proto::settings::custom_kind_spec(field)).flatten()
+        })
+    }
+
+    /// Every notification kind, built in then yours: (key, name).
+    fn kinds(&self) -> Vec<(String, String)> {
+        let builtin = midna_proto::notify::CATEGORIES.iter().map(|c| (c.key.to_string(), c.label.to_string()));
+        builtin.chain(self.custom.iter().map(|k| (k.key.clone(), k.label.clone()))).collect()
+    }
+
+    /// Fill the editable rows' fields from the settings (each kind's title and text, the name of
+    /// a kind you added), leaving alone a field you've typed in since it was last filled.
+    fn sync_edits(&mut self, cx: &mut Context<Self>) {
+        use midna_proto::notify::{body_key, title_key};
+        let mut want: Vec<(String, String, &str)> = vec![];
+        for (k, _) in self.kinds() {
+            want.push((title_key(&k), self.value(&title_key(&k)).as_str().unwrap_or("").to_string(), "midna's own (the terminal · its project)"));
+            want.push((body_key(&k), self.value(&body_key(&k)).as_str().unwrap_or("").to_string(), "midna's own"));
+        }
+        for k in &self.custom {
+            want.push((format!("label:{}", k.key), k.label.clone(), "Name"));
+        }
+        self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
+        for (key, value, placeholder) in want {
+            match self.edits.get_mut(&key) {
+                Some((input, last)) => {
+                    if input.text(cx) == *last && *last != value {
+                        input.set_text(&value, cx);
+                    }
+                    *last = value;
+                }
+                None => {
+                    let input = LineInput::new(cx, false, placeholder);
+                    input.set_text(&value, cx);
+                    self.edits.insert(key, (input, value));
+                }
+            }
+        }
+    }
+
+    /// An editable row's ↩: save its text (a setting, or a kind's name).
+    fn commit_edit(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some((input, _)) = self.edits.get(key) else { return };
+        let text = input.text(cx).trim().to_string();
+        match key.strip_prefix("label:") {
+            Some(kind) if !text.is_empty() => self.kind_call("notify.kinds.add", json!({ "key": kind, "label": text, "replace": true }), format!("midna notify kinds update {kind} --label \"{text}\""), cx),
+            Some(_) => {}
+            None => self.set(key, json!(text), cx),
+        }
+    }
+
+    /// A `notify.kinds.*` call from this window, reported in the footer.
+    fn kind_call(&mut self, method: &'static str, params: Value, cmd: String, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.call(method, params) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.last = Some(Last {
+                    cmd,
+                    ok: r.is_ok(),
+                    result: match &r {
+                        Ok(_) => "✓ applied".into(),
+                        Err(e) => format!("✗ {e:#}"),
+                    },
+                    who: "you, from this window".into(),
+                    at: Instant::now(),
+                });
+                s.load(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// "Add a kind": its key from the name (`Deploys` -> `deploys`).
+    fn add_kind(&mut self, cx: &mut Context<Self>) {
+        let name = self.new_kind.text(cx).trim().to_string();
+        let mut key: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        key = key.trim_matches('_').split('_').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("_");
+        key = key.trim_start_matches(|c: char| c.is_ascii_digit() || c == '_').chars().take(32).collect();
+        if key.is_empty() {
+            self.last = Some(Last { cmd: "midna notify kinds add <key>".into(), ok: false, result: "✗ give it a name with a letter in it".into(), who: "you, from this window".into(), at: Instant::now() });
+            cx.notify();
+            return;
+        }
+        self.new_kind.clear(cx);
+        self.kind_call("notify.kinds.add", json!({ "key": key, "label": name }), format!("midna notify kinds add {key} --label \"{name}\""), cx);
     }
 
     fn set(&mut self, key: &str, value: Value, cx: &mut Context<Self>) {
@@ -548,10 +657,17 @@ enum Control {
     Switch { key: String, on: bool, on_text: &'static str, off_text: &'static str },
     Text { dot: Option<Hsla>, text: String, color: Hsla, action: Option<(String, Act, bool)> },
     /// A notification kind's sound picker, volume and preview (settings_notify.rs).
-    Sound { cat: &'static str },
+    Sound { cat: String },
     Volume { key: String },
     /// An image picker: `notify.image` (cat None) or a kind's `notify.image.<kind>`.
-    Image { key: String, cat: Option<&'static str> },
+    Image { key: String, cat: Option<String> },
+    /// A kind's `notify.color.<kind>`: theme colors, a few more, and a custom one if set.
+    Color { key: String, current: String },
+    /// A text field (`edits`), saved on ↩: a setting, or `label:<kind>` (a kind's name), with
+    /// buttons after it.
+    Edit { key: String, actions: Vec<(String, Act)> },
+    /// "Add a kind": a name field and Add.
+    AddKind,
     /// `theme` / `theme.dark` / `theme.light`: swatch chips for every theme (customs too).
     Theme { key: String, current: String },
     /// A shortcut's keys: click to rebind (settings_shortcuts.rs). No setting = built in.
@@ -568,6 +684,10 @@ enum Act {
     Life(crate::lifecycle::Cmd),
     /// Agent hooks: open the main window's hooks sheet (the diff, then install or remove).
     Hooks { uninstall: bool },
+    /// Remove a notification kind you added (and its settings).
+    RemoveKind(String),
+    /// Show a test notification of a kind.
+    TestKind(String),
 }
 
 struct RowSpec {
@@ -716,6 +836,8 @@ fn label_for(key: &str) -> String {
         "notify.sounds_in_app" => "While you're using midna",
         "notify.image" => "Every notification",
         "notify.when_app_closed" => "When the app isn't running",
+        "notify.badge" => "Show the badge",
+        "notify.badge.corner" => "Corner",
         k if k.starts_with("notify.") => {
             let kind = k.rsplit('.').next().unwrap_or(k);
             match (midna_proto::notify::category(kind), midna_proto::notify::effect(kind)) {
@@ -728,6 +850,20 @@ fn label_for(key: &str) -> String {
     }
     .to_string()
 }
+
+/// The durations a kind's `notify.stay.<kind>` offers, in seconds (0 = until handled).
+const STAYS: [i64; 7] = [0, 3, 5, 8, 15, 30, 60];
+
+fn stay_label(secs: i64) -> String {
+    match secs {
+        0 => "Until handled".into(),
+        s if s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s} s"),
+    }
+}
+
+/// The colors a kind can take besides the theme's (`notify.color.<kind>`).
+const MORE_COLORS: [&str; 4] = ["#e879b9", "#5fc9d8", "#a3d977", "#f0884a"];
 
 fn option_label(key: &str, v: &str) -> String {
     match (key, v) {
@@ -748,6 +884,9 @@ fn option_label(key: &str, v: &str) -> String {
         ("terminal.preview_path_click", "reveal") => "Reveal in Finder".into(),
         ("terminal.preview_path_click", "ide") => "Open in IDE".into(),
         ("terminal.preview_path_click", "copy") => "Copy path".into(),
+        ("notify.badge", "background") => "When midna is in the background".into(),
+        ("notify.badge", "always") => "Always".into(),
+        ("notify.badge", "off") => "Off".into(),
         // script names are names: keep them as typed
         ("ui.ask.agent" | "ui.ask.scope", v) => capitalize(v),
         (k, v) if k.starts_with("ui.") => v.to_string(),
@@ -795,7 +934,7 @@ const PANE_NOTIF: &str = midna_proto::paths::NOTIFICATIONS_PANE;
 
 impl SettingsWindow {
     fn spec_row(&self, key: &str) -> Option<RowSpec> {
-        let spec = midna_proto::settings::setting(key)?;
+        let spec = self.spec_of(key)?;
         let entry = self.entries.iter().find(|e| e.key == key);
         let value = self.value(key);
         let who = if spec.human_only { Who::Human } else { Who::Agents };
@@ -963,7 +1102,7 @@ impl SettingsWindow {
 
     /// The rows for a `@name` in `LAYOUT`.
     fn special_rows(&self, t: &Theme, name: &str) -> Vec<RowSpec> {
-        use midna_proto::notify::{CATEGORIES, body_key, push_focused_key, push_key, setting_key, title_key};
+        use midna_proto::notify::{body_key, color_key, push_focused_key, push_key, setting_key, stay_key, title_key};
         let status = |label: &str, dot: Hsla, value: String, color: Hsla, note: Option<String>, cli: &str| RowSpec {
             label: label.into(),
             note: note.map(|n| (n, Hsla::default())),
@@ -981,7 +1120,18 @@ impl SettingsWindow {
             }
             rows
         };
-        let per_kind = |key: fn(&str) -> String| CATEGORIES.iter().filter_map(|c| self.spec_row(&key(c.key))).collect::<Vec<_>>();
+        // One row per kind (built in, then yours), named after the kind.
+        let kinds = self.kinds();
+        let per_kind = |key: fn(&str) -> String| {
+            kinds
+                .iter()
+                .filter_map(|(k, label)| {
+                    let mut r = self.spec_row(&key(k))?;
+                    r.label = label.clone();
+                    Some(r)
+                })
+                .collect::<Vec<_>>()
+        };
         match name {
             "@update" => vec![lifecycle_rows(t).update],
             "@cli" => vec![lifecycle_rows(t).cli],
@@ -1069,24 +1219,74 @@ impl SettingsWindow {
             "@banners" => silenced(per_kind(push_key)),
             "@banners_focused" => silenced(per_kind(push_focused_key)),
             "@images" => silenced(self.notify_image_rows(t)),
-            // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates, set from the CLI.
+            // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates,
+            // typed here (↩ saves; empty = midna's own, `none` = no text).
             "@texts" => {
                 let mut texts = vec![];
-                for c in CATEGORIES {
-                    for (key, part) in [(title_key(c.key), "title"), (body_key(c.key), "text")] {
+                for (k, label) in &kinds {
+                    for (key, part) in [(title_key(k), "title"), (body_key(k), "text")] {
                         let Some(mut r) = self.spec_row(&key) else { continue };
-                        r.label = format!("{}: {part}", c.label);
-                        if let Control::Text { text, .. } = &mut r.control {
-                            match text.as_str() {
-                                "not set" => *text = "midna's own".into(),
-                                midna_proto::notify::NO_BODY if part == "text" => *text = "none (title only)".into(),
-                                _ => {}
-                            }
-                        }
+                        r.label = format!("{label}: {part}");
+                        r.control = Control::Edit { key: key.clone(), actions: vec![] };
                         texts.push(r);
                     }
                 }
                 silenced(texts)
+            }
+            // How long each kind stays on screen (the floating badge and the in-app card).
+            "@stay" => {
+                let mut rows = vec![];
+                for (k, label) in &kinds {
+                    let key = stay_key(k);
+                    let Some(mut r) = self.spec_row(&key) else { continue };
+                    let current = self.value(&key).as_i64().unwrap_or(0).to_string();
+                    let mut options: Vec<(String, String)> = STAYS.iter().map(|s| (s.to_string(), stay_label(*s))).collect();
+                    if !options.iter().any(|(v, _)| *v == current) {
+                        options.push((current.clone(), stay_label(current.parse().unwrap_or(0))));
+                    }
+                    r.label = label.clone();
+                    r.control = Control::Seg { key, options, current };
+                    rows.push(r);
+                }
+                silenced(rows)
+            }
+            "@colors" => {
+                let mut rows = vec![];
+                for (k, label) in &kinds {
+                    let key = color_key(k);
+                    let Some(mut r) = self.spec_row(&key) else { continue };
+                    r.label = label.clone();
+                    r.control = Control::Color { current: self.value(&key).as_str().unwrap_or("").to_string(), key };
+                    rows.push(r);
+                }
+                rows
+            }
+            // Kinds you added: rename, test or remove each; then add one.
+            "@custom_kinds" => {
+                let mut rows: Vec<RowSpec> = self
+                    .custom
+                    .iter()
+                    .map(|k| RowSpec {
+                        label: k.label.clone(),
+                        note: Some((
+                            format!("`{}`: agents send it with `midna notify send --kind {}`, triggers with their notify action's kind. ↩ saves a new name; Remove drops its settings too.", k.key, k.key),
+                            Hsla::default(),
+                        )),
+                        control: Control::Edit { key: format!("label:{}", k.key), actions: vec![("Test".into(), Act::TestKind(k.key.clone())), ("Remove".into(), Act::RemoveKind(k.key.clone()))] },
+                        cli: format!("midna notify kinds update {} --label \"{}\"", k.key, k.label),
+                        who: Who::Agents,
+                        warn: false,
+                    })
+                    .collect();
+                rows.push(RowSpec {
+                    label: "Add a kind".into(),
+                    note: Some(("Its own sound, color, duration and switch, for notifications agents or triggers send as it (\"Deploys\", \"CI\").".into(), Hsla::default())),
+                    control: Control::AddKind,
+                    cli: "midna notify kinds add <key> --label <name>".into(),
+                    who: Who::Agents,
+                    warn: false,
+                });
+                rows
             }
             // The volume, then every kind's sound (the volume isn't silenced by notifications).
             "@sounds" => {
@@ -1433,7 +1633,7 @@ impl Render for SettingsWindow {
             let shown: Vec<Shown> = found.into_iter().filter(|(s, _)| scope.is_none_or(|x| x == *s)).flat_map(|(_, gs)| gs).collect();
             sidebar = self.sidebar(&t, Some(Found { counts: &counts, total, scope }), &badges, window, cx).into_any_element();
             head = self.page_header(&t, title, sub, None, cx).into_any_element();
-            body = self.cards(&t, shown, &words, Some((q, total)), cx).into_any_element();
+            body = self.cards(&t, shown, &words, Some((q, total)), window, cx).into_any_element();
         } else {
             sidebar = self.sidebar(&t, None, &badges, window, cx).into_any_element();
             match self.view {
@@ -1451,7 +1651,7 @@ impl Render for SettingsWindow {
                     head = self.page_header(&t, sec.label().into(), sub, Some(sec), cx).into_any_element();
                     let groups = sections.into_iter().find(|(s, _)| *s == sec).map(|(_, g)| g).unwrap_or_default();
                     let shown = groups.into_iter().map(|g| Shown { sec, name: g.name, note: g.note, rows: g.rows.into_iter().map(|row| Hit { row, via: None }).collect() }).collect();
-                    body = self.cards(&t, shown, &[], None, cx).into_any_element();
+                    body = self.cards(&t, shown, &[], None, window, cx).into_any_element();
                 }
             }
         }
@@ -1841,7 +2041,7 @@ impl SettingsWindow {
 
     /// The groups as cards. While searching, each heading starts with its section (a link to
     /// it), and the last card asks an agent.
-    fn cards(&self, t: &Theme, shown: Vec<Shown>, words: &[String], search: Option<(String, usize)>, cx: &mut Context<Self>) -> impl IntoElement {
+    fn cards(&self, t: &Theme, shown: Vec<Shown>, words: &[String], search: Option<(String, usize)>, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         let mut id = 0;
         for g in shown {
@@ -1878,7 +2078,7 @@ impl SettingsWindow {
             });
             let mut card = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).overflow_hidden();
             for (i, hit) in g.rows.into_iter().enumerate() {
-                card = card.child(self.row(t, hit, words, i == 0, id, cx));
+                card = card.child(self.row(t, hit, words, i == 0, id, window, cx));
                 id += 1;
             }
             list = list.child(div().flex().flex_col().gap(px(8.)).children(heading).child(card));
@@ -1943,7 +2143,7 @@ impl SettingsWindow {
         list
     }
 
-    fn row(&self, t: &Theme, hit: Hit, words: &[String], first: bool, id: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(&self, t: &Theme, hit: Hit, words: &[String], first: bool, id: usize, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Hit { row: r, via } = hit;
         let note = r.note.map(|(n, c)| (n, if c == Hsla::default() { t.dim } else { c }));
         let lock = r.who == Who::Human && r.cli.starts_with("midna settings set ");
@@ -1954,7 +2154,7 @@ impl SettingsWindow {
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
         let wide = matches!(r.control, Control::Theme { .. });
-        let control = self.control(t, r.control, words, id, cx);
+        let control = self.control(t, r.control, words, id, window, cx);
         let (inline, below) = if wide { (None, Some(control)) } else { (Some(control), None) };
         let cli = r.cli;
         let copied = self.copied.as_ref().is_some_and(|(c, _)| *c == cli);
@@ -2066,8 +2266,195 @@ impl SettingsWindow {
             .children(cli_line)
     }
 
-    fn control(&self, t: &Theme, control: Control, words: &[String], id: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// A row button's action.
+    fn run(&mut self, act: &Act, cx: &mut Context<Self>) {
+        match act {
+            Act::Url(u) => cx.open_url(u),
+            Act::ResetSettings => {
+                if self.armed_reset {
+                    self.reset_all(cx);
+                } else {
+                    self.armed_reset = true;
+                    self.armed_daemon_reset = false;
+                }
+                cx.notify();
+            }
+            Act::ResetDaemon => {
+                if self.armed_daemon_reset {
+                    self.reset_daemon(cx);
+                } else {
+                    self.armed_daemon_reset = true;
+                    self.armed_reset = false;
+                }
+                cx.notify();
+            }
+            Act::Life(c) => crate::lifecycle::command(c.clone(), cx),
+            &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
+                window.activate_window();
+                crate::ui::hooks::open(m, uninstall, window, cx);
+            }),
+            Act::RemoveKind(k) => self.kind_call("notify.kinds.remove", json!({ "key": k }), format!("midna notify kinds rm {k}"), cx),
+            Act::TestKind(k) => self.test_notification(k.clone(), cx),
+        }
+    }
+
+    /// A text field row (`Control::Edit`): ↩ saves, esc puts back what's saved.
+    fn edit_control(&self, t: &Theme, key: String, actions: Vec<(String, Act)>, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some((input, saved)) = self.edits.get(&key) else { return div().into_any_element() };
+        let changed = input.text(cx) != *saved;
+        let k = key.clone();
+        let mut row = div().flex().items_center().gap(px(6.)).w(px(320.)).child(
+            input
+                .render(t, SharedString::from(format!("edit-{key}")), window)
+                .h(px(28.))
+                .flex_1()
+                .min_w_0()
+                .on_key_down(cx.listener(move |s, ev: &KeyDownEvent, _, cx| {
+                    let Some((input, saved)) = s.edits.get_mut(&k) else { return };
+                    match input.on_key(ev, cx) {
+                        KeyOutcome::Submit => {
+                            cx.stop_propagation();
+                            s.commit_edit(&k, cx);
+                        }
+                        KeyOutcome::Cancel => {
+                            cx.stop_propagation();
+                            let saved = saved.clone();
+                            input.set_text(&saved, cx);
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })),
+        );
+        if changed {
+            let k = key.clone();
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("edit-save-{key}")))
+                    .flex_none()
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(7.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::BOLD)
+                    .bg(t.accent)
+                    .text_color(t.accent_fg)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |s, _, _, cx| s.commit_edit(&k, cx)))
+                    .child("Save"),
+            );
+        }
+        for (i, (label, act)) in actions.into_iter().enumerate() {
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("edit-act-{key}-{i}")))
+                    .flex_none()
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(7.))
+                    .text_size(px(12.))
+                    .border_1()
+                    .border_color(t.line)
+                    .bg(t.raised)
+                    .text_color(if matches!(act, Act::RemoveKind(_)) { t.err } else { t.fg })
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(t.dim))
+                    .on_click(cx.listener(move |s, _, _, cx| s.run(&act, cx)))
+                    .child(label),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// A kind's color: the theme's six, a few more, and the one it has if it's none of these.
+    fn color_control(&self, t: &Theme, key: String, current: String, cx: &mut Context<Self>) -> AnyElement {
+        let mut values: Vec<String> = midna_proto::notify::COLOR_TOKENS.iter().chain(MORE_COLORS.iter()).map(|c| c.to_string()).collect();
+        if !current.is_empty() && !values.contains(&current) {
+            values.push(current.clone());
+        }
+        let mut row = div().flex().flex_wrap().justify_end().gap(px(4.));
+        for (i, v) in values.into_iter().enumerate() {
+            let on = v == current;
+            let color = crate::ui::notifications::color_of(t, &v).unwrap_or(t.dim);
+            let k = key.clone();
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("color-{key}-{i}")))
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .border_2()
+                    .border_color(if on { t.fg } else { gpui_kit::transparent_black() })
+                    .cursor_pointer()
+                    .tooltip(crate::ui::header::tip(v.clone()))
+                    .on_click(cx.listener(move |s, _, _, cx| {
+                        if !on {
+                            s.set(&k, json!(v), cx);
+                        }
+                    }))
+                    .child(div().size(px(14.)).rounded(px(4.)).bg(color)),
+            );
+        }
+        row.into_any_element()
+    }
+
+    fn add_kind_control(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .w(px(320.))
+            .child(
+                self.new_kind
+                    .render(t, "new-kind", window)
+                    .h(px(28.))
+                    .flex_1()
+                    .min_w_0()
+                    .on_key_down(cx.listener(|s, ev: &KeyDownEvent, _, cx| match s.new_kind.on_key(ev, cx) {
+                        KeyOutcome::Submit => {
+                            cx.stop_propagation();
+                            s.add_kind(cx);
+                        }
+                        KeyOutcome::Cancel => {
+                            cx.stop_propagation();
+                            s.new_kind.clear(cx);
+                        }
+                        _ => {}
+                    })),
+            )
+            .child(
+                div()
+                    .id("new-kind-add")
+                    .flex_none()
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .rounded(px(7.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::BOLD)
+                    .bg(t.accent)
+                    .text_color(t.accent_fg)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|s, _, _, cx| s.add_kind(cx)))
+                    .child(Icon::Plus.el(11., t.accent_fg))
+                    .child("Add"),
+            )
+            .into_any_element()
+    }
+
+    fn control(&self, t: &Theme, control: Control, words: &[String], id: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match control {
+            Control::Color { key, current } => self.color_control(t, key, current, cx),
+            Control::Edit { key, actions } => self.edit_control(t, key, actions, window, cx),
+            Control::AddKind => self.add_kind_control(t, window, cx),
             // many choices: a menu instead of a row of buttons
             Control::Seg { key, options, current } if options.len() > 5 => self.choice_menu(t, key, options, current, cx),
             Control::Seg { key, options, current } => {
@@ -2177,32 +2564,7 @@ impl SettingsWindow {
                                         b.border_1().border_color(t.line).bg(t.raised).text_color(t.fg).hover(|s| s.border_color(t.dim))
                                     }
                                 })
-                                .on_click(cx.listener(move |s, _, _, cx| match &act {
-                                    Act::Url(u) => cx.open_url(u),
-                                    Act::ResetSettings => {
-                                        if s.armed_reset {
-                                            s.reset_all(cx);
-                                        } else {
-                                            s.armed_reset = true;
-                                            s.armed_daemon_reset = false;
-                                        }
-                                        cx.notify();
-                                    }
-                                    Act::ResetDaemon => {
-                                        if s.armed_daemon_reset {
-                                            s.reset_daemon(cx);
-                                        } else {
-                                            s.armed_daemon_reset = true;
-                                            s.armed_reset = false;
-                                        }
-                                        cx.notify();
-                                    }
-                                    Act::Life(c) => crate::lifecycle::command(c.clone(), cx),
-                                    &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
-                                        window.activate_window();
-                                        crate::ui::hooks::open(m, uninstall, window, cx);
-                                    }),
-                                }))
+                                .on_click(cx.listener(move |s, _, _, cx| s.run(&act, cx)))
                                 .child(label),
                         )
                     })
@@ -2459,13 +2821,13 @@ mod tests {
 
     #[test]
     fn every_setting_has_a_place() {
-        use midna_proto::notify::{body_key, image_key, push_focused_key, push_key, setting_key, sound_key, title_key, volume_key};
+        use midna_proto::notify::{body_key, color_key, image_key, push_focused_key, push_key, setting_key, sound_key, stay_key, title_key, volume_key};
         let listed: Vec<&str> = LAYOUT.iter().flat_map(|(_, _, items)| items.iter().copied()).filter(|i| !i.starts_with('@')).collect();
         for k in &listed {
             assert!(setting(k).is_some(), "LAYOUT lists {k}, which isn't a setting");
         }
         // the per-kind rows (`@kinds`, `@sounds`, `@images`, …) and `@shortcuts`
-        let kinds: [fn(&str) -> String; 8] = [setting_key, push_key, push_focused_key, sound_key, volume_key, image_key, title_key, body_key];
+        let kinds: [fn(&str) -> String; 10] = [setting_key, push_key, push_focused_key, sound_key, volume_key, image_key, title_key, body_key, stay_key, color_key];
         let per_kind = |k: &str| {
             CATEGORIES.iter().any(|c| kinds.iter().any(|f| f(c.key) == k))
                 || EFFECTS.iter().any(|e| sound_key(e.key) == k || volume_key(e.key) == k)
@@ -2480,7 +2842,8 @@ mod tests {
     fn every_special_row_is_built() {
         let known = [
             "@update", "@cli", "@login", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
-            "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in",
+            "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
+            "@custom_kinds",
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {

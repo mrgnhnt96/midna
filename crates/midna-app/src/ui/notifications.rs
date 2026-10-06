@@ -47,17 +47,35 @@ pub fn tab_of(category: &str) -> Tab {
     }
 }
 
-/// The kind's name (as in Settings) and its color.
-pub fn kind(t: &Theme, category: &str) -> (&'static str, Hsla) {
-    let label = midna_proto::notify::category(category).map(|c| c.label).unwrap_or("Notification");
-    let color = match tab_of(category) {
+/// The kind's name (as in Settings) and its color (`notify.color.<kind>`, carried on the
+/// notification; a daemon from before it: by tab).
+pub fn kind(t: &Theme, n: &midna_proto::notify::Posted) -> (String, Hsla) {
+    let label = match (midna_proto::notify::category(&n.category), &n.label) {
+        (Some(c), _) => c.label.to_string(),
+        (None, Some(l)) => l.clone(),
+        (None, None) => "Notification".into(),
+    };
+    let color = n.color.as_deref().and_then(|c| color_of(t, c)).unwrap_or(match tab_of(&n.category) {
         Tab::Needs => t.need,
         Tab::Finished => t.ok,
         Tab::Failed => t.err,
         Tab::Sent => t.accent,
         _ => t.dim,
-    };
+    });
     (label, color)
+}
+
+/// A `notify.color.<kind>` value: a theme color by name (follows the theme) or `#rrggbb`.
+pub fn color_of(t: &Theme, v: &str) -> Option<Hsla> {
+    Some(match v {
+        "need" => t.need,
+        "ok" => t.ok,
+        "err" => t.err,
+        "work" => t.work,
+        "accent" => t.accent,
+        "dim" => t.dim,
+        hex => gpui::rgb(u32::from_str_radix(hex.strip_prefix('#').filter(|h| h.len() == 6)?, 16).ok()?).into(),
+    })
 }
 
 /// The terminal's name, else its project's, else "midna".
@@ -268,7 +286,7 @@ fn rows(m: &MainWindow, t: &Theme, list: &[&NotifyHistoryItem], cur: Option<u64>
             col = col.child(div().px(px(16.)).pt(px(12.)).pb(px(4.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim).child(day.to_uppercase()));
             last_day = day;
         }
-        let (label, color) = kind(t, &i.notification.category);
+        let (label, color) = kind(t, &i.notification);
         let seq = i.seq;
         let on = cur == Some(seq);
         let body = i.notification.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
@@ -318,7 +336,7 @@ fn badge(_t: &Theme, text: &'static str, bg: Hsla, fg: Hsla) -> Div {
 
 /// The right side: everything about one notification, and what you can do about it.
 fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
-    let (label, color) = kind(t, &i.notification.category);
+    let (label, color) = kind(t, &i.notification);
     let need = waiting(m, i).cloned();
     let session = i.session_id.clone().filter(|s| m.sessions.iter().any(|x| &x.id == s));
     let project = i.project_id.as_deref().or(session.as_deref().and_then(|s| m.sessions.iter().find(|x| x.id == s)).and_then(|s| s.project_id.as_deref()));
@@ -343,8 +361,10 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
     }
     if let Some(sid) = session {
         let mute = format!("Mute “{label}” for {name}");
+        let label = label.clone();
         actions = actions.child(super::screen_kit::btn(t, "nt-mute", mute).on_click(cx.listener(move |m, _, _, cx| {
             let params = json!({ "session": sid, "key": category, "value": false });
+            let label = label.clone();
             m.rpc("notify.set", params, cx, move |m, _, _, cx| m.toast(format!("Muted “{label}” for this terminal. Its … menu turns it back on."), cx));
         })));
     }

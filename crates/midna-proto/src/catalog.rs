@@ -248,6 +248,18 @@ fn build() -> Vec<MethodSpec> {
              (\"ping me when the build is green\") or when a result needs them and they may be away. Clicking it selects \
              your terminal. Not for routine progress: approvals, failures and finished turns already notify. Duplicates \
              within a few seconds are dropped and an agent can send at most 6 a minute."),
+        m::<NoParams, NotifyKindsList>("notify.kinds.list").d(
+            "The notification kinds the human added, beside the built-in ones (notify.list): each with its label, \
+             whether it's on, how long it stays on screen (`stay`, 0 = until handled), its color and sound. Send to one \
+             with notify.send `category`, or from a trigger's notify action `category`. Their settings are `notify.<field>.<key>` \
+             like a built-in kind's (settings.set)."),
+        m::<NotifyKindsAddParams, NotifyKindInfo>("notify.kinds.add").mutating().d(
+            "Add a notification kind (\"deploys\", \"ci\"), so notifications about it get their own sound, color, \
+             duration and switch: {key, label, description?, settings?: {stay, color, sound, push, …}}. Add one when \
+             the human asks for it; same key = error unless replace=true."),
+        m::<NotifyKindsRemoveParams, OkResult>("notify.kinds.remove").mutating().d(
+            "Remove a notification kind the human added, and its settings. Built-in kinds can only be turned off \
+             (`notify.<key>`)."),
         m::<NotifyMediaParams, NotifyMediaResult>("notify.media").d(
             "The sounds and images notifications can use: the macOS sounds (Glass, Ping, …) and what the human imported, \
              each with the `name` a setting takes and which settings use it. A category's sound, volume and image are the \
@@ -358,7 +370,7 @@ fn build() -> Vec<MethodSpec> {
              {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready), \
              {kind:set_status, label, color (red|orange|amber|yellow|green|teal|blue|purple|pink|gray|#rrggbb), icon?, \
              base (idle|working|needs_you|done|failed: still drives sorting, notifications, Needs You), clear_on (prompt|turn|status|never)}, \
-             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true} (a macOS notification, \
+             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true, category?} (a macOS notification, \
              category from_trigger; clicking it selects the terminal that fired). Local templates: {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, \
              {{session.id|name|project_id|agent|status}}, {{data.<path>}} or {{<path>}}. cooldown_secs (default 60) spaces \
              firings per terminal; what a trigger causes never fires triggers. Example (compact, then resend): \
