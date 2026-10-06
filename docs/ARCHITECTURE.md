@@ -38,7 +38,7 @@ crates/
   midna-relay/        self-hostable webhook relay (later phase)
 docs/
   ARCHITECTURE.md     this file
-  design/             approved .dc.html boards (Main, CommandBar-A, NeedsYou-C, Rules-B, Triggers-A, Insights-A, Settings-C, Onboarding-B)
+  design/             approved .dc.html boards (Main, CommandBar-A, NeedsYou-C, Rules-B, Triggers-A, Insights-A, Settings-A, Onboarding-B; Settings-C is the older one-table Settings)
 spikes/               proven prototypes; reuse code from here freely
 ```
 
@@ -209,7 +209,7 @@ Build it with GPUI via `gpui-kit` 0.7 (see `spikes/gpui-terminal` for a working 
   - the ⌘K palette (CommandBar-A)
   - the needs-you card stack (NeedsYou-C)
   - Rules (Rules-B), Triggers (Triggers-A) and Insights (graph-based; Insights-A is NOT the target — design fresh graphs), which replace the terminal pane; the sidebar stays
-- **Settings is its own separate window** (Settings-C).
+- **Settings is its own separate window** (Settings-A: sidebar sections, search over both panes).
 - **Pop-out / keep-on-top** terminals are separate windows (`NSWindow` level). Satellites use `WindowKind::PopUp`.
 
 **⌘K fallback.** Free text that doesn't match a command opens a new agent terminal in the current project with that text as the prompt. Pick Claude or Codex and this project or root.

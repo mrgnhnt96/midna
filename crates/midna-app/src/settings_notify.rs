@@ -200,7 +200,7 @@ impl SettingsWindow {
             .child(step("vol-up", "+", (v + STEP).min(100), v < 100))
     }
 
-    fn picker_button(&self, t: &Theme, key: &str, label: String, width: f32, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn picker_button(&self, t: &Theme, key: &str, label: String, width: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let open = self.picker.as_deref() == Some(key);
         let k = key.to_string();
         div()

@@ -1,8 +1,8 @@
-//! Settings ▸ Shortcuts: every shortcut in one list (the `keys.*` settings, then the built-in
-//! keys screens handle themselves), searchable by name or by keys. The keyboard button (⌥⌘K)
-//! is a key detector, like VS Code's "Record Keys": while it's on, the next keystroke is
-//! captured before any binding fires (so ⌘W or ⌘Q are searched, not run) and the list
-//! shows only the shortcuts on those keys.
+//! Settings ▸ Shortcuts: every shortcut as a row (the `keys.*` settings, then the built-in
+//! keys screens handle themselves); the window's search finds them by name. The keyboard
+//! button (⌥⌘K) is a key detector, like VS Code's "Record Keys": while it's on, the next
+//! keystroke is captured before any binding fires (so ⌘W or ⌘Q are searched, not run) and
+//! the section shows only the shortcuts on those keys.
 //!
 //! Clicking a shortcut's keys rebinds it the same way: press the new keys, ↩ saves, ⎋
 //! cancels. × on the row (or Remove in its right-click menu) unbinds it. Keys another shortcut uses move: saving unbinds the other one.
@@ -15,6 +15,12 @@ pub(super) struct Editing {
     setting: &'static str,
     keys: Option<String>,
     _capture: Subscription,
+}
+
+impl Editing {
+    pub(super) fn setting(&self) -> &'static str {
+        self.setting
+    }
 }
 
 /// Keystrokes in `window` go to `f` before any binding sees them (a lone modifier is skipped).
@@ -38,58 +44,43 @@ fn capture(window: &Window, cx: &mut Context<SettingsWindow>, f: fn(&mut Setting
     })
 }
 
-/// One row of the list.
-struct Row {
-    title: String,
-    place: &'static str,
-    /// Pretty keys ("" when unbound).
-    keys: String,
-    /// Every keystroke it's on, as written in settings (what a key search matches).
-    raw: Vec<String>,
-    /// The setting to rebind it, or None for a built-in key.
-    setting: Option<&'static str>,
-    cli: String,
-}
-
 impl SettingsWindow {
-    fn shortcut_rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = SHORTCUTS
-            .iter()
-            .map(|s| {
-                let v = value_text(&self.value(s.setting));
-                let desc = midna_proto::settings::setting(s.setting).map(|x| x.description).unwrap_or("");
-                Row {
-                    title: desc.trim_end_matches('.').to_string(),
-                    place: "",
-                    keys: pretty(&v),
-                    raw: vec![v.clone()],
-                    setting: Some(s.setting),
-                    cli: format!("midna settings set {} {}", s.setting, if v.is_empty() { "<keys>".into() } else { v }),
-                }
-            })
-            .collect();
-        rows.extend(FIXED.iter().map(|f| Row {
-            title: f.title.to_string(),
-            place: f.place,
-            keys: f.label.map(str::to_string).unwrap_or_else(|| f.keys.iter().map(|k| pretty(k)).collect::<Vec<_>>().join(" · ")),
-            raw: f.keys.iter().map(|k| k.to_string()).collect(),
-            setting: None,
-            cli: String::new(),
-        }));
-        rows
-    }
-
-    /// Rows matching the recorded keys, or else the search text.
-    fn matching(&self, cx: &App) -> Vec<Row> {
-        let q = self.search.text(cx).trim().to_lowercase();
+    /// The `keys.*` shortcuts, or (`built_in`) the keys screens handle themselves. While the
+    /// key detector has caught keys, only the shortcuts on them.
+    pub(super) fn shortcut_specs(&self, t: &Theme, built_in: bool) -> Vec<RowSpec> {
         let rec = &self.recorded;
-        self.shortcut_rows()
-            .into_iter()
-            .filter(|r| {
-                if !rec.is_empty() {
-                    return r.raw.iter().any(|k| keys_match(k, rec));
+        if built_in {
+            return FIXED
+                .iter()
+                .filter(|f| rec.is_empty() || f.keys.iter().any(|k| keys_match(k, rec)))
+                .map(|f| RowSpec {
+                    label: f.title.to_string(),
+                    note: Some((f.place.to_string(), Hsla::default())),
+                    control: Control::Keys { setting: None, keys: f.label.map(str::to_string).unwrap_or_else(|| f.keys.iter().map(|k| pretty(k)).collect::<Vec<_>>().join(" · ")) },
+                    cli: String::new(),
+                    who: Who::ReadOnly,
+                    warn: false,
+                })
+                .collect();
+        }
+        SHORTCUTS
+            .iter()
+            .filter_map(|s| {
+                let v = value_text(&self.value(s.setting));
+                if !rec.is_empty() && !keys_match(&v, rec) {
+                    return None;
                 }
-                q.is_empty() || [r.title.as_str(), r.place, r.keys.as_str(), r.setting.unwrap_or("")].iter().any(|h| h.to_lowercase().contains(&q))
+                let desc = midna_proto::settings::setting(s.setting).map(|x| x.description).unwrap_or("");
+                // while rebinding: what the new keys would take from another shortcut
+                let note = self.editing.as_ref().filter(|e| e.setting == s.setting).and_then(|e| e.keys.as_ref().map(|k| self.conflict_note(e.setting, k))).filter(|n| !n.is_empty());
+                Some(RowSpec {
+                    label: desc.trim_end_matches('.').to_string(),
+                    note: note.map(|n| (n, t.need)),
+                    control: Control::Keys { setting: Some(s.setting), keys: pretty(&v) },
+                    cli: format!("midna settings set {} {}", s.setting, if v.is_empty() { "\"\"".into() } else { v }),
+                    who: Who::Agents,
+                    warn: false,
+                })
             })
             .collect()
     }
@@ -100,9 +91,9 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        self.view = View::Shortcuts;
+        self.view = View::Section(Sec::Shortcuts);
         self.editing = None;
-        self.search.clear(cx);
+        self.ask.clear(cx);
         self.recorded.clear();
         self.focus.focus(window, cx);
         self.recorder = Some(capture(window, cx, |s, ks, _| {
@@ -158,7 +149,7 @@ impl SettingsWindow {
     }
 
     /// The right-click menu on a shortcut row: change, remove, reset, copy the command.
-    fn shortcut_menu_el(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn shortcut_menu_el(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (setting, pos) = self.shortcut_menu?;
         let current = value_text(&self.value(setting));
         let default = crate::actions::default_key(setting);
@@ -204,171 +195,64 @@ impl SettingsWindow {
         notes.join(" ")
     }
 
-    pub(super) fn shortcuts(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The page header's key detector: press a shortcut to find what it does.
+    pub(super) fn record_button(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let recording = self.recorder.is_some();
-        let focused = self.search.focus.is_focused(window);
-        let field: AnyElement = if recording || !self.recorded.is_empty() {
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .children(self.recorded.iter().map(|k| crate::ui::header::key_chip(t, pretty(k).into()).text_size(px(12.)).text_color(t.fg)))
-                .when(self.recorded.is_empty(), |d| d.child(div().text_color(t.dim).child("Press a shortcut…")))
-                .when(recording && !self.recorded.is_empty(), |d| d.child(div().text_color(t.dim).text_size(px(11.5)).child("press another to change it")))
-                .into_any_element()
-        } else {
-            div().flex_1().min_w_0().flex().items_center().overflow_hidden().text_color(t.fg).child(self.search.field.clone()).into_any_element()
-        };
-        let clear = (!self.recorded.is_empty() || !self.search.is_empty(cx)).then(|| {
-            div()
-                .id("shortcut-search-clear")
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .hover(|s| s.bg(t.panel))
-                .tooltip(crate::ui::header::tip("Clear"))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|s, _, window, cx| {
-                    s.recorded.clear();
-                    s.recorder = None;
-                    s.search.clear(cx);
-                    s.search.focus.focus(window, cx);
-                    cx.notify();
-                }))
-                .child(Icon::Cross.el(11., t.dim))
-        });
-        let detector = div()
-            .id("shortcut-record")
-            .size(px(26.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .cursor_pointer()
-            .when(recording, |d| d.bg(t.accent_soft).border_1().border_color(t.accent))
-            .when(!recording, |d| d.hover(|s| s.bg(t.panel)))
-            .tooltip(crate::ui::header::tip_fixed(if recording { "Stop recording keys" } else { "Record keys: search by pressing a shortcut" }, "⌥⌘K"))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|s, _, window, cx| s.toggle_recording(window, cx)))
-            .child(Icon::Keyboard.el(15., if recording { t.accent } else { t.dim }));
-        let bar = div()
-            .id("shortcut-search")
-            .flex_1()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .h(px(34.))
-            .pl(px(12.))
-            .pr(px(4.))
-            .rounded(px(9.))
-            .border_1()
-            .border_color(if recording { t.accent } else { t.line })
-            .when(focused || recording, |d| d.shadow(vec![BoxShadow { color: t.accent_soft, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]))
-            .bg(t.raised)
-            .cursor_text()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|s, _, window, cx| {
-                    if s.recorder.is_none() {
-                        s.recorded.clear();
-                        s.search.focus.focus(window, cx);
-                    }
-                    cx.notify();
-                }),
-            )
-            .on_key_down(cx.listener(|s, ev: &KeyDownEvent, window, cx| match s.search.on_key(ev, cx) {
-                KeyOutcome::Cancel => {
-                    s.search.clear(cx);
-                    s.focus.focus(window, cx);
-                    cx.notify();
-                }
-                KeyOutcome::Submit | KeyOutcome::Ignored => cx.propagate(),
-            }))
-            .child(Icon::Search.el(14., t.dim))
-            .child(field)
-            .children(clear)
-            .child(detector);
-        let rows = self.matching(cx);
-        let n = rows.len();
-        let head = div()
-            .flex()
-            .flex_none()
-            .gap(px(16.))
-            .px(px(18.))
-            .py(px(8.))
-            .bg(t.bg)
-            .border_b_1()
-            .border_color(t.line)
-            .text_size(px(11.))
-            .font_weight(FontWeight::BOLD)
-            .text_color(t.dim)
-            .child(div().w(px(COL_SETTING + 80.)).flex_none().child("COMMAND"))
-            .child(div().w(px(KEYS_W)).flex_none().child("KEYS · CLICK TO CHANGE"))
-            .child(div().flex_1().min_w_0().child("SAME THING, FOR AGENTS"))
-            .child(div().w(px(COL_WHO)).flex_none().child("WHO CAN SET"));
-        let mut list = div().id("shortcut-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().pb(px(16.));
-        let mut built_in = false;
-        for (i, r) in rows.into_iter().enumerate() {
-            if r.setting.is_none() && !built_in {
-                built_in = true;
-                list = list.child(
-                    div()
-                        .px(px(18.))
-                        .pt(px(16.))
-                        .pb(px(4.))
-                        .flex()
-                        .gap(px(8.))
-                        .items_baseline()
-                        .child(div().font_weight(FontWeight::BOLD).child("Built in"))
-                        .child(div().text_size(px(11.5)).text_color(t.dim).child("Keys a screen handles itself. Not settings, so they can't be changed.")),
-                );
-            }
-            list = list.child(self.shortcut_row(t, r, i, cx));
-        }
-        if n == 0 {
-            list = list.child(div().px(px(18.)).py(px(24.)).text_color(t.dim).child(if self.recorded.is_empty() {
-                "No shortcut matches.".to_string()
-            } else {
-                format!("Nothing uses {}. Ask above to bind it to something.", pretty(&self.recorded.join(" ")))
-            }));
-        }
         div()
-            .flex_1()
-            .min_h_0()
             .flex()
-            .flex_col()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .children(self.recorded.iter().map(|k| crate::ui::header::key_chip(t, pretty(k).into()).text_size(px(12.)).text_color(t.fg)))
+            .when(!self.recorded.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("shortcut-search-clear")
+                        .size(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.raised))
+                        .tooltip(crate::ui::header::tip("Show every shortcut"))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.recorded.clear();
+                            s.recorder = None;
+                            cx.notify();
+                        }))
+                        .child(Icon::Cross.el(11., t.dim)),
+                )
+            })
             .child(
                 div()
+                    .id("shortcut-record")
                     .flex()
-                    .flex_none()
                     .items_center()
-                    .gap(px(12.))
-                    .px(px(16.))
-                    .py(px(10.))
-                    .border_b_1()
-                    .border_color(t.line)
-                    .child(bar)
-                    .child(div().flex_none().w(px(90.)).text_size(px(12.)).text_color(t.dim).child(format!("{n} shortcut{}", if n == 1 { "" } else { "s" }))),
+                    .gap(px(6.))
+                    .h(px(28.))
+                    .px(px(10.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .text_size(px(12.))
+                    .cursor_pointer()
+                    .map(|d| if recording { d.border_color(t.accent).bg(t.accent_soft).text_color(t.fg) } else { d.border_color(t.line).bg(t.panel).text_color(t.dim).hover(|s| s.text_color(t.fg)) })
+                    .tooltip(crate::ui::header::tip_fixed(if recording { "Stop recording keys" } else { "Find a shortcut by pressing it" }, "⌥⌘K"))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|s, _, window, cx| s.toggle_recording(window, cx)))
+                    .child(Icon::Keyboard.el(14., if recording { t.accent } else { t.dim }))
+                    .child(if recording && self.recorded.is_empty() { "Press a shortcut…" } else { "Record keys" }),
             )
-            .child(head)
-            .child(list)
-            .children(self.shortcut_menu_el(t, cx))
     }
 
-    fn shortcut_row(&self, t: &Theme, r: Row, i: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let cli = r.cli.clone();
-        let copied = !cli.is_empty() && self.copied.as_ref().is_some_and(|(c, _)| *c == cli);
-        let (who_text, who_color) = if r.setting.is_some() { ("agents too", t.dim) } else { ("built in", t.dim) };
-        let editing = self.editing.as_ref().filter(|e| Some(e.setting) == r.setting);
-        let note = editing.and_then(|e| e.keys.as_ref().map(|k| self.conflict_note(e.setting, k))).filter(|n| !n.is_empty());
-        let keys: AnyElement = match (r.setting, editing) {
-            (Some(_), Some(e)) => div()
+    /// A shortcut's keys: click to rebind; × unbinds; Reset when it's not the default.
+    pub(super) fn keys_control(&self, t: &Theme, setting: Option<&'static str>, keys: String, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(setting) = setting else {
+            return crate::ui::header::key_chip(t, keys.into()).text_size(px(12.)).text_color(t.fg).into_any_element();
+        };
+        if let Some(e) = self.editing.as_ref().filter(|e| e.setting == setting) {
+            return div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
@@ -383,130 +267,57 @@ impl SettingsWindow {
                     None => div().text_size(px(12.)).text_color(t.accent).child("Press keys…").into_any_element(),
                 })
                 .child(div().text_size(px(11.)).text_color(t.dim).whitespace_nowrap().child(if e.keys.is_some() { "↩ save · ⎋ cancel" } else { "⎋ cancel" }))
-                .into_any_element(),
-            (Some(setting), None) => {
-                let current = value_text(&self.value(setting));
-                let default = crate::actions::default_key(setting);
-                let changed = crate::actions::normalize_keys(&current) != crate::actions::normalize_keys(default);
-                let small = |id: &'static str| {
-                    div()
-                        .id((id, i))
-                        .px(px(5.))
-                        .h(px(22.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(5.))
-                        .text_size(px(11.))
-                        .text_color(t.dim)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.raised).text_color(t.fg))
-                };
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .id(("shortcut-keys", i))
-                            .cursor_pointer()
-                            .rounded(px(5.))
-                            .tooltip(crate::ui::header::tip("Click, then press the new keys"))
-                            .on_click(cx.listener(move |s, _, window, cx| s.start_edit(setting, window, cx)))
-                            .child(if r.keys.is_empty() {
-                                div().px(px(6.)).h(px(22.)).flex().items_center().rounded(px(5.)).border_1().border_dashed().border_color(t.line).text_size(px(11.5)).text_color(t.dim).hover(|s| s.border_color(t.accent).text_color(t.fg)).child("Set keys")
-                            } else {
-                                crate::ui::header::key_chip(t, r.keys.clone().into()).text_size(px(12.)).text_color(t.fg).hover(|s| s.border_color(t.accent))
-                            }),
-                    )
-                    .when(!r.keys.is_empty(), |d| {
-                        d.child(small("shortcut-unbind").tooltip(crate::ui::header::tip("Remove keys")).on_click(cx.listener(move |s, _, _, cx| s.set(setting, json!(""), cx))).child(Icon::Cross.el(10., t.dim)))
-                    })
-                    .when(changed, |d| {
-                        d.child(
-                            small("shortcut-reset")
-                                .tooltip(crate::ui::header::tip(if default.is_empty() { "Back to the default: unbound".to_string() } else { format!("Back to the default: {}", pretty(default)) }))
-                                .on_click(cx.listener(move |s, _, _, cx| s.reset_shortcut(setting, cx)))
-                                .child("Reset"),
-                        )
-                    })
-                    .into_any_element()
-            }
-            (None, _) => crate::ui::header::key_chip(t, r.keys.into()).text_size(px(12.)).text_color(t.fg).into_any_element(),
+                .into_any_element();
+        }
+        let current = value_text(&self.value(setting));
+        let default = crate::actions::default_key(setting);
+        let changed = crate::actions::normalize_keys(&current) != crate::actions::normalize_keys(default);
+        let small = |id: &'static str| {
+            div()
+                .id((id, i))
+                .px(px(5.))
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .rounded(px(5.))
+                .text_size(px(11.))
+                .text_color(t.dim)
+                .cursor_pointer()
+                .hover(|s| s.bg(t.raised).text_color(t.fg))
         };
         div()
             .flex()
-            .flex_none()
             .items_center()
-            .gap(px(16.))
-            .min_h(px(38.))
-            .px(px(18.))
-            .py(px(5.))
-            .border_b_1()
-            .border_color(t.line)
-            .when(editing.is_some() || self.shortcut_menu.is_some_and(|(s, _)| Some(s) == r.setting), |d| d.bg(t.raised))
-            .when_some(r.setting, |d, setting| {
-                d.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |s, ev: &MouseDownEvent, _, cx| {
-                        s.shortcut_menu = Some((setting, ev.position));
-                        cx.notify();
-                    }),
+            .gap(px(4.))
+            .when(changed, |d| {
+                d.child(
+                    small("shortcut-reset")
+                        .tooltip(crate::ui::header::tip(if default.is_empty() { "Back to the default: unbound".to_string() } else { format!("Back to the default: {}", pretty(default)) }))
+                        .on_click(cx.listener(move |s, _, _, cx| s.reset_shortcut(setting, cx)))
+                        .child("Reset"),
                 )
+            })
+            .when(!keys.is_empty(), |d| {
+                d.child(small("shortcut-unbind").tooltip(crate::ui::header::tip("Remove keys")).on_click(cx.listener(move |s, _, _, cx| s.set(setting, json!(""), cx))).child(Icon::Cross.el(10., t.dim)))
             })
             .child(
                 div()
-                    .w(px(COL_SETTING + 80.))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .child(div().child(r.title))
-                    .when(!r.place.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child(r.place)))
-                    .when_some(note, |d, n| d.child(div().text_size(px(11.5)).line_height(px(15.)).text_color(t.need).child(n))),
-            )
-            .child(div().w(px(KEYS_W)).flex_none().flex().child(keys))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .when(!cli.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .font_family(t.mono_font.clone())
-                                .text_size(px(11.5))
-                                .text_color(t.dim)
-                                .flex()
-                                .gap(px(6.))
-                                .child(div().flex_none().text_color(t.accent).child("$"))
-                                .child(div().flex_1().min_w_0().child(cli.clone())),
-                        )
-                        .child(
-                            div()
-                                .id(("shortcut-copy", i))
-                                .flex_none()
-                                .h(px(22.))
-                                .px(px(6.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(5.))
-                                .text_size(px(11.))
-                                .text_color(if copied { t.ok } else { t.dim })
-                                .cursor_pointer()
-                                .hover(|s| s.bg(t.raised).text_color(t.fg))
-                                .on_click(cx.listener(move |s, _, _, cx| s.copy(cli.clone(), cx)))
-                                .child(if copied { "Copied" } else { "Copy" }),
-                        )
+                    .id(("shortcut-keys", i))
+                    .cursor_pointer()
+                    .rounded(px(5.))
+                    .tooltip(crate::ui::header::tip("Click, then press the new keys"))
+                    .on_click(cx.listener(move |s, _, window, cx| s.start_edit(setting, window, cx)))
+                    .child(if keys.is_empty() {
+                        div().px(px(6.)).h(px(22.)).flex().items_center().rounded(px(5.)).border_1().border_dashed().border_color(t.line).text_size(px(11.5)).text_color(t.dim).hover(|s| s.border_color(t.accent).text_color(t.fg)).child("Set keys")
+                    } else {
+                        crate::ui::header::key_chip(t, keys.into()).text_size(px(12.)).text_color(t.fg).hover(|s| s.border_color(t.accent))
                     }),
             )
-            .child(div().w(px(COL_WHO)).flex_none().text_size(px(11.5)).text_color(who_color).child(who_text))
+            .into_any_element()
     }
 }
 
-const KEYS_W: f32 = 210.;
+
 
 #[cfg(test)]
 mod tests {

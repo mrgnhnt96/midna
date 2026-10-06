@@ -1,12 +1,14 @@
-//! Settings: its own standard macOS window (Settings-C, "settings as code").
-//!
-//! Every row shows the control, what the setting does, the exact CLI an agent would run
-//! (copyable), and who may change it. Data is `settings.list` + the
+//! Settings: its own standard macOS window. A sidebar of sections (General … System) beside
+//! the selected section's rows, grouped in cards. A row is the setting's name, what it does
+//! and its control; a lock marks the ones only the human can change. "Agent commands" adds
+//! under every row the exact CLI an agent would run (copyable). Data is `settings.list` + the
 //! `midna_proto::settings::SETTINGS` catalog, live-updated on `settings.changed` (agents
-//! change settings at any time). The title bar toggles Rows ↔ an annotated, read-only
-//! `settings.json`. The Ask box filters the rows as you type and, on ↩, opens an agent with
-//! the request as its prompt. The GUI is
-//! the human, so human-only settings are editable here.
+//! change settings at any time). `LAYOUT` says where every setting lives.
+//!
+//! The search field filters both panes: the sidebar keeps the sections with matches (with
+//! counts) and the main pane lists every match as Section › Group, the matched text marked,
+//! with a line saying why when the match isn't in the name or description. ↩ opens an agent
+//! with the text as its prompt. The GUI is the human, so human-only settings are editable here.
 use crate::backend::{Backend, BackendEvent};
 use crate::icons::Icon;
 use crate::model::{Event, SettingEntry, parse_list};
@@ -34,12 +36,12 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     {
         return;
     }
-    let w: f32 = std::env::var("MIDNA_SETTINGS_W").ok().and_then(|v| v.parse().ok()).unwrap_or(900.);
-    let h: f32 = std::env::var("MIDNA_SETTINGS_H").ok().and_then(|v| v.parse().ok()).unwrap_or(640.);
+    let w: f32 = std::env::var("MIDNA_SETTINGS_W").ok().and_then(|v| v.parse().ok()).unwrap_or(940.);
+    let h: f32 = std::env::var("MIDNA_SETTINGS_H").ok().and_then(|v| v.parse().ok()).unwrap_or(680.);
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx))),
         titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
-        window_min_size: Some(size(px(720.), px(420.))),
+        window_min_size: Some(size(px(760.), px(440.))),
         app_id: Some("com.mrgnhnt.midna".into()),
         focus: std::env::var("MIDNA_NO_ACTIVATE").is_err(),
         ..Default::default()
@@ -52,12 +54,122 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     }
 }
 
+/// The sidebar's sections, top to bottom.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sec {
+    General,
+    Appearance,
+    Terminal,
+    Shortcuts,
+    Agents,
+    Limits,
+    Notifications,
+    Sounds,
+    Webhooks,
+    System,
+}
+
+const SECS: [Sec; 10] = [Sec::General, Sec::Appearance, Sec::Terminal, Sec::Shortcuts, Sec::Agents, Sec::Limits, Sec::Notifications, Sec::Sounds, Sec::Webhooks, Sec::System];
+
+impl Sec {
+    fn label(self) -> &'static str {
+        match self {
+            Sec::General => "General",
+            Sec::Appearance => "Appearance",
+            Sec::Terminal => "Terminal",
+            Sec::Shortcuts => "Shortcuts",
+            Sec::Agents => "Agents",
+            Sec::Limits => "Agent limits",
+            Sec::Notifications => "Notifications",
+            Sec::Sounds => "Sounds",
+            Sec::Webhooks => "Webhooks",
+            Sec::System => "System",
+        }
+    }
+
+    fn about(self) -> &'static str {
+        match self {
+            Sec::General => "Updates, the ⌘K Ask box, and where projects open.",
+            Sec::Appearance => "Theme, density and what the bars show.",
+            Sec::Terminal => "How terminals behave under your hands.",
+            Sec::Shortcuts => "Click a shortcut's keys, then press new ones. Right-click for more.",
+            Sec::Agents => "How Claude and Codex report to midna.",
+            Sec::Limits => "What agents may do without asking. Only you can change these.",
+            Sec::Notifications => "What tells you, and how. A terminal can override any of these.",
+            Sec::Sounds => "What each notification and action sounds like.",
+            Sec::Webhooks => "How GitHub and Bitbucket events reach midna to start triggers.",
+            Sec::System => "macOS permissions, the daemon, and starting over.",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Sec::General => Icon::Settings,
+            Sec::Appearance => Icon::Moon,
+            Sec::Terminal => Icon::Shell,
+            Sec::Shortcuts => Icon::Keyboard,
+            Sec::Agents => Icon::Orbit,
+            Sec::Limits => Icon::Rules,
+            Sec::Notifications => Icon::Bell,
+            Sec::Sounds => Icon::Play,
+            Sec::Webhooks => Icon::Globe,
+            Sec::System => Icon::Screen,
+        }
+    }
+
+    /// A gap above it in the sidebar: the agent sections, then the system ones.
+    fn gap(self) -> bool {
+        matches!(self, Sec::Agents | Sec::Webhooks)
+    }
+
+    /// For `MIDNA_SETTINGS_VIEW`.
+    fn id(self) -> String {
+        self.label().to_lowercase().replace(' ', "_")
+    }
+}
+
+/// Where every setting lives: section, group heading ("" for none), then its rows in order.
+/// `@name` is a row that isn't one setting (a status, a button, or one row per notification
+/// kind); see `special_rows`. A test checks every catalog setting has a place.
+const LAYOUT: &[(Sec, &str, &[&str])] = &[
+    (Sec::General, "Updates", &["@update", "updates.channel", "updates.feed_url"]),
+    (Sec::General, "⌘K Ask an agent", &["ui.ask.agent", "ui.ask.scope"]),
+    (Sec::General, "Projects and windows", &["projects.roots", "ide.app", "ide.rules", "windows.close_with_terminals", "finder.quick_action"]),
+    (Sec::Appearance, "Theme", &["theme", "theme.dark", "theme.light", "theme.colors", "density", "ui.haptics"]),
+    (Sec::Appearance, "Bars", &["ui.header.script", "ui.header.buttons", "ui.row.script", "ui.status.script", "ui.status.items", "ui.status.looks", "git.refresh_secs"]),
+    (Sec::Terminal, "Links and paths", &["terminal.link_preview", "terminal.preview_path_click"]),
+    (Sec::Terminal, "Keyboard", &["terminal.option_as_meta"]),
+    (Sec::Shortcuts, "", &["@shortcuts"]),
+    (Sec::Shortcuts, "Built in", &["@built_in"]),
+    (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.system_hint"]),
+    (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.resume_after_sleep", "agents.resume_after_sleep_prompt"]),
+    (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
+    (
+        Sec::Limits,
+        "Without asking, agents may",
+        &["agents.may_move_windows", "agents.may_close_idle", "agents.may_force_close", "agents.may_install_updates", "approve.from_cli", "agents.trust_folders"],
+    ),
+    (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
+    (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
+    (Sec::Notifications, "Banners for other terminals", &["@banners"]),
+    (Sec::Notifications, "Banners for the terminal in front of you", &["@banners_focused"]),
+    (Sec::Notifications, "Images", &["@images"]),
+    (Sec::Notifications, "Text", &["@texts"]),
+    (Sec::Sounds, "", &["notify.sounds", "notify.sounds_in_app", "@sounds"]),
+    (Sec::Sounds, "Sound effects", &["@effects"]),
+    (Sec::Webhooks, "Delivery", &["webhooks.path", "webhooks.port", "webhooks.relay_url"]),
+    (Sec::Webhooks, "Triggers", &["triggers.agent_mode"]),
+    (Sec::System, "macOS", &["@accessibility", "@notifications", "@login"]),
+    (Sec::System, "midna", &["@version", "@daemon"]),
+    (Sec::System, "Reset", &["@reset_settings", "@reset_midna"]),
+];
+
+/// What the main pane shows (a search shows its results over either).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
-    Rows,
+    Section(Sec),
+    /// The read-only, annotated `settings.json` (the sidebar's footer link).
     Json,
-    /// Every shortcut, searchable by name or by pressing keys (settings_shortcuts.rs).
-    Shortcuts,
 }
 
 struct Last {
@@ -81,9 +193,13 @@ pub struct SettingsWindow {
     picker: Option<String>,
     error: Option<String>,
     view: View,
+    /// The search field (↩ asks an agent instead).
     ask: LineInput,
-    /// Shortcuts tab: the search field, the key detector while it's on, and the keys it caught.
-    search: LineInput,
+    /// While searching: the one section the results are narrowed to (None = all).
+    scope: Option<Sec>,
+    /// "Agent commands": show each row's CLI.
+    cli: bool,
+    /// Shortcuts: the key detector while it's on, and the keys it caught.
     recorder: Option<Subscription>,
     recorded: Vec<String>,
     /// The shortcut being rebound by pressing keys.
@@ -114,25 +230,27 @@ impl SettingsWindow {
                 }
             }
         });
-        let search = LineInput::new(cx, false, "Search shortcuts");
-        let ask = LineInput::new(cx, false, "Search settings, or ask: make ⌘T open Claude at the project root");
+        let ask = LineInput::new(cx, false, "Search, or ask an agent");
+        if let Ok(q) = crate::dev::var("MIDNA_SETTINGS_QUERY") {
+            // dev (screenshots): start with this search
+            ask.set_text(&q, cx);
+        }
         let subs = vec![
-            cx.subscribe(&ask.field, |s, field, _: &crate::ui::text_input::FieldChanged, cx| {
-                // Typing searches the rows (the other tabs have nothing to filter).
-                if !field.read(cx).text().trim().is_empty() && s.view != View::Rows {
-                    s.show(View::Rows, cx);
-                }
+            cx.subscribe(&ask.field, |s, _, _: &crate::ui::text_input::FieldChanged, cx| {
+                // a new search starts over all sections, at the top
+                s.scope = None;
                 s.scroll.set_offset(point(px(0.), px(0.)));
                 cx.notify();
             }),
             cx.observe_global::<Theme>(|_, cx| cx.notify()),
-            cx.subscribe(&search.field, |s, _, _: &crate::ui::text_input::FieldChanged, cx| {
-                s.recorded.clear();
-                cx.notify();
-            }),
         ];
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let view = match crate::dev::var("MIDNA_SETTINGS_VIEW").as_deref() {
+            Ok("json") => View::Json,
+            Ok(v) => View::Section(SECS.into_iter().find(|s| s.id() == v).unwrap_or(Sec::General)),
+            _ => View::Section(Sec::General),
+        };
         let mut s = SettingsWindow {
             backend,
             entries: vec![],
@@ -142,13 +260,10 @@ impl SettingsWindow {
             media: Value::Null,
             picker: None,
             error: None,
-            view: match crate::dev::var("MIDNA_SETTINGS_VIEW").as_deref() {
-                Ok("json") => View::Json,
-                Ok("shortcuts") => View::Shortcuts,
-                _ => View::Rows,
-            },
+            view,
             ask,
-            search,
+            scope: crate::dev::var("MIDNA_SETTINGS_SCOPE").ok().and_then(|v| SECS.into_iter().find(|s| s.id() == v)),
+            cli: crate::dev::var("MIDNA_SETTINGS_CLI").is_ok(),
             recorder: None,
             recorded: vec![],
             editing: None,
@@ -174,7 +289,7 @@ impl SettingsWindow {
         }
         if let Some(sc) = crate::dev::var("MIDNA_SETTINGS_SHORTCUT_MENU").ok().and_then(|k| crate::actions::SHORTCUTS.iter().find(|s| s.setting == k)) {
             // dev (screenshots): a shortcut row's right-click menu
-            s.shortcut_menu = Some((sc.setting, point(px(340.), px(250.))));
+            s.shortcut_menu = Some((sc.setting, point(px(560.), px(250.))));
         }
         if let Ok(keys) = crate::dev::var("MIDNA_SETTINGS_DEBUG_KEYS") {
             // Dev: comma-separated keystrokes through GPUI's own dispatch (interceptors,
@@ -374,8 +489,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Ask box: open a Claude agent at the root with the request as its prompt, then bring the
-    /// main window to that terminal.
+    /// The search field's ↩: open an agent (`ui.ask.agent`) at the root with the request as its
+    /// prompt, then bring the main window to that terminal.
     fn submit_ask(&mut self, cx: &mut Context<Self>) {
         let text = self.ask.text(cx).trim().to_string();
         if text.is_empty() {
@@ -383,13 +498,14 @@ impl SettingsWindow {
         }
         self.ask.clear(cx);
         let prompt = format!("{text}\n\n(This is a midna settings request. `midna settings list` shows every setting; `midna settings set <key> <value>` changes one.)");
+        let agent = if self.value("ui.ask.agent") == json!("codex") { "codex" } else { "claude" };
         let backend = self.backend.clone();
         let shown = text.clone();
         cx.spawn(async move |this, cx| {
             let r = cx
                 .background_executor()
                 .spawn(async move {
-                    let v = backend.call("session.open", json!({"kind": "agent", "agent": "claude", "name": "settings", "prompt": prompt}))?;
+                    let v = backend.call("session.open", json!({"kind": "agent", "agent": agent, "name": "settings", "prompt": prompt}))?;
                     let id = v.get("id").and_then(Value::as_str).or_else(|| v.pointer("/session/id").and_then(Value::as_str)).unwrap_or("").to_string();
                     if !id.is_empty() {
                         let _ = backend.call("window.command", json!({"action": "front", "target": id}));
@@ -400,13 +516,13 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 s.last = Some(match r {
                     Ok(id) => Last {
-                        cmd: format!("midna open --agent claude -- \"{shown}\""),
+                        cmd: format!("midna open --agent {agent} -- \"{shown}\""),
                         ok: true,
                         result: format!("✓ agent {id} started"),
                         who: "you, from this window".into(),
                         at: Instant::now(),
                     },
-                    Err(e) => Last { cmd: "midna open --agent claude".into(), ok: false, result: format!("✗ {e:#}"), who: "you, from this window".into(), at: Instant::now() },
+                    Err(e) => Last { cmd: format!("midna open --agent {agent}"), ok: false, result: format!("✗ {e:#}"), who: "you, from this window".into(), at: Instant::now() },
                 });
                 cx.notify();
             });
@@ -436,6 +552,8 @@ enum Control {
     Image { key: String, cat: Option<&'static str> },
     /// `theme` / `theme.dark` / `theme.light`: swatch chips for every theme (customs too).
     Theme { key: String, current: String },
+    /// A shortcut's keys: click to rebind (settings_shortcuts.rs). No setting = built in.
+    Keys { setting: Option<&'static str>, keys: String },
 }
 
 #[derive(Clone)]
@@ -459,11 +577,80 @@ struct RowSpec {
     warn: bool,
 }
 
+impl RowSpec {
+    /// The setting this row changes, from its command (None for a status or a button).
+    fn key(&self) -> Option<&str> {
+        self.cli.strip_prefix("midna settings set ").and_then(|r| r.split_whitespace().next())
+    }
+
+    /// What a search looks at besides the name and description, in the order a match is
+    /// explained ("Option: Restart when idle").
+    fn fields(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![];
+        match &self.control {
+            Control::Seg { options, .. } => out.extend(options.iter().map(|(_, l)| ("Option", l.clone()))),
+            Control::Text { text, action, .. } => {
+                out.push(("Value", text.clone()));
+                if let Some((label, ..)) = action {
+                    out.push(("Button", label.clone()));
+                }
+            }
+            Control::Theme { current, .. } => out.push(("Value", current.clone())),
+            Control::Keys { keys, .. } => out.push(("Keys", keys.clone())),
+            _ => {}
+        }
+        if let Some(k) = self.key() {
+            out.push(("Key", k.to_string()));
+        }
+        let kw = related(self.key().unwrap_or(&self.label));
+        if !kw.is_empty() {
+            out.push(("Related", kw.to_string()));
+        }
+        if !self.cli.is_empty() {
+            out.push(("Command", self.cli.clone()));
+        }
+        out
+    }
+}
+
+/// Words people search for that a row doesn't say ("sound" finds the volume).
+fn related(key_or_label: &str) -> &'static str {
+    match key_or_label {
+        "notify.sounds" | "notify.sounds_in_app" | "notify.volume" => "audio sound",
+        "density" => "spacing compact",
+        "theme" => "dark mode light mode colors",
+        "theme.colors" => "colours",
+        "terminal.option_as_meta" => "alt key",
+        "ui.haptics" => "trackpad vibration",
+        "agents.mcp" => "tools",
+        "Accessibility" => "permission dictation",
+        "Notifications" => "permission banners",
+        "Login item" => "startup launch at login",
+        "Update" => "upgrade version",
+        "midna CLI" => "command line path",
+        _ => "",
+    }
+}
+
 struct Group {
     name: &'static str,
-    danger: bool,
-    badge: usize,
+    /// A line beside the heading ("Built in": why they can't be changed).
+    note: Option<&'static str>,
     rows: Vec<RowSpec>,
+}
+
+/// A row as shown: why a search found it when it isn't in its name or description.
+struct Hit {
+    row: RowSpec,
+    via: Option<(&'static str, String)>,
+}
+
+/// A card in the main pane: a group, with its section when it's a search result.
+struct Shown {
+    sec: Sec,
+    name: &'static str,
+    note: Option<&'static str>,
+    rows: Vec<Hit>,
 }
 
 fn label_for(key: &str) -> String {
@@ -497,6 +684,20 @@ fn label_for(key: &str) -> String {
         "policy.request_timeout_secs" => "Approval timeout (seconds)",
         "git.refresh_secs" => "Git refresh (seconds)",
         "kass.auto_send" => "Send dictation when Kass finishes",
+        "windows.close_with_terminals" => "Closing a window with terminals",
+        "ide.app" => "Open in IDE",
+        "ide.rules" => "IDE per folder or file",
+        "finder.quick_action" => "Finder “Open in Midna”",
+        "ui.haptics" => "Haptics",
+        "ui.header.buttons" => "Terminal header buttons",
+        "ui.status.looks" => "Status looks",
+        "terminal.option_as_meta" => "Option as Meta",
+        "agents.restart_on_update" => "After an agent update",
+        "agents.restart_idle_secs" => "Idle before a restart (seconds)",
+        "agents.adopt_typed" => "Adopt agents typed in a shell",
+        "agents.resume_after_sleep" => "Resume after sleep",
+        "agents.resume_after_sleep_prompt" => "Resume message",
+        "triggers.agent_mode" => "Agents started by triggers",
         "projects.roots" => "Project folders",
         "terminal.link_preview" => "Link previews",
         "terminal.preview_path_click" => "Clicking a preview's path",
@@ -535,7 +736,7 @@ fn option_label(key: &str, v: &str) -> String {
         // script names are names: keep them as typed
         ("ui.ask.agent" | "ui.ask.scope", v) => capitalize(v),
         (k, v) if k.starts_with("ui.") => v.to_string(),
-        (_, v) => capitalize(v),
+        (_, v) => capitalize(&v.replace('_', " ")),
     }
 }
 
@@ -575,6 +776,7 @@ pub(crate) fn accessibility_trusted() -> bool {
 
 const PANE_AX: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const PANE_NOTIF: &str = midna_proto::paths::NOTIFICATIONS_PANE;
+
 
 impl SettingsWindow {
     fn spec_row(&self, key: &str) -> Option<RowSpec> {
@@ -716,208 +918,124 @@ impl SettingsWindow {
         }
     }
 
-    fn groups(&self, t: &Theme) -> Vec<Group> {
-        let row = |k: &str| self.spec_row(k);
-        let text = |label: &str, value: String, color: Hsla, dot: Option<Hsla>, cli: &str, who: Who, note: Option<String>| RowSpec {
+    /// One setting's row, with notes that depend on other settings.
+    fn key_row(&self, t: &Theme, key: &str) -> Option<RowSpec> {
+        // theme.dark / theme.light only matter while the theme follows macOS
+        if matches!(key, "theme.dark" | "theme.light") && self.value("theme") != json!("system") {
+            return None;
+        }
+        let mut r = self.spec_row(key)?;
+        let off = |what: &str| Some((format!("No effect while {what}"), t.dim));
+        match key {
+            "notify.turn_done_min_secs" | "notify.when_app_closed" if self.notify_off() => r.note = off("notifications are off"),
+            "terminal.preview_path_click" if self.value("terminal.link_preview") == json!("off") => r.note = off("link previews are off"),
+            "agents.may_move_windows" if !accessibility_trusted() => r.note = Some(("No effect until Accessibility is granted".into(), t.need)),
+            "webhooks.path" => {
+                let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
+                if let Some(n) = url.or_else(|| self.webhooks.get("message").and_then(Value::as_str).map(str::to_string)) {
+                    r.note = Some((n, Hsla::default()));
+                }
+            }
+            _ => {}
+        }
+        Some(r)
+    }
+
+    fn notify_off(&self) -> bool {
+        self.value("notify.enabled") == Value::Bool(false)
+    }
+
+    /// The rows for a `@name` in `LAYOUT`.
+    fn special_rows(&self, t: &Theme, name: &str) -> Vec<RowSpec> {
+        use midna_proto::notify::{CATEGORIES, body_key, push_focused_key, push_key, setting_key, title_key};
+        let status = |label: &str, dot: Hsla, value: String, color: Hsla, note: Option<String>, cli: &str| RowSpec {
             label: label.into(),
             note: note.map(|n| (n, Hsla::default())),
-            control: Control::Text { dot, text: value, color, action: None },
+            control: Control::Text { dot: Some(dot), text: value, color, action: None },
             cli: cli.into(),
-            who,
+            who: Who::ReadOnly,
             warn: false,
         };
-        // Updates
-        let daemon_v = self.info.get("version").and_then(Value::as_str).unwrap_or("not connected").to_string();
-        let uptime = self.info.get("uptime_secs").and_then(Value::as_u64).map(|s| crate::ui::charts::duration(s as f64)).unwrap_or_default();
-        let life = lifecycle_rows(t);
-        let updates = vec![
-            Some(life.update),
-            row("updates.channel"),
-            row("updates.feed_url"),
-            Some(text("Version", format!("midna {} · midnad {daemon_v}", midna_proto::VERSION), t.fg, Some(t.ok), "midna info", Who::ReadOnly, None)),
-            Some(text(
-                "Daemon",
-                if uptime.is_empty() { "not running".into() } else { format!("up {uptime} · pid {}", self.info.get("pid").and_then(Value::as_u64).unwrap_or(0)) },
-                t.fg,
-                None,
-                "midna info",
-                Who::ReadOnly,
-                None,
-            )),
-        ];
-        // Permissions (OS grants are human only; agents can't change them)
-        let ax = accessibility_trusted();
-        let perm = |name: &str, ok: Option<bool>, state: &str, why: &str, pane: &str, _key: &str| {
-            let (color, dot) = match ok {
-                Some(true) => (t.fg, t.ok),
-                Some(false) => (t.need, t.need),
-                None => (t.dim, t.dim),
-            };
-            RowSpec {
-                label: name.into(),
-                note: Some((why.into(), Hsla::default())),
-                control: Control::Text {
-                    dot: Some(dot),
-                    text: state.into(),
-                    color,
-                    action: (ok != Some(true)).then(|| ((if ok == Some(false) { "Fix" } else { "Open" }).to_string(), Act::Url(pane.into()), ok == Some(false))),
-                },
-                // OS grants: nothing in midna can change them; this opens the same pane
-                cli: format!("midna permissions open {}", if pane == PANE_AX { "accessibility" } else { "notifications" }),
-                who: Who::Human,
-                warn: ok == Some(false),
-            }
-        };
-        let ax_row = perm(
-            "Accessibility",
-            Some(ax),
-            if ax { "Granted" } else { "Missing" },
-            "Lets Kass read and edit terminal input, and lets agents move windows.",
-            PANE_AX,
-            "permissions.accessibility",
-        );
-        use crate::notify::Permission as NP;
-        let (n_ok, n_state, n_why) = match crate::notify::permission() {
-            NP::Allowed => (Some(true), "Allowed", "midna shows approvals, failures and finished turns as macOS notifications."),
-            NP::Denied => (Some(false), "Off in System Settings", "Turn midna's notifications on to get approvals, failures and finished turns."),
-            NP::NotAsked => (None, "Not requested yet", "macOS asks the first time midna has something to tell you."),
-            NP::Unknown => (None, "Checking…", "Approvals, failures and finished turns show as macOS notifications."),
-            NP::Dev => (None, "Dev build", "Not running from Midna.app: notifications go through osascript (shown as Script Editor)."),
-        };
-        let perms = vec![ax_row, perm("Notifications", n_ok, n_state, n_why, PANE_NOTIF, "permissions.notifications"), life.login];
-        let missing = perms.iter().filter(|r| r.warn).count();
-        // Webhooks
-        let wh_note = self
-            .webhooks
-            .get("public_url")
-            .and_then(Value::as_str)
-            .map(|u| format!("Public URL {u}"))
-            .or_else(|| self.webhooks.get("message").and_then(Value::as_str).map(str::to_string));
-        let mut wpath = row("webhooks.path");
-        if let (Some(r), Some(n)) = (wpath.as_mut(), wh_note) {
-            r.note = Some((n, Hsla::default()));
-        }
-        let webhooks = vec![wpath, row("webhooks.port"), row("webhooks.relay_url")];
-        // Notifications: the master switch, each kind, then how they're shown. A terminal
-        // overrides any of these with `midna notify set` (or mutes itself from its … menu).
-        let mut notifications = vec![row("notify.enabled")];
-        notifications.extend(midna_proto::notify::CATEGORIES.iter().map(|c| row(&midna_proto::notify::setting_key(c.key))));
-        notifications.extend(["notify.turn_done_min_secs", "notify.when_app_closed"].map(row));
-        // Which kinds become macOS banners: for other terminals, and for the one in front of you.
-        let banners: Vec<RowSpec> = midna_proto::notify::CATEGORIES.iter().filter_map(|c| row(&midna_proto::notify::push_key(c.key))).collect();
-        let banners_focused: Vec<RowSpec> = midna_proto::notify::CATEGORIES.iter().filter_map(|c| row(&midna_proto::notify::push_focused_key(c.key))).collect();
-        let (mut banners, mut banners_focused) = (banners, banners_focused);
-        let notify_off = self.value("notify.enabled") == Value::Bool(false);
-        let mut notifications: Vec<RowSpec> = notifications.into_iter().flatten().collect();
-        // Sounds: on/off and in-app first, then every notification kind; effects get their own group.
-        let mut sounds: Vec<RowSpec> = ["notify.sounds", "notify.sounds_in_app"].iter().filter_map(|k| self.spec_row(k)).collect();
-        let switches = sounds.len();
-        sounds.extend(self.notify_sound_rows(t));
-        let effects = self.sound_effect_rows(t);
-        let mut images = self.notify_image_rows(t);
-        // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates, set from the CLI.
-        let mut texts: Vec<RowSpec> = vec![];
-        for c in midna_proto::notify::CATEGORIES {
-            for (key, part) in [(midna_proto::notify::title_key(c.key), "title"), (midna_proto::notify::body_key(c.key), "text")] {
-                let Some(mut r) = self.spec_row(&key) else { continue };
-                r.label = format!("{}: {part}", c.label);
-                if let Control::Text { text, .. } = &mut r.control {
-                    match text.as_str() {
-                        "not set" => *text = "midna's own".into(),
-                        midna_proto::notify::NO_BODY if part == "text" => *text = "none (title only)".into(),
-                        _ => {}
-                    }
+        // Notifications off: say so on every row it silences.
+        let silenced = |mut rows: Vec<RowSpec>| {
+            if self.notify_off() {
+                for r in &mut rows {
+                    r.note = Some(("No effect while notifications are off".into(), t.dim));
                 }
-                texts.push(r);
             }
-        }
-        if notify_off {
-            for r in notifications.iter_mut().skip(1).chain(banners.iter_mut()).chain(banners_focused.iter_mut()).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()).chain(texts.iter_mut()) {
-                r.note = Some(("No effect while notifications are off".into(), t.dim));
-            }
-        }
-        // Look
-        let system = self.value("theme") == json!("system");
-        let look = vec![row("theme"), row("theme.dark").filter(|_| system), row("theme.light").filter(|_| system), row("theme.colors"), row("density"), row("ui.header.script"), row("ui.row.script"), row("ui.status.script"), row("ui.status.items")];
-        // Terminal: link previews (the card a hovered path or link opens)
-        let mut terminal: Vec<RowSpec> = [row("terminal.link_preview"), row("terminal.preview_path_click")].into_iter().flatten().collect();
-        if self.value("terminal.link_preview") == json!("off")
-            && let Some(r) = terminal.get_mut(1)
-        {
-            r.note = Some(("No effect while link previews are off".into(), t.dim));
-        }
-        // Agents
-        let agents = vec![
-            Some(life.cli),
-            Some(self.hooks_row(t, "claude")),
-            Some(self.hooks_row(t, "codex")),
-            row("agents.claude.statusline"),
-            row("agents.mcp"),
-            row("agents.system_hint"),
-            row("ui.ask.agent"),
-            row("ui.ask.scope"),
-            row("kass.auto_send"),
-            Some(RowSpec {
-                label: "Kass".into(),
-                note: Some((
-                    if crate::kass::handshake_detected() {
+            rows
+        };
+        let per_kind = |key: fn(&str) -> String| CATEGORIES.iter().filter_map(|c| self.spec_row(&key(c.key))).collect::<Vec<_>>();
+        match name {
+            "@update" => vec![lifecycle_rows(t).update],
+            "@cli" => vec![lifecycle_rows(t).cli],
+            "@login" => vec![lifecycle_rows(t).login],
+            "@hooks.claude" => vec![self.hooks_row(t, "claude")],
+            "@hooks.codex" => vec![self.hooks_row(t, "codex")],
+            "@kass" => {
+                let seen = crate::kass::handshake_detected();
+                let mut r = status(
+                    "Kass",
+                    if seen { t.ok } else { t.dim },
+                    if seen { "Handshake detected" } else { "Handshake not detected" }.into(),
+                    if seen { t.fg } else { t.dim },
+                    Some(if seen {
                         "Dictation opens the composer under the terminal; Kass inserts into it directly.".into()
                     } else {
                         "Dictation composer: needs the Kass handshake (com.mrgnhnt.kass.dictationWillBegin). Detected once Kass sends one.".into()
+                    }),
+                    "midna info",
+                );
+                r.who = Who::ReadOnly;
+                vec![r]
+            }
+            "@accessibility" => {
+                let ax = accessibility_trusted();
+                vec![self.permission(t, "Accessibility", Some(ax), if ax { "Granted" } else { "Missing" }, "Lets Kass read and edit terminal input, and lets agents move windows.", PANE_AX)]
+            }
+            "@notifications" => {
+                use crate::notify::Permission as NP;
+                let (ok, state, why) = match crate::notify::permission() {
+                    NP::Allowed => (Some(true), "Allowed", "midna shows approvals, failures and finished turns as macOS notifications."),
+                    NP::Denied => (Some(false), "Off in System Settings", "Turn midna's notifications on to get approvals, failures and finished turns."),
+                    NP::NotAsked => (None, "Not requested yet", "macOS asks the first time midna has something to tell you."),
+                    NP::Unknown => (None, "Checking…", "Approvals, failures and finished turns show as macOS notifications."),
+                    NP::Dev => (None, "Dev build", "Not running from Midna.app: notifications go through osascript (shown as Script Editor)."),
+                };
+                vec![self.permission(t, "Notifications", ok, state, why, PANE_NOTIF)]
+            }
+            "@version" => {
+                let daemon = self.info.get("version").and_then(Value::as_str).unwrap_or("not connected");
+                vec![status("Version", t.ok, format!("midna {} · midnad {daemon}", midna_proto::VERSION), t.fg, None, "midna info")]
+            }
+            "@daemon" => {
+                let uptime = self.info.get("uptime_secs").and_then(Value::as_u64).map(|s| crate::ui::charts::duration(s as f64)).unwrap_or_default();
+                let text = if uptime.is_empty() { "not running".into() } else { format!("up {uptime} · pid {}", self.info.get("pid").and_then(Value::as_u64).unwrap_or(0)) };
+                vec![RowSpec { control: Control::Text { dot: None, text, color: t.fg, action: None }, ..status("midnad", t.ok, String::new(), t.fg, Some("Runs every terminal, so they survive the app quitting.".into()), "midna info") }]
+            }
+            "@reset_settings" => {
+                let changed = self.entries.iter().filter(|e| e.value != e.default).count();
+                vec![RowSpec {
+                    label: "Reset settings".into(),
+                    note: Some(("Every setting back to its default. Terminals, rules and the event log are kept.".into(), Hsla::default())),
+                    control: Control::Text {
+                        dot: Some(t.err),
+                        text: if self.armed_reset {
+                            format!("Resets {changed} changed setting{}. Click again to confirm.", if changed == 1 { "" } else { "s" })
+                        } else {
+                            format!("{changed} changed from default")
+                        },
+                        color: if self.armed_reset { t.err } else { t.dim },
+                        action: Some((if self.armed_reset { "Confirm".into() } else { "Reset…".into() }, Act::ResetSettings, true)),
                     },
-                    Hsla::default(),
-                )),
-                control: if crate::kass::handshake_detected() {
-                    Control::Text { dot: Some(t.ok), text: "Handshake detected".into(), color: t.fg, action: None }
-                } else {
-                    Control::Text { dot: Some(t.dim), text: "Handshake not detected".into(), color: t.dim, action: None }
-                },
-                cli: "midna info".into(),
-                who: Who::ReadOnly,
-                warn: false,
-            }),
-        ];
-        // What agents may change without asking (human-only switches)
-        let allow = vec![
-            row("agents.may_move_windows"),
-            row("agents.may_close_idle"),
-            row("agents.may_force_close"),
-            row("agents.may_install_updates"),
-            row("approve.from_cli"),
-            row("agents.trust_folders"),
-            row("policy.default"),
-            row("policy.request_timeout_secs"),
-            row("git.refresh_secs"),
-        ];
-        let mut allow: Vec<RowSpec> = allow.into_iter().flatten().collect();
-        if !ax && let Some(r) = allow.iter_mut().find(|r| r.label == label_for("agents.may_move_windows")) {
-            r.note = Some(("No effect until Accessibility is granted".into(), t.need));
-        }
-        let changed = self.entries.iter().filter(|e| e.value != e.default).count();
-        let danger = vec![
-            RowSpec {
-                label: "Reset settings".into(),
-                note: Some(("Every setting back to its default. Terminals, rules and the event log are kept.".into(), Hsla::default())),
-                control: Control::Text {
-                    dot: Some(t.err),
-                    text: if self.armed_reset {
-                        format!("Resets {changed} changed setting{}. Click again to confirm.", if changed == 1 { "" } else { "s" })
-                    } else {
-                        format!("{changed} changed from default")
-                    },
-                    color: if self.armed_reset { t.err } else { t.dim },
-                    action: Some((if self.armed_reset { "Confirm".into() } else { "Reset…".into() }, Act::ResetSettings, true)),
-                },
-                cli: "midna settings reset <key>".into(),
-                who: Who::Human,
-                warn: false,
-            },
-            RowSpec {
+                    cli: "midna settings reset <key>".into(),
+                    who: Who::Human,
+                    warn: false,
+                }]
+            }
+            "@reset_midna" => vec![RowSpec {
                 label: "Reset midna".into(),
-                note: Some((
-                    "Closes every terminal, removes projects, triggers and needs-you items, and resets settings. Rules and the event log are kept.".into(),
-                    Hsla::default(),
-                )),
+                note: Some(("Closes every terminal, removes projects, triggers and needs-you items, and resets settings. Rules and the event log are kept.".into(), Hsla::default())),
                 control: Control::Text {
                     dot: Some(t.err),
                     text: if self.armed_daemon_reset { "Closes every terminal now. Click again to confirm.".into() } else { "Start over".into() },
@@ -927,49 +1045,203 @@ impl SettingsWindow {
                 cli: "midna daemon reset".into(),
                 who: Who::Human,
                 warn: false,
+            }],
+            // Notifications: each kind on or off. A terminal overrides any of these with
+            // `midna notify set` (or mutes itself from its … menu).
+            "@kinds" => silenced(per_kind(setting_key)),
+            // Which kinds become macOS banners: for other terminals, and for the one in front of you.
+            "@banners" => silenced(per_kind(push_key)),
+            "@banners_focused" => silenced(per_kind(push_focused_key)),
+            "@images" => silenced(self.notify_image_rows(t)),
+            // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates, set from the CLI.
+            "@texts" => {
+                let mut texts = vec![];
+                for c in CATEGORIES {
+                    for (key, part) in [(title_key(c.key), "title"), (body_key(c.key), "text")] {
+                        let Some(mut r) = self.spec_row(&key) else { continue };
+                        r.label = format!("{}: {part}", c.label);
+                        if let Control::Text { text, .. } = &mut r.control {
+                            match text.as_str() {
+                                "not set" => *text = "midna's own".into(),
+                                midna_proto::notify::NO_BODY if part == "text" => *text = "none (title only)".into(),
+                                _ => {}
+                            }
+                        }
+                        texts.push(r);
+                    }
+                }
+                silenced(texts)
+            }
+            // The volume, then every kind's sound (the volume isn't silenced by notifications).
+            "@sounds" => {
+                let mut rows = self.notify_sound_rows(t);
+                if self.notify_off() {
+                    for r in rows.iter_mut().skip(1) {
+                        r.note = Some(("No effect while notifications are off".into(), t.dim));
+                    }
+                }
+                rows
+            }
+            "@effects" => self.sound_effect_rows(t),
+            "@shortcuts" => self.shortcut_specs(t, false),
+            "@built_in" => self.shortcut_specs(t, true),
+            _ => vec![],
+        }
+    }
+
+    /// A macOS grant: agents can't change it; the button opens its System Settings pane.
+    fn permission(&self, t: &Theme, name: &str, ok: Option<bool>, state: &str, why: &str, pane: &str) -> RowSpec {
+        let (color, dot) = match ok {
+            Some(true) => (t.fg, t.ok),
+            Some(false) => (t.need, t.need),
+            None => (t.dim, t.dim),
+        };
+        RowSpec {
+            label: name.into(),
+            note: Some((why.into(), Hsla::default())),
+            control: Control::Text {
+                dot: Some(dot),
+                text: state.into(),
+                color,
+                action: (ok != Some(true)).then(|| ((if ok == Some(false) { "Fix" } else { "Open" }).to_string(), Act::Url(pane.into()), ok == Some(false))),
             },
-        ];
-        vec![
-            Group { name: "Updates", danger: false, badge: 0, rows: updates.into_iter().flatten().collect() },
-            Group { name: "Permissions", danger: false, badge: missing, rows: perms },
-            Group { name: "Webhooks", danger: false, badge: 0, rows: webhooks.into_iter().flatten().collect() },
-            Group { name: "Notifications", danger: false, badge: 0, rows: notifications },
-            Group { name: "Banners for other terminals", danger: false, badge: 0, rows: banners },
-            Group { name: "Banners for the terminal in front of you", danger: false, badge: 0, rows: banners_focused },
-            Group { name: "Sounds", danger: false, badge: 0, rows: sounds },
-            Group { name: "Sound effects", danger: false, badge: 0, rows: effects },
-            Group { name: "Notification images", danger: false, badge: 0, rows: images },
-            Group { name: "Notification text", danger: false, badge: 0, rows: texts },
-            Group { name: "Look", danger: false, badge: 0, rows: look.into_iter().flatten().collect() },
-            Group { name: "Terminal", danger: false, badge: 0, rows: terminal },
-            Group { name: "Projects", danger: false, badge: 0, rows: row("projects.roots").into_iter().collect() },
-            Group { name: "Agents", danger: false, badge: 0, rows: agents.into_iter().flatten().collect() },
-            Group { name: "What agents may do without asking", danger: false, badge: 0, rows: allow },
-            Group { name: "Danger zone", danger: true, badge: 0, rows: danger },
-        ]
+            // OS grants: nothing in midna can change them; this opens the same pane
+            cli: format!("midna permissions open {}", if pane == PANE_AX { "accessibility" } else { "notifications" }),
+            who: Who::Human,
+            warn: ok == Some(false),
+        }
+    }
+
+    /// Every section's groups, in sidebar order (empty groups dropped).
+    fn sections(&self, t: &Theme) -> Vec<(Sec, Vec<Group>)> {
+        SECS.into_iter()
+            .map(|sec| {
+                let groups = LAYOUT
+                    .iter()
+                    .filter(|(s, ..)| *s == sec)
+                    .map(|&(_, name, items)| Group {
+                        name,
+                        note: (name == "Built in").then_some("Keys a screen handles itself. Not settings, so they can't be changed."),
+                        rows: items.iter().flat_map(|i| if i.starts_with('@') { self.special_rows(t, i) } else { self.key_row(t, i).into_iter().collect() }).collect(),
+                    })
+                    .filter(|g| !g.rows.is_empty())
+                    .collect();
+                (sec, groups)
+            })
+            .collect()
     }
 }
 
-/// The Ask box as a search: every word must appear in the group's name or in the row's label,
-/// note or CLI (so a setting's key matches too). A matching group keeps all its rows.
-fn filter_groups(groups: Vec<Group>, query: &str) -> Vec<Group> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+/// The search: every word must appear somewhere in a row (its name, description, options,
+/// value, key, related words, command, group or section). Only sections with matches are
+/// returned, each with its matching groups.
+fn search(sections: Vec<(Sec, Vec<Group>)>, query: &str) -> Vec<(Sec, Vec<Shown>)> {
+    let words = words(query);
     if words.is_empty() {
-        return groups;
+        return vec![];
     }
-    let hits = |hay: &str| {
-        let hay = hay.to_lowercase();
-        words.iter().all(|w| hay.contains(w.as_str()))
+    let hits = |s: &str| {
+        let s = s.to_lowercase();
+        words.iter().any(|w| s.contains(w.as_str()))
     };
-    groups
-        .into_iter()
-        .filter_map(|mut g| {
-            if !hits(g.name) {
-                g.rows.retain(|r| hits(&format!("{} {} {}", r.label, r.note.as_ref().map(|(n, _)| n.as_str()).unwrap_or(""), r.cli)));
+    let mut out = vec![];
+    for (sec, groups) in sections {
+        let mut shown = vec![];
+        for g in groups {
+            let mut rows = vec![];
+            for r in g.rows {
+                let fields = r.fields();
+                let note = r.note.as_ref().map(|(n, _)| n.as_str()).unwrap_or("");
+                let hay = format!("{} {note} {} {} {}", r.label, g.name, sec.label(), fields.iter().map(|(_, f)| f.as_str()).collect::<Vec<_>>().join(" ")).to_lowercase();
+                if !words.iter().all(|w| hay.contains(w.as_str())) {
+                    continue;
+                }
+                let via = if hits(&r.label) || hits(note) { None } else { fields.into_iter().find(|(_, f)| hits(f)) };
+                rows.push(Hit { row: r, via });
             }
-            (!g.rows.is_empty()).then_some(g)
-        })
-        .collect()
+            if !rows.is_empty() {
+                shown.push(Shown { sec, name: g.name, note: g.note, rows });
+            }
+        }
+        if !shown.is_empty() {
+            out.push((sec, shown));
+        }
+    }
+    out
+}
+
+/// A description split into sentences ("e.g. ~/Development" doesn't end one).
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let (mut start, mut from) = (0, 0);
+    while let Some(i) = text[from..].find(". ") {
+        let end = from + i + 1;
+        if !["e.g.", "i.e.", "etc."].iter().any(|a| text[..end].ends_with(a)) {
+            out.push(&text[start..end]);
+            start = end + 1;
+        }
+        from = end;
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// The sentence of a description a search matched, when it isn't the first.
+fn excerpt(note: &str, words: &[String]) -> String {
+    let all = sentences(note);
+    match all.iter().position(|s| words.iter().any(|w| s.to_lowercase().contains(w.as_str()))) {
+        Some(0) | None => note.to_string(),
+        Some(i) => format!("… {}", all[i]),
+    }
+}
+
+/// A description's first sentence (and the "(default: …)" a changed setting ends with).
+fn brief(note: &str) -> String {
+    let (body, default) = match note.rfind(" (default: ") {
+        Some(i) if note.ends_with(')') => note.split_at(i),
+        _ => (note, ""),
+    };
+    let first = sentences(body)[0];
+    // a long one stops at its first clause: "Script that renders the header line: …"
+    if first.len() > 90
+        && let Some(i) = [": ", "; ", " ("].iter().filter_map(|sep| first.find(sep)).filter(|&i| i >= 20).min()
+    {
+        return format!("{}.{default}", &first[..i]);
+    }
+    format!("{first}{default}")
+}
+
+fn words(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// `text` with every search word marked (case-insensitive).
+fn marked(t: &Theme, text: String, words: &[String]) -> StyledText {
+    let lower = text.to_lowercase();
+    let mut ranges: Vec<std::ops::Range<usize>> = vec![];
+    // byte offsets only line up when lowercasing kept the length
+    if lower.len() == text.len() {
+        for w in words.iter().filter(|w| !w.is_empty()) {
+            let mut from = 0;
+            while let Some(i) = lower[from..].find(w.as_str()) {
+                let r = from + i..from + i + w.len();
+                if text.is_char_boundary(r.start) && text.is_char_boundary(r.end) {
+                    ranges.push(r.clone());
+                }
+                from = r.end;
+            }
+        }
+    }
+    ranges.sort_by_key(|r| r.start);
+    let mut merged: Vec<std::ops::Range<usize>> = vec![];
+    for r in ranges {
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    let style = HighlightStyle { background_color: Some(t.accent.opacity(0.32)), color: Some(t.fg), ..Default::default() };
+    StyledText::new(SharedString::from(text)).with_highlights(merged.into_iter().map(|r| (r, style)))
 }
 
 struct LifeRows {
@@ -1116,18 +1388,57 @@ fn cx_dim_placeholder() -> Hsla {
 
 // ------------------------------------------------------------------ render
 
-const COL_SETTING: f32 = 210.;
-const COL_VALUE: f32 = 250.;
-const COL_WHO: f32 = 96.;
+const SIDEBAR_W: f32 = 228.;
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
-        let body: AnyElement = match self.view {
-            View::Rows => self.rows(&t, cx).into_any_element(),
-            View::Json => self.json(&t).into_any_element(),
-            View::Shortcuts => self.shortcuts(&t, window, cx).into_any_element(),
-        };
+        let query = self.ask.text(cx);
+        let words = words(&query);
+        let sections = self.sections(&t);
+        // the sidebar's amber badges: rows that need you
+        let badges: Vec<(Sec, usize)> = sections.iter().map(|(s, gs)| (*s, gs.iter().flat_map(|g| &g.rows).filter(|r| r.warn).count())).collect();
+        let (sidebar, head, body): (AnyElement, AnyElement, AnyElement);
+        if !words.is_empty() {
+            let found = search(sections, &query);
+            let counts: Vec<(Sec, usize)> = found.iter().map(|(s, gs)| (*s, gs.iter().map(|g| g.rows.len()).sum())).collect();
+            let total: usize = counts.iter().map(|(_, n)| n).sum();
+            let scope = self.scope.filter(|s| counts.iter().any(|(c, _)| c == s));
+            let q = query.trim().to_string();
+            let count = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+            let (title, sub) = match scope {
+                _ if total == 0 => ("No results".to_string(), "No setting matches. Press ↩ to ask an agent instead.".to_string()),
+                None => (format!("Results for “{q}”"), format!("{} in {}.", count(total, "setting", "settings"), count(counts.len(), "section", "sections"))),
+                Some(s) => {
+                    let n = counts.iter().find(|(c, _)| *c == s).map_or(0, |(_, n)| *n);
+                    (s.label().to_string(), format!("{} for “{q}” · {} in other sections.", count(n, "match", "matches"), total - n))
+                }
+            };
+            let shown: Vec<Shown> = found.into_iter().filter(|(s, _)| scope.is_none_or(|x| x == *s)).flat_map(|(_, gs)| gs).collect();
+            sidebar = self.sidebar(&t, Some(Found { counts: &counts, total, scope }), &badges, window, cx).into_any_element();
+            head = self.page_header(&t, title, sub, None, cx).into_any_element();
+            body = self.cards(&t, shown, &words, Some((q, total)), cx).into_any_element();
+        } else {
+            sidebar = self.sidebar(&t, None, &badges, window, cx).into_any_element();
+            match self.view {
+                View::Json => {
+                    let sub = "What `midna settings list --json` returns. Read-only here: change a setting in its section, from the CLI, or by asking.";
+                    head = self.page_header(&t, "settings.json".into(), sub.into(), None, cx).into_any_element();
+                    body = self.json(&t).into_any_element();
+                }
+                View::Section(sec) => {
+                    let sub = if sec == Sec::Shortcuts && !self.recorded.is_empty() {
+                        format!("Shortcuts on {}. Press other keys to search again; ⌥⌘K stops.", crate::actions::pretty(&self.recorded.join(" ")))
+                    } else {
+                        sec.about().to_string()
+                    };
+                    head = self.page_header(&t, sec.label().into(), sub, Some(sec), cx).into_any_element();
+                    let groups = sections.into_iter().find(|(s, _)| *s == sec).map(|(_, g)| g).unwrap_or_default();
+                    let shown = groups.into_iter().map(|g| Shown { sec, name: g.name, note: g.note, rows: g.rows.into_iter().map(|row| Hit { row, via: None }).collect() }).collect();
+                    body = self.cards(&t, shown, &[], None, cx).into_any_element();
+                }
+            }
+        }
         div()
             .id("settings-root")
             .track_focus(&self.focus)
@@ -1136,19 +1447,27 @@ impl Render for SettingsWindow {
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .flex()
-            .flex_col()
             .bg(t.bg)
             .text_color(t.fg)
             .font_family(t.ui_font.clone())
             .text_size(px(13.))
             .line_height(px(13. * 1.45))
-            .child(self.title_bar(&t, cx))
-            .child(self.ask_bar(&t, window, cx))
-            .when_some(self.error.clone(), |d, e| {
-                d.child(div().px(px(18.)).py(px(8.)).bg(t.need_soft).text_color(t.need).text_size(px(12.)).child(format!("midnad: {e} — showing the catalog defaults.")))
-            })
-            .child(body)
-            .child(self.footer(&t))
+            .child(sidebar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(head)
+                    .when_some(self.error.clone(), |d, e| {
+                        d.child(div().mx(px(28.)).mb(px(10.)).px(px(12.)).py(px(8.)).rounded(px(8.)).bg(t.need_soft).text_color(t.need).text_size(px(12.)).child(format!("midnad: {e} — showing the catalog defaults.")))
+                    })
+                    .child(body)
+                    .child(self.footer(&t)),
+            )
+            .children(self.shortcut_menu_el(&t, cx))
             .when(self.picker.is_some(), |d| {
                 // click-away layer under an open sound/image picker
                 d.child(
@@ -1165,56 +1484,71 @@ impl Render for SettingsWindow {
     }
 }
 
+/// What a search found, for the sidebar: matches per section, in all, and the section the
+/// results are narrowed to.
+struct Found<'a> {
+    counts: &'a [(Sec, usize)],
+    total: usize,
+    scope: Option<Sec>,
+}
+
+/// Drags the window from empty space; a double click zooms, like a title bar.
+fn drag_window(ev: &MouseDownEvent, window: &mut Window, _: &mut App) {
+    if ev.click_count >= 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
+    }
+}
+
 impl SettingsWindow {
-    fn title_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut tabs = div().flex().p(px(2.)).gap(px(2.)).rounded(px(7.)).border_1().border_color(t.line).bg(t.bg);
-        for (i, (v, label)) in [(View::Rows, "Rows"), (View::Json, "settings.json"), (View::Shortcuts, "Shortcuts")].into_iter().enumerate() {
-            let on = self.view == v;
-            let keys = ["⌘1", "⌘2", "⌘3"][i];
-            tabs = tabs.child(
-                div()
-                    .id(label)
-                    .h(px(24.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(5.))
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .when(on, |d| d.bg(t.raised).text_color(t.fg).font_weight(FontWeight::BOLD))
-                    .when(!on, |d| d.text_color(t.dim).hover(|s| s.text_color(t.fg)))
-                    .tooltip(crate::ui::header::tip_fixed(label, keys))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |s, _, _, cx| s.show(v, cx)))
-                    .child(label),
-            );
-        }
-        div()
-            .id("settings-titlebar")
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(46.))
-            .px(px(14.))
-            .border_b_1()
-            .border_color(t.line)
-            .bg(t.panel)
-            .on_mouse_down(MouseButton::Left, |ev, window, _| {
-                if ev.click_count >= 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-            })
-            .child(div().absolute().top_0().left_0().size_full().flex().items_center().justify_center().text_size(px(13.)).font_weight(FontWeight::BOLD).child("Settings"))
-            .child(div().flex_1())
-            .child(tabs)
+    /// An enum with many options: a button showing the current one that opens the list.
+    fn choice_menu(&self, t: &Theme, key: String, options: Vec<(String, String)>, current: String, cx: &mut Context<Self>) -> AnyElement {
+        let label = options.iter().find(|(v, _)| *v == current).map_or(current.clone(), |(_, l)| l.clone());
+        let open = self.picker.as_deref() == Some(key.as_str());
+        let menu = open.then(|| {
+            let mut list = div().id(SharedString::from(format!("choices-{key}"))).max_h(px(320.)).overflow_y_scroll().flex().flex_col();
+            for (i, (v, l)) in options.into_iter().enumerate() {
+                let on = v == current;
+                let k = key.clone();
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("choice-{key}-{i}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.accent_soft))
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            s.picker = None;
+                            if !on {
+                                s.set(&k, json!(v), cx);
+                            }
+                            cx.notify();
+                        }))
+                        .child(div().w(px(12.)).flex_none().when(on, |d| d.child(Icon::Check.el(11., t.accent))))
+                        .child(div().flex_1().min_w_0().truncate().child(l)),
+                );
+            }
+            deferred(
+                anchored().offset(point(px(0.), px(30.))).snap_to_window_with_margin(px(8.)).child(
+                    crate::ui::sidebar::menu_box(t).min_w(px(200.)).p(px(4.)).text_size(px(12.5)).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(list),
+                ),
+            )
+            .with_priority(2)
+        });
+        div().relative().child(self.picker_button(t, &key, label, 170., cx)).children(menu).into_any_element()
     }
 
-    fn show(&mut self, v: View, cx: &mut Context<Self>) {
+    fn go(&mut self, v: View, cx: &mut Context<Self>) {
+        if self.view != v {
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
         self.view = v;
-        if v != View::Shortcuts {
+        if v != View::Section(Sec::Shortcuts) {
             self.recorder = None;
             self.editing = None;
             self.shortcut_menu = None;
@@ -1222,8 +1556,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// The window's own keys (listed under Built in on the Shortcuts tab). The key detector
-    /// takes keys before this while it's on.
+    /// Leave the search for a section (a result's crumb, or ⌘[ / ⌘] while searching).
+    fn open_section(&mut self, sec: Sec, cx: &mut Context<Self>) {
+        self.ask.clear(cx);
+        self.scope = None;
+        self.go(View::Section(sec), cx);
+    }
+
+    /// The window's own keys (listed under Built in on Shortcuts). The key detector takes
+    /// keys before this while it's on.
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
@@ -1231,17 +1572,18 @@ impl SettingsWindow {
             return;
         }
         match (ks.key.as_str(), m.alt) {
-            ("1", false) => self.show(View::Rows, cx),
-            ("2", false) => self.show(View::Json, cx),
-            ("3", false) => self.show(View::Shortcuts, cx),
-            ("k", false) => {
-                self.show(View::Rows, cx);
+            ("k" | "f", false) => {
                 self.ask.focus.focus(window, cx);
+                self.ask.field.update(cx, |f, cx| f.select_all(cx));
+                cx.notify();
             }
-            ("f", false) => {
-                self.show(View::Shortcuts, cx);
-                self.recorded.clear();
-                self.search.focus.focus(window, cx);
+            ("[" | "]", false) => {
+                let at = match self.view {
+                    View::Section(s) => SECS.iter().position(|x| *x == s).unwrap_or(0),
+                    View::Json => SECS.len() - 1,
+                };
+                let next = if ks.key == "]" { (at + 1) % SECS.len() } else { (at + SECS.len() - 1) % SECS.len() };
+                self.open_section(SECS[next], cx);
             }
             ("k", true) => self.toggle_recording(window, cx),
             _ => return,
@@ -1249,127 +1591,475 @@ impl SettingsWindow {
         cx.stop_propagation();
     }
 
-    fn ask_bar(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The search field, the sections (or, while searching, the sections with matches), and
+    /// the live dot with the settings.json link.
+    fn sidebar(&self, t: &Theme, found: Option<Found>, badges: &[(Sec, usize)], window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.ask.focus.is_focused(window);
-        div().flex().flex_none().items_center().gap(px(10.)).px(px(16.)).py(px(10.)).border_b_1().border_color(t.line).child(
-            div()
-                .id("ask")
-                .flex_1()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .h(px(34.))
-                .pl(px(12.))
-                .pr(px(6.))
-                .rounded(px(9.))
-                .border_1()
-                .border_color(t.accent)
-                .when(focused, |d| d.shadow(vec![BoxShadow { color: t.accent_soft, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]))
-                .bg(t.raised)
-                .cursor_text()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|s, _, window, cx| {
-                        s.ask.focus.focus(window, cx);
-                        cx.notify();
-                    }),
-                )
-                .on_key_down(cx.listener(|s, ev: &KeyDownEvent, window, cx| match s.ask.on_key(ev, cx) {
-                    KeyOutcome::Submit => s.submit_ask(cx),
-                    KeyOutcome::Cancel => {
-                        s.ask.clear(cx);
-                        s.focus.focus(window, cx);
-                        cx.notify();
-                    }
-                    KeyOutcome::Ignored => cx.propagate(),
-                }))
-                .child(div().font_family(t.mono_font.clone()).text_color(t.accent).child("❯"))
-                .child(div().flex_1().min_w_0().flex().items_center().overflow_hidden().text_color(t.fg).child(self.ask.field.clone()))
-                .child(
-                    div()
-                        .id("ask-go")
-                        .h(px(24.))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(6.))
-                        .bg(t.accent)
-                        .text_color(t.accent_fg)
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::BOLD)
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(|s, _, _, cx| s.submit_ask(cx)))
-                        .child("Ask ↩"),
-                ),
-        )
-    }
-
-    fn rows(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let head = div()
+        let searching = found.is_some();
+        let field = div()
+            .id("search")
             .flex()
             .flex_none()
-            .gap(px(16.))
-            .px(px(18.))
-            .py(px(8.))
+            .items_center()
+            .gap(px(8.))
+            .h(px(30.))
+            .mx(px(12.))
+            .mb(px(12.))
+            .pl(px(10.))
+            .pr(px(6.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if focused || searching { t.accent } else { t.line })
+            .when(focused, |d| d.shadow(vec![BoxShadow { color: t.accent_soft, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]))
             .bg(t.bg)
-            .border_b_1()
-            .border_color(t.line)
-            .text_size(px(11.))
-            .font_weight(FontWeight::BOLD)
-            .text_color(t.dim)
-            .child(div().w(px(COL_SETTING)).flex_none().child("SETTING"))
-            .child(div().w(px(COL_VALUE)).flex_none().child("VALUE"))
-            .child(div().flex_1().min_w_0().child("SAME THING, FOR AGENTS"))
-            .child(div().w(px(COL_WHO)).flex_none().child("WHO CAN SET"));
-        let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().pb(px(16.));
-        let groups = filter_groups(self.groups(t), &self.ask.text(cx));
-        if groups.is_empty() {
-            list = list.child(div().px(px(18.)).pt(px(24.)).text_color(t.dim).child("No setting matches. Press ↩ to ask an agent instead."));
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|s, _, window, cx| {
+                    s.ask.focus.focus(window, cx);
+                    cx.notify();
+                }),
+            )
+            .on_key_down(cx.listener(|s, ev: &KeyDownEvent, window, cx| match s.ask.on_key(ev, cx) {
+                KeyOutcome::Submit => s.submit_ask(cx),
+                KeyOutcome::Cancel => {
+                    if s.ask.is_empty(cx) {
+                        s.focus.focus(window, cx);
+                    }
+                    s.ask.clear(cx);
+                    cx.notify();
+                }
+                KeyOutcome::Ignored => cx.propagate(),
+            }))
+            .child(Icon::Search.el(13., t.dim))
+            .child(div().flex_1().min_w_0().flex().items_center().overflow_hidden().text_color(t.fg).child(self.ask.field.clone()))
+            .when(searching, |d| {
+                d.child(
+                    div()
+                        .id("search-clear")
+                        .size(px(18.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(t.line)
+                        .cursor_pointer()
+                        .tooltip(crate::ui::header::tip_fixed("Clear the search", "esc"))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|s, _, window, cx| {
+                            s.ask.clear(cx);
+                            s.ask.focus.focus(window, cx);
+                            cx.notify();
+                        }))
+                        .child(Icon::Cross.el(8., t.fg)),
+                )
+            });
+        let item = |id: SharedString, icon: Icon, label: &str, on: bool, gap: bool| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(9.))
+                .h(px(30.))
+                .px(px(9.))
+                .when(gap, |d| d.mt(px(12.)))
+                .rounded(px(7.))
+                .cursor_pointer()
+                .when(on, |d| d.bg(t.raised).text_color(t.fg).font_weight(FontWeight::SEMIBOLD))
+                .when(!on, |d| d.text_color(t.fg).hover(|s| s.bg(t.raised.opacity(0.6))))
+                .child(icon.el(15., if on { t.accent } else { t.dim }))
+                .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
+        };
+        let count = |n: usize, amber: bool| {
+            div()
+                .flex_none()
+                .min_w(px(18.))
+                .h(px(18.))
+                .px(px(5.))
+                .rounded(px(9.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.))
+                .font_weight(FontWeight::BOLD)
+                .map(|d| if amber { d.bg(t.need).text_color(t.badge_fg) } else { d.bg(t.line.opacity(0.7)).text_color(t.dim) })
+                .child(n.to_string())
+        };
+        let mut list = div().id("sections").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(10.));
+        match found {
+            Some(Found { counts, total, scope }) => {
+                if total > 0 {
+                    list = list.child(item("sec-all".into(), Icon::Search, "All results", scope.is_none(), false).child(count(total, false)).on_click(cx.listener(|s, _, _, cx| {
+                        s.scope = None;
+                        s.scroll.set_offset(point(px(0.), px(0.)));
+                        cx.notify();
+                    })));
+                }
+                for (i, &(sec, n)) in counts.iter().enumerate() {
+                    list = list.child(item(SharedString::from(format!("sec-{}", sec.id())), sec.icon(), sec.label(), scope == Some(sec), i == 0).child(count(n, false)).on_click(cx.listener(
+                        move |s, _, _, cx| {
+                            s.scope = Some(sec);
+                            s.scroll.set_offset(point(px(0.), px(0.)));
+                            cx.notify();
+                        },
+                    )));
+                }
+                let hidden = SECS.len() - counts.len();
+                if total > 0 && hidden > 0 {
+                    list = list.child(div().px(px(9.)).pt(px(10.)).text_size(px(11.5)).line_height(px(15.)).text_color(t.dim).child(format!(
+                        "{hidden} section{} with no matches hidden",
+                        if hidden == 1 { "" } else { "s" }
+                    )));
+                }
+            }
+            None => {
+                for sec in SECS {
+                    let n = badges.iter().find(|(s, _)| *s == sec).map_or(0, |(_, n)| *n);
+                    list = list.child(
+                        item(SharedString::from(format!("sec-{}", sec.id())), sec.icon(), sec.label(), self.view == View::Section(sec), sec.gap())
+                            .when(n > 0, |d| d.child(count(n, true)))
+                            .on_click(cx.listener(move |s, _, _, cx| s.go(View::Section(sec), cx))),
+                    );
+                }
+            }
         }
-        for (gi, g) in groups.into_iter().enumerate() {
-            list = list.child(
+        let live = self.error.is_none() && !self.entries.is_empty();
+        let json_on = self.view == View::Json && !searching;
+        div()
+            .w(px(SIDEBAR_W))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(t.panel)
+            .border_r_1()
+            .border_color(t.line)
+            // room for the traffic lights; drags the window like a title bar
+            .child(div().id("sidebar-drag").h(px(48.)).flex_none().on_mouse_down(MouseButton::Left, drag_window))
+            .child(field)
+            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(7.))
+                    .px(px(19.))
+                    .py(px(12.))
+                    .text_size(px(12.))
+                    .text_color(t.dim)
+                    .child(div().size(px(7.)).rounded_full().bg(if live { t.ok } else { t.need }))
+                    .child(div().flex_1().child(if live { "Live" } else { "Not connected" }))
+                    .child(
+                        div()
+                            .id("open-json")
+                            .cursor_pointer()
+                            .text_color(t.accent)
+                            .when(json_on, |d| d.font_weight(FontWeight::BOLD))
+                            .hover(|s| s.underline())
+                            .tooltip(crate::ui::header::tip("Every setting as `midna settings list --json` returns it"))
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.ask.clear(cx);
+                                s.go(View::Json, cx);
+                            }))
+                            .child("settings.json"),
+                    ),
+            )
+    }
+
+    /// The page's title and what it's for; "Agent commands" (and, on Shortcuts, the key detector).
+    fn page_header(&self, t: &Theme, title: String, sub: String, sec: Option<Sec>, cx: &mut Context<Self>) -> impl IntoElement {
+        let button = |id: &'static str, on: bool| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.))
+                .h(px(28.))
+                .px(px(10.))
+                .rounded(px(7.))
+                .border_1()
+                .text_size(px(12.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .map(|d| if on { d.border_color(t.accent).bg(t.accent_soft).text_color(t.fg) } else { d.border_color(t.line).bg(t.panel).text_color(t.dim).hover(|s| s.text_color(t.fg)) })
+        };
+        let json = self.view == View::Json && self.ask.is_empty(cx);
+        div()
+            .id("page-header")
+            .flex()
+            .flex_none()
+            .items_end()
+            .gap(px(16.))
+            .px(px(28.))
+            .pt(px(22.))
+            .pb(px(14.))
+            .on_mouse_down(MouseButton::Left, drag_window)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::BOLD).truncate().child(title))
+                    .child(div().text_size(px(12.5)).line_height(px(17.)).text_color(t.dim).child(sub)),
+            )
+            .when(sec == Some(Sec::Shortcuts), |d| d.child(self.record_button(t, cx)))
+            .when(!json, |d| {
+                d.child(
+                    button("agent-commands", self.cli)
+                        .tooltip(crate::ui::header::tip("Show the command an agent would run for each setting"))
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.cli = !s.cli;
+                            cx.notify();
+                        }))
+                        .child(Icon::Code.el(13., if self.cli { t.accent } else { t.dim }))
+                        .child("Agent commands"),
+                )
+            })
+    }
+
+    /// The groups as cards. While searching, each heading starts with its section (a link to
+    /// it), and the last card asks an agent.
+    fn cards(&self, t: &Theme, shown: Vec<Shown>, words: &[String], search: Option<(String, usize)>, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let mut id = 0;
+        for g in shown {
+            let crumb = search.is_some();
+            let heading = (crumb || !g.name.is_empty()).then(|| {
+                let sec = g.sec;
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(18.))
-                    .pt(px(16.))
-                    .pb(px(4.))
-                    .child(div().font_weight(FontWeight::BOLD).text_color(if g.danger { t.err } else { t.fg }).child(g.name))
-                    .when(g.badge > 0, |d| {
+                    .gap(px(6.))
+                    .px(px(4.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.dim)
+                    .when(crumb, |d| {
                         d.child(
                             div()
-                                .min_w(px(18.))
-                                .h(px(18.))
-                                .px(px(5.))
-                                .rounded(px(9.))
-                                .bg(t.need)
-                                .text_color(t.badge_fg)
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::BOLD)
+                                .id(SharedString::from(format!("crumb-{}-{id}", sec.id())))
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .child(g.badge.to_string()),
+                                .gap(px(5.))
+                                .text_color(t.fg)
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(t.accent))
+                                .tooltip(crate::ui::header::tip(format!("Open {}", sec.label())))
+                                .on_click(cx.listener(move |s, _, _, cx| s.open_section(sec, cx)))
+                                .child(sec.icon().el(12., t.dim))
+                                .child(sec.label()),
                         )
-                    }),
-            );
-            for (ri, r) in g.rows.into_iter().enumerate() {
-                list = list.child(self.row(t, r, gi * 100 + ri, cx));
+                        .when(!g.name.is_empty(), |d| d.child(div().text_color(t.line).child("›")))
+                    })
+                    .child(g.name)
+                    .when_some(g.note, |d, n| d.child(div().font_weight(FontWeight::NORMAL).text_size(px(11.5)).child(format!("· {n}"))))
+            });
+            let mut card = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).overflow_hidden();
+            for (i, hit) in g.rows.into_iter().enumerate() {
+                card = card.child(self.row(t, hit, words, i == 0, id, cx));
+                id += 1;
             }
+            list = list.child(div().flex().flex_col().gap(px(8.)).children(heading).child(card));
         }
-        div().flex_1().min_h_0().flex().flex_col().child(head).child(list)
+        if let Some((q, total)) = search {
+            let agent = if self.value("ui.ask.agent") == json!("codex") { "Codex" } else { "Claude" };
+            if total == 0 {
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.))
+                        .pt(px(56.))
+                        .child(Icon::Search.el(26., t.line))
+                        .child(div().pt(px(6.)).text_size(px(14.)).font_weight(FontWeight::BOLD).child(format!("No setting matches “{q}”")))
+                        .child(div().text_size(px(12.)).text_color(t.dim).child("Search looks at names, descriptions, options, values and keys.")),
+                );
+            }
+            list = list.child(
+                div()
+                    .id("ask-agent")
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(14.))
+                    .py(px(12.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(t.line)
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(t.accent).bg(t.panel))
+                    .on_click(cx.listener(|s, _, _, cx| s.submit_ask(cx)))
+                    .child(
+                        div()
+                            .size(px(28.))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(8.))
+                            .bg(t.accent_soft)
+                            .child(if agent == "Codex" { Icon::Codex } else { Icon::Claude }.el(15., t.accent)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().child(format!("Ask {agent}: “{q}”")))
+                            .child(div().text_size(px(12.)).text_color(t.dim).child(if total == 0 {
+                                "An agent can find it, or change it for you."
+                            } else {
+                                "Not what you meant? An agent can find or change it for you."
+                            })),
+                    )
+                    .child(crate::ui::header::key_chip(t, "↩".into()).text_size(px(12.)).text_color(t.dim)),
+            );
+        }
+        list
     }
 
-    fn row(&self, t: &Theme, r: RowSpec, id: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(&self, t: &Theme, hit: Hit, words: &[String], first: bool, id: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let Hit { row: r, via } = hit;
         let note = r.note.map(|(n, c)| (n, if c == Hsla::default() { t.dim } else { c }));
-        let control: AnyElement = match r.control {
+        let lock = r.who == Who::Human && r.cli.starts_with("midna settings set ");
+        let label_hit = words.iter().any(|w| r.label.to_lowercase().contains(w.as_str()));
+        let keys_setting = match &r.control {
+            Control::Keys { setting, .. } => *setting,
+            _ => None,
+        };
+        let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
+        let wide = matches!(r.control, Control::Theme { .. });
+        let control = self.control(t, r.control, words, id, cx);
+        let (inline, below) = if wide { (None, Some(control)) } else { (Some(control), None) };
+        let cli = r.cli;
+        let copied = self.copied.as_ref().is_some_and(|(c, _)| *c == cli);
+        let who = match r.who {
+            Who::Agents => "agents too",
+            Who::Human => "only you",
+            Who::ReadOnly => "read-only",
+        };
+        let cli_line = (self.cli && !cli.is_empty()).then(|| {
+            let text = cli.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(8.))
+                .pl(px(10.))
+                .pr(px(4.))
+                .py(px(3.))
+                .rounded(px(6.))
+                .bg(t.term)
+                .font_family(t.mono_font.clone())
+                .text_size(px(11.5))
+                .child(div().flex_none().text_color(t.accent).child("$"))
+                .child(div().flex_1().min_w_0().truncate().text_color(t.fg).child(cli.clone()))
+                .child(div().flex_none().font_family(t.ui_font.clone()).text_size(px(11.)).text_color(t.dim).child(who))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("copy-{id}")))
+                        .flex_none()
+                        .h(px(20.))
+                        .px(px(6.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(5.))
+                        .font_family(t.ui_font.clone())
+                        .text_size(px(11.))
+                        .text_color(if copied { t.ok } else { t.dim })
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.raised).text_color(t.fg))
+                        .on_click(cx.listener(move |s, _, _, cx| s.copy(text.clone(), cx)))
+                        .child(if copied { "Copied" } else { "Copy" }),
+                )
+        });
+        div()
+            .id(SharedString::from(format!("row-{id}")))
+            .flex()
+            .flex_col()
+            .px(px(16.))
+            .py(px(9.))
+            .when(!first, |d| d.border_t_1().border_color(t.line))
+            .when(r.warn, |d| d.bg(t.need_soft))
+            .when(active, |d| d.bg(t.raised))
+            .when_some(keys_setting, |d, setting| {
+                d.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |s, ev: &MouseDownEvent, _, cx| {
+                        s.shortcut_menu = Some((setting, ev.position));
+                        cx.notify();
+                    }),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .min_h(px(28.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(150.))
+                            .flex()
+                            .flex_col()
+                            .child(div().flex().items_center().gap(px(6.)).child(marked(t, r.label, words)).when(lock, |d| d.child(Icon::Lock.el(11., t.dim))))
+                            .when_some(note, |d, (n, c)| {
+                                // the catalog's descriptions are written for agents: the first
+                                // sentence here, all of it on hover (and when only the rest matched)
+                                let first = brief(&n);
+                                let seen = |s: &str| words.iter().any(|w| s.to_lowercase().contains(w.as_str()));
+                                let short = if words.is_empty() || seen(&first) || label_hit { first } else { excerpt(&n, words) };
+                                let cut = short.len() < n.len();
+                                d.child(
+                                    div()
+                                        .id(SharedString::from(format!("note-{id}")))
+                                        .text_size(px(11.5))
+                                        .line_height(px(15.))
+                                        .text_color(c)
+                                        .when(cut, |d| d.tooltip(crate::ui::header::tip(n)))
+                                        .child(marked(t, short, words)),
+                                )
+                            })
+                            .when_some(via, |d, (what, text)| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .gap(px(5.))
+                                        .mt(px(2.))
+                                        .text_size(px(11.))
+                                        .line_height(px(15.))
+                                        .text_color(t.dim)
+                                        .child(div().flex_none().child(what))
+                                        .child(div().min_w_0().truncate().font_family(t.mono_font.clone()).child(marked(t, text, words))),
+                                )
+                            }),
+                    )
+                    .children(inline.map(|c| div().flex().justify_end().min_w_0().max_w(relative(0.62)).child(c))),
+            )
+            .children(below.map(|c| div().pt(px(8.)).child(c)))
+            .children(cli_line)
+    }
+
+    fn control(&self, t: &Theme, control: Control, words: &[String], id: usize, cx: &mut Context<Self>) -> AnyElement {
+        match control {
+            // many choices: a menu instead of a row of buttons
+            Control::Seg { key, options, current } if options.len() > 5 => self.choice_menu(t, key, options, current, cx),
             Control::Seg { key, options, current } => {
-                let mut seg = div().flex().flex_wrap().p(px(2.)).gap(px(1.)).rounded(px(7.)).border_1().border_color(t.line).bg(t.panel);
+                let mut seg = div().flex().flex_wrap().justify_end().p(px(2.)).gap(px(1.)).rounded(px(7.)).border_1().border_color(t.line).bg(t.bg);
                 for (i, (v, label)) in options.into_iter().enumerate() {
                     let on = v == current;
                     let soon = key == "webhooks.path" && crate::ui::triggers::SOON.contains(&v.as_str());
+                    let found = !words.is_empty() && words.iter().any(|w| label.to_lowercase().contains(w.as_str()));
                     let k = key.clone();
                     seg = seg.child(
                         div()
@@ -1392,6 +2082,7 @@ impl SettingsWindow {
                                     inset: false,
                                 }])
                             })
+                            .when(found, |d| d.border_1().border_color(t.accent))
                             .when(!on && !soon, |d| d.text_color(t.dim).hover(|s| s.text_color(t.fg)))
                             .when(soon && !on, |d| d.text_color(t.dim).opacity(0.6))
                             .on_click(cx.listener(move |s, _, _, cx| {
@@ -1409,10 +2100,12 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .child(div().text_size(px(12.)).text_color(t.dim).child(if on { on_text } else { off_text }))
                 .child(
                     div()
                         .id(SharedString::from(format!("sw-{key}")))
                         .relative()
+                        .flex_none()
                         .w(px(36.))
                         .h(px(20.))
                         .rounded(px(10.))
@@ -1421,12 +2114,12 @@ impl SettingsWindow {
                         .on_click(cx.listener(move |s, _, _, cx| s.set(&key, json!(!on), cx)))
                         .child(div().absolute().top(px(2.)).left(px(if on { 18. } else { 2. })).size(px(16.)).rounded_full().bg(gpui_kit::white())),
                 )
-                .child(div().text_color(t.dim).child(if on { on_text } else { off_text }))
                 .into_any_element(),
             Control::Sound { cat } => self.sound_control(t, cat, cx),
             Control::Theme { key, current } => self.theme_control(t, key, current, cx).into_any_element(),
             Control::Volume { key } => self.volume_stepper(t, &key, None, cx).into_any_element(),
             Control::Image { key, cat } => self.image_control(t, &key, cat, cx),
+            Control::Keys { setting, keys } => self.keys_control(t, setting, keys, id, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
@@ -1435,7 +2128,7 @@ impl SettingsWindow {
                     .gap(px(8.))
                     .min_w_0()
                     .when_some(dot, |d, c| d.child(div().size(px(7.)).rounded_full().flex_none().bg(c)))
-                    .child(div().flex_1().min_w_0().text_color(color).truncate().child(text))
+                    .child(div().min_w_0().text_color(color).truncate().child(text))
                     .when_some(action, |d, (label, act, strong)| {
                         let danger = matches!(act, Act::ResetSettings | Act::ResetDaemon);
                         let armed = match act {
@@ -1463,9 +2156,9 @@ impl SettingsWindow {
                                             t.err
                                         })
                                     } else if strong {
-                                        b.bg(t.accent).text_color(t.accent_fg)
+                                        b.bg(if color == t.need { t.need } else { t.accent }).text_color(if color == t.need { t.badge_fg } else { t.accent_fg })
                                     } else {
-                                        b.border_1().border_color(t.line).text_color(t.fg).hover(|s| s.bg(t.raised))
+                                        b.border_1().border_color(t.line).bg(t.raised).text_color(t.fg).hover(|s| s.border_color(t.dim))
                                     }
                                 })
                                 .on_click(cx.listener(move |s, _, _, cx| match &act {
@@ -1499,86 +2192,11 @@ impl SettingsWindow {
                     })
                     .into_any_element()
             }
-        };
-        let cli = r.cli.clone();
-        let copied = self.copied.as_ref().is_some_and(|(c, _)| *c == r.cli);
-        let (who_text, who_color) = match r.who {
-            Who::Agents => ("agents too", t.dim),
-            Who::Human => ("human only", t.fg),
-            Who::ReadOnly => ("read-only", t.dim),
-        };
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(16.))
-            .min_h(px(40.))
-            .px(px(18.))
-            .py(px(5.))
-            .border_b_1()
-            .border_color(t.line)
-            .when(r.warn, |d| d.bg(t.need_soft))
-            .child(
-                div()
-                    .w(px(COL_SETTING))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .child(div().child(r.label))
-                    .when_some(note, |d, (n, c)| d.child(div().text_size(px(11.5)).line_height(px(15.)).text_color(c).child(n))),
-            )
-            .child(div().w(px(COL_VALUE)).flex_none().min_w_0().flex().items_center().child(control))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .font_family(t.mono_font.clone())
-                            .text_size(px(11.5))
-                            .line_height(px(16.))
-                            .text_color(t.dim)
-                            .flex()
-                            .gap(px(6.))
-                            .child(div().flex_none().text_color(t.accent).child("$"))
-                            .child(div().flex_1().min_w_0().child(r.cli.clone())),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("copy-{id}")))
-                            .flex_none()
-                            .h(px(22.))
-                            .px(px(6.))
-                            .flex()
-                            .items_center()
-                            .rounded(px(5.))
-                            .text_size(px(11.))
-                            .text_color(if copied { t.ok } else { t.dim })
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.raised).text_color(t.fg))
-                            .on_click(cx.listener(move |s, _, _, cx| s.copy(cli.clone(), cx)))
-                            .child(if copied { "Copied" } else { "Copy" }),
-                    ),
-            )
-            .child(
-                div()
-                    .w(px(COL_WHO))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .text_size(px(11.5))
-                    .text_color(who_color)
-                    .when(r.who == Who::Human, |d| d.child(Icon::Lock.el(12., who_color)))
-                    .child(who_text),
-            )
+        }
     }
+}
 
+impl SettingsWindow {
     /// Read-only annotated JSON: what `midna settings list --json` holds, grouped by prefix.
     fn json(&self, t: &Theme) -> impl IntoElement {
         let mut lines: Vec<(String, String, String, Hsla, String, Hsla)> = vec![]; // indent, key, value, value color, comment, comment color
@@ -1750,32 +2368,108 @@ fn snapshot(handle: WindowHandle<SettingsWindow>, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
-    use super::{Control, Group, Hsla, RowSpec, Who, filter_groups};
+    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, search};
+    use midna_proto::notify::{CATEGORIES, EFFECTS};
+    use midna_proto::settings::{SETTINGS, setting};
 
     fn row(label: &str, note: &str, cli: &str) -> RowSpec {
         let text = Control::Text { dot: None, text: String::new(), color: Hsla::default(), action: None };
         RowSpec { label: label.into(), note: Some((note.into(), Hsla::default())), control: text, cli: cli.into(), who: Who::Agents, warn: false }
     }
 
-    fn names(groups: &[Group]) -> Vec<(&str, Vec<&str>)> {
-        groups.iter().map(|g| (g.name, g.rows.iter().map(|r| r.label.as_str()).collect())).collect()
+    fn seg(label: &str, key: &str, options: &[&str]) -> RowSpec {
+        let options = options.iter().map(|o| (o.to_lowercase(), o.to_string())).collect();
+        RowSpec { control: Control::Seg { key: key.into(), options, current: String::new() }, ..row(label, "", &format!("midna settings set {key} x")) }
     }
 
-    fn sample() -> Vec<Group> {
+    fn group(name: &'static str, rows: Vec<RowSpec>) -> Group {
+        Group { name, note: None, rows }
+    }
+
+    fn sample() -> Vec<(Sec, Vec<Group>)> {
         vec![
-            Group { name: "Look", danger: false, badge: 0, rows: vec![row("Theme", "", "midna settings set theme dusk"), row("Sidebar density", "", "midna settings set density compact")] },
-            Group { name: "Sounds", danger: false, badge: 0, rows: vec![row("Needs you", "Plays when an agent waits", "midna settings set notify.sound.need ping")] },
+            (Sec::Appearance, vec![group("Theme", vec![row("Theme", "", "midna settings set theme dusk"), seg("Sidebar density", "density", &["Comfortable", "Compact"])])]),
+            (Sec::Agents, vec![group("Lifecycle", vec![seg("After an agent update", "agents.restart_on_update", &["Ask", "Restart when idle", "Never"])])]),
+            (Sec::Sounds, vec![group("", vec![row("Needs you", "Plays when an agent waits", "midna settings set notify.sound.need ping")])]),
         ]
     }
 
+    /// A row's name, and why it matched when that isn't its name or description.
+    type Match = (String, Option<String>);
+
+    /// Section → rows.
+    fn found(query: &str) -> Vec<(Sec, Vec<Match>)> {
+        let names = |gs: Vec<Shown>| gs.into_iter().flat_map(|g| g.rows).map(|h| (h.row.label, h.via.map(|(what, text)| format!("{what}: {text}")))).collect();
+        search(sample(), query).into_iter().map(|(s, gs)| (s, names(gs))).collect()
+    }
+
+    fn row_names(query: &str) -> Vec<(Sec, Vec<String>)> {
+        found(query).into_iter().map(|(s, rows)| (s, rows.into_iter().map(|(l, _)| l).collect())).collect()
+    }
+
     #[test]
-    fn ask_box_filters_rows_by_label_note_and_key() {
-        assert_eq!(names(&filter_groups(sample(), "  ")).len(), 2);
-        assert_eq!(names(&filter_groups(sample(), "THEME")), vec![("Look", vec!["Theme"])]);
-        assert_eq!(names(&filter_groups(sample(), "agent waits")), vec![("Sounds", vec!["Needs you"])]);
-        assert_eq!(names(&filter_groups(sample(), "notify.sound")), vec![("Sounds", vec!["Needs you"])]);
-        // a group name keeps the whole group
-        assert_eq!(names(&filter_groups(sample(), "look")), vec![("Look", vec!["Theme", "Sidebar density"])]);
-        assert!(filter_groups(sample(), "make ⌘T open Claude").is_empty());
+    fn search_keeps_only_sections_and_rows_that_match() {
+        assert!(found("  ").is_empty());
+        assert_eq!(row_names("THEME"), vec![(Sec::Appearance, vec!["Theme".into(), "Sidebar density".into()])]);
+        assert_eq!(row_names("agent waits"), vec![(Sec::Sounds, vec!["Needs you".into()])]);
+        // every word, anywhere in the row
+        assert_eq!(row_names("agent idle"), vec![(Sec::Agents, vec!["After an agent update".into()])]);
+        assert!(found("make ⌘T open Claude").is_empty());
+        // a section's name finds all of it
+        assert_eq!(row_names("sounds"), vec![(Sec::Sounds, vec!["Needs you".into()])]);
+    }
+
+    #[test]
+    fn search_says_why_a_row_matched() {
+        // in the name or description: nothing to explain
+        assert_eq!(found("update"), vec![(Sec::Agents, vec![("After an agent update".into(), None)])]);
+        // an option, then the key, then related words
+        assert_eq!(found("restart"), vec![(Sec::Agents, vec![("After an agent update".into(), Some("Option: Restart when idle".into()))])]);
+        assert_eq!(found("notify.sound"), vec![(Sec::Sounds, vec![("Needs you".into(), Some("Key: notify.sound.need".into()))])]);
+        assert_eq!(found("spacing"), vec![(Sec::Appearance, vec![("Sidebar density".into(), Some("Related: spacing compact".into()))])]);
+    }
+
+    #[test]
+    fn notes_show_their_first_sentence() {
+        assert_eq!(brief("Spacing of rows. Compact fits more."), "Spacing of rows.");
+        assert_eq!(brief("Folders (e.g. ~/Dev). More here."), "Folders (e.g. ~/Dev).");
+        assert_eq!(brief("One sentence only."), "One sentence only.");
+        assert_eq!(brief("Which channel. Beta gets builds first. (default: stable)"), "Which channel. (default: stable)");
+        let long = "Script that renders the terminal header line: built-in parts joined with + (github, agent, worktree) or a path.";
+        assert_eq!(brief(long), "Script that renders the terminal header line.");
+        // a search shows the sentence that matched
+        assert_eq!(excerpt("Spacing of rows. Compact fits more. Done.", &["fits".into()]), "… Compact fits more.");
+    }
+
+    #[test]
+    fn every_setting_has_a_place() {
+        use midna_proto::notify::{body_key, image_key, push_focused_key, push_key, setting_key, sound_key, title_key, volume_key};
+        let listed: Vec<&str> = LAYOUT.iter().flat_map(|(_, _, items)| items.iter().copied()).filter(|i| !i.starts_with('@')).collect();
+        for k in &listed {
+            assert!(setting(k).is_some(), "LAYOUT lists {k}, which isn't a setting");
+        }
+        // the per-kind rows (`@kinds`, `@sounds`, `@images`, …) and `@shortcuts`
+        let kinds: [fn(&str) -> String; 8] = [setting_key, push_key, push_focused_key, sound_key, volume_key, image_key, title_key, body_key];
+        let per_kind = |k: &str| {
+            CATEGORIES.iter().any(|c| kinds.iter().any(|f| f(c.key) == k))
+                || EFFECTS.iter().any(|e| sound_key(e.key) == k || volume_key(e.key) == k)
+                || ["notify.volume", "notify.image"].contains(&k)
+        };
+        for s in SETTINGS {
+            assert!(listed.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
+        }
+    }
+
+    #[test]
+    fn every_special_row_is_built() {
+        let known = [
+            "@update", "@cli", "@login", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
+            "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in",
+        ];
+        for (_, _, items) in LAYOUT {
+            for i in items.iter().filter(|i| i.starts_with('@')) {
+                assert!(known.contains(i), "{i} isn't handled by special_rows");
+            }
+        }
     }
 }

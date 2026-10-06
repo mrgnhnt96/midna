@@ -1047,6 +1047,7 @@ pub const PROMPT_PREFIX: &str = ">";
 pub fn prompt_rows(session: &str, agent: Option<AgentKind>, v: &Value) -> Vec<Command> {
     let icon = if agent == Some(AgentKind::Codex) { CmdIcon::Codex } else { CmdIcon::Claude };
     let here = v.get("here").and_then(Value::as_u64);
+    let scrolled = v.get("scrolled").and_then(Value::as_bool).unwrap_or(false);
     let list = v.get("prompts").and_then(Value::as_array).cloned().unwrap_or_default();
     let live = (!list.is_empty()).then(|| Command {
         id: "prompt:live".into(),
@@ -1060,7 +1061,6 @@ pub fn prompt_rows(session: &str, agent: Option<AgentKind>, v: &Value) -> Vec<Co
         .chain(list.iter().rev().filter_map(|p| {
             let n = p.get("n")?.as_u64()? as u32;
             let text = p.get("text").and_then(Value::as_str).unwrap_or("");
-    let scrolled = v.get("scrolled").and_then(Value::as_bool).unwrap_or(false);
             let on_screen = p.get("on_screen").and_then(Value::as_bool).unwrap_or(true);
             let at = p.get("at").and_then(Value::as_str).unwrap_or("");
             let mut sub = format!("#{n} · {}", crate::ui::screen_kit::clock_or_day(at));

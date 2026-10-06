@@ -390,11 +390,16 @@ impl Shaped {
     }
 }
 
-/// Byte offset of the start of the word left of `off` (spaces skipped first).
+/// Byte offset of the start of the word left of `off` (spaces skipped first). Right after
+/// punctuation (`foo.`, `--`), that run of punctuation is the word, so it always moves.
 pub fn word_left(s: &str, off: usize) -> usize {
-    let before = &s[..off];
-    let trimmed = before.trim_end();
-    trimmed.rfind(|c: char| c.is_whitespace() || "/.-_:=,".contains(c)).map(|i| i + trimmed[i..].chars().next().map_or(1, char::len_utf8)).unwrap_or(0)
+    let sep = |c: char| "/.-_:=,".contains(c);
+    let trimmed = s[..off].trim_end();
+    let word = trimmed.trim_end_matches(sep);
+    if word.len() < trimmed.len() {
+        return word.len();
+    }
+    trimmed.rfind(|c: char| c.is_whitespace() || sep(c)).map(|i| i + trimmed[i..].chars().next().map_or(1, char::len_utf8)).unwrap_or(0)
 }
 
 /// Byte offset of the end of the word right of `off`.
@@ -711,5 +716,11 @@ mod tests {
         assert_eq!(word_right(s, 0), 3);
         assert_eq!(word_right(s, 3), 8);
         assert_eq!(word_left("héllo wörld", "héllo wörld".len()), "héllo ".len());
+        // Right after punctuation, ⌥⌫ takes the punctuation instead of nothing.
+        assert_eq!(word_left(s, 11), 9);
+        assert_eq!(word_left("see foo.", 8), 7);
+        assert_eq!(word_left("see foo. ", 9), 7);
+        assert_eq!(word_left("a/b/", 4), 3);
+        assert_eq!(word_left("...", 3), 0);
     }
 }

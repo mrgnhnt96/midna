@@ -149,10 +149,10 @@ Both replace the terminal pane (sidebar stays) and open from the sidebar buttons
 - Friendly empty state; looks right in dark and light.
 - Data: new daemon method `insights.series` (+ `range: month` for `insights.summary`), all from events.
 
-**Settings** (`settings_window.rs`) is its own ~900×640 window: ⌘, (`keys.settings`), the sidebar Settings button, the app menu, or ⌘K.
-- Sections: Updates (channel, versions, daemon uptime), Permissions (Accessibility via `AXIsProcessTrusted`, Notifications, Login item, each with a System Settings button), Webhooks, Look, Agents (Claude hooks, Codex, status line, Kass "handshake not detected"), What agents may do without asking (human-only switches + policy), Keybindings (read-only), Danger zone (reset settings, two-click confirm).
-- Each row: control, description, the CLI equivalent with a Copy button, and who can set it (human only with a lock / agents too / read-only).
-- Title-bar toggle Rows ↔ annotated read-only `settings.json`; Ask box opens a Claude agent with the request; live footer shows each change and who made it (verified: `midna settings set density compact` from a shell shows "an agent (CLI) · just now").
+**Settings** (`settings_window.rs`, Settings-A) is its own ~940×680 window: ⌘, (`keys.settings`), the sidebar Settings button, the app menu, or ⌘K.
+- A sidebar of sections: General, Appearance, Terminal, Shortcuts · Agents, Agent limits, Notifications, Sounds · Webhooks, System. Amber badges count rows that need you. `LAYOUT` places every catalog setting (a test checks).
+- Each row: name (lock = only you), the description's first sentence, the control. "Agent commands" shows each row's CLI with who may run it and Copy.
+- Search filters both panes: matching sections with counts in the sidebar, results as Section › Group with matches marked and why a row matched; ↩ or the last card asks an agent. The sidebar's `settings.json` link shows the annotated read-only JSON; the live footer shows each change and who made it.
 
 **Verify:** `cargo test -p midna-proto -p midnad -p midna-cli -p midna-app` passes except `daemon.rs::discover_lists_every_method`, which fails on the `daemon.upgrade` assertion (another agent's in-progress daemon work, not insights). New tests: 2 `insights::series_*` unit tests, `tests/seed_insights.rs` (seeded history + live `agent.hook` through the RPC), chart scale/format tests, series wire-shape and key-normalization tests.
 

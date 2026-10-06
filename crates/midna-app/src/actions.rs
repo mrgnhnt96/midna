@@ -211,10 +211,9 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["cmd-v"], "Add the image on the clipboard", "Image sheet"),
     fixed(&["enter"], "Send to the terminal", "Composer"),
     fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo", "Composer"),
-    fixed(&["cmd-1", "cmd-2", "cmd-3"], "Rows / settings.json / Shortcuts", "Settings"),
-    fixed(&["cmd-k"], "Ask an agent to change a setting", "Settings"),
-    fixed(&["cmd-f"], "Search shortcuts", "Settings"),
-    fixed(&["cmd-alt-k"], "Record keys: search by pressing a shortcut", "Settings"),
+    fixed(&["cmd-k", "cmd-f"], "Search settings (↩ asks an agent instead)", "Settings"),
+    fixed(&["cmd-[", "cmd-]"], "Previous / next section", "Settings"),
+    fixed(&["cmd-alt-k"], "Record keys: find a shortcut by pressing it", "Settings"),
 ];
 
 /// The keys bound to each `keys.*` setting right now (normalized), for tooltips and labels.

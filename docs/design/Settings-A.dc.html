@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings: sidebar sections and search</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#0B0D12}
+a{color:#B79AE8}a:hover{color:#CDB6F2}
+button{font:inherit;cursor:pointer}
+input::placeholder{color:#7C8496}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+</style>
+</helmet>
+<div style="width: 1120px; height: 760px; box-sizing: border-box; display: flex; flex-direction: column; background: #0F1117; color: #E4E7EE; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif; font-size: 13px; border-radius: 12px; overflow: hidden; border: 1px solid #282D3B">
+  <div style="display: flex; flex: 1; min-height: 0">
+    <nav aria-label="Settings sections" style="width: 236px; flex-shrink: 0; background: #151821; border-right: 1px solid #282D3B; display: flex; flex-direction: column; padding: 14px 10px 12px">
+      <div style="display: flex; gap: 8px; padding: 0 6px 16px">
+        <span style="width: 12px; height: 12px; border-radius: 6px; background: #F2665C"></span>
+        <span style="width: 12px; height: 12px; border-radius: 6px; background: #F2A93B"></span>
+        <span style="width: 12px; height: 12px; border-radius: 6px; background: #4CC38A"></span>
+      </div>
+      <label style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 8px; background: #0F1117; margin-bottom: 14px; {{searchBorder}}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9AA2B3" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+        <input aria-label="Search settings or ask an agent" placeholder="Search, or ask an agent" value="{{query}}" onInput="{{onQuery}}" onKeyDown="{{onKey}}" style="flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: #E4E7EE; font: inherit">
+        <sc-if value="{{searching}}" hint-placeholder-val="{{false}}">
+          <button onClick="{{clear}}" aria-label="Clear search" style="width: 16px; height: 16px; padding: 0; border: 0; border-radius: 8px; background: #3A4052; color: #0F1117; display: flex; align-items: center; justify-content: center"><svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+        </sc-if>
+      </label>
+      <sc-for list="{{sections}}" as="s" hint-placeholder-count="9">
+        <button onClick="{{s.pick}}" aria-current="{{s.current}}" style="{{s.st}}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="{{s.icon}}"></path></svg>
+          <span style="flex: 1; text-align: left">{{s.label}}</span>
+          <sc-if value="{{s.hasBadge}}" hint-placeholder-val="{{false}}">
+            <span style="{{s.badgeSt}}">{{s.badge}}</span>
+          </sc-if>
+        </button>
+      </sc-for>
+      <sc-if value="{{hasHidden}}" hint-placeholder-val="{{false}}">
+        <div style="padding: 10px 10px 0; color: #7C8496; font-size: 12px; line-height: 1.4">{{hiddenNote}}</div>
+      </sc-if>
+      <div style="flex: 1"></div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; color: #9AA2B3; font-size: 12px">
+        <span style="width: 7px; height: 7px; border-radius: 4px; background: #4CC38A"></span>
+        <span style="flex: 1">Live</span>
+        <a href="#" style="font-size: 12px; text-decoration: none">settings.json</a>
+      </div>
+    </nav>
+    <main style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+      <header style="display: flex; align-items: flex-end; gap: 16px; padding: 26px 32px 16px">
+        <div style="flex: 1">
+          <h1 style="margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.01em">{{title}}</h1>
+          <p style="margin: 4px 0 0; color: #9AA2B3; font-size: 13px">{{subtitle}}</p>
+        </div>
+        <button onClick="{{toggleCli}}" aria-pressed="{{cli}}" style="{{cliBtn}}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"></path></svg>
+          Agent commands
+        </button>
+      </header>
+      <div style="flex: 1; overflow: auto; padding: 0 32px 32px; display: flex; flex-direction: column; gap: 22px">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="2">
+          <section style="display: flex; flex-direction: column; gap: 8px">
+            <h2 style="margin: 0 0 0 4px; font-size: 12px; font-weight: 600; color: #9AA2B3; letter-spacing: 0.02em; display: flex; align-items: center; gap: 6px">
+              <sc-if value="{{g.hasCrumb}}" hint-placeholder-val="{{false}}">
+                <button onClick="{{g.goSection}}" style="display: flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: #C9CEDA; font-size: 12px; font-weight: 600">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{g.icon}}"></path></svg>{{g.crumb}}
+                </button>
+                <sc-if value="{{g.hasTitle}}" hint-placeholder-val="{{false}}"><span style="color: #5A6172">›</span></sc-if>
+              </sc-if>
+              {{g.title}}
+            </h2>
+            <div style="background: #151821; border: 1px solid #282D3B; border-radius: 10px; overflow: hidden">
+              <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="3">
+                <div style="{{r.rowSt}}">
+                  <div style="display: flex; align-items: center; gap: 16px; min-height: 30px">
+                    <div style="flex: 1; min-width: 0">
+                      <div style="display: flex; align-items: center; gap: 6px; font-size: 13px">
+                        <span>{{r.lab.a}}<mark style="{{markSt}}">{{r.lab.m}}</mark>{{r.lab.b}}</span>
+                        <sc-if value="{{r.lock}}" hint-placeholder-val="{{false}}">
+                          <svg aria-label="Only you can change this" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9AA2B3" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>
+                        </sc-if>
+                      </div>
+                      <sc-if value="{{r.hasNote}}" hint-placeholder-val="{{true}}">
+                        <div style="{{r.noteSt}}">{{r.nt.a}}<mark style="{{markSt}}">{{r.nt.m}}</mark>{{r.nt.b}}</div>
+                      </sc-if>
+                      <sc-if value="{{r.hasVia}}" hint-placeholder-val="{{false}}">
+                        <div style="margin-top: 3px; font-size: 11px; color: #7C8496">{{r.viaLabel}} <span class="mono" style="color: #9AA2B3">{{r.via.a}}<mark style="{{markSt}}">{{r.via.m}}</mark>{{r.via.b}}</span></div>
+                      </sc-if>
+                    </div>
+                    <sc-if value="{{r.isToggle}}" hint-placeholder-val="{{false}}">
+                      <button onClick="{{r.toggle}}" aria-pressed="{{r.on}}" aria-label="{{r.label}}" style="{{r.track}}"><span style="{{r.knob}}"></span></button>
+                    </sc-if>
+                    <sc-if value="{{r.isSeg}}" hint-placeholder-val="{{false}}">
+                      <div role="group" aria-label="{{r.label}}" style="display: flex; padding: 2px; border-radius: 7px; background: #0F1117; border: 1px solid #282D3B">
+                        <sc-for list="{{r.opts}}" as="o" hint-placeholder-count="2">
+                          <button onClick="{{o.pick}}" aria-pressed="{{o.sel}}" style="{{o.st}}">{{o.t}}</button>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{r.isSelect}}" hint-placeholder-val="{{false}}">
+                      <button style="display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid #282D3B; background: #1D2130; color: #E4E7EE; font-size: 13px">
+                        <sc-if value="{{r.hasSw}}" hint-placeholder-val="{{false}}">
+                          <span style="display: flex; gap: 2px"><sc-for list="{{r.sw}}" as="c" hint-placeholder-count="4"><span style="{{c.st}}"></span></sc-for></span>
+                        </sc-if>
+                        {{r.value}}
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9AA2B3" stroke-width="2.5" stroke-linecap="round"><path d="M7 10l5 5 5-5"></path></svg>
+                      </button>
+                    </sc-if>
+                    <sc-if value="{{r.isStatus}}" hint-placeholder-val="{{false}}">
+                      <div style="display: flex; align-items: center; gap: 10px">
+                        <span style="{{r.dotSt}}"></span>
+                        <span style="{{r.statusSt}}">{{r.value}}</span>
+                        <sc-if value="{{r.hasAction}}" hint-placeholder-val="{{false}}">
+                          <button style="{{r.actionSt}}">{{r.action}}</button>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{r.isText}}" hint-placeholder-val="{{false}}">
+                      <div style="display: flex; align-items: center; gap: 10px">
+                        <span style="color: #9AA2B3">{{r.value}}</span>
+                        <sc-if value="{{r.hasAction}}" hint-placeholder-val="{{false}}">
+                          <button style="height: 26px; padding: 0 10px; border-radius: 6px; border: 1px solid #282D3B; background: #1D2130; color: #E4E7EE; font-size: 12px">{{r.action}}</button>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{r.isKey}}" hint-placeholder-val="{{false}}">
+                      <span style="display: flex; gap: 3px"><sc-for list="{{r.caps}}" as="k" hint-placeholder-count="2"><kbd style="min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box; border-radius: 5px; background: #1D2130; border: 1px solid #282D3B; border-bottom-width: 2px; display: flex; align-items: center; justify-content: center; font-family: inherit; font-size: 12px">{{k.k}}</kbd></sc-for></span>
+                    </sc-if>
+                  </div>
+                  <sc-if value="{{r.showCli}}" hint-placeholder-val="{{false}}">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: #0B0D12">
+                      <span class="mono" style="color: #B79AE8; font-size: 12px">$</span>
+                      <span class="mono" style="flex: 1; color: #C9CEDA; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{r.cli}}</span>
+                      <span style="color: #9AA2B3; font-size: 11px">{{r.who}}</span>
+                      <button aria-label="Copy command" style="border: 0; background: transparent; color: #9AA2B3; padding: 2px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"></path></svg></button>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </sc-for>
+        <sc-if value="{{noHits}}" hint-placeholder-val="{{false}}">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 70px 0 6px; color: #9AA2B3; text-align: center">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#5A6172" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+            <div style="color: #E4E7EE; font-size: 14px; font-weight: 600; margin-top: 6px">No setting matches “{{query}}”</div>
+            <div style="font-size: 12px">Searches names, descriptions, keys and values.</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{searching}}" hint-placeholder-val="{{false}}">
+          <button onClick="{{ask}}" style="{{askSt}}">
+            <span style="width: 28px; height: 28px; border-radius: 8px; background: rgba(183,154,232,0.16); color: #B79AE8; display: flex; align-items: center; justify-content: center; flex-shrink: 0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path></svg></span>
+            <span style="flex: 1; text-align: left">
+              <span style="display: block; color: #E4E7EE; font-size: 13px">{{askTitle}}</span>
+              <span style="display: block; color: #9AA2B3; font-size: 12px; margin-top: 2px">{{askSub}}</span>
+            </span>
+            <kbd style="height: 22px; padding: 0 7px; border-radius: 5px; background: #1D2130; border: 1px solid #282D3B; border-bottom-width: 2px; display: flex; align-items: center; font-family: inherit; font-size: 12px; color: #C9CEDA">↩</kbd>
+          </button>
+        </sc-if>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"query":{"editor":"text","default":""},"startSection":{"editor":"enum","options":["general","appearance","terminal","shortcuts","agents","limits","notifications","webhooks","system"],"default":"agents"},"$preview":{"width":1120,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const S = this.state || {};
+    const sec = S.sec || this.props.startSection || 'agents';
+    const cli = !!S.cli;
+    const V = S.v || {};
+    const set = (k, val) => this.setState({ v: Object.assign({}, V, { [k]: val }) });
+    const get = (k, d) => (k in V ? V[k] : d);
+
+    const tog = (k, label, note, d, o) => {
+      const on = get(k, d);
+      return Object.assign({ kind: 'toggle', label, note, key: k, on, cli: 'midna settings set ' + k + ' ' + on, toggle: () => set(k, !on) }, o || {});
+    };
+    const seg = (k, label, note, opts, d, o) => {
+      const cur = get(k, d);
+      return Object.assign({ kind: 'seg', label, note, key: k, cli: 'midna settings set ' + k + ' ' + cur,
+        opts: opts.map(([id, t]) => ({ t, sel: id === cur, pick: () => set(k, id) })) }, o || {});
+    };
+    const sel = (k, label, note, value, o) => Object.assign({ kind: 'select', label, note, value, key: k, cli: 'midna settings set ' + k + ' …' }, o || {});
+    const st = (label, note, tone, value, action, cliText, o) => Object.assign({ kind: 'status', label, note, tone, value, action, cli: cliText }, o || {});
+    const txt = (label, note, value, action, cliText, o) => Object.assign({ kind: 'text', label, note, value, action, cli: cliText }, o || {});
+    const key = (label, caps, k) => ({ kind: 'key', label, key: k, caps: caps.map((c) => ({ k: c })), cli: 'midna settings set ' + k + ' …' });
+
+    const twilight = ['#0F1117', '#B79AE8', '#4CC38A', '#F2A93B'];
+    const daylight = ['#F7F5F0', '#6B4FBF', '#2E9B67', '#C77E12'];
+
+    const data = {
+      general: { title: 'General', sub: 'Updates, the Ask box and where projects live.', groups: [
+        { title: 'Updates', rows: [
+          st('Update', 'Checks every 6 hours. Terminals keep running through a restart.', 'ok', 'Up to date · checked 2 h ago', 'Check now', 'midna updates check'),
+          seg('updates.channel', 'Channel', null, [['stable', 'Stable'], ['beta', 'Beta']], 'beta'),
+          txt('Version', null, 'midna 0.1.0-beta.4 · midnad 0.1.0-beta.4', null, 'midna info', { who: 'read-only' }),
+        ] },
+        { title: 'Ask box', rows: [
+          seg('ui.ask.agent', 'Agent', 'Who answers what you type in ⌘K or here.', [['claude', 'Claude'], ['codex', 'Codex']], 'claude'),
+          seg('ui.ask.scope', 'Starts in', null, [['project', 'Current project'], ['root', 'Home']], 'project'),
+        ] },
+        { title: 'Projects and editor', rows: [
+          txt('Project folders', 'Folders under these are found by ⌘K search.', '~/Development, ~/work', 'Edit…', 'midna settings set projects.roots …'),
+          sel('ide.app', 'Open in IDE', 'Per-folder and per-file rules: 2', 'Cursor'),
+          seg('windows.close_with_terminals', 'Closing a window with terminals', null, [['ask', 'Ask'], ['close', 'Close them'], ['move', 'Move them']], 'ask'),
+        ] },
+      ] },
+      appearance: { title: 'Appearance', sub: 'Theme, density and what the bars show.', groups: [
+        { title: 'Theme', rows: [
+          seg('theme', 'Theme', null, [['system', 'Match macOS'], ['dark', 'Dark'], ['light', 'Light']], 'system'),
+          sel('theme.dark', 'Dark theme', null, 'Midna Twilight', { sw: twilight }),
+          sel('theme.light', 'Light theme', null, 'Daylight', { sw: daylight }),
+          txt('Color overrides', 'Change any single color on top of the theme.', 'None', 'Edit…', 'midna settings set theme.colors …'),
+          seg('density', 'Density', null, [['comfortable', 'Comfortable'], ['compact', 'Compact']], 'comfortable', { kw: 'spacing size' }),
+        ] },
+        { title: 'Bars', rows: [
+          sel('ui.header.script', 'Header middle', 'Script; built-ins compose with +', 'GitHub'),
+          txt('Header buttons', 'Order and visibility. Hidden ones go in More (…).', '7 shown', 'Edit…', 'midna settings set ui.header.buttons …'),
+          sel('ui.row.script', 'Sidebar row line', null, 'Worktree + diff'),
+          sel('ui.status.script', 'Status bar script', null, 'Worktree + branch'),
+          txt('Status bar items', 'Right-click the status bar to toggle items.', '10 items', 'Edit…', 'midna settings set ui.status.items …'),
+          txt('Status looks', 'Restyle a status: color, icon, label.', '1 rule', 'Edit…', 'midna settings set ui.status.looks …'),
+        ] },
+      ] },
+      terminal: { title: 'Terminal', sub: 'How terminals behave under your hands.', groups: [
+        { title: 'Links and paths', rows: [
+          seg('terminal.link_preview', 'Link preview', 'The card a hovered path or link opens.', [['hover', 'On hover'], ['cmd', 'With ⌘'], ['off', 'Off']], 'hover'),
+          seg('terminal.preview_path_click', 'Clicking the path', null, [['reveal', 'Reveal in Finder'], ['ide', 'Open in IDE'], ['copy', 'Copy']], 'reveal'),
+        ] },
+        { title: 'Keyboard', rows: [
+          tog('terminal.option_as_meta', 'Option as Meta', 'For shells and editors that use Alt bindings.', false, { kw: 'alt key' }),
+          tog('finder.quick_action', 'Finder quick action', 'Open in midna from Finder’s right-click menu.', true),
+        ] },
+      ] },
+      shortcuts: { title: 'Shortcuts', sub: '41 shortcuts. Search above, or click one to record.', groups: [
+        { title: 'Terminals', rows: [ key('New terminal', ['⌘', 'T'], 'keys.new_terminal'), key('New agent', ['⇧', '⌘', 'T'], 'keys.new_agent'), key('Split', ['⌘', 'D'], 'keys.split'), key('Pop out', ['⇧', '⌘', 'O'], 'keys.pop_out'), key('Queue a message', ['⌘', 'U'], 'keys.queue') ] },
+        { title: 'Approvals', rows: [ key('Approve', ['⌘', '↩'], 'keys.approve'), key('Deny', ['⌘', '⌫'], 'keys.deny'), key('Next needs-you', ['⌘', 'J'], 'keys.next_needs_you') ] },
+      ] },
+      agents: { title: 'Agents', sub: 'How Claude and Codex report to midna.', groups: [
+        { title: 'Connection', rows: [
+          st('Claude Code hooks', 'Installed in ~/.claude/settings.json', 'ok', 'Installed', null, 'midna hooks install claude'),
+          st('Codex hooks', 'The CLI path moved since install.', 'need', 'Stale', 'Reinstall', 'midna hooks install codex', { warn: true }),
+          st('midna CLI', 'For agents outside midna.', 'ok', '/usr/local/bin/midna', null, 'midna --help'),
+          tog('agents.mcp', 'MCP server', 'Agents get midna’s tools.', true),
+          tog('agents.claude.statusline', 'Claude status line', null, true),
+          tog('agents.system_hint', 'System hint', 'Tell agents they run inside midna.', true),
+        ] },
+        { title: 'Lifecycle', rows: [
+          seg('agents.restart_on_update', 'After an agent update', null, [['ask', 'Ask'], ['when_idle', 'Restart when idle'], ['off', 'Never']], 'ask'),
+          tog('agents.adopt_typed', 'Adopt agents typed in a shell', null, true),
+          tog('agents.resume_after_sleep', 'Resume after sleep', 'Sends “continue” to agents stopped by sleep.', true),
+        ] },
+        { title: 'Kass dictation', rows: [
+          st('Handshake', 'Dictation opens the composer under the terminal.', 'ok', 'Detected', null, 'midna info', { who: 'read-only' }),
+          tog('kass.auto_send', 'Send when dictation ends', null, false),
+        ] },
+      ] },
+      limits: { title: 'Agent limits', sub: 'What agents may do without asking. Only you can change these.', groups: [
+        { title: 'Without asking, agents may', rows: [
+          tog('agents.may_move_windows', 'Move and resize windows', null, true, { lock: true }),
+          tog('agents.may_close_idle', 'Close idle terminals', null, true, { lock: true }),
+          tog('agents.may_force_close', 'Force-close busy terminals', null, false, { lock: true }),
+          tog('approve.from_cli', 'Approve from the CLI', 'Lets `midna approve` answer approvals.', false, { lock: true }),
+        ] },
+        { title: 'Policy', rows: [
+          seg('policy.default', 'When no rule matches', null, [['auto', 'Auto'], ['allow', 'Allow'], ['ask', 'Ask'], ['deny', 'Deny']], 'auto', { lock: true }),
+          sel('policy.request_timeout_secs', 'Request timeout', 'Unanswered requests are denied after this.', '10 minutes'),
+        ] },
+      ] },
+      notifications: { title: 'Notifications', sub: 'Most important on by default. A terminal can override any of these.', groups: [
+        { title: '', rows: [ tog('notify.enabled', 'Notifications', null, true), tog('notify.sounds', 'Sounds', null, true, { kw: 'audio' }) ] },
+        { title: 'Notify me when', rows: [
+          tog('notify.approval', 'An approval or question is waiting', null, true, { kw: 'sound: Portal' }),
+          tog('notify.attention', 'An agent asks for me', null, true),
+          tog('notify.failed', 'Something fails', null, true),
+          tog('notify.turn_done', 'An agent finishes', 'Turns longer than 30 s', true),
+          tog('notify.agent', 'An agent sends one on purpose', null, true),
+          tog('notify.pr_checks', 'PR checks finish', null, false),
+          tog('notify.background', 'A background task finishes', null, false),
+          tog('notify.exited', 'A terminal exits', null, false),
+        ] },
+        { title: 'Delivery', rows: [
+          tog('notify.when_focused', 'Even when midna is in front', null, false),
+          sel('notify.volume', 'Volume', null, '100%', { kw: 'sound loudness', key: 'notify.volume' }),
+          txt('Sound for each kind', null, '6 custom', 'Edit…', 'midna settings set notify.sound.<kind> …', { key: 'notify.sound.<kind>' }),
+        ] },
+      ] },
+      webhooks: { title: 'Webhooks', sub: 'GitHub and Bitbucket events that start sessions.', groups: [
+        { title: 'Route', rows: [
+          seg('webhooks.path', 'Path', null, [['off', 'Off'], ['tailscale_funnel', 'Tailscale Funnel'], ['self_relay', 'Self-hosted relay']], 'tailscale_funnel', { lock: true }),
+          txt('Public URL', null, 'https://morgans-macbook-pro.tail439d44.ts.net', 'Copy', 'midna webhooks status'),
+          txt('Port', null, '8443', null, 'midna settings set webhooks.port 8443'),
+          seg('triggers.agent_mode', 'Agents started by triggers', null, [['supervised', 'Supervised'], ['inherit', 'Inherit']], 'supervised', { lock: true }),
+        ] },
+      ] },
+      system: { title: 'System', sub: 'macOS grants and the daemon. midna can’t change these for you.', groups: [
+        { title: 'macOS', rows: [
+          st('Accessibility', 'Lets Kass read and edit terminal input.', 'ok', 'Granted', null, 'midna permissions open accessibility', { lock: true, kw: 'permission dictation' }),
+          st('Notifications', 'Approvals and failures show as notifications.', 'need', 'Off in System Settings', 'Fix', 'midna permissions open notifications', { lock: true, warn: true, kw: 'permission banners' }),
+          st('Login item', 'Starts midnad at login so shells survive a restart.', 'ok', 'On', null, 'midna permissions open login-items', { lock: true }),
+        ] },
+        { title: 'Daemon', rows: [ txt('midnad', null, 'up 8 h · pid 28159', 'Restart', 'midna info') ] },
+        { title: 'Reset', rows: [
+          st('Reset settings', 'Every setting back to its default.', 'err', '7 changed', 'Reset…', 'midna settings reset <key>', { lock: true }),
+          st('Reset midna', 'Closes every terminal and removes projects.', 'err', 'Start over', 'Reset…', 'midna daemon reset', { lock: true }),
+        ] },
+      ] },
+    };
+
+    const icons = {
+      general: 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4',
+      appearance: 'M12 3a9 9 0 1 1 0 18a9 9 0 0 1 0-18zM12 3v18',
+      terminal: 'M5 7l5 5-5 5M13 17h6',
+      shortcuts: 'M3 7h18v10H3zM7 10.5h.01M11 10.5h.01M15 10.5h.01M8 14h8',
+      agents: 'M12 3v5M12 16v5M3 12h5M16 12h5M6 6l3 3M15 15l3 3M6 18l3-3M15 9l3-3',
+      limits: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
+      notifications: 'M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 21h4',
+      webhooks: 'M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1',
+      system: 'M12 3a9 9 0 1 1 0 18a9 9 0 0 1 0-18zM12 11v6M12 7.5v.5',
+    };
+    const order = [['general', 'General'], ['appearance', 'Appearance'], ['terminal', 'Terminal'], ['shortcuts', 'Shortcuts'], ['agents', 'Agents', 1, true], ['limits', 'Agent limits'], ['notifications', 'Notifications'], ['webhooks', 'Webhooks'], ['system', 'System', 1, true]];
+    const secLabel = Object.fromEntries(order.map(([id, l]) => [id, l]));
+
+    // Search: every word must appear somewhere in the row.
+    const query = 'q' in S ? S.q : (this.props.query || '');
+    const ql = query.trim().toLowerCase();
+    const searching = ql.length > 0;
+    const words = ql.split(/\s+/).filter(Boolean);
+    const scope = S.scope || 'all';
+    const hl = (text) => {
+      const t = text || '';
+      const lo = t.toLowerCase();
+      for (const w of [ql].concat(words)) {
+        const i = w ? lo.indexOf(w) : -1;
+        if (i >= 0) return { a: t.slice(0, i), m: t.slice(i, i + w.length), b: t.slice(i + w.length) };
+      }
+      return { a: t, m: '', b: '' };
+    };
+    const hits = (t) => !!t && words.some((w) => t.toLowerCase().includes(w));
+    const match = (r, g, id) => {
+      const opts = (r.opts || []).map((o) => o.t).join(' ');
+      const hay = [r.label, r.note, r.key, r.value, r.action, r.kw, opts, g.title, secLabel[id], r.cli].join(' ').toLowerCase();
+      if (!words.every((w) => hay.includes(w))) return null;
+      if (hits(r.label) || hits(r.note)) return { via: null };
+      const why = [['Option', (r.opts || []).map((o) => o.t).find(hits)], ['Value', r.value], ['Button', r.action], ['Key', r.key], ['Related', r.kw], ['Command', r.cli]].find(([, t]) => hits(t));
+      return { via: why || null };
+    };
+
+    const tones = { ok: '#4CC38A', need: '#F2A93B', err: '#F2665C', dim: '#9AA2B3' };
+    const deco = (r, i, m) => {
+      const k = r.kind;
+      const tone = tones[r.tone] || '#9AA2B3';
+      const via = m && m.via;
+      return Object.assign({}, r, {
+        isToggle: k === 'toggle', isSeg: k === 'seg', isSelect: k === 'select', isStatus: k === 'status', isText: k === 'text', isKey: k === 'key',
+        hasNote: !!r.note, hasAction: !!r.action, hasSw: !!r.sw, lock: !!r.lock,
+        lab: searching ? hl(r.label) : { a: r.label, m: '', b: '' },
+        nt: searching ? hl(r.note) : { a: r.note || '', m: '', b: '' },
+        hasVia: !!via, viaLabel: via ? via[0] : '', via: via ? hl(via[1]) : { a: '', m: '', b: '' },
+        sw: (r.sw || []).map((c) => ({ st: 'width: 10px; height: 10px; border-radius: 3px; background: ' + c + '; border: 1px solid #3A4052' })),
+        showCli: cli && !!r.cli, who: r.who || (r.lock ? 'human only' : 'agents too'),
+        rowSt: 'padding: 11px 16px; ' + (i ? 'border-top: 1px solid #232838; ' : '') + (r.warn ? 'background: rgba(242,169,59,0.06)' : ''),
+        noteSt: 'margin-top: 2px; font-size: 12px; color: ' + (r.warn ? '#F2A93B' : '#9AA2B3'),
+        track: 'width: 34px; height: 20px; padding: 2px; border-radius: 10px; border: 0; display: flex; box-sizing: border-box; ' +
+          (r.on ? 'background: #B79AE8; justify-content: flex-end' : 'background: #3A4052; justify-content: flex-start'),
+        knob: 'width: 16px; height: 16px; border-radius: 8px; background: ' + (r.on ? '#15111C' : '#C9CEDA'),
+        opts: (r.opts || []).map((o) => Object.assign({}, o, { st: 'height: 24px; padding: 0 10px; border: 0; border-radius: 5px; font-size: 12px; ' + (o.sel ? 'background: #282D3B; color: #E4E7EE; font-weight: 600' : 'background: transparent; color: #9AA2B3') + (searching && hits(o.t) ? '; box-shadow: inset 0 0 0 1px #B79AE8' : '') })),
+        dotSt: 'width: 8px; height: 8px; border-radius: 4px; background: ' + tone,
+        statusSt: 'font-size: 13px; color: ' + (r.tone === 'need' ? '#F2A93B' : r.tone === 'err' ? '#9AA2B3' : '#E4E7EE'),
+        actionSt: 'height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; ' +
+          (r.tone === 'need' ? 'border: 0; background: #F2A93B; color: #15111C; font-weight: 600' : r.tone === 'err' ? 'border: 1px solid rgba(242,102,92,0.5); background: transparent; color: #F2665C' : 'border: 1px solid #282D3B; background: #1D2130; color: #E4E7EE'),
+      });
+    };
+
+    // Results per section, in sidebar order.
+    const results = {};
+    let total = 0;
+    if (searching) {
+      for (const [id] of order) {
+        const gs = data[id].groups.map((g) => {
+          const rows = [];
+          g.rows.forEach((r) => { const m = match(r, g, id); if (m) rows.push(deco(r, rows.length, m)); });
+          return { title: g.title, rows };
+        }).filter((g) => g.rows.length);
+        const n = gs.reduce((a, g) => a + g.rows.length, 0);
+        if (n) { results[id] = { groups: gs, n }; total += n; }
+      }
+    }
+    const shown = Object.keys(results);
+    const inScope = scope !== 'all' && results[scope] ? scope : 'all';
+
+    const itemSt = (on, gap) => 'display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: 7px; font-size: 13px; ' +
+      (gap ? 'margin-top: 12px; ' : '') +
+      (on ? 'background: #282D3B; color: #E4E7EE; font-weight: 600' : 'background: transparent; color: #C9CEDA');
+    const amber = 'min-width: 18px; height: 18px; border-radius: 9px; background: #F2A93B; color: #15111C; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center';
+    const count = 'min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: #232838; color: #9AA2B3; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center';
+
+    let sections;
+    if (!searching) {
+      sections = order.map(([id, label, badge, gap]) => ({
+        label, icon: icons[id], badge: badge || 0, hasBadge: !!badge, badgeSt: amber, current: id === sec ? 'page' : 'false',
+        pick: () => this.setState({ sec: id }), st: itemSt(id === sec, gap),
+      }));
+    } else {
+      const all = { label: 'All results', icon: 'M11 4a7 7 0 1 1 0 14a7 7 0 0 1 0-14zM20 20l-4-4', badge: total, hasBadge: true, badgeSt: count,
+        current: inScope === 'all' ? 'page' : 'false', pick: () => this.setState({ scope: 'all' }), st: itemSt(inScope === 'all', false) };
+      sections = (total ? [all] : []).concat(order.filter(([id]) => results[id]).map(([id, label], i) => ({
+        label, icon: icons[id], badge: results[id].n, hasBadge: true, badgeSt: count, current: inScope === id ? 'page' : 'false',
+        pick: () => this.setState({ scope: id }), st: itemSt(inScope === id, i === 0),
+      })));
+    }
+    const hiddenN = order.length - shown.length;
+
+    let groups, title, subtitle;
+    if (!searching) {
+      const page = data[sec];
+      title = page.title; subtitle = page.sub;
+      groups = page.groups.map((g) => ({ title: g.title, hasCrumb: false, rows: g.rows.map((r, i) => deco(r, i, null)) }));
+    } else {
+      const ids = inScope === 'all' ? shown : [inScope];
+      groups = [];
+      for (const id of ids) {
+        results[id].groups.forEach((g) => groups.push({
+          title: g.title, hasTitle: !!g.title, hasCrumb: true, crumb: secLabel[id], icon: icons[id], rows: g.rows,
+          goSection: () => this.setState({ q: '', scope: 'all', sec: id }),
+        }));
+      }
+      const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+      if (!total) { title = 'No results'; subtitle = 'Press Return to ask an agent instead.'; }
+      else if (inScope === 'all') { title = 'Results for “' + query.trim() + '”'; subtitle = plural(total, 'setting') + ' in ' + plural(shown.length, 'section') + '.'; }
+      else { title = secLabel[inScope]; subtitle = plural(results[inScope].n, 'match') + ' for “' + query.trim() + '” · ' + (total - results[inScope].n) + ' more in other sections.'; }
+    }
+    const agent = get('ui.ask.agent', 'claude') === 'codex' ? 'Codex' : 'Claude';
+
+    return {
+      sections, groups, title, subtitle, cli: cli ? 'true' : 'false',
+      query, searching, noHits: searching && !total,
+      hasHidden: searching && hiddenN > 0 && total > 0,
+      hiddenNote: hiddenN + ' section' + (hiddenN === 1 ? '' : 's') + ' with no matches hidden',
+      onQuery: (e) => this.setState({ q: e.target.value, scope: 'all' }),
+      onKey: (e) => { if (e.key === 'Escape') this.setState({ q: '', scope: 'all' }); if (e.key === 'Enter') this.setState({ asked: query.trim() }); },
+      clear: () => this.setState({ q: '', scope: 'all' }),
+      ask: () => this.setState({ asked: query.trim() }),
+      searchBorder: searching ? 'border: 1px solid #B79AE8; box-shadow: 0 0 0 3px rgba(183,154,232,0.15)' : 'border: 1px solid #282D3B',
+      markSt: 'background: rgba(183,154,232,0.28); color: #F1EAFE; border-radius: 3px; padding: 0 1px',
+      askTitle: S.asked === query.trim() && searching ? agent + ' is on it. A terminal opened in Home.' : 'Ask ' + agent + ': “' + query.trim() + '”',
+      askSub: S.asked === query.trim() && searching ? 'It can change any setting without a lock. Changes show here as they land.' : (total ? 'Not what you meant? An agent can find or change it for you.' : 'An agent can find it, or change it for you.'),
+      askSt: 'display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; margin-top: ' + (total ? '4px' : '18px') + '; border-radius: 10px; border: 1px dashed #3A4052; background: transparent; color: inherit; text-align: left',
+      toggleCli: () => this.setState({ cli: !cli }),
+      cliBtn: 'display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12px; ' +
+        (cli ? 'border: 1px solid #B79AE8; background: rgba(183,154,232,0.12); color: #CDB6F2' : 'border: 1px solid #282D3B; background: #151821; color: #9AA2B3'),
+    };
+  }
+}
+</script>
+</body>
+</html>
