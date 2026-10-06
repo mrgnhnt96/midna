@@ -91,7 +91,8 @@ pub static VERBS: &[Verb] = &[
         summary: "list and edit projects (directories that group terminals)",
         details: "Saved commands show up in the human's command bar as \"Run <name>\" (pinned ones are\n\
                   suggested). `discover` lists folders under the projects.roots setting\n\
-                  that can be opened. `remove` is human only: it asks the human.",
+                  that can be opened. `remove` is human only (it asks the human), except for a project midna\n\
+                  created for an agent's `open --cwd` (auto_created) once none of its terminals runs.",
         methods: &["project.list", "project.discover", "project.add", "project.update", "project.remove"],
     },
     Verb {
@@ -102,6 +103,16 @@ pub static VERBS: &[Verb] = &[
         details: "Status: idle, working, needs_you, done (finished, not seen yet), failed, exited.\n\
                   `midna explain <id>` says why a terminal has its status.",
         methods: &["session.list"],
+    },
+    Verb {
+        name: "get",
+        aliases: &["show"],
+        usage: "get <id>",
+        summary: "one terminal: status, cwd, command, agent info",
+        details: "Everything session.get returns: kind, agent, cwd, command, title, status {state, reason, since},\n\
+                  repo info and, for agents, agent_info (conversation, version, background work, subagents,\n\
+                  queued restart). `--json` for the full object; `midna explain <id>` says why it has its status.",
+        methods: &["session.get"],
     },
     Verb {
         name: "open",
@@ -126,8 +137,10 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "close <id> [--force]",
         summary: "close a terminal and kill its process",
-        details: "A working terminal needs --force. Closing another terminal may ask the human\n\
-                  (setting agents.may_close_idle, rules on `close …`).",
+        details: "A working terminal needs --force. `close --force` and closing another terminal may ask the\n\
+                  human (settings agents.may_close_idle and agents.may_force_close, rules on `close …`); add\n\
+                  --no-wait to get the needs-you id back at once instead of waiting (see `midna needs`).\n\
+                  An approval still open when its terminal closes is withdrawn.",
         methods: &["session.close"],
     },
     Verb {
@@ -316,11 +329,14 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "needs",
         aliases: &["needs-you"],
-        usage: "needs",
-        summary: "list what is waiting on the human",
-        details: "Approvals, permission prompts, blocked agents, notes, failures, rule-removal requests,\n\
-                  missing webhook secrets. `midna explain <n_id>` explains one.",
-        methods: &["needs_you.list"],
+        usage: "needs\n       needs get <n_id>\n       needs wait <n_id> [--timeout S]",
+        summary: "list what is waiting on the human; follow one item",
+        details: "Approvals, permission prompts (also an agent's \"trust this folder?\" dialog), blocked agents,\n\
+                  notes, failures, rule-removal requests, missing webhook secrets. `midna explain <n_id>` explains one.\n\
+                  get   where one item stands: open, resolved (how, by whom), withdrawn (its terminal or its asker\n\
+                  \x20     went away) or timeout; for a --no-wait call also what that call ended with.\n\
+                  wait  block until it is answered (default 300 s), then print the same. Exit 4 while still open.",
+        methods: &["needs_you.list", "needs_you.get"],
     },
     Verb {
         name: "approve",
@@ -631,7 +647,9 @@ pub fn usage() -> String {
     out.push_str(
         "\nNew here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
          Free text with flags goes after `--`, e.g. `midna check command -- git push --force`.\n\
-         Exit codes: 0 ok, 1 refused or failed, 2 bad arguments, 3 daemon unreachable.\n\
+         --no-wait (any verb): don't block on an approval; print its needs-you id and exit 4 (the call\n\
+         carries on when the human answers; follow it with `midna needs get|wait <id>`).\n\
+         Exit codes: 0 ok, 1 refused or failed, 2 bad arguments, 3 daemon unreachable, 4 waiting on the human.\n\
          Socket: $MIDNA_SOCKET, else $MIDNA_HOME/midnad.sock.",
     );
     out
@@ -654,7 +672,7 @@ mod tests {
         // method has to be placed deliberately.
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
-            "session.get", "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report",
+            "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

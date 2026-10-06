@@ -404,3 +404,42 @@ fn queue_add_list_move_remove() {
     assert_eq!(code(&midna(&s, &["queue", "add", "x", "--idle", "soon", "--session", &id], None, None)), 2);
     assert_eq!(code(&midna(&s, &["queue", "add", "x", "--idle", "5", "--at", "18:00", "--session", &id], None, None)), 2);
 }
+
+#[test]
+fn get_no_wait_and_needs_get() {
+    let d = D::start();
+    let s = d.sock();
+    let mut h = d.human();
+    let open = |h: &mut midna_proto::Client| -> String {
+        let v = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    };
+    let (me, target) = (open(&mut h), open(&mut h));
+    // `get` = session.get.
+    let o = midna(&s, &["get", &target], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert!(stdout(&o).contains(&target) && stdout(&o).contains("/tmp"), "{}", stdout(&o));
+    let o = midna(&s, &["get", &target, "--json"], None, None);
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&o)).unwrap()["id"], target.as_str());
+
+    // `close --force --no-wait`: the needs-you id on stdout, exit 4, right away.
+    let t0 = std::time::Instant::now();
+    let o = midna(&s, &["close", &target, "--force", "--no-wait"], None, Some(&me));
+    assert_eq!(code(&o), 4, "{o:?}");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+    let nid = stdout(&o).trim().to_string();
+    assert!(nid.starts_with("n_"), "{o:?}");
+    let o = midna(&s, &["needs", "get", &nid, "--json"], None, None);
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&o)).unwrap()["state"], "open");
+    // Still open after a short wait: exit 4.
+    let o = midna(&s, &["needs", "wait", &nid, "--timeout", "1"], None, None);
+    assert_eq!(code(&o), 4, "{o:?}");
+    // The human approves; `needs wait` reports the close went through.
+    h.call_value("needs_you.resolve", json!({ "id": nid, "resolution": { "kind": "approve", "scope": { "kind": "once" } } })).unwrap();
+    let o = midna(&s, &["needs", "wait", &nid, "--json"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!((v["state"].as_str(), v["result"]["ok"].as_bool()), (Some("resolved"), Some(true)), "{v}");
+    let o = midna(&s, &["needs", "get", &nid], None, None);
+    assert!(stdout(&o).contains("resolved: approve"), "{}", stdout(&o));
+}

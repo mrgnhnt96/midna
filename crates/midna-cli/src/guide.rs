@@ -1,6 +1,6 @@
 //! Agent-facing guidance shared by the CLI and `midna mcp`: the capabilities overview, the
 //! bundled skill, "what to do next" hints for refusals, topic notes, and `explain`.
-use midna_proto::error::{BAD_PARAMS, CONFLICT, HUMAN_ONLY, NOT_FOUND, REFUSED, UNKNOWN_METHOD};
+use midna_proto::error::{BAD_PARAMS, CONFLICT, HUMAN_ONLY, NOT_FOUND, PENDING, REFUSED, UNKNOWN_METHOD};
 use midna_proto::settings::{SETTINGS, setting};
 use midna_proto::{RpcError, catalog, time};
 use serde_json::{Value, json};
@@ -24,7 +24,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 `midna call <method> <json>`. Everything you do is logged (`midna events`).
 
 WHAT YOU CAN DO
-  see        midna list | projects | needs | read <id> | explain <id> | events | insights | usage
+  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage
   terminals  midna open [--agent claude|codex --prompt T --resume ID -- agent-args | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
@@ -106,6 +106,22 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
              {} asks them (human-only setting).",
             cmd(surface, "settings set agents.may_move_windows true", "settings_set")
         ),
+        (PENDING, _) => {
+            let n = needs_you.as_deref().unwrap_or("<n_id>");
+            format!(
+                "Nothing was done yet: needs-you {n} waits on the human, and the call carries on by itself if they approve. \
+                 Don't retry it. Follow it with {} (state, and the call's result or error once answered).",
+                match surface {
+                    Surface::Cli => format!("`midna needs get {n}` or `midna needs wait {n}`"),
+                    Surface::Mcp => format!("the `needs_you_get` tool with {{\"id\":\"{n}\",\"wait_secs\":60}}"),
+                }
+            )
+        }
+        (REFUSED, _) if e.message.contains("approval withdrawn") => format!(
+            "Nothing was done: the approval was withdrawn before the human answered, because what it was about (or the asker) \
+             is gone. Check with {} before asking again.",
+            cmd(surface, "list", "session_list")
+        ),
         (REFUSED, _) if needs_you.is_some() => format!(
             "The human denied it (or didn't answer in time). Don't retry another way. If it matters, explain why in one line \
              with {}.",
@@ -174,7 +190,10 @@ const TOPICS: &[(&str, &str)] = &[
     ("approvals", "An `ask` decision raises an approval needs-you item and blocks the caller until the human answers \
         (setting policy.request_timeout_secs, default 300). Approving with a scope adds a rule: minutes(n) and session \
         → session rule, always → project rule. Agents can't approve unless the human enabled approve.from_cli, and \
-        then only their own session's requests. Approvals that confirm a human-only action are the human's alone."),
+        then only their own session's requests. Approvals that confirm a human-only action are the human's alone. \
+        `--no-wait` (MCP/RPC: caller.no_wait) returns at once with the needs-you id (exit 4 / error 6) and the call \
+        finishes when the human answers; follow it with `midna needs get|wait <id>` (needs_you.get). An approval is \
+        withdrawn if the terminal it is about closes, or its asker disconnects or closes, before anyone answers."),
     ("triggers", "A webhook trigger maps a GitHub/Bitbucket event (`pull_request.opened`, `pullrequest:created`, globs \
         ok) plus filters (repo, branch, action, label) to an action: start_agent (prompt template), run_command (a \
         monitor terminal; values shell-quoted) or attention. States: needs_secret → draft → active ⇄ paused. Agents \
@@ -204,7 +223,8 @@ const TOPICS: &[(&str, &str)] = &[
         the human removes secrets. Never ask for a value in chat."),
     ("needs-you", "Needs-you items are what the human must look at: approval, permission_prompt, blocked, note, failed, \
         trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`. The human \
-        resolves: approve{scope}, deny, dismiss, done, restart."),
+        resolves: approve{scope}, deny, dismiss, done, restart. An agent's \"trust this folder?\" startup dialog is a \
+        permission_prompt too (approve = Yes, deny = No). `midna needs get <id>` says where one item stands."),
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
         description. Agents may change any key not marked human only; setting a human-only key asks the human. The GUI \
         updates live on settings.changed. Keybindings are settings too (keys.*)."),

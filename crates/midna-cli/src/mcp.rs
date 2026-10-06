@@ -79,7 +79,11 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             session for local triggers. The `guide` tool (section “Local triggers”) has worked examples.",
         "needs_you.resolve" => "Agents normally don't call this: answering is the human's job. Refused unless the human enabled \
             approve.from_cli, and then only for your own session's approvals.",
-        "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action.",
+        "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action. \
+            Add no_wait: true (works on any tool) to get the needs-you id back at once (error 6) and follow it with needs_you_get.",
+        "session.close" => "Closing a working terminal or another one may ask the human and block meanwhile; add no_wait: true \
+            to get the needs-you id back at once (error 6): the close then happens if they approve, and needs_you_get \
+            {id, wait_secs} tells you how it went.",
         "agent.hook" => "Internal: midna's hook bridge calls this. Agents don't need it.",
         "session.input" => "To message another agent, send the text with enter=true; add images as absolute paths in `images` \
             (e.g. a screenshot you saved). To press special keys use session_key. Read the result with session_read.",
@@ -256,7 +260,16 @@ fn call_tool(client: &mut Option<Client>, params: &Value) -> Result<Value, Value
     let Some(method) = method_for(tool) else {
         return Err(json!({ "code": -32602, "message": format!("unknown tool `{tool}`; tools/list lists them (or call the `capabilities` tool)") }));
     };
-    Ok(match rpc(client, method, args.clone()) {
+    // `no_wait: true` on any tool: don't block on an approval (caller.no_wait), on a connection of its own.
+    let mut args = args;
+    let no_wait = args.as_object_mut().and_then(|o| o.remove("no_wait")).and_then(|v| v.as_bool()) == Some(true);
+    let res = if no_wait {
+        let mut once = Client::connect_default().ok().map(Client::no_wait);
+        rpc(&mut once, method, args.clone())
+    } else {
+        rpc(client, method, args.clone())
+    };
+    Ok(match res {
         Ok(v) => text_result(
             serde_json::to_string_pretty(&v).unwrap_or_default(),
             Some(if v.is_object() { v } else { json!({ "result": v }) }),

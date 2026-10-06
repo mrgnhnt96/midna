@@ -118,7 +118,7 @@ impl Args {
     /// Unknown flags (anything not in `allowed`).
     pub fn check(&self, allowed: &[&str]) -> Result<(), ArgError> {
         for k in self.flags.keys() {
-            if !allowed.contains(&k.as_str()) && !matches!(k.as_str(), "json" | "help" | "socket") {
+            if !allowed.contains(&k.as_str()) && !matches!(k.as_str(), "json" | "help" | "socket" | "no-wait") {
                 return Err(ArgError(format!("unknown flag --{k}")));
             }
         }

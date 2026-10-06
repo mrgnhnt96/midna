@@ -18,13 +18,14 @@ Three ways in, all equivalent (same daemon, same checks, same audit log):
 - Raw RPC: `midna call <method> '<json>'`. `midna schema <method>` shows the params.
 
 Add `--json` to any verb for machine-readable output. Exit codes: 0 ok, 1 refused/failed,
-2 bad arguments, 3 daemon unreachable.
+2 bad arguments, 3 daemon unreachable, 4 waiting on the human (`--no-wait`).
 
 ## Orient yourself
 
 ```
 midna info                 # your role (agent) and session
 midna list                 # terminals: id, status, kind, name, project
+midna get <id>             # one terminal: status and reason, cwd, command, agent info
 midna projects             # projects (directories that group terminals)
 midna projects discover    # folders under the projects.roots setting that can be opened as projects
 midna needs                # what is waiting on the human right now
@@ -51,7 +52,11 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   view is). `midna prompts <id> --jump N|prev|next|latest|live` scrolls the agent's own view there,
   e.g. to show the human the answer to an earlier question.
 - `midna rename`, `midna restart` and `midna close <id>` manage a terminal. Closing a busy
-  terminal needs `--force` and may ask the human.
+  terminal needs `--force` and may ask the human (unless they turned on `agents.may_force_close`).
+  If you shouldn't sit waiting for the answer, add `--no-wait`: it prints the needs-you id and exits 4
+  at once, the close happens if the human approves, and `midna needs get <id>` (or
+  `midna needs wait <id>`) tells you how it went. An approval about a terminal that closes in the
+  meantime is withdrawn.
 - `midna procs <id>` lists a terminal's processes and what its agent has in flight (background
   shells, subagents, scheduled wakeups). `midna restart <id>` reopens an agent in the same
   conversation; it refuses while background work would be lost, so use `--idle` to queue it until
@@ -96,7 +101,9 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - `midna check <kind> <value>` tests an action without side effects and shows the trace.
 - An `ask` decision raises an approval for the human and waits for the answer. Don't approve your
   own requests: agents may approve only when the human turned on `approve.from_cli`, and only for
-  their own session.
+  their own session. `--no-wait` on any verb returns the needs-you id instead of waiting.
+- A new Claude or Codex in a folder it hasn't seen asks "do you trust this folder?" before it starts;
+  that shows as a needs-you item (its terminal is needs_you) the human answers. Don't type into it.
 
 ## Rules: agents add, humans remove
 
@@ -276,7 +283,7 @@ the human stored asks them first. Only the human removes secrets.
 | replace a secret the human stored | `<command> \| midna secret save NAME`, which asks the human |
 | set a webhook secret / enable a webhook trigger | `midna triggers enable <id>`, which asks the human (local triggers you may enable) |
 | change a human-only setting | `midna settings set ...`, which asks the human |
-| remove a project, stop, upgrade or reset the daemon, configure webhooks, install an app update | call it; it becomes a needs-you approval |
+| remove a project, stop, upgrade or reset the daemon, configure webhooks, install an app update | call it; it becomes a needs-you approval (a project midna created for your `open --cwd` you may remove yourself once its terminals are closed) |
 | approve your own request | wait; the human answers it |
 | grant macOS permissions | `midna attention` and say what you need |
 

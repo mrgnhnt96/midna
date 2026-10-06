@@ -13,7 +13,7 @@ mod triggers;
 
 use args::{ArgError, Args};
 use midna_proto::client::Notification;
-use midna_proto::error::{BAD_PARAMS, UNKNOWN_METHOD};
+use midna_proto::error::{BAD_PARAMS, PENDING, UNKNOWN_METHOD};
 use midna_proto::{Client, ClientError, RpcError};
 use serde_json::{Value, json};
 
@@ -22,7 +22,12 @@ pub enum Fail {
     Unreachable(String),
     Rpc(RpcError),
     Other(String),
+    /// Still waiting on the human (`needs wait` timed out); exit 4.
+    Pending(String),
 }
+
+/// `--no-wait`: calls that need an approval return its needs-you id instead of blocking.
+static NO_WAIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl From<ArgError> for Fail {
     fn from(e: ArgError) -> Self {
@@ -46,6 +51,8 @@ impl Fail {
             Fail::Usage(_) => 2,
             Fail::Unreachable(_) => 3,
             Fail::Rpc(e) if e.code == BAD_PARAMS || e.code == UNKNOWN_METHOD => 2,
+            Fail::Rpc(e) if e.code == PENDING => 4,
+            Fail::Pending(_) => 4,
             Fail::Rpc(_) | Fail::Other(_) => 1,
         }
     }
@@ -76,6 +83,7 @@ fn main() {
         // SAFETY: single-threaded at this point.
         unsafe { std::env::set_var("MIDNA_SOCKET", s) };
     }
+    NO_WAIT.store(args.has("no-wait"), std::sync::atomic::Ordering::Relaxed);
     finish(run(&args), json);
 }
 
@@ -88,8 +96,16 @@ fn finish(r: Res, json: bool) -> ! {
                 Fail::Usage(m) => format!("{m}\nrun `midna help` for usage"),
                 Fail::Unreachable(m) => format!("midnad is not reachable at {}: {m}", midna_proto::paths::socket_path().display()),
                 Fail::Rpc(e) => e.message.clone(),
-                Fail::Other(m) => m.clone(),
+                Fail::Other(m) | Fail::Pending(m) => m.clone(),
             };
+            // `--no-wait`: the needs-you id alone on stdout, for scripts (`id=$(midna close X --force --no-wait)`).
+            let pending = match &f {
+                Fail::Rpc(e) if e.code == PENDING => e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()),
+                _ => None,
+            };
+            if let (Some(id), false) = (pending, json) {
+                println!("{id}");
+            }
             if json {
                 let err = match &f {
                     Fail::Rpc(e) => json!({ "error": e }),
@@ -109,7 +125,11 @@ pub fn connect() -> Result<Client, Fail> {
 }
 
 pub(crate) fn call(method: &str, params: Value) -> Result<Value, Fail> {
-    match connect()?.call_value(method, params.clone()) {
+    let mut c = connect()?;
+    if NO_WAIT.load(std::sync::atomic::Ordering::Relaxed) {
+        c = c.no_wait();
+    }
+    match c.call_value(method, params.clone()) {
         Ok(v) => Ok(v),
         Err(ClientError::Rpc(e)) => Err(Fail::Rpc(guide::with_next_step(method, &params, e, guide::Surface::Cli))),
         Err(e) => Err(e.into()),
@@ -410,9 +430,12 @@ fn run(a: &Args) -> Res {
             out(&v, &|v| println!("raised {} ({kind})", v["id"].as_str().unwrap_or("")));
             Ok(())
         }
-        "needs" | "needs-you" => {
-            let v = call("needs_you.list", json!({}))?;
-            out(&v, &print::needs_you);
+        "needs" | "needs-you" => needs(a, &out),
+        "get" => {
+            a.check(&[])?;
+            let id = a.need(1, "terminal id")?;
+            let v = call("session.get", json!({ "id": id }))?;
+            out(&v, &print::session);
             Ok(())
         }
         "approve" => approve(a, &out),
@@ -505,6 +528,40 @@ fn open(a: &Args, out: OutFn) -> Res {
     }
     let v = call("session.open", p)?;
     out(&v, &|v| println!("{}", v["id"].as_str().unwrap_or("")));
+    Ok(())
+}
+
+/// `needs` (list), `needs get <id>`, `needs wait <id> [--timeout S]`.
+fn needs(a: &Args, out: OutFn) -> Res {
+    match a.pos.get(1).map(String::as_str) {
+        None | Some("list" | "ls") => {
+            a.check(&[])?;
+            let v = call("needs_you.list", json!({}))?;
+            out(&v, &print::needs_you);
+        }
+        Some(sub @ ("get" | "wait")) => {
+            a.check(&["timeout"])?;
+            let id = a.need(2, "needs-you id")?;
+            let v = if sub == "get" {
+                call("needs_you.get", json!({ "id": id }))?
+            } else {
+                // The daemon waits at most 600 s per call; ask again until the timeout.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(a.num::<u64>("timeout")?.unwrap_or(300));
+                loop {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now()).as_secs().clamp(1, 600);
+                    let v = call("needs_you.get", json!({ "id": id, "wait_secs": left }))?;
+                    if v["state"] != "open" || std::time::Instant::now() >= deadline {
+                        break v;
+                    }
+                }
+            };
+            out(&v, &print::needs_you_state);
+            if sub == "wait" && v["state"] == "open" {
+                return Err(Fail::Pending(format!("{id} is still waiting on the human")));
+            }
+        }
+        Some(other) => return Err(Fail::Usage(format!("unknown needs subcommand `{other}` (get|wait)"))),
+    }
     Ok(())
 }
 

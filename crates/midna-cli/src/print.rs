@@ -71,6 +71,57 @@ pub fn sessions(v: &Value) {
     table(rows);
 }
 
+/// `midna get <id>`: one terminal, the fields worth a glance (`--json` has everything).
+pub fn session(x: &Value) {
+    let mut rows: Vec<(&str, String)> = vec![
+        ("id", s(x, "id")),
+        ("name", s(x, "name")),
+        ("status", status_text(x)),
+        ("reason", plain(&x["status"]["reason"])),
+        ("since", plain(&x["status"]["since"])),
+        ("kind", s(x, "kind")),
+        ("agent", plain(&x["agent"])),
+        ("project", s(x, "project_id")),
+        ("cwd", s(x, "cwd")),
+        ("command", x["command"].as_array().map(|c| c.iter().map(plain).collect::<Vec<_>>().join(" ")).unwrap_or_default()),
+        ("pid", plain(&x["pid"])),
+        ("title", s(x, "title")),
+        ("branch", plain(&x["git"]["branch"])),
+    ];
+    let info = &x["agent_info"];
+    if info.is_object() {
+        rows.push(("conversation", plain(&info["conversation_id"])));
+        rows.push(("version", plain(&info["version"])));
+        let n = |k: &str| info[k].as_array().map_or(0, Vec::len);
+        rows.push(("background", n("background").to_string()));
+        rows.push(("subagents", n("subagents").to_string()));
+    }
+    let w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (k, v) in rows.into_iter().filter(|(_, v)| !v.is_empty() && v != "null") {
+        println!("{k:<w$}  {v}");
+    }
+}
+
+/// `midna needs get|wait <id>`: where one item stands.
+pub fn needs_you_state(v: &Value) {
+    let state = s(v, "state");
+    match state.as_str() {
+        "open" => println!("{} open: {}", s(v, "id"), plain(&v["item"]["title"])),
+        _ => {
+            let how = v["resolution"]["kind"].as_str().unwrap_or("");
+            let why = v["resolution"]["reason"].as_str().map(|r| format!(" ({r})")).unwrap_or_default();
+            let by = v["resolved_by"]["kind"].as_str().map(|b| format!(" by {b}")).unwrap_or_default();
+            println!("{} {state}: {how}{why}{by}", s(v, "id"));
+        }
+    }
+    if let Some(r) = v.get("result") {
+        println!("the call returned: {r}");
+    }
+    if let Some(e) = v.get("error") {
+        println!("the call failed: {}", e["message"].as_str().unwrap_or(""));
+    }
+}
+
 pub fn needs_you(v: &Value) {
     let list = v.as_array().cloned().unwrap_or_default();
     if list.is_empty() {
