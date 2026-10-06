@@ -222,10 +222,18 @@ pub fn trust_keys(t: &TrustDialog, approve: bool) -> Vec<crate::term::Key> {
     keys
 }
 
-/// The screen shows something only the human should answer: a permission prompt or a
-/// folder-trust dialog. Queued messages and title heuristics hold off while it is up.
+/// Claude's question dialog (AskUserQuestion), from its footer at the bottom of the screen.
+/// Kept apart from `screen_shows_prompt`: Enter there picks the highlighted answer, not "Yes".
+pub fn screen_shows_question(lines: &[String]) -> bool {
+    let tail: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let tail = &tail[tail.len().saturating_sub(4)..];
+    tail.iter().any(|l| l.starts_with("Enter to select") && l.contains("Esc to cancel"))
+}
+
+/// The screen shows something only the human should answer: a permission prompt, a question
+/// or a folder-trust dialog. Queued messages and title heuristics hold off while it is up.
 pub fn screen_waits_on_human(lines: &[String]) -> bool {
-    screen_shows_prompt(lines) || screen_shows_trust(lines).is_some()
+    screen_shows_prompt(lines) || screen_shows_question(lines) || screen_shows_trust(lines).is_some()
 }
 
 #[cfg(test)]
@@ -259,6 +267,13 @@ mod tests {
         assert!(!screen_shows_prompt(&screen("claude-2.1.288-trust-folder.screen.txt")), "Enter there would exit");
         assert!(!screen_shows_prompt(&screen("codex-0.160.0-idle.screen.txt")));
         assert!(!screen_shows_prompt(&screen("codex-0.160.0-hooks-review.screen.txt")), "Enter there opens the review");
+        // A question waits on the human, but Enter there picks an answer: never "Yes".
+        assert!(!screen_shows_prompt(&screen("claude-2.1.292-question.screen.txt")), "Enter there picks an answer");
+        assert!(screen_shows_question(&screen("claude-2.1.292-question.screen.txt")));
+        assert!(screen_waits_on_human(&screen("claude-2.1.292-question.screen.txt")));
+        for f in ["claude-2.1.288-permission.screen.txt", "claude-2.1.288-interrupted.screen.txt", "claude-2.1.288-trust-folder.screen.txt", "codex-0.160.0-idle.screen.txt"] {
+            assert!(!screen_shows_question(&screen(f)), "{f}");
+        }
         // Quoted in the transcript, far above the input box: not a live prompt.
         let mut quoted = vec!["Do you want to proceed?".to_string(), "1. Yes".to_string()];
         quoted.extend(screen("claude-2.1.288-interrupted.screen.txt"));

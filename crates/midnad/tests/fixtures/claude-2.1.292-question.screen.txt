@@ -1,0 +1,21 @@
+● Three test Quick Actions are registered. I need your eyes for one step, since I can't open a Finder context menu without taking over your screen.
+
+────────────────────────────────────────────────────────────────────────────────
+ ←  ☐ Icon test  ✔ Submit  →
+
+Right-click any folder in Finder (check under Quick Actions too). Three test entries named "ZZ Icon A/B/C …" are there. Which ones show the Midna (Dev) icon?
+
+❯ 1. [ ] A icns path
+         NSIconName = absolute path to the app's .icns
+  2. [ ] B png path
+         NSIconName = absolute path to a .png
+  3. [ ] C bundled name
+         NSIconName = "AppIcon", icns copied inside the workflow
+  4. [ ] None show an icon
+         All three look like plain text / generic
+  5. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

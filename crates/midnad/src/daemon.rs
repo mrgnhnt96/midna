@@ -123,6 +123,9 @@ pub struct AgentRt {
     /// When the title heuristic last ended a turn. Codex's notify for the same turn can land
     /// after the title already stopped spinning; it must not open a second turn.
     pub title_ended_at: Option<Instant>,
+    /// When the agent's prompt item was last raised. Claude draws the dialog after the hook,
+    /// so the screen check must not dismiss the item before it could have appeared.
+    pub prompt_raised_at: Option<Instant>,
     /// A stopped-title re-check is already scheduled.
     pub settle_pending: bool,
     /// A queued restart is running (see `restart::tick`).

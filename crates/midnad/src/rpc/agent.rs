@@ -110,6 +110,7 @@ fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str, question: Op
     item.screen_excerpt = d.rt(sid).and_then(|rt| rt.read(true)).map(|(l, _, _)| super::session::tail_nonempty(l, 12));
     item.question = question;
     d.raise_needs_you(item);
+    d.core().agents.entry(sid.to_string()).or_default().prompt_raised_at = Some(std::time::Instant::now());
 }
 
 fn retitle_prompt(d: &Daemon, sid: &str, title: &str, question: Option<NeedsYouQuestion>) {

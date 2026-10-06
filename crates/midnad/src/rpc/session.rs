@@ -241,6 +241,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
         queue_paused: false,
         adopted: None,
         close_on_exit: p.close_on_exit,
+        auto_name: None,
     };
     {
         let mut core = d.core();
@@ -324,6 +325,8 @@ pub fn rename(d: &Daemon, ctx: &Ctx, p: SessionRenameParams) -> R {
     let mut core = d.core();
     let s = core.state.session_mut(&p.id).ok_or_else(|| not_found(&p.id))?;
     let old = std::mem::replace(&mut s.name, p.name.clone());
+    // A name someone chose stays: midna stops naming this terminal by itself.
+    s.auto_name = None;
     let out = s.clone();
     d.mark_dirty();
     d.emit(kinds::SESSION_RENAMED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "name": p.name, "old": old }));
@@ -951,6 +954,10 @@ fn settle_loop(d: &Arc<Daemon>, sid: &str, generation: u64) {
         };
         if agent_title_hint(agent, &title) != TitleHint::Stopped || !matches!(state, StatusState::Working | StatusState::NeedsYou) {
             return;
+        }
+        let just_raised = d.core().agents.get(sid).and_then(|a| a.prompt_raised_at).is_some_and(|t| t.elapsed() < TITLE_SETTLE);
+        if state == StatusState::NeedsYou && just_raised {
+            continue;
         }
         let Some((screen, _, _)) = rt.read(true) else { return };
         if screen_waits_on_human(&screen) {
