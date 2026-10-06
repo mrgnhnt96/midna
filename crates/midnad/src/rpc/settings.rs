@@ -110,6 +110,9 @@ fn apply(d: &Daemon, by: Actor, s: &SettingSpec, value: Value) -> R {
         if s.key == "agents.claude.statusline" {
             crate::hooks::write_claude_settings(d);
         }
+        if s.key.starts_with("terminal.auto_name") {
+            crate::auto_name::refresh_all(d);
+        }
     }
     ok(entry(s, value))
 }

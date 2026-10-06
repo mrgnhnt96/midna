@@ -163,6 +163,7 @@ pub fn refresh_session(d: &Daemon, sid: &str) {
     };
     d.mark_dirty();
     d.emit(kinds::SESSION_GIT, Actor::system(), Some(project), Some(sid.into()), json!({ "git": info }));
+    crate::auto_name::on_context(d, sid);
 }
 
 pub fn refresh_session_async(d: &Arc<Daemon>, sid: &str) {

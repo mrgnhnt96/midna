@@ -261,6 +261,31 @@ pub struct Session {
     /// failed exit stays open with its needs-you item. Set with `session.open`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub close_on_exit: bool,
+    /// The name midna gave this terminal by itself (`terminal.auto_name`) and where it came
+    /// from. While `name` still equals it, midna may rename the terminal again; a rename by
+    /// anyone else clears it, and the name stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_name: Option<AutoName>,
+}
+
+/// A name midna gave a terminal by itself (see `Session.auto_name`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AutoName {
+    pub name: String,
+    pub source: AutoNameSource,
+}
+
+/// Where an automatic name came from, weakest first: a later name only replaces one from a
+/// weaker source, or one from the same source when `terminal.auto_name_updates` is `follow`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoNameSource {
+    /// The git branch or worktree (`context`).
+    Context,
+    /// The prompt, shortened without any model (`prompt`).
+    Prompt,
+    /// The summary the agent puts in the terminal title (`agent`).
+    Agent,
 }
 
 /// An agent typed into a shell terminal and run by `midna shim` (see `Session.adopted`).

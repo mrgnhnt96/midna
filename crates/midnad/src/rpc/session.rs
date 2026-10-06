@@ -257,6 +257,8 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     d.mark_dirty();
     d.emit(kinds::SESSION_OPENED, ctx.actor(), Some(project.id), Some(sid.clone()), serde_json::to_value(&session).unwrap_or_default());
     crate::git::refresh_session_async(d, &sid);
+    // Outside git, nothing refreshes: name it from its folder now (`terminal.auto_name` = context).
+    crate::auto_name::on_context(d, &sid);
     ok(session)
 }
 
@@ -895,6 +897,7 @@ pub fn on_title(d: &Arc<Daemon>, sid: &str, generation: u64, title: &str, screen
     if changed_text {
         d.mark_dirty();
         d.emit(kinds::SESSION_TITLE, Actor::system(), Some(project.clone()), Some(sid.to_string()), json!({ "title": title }));
+        crate::auto_name::on_title(d, sid);
     }
     let Some(agent) = agent else { return };
     // Gaps no hook covers: approval answered, Esc during a tool, Esc/ctrl-c at a prompt, and

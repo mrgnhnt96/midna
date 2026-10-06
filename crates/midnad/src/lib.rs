@@ -4,6 +4,7 @@ pub mod adopt;
 pub mod agent_args;
 pub mod agent_state;
 pub mod agent_work;
+pub mod auto_name;
 pub mod conn;
 pub mod daemon;
 pub mod engine;

@@ -54,7 +54,8 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - `midna prompts <id>` lists the prompts the human sent an agent terminal (numbered, ▸ = where its
   view is). `midna prompts <id> --jump N|prev|next|latest|live` scrolls the agent's own view there,
   e.g. to show the human the answer to an earlier question.
-- `midna rename`, `midna restart` and `midna close <id>` manage a terminal. Closing a busy
+- `midna rename`, `midna restart` and `midna close <id>` manage a terminal (a rename also stops midna
+  naming it automatically from the agent's summary, `terminal.auto_name`). Closing a busy
   terminal needs `--force` and may ask the human (unless they turned on `agents.may_force_close`).
   If you shouldn't sit waiting for the answer, add `--no-wait`: it prints the needs-you id and exits 4
   at once, the close happens if the human approves, and `midna needs get <id>` (or

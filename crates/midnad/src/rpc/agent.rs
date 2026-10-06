@@ -36,6 +36,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             // The conversation lets prompt fast travel tell prompts before a /clear apart.
             let conversation = payload.get("session_id").and_then(Value::as_str);
             d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
+            crate::auto_name::on_prompt(d, &sid, prompt);
             start_turn(d, &sid, &project, &actor);
         }
         "Stop" | "StopFailure" => {
@@ -55,6 +56,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             let msgs: Vec<String> = payload.get("input-messages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             for m in &msgs {
                 d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "via": "notify", "prompt": m, "conversation": payload.get("thread-id") }));
+            }
+            if let Some(m) = msgs.first() {
+                crate::auto_name::on_prompt(d, &sid, m);
             }
             // The title spinner usually opened this turn already. If the title also ended it
             // moments ago, this notify belongs to that turn: don't open another.
