@@ -16,3 +16,5 @@ spikes/daemon-reexec/run*/
 spikes/gpui-terminal/shots/*-big.png
 # tools/twilight render output (the shipped sounds are crates/midnad/assets/sounds/twilight)
 /tools/twilight/out
+# the app's UI state from dev runs with the test backend (MIDNA_BACKEND=fake) started here
+/app-state.json
