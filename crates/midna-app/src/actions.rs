@@ -39,6 +39,10 @@ actions!(
         Quit,
         /// ⌘Q: hold for 2.5 s to quit (see `ui::quit_hold`). The menu item quits at once.
         HoldToQuit,
+        /// ⌘H / ⌥⌘H / Show All: the standard macOS app-menu items.
+        Hide,
+        HideOthers,
+        ShowAll,
         // terminal
         TermCopy,
         TermPaste,
@@ -177,6 +181,8 @@ pub const FIXED: &[Fixed] = &[
         place: "Main window",
     },
     fixed(&["escape"], "Close the overlay, or go back to the terminal", "Main window"),
+    fixed(&["cmd-h"], "Hide midna", "Anywhere"),
+    fixed(&["cmd-alt-h"], "Hide other apps", "Anywhere"),
     fixed(&["cmd-c"], "Copy the selection", "Terminal"),
     fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet; a secret pasted into an agent asks to store it)", "Terminal"),
     fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", "Terminal"),
@@ -265,6 +271,8 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     b.push(KeyBinding::new("cmd-v", TermPaste, TERM));
     b.push(KeyBinding::new("cmd-alt-v", TermPasteSecret, TERM));
     b.push(KeyBinding::new("cmd-a", TermSelectAll, TERM));
+    b.push(KeyBinding::new("cmd-h", Hide, None));
+    b.push(KeyBinding::new("cmd-alt-h", HideOthers, None));
     cx.bind_keys(b);
     cx.set_global(bound);
 }

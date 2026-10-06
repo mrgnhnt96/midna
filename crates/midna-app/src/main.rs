@@ -78,6 +78,9 @@ fn main() {
                 let _ = w.update(cx, |_, window, _| window.remove_window());
             }
         });
+        cx.on_action(|_: &Hide, cx| cx.hide());
+        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         // ⌘⇧N: another main window, empty until you open something in it.
         let b = backend.clone();
         cx.on_action(move |_: &NewWindow, cx| {
@@ -88,6 +91,10 @@ fn main() {
             items: vec![
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Hide midna", Hide),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
                 MenuItem::separator(),
                 MenuItem::action("Close", CloseWindow),
                 MenuItem::action("Quit midna", Quit),
