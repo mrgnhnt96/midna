@@ -12,6 +12,9 @@
 #     --label LABEL       LaunchAgent label (default com.mrgnhnt.midna.daemon)
 #     --env K=V           add K=V to the app's LSEnvironment AND the daemon's EnvironmentVariables
 #                         (e.g. MIDNA_HOME=/tmp/x); repeatable
+#     --name NAME         CFBundleName / CFBundleDisplayName (default Midna)
+#     --icon FILE         .icns to ship (default packaging/assets/Midna.icns)
+#     --no-update-key     embed no update key: the build never updates itself
 #     --dev-drivers       honour the MIDNA_DEBUG_* / updater-override env vars (cargo feature
 #                         midna-app/dev-drivers). Test bundles only: those drivers act as the human.
 #
@@ -23,7 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="" OUT="" ADHOC=0 BUILD=1 TARGET_DIR="$ROOT/target/package"
-BUNDLE_ID="com.mrgnhnt.midna" LABEL="com.mrgnhnt.midna.daemon" EXTRA_ENV=() FEATURES=()
+BUNDLE_ID="com.mrgnhnt.midna" LABEL="com.mrgnhnt.midna.daemon" NAME="Midna" ICON="" UPDATE_KEY=1 EXTRA_ENV=() FEATURES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
@@ -33,9 +36,12 @@ while [ $# -gt 0 ]; do
     --target-dir) TARGET_DIR="$2"; shift 2 ;;
     --bundle-id) BUNDLE_ID="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
+    --name) NAME="$2"; shift 2 ;;
+    --icon) ICON="$2"; shift 2 ;;
+    --no-update-key) UPDATE_KEY=0; shift ;;
     --env) EXTRA_ENV+=("$2"); shift 2 ;;
     --dev-drivers) FEATURES=(--features midna-app/dev-drivers); shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "build-app.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -48,7 +54,8 @@ case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 APP="$OUT/Midna.app"
 
 PUBKEY="${MIDNA_UPDATE_PUBKEY:-}"
-if [ -z "$PUBKEY" ] && [ -f "$HOME/.config/midna-dev/update-ed25519.pub" ]; then
+[ "$UPDATE_KEY" = 1 ] || PUBKEY=""
+if [ -z "$PUBKEY" ] && [ "$UPDATE_KEY" = 1 ] && [ -f "$HOME/.config/midna-dev/update-ed25519.pub" ]; then
   PUBKEY="$(tr -d '[:space:]' < "$HOME/.config/midna-dev/update-ed25519.pub")"
 fi
 [ -n "$PUBKEY" ] || echo "build-app.sh: no update key (MIDNA_UPDATE_PUBKEY or ~/.config/midna-dev/update-ed25519.pub): this build will never update itself" >&2
@@ -59,7 +66,8 @@ if [ "$BUILD" = 1 ]; then
   # shellcheck disable=SC1091
   . "$ROOT/env.sh"
   echo "==> cargo build --release (midna $VERSION, target $TARGET_DIR)"
-  MIDNA_BUILD_VERSION="$VERSION" MIDNA_UPDATE_PUBKEY="$PUBKEY" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" \
+  if [ -n "$PUBKEY" ]; then export MIDNA_UPDATE_PUBKEY="$PUBKEY"; else unset MIDNA_UPDATE_PUBKEY; fi
+  MIDNA_BUILD_VERSION="$VERSION" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" \
     cargo build --release -p midna-app -p midnad -p midna-cli --bin midna-app --bin midnad --bin midna ${FEATURES[@]+"${FEATURES[@]}"}
 fi
 for b in midna-app midnad midna; do [ -x "$BIN/$b" ] || { echo "missing $BIN/$b" >&2; exit 1; }; done
@@ -69,8 +77,12 @@ echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Fonts" "$APP/Contents/Library/LaunchAgents"
 cp "$BIN/midna-app" "$BIN/midnad" "$BIN/midna" "$APP/Contents/MacOS/"
-[ -f packaging/assets/Midna.icns ] || python3 packaging/make-icon.py packaging/assets/Midna.icns
-cp packaging/assets/Midna.icns "$APP/Contents/Resources/Midna.icns"
+if [ -n "$ICON" ]; then
+  cp "$ICON" "$APP/Contents/Resources/Midna.icns"
+else
+  [ -f packaging/assets/Midna.icns ] || python3 packaging/make-icon.py packaging/assets/Midna.icns
+  cp packaging/assets/Midna.icns "$APP/Contents/Resources/Midna.icns"
+fi
 # The fonts are compiled into midna-app (include_bytes!); the files and their OFL licenses
 # ship too so the licenses travel with the binary.
 cp crates/midna-app/assets/fonts/* "$APP/Contents/Resources/Fonts/"
@@ -96,8 +108,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundleName</key><string>Midna</string>
-  <key>CFBundleDisplayName</key><string>Midna</string>
+  <key>CFBundleName</key><string>$NAME</string>
+  <key>CFBundleDisplayName</key><string>$NAME</string>
   <key>CFBundleExecutable</key><string>midna-app</string>
   <key>CFBundleIconFile</key><string>Midna</string>
   <key>CFBundlePackageType</key><string>APPL</string>

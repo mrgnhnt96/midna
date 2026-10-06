@@ -29,7 +29,13 @@ pub fn sync(enabled: bool) {
         let Some(dir) = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Services").join(WORKFLOW)) else {
             return;
         };
-        let changed = if enabled { install(&dir, &bundle, &bundle_id(&bundle)) } else { uninstall(&dir) };
+        // Only the real app owns the Quick Action; a side-by-side flavor (Midna Dev, the e2e
+        // test bundle) would point it at itself, or remove the real app's.
+        let id = bundle_id(&bundle);
+        if id != "com.mrgnhnt.midna" {
+            return;
+        }
+        let changed = if enabled { install(&dir, &bundle, &id) } else { uninstall(&dir) };
         match changed {
             Ok(false) => {}
             // Refresh the Services / Quick Actions menus now rather than at next login.

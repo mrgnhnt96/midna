@@ -58,6 +58,7 @@ The `MIDNA_DEBUG_*` UI drivers work in debug builds only. See `docs/STATUS-*.md`
 ```sh
 packaging/build-app.sh                       # -> dist/<version>/Midna.app, Developer ID signed if a cert is present
 scripts/reinstall.sh [--test] [--no-build]   # rebuild the app and restart it; terminals survive
+scripts/dev-app.sh [--test] [--no-build]     # "Midna Dev" beside your real Midna: own home, daemon, CLI link; never updates
 packaging/make-update.sh --app dist/<v>/Midna.app --url-base …   # signed update feed
 packaging/notarize.sh dist/<v>/Midna.app     # opt-in, uploads to Apple
 packaging/e2e/update-e2e.sh                  # full install + auto-update test (test bundle id, temp home)

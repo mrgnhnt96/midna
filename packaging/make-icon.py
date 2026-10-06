@@ -6,6 +6,7 @@ orange, lavender), the main pane holding a lavender crescent, a teal split pane 
 block cursor, and an orange status bar. The colors are the setup screen's Twilight Tiles.
 
 Usage: packaging/make-icon.py packaging/assets/Midna.icns
+       packaging/make-icon.py --invert packaging/assets/MidnaDev.icns   (Midna Dev: colors inverted)
 Writes a 1024px PNG with the stdlib only, then uses sips + iconutil for the .icns sizes.
 The design is on a 100-unit grid (the body is 9..91, the macOS 824px icon body).
 """
@@ -99,12 +100,17 @@ def write_png(path, w, h, rows):
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else "Midna.icns"
+    args = sys.argv[1:]
+    invert = "--invert" in args
+    args = [a for a in args if a != "--invert"]
+    out = args[0] if args else "Midna.icns"
     rows = []
     for y in range(N):
         row = bytearray()
         for x in range(N):
             r, g, b, a = pixel(x + 0.5, y + 0.5)
+            if invert:
+                r, g, b = 255 - r, 255 - g, 255 - b
             row += bytes((int(r + 0.5), int(g + 0.5), int(b + 0.5), int(a * 255 + 0.5)))
         rows.append(row)
     with tempfile.TemporaryDirectory() as tmp:
