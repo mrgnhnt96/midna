@@ -4,7 +4,8 @@
 //! (copyable), and who may change it. Data is `settings.list` + the
 //! `midna_proto::settings::SETTINGS` catalog, live-updated on `settings.changed` (agents
 //! change settings at any time). The title bar toggles Rows ↔ an annotated, read-only
-//! `settings.json`. The Ask box opens an agent with the request as its prompt. The GUI is
+//! `settings.json`. The Ask box filters the rows as you type and, on ↩, opens an agent with
+//! the request as its prompt. The GUI is
 //! the human, so human-only settings are editable here.
 use crate::backend::{Backend, BackendEvent};
 use crate::icons::Icon;
@@ -114,7 +115,16 @@ impl SettingsWindow {
             }
         });
         let search = LineInput::new(cx, false, "Search shortcuts");
+        let ask = LineInput::new(cx, false, "Search settings, or ask: make ⌘T open Claude at the project root");
         let subs = vec![
+            cx.subscribe(&ask.field, |s, field, _: &crate::ui::text_input::FieldChanged, cx| {
+                // Typing searches the rows (the other tabs have nothing to filter).
+                if !field.read(cx).text().trim().is_empty() && s.view != View::Rows {
+                    s.show(View::Rows, cx);
+                }
+                s.scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }),
             cx.observe_global::<Theme>(|_, cx| cx.notify()),
             cx.subscribe(&search.field, |s, _, _: &crate::ui::text_input::FieldChanged, cx| {
                 s.recorded.clear();
@@ -137,7 +147,7 @@ impl SettingsWindow {
                 Ok("shortcuts") => View::Shortcuts,
                 _ => View::Rows,
             },
-            ask: LineInput::new(cx, false, "Ask: make ⌘T open Claude at the project root"),
+            ask,
             search,
             recorder: None,
             recorded: vec![],
@@ -914,6 +924,28 @@ impl SettingsWindow {
     }
 }
 
+/// The Ask box as a search: every word must appear in the group's name or in the row's label,
+/// note or CLI (so a setting's key matches too). A matching group keeps all its rows.
+fn filter_groups(groups: Vec<Group>, query: &str) -> Vec<Group> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return groups;
+    }
+    let hits = |hay: &str| {
+        let hay = hay.to_lowercase();
+        words.iter().all(|w| hay.contains(w.as_str()))
+    };
+    groups
+        .into_iter()
+        .filter_map(|mut g| {
+            if !hits(g.name) {
+                g.rows.retain(|r| hits(&format!("{} {} {}", r.label, r.note.as_ref().map(|(n, _)| n.as_str()).unwrap_or(""), r.cli)));
+            }
+            (!g.rows.is_empty()).then_some(g)
+        })
+        .collect()
+}
+
 struct LifeRows {
     update: RowSpec,
     login: RowSpec,
@@ -1265,7 +1297,11 @@ impl SettingsWindow {
             .child(div().flex_1().min_w_0().child("SAME THING, FOR AGENTS"))
             .child(div().w(px(COL_WHO)).flex_none().child("WHO CAN SET"));
         let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().pb(px(16.));
-        for (gi, g) in self.groups(t).into_iter().enumerate() {
+        let groups = filter_groups(self.groups(t), &self.ask.text(cx));
+        if groups.is_empty() {
+            list = list.child(div().px(px(18.)).pt(px(24.)).text_color(t.dim).child("No setting matches. Press ↩ to ask an agent instead."));
+        }
+        for (gi, g) in groups.into_iter().enumerate() {
             list = list.child(
                 div()
                     .flex()
@@ -1679,4 +1715,37 @@ fn snapshot(handle: WindowHandle<SettingsWindow>, cx: &mut App) {
         let _ = cx.update(|cx| cx.dispatch_action(&crate::actions::Quit));
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
+    use super::{Control, Group, Hsla, RowSpec, Who, filter_groups};
+
+    fn row(label: &str, note: &str, cli: &str) -> RowSpec {
+        let text = Control::Text { dot: None, text: String::new(), color: Hsla::default(), action: None };
+        RowSpec { label: label.into(), note: Some((note.into(), Hsla::default())), control: text, cli: cli.into(), who: Who::Agents, warn: false }
+    }
+
+    fn names(groups: &[Group]) -> Vec<(&str, Vec<&str>)> {
+        groups.iter().map(|g| (g.name, g.rows.iter().map(|r| r.label.as_str()).collect())).collect()
+    }
+
+    fn sample() -> Vec<Group> {
+        vec![
+            Group { name: "Look", danger: false, badge: 0, rows: vec![row("Theme", "", "midna settings set theme dusk"), row("Sidebar density", "", "midna settings set density compact")] },
+            Group { name: "Sounds", danger: false, badge: 0, rows: vec![row("Needs you", "Plays when an agent waits", "midna settings set notify.sound.need ping")] },
+        ]
+    }
+
+    #[test]
+    fn ask_box_filters_rows_by_label_note_and_key() {
+        assert_eq!(names(&filter_groups(sample(), "  ")).len(), 2);
+        assert_eq!(names(&filter_groups(sample(), "THEME")), vec![("Look", vec!["Theme"])]);
+        assert_eq!(names(&filter_groups(sample(), "agent waits")), vec![("Sounds", vec!["Needs you"])]);
+        assert_eq!(names(&filter_groups(sample(), "notify.sound")), vec![("Sounds", vec!["Needs you"])]);
+        // a group name keeps the whole group
+        assert_eq!(names(&filter_groups(sample(), "look")), vec![("Look", vec!["Theme", "Sidebar density"])]);
+        assert!(filter_groups(sample(), "make ⌘T open Claude").is_empty());
+    }
 }
