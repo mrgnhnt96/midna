@@ -19,6 +19,16 @@ for a in "$@"; do
   esac
 done
 
+# This restarts the PRODUCTION app (the human's daily terminal). Human only: it asks on the
+# terminal, which an agent's non-interactive shell can't answer. Agents use scripts/dev-app.sh.
+if ! { [ -t 0 ] && [ -r /dev/tty ]; }; then
+  echo "reinstall.sh restarts the production Midna and is human only (no terminal to confirm on)." >&2
+  echo "Agents: use scripts/dev-app.sh (Midna Dev). See AGENTS.md." >&2
+  exit 1
+fi
+read -r -p "Quit the PRODUCTION Midna and restart it from a dist/ build? Type 'production': " answer </dev/tty
+[ "$answer" = production ] || { echo "cancelled"; exit 1; }
+
 source ./env.sh >/dev/null
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
 
