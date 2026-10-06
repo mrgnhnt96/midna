@@ -6,12 +6,14 @@
 //! looking at); with no app connected midnad shows them itself (`via: system`). Each carries
 //! its category's sound file, volume and image (`style`, see `crate::notify_media`), and that
 //! sound rendered at its volume for macOS to play with the banner (`notify_media::rendered`).
+//! Its title and text are midna's own unless `notify.title.<key>` / `notify.body.<key>` hold
+//! a template (`texts`).
 //!
 //! Lock order: `core`, then `Daemon::notify`. Never emit while holding `notify`.
 use crate::daemon::Daemon;
 use midna_proto::notify::{self, Posted};
 use midna_proto::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +24,7 @@ const DEDUPE: Duration = Duration::from_secs(3);
 /// An agent may send this many notifications per minute (`notify.send`).
 const AGENT_PER_MINUTE: usize = 6;
 const BODY_MAX: usize = 180;
+const TITLE_MAX: usize = 80;
 
 /// Book-keeping shared by the notifier thread and `notify.send`.
 #[derive(Default)]
@@ -67,7 +70,13 @@ struct Draft {
     category: &'static str,
     session: Option<Id>,
     project: Option<Id>,
+    /// midna's own text (`{{text}}`).
     body: String,
+    /// The event kind behind it (`{{event}}`; empty for `notify.send` / `notify.test`).
+    event: String,
+    /// What a `notify.body.<category>` template can use: the event's data plus the
+    /// category's own variables (`NotifyCategory::vars`).
+    vars: Value,
     needs_you_id: Option<String>,
     /// `notify.send`'s `sound` (None: play the category's sound).
     sound: Option<bool>,
@@ -78,8 +87,55 @@ struct Draft {
 
 impl Draft {
     fn new(category: &'static str, e: &Event, body: impl Into<String>) -> Draft {
-        Draft { category, session: e.session_id.clone(), project: e.project_id.clone(), body: body.into(), needs_you_id: None, sound: None, key: None, test: false }
+        let vars = if e.data.is_object() { e.data.clone() } else { json!({}) };
+        Draft {
+            category,
+            session: e.session_id.clone(),
+            project: e.project_id.clone(),
+            body: body.into(),
+            event: e.kind.clone(),
+            vars,
+            needs_you_id: None,
+            sound: None,
+            key: None,
+            test: false,
+        }
     }
+
+    /// Add a template variable (`{{k}}`).
+    fn var(mut self, k: &str, v: impl Into<Value>) -> Draft {
+        if let Value::Object(m) = &mut self.vars {
+            m.insert(k.into(), v.into());
+        }
+        self
+    }
+}
+
+/// The title and text a notification shows: `notify.title.<category>` /
+/// `notify.body.<category>` rendered when set, else midna's own (`heading`, `Draft::body`).
+/// The text may come out empty (`none`, or a template with nothing in it); the title never
+/// does.
+fn texts(templates: (&str, &str), draft: &Draft, session: Option<&Session>, project: Option<&str>, heading: String) -> (String, String) {
+    let (title_tpl, body_tpl) = (templates.0.trim(), templates.1.trim());
+    if title_tpl.is_empty() && body_tpl.is_empty() {
+        return (heading, draft.body.clone());
+    }
+    let mut vars = draft.vars.clone();
+    if let Value::Object(m) = &mut vars {
+        m.insert("heading".into(), json!(heading));
+        m.insert("text".into(), json!(draft.body));
+        m.insert("category".into(), json!(draft.category));
+        m.insert("project".into(), json!(project.unwrap_or("")));
+    }
+    let facts = session.map(|s| crate::local::SessionFacts { id: s.id.clone(), name: s.name.clone(), project_id: s.project_id.clone(), agent: s.agent, status: s.status.state });
+    let render = |tpl: &str| crate::local::render(tpl, &draft.event, facts.as_ref(), &vars, None, false).trim().to_string();
+    let title = Some(title_tpl).filter(|t| !t.is_empty()).map(render).filter(|t| !t.is_empty()).unwrap_or_else(|| heading.clone());
+    let body = match body_tpl {
+        "" => draft.body.clone(),
+        notify::NO_BODY => String::new(),
+        tpl => render(tpl),
+    };
+    (title, body)
 }
 
 fn on_event(d: &Daemon, e: &Event) {
@@ -105,12 +161,12 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
                 NeedsYouKind::TriggerWaiting | NeedsYouKind::SecretNeeded | NeedsYouKind::RuleRemoval => "requests",
             };
             let mut body = capitalize(&item.title);
-            if item.kind == NeedsYouKind::Approval
-                && let Some(a) = &item.approval
-            {
-                body = format!("Approve? {}", a.action.value);
+            let action = item.approval.as_ref().map(|a| a.action.value.clone()).unwrap_or_default();
+            if item.kind == NeedsYouKind::Approval && item.approval.is_some() {
+                body = format!("Approve? {action}");
             }
-            let mut draft = Draft::new(category, e, body);
+            let kind = serde_json::to_value(item.kind).unwrap_or_default();
+            let mut draft = Draft::new(category, e, body).var("title", capitalize(&item.title)).var("kind", kind).var("action", action);
             draft.needs_you_id = Some(item.id);
             Some(draft)
         }
@@ -134,7 +190,8 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             }
             let reply = first_line(s(&e.data, "message"));
             let took = if secs > 0 { format!("Finished in {}", duration(secs)) } else { "Finished".into() };
-            Some(Draft::new("turn_done", e, if reply.is_empty() { took } else { format!("{took}: {reply}") }))
+            let text = if reply.is_empty() { took } else { format!("{took}: {reply}") };
+            Some(Draft::new("turn_done", e, text).var("elapsed", duration(secs)).var("secs", secs).var("reply", reply))
         }
         kinds::SESSION_STATUS => {
             let state = s(&e.data, "state");
@@ -162,7 +219,7 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             }
             // The description came with an earlier snapshot; keep it short either way.
             let what = if finished.len() == 1 { "A background task finished".to_string() } else { format!("{} background tasks finished", finished.len()) };
-            Some(Draft::new("background", e, what))
+            Some(Draft::new("background", e, what).var("count", finished.len()))
         }
         kinds::SESSION_GIT => {
             let sid = sid?;
@@ -180,7 +237,9 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
                 ChecksState::Failing => format!("PR #{}: {} check{} failing", pr.number, pr.failing_count.max(1), if pr.failing_count == 1 { "" } else { "s" }),
                 _ => format!("PR #{}: checks passing", pr.number),
             };
-            let mut draft = Draft::new("pr_checks", e, body);
+            let checks = if pr.checks == ChecksState::Failing { "failing" } else { "passing" };
+            let failing = if pr.checks == ChecksState::Failing { pr.failing_count.max(1) } else { 0 };
+            let mut draft = Draft::new("pr_checks", e, body).var("number", pr.number).var("checks", checks).var("failing", failing);
             // Several terminals on one branch see the same PR.
             draft.key = Some(format!("pr_checks:{}:{:?}", pr.url, pr.checks));
             Some(draft)
@@ -189,7 +248,8 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             let id = s(&e.data, "trigger_id");
             let name = d.core().state.triggers.iter().find(|t| t.id == id).map(|t| t.name.clone()).unwrap_or_else(|| id.to_string());
             let outcome = s(&e.data, "outcome");
-            let mut draft = Draft::new("triggers", e, if outcome.is_empty() { format!("Trigger “{name}” fired") } else { format!("Trigger “{name}”: {outcome}") });
+            let text = if outcome.is_empty() { format!("Trigger “{name}” fired") } else { format!("Trigger “{name}”: {outcome}") };
+            let mut draft = Draft::new("triggers", e, text).var("name", name);
             draft.key = Some(format!("triggers:{}", s(&e.data, "delivery_id")));
             Some(draft)
         }
@@ -230,6 +290,8 @@ pub fn send_as(d: &Daemon, category: &'static str, session: Option<Id>, title: &
         session,
         project,
         body: text,
+        event: String::new(),
+        vars: json!({ "title": title.trim(), "body": body.trim() }),
         needs_you_id: None,
         sound: Some(sound),
         test: false,
@@ -246,10 +308,38 @@ pub fn test(d: &Daemon, session: Option<Id>, category: &str) -> NotifySendResult
         return NotifySendResult { posted: false, reason: Some("unknown_category".into()) };
     };
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
-    let draft = Draft { category: c.key, session, project, body: format!("Test: {}", c.label), needs_you_id: None, sound: None, key: None, test: true };
+    let draft = Draft {
+        category: c.key,
+        session,
+        project,
+        body: format!("Test: {}", c.label),
+        event: String::new(),
+        vars: sample_vars(c.key),
+        needs_you_id: None,
+        sound: None,
+        key: None,
+        test: true,
+    };
     match post(d, draft) {
         Ok(_) => NotifySendResult { posted: true, reason: None },
         Err(r) => NotifySendResult { posted: false, reason: Some(r.into()) },
+    }
+}
+
+/// Made-up values for a test notification, so `notify.test` shows what a category's
+/// `notify.body.<key>` template looks like filled in.
+fn sample_vars(category: &str) -> Value {
+    match category {
+        "approval" => json!({ "title": "Run cargo test", "detail": "", "kind": "approval", "action": "cargo test --workspace" }),
+        "attention" | "requests" => json!({ "title": "Which branch should I use?", "detail": "", "kind": "blocked" }),
+        "failed" => json!({ "title": "Exited with status 101", "detail": "", "kind": "failed", "reason": "API error" }),
+        "turn_done" => json!({ "elapsed": "2m 5s", "secs": 125, "reply": "All tests pass.", "message": "All tests pass.\nI also tidied the README." }),
+        "agent" | "from_trigger" => json!({ "title": "Build is green", "body": "Ready to ship" }),
+        "background" => json!({ "count": 1 }),
+        "pr_checks" => json!({ "number": 42, "checks": "failing", "failing": 2 }),
+        "triggers" => json!({ "name": "Review PRs", "outcome": "started an agent" }),
+        "restarted" => json!({ "reason": "Claude Code updated" }),
+        _ => json!({}),
     }
 }
 
@@ -338,7 +428,7 @@ pub fn play(d: &Daemon, session: Option<Id>, what: &str, volume: Option<u8>, rat
 /// Check the settings, dedupe, and emit `notify.posted` (showing it from midnad when no app
 /// is connected).
 fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
-    let (title, (sound, image), when_app_closed) = {
+    let (title, text, (sound, image), when_app_closed) = {
         let core = d.core();
         let st = &core.state;
         let session = draft.session.as_deref().and_then(|s| st.session(s));
@@ -348,13 +438,15 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
             return Err(r);
         }
         let project = draft.project.as_deref().or(session.map(|s| s.project_id.as_str())).and_then(|p| st.project(p)).map(|p| p.name.clone());
-        let title = match (session, project) {
+        let heading = match (session, project.as_deref()) {
             (Some(s), Some(p)) if p != s.name => format!("{} · {p}", s.name),
             (Some(s), _) => s.name.clone(),
-            (None, Some(p)) => p,
+            (None, Some(p)) => p.to_string(),
             (None, None) => "midna".into(),
         };
-        (title, style(&d.cfg.home, &|k| st.setting(k), draft.category), st.setting_bool("notify.when_app_closed") || draft.test)
+        let templates = (st.setting_str(&notify::title_key(draft.category)), st.setting_str(&notify::body_key(draft.category)));
+        let (title, text) = texts((&templates.0, &templates.1), &draft, session, project.as_deref(), heading);
+        (title, text, style(&d.cfg.home, &|k| st.setting(k), draft.category), st.setting_bool("notify.when_app_closed") || draft.test)
     };
     if !draft.test {
         let mut st = d.notify();
@@ -380,8 +472,8 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
     };
     let posted = Posted {
         category: draft.category.into(),
-        title,
-        body: truncate(&draft.body, BODY_MAX),
+        title: truncate(&title, TITLE_MAX),
+        body: truncate(&text, BODY_MAX),
         sound: sound.is_some(),
         notification_sound: sound.as_ref().and_then(|(f, v)| crate::notify_media::rendered(&d.cfg.home, f, *v)).map(|p| p.to_string_lossy().into_owned()),
         volume: sound.as_ref().map(|s| s.1),
@@ -474,5 +566,45 @@ mod tests {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(duration(125), "2m 5s");
         assert_eq!(capitalize("permission Bash"), "Permission Bash");
+    }
+
+    fn turn_done() -> Draft {
+        let data = json!({ "reason": "Stop", "message": "All done.\nmore" });
+        let e = Event { seq: 1, at: "2026-10-06T12:00:00Z".into(), kind: "agent.turn_ended".into(), actor: Actor::system(), project_id: None, session_id: None, data };
+        Draft::new("turn_done", &e, "Finished in 2m 5s: All done.").var("elapsed", "2m 5s").var("reply", "All done.")
+    }
+
+    fn texts_of(title: &str, body: &str, d: &Draft) -> (String, String) {
+        texts((title, body), d, None, Some("midna"), "api · midna".into())
+    }
+
+    #[test]
+    fn title_and_body_templates() {
+        let d = turn_done();
+        let own = ("api · midna".to_string(), "Finished in 2m 5s: All done.".to_string());
+        assert_eq!(texts_of("", "", &d), own);
+        assert_eq!(texts_of("  ", "  ", &d), own);
+        assert_eq!(texts_of("", "{{reply}} ({{elapsed}}) in {{project}}", &d).1, "All done. (2m 5s) in midna");
+        // The event's data, the built-in text, the category and the event kind.
+        assert_eq!(texts_of("", "{{data.reason}}|{{message}}|{{category}}|{{event}}", &d).1, "Stop|All done.\nmore|turn_done|agent.turn_ended");
+        assert_eq!(texts_of("", "✓ {{text}}", &d).1, "✓ Finished in 2m 5s: All done.");
+        // The text may be left out: `none`, or a template that renders empty.
+        assert_eq!(texts_of("", "none", &d), (own.0.clone(), String::new()));
+        assert_eq!(texts_of("", "{{missing}}", &d).1, "");
+        // The title never is.
+        assert_eq!(texts_of("Done in {{elapsed}} ({{heading}})", "", &d), ("Done in 2m 5s (api · midna)".into(), own.1.clone()));
+        assert_eq!(texts_of("{{missing}}", "none", &d), (own.0.clone(), String::new()));
+    }
+
+    #[test]
+    fn every_category_has_title_and_body_settings_and_test_values() {
+        for c in notify::CATEGORIES {
+            assert!(midna_proto::settings::setting(&notify::body_key(c.key)).is_some(), "notify.body.{}", c.key);
+            assert!(midna_proto::settings::setting(&notify::title_key(c.key)).is_some(), "notify.title.{}", c.key);
+            let sample = sample_vars(c.key);
+            for v in c.vars {
+                assert!(sample.get(*v).is_some(), "sample_vars({}) lacks {v}", c.key);
+            }
+        }
     }
 }

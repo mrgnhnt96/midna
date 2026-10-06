@@ -209,6 +209,21 @@ macro_rules! pic {
     };
 }
 
+macro_rules! txt {
+    ($cat:literal, $vars:literal) => {
+        s!(concat!("notify.body.", $cat), SettingKind::String, S(""), "notifications", false,
+            concat!("Text of “notify.", $cat, "” notifications, as a template: empty = midna's own, none = no text (just the title). ", $vars,
+                "Every kind also has {{text}} (midna's own text), {{heading}} (midna's own title), {{project}}, {{session.name}} and the event's data ({{data.<path>}})."))
+    };
+}
+macro_rules! ttl {
+    ($cat:literal) => {
+        s!(concat!("notify.title.", $cat), SettingKind::String, S(""), "notifications", false,
+            concat!("Title of “notify.", $cat, "” notifications, as a template with the same variables as notify.body.", $cat,
+                ": empty = midna's own ({{heading}}: the terminal · its project). A title can't be empty: one that renders empty is midna's own."))
+    };
+}
+
 use DefaultValue::{Bool as B, Int as I, List as L, Str as S};
 const fn en(options: &'static [&'static str]) -> SettingKind {
     SettingKind::Enum { options, allow_other: false }
@@ -417,18 +432,18 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
     s!("notify.image", SettingKind::String, S(""), "notifications", false,
         "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
-    snd!("approval", "Portal"), vol!("approval"), pic!("approval"),
-    snd!("attention", "Call"), vol!("attention"), pic!("attention"),
-    snd!("failed", "Uh-oh"), vol!("failed"), pic!("failed"),
-    snd!("turn_done", "Strum"), vol!("turn_done"), pic!("turn_done"),
-    snd!("agent", "Hm"), vol!("agent"), pic!("agent"),
-    snd!("from_trigger", "Hm"), vol!("from_trigger"), pic!("from_trigger"),
-    snd!("requests", "none"), vol!("requests"), pic!("requests"),
-    snd!("background", "none"), vol!("background"), pic!("background"),
-    snd!("pr_checks", "none"), vol!("pr_checks"), pic!("pr_checks"),
-    snd!("exited", "none"), vol!("exited"), pic!("exited"),
-    snd!("triggers", "none"), vol!("triggers"), pic!("triggers"),
-    snd!("restarted", "none"), vol!("restarted"), pic!("restarted"),
+    snd!("approval", "Portal"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "),
+    snd!("attention", "Call"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "),
+    snd!("failed", "Uh-oh"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "),
+    snd!("turn_done", "Strum"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "),
+    snd!("agent", "Hm"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "),
+    snd!("from_trigger", "Hm"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "),
+    snd!("requests", "none"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "),
+    snd!("background", "none"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "),
+    snd!("pr_checks", "none"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "),
+    snd!("exited", "none"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""),
+    snd!("triggers", "none"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "),
+    snd!("restarted", "none"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "),
     snd!("approved", "Rise"), vol!("approved"),
     snd!("denied", "Nn-nn"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),

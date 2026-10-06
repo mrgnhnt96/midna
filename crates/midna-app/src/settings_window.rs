@@ -811,8 +811,24 @@ impl SettingsWindow {
         sounds.extend(self.notify_sound_rows(t));
         let effects = self.sound_effect_rows(t);
         let mut images = self.notify_image_rows(t);
+        // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates, set from the CLI.
+        let mut texts: Vec<RowSpec> = vec![];
+        for c in midna_proto::notify::CATEGORIES {
+            for (key, part) in [(midna_proto::notify::title_key(c.key), "title"), (midna_proto::notify::body_key(c.key), "text")] {
+                let Some(mut r) = self.spec_row(&key) else { continue };
+                r.label = format!("{}: {part}", c.label);
+                if let Control::Text { text, .. } = &mut r.control {
+                    match text.as_str() {
+                        "not set" => *text = "midna's own".into(),
+                        midna_proto::notify::NO_BODY if part == "text" => *text = "none (title only)".into(),
+                        _ => {}
+                    }
+                }
+                texts.push(r);
+            }
+        }
         if notify_off {
-            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()) {
+            for r in notifications.iter_mut().skip(1).chain(sounds.iter_mut().skip(switches + 1)).chain(images.iter_mut()).chain(texts.iter_mut()) {
                 r.note = Some(("No effect while notifications are off".into(), t.dim));
             }
         }
@@ -916,6 +932,7 @@ impl SettingsWindow {
             Group { name: "Sounds", danger: false, badge: 0, rows: sounds },
             Group { name: "Sound effects", danger: false, badge: 0, rows: effects },
             Group { name: "Notification images", danger: false, badge: 0, rows: images },
+            Group { name: "Notification text", danger: false, badge: 0, rows: texts },
             Group { name: "Look", danger: false, badge: 0, rows: look.into_iter().flatten().collect() },
             Group { name: "Terminal", danger: false, badge: 0, rows: terminal },
             Group { name: "Projects", danger: false, badge: 0, rows: row("projects.roots").into_iter().collect() },

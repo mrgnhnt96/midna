@@ -96,6 +96,11 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   approvals, quieter"), `midna notify import <file> --for approval` copies it in and uses it,
   `midna settings set notify.volume.approval 40` sets how loud, and `midna notify test approval`
   lets them hear it.
+- A notification's title and text are templates too: `midna settings set notify.body.turn_done
+  "{{elapsed}} · {{reply}}"`, `notify.title.<kind>` likewise (empty = midna's own; a body of
+  `none` shows the title only; a title can't be empty). Each kind has
+  {{text}} and {{heading}} (midna's own body and title), {{project}}, {{session.name}} and its own variables (in the setting's
+  description, `midna settings list --json`); `midna notify test <kind>` shows it with sample values.
 
 ## Approvals and policy
 

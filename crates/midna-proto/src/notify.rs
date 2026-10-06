@@ -7,10 +7,12 @@
 //!
 //! Each category also has a sound, a volume and an image (`notify.sound.<key>`,
 //! `notify.volume.<key>`, `notify.image.<key>`). Sounds and images you bring are imported into
-//! `MIDNA_HOME/notify/{sounds,images}` (`notify.import`) and named by their file name.
+//! `MIDNA_HOME/notify/{sounds,images}` (`notify.import`) and named by their file name. Its title
+//! and text are templates (`notify.title.<key>`, `notify.body.<key>`; empty = midna's own, see
+//! `NotifyCategory::vars`). The text may be left out; the title never is.
 //!
-//! Add a category here, add its `notify.<key>`, sound, volume and image rows to the settings
-//! catalog, and map a signal to it in midnad.
+//! Add a category here, add its `notify.<key>`, sound, volume, image, title and body rows to the
+//! settings catalog, and map a signal to it in midnad.
 //!
 //! Sound effects (`EFFECTS`) share that sound library and the `notify.sound.<key>` /
 //! `notify.volume.<key>` settings, but have no banner: the app plays them itself when you do
@@ -30,30 +32,42 @@ pub struct NotifyCategory {
     /// Its sound out of the box (`notify.sound.<key>`): a macOS sound name, or `none`.
     pub sound: &'static str,
     pub description: &'static str,
+    /// The variables its `notify.title.<key>` / `notify.body.<key>` templates get besides the ones every category
+    /// gets (`BODY_VARS`) and the event's own data.
+    pub vars: &'static [&'static str],
 }
 
 macro_rules! c {
-    ($key:literal, $label:literal, $default:literal, $sound:literal, $desc:literal) => {
-        NotifyCategory { key: $key, label: $label, default: $default, sound: $sound, description: $desc }
+    ($key:literal, $label:literal, $default:literal, $sound:literal, $desc:literal, $vars:expr) => {
+        NotifyCategory { key: $key, label: $label, default: $default, sound: $sound, description: $desc, vars: $vars }
     };
 }
 
+/// What every `notify.title.<key>` / `notify.body.<key>` template can use: midna's own title
+/// and text, the project's name, the category, and the terminal (as in triggers).
+pub static BODY_VARS: &[&str] = &["heading", "text", "project", "category", "event", "session.name", "session.id", "session.agent", "session.status"];
+
+/// A `notify.body.<key>` value that shows no text, only the title.
+pub const NO_BODY: &str = "none";
+
+const NEEDS_YOU: &[&str] = &["title", "detail", "kind"];
+
 pub static CATEGORIES: &[NotifyCategory] = &[
     c!("approval", "Approvals and questions", true, "Portal",
-        "An agent waits on you: an approval request, a permission prompt or a question it asked in its terminal."),
-    c!("attention", "Agent asks for you", true, "Call", "An agent raised a needs-you note or said it's blocked (`midna attention`)."),
-    c!("failed", "Failures", true, "Uh-oh", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error."),
+        "An agent waits on you: an approval request, a permission prompt or a question it asked in its terminal.", &["title", "detail", "kind", "action"]),
+    c!("attention", "Agent asks for you", true, "Call", "An agent raised a needs-you note or said it's blocked (`midna attention`).", NEEDS_YOU),
+    c!("failed", "Failures", true, "Uh-oh", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error.", &["title", "detail", "kind", "reason"]),
     c!("turn_done", "Agent finished", true, "Strum",
-        "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply."),
-    c!("agent", "Sent by an agent", true, "Hm", "An agent sent you a notification on purpose (`midna notify send`)."),
-    c!("from_trigger", "Sent by a trigger", true, "Hm", "A trigger you set up sent a notification (its `notify` action)."),
+        "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply.", &["elapsed", "secs", "reply", "message"]),
+    c!("agent", "Sent by an agent", true, "Hm", "An agent sent you a notification on purpose (`midna notify send`).", &["title", "body"]),
+    c!("from_trigger", "Sent by a trigger", true, "Hm", "A trigger you set up sent a notification (its `notify` action).", &["title", "body"]),
     c!("requests", "Other requests", false, "none",
-        "Needs-you items that can wait: a trigger waiting to be enabled, a webhook secret to set, a rule an agent wants removed."),
-    c!("background", "Background task finished", false, "none", "A background shell an agent started (Claude's run_in_background) finished."),
-    c!("pr_checks", "PR checks", false, "none", "The checks on a terminal's pull request finished: all passing, or some failing."),
-    c!("exited", "Terminal exited", false, "none", "A terminal's process exited cleanly (a shell's `exit`, a monitor or command that finished)."),
-    c!("triggers", "Trigger fired", false, "none", "A webhook trigger fired and started an agent or a command."),
-    c!("restarted", "Agent restarted", false, "none", "midna restarted an agent into the same conversation (an agent update was installed)."),
+        "Needs-you items that can wait: a trigger waiting to be enabled, a webhook secret to set, a rule an agent wants removed.", NEEDS_YOU),
+    c!("background", "Background task finished", false, "none", "A background shell an agent started (Claude's run_in_background) finished.", &["count"]),
+    c!("pr_checks", "PR checks", false, "none", "The checks on a terminal's pull request finished: all passing, or some failing.", &["number", "checks", "failing"]),
+    c!("exited", "Terminal exited", false, "none", "A terminal's process exited cleanly (a shell's `exit`, a monitor or command that finished).", &[]),
+    c!("triggers", "Trigger fired", false, "none", "A webhook trigger fired and started an agent or a command.", &["name", "outcome"]),
+    c!("restarted", "Agent restarted", false, "none", "midna restarted an agent into the same conversation (an agent update was installed).", &["reason"]),
 ];
 
 /// A sound with no notification: something you did, or a small UI cue.
@@ -117,6 +131,18 @@ pub fn volume_key(key: &str) -> String {
 /// uses, `none`, or an imported image's file name.
 pub fn image_key(key: &str) -> String {
     format!("notify.image.{key}")
+}
+
+/// A category's text (`notify.body.<key>`): a template like a trigger's (`{{reply}}`,
+/// `{{session.name}}`, `{{data.<path>}}`), empty = midna's own text, `none` = no text.
+pub fn body_key(key: &str) -> String {
+    format!("notify.body.{key}")
+}
+
+/// A category's title (`notify.title.<key>`): a template like the text's, empty = midna's own
+/// (`<terminal> · <project>`). A title that renders empty is midna's own too.
+pub fn title_key(key: &str) -> String {
+    format!("notify.title.{key}")
 }
 
 /// The sounds in /System/Library/Sounds, by name (no extension). A sound setting's value is
