@@ -407,6 +407,9 @@ const PATHS: [(&str, &str, &str, &str); 4] = [
     ("off", "Off", "", "Stop receiving webhooks. Triggers stay, nothing fires."),
 ];
 
+/// Paths listed in the menu but not yet pickable.
+const SOON: [&str; 1] = ["midna_relay"];
+
 fn path_meta(path: &str) -> (&'static str, &'static str) {
     PATHS.iter().find(|p| p.0 == path).map(|p| (p.1, p.2)).unwrap_or(("Webhooks", ""))
 }
@@ -879,6 +882,7 @@ impl TriggersView {
             }));
         for (key, name, cost, desc) in PATHS {
             let on = cur == key;
+            let soon = SOON.contains(&key);
             menu = menu.child(
                 div()
                     .id(key)
@@ -887,9 +891,8 @@ impl TriggersView {
                     .px(px(10.))
                     .py(px(9.))
                     .rounded(px(7.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.accent_soft))
-                    .on_click(cx.listener(move |v, _, _, cx| v.configure(key, cx)))
+                    .when(soon, |d| d.opacity(0.55))
+                    .when(!soon, |d| d.cursor_pointer().hover(|s| s.bg(t.accent_soft)).on_click(cx.listener(move |v, _, _, cx| v.configure(key, cx))))
                     .child(div().w(px(16.)).flex_none().text_color(t.accent).child(if on { "✓" } else { "" }))
                     .child(
                         div()
@@ -899,7 +902,13 @@ impl TriggersView {
                             .min_w_0()
                             .gap(px(2.))
                             .child(
-                                div().flex().items_center().child(div().flex_1().font_weight(FontWeight::BOLD).child(name)).when(!cost.is_empty(), |d| d.child(kit::chip(t, cost))),
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(div().flex_1().font_weight(FontWeight::BOLD).child(name))
+                                    .when(soon, |d| d.child(soon_pill(t)))
+                                    .when(!soon && !cost.is_empty(), |d| d.child(kit::chip(t, cost))),
                             )
                             .child(div().text_size(px(12.)).text_color(t.dim).child(desc)),
                     ),
@@ -1613,6 +1622,11 @@ fn cooldown_text(secs: u64) -> String {
         s if s >= 60 && s % 60 == 0 => format!("{} min", s / 60),
         s => format!("{s}s"),
     }
+}
+
+/// The "Coming soon" pill on paths that aren't pickable yet.
+fn soon_pill(t: &Theme) -> Div {
+    kit::chip(t, "Coming soon").h(px(18.)).rounded_full().text_size(px(10.5)).border_color(t.accent).text_color(t.accent).bg(t.accent_soft)
 }
 
 /// The small "built-in" tag on triggers midna ships.
