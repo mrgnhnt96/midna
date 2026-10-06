@@ -1,5 +1,6 @@
-//! Approval banner at the bottom of the terminal pane when the selected session has an
-//! approval needs-you item. Every option calls `needs_you.resolve`.
+//! Approval banner at the bottom of the terminal pane when the selected session has a midna
+//! approval waiting (not the agent's own prompt, which the terminal already shows). Every
+//! option calls `needs_you.resolve`.
 use super::border_w;
 use super::sidebar::menu_box;
 use crate::app::{MainWindow, Menu};

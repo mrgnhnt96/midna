@@ -364,6 +364,25 @@ fn agent_hooks_drive_status_turns_cost_and_insights() {
 }
 
 #[test]
+fn a_question_after_a_generic_notification_retitles_the_prompt() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let hook = |a: &mut Client, ev: &str, payload: Value| call(a, "agent.hook", json!({ "agent": "claude", "event": ev, "payload": payload }));
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "pick a design" }));
+    hook(&mut a, "Notification", json!({ "notification_type": "permission_prompt", "message": "Claude needs your permission" }));
+    assert_eq!(call(&mut h, "needs_you.list", json!({}))[0]["title"], "Claude needs your permission");
+    let ask = json!({ "tool_name": "AskUserQuestion", "tool_input": { "questions": [{ "question": "What should the bell open?" }] } });
+    hook(&mut a, "PermissionRequest", ask);
+    let items = call(&mut h, "needs_you.list", json!({}));
+    assert_eq!(items.as_array().unwrap().len(), 1, "same item, not a second one");
+    assert_eq!(items[0]["title"], "question: What should the bell open?");
+    let evs = call(&mut h, "events.list", json!({ "filter": { "kinds": ["needs_you.updated"] } }));
+    assert_eq!(evs.as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn window_commands_reach_gui_and_are_gated() {
     let d = TestDaemon::start();
     let mut h = d.human();

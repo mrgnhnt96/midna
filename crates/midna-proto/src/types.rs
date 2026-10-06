@@ -1140,6 +1140,8 @@ pub mod kinds {
     pub const SESSION_RESTARTED: &str = "session.restarted";
     pub const NEEDS_YOU_RAISED: &str = "needs_you.raised";
     pub const NEEDS_YOU_RESOLVED: &str = "needs_you.resolved";
+    /// An open item's title changed (an agent's prompt learned what it asks). data = the item.
+    pub const NEEDS_YOU_UPDATED: &str = "needs_you.updated";
     pub const RULE_ADDED: &str = "rule.added";
     pub const RULE_FIRED: &str = "rule.fired";
     pub const RULE_REMOVAL_REQUESTED: &str = "rule.removal_requested";

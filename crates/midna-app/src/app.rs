@@ -1051,9 +1051,11 @@ impl MainWindow {
         self.needs.iter().find(|n| n.session_id.as_deref() == Some(sid))
     }
 
+    /// The approval the banner (and ⌘↩/⌘⌫) answers for the selected session. An agent's own
+    /// prompt is already on screen in that terminal and is answered there, so it never counts.
     pub fn approval_for_selected(&self) -> Option<&NeedsYou> {
         let sid = self.selected.as_ref()?;
-        self.needs.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.is_approval())
+        self.needs.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.is_approval() && n.kind != NeedsYouKind::PermissionPrompt)
     }
 
     pub fn needs_in_project(&self, pid: Option<&str>) -> usize {

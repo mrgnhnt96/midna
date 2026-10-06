@@ -72,6 +72,10 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         }
         d.set_status(&sid, next, Some(reason), None, actor.clone());
         status = next;
+    } else if ev == "PermissionRequest" && cur == StatusState::NeedsYou {
+        // Claude's generic `Notification` ("Claude needs your permission") can open the prompt
+        // first; this hook names what it actually asks.
+        retitle_prompt(d, &sid, &crate::agent_state::prompt_label(payload));
     }
     ok(AgentHookResult { ok: true, status: Some(status) })
 }
@@ -101,6 +105,20 @@ fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str) {
     let mut item = d.new_needs_you(NeedsYouKind::PermissionPrompt, title, actor.clone(), Some(sid.to_string()));
     item.screen_excerpt = d.rt(sid).and_then(|rt| rt.read(true)).map(|(l, _, _)| super::session::tail_nonempty(l, 12));
     d.raise_needs_you(item);
+}
+
+fn retitle_prompt(d: &Daemon, sid: &str, title: &str) {
+    let item = {
+        let mut core = d.core();
+        let Some(n) = core.state.needs_you.iter_mut().find(|n| n.kind == NeedsYouKind::PermissionPrompt && n.session_id.as_deref() == Some(sid)) else { return };
+        if n.title == title || crate::trust::is_trust_item(n) {
+            return;
+        }
+        n.title = title.to_string();
+        n.clone()
+    };
+    d.mark_dirty();
+    d.emit(kinds::NEEDS_YOU_UPDATED, Actor::system(), item.project_id.clone(), item.session_id.clone(), serde_json::to_value(&item).unwrap_or_default());
 }
 
 pub fn start_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor) {

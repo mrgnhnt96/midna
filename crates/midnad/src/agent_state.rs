@@ -18,6 +18,19 @@ pub fn tool_label(p: &Value) -> String {
     }
 }
 
+/// What a `PermissionRequest` asks: `question: <text>` for AskUserQuestion (it's a question
+/// dialog, not a permission), otherwise `permission <tool_label>`.
+pub fn prompt_label(p: &Value) -> String {
+    if s(p, "tool_name") == "AskUserQuestion" {
+        let q = p.pointer("/tool_input/questions/0/question").and_then(Value::as_str).map(str::trim).filter(|q| !q.is_empty());
+        return match q {
+            Some(q) => format!("question: {}", q.chars().take(160).collect::<String>()),
+            None => "question".into(),
+        };
+    }
+    format!("permission {}", tool_label(p))
+}
+
 /// Pure transition: (current state, hook event, payload) -> next (state, reason). None = no change.
 /// Shared by Claude Code and Codex (Codex reuses Claude's hook names; `agent-turn-complete` is
 /// Codex's legacy notify).
@@ -42,7 +55,7 @@ pub fn transition(cur: StatusState, event: &str, p: &Value) -> Option<(StatusSta
             }
             (Working, format!("after {}", s(p, "tool_name")))
         }
-        "PermissionRequest" => (NeedsYou, format!("permission {}", tool_label(p))),
+        "PermissionRequest" => (NeedsYou, prompt_label(p)),
         "Elicitation" => (NeedsYou, "elicitation".into()),
         "Notification" => match s(p, "notification_type") {
             "permission_prompt" | "elicitation_dialog" => (NeedsYou, s(p, "message").to_string()),
@@ -285,6 +298,13 @@ mod tests {
     fn permission_request_names_the_action() {
         let p = json!({"tool_name": "Bash", "tool_input": {"command": "touch c.txt && ls"}});
         assert_eq!(transition(Working, "PermissionRequest", &p).unwrap(), (NeedsYou, "permission Bash(touch c.txt && ls)".to_string()));
+    }
+
+    #[test]
+    fn ask_user_question_is_a_question() {
+        let p = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "What should the bell open?", "header": "Bell opens"}]}});
+        assert_eq!(transition(Working, "PermissionRequest", &p).unwrap(), (NeedsYou, "question: What should the bell open?".to_string()));
+        assert_eq!(prompt_label(&json!({"tool_name": "AskUserQuestion"})), "question");
     }
 
     #[test]
