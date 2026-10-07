@@ -531,7 +531,6 @@ impl InsightsView {
             .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Insights"))
             .child(seg)
             .child(div().text_size(px(12.)).text_color(t.dim).child(format!("deltas {}", self.range.vs())))
-            .when(self.loading && self.data.range.is_some(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child("updating…")))
             .child(div().flex_1())
             .child(self.layout_button(t, cx))
             .child(self.add_button(t, cx))
