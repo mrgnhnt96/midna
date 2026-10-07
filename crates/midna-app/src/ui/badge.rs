@@ -217,8 +217,9 @@ fn midna_in_front(badge: &objc2_app_kit::NSWindow) -> bool {
 
 /// Whether a click on the badge may make midna the active app. A style mask set after the
 /// window's made doesn't reach the WindowServer's "never activate" flag; this (private, so only
-/// when it's there) does. While it's on, midna can't bring itself forward either, so opening a
-/// terminal lifts it for a moment (`Badge::bring_forward`).
+/// when it's there) does. While it's on, nothing can bring midna forward (itself, an app
+/// switcher, the Dock), so it's on only while the pointer is on the badge (`Badge::tick`), and
+/// opening a terminal lifts it for a moment (`Badge::bring_forward`).
 fn prevent_activation(ns: &objc2_app_kit::NSWindow, on: bool) {
     use objc2::{msg_send, sel};
     unsafe {
@@ -386,6 +387,8 @@ pub struct Badge {
     ns: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>>,
     /// When to stop letting the badge activate midna again, after `bring_forward`.
     reprevent: Option<Instant>,
+    /// A click on the badge can't activate midna (`prevent_activation`): the pointer's on it.
+    preventing: bool,
     /// `MIDNA_DEBUG_BADGE`: open the list (`list`), the list with its first card (`card`) or
     /// the menu (`menu`) once there's something.
     debug: Option<String>,
@@ -428,7 +431,6 @@ pub fn init(backend: Arc<dyn Backend>, cx: &mut App) {
             // GPUI makes it a titled panel; macOS draws a titled window's rim (a light line
             // along its top) even when it's transparent, and treats its top as a titlebar.
             ns.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel);
-            prevent_activation(&ns, true);
             ns.setHasShadow(false);
             ns.setIgnoresMouseEvents(true);
             place(&ns, Corner::TopRight);
@@ -707,6 +709,7 @@ impl Badge {
             zones: Zones::default(),
             ns: super::twilight::ns_window(window),
             reprevent: None,
+            preventing: false,
             _ticker: ticker,
         }
     }
@@ -1125,6 +1128,7 @@ impl Badge {
     fn bring_forward(&mut self, cx: &mut Context<Self>) {
         if let Some(ns) = &self.ns {
             prevent_activation(ns, false);
+            self.preventing = false;
             self.reprevent = Some(Instant::now() + Duration::from_secs(1));
         }
         cx.activate(true);
@@ -1184,7 +1188,6 @@ impl Badge {
 
         if self.reprevent.is_some_and(|t| now >= t) {
             self.reprevent = None;
-            prevent_activation(&ns, true);
             crate::lifecycle::log(&format!("badge brought midna forward: {}", if midna_in_front(&ns) { "yes" } else { "no (macOS kept the other app in front)" }));
         }
 
@@ -1356,6 +1359,13 @@ impl Badge {
                 }
                 changed = true;
             }
+        }
+        // Only a click on the badge is kept from activating midna: left on, the flag turns away
+        // anything else bringing it forward (an app switcher's flashes in and back out).
+        let prevent = self.shown && (self.hover.is_some() || self.pressing.is_some()) && self.reprevent.is_none();
+        if prevent != self.preventing {
+            self.preventing = prevent;
+            prevent_activation(&ns, prevent);
         }
         // The list: × and arrow linger, then shrink; finished animations end.
         if self.hot.is_some() && self.hot_left.is_none() && self.hover != Some("panel") {
