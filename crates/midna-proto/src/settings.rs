@@ -793,12 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn status_items_keep_order_and_reject_unknown_names() {
-        let s = setting("ui.status.items").unwrap();
-        assert_eq!(s.coerce(&json!("script, daemon,spacer,daemon")), Ok(json!(["script", "daemon", "spacer"])));
-        assert_eq!(s.coerce(&json!(["daemon", "/Users/me/bin/ci.sh"])), Ok(json!(["daemon", "/Users/me/bin/ci.sh"])));
-        assert_eq!(s.coerce(&json!([])), Ok(json!([])));
-    #[test]
     fn insights_layouts_check_widgets_sizes_and_names() {
         let s = setting("insights.layouts").unwrap();
         assert_eq!(s.coerce(&json!(["Mine = heatmap:large approved"])).unwrap(), json!(["Mine = heatmap:large approved"]));
@@ -813,6 +807,12 @@ mod tests {
         assert_eq!(format_insights_layout(&items), "heatmap:large approved spend");
     }
 
+    #[test]
+    fn status_items_keep_order_and_reject_unknown_names() {
+        let s = setting("ui.status.items").unwrap();
+        assert_eq!(s.coerce(&json!("script, daemon,spacer,daemon")), Ok(json!(["script", "daemon", "spacer"])));
+        assert_eq!(s.coerce(&json!(["daemon", "/Users/me/bin/ci.sh"])), Ok(json!(["daemon", "/Users/me/bin/ci.sh"])));
+        assert_eq!(s.coerce(&json!([])), Ok(json!([])));
         assert!(s.coerce(&json!("daemon, clock")).is_err());
         assert!(s.coerce(&json!("bin/ci.sh")).is_err());
         assert!(s.default.to_json().as_array().unwrap().iter().all(|v| STATUS_ITEMS.contains(&v.as_str().unwrap())));
