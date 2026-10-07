@@ -605,7 +605,7 @@ The user picked all three concepts, combined into one screen ("All three, one sc
 - **GUI** (agent terminals only):
   - The pinned bar shows while the view is scrolled back. It holds ‹ ›, the prompt title (`#n` + its first line; clicking it opens the list), the time, "n of N", and Live ↓. It covers row 0, which is Claude's own pinned copy of the same prompt.
   - The rail has one tick per prompt, spaced by order (the agent's scroll extents are unknown, so ticks can't sit at positions). The bright tick is where the view is, and prompts from before a /clear are greyed. Hovering a tick shows its text; clicking jumps.
-  - Keys: ⌥⌘↑ / ⌥⌘↓ (`keys.prev_prompt` / `keys.next_prompt`), because ⌘↑ ⌘↓ already go to the start and end of an agent's input. From the live end, ⌥⌘↑ goes to the last prompt; past the last one, ⌥⌘↓ goes back to live. A press made before the screen catches up steps from the pending target.
+  - Keys: `keys.prev_prompt` / `keys.next_prompt`, unbound by default. They were ⌥⌘↑ / ⌥⌘↓ until 2026-10-07, when those went to moving between terminals (`keys.prev_terminal` / `keys.next_terminal`, unbound before); the ‹ › buttons and the rail still jump. From the live end, previous goes to the last prompt; past the last one, next goes back to live. A press made before the screen catches up steps from the pending target.
   - The prompt list is the command bar in `>` mode (⌘P = `keys.prompts`, or click the bar's title), not the dropdown drawn on the canvas. It reuses the bar's search and keyboard, shows the newest first with "you're here", and puts prompts from before a /clear under "Before /clear" (listed, not jumpable).
   - The list is fetched when the view opens and again when the screen shows a prompt row it doesn't know.
 - **Not done**: the "all terminals in this project" toggle from concept B; Codex is untested (its `› ` rows are recognized, but whether PageUp scrolls its view isn't checked).
@@ -1058,6 +1058,14 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
   - anywhere else, or several rows closed at once: it just moves.
 - **The pane**: when the next terminal is promoted (after its first frame, as before), the closed one slides out the way the list moves (up when the next is below, down when it's above) and the next slides in behind it, in step, over 320 ms. If the next terminal takes longer than 1 s to draw, it just appears.
 - Only ⌘W animates, including a multi-selection. A terminal that exits or is closed elsewhere just leaves. Rows in folded projects don't animate. With Reduce Motion on, nothing moves.
+- **Opening runs it in reverse** (anything the sidebar's `open_session` opens: ⌘T, a new agent, the project menu). The new row unfolds over 320 ms while its content drops 14 px into place and fades up over the first 220 ms, and the rows below slide down.
+  - It landed right below the terminal shown before (the usual case, new rows go last in their project): the highlight slides down to it, the reverse of closing with the next row above.
+  - Right above: the highlight stays put and the new row unfolds into it as the old one slides down.
+  - Anywhere else: the highlight fills the new row's room, solid, as it opens.
+  - A project's run of rows clips only while it folds, so the highlight sliding out of the row above isn't cut off at that row's edge.
+  - The pane slides the old terminal out and the new one in, the way the list moves, starting at once: the new terminal is shown and focused straight away, as before, so keys typed right after ⌘T reach it, and it may draw its first frame mid-slide.
+  - Terminals opened from outside the window (`midna open`, another window) just appear.
+- **Moving between terminals** with ⌥⌘↑ / ⌥⌘↓ (`select_step`) slides the same way (`switch`). The highlight glides to the next row over 320 ms, into and out of projects too (past the heading) and around the ends, from where each row was last laid out (`CloseAnim::rows`), growing or shrinking to the new row's height. The upper of the two rows draws it on its way, so the rows and headings below draw over it. A row in a folded project: it just moves. The pane slides the way the list moves (down the list: up), once the next terminal has drawn, as when closing. Clicking a row doesn't animate.
 
 ## Collapsing the sidebar cascades (`ui/sidebar_anim.rs`; 2026-10-06)
 

@@ -334,6 +334,14 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let ghosts = |next: Option<&str>, cx: &mut Context<MainWindow>| -> Vec<AnyElement> {
             if fold > 0. { vec![] } else { m.close_anim.ghosts(&key, next).map(|gh| ghost(m, gh, t, compact, cx)).collect() }
         };
+        // A terminal just opened unfolds where it lands.
+        let row_el = |s: &Session, cx: &mut Context<MainWindow>| -> AnyElement {
+            let el = measured(m, &s.id, row(m, s, &key, t, compact, cx).into_any_element());
+            match m.close_anim.opening(&s.id) {
+                Some(o) => unfold(o, el, t),
+                None => el,
+            }
+        };
         let leaving = leaving(m, &key, collapsed, &g.sessions, window, cx);
         for s in g.sessions {
             run.extend(ghosts(Some(&s.id), cx));
@@ -344,11 +352,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                 ri += 1;
                 line += 1;
             } else if m.selected.as_deref() == Some(&s.id) {
-                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., shown_row(m, &key, collapsed, row(m, s, &key, t, compact, cx).into_any_element())));
+                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., shown_row(m, &key, collapsed, row_el(s, cx))));
                 ri += 1;
                 line += 1;
             } else if fold < 1. {
-                run.push(cascade(k, wipe(line, 26., row(m, s, &key, t, compact, cx).into_any_element())));
+                run.push(cascade(k, wipe(line, 26., row_el(s, cx))));
                 k += 1;
                 line += 1;
             }
@@ -695,8 +703,8 @@ fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Op
         div()
             .flex()
             .flex_col()
-            .overflow_hidden()
-            .when(fold > 0., |d| d.h(px(full * (1. - fold))))
+            // Only while folding: at rest a highlight sliding out of a row (`ui::close_anim`) shows.
+            .when(fold > 0., |d| d.overflow_hidden().h(px(full * (1. - fold))))
             .on_children_prepainted(move |b, _, _| {
                 if let Some(b) = b.first() {
                     heights.borrow_mut().insert(key.clone(), f32::from(b.size.height));
@@ -770,8 +778,8 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let line2 = line2.or_else(|| look.leaving.as_ref().filter(|_| !compact).map(|l| (l.text.clone(), crate::ui::need_anim::outcome_color(t, l.tone))));
     let segs = m.row_segments.get(&s.id).cloned().unwrap_or_default();
     let pad_y = if compact { 5. } else { 8. };
-    // Just closed the terminal beside it: the highlight is moving here (`ui::close_anim`).
-    let hl = if selected { m.close_anim.highlight(&s.id) } else { crate::ui::close_anim::Highlight::Own };
+    // Just closed or opened the terminal beside it: the highlight is moving (`ui::close_anim`).
+    let hl = m.close_anim.highlight(&s.id, selected);
     let own = selected && hl == crate::ui::close_anim::Highlight::Own;
 
     div()
@@ -785,7 +793,11 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         .py(px(pad_y))
         .cursor_pointer()
         .when(own, |d| d.bg(t.raised))
-        .when_some(match hl { crate::ui::close_anim::Highlight::Shifted(v) => Some(v), _ => None }, |d, v| d.child(highlight(t).top(relative(v)).h_full()))
+        .map(|d| match hl {
+            crate::ui::close_anim::Highlight::Shifted(v) => d.child(highlight(t).top(relative(v)).h_full()),
+            crate::ui::close_anim::Highlight::At { top, h } => d.child(highlight(t).top(px(top)).h(px(h))),
+            _ => d,
+        })
         .when(marked, |d| d.bg(t.accent_soft))
         .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
         .map(|d| crate::annotate::row_drop_target(d, m, &s.id, t, cx))
@@ -876,6 +888,52 @@ fn ghost(m: &MainWindow, g: &crate::ui::close_anim::Ghost, t: &Theme, compact: b
         .when_some(full.filter(|_| g.slot), |d, h| d.child(highlight(t).top_0().h(px(h))))
         .child(content)
         .child(div().absolute().inset_0().occlude())
+        .into_any_element()
+}
+
+/// `el`, a row, noting where it's laid out (`CloseAnim::rows`): ⌥⌘↑ / ⌥⌘↓ glide the highlight
+/// between rows from there.
+fn measured(m: &MainWindow, id: &str, el: AnyElement) -> AnyElement {
+    let (rows, id) = (m.close_anim.rows.clone(), id.to_string());
+    div()
+        .flex()
+        .flex_col()
+        .on_children_prepainted(move |b, _, _| {
+            if let Some(b) = b.first() {
+                rows.borrow_mut().insert(id.clone(), (f32::from(b.origin.y), f32::from(b.size.height)));
+            }
+        })
+        .child(el)
+        .into_any_element()
+}
+
+/// A row just opened unfolding (`ui::close_anim`), a ghost in reverse: its room opens while
+/// its content drops in and fades up. Opened right below the terminal shown before, the
+/// highlight slides down to it from that row (`row`); right above, it holds the highlight in
+/// place for the new row to unfold into; anywhere else, the highlight fills the room, solid.
+fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyElement {
+    let (grow, drop) = o.progress();
+    let full = o.height();
+    let measure = o.measure();
+    let content = div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .h(px(full.map_or(0., |h| h * grow)))
+        .on_children_prepainted(move |b, _, _| {
+            if let Some(b) = b.first() {
+                measure.set(f32::from(b.size.height));
+            }
+        })
+        .child(div().flex_none().relative().top(px(-crate::ui::close_anim::LIFT * (1. - drop))).opacity(drop).child(el));
+    div()
+        .relative()
+        .map(|d| match (o.glide, full) {
+            (Some(crate::ui::close_anim::Dir::Below), _) => d,
+            (Some(crate::ui::close_anim::Dir::Above), Some(h)) => d.child(highlight(t).top_0().h(px(h))),
+            _ => d.child(highlight(t).top_0().bottom_0()),
+        })
+        .child(content)
         .into_any_element()
 }
 

@@ -6,8 +6,17 @@
 //! the way the list moves and the next one comes in behind it.
 //!
 //! `start` runs before the sessions leave `MainWindow::sessions`; the pane's slide starts when
-//! the next terminal is promoted (`on_show`), which waits for its first frame. With Reduce
-//! Motion on, nothing moves.
+//! the next terminal is promoted (`on_show`), which waits for its first frame.
+//!
+//! Opening a terminal (⌘T and the like, `open`) runs it in reverse: the new row unfolds where
+//! it lands, its content dropping in and fading up, and the rows below slide down. The
+//! highlight glides down to it from the row right above, or stays put for it to unfold into
+//! from the row right below; anywhere else it fills the new row's room, solid, as it opens.
+//! The pane slides the new terminal in the same way.
+//!
+//! Moving to the terminal above or below (⌥⌘↑ / ⌥⌘↓, `switch`) slides too: the highlight glides
+//! to it, across project headings too, from where each row was last laid out (`rows`), and the
+//! pane slides the same way, once the terminal has drawn (`on_show`). With Reduce Motion on, nothing moves.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::terminal::TerminalView;
@@ -47,6 +56,18 @@ pub struct Ghost {
     height: Rc<Cell<f32>>,
 }
 
+/// A row just opened, unfolding where it landed.
+pub struct Opening {
+    pub id: String,
+    /// The terminal shown before it.
+    from: Option<String>,
+    /// Where it sits from `from`, when they're side by side: the highlight moves to it.
+    pub glide: Option<Dir>,
+    at: Instant,
+    /// Its measured height (0 until the first frame).
+    height: Rc<Cell<f32>>,
+}
+
 /// How a row draws its selection highlight.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Highlight {
@@ -56,6 +77,20 @@ pub enum Highlight {
     None,
     /// Shifted down by this fraction of the row's height (the highlight gliding up to it).
     Shifted(f32),
+    /// At `top` px from the row's top, `h` px tall (gliding between rows further apart).
+    At { top: f32, h: f32 },
+}
+
+/// A highlight gliding between two rows (`switch`).
+struct Step {
+    from: String,
+    to: String,
+    /// Where `to` sits from `from`.
+    dir: Dir,
+    /// Each row's top and height, laid out.
+    from_at: (f32, f32),
+    to_at: (f32, f32),
+    at: Instant,
 }
 
 #[derive(Default)]
@@ -66,6 +101,10 @@ pub struct CloseAnim {
     /// Closed terminals whose pane slides when the next one shows, and which way.
     pane_due: Option<(Vec<String>, Dir, Instant)>,
     pane: Option<(Entity<TerminalView>, Dir, Instant)>,
+    opening: Option<Opening>,
+    step: Option<Step>,
+    /// Each sidebar row's top and height in the window, as last laid out (`sidebar::measured`).
+    pub rows: Rc<std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>>,
 }
 
 /// A sidebar group for `plan`: its key, whether it's folded, its rows in order.
@@ -112,6 +151,34 @@ pub fn plan(groups: &[PlanGroup], order: &[String], closing: &[String], next: Op
     Plan { ghosts, glide, pane: dir }
 }
 
+/// What opening or moving to `new` animates, from `from` (the terminal shown before): whether
+/// the highlight glides (`from` right beside it in an unfolded group), and which way the pane
+/// slides.
+pub fn plan_move(groups: &[PlanGroup], order: &[String], from: Option<&str>, new: &str) -> (Option<Dir>, Option<Dir>) {
+    let at = |x: &str| order.iter().position(|r| r == x);
+    let Some((from, f, n)) = from.and_then(|f| Some((f, at(f)?, at(new)?))).filter(|(_, f, n)| f != n) else { return (None, None) };
+    let dir = if n < f { Dir::Above } else { Dir::Below };
+    let beside = groups.iter().filter(|g| !g.folded).any(|g| {
+        let at = |x: &str| g.rows.iter().position(|r| r == x);
+        matches!((at(from), at(new)), (Some(a), Some(b)) if a.abs_diff(b) == 1)
+    });
+    (beside.then_some(dir), Some(dir))
+}
+
+fn plan_groups(m: &MainWindow) -> Vec<PlanGroup> {
+    m.groups()
+        .into_iter()
+        .map(|g| {
+            let pid = g.project.map(|p| p.id.clone());
+            PlanGroup {
+                folded: pid.as_ref().is_some_and(|p| m.collapsed.contains(p)),
+                key: pid.unwrap_or_else(|| "root".into()),
+                rows: g.sessions.iter().map(|s| s.id.clone()).collect(),
+            }
+        })
+        .collect()
+}
+
 fn ease_out(x: f32) -> f32 {
     1. - (1. - x.clamp(0., 1.)).powi(3)
 }
@@ -126,18 +193,7 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
     if cx.reduce_motion() {
         return;
     }
-    let groups: Vec<PlanGroup> = m
-        .groups()
-        .into_iter()
-        .map(|g| {
-            let pid = g.project.map(|p| p.id.clone());
-            PlanGroup {
-                folded: pid.as_ref().is_some_and(|p| m.collapsed.contains(p)),
-                key: pid.unwrap_or_else(|| "root".into()),
-                rows: g.sessions.iter().map(|s| s.id.clone()).collect(),
-            }
-        })
-        .collect();
+    let groups = plan_groups(m);
     let order: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
     let p = plan(&groups, &order, ids, next);
     let now = Instant::now();
@@ -152,6 +208,45 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
         .collect();
     a.glide = p.glide.map(|(id, d)| (id, d, now));
     a.pane_due = p.pane.map(|d| (ids.to_vec(), d, now));
+    cx.notify();
+}
+
+/// `new` just opened, already in `m.sessions` but not yet selected; `old` is the terminal on
+/// screen, which slides out as `new` comes in (shown straight away, so keys reach it).
+pub fn open(m: &mut MainWindow, new: &str, old: Option<Entity<TerminalView>>, cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        return;
+    }
+    let order: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
+    let from = m.selected.clone();
+    let (glide, pane) = plan_move(&plan_groups(m), &order, from.as_deref(), new);
+    let now = Instant::now();
+    let a = &mut m.close_anim;
+    a.opening = Some(Opening { id: new.to_string(), from, glide, at: now, height: Rc::new(Cell::new(0.)) });
+    a.pane_due = None;
+    a.pane = old.filter(|o| o.read(cx).session_id != new).zip(pane).map(|(o, d)| (o, d, now));
+    cx.notify();
+}
+
+/// ⌥⌘↑ / ⌥⌘↓ moved from the selected terminal to `to`, not yet selected.
+pub fn switch(m: &mut MainWindow, to: &str, cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    let Some(from) = m.selected.clone().filter(|f| f != to && !cx.reduce_motion()) else { return };
+    let order: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
+    let groups = plan_groups(m);
+    let (_, pane) = plan_move(&groups, &order, Some(&from), to);
+    // Both rows stay on screen: neither is in a folded project.
+    let shown = |id: &str| groups.iter().any(|g| !g.folded && g.rows.iter().any(|r| r == id));
+    let now = Instant::now();
+    let a = &mut m.close_anim;
+    let rows = a.rows.borrow();
+    a.step = match (pane, rows.get(&from), rows.get(to)) {
+        (Some(dir), Some(&from_at), Some(&to_at)) if shown(&from) && shown(to) => Some(Step { from: from.clone(), to: to.to_string(), dir, from_at, to_at, at: now }),
+        _ => None,
+    };
+    drop(rows);
+    a.pane_due = pane.map(|d| (vec![from], d, now));
     cx.notify();
 }
 
@@ -174,11 +269,25 @@ impl CloseAnim {
         if self.pane.as_ref().is_some_and(|(_, _, at)| ms(*at) >= SLIDE_MS) {
             self.pane = None;
         }
+        if self.opening.as_ref().is_some_and(|o| ms(o.at) >= SLIDE_MS) {
+            self.opening = None;
+        }
+        if self.step.as_ref().is_some_and(|s| ms(s.at) >= SLIDE_MS) {
+            self.step = None;
+        }
     }
 
     /// The sidebar is moving (it asks for the next frame).
     pub fn moving(&self) -> bool {
-        self.ghosts.iter().any(|g| ms(g.at) < SLIDE_MS) || self.glide.as_ref().is_some_and(|(_, _, at)| ms(*at) < SLIDE_MS)
+        self.ghosts.iter().any(|g| ms(g.at) < SLIDE_MS)
+            || self.glide.as_ref().is_some_and(|(_, _, at)| ms(*at) < SLIDE_MS)
+            || self.opening.as_ref().is_some_and(|o| ms(o.at) < SLIDE_MS)
+            || self.step.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
+    }
+
+    /// `id`, when it's the row unfolding.
+    pub fn opening(&self, id: &str) -> Option<&Opening> {
+        self.opening.as_ref().filter(|o| o.id == id && ms(o.at) < SLIDE_MS)
     }
 
     /// Ghosts in `group` sitting above `next` (`None`: at the group's end).
@@ -186,9 +295,32 @@ impl CloseAnim {
         self.ghosts.iter().filter(move |g| g.group == group && g.next.as_deref() == next && ms(g.at) < SLIDE_MS)
     }
 
-    pub fn highlight(&self, id: &str) -> Highlight {
+    /// How row `id` (`selected` or not) draws the highlight.
+    pub fn highlight(&self, id: &str, selected: bool) -> Highlight {
+        if let Some(o) = self.opening.as_ref().filter(|o| ms(o.at) < SLIDE_MS) {
+            // The unfolding row's highlight is drawn around it (`sidebar::unfold`), not faded
+            // with its content, or comes down from the row above.
+            if o.id == id {
+                return Highlight::None;
+            }
+            if o.glide == Some(Dir::Below) && o.from.as_deref() == Some(id) && !selected {
+                return Highlight::Shifted(ease_out(ms(o.at) / SLIDE_MS));
+            }
+        }
+        // Moved with ⌥⌘↑ / ⌥⌘↓: the upper of the two rows draws the highlight on its way, so
+        // the rows and headings below it draw over it.
+        if let Some(s) = self.step.as_ref().filter(|s| ms(s.at) < SLIDE_MS) {
+            let e = ease_out(ms(s.at) / SLIDE_MS);
+            let h = s.from_at.1 + (s.to_at.1 - s.from_at.1) * e;
+            match s.dir {
+                Dir::Below if s.to == id && selected => return Highlight::None,
+                Dir::Below if s.from == id && !selected => return Highlight::At { top: (s.to_at.0 - s.from_at.0) * e, h },
+                Dir::Above if s.to == id && selected => return Highlight::At { top: (s.from_at.0 - s.to_at.0) * (1. - e), h },
+                _ => {}
+            }
+        }
         match &self.glide {
-            Some((g, dir, at)) if g == id && ms(*at) < SLIDE_MS => match dir {
+            Some((g, dir, at)) if selected && g == id && ms(*at) < SLIDE_MS => match dir {
                 Dir::Below => Highlight::None,
                 Dir::Above => Highlight::Shifted(1. - ease_out(ms(*at) / SLIDE_MS)),
             },
@@ -202,6 +334,23 @@ impl Ghost {
     pub fn progress(&self) -> (f32, f32) {
         let t = ms(self.at);
         (ease_out(t / SLIDE_MS), (t / LIFT_MS).clamp(0., 1.).powi(2))
+    }
+
+    /// Its full height, once measured.
+    pub fn height(&self) -> Option<f32> {
+        Some(self.height.get()).filter(|h| *h > 0.)
+    }
+
+    pub fn measure(&self) -> Rc<Cell<f32>> {
+        self.height.clone()
+    }
+}
+
+impl Opening {
+    /// How far it has unfolded and its content dropped in, 0..1 each.
+    pub fn progress(&self) -> (f32, f32) {
+        let t = ms(self.at);
+        (ease_out(t / SLIDE_MS), 1. - (1. - t / LIFT_MS).clamp(0., 1.).powi(2))
     }
 
     /// Its full height, once measured.
@@ -296,5 +445,21 @@ mod tests {
         let p = plan(&g, &order(), &s(&["b1"]), None);
         assert!(p.ghosts.is_empty());
         assert_eq!((p.glide, p.pane), (None, None));
+    }
+
+    #[test]
+    fn opening_beside_glides_the_highlight() {
+        assert_eq!(plan_move(&groups(), &order(), Some("a2"), "a3"), (Some(Dir::Below), Some(Dir::Below)));
+        assert_eq!(plan_move(&groups(), &order(), Some("a2"), "a1"), (Some(Dir::Above), Some(Dir::Above)));
+    }
+
+    #[test]
+    fn opening_elsewhere_only_slides_the_pane() {
+        assert_eq!(plan_move(&groups(), &order(), Some("a1"), "b1"), (None, Some(Dir::Below)));
+        assert_eq!(plan_move(&groups(), &order(), Some("a3"), "b1"), (None, Some(Dir::Below)));
+        assert_eq!(plan_move(&groups(), &order(), None, "b1"), (None, None));
+        let mut g = groups();
+        g[0].folded = true;
+        assert_eq!(plan_move(&g, &order(), Some("a2"), "a3"), (None, Some(Dir::Below)));
     }
 }

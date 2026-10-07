@@ -1500,6 +1500,8 @@ impl MainWindow {
             }
             if let Some(id) = id {
                 m.windows.borrow_mut().claim(&id, m.id);
+                let old = m.terminal.clone();
+                crate::ui::close_anim::open(m, &id, old, cx);
                 m.selected = Some(id);
                 m.terminal = None;
                 m.pending_terminal = None;
@@ -1765,6 +1767,7 @@ impl MainWindow {
         };
         if self.selected.as_deref() != Some(order[next as usize].as_str()) {
             crate::sounds::play("switched");
+            crate::ui::close_anim::switch(self, &order[next as usize], cx);
         }
         self.select(order[next as usize].clone(), window, cx);
     }
