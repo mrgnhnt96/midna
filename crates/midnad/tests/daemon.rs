@@ -677,6 +677,43 @@ fn no_project_opens_at_root() {
 }
 
 #[test]
+fn slash_is_never_a_project() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("midna-rel-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let dir_s = dir.to_string_lossy().into_owned();
+    let s = call(&mut c, "session.open", json!({ "kind": "shell", "cwd": dir_s, "command": ["/bin/sh"] }));
+    let pid = s["project_id"].as_str().unwrap().to_string();
+    // A relative cwd is the caller's terminal's, not the daemon's (which is / under launchd).
+    let mut a = d.agent(Some(s["id"].as_str().unwrap()));
+    let here = call(&mut a, "session.open", json!({ "kind": "shell", "cwd": ".", "command": ["/bin/sh"] }));
+    assert_eq!((here["project_id"].as_str(), here["cwd"].as_str()), (Some(pid.as_str()), Some(dir_s.as_str())));
+    let sub = call(&mut a, "session.open", json!({ "kind": "shell", "cwd": "sub", "command": ["/bin/sh"] }));
+    assert_eq!(sub["cwd"], format!("{dir_s}/sub"));
+    // With no terminal to be relative to, it's refused.
+    assert!(call_err(&mut c, "session.open", json!({ "kind": "shell", "cwd": ".", "command": ["/bin/sh"] })).message.contains("relative"));
+    // `/` opens at root instead of becoming a project, and can't be added as one.
+    let slash = call(&mut a, "session.open", json!({ "kind": "shell", "cwd": "/", "command": ["/bin/sh"] }));
+    assert_eq!((slash["project_id"].as_str(), slash["cwd"].as_str()), (Some("root"), Some("/")));
+    call_err(&mut c, "project.add", json!({ "path": "/" }));
+    let paths: Vec<String> = call(&mut c, "project.list", json!({})).as_array().unwrap().iter().map(|p| p["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir_s.clone()]);
+    // A `/` project an older daemon stored is dropped on load; its terminals move to root.
+    let mut state = midnad::state::State::default();
+    let mut old: midna_proto::Session = serde_json::from_value(slash.clone()).unwrap();
+    old.project_id = "p_slash".into();
+    state.sessions.push(old);
+    state.projects.push(serde_json::from_value(json!({ "id": "p_slash", "name": "root", "path": "/", "order": 0, "commands": [] })).unwrap());
+    let file = dir.join("state.json");
+    state.save(&file).unwrap();
+    let loaded = midnad::state::State::load(&file);
+    assert!(loaded.projects.is_empty());
+    assert_eq!(loaded.sessions[0].project_id, "root");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn background_terminals_open_and_move() {
     let d = TestDaemon::start();
     let mut c = d.human();

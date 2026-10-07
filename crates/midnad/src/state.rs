@@ -58,7 +58,10 @@ impl State {
     pub fn load(path: &Path) -> State {
         match std::fs::read(path) {
             Ok(b) => match serde_json::from_slice::<State>(&b) {
-                Ok(s) => s,
+                Ok(mut s) => {
+                    s.drop_filesystem_root_project();
+                    s
+                }
                 Err(e) => {
                     // Keep the unreadable file for inspection rather than overwriting it silently.
                     let bad = path.with_extension(format!("json.bad-{}", time::now_unix()));
@@ -82,6 +85,19 @@ impl State {
             f.sync_all()?;
         }
         std::fs::rename(&tmp, path)
+    }
+
+    /// `/` is never a project: older daemons auto-created one (named "root") for an open in
+    /// `/`, and it then covered every path. Its terminals move to root, which has no heading.
+    pub fn drop_filesystem_root_project(&mut self) {
+        let gone: Vec<Id> = self.projects.iter().filter(|p| p.path == "/").map(|p| p.id.clone()).collect();
+        if gone.is_empty() {
+            return;
+        }
+        self.projects.retain(|p| p.path != "/");
+        for s in self.sessions.iter_mut().filter(|s| gone.contains(&s.project_id)) {
+            s.project_id = ROOT_PROJECT_ID.into();
+        }
     }
 
     pub fn project(&self, id: &str) -> Option<&Project> {

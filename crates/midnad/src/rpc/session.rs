@@ -178,11 +178,15 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     // Resolve the project: explicit, the caller's, the one containing cwd, or a new one for cwd.
     // With none of those the terminal opens at root: no project, starting in $HOME.
     let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false };
+    let mut p = p;
+    p.cwd = p.cwd.take().map(|c| absolute_cwd(d, ctx, &c)).transpose()?;
     let project = match (&p.project_id, &p.cwd) {
         (Some(id), _) if id == ROOT_PROJECT_ID => root(),
         (Some(id), _) => d.core().state.project(id).cloned().ok_or_else(|| RpcError::not_found(format!("no project {id}")))?,
         (None, Some(cwd)) => match super::project::containing(d, cwd) {
             Some(pr) => pr,
+            // `/` is never a project (it would cover every path): open there at root.
+            None if cwd == "/" => root(),
             None => super::project::find_or_add_for_open(d, ctx.actor(), cwd)?,
         },
         (None, None) => match super::session_project(d, ctx.session.as_deref()) {
@@ -1000,6 +1004,23 @@ mod keystroke_tests {
 }
 
 /// Where root terminals start: `$HOME`, else `/`.
+/// `cwd` made absolute. A relative one is relative to the caller's terminal (its agent's
+/// folder, else where it started), never to the daemon's own working directory, which is `/`.
+fn absolute_cwd(d: &Daemon, ctx: &Ctx, cwd: &str) -> Result<String, RpcError> {
+    let path = match cwd.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{}{rest}", home_dir()),
+        _ => cwd.to_string(),
+    };
+    if std::path::Path::new(&path).is_absolute() {
+        return Ok(path);
+    }
+    let core = d.core();
+    let base = ctx.session.as_deref().and_then(|sid| core.state.session(sid)).map(|s| s.agent_info.as_ref().and_then(|a| a.cwd.clone()).unwrap_or_else(|| s.cwd.clone()));
+    let base = base.ok_or_else(|| RpcError::bad_params(format!("cwd {cwd:?} is relative; pass an absolute path")))?;
+    let joined = std::path::Path::new(&base).join(&path);
+    Ok(std::fs::canonicalize(&joined).unwrap_or(joined).to_string_lossy().into_owned())
+}
+
 pub fn home_dir() -> String {
     std::env::var("HOME").ok().filter(|h| std::path::Path::new(h).is_dir()).unwrap_or_else(|| "/".into())
 }

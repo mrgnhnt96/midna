@@ -34,6 +34,10 @@ fn add_inner(d: &Daemon, actor: Actor, path: &str, name: Option<String>, auto_cr
     if !std::path::Path::new(&path).is_dir() {
         return Err(RpcError::bad_params(format!("{path} is not a directory")));
     }
+    // A project at / would cover every path; terminals there belong to root instead.
+    if path == "/" {
+        return Err(RpcError::bad_params("/ can't be a project; open a terminal there at root instead"));
+    }
     let mut core = d.core();
     if let Some(p) = core.state.projects.iter_mut().find(|p| p.path == path) {
         // The human adding it themselves makes it theirs.
@@ -42,7 +46,7 @@ fn add_inner(d: &Daemon, actor: Actor, path: &str, name: Option<String>, auto_cr
         }
         return Ok(p.clone());
     }
-    let name = name.unwrap_or_else(|| path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("root").to_string());
+    let name = name.unwrap_or_else(|| path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&path).to_string());
     let order = core.state.projects.iter().map(|p| p.order + 1).max().unwrap_or(0);
     let p = Project { id: format!("p_{}", hex_id(6)), name, path, icon: None, order, commands: vec![], last_opened_at: None, auto_created };
     core.state.projects.push(p.clone());
@@ -58,7 +62,7 @@ pub fn containing(d: &Daemon, path: &str) -> Option<Project> {
         .state
         .projects
         .iter()
-        .filter(|p| path == p.path || path.starts_with(&format!("{}/", p.path)) || p.path == "/")
+        .filter(|p| path == p.path || path.starts_with(&format!("{}/", p.path)))
         .max_by_key(|p| p.path.len())
         .cloned()
 }
