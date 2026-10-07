@@ -66,7 +66,9 @@ pub fn key(prompt: &str) -> String {
 pub fn matches(row: &str, prompt: &str) -> bool {
     let (a, b) = (key(row), key(prompt));
     let a = a.trim_end_matches('…').trim_end();
-    !a.is_empty() && (a == b || (a.chars().count() >= 8 && b.starts_with(a)))
+    // Claude shows a prompt of several lines on one row, its lines joined.
+    let all = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    !a.is_empty() && (a == b || a == all || (a.chars().count() >= 8 && (b.starts_with(a) || all.starts_with(a))))
 }
 
 fn is_rule(line: &str) -> bool {
@@ -164,6 +166,7 @@ mod tests {
         assert!(matches("ship it", "ship it"));
         assert!(!matches("ship it now", "ship it"));
         assert!(!matches("", "x"));
+        assert!(matches("[Image #5] Annotations (coordinates are perc…", "[Image #5]\nAnnotations (coordinates are percentages)"), "lines joined on one row");
     }
 
     #[test]

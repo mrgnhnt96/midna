@@ -2,7 +2,9 @@
 //! scrolling the agent to one (`session.jump_prompt`).
 //!
 //! Prompts come from `agent.prompt_submitted` events; each carries the agent's conversation id,
-//! so prompts sent before a /clear (or a fresh start) are known to be gone from its screen.
+//! so prompts sent before a /clear (or a fresh start) are known to be gone from its screen. A
+//! Claude conversation resumed here (its prompts typed in another terminal or app) has more
+//! prompts in its transcript than events: then the transcript lists the current conversation.
 //!
 //! Claude Code and Codex draw full-screen and scroll their own view, so a jump drives them the
 //! way the human would: page keys until the prompt's row shows (read with
@@ -40,7 +42,39 @@ fn still_current(sid: &str, token: u64) -> bool {
 
 /// Every prompt sent to the terminal, oldest first, numbered from 1.
 pub fn list(d: &Daemon, sid: &str) -> Vec<PromptMark> {
-    let current = d.core().state.session(sid).and_then(|s| s.agent_info.as_ref()).and_then(|a| a.conversation_id.clone());
+    let info = d.core().state.session(sid).and_then(|s| s.agent_info.clone());
+    let current = info.as_ref().and_then(|a| a.conversation_id.clone());
+    let mut marks = from_events(d, sid, current.as_ref());
+    if let (Some(cur), Some(path)) = (current, info.and_then(|a| a.transcript_path)) {
+        let typed = transcript_prompts(&path);
+        if typed.len() > marks.iter().filter(|m| m.conversation.as_ref() == Some(&cur)).count() {
+            marks.retain(|m| m.conversation.as_ref() != Some(&cur));
+            let n = marks.len();
+            marks.extend(typed.into_iter().enumerate().map(|(i, (text, at))| PromptMark { n: (n + i) as u32 + 1, text, at, conversation: Some(cur.clone()), on_screen: true }));
+            marks.truncate(MAX_PROMPTS);
+        }
+    }
+    marks
+}
+
+/// The prompts the human typed in a Claude transcript (JSONL), oldest first, with when: `user`
+/// entries Claude marks `origin.kind` = human (not its own meta rows, tool results or task
+/// notifications). An entry's text is its string content or its first text block.
+fn transcript_prompts(path: &str) -> Vec<(String, String)> {
+    let Ok(file) = std::fs::read_to_string(path) else { return vec![] };
+    file.lines()
+        .filter(|l| l.contains("\"human\""))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e["type"] == "user" && e["origin"]["kind"] == "human" && e["isMeta"] != true && e["isSidechain"] != true)
+        .filter_map(|e| {
+            let c = &e["message"]["content"];
+            let text = c.as_str().map(str::to_string).or_else(|| c.as_array()?.iter().find(|b| b["type"] == "text").and_then(|b| b["text"].as_str()).map(str::to_string))?;
+            Some((text, e["timestamp"].as_str().unwrap_or("").to_string()))
+        })
+        .collect()
+}
+
+fn from_events(d: &Daemon, sid: &str, current: Option<&String>) -> Vec<PromptMark> {
     let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
     let events = d.log.list(0, MAX_PROMPTS, &filter);
     let last_conv = events.iter().rev().find_map(|e| e.data.get("conversation").and_then(|c| c.as_str()).map(str::to_string));
@@ -51,7 +85,7 @@ pub fn list(d: &Daemon, sid: &str) -> Vec<PromptMark> {
             let conversation = e.data.get("conversation").and_then(|c| c.as_str()).map(str::to_string);
             // Older events carry no conversation: count them as current only while no newer
             // prompt says otherwise.
-            let on_screen = match (&conversation, current.as_ref().or(last_conv.as_ref())) {
+            let on_screen = match (&conversation, current.or(last_conv.as_ref())) {
                 (Some(c), Some(cur)) => c == cur,
                 (None, cur) => cur.is_none() || last_conv.is_none(),
                 (Some(_), None) => true,
@@ -332,6 +366,26 @@ mod tests {
         assert_eq!(resolve(&To::Next, &marks, &ns, &back, Here::At(2)).ok(), Some(None), "past the last: live");
         assert!(resolve(&To::Next, &marks, &ns, &live, Here::At(2)).is_err());
         assert_eq!(resolve(&To::Next, &marks, &ns, &back, Here::BeforeFirst).ok(), Some(Some(0)));
+    }
+
+    #[test]
+    fn a_transcript_lists_only_what_the_human_typed() {
+        let dir = std::env::temp_dir().join(format!("midna-transcript-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let lines = [
+            r#"{"type":"user","origin":{"kind":"human"},"timestamp":"t1","message":{"role":"user","content":"commit"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"human"}]}}"#,
+            r#"{"type":"user","origin":{"kind":"human"},"timestamp":"t2","message":{"role":"user","content":[{"type":"text","text":"[Image #5]\nLook"},{"type":"image"}]}}"#,
+            r#"{"type":"user","isMeta":true,"origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"[Image: source: x]"}]}}"#,
+            r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>human</task-notification>"}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"human"}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let got = transcript_prompts(path.to_str().unwrap());
+        assert_eq!(got, vec![("commit".to_string(), "t1".to_string()), ("[Image #5]\nLook".to_string(), "t2".to_string())]);
+        assert!(transcript_prompts("/nonexistent/t.jsonl").is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
