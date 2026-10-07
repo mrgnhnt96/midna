@@ -556,8 +556,8 @@ pub fn go_newest(cx: &mut App) {
     let _ = h.update(cx, |b, _, cx| {
         let Some(l) = b.lines.front().filter(|l| l.leaving.is_none()) else { return };
         let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
-        let (session, need) = (l.session.clone(), l.need.clone());
-        b.open(session, need, held, cx);
+        let (session, need, sent) = (l.session.clone(), l.need.clone(), l.sent.clone());
+        b.open(session, need, held, sent, cx);
     });
 }
 
