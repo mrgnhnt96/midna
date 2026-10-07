@@ -530,6 +530,10 @@ impl MainWindow {
                     if key.starts_with("policy.") {
                         what |= refresh::RULES;
                     }
+                    // Which kinds count on the bell: count again.
+                    if key.starts_with("notify.bell.") {
+                        crate::ui::notifications::fetch(self, cx);
+                    }
                 }
                 if k.starts_with("agent.") || k.starts_with("trigger.") {
                     what |= refresh::INSIGHTS;

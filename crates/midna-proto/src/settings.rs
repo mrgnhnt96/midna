@@ -253,6 +253,13 @@ macro_rules! color {
     };
 }
 
+macro_rules! bell {
+    ($cat:literal, $def:literal) => {
+        s!(concat!("notify.bell.", $cat), SettingKind::Bool, B($def), "notifications", false,
+            concat!("Count “notify.", $cat, "” toward the unread number on the status bar's bell. Off: it's still in the notifications screen, just not counted."))
+    };
+}
+
 use DefaultValue::{Bool as B, Int as I, List as L, Str as S};
 
 /// A per-kind setting of a kind you added (`notify::CustomKind`), by its field
@@ -275,6 +282,7 @@ static CUSTOM_KIND: &[SettingSpec] = &[
     SettingSpec { range: Some((0, 3600)), ..s!("notify.stay.<kind>", SettingKind::Int, I(6), "notifications", false,
         "How long this kind stays on screen, in seconds. 0 = it stays until it's handled or dismissed.") },
     s!("notify.color.<kind>", SettingKind::String, S("accent"), "notifications", false, "Color of this kind: a theme color (need, ok, err, work, accent, dim) or #rrggbb."),
+    s!("notify.bell.<kind>", SettingKind::Bool, B(false), "notifications", false, "Count this kind toward the unread number on the status bar's bell."),
 ];
 const fn en(options: &'static [&'static str]) -> SettingKind {
     SettingKind::Enum { options, allow_other: false }
@@ -493,18 +501,18 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Volume of every notification sound, 0–100 (0 = silent). Each kind's notify.volume.<kind> is scaled by it; each kind picks its sound with notify.sound.<kind>.") },
     s!("notify.image", SettingKind::String, S(""), "notifications", false,
         "Image shown on every notification (an image imported with `midna notify import <file>`, by its file name; empty = none). A kind's notify.image.<kind> overrides it."),
-    snd!("approval", "Portal"), push!("approval", true), pushf!("approval"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "), stay!("approval", 0), color!("approval", "need"),
-    snd!("attention", "Call"), push!("attention", true), pushf!("attention"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "), stay!("attention", 0), color!("attention", "need"),
-    snd!("failed", "Uh-oh"), push!("failed", false), pushf!("failed"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "), stay!("failed", 0), color!("failed", "err"),
-    snd!("turn_done", "Strum"), push!("turn_done", false), pushf!("turn_done"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "), stay!("turn_done", 6), color!("turn_done", "ok"),
-    snd!("agent", "Hm"), push!("agent", false), pushf!("agent"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "), stay!("agent", 6), color!("agent", "accent"),
-    snd!("from_trigger", "Hm"), push!("from_trigger", false), pushf!("from_trigger"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "), stay!("from_trigger", 6), color!("from_trigger", "work"),
-    snd!("requests", "none"), push!("requests", false), pushf!("requests"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "), stay!("requests", 0), color!("requests", "accent"),
-    snd!("background", "none"), push!("background", false), pushf!("background"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "), stay!("background", 6), color!("background", "ok"),
-    snd!("pr_checks", "none"), push!("pr_checks", false), pushf!("pr_checks"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "), stay!("pr_checks", 6), color!("pr_checks", "ok"),
-    snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""), stay!("exited", 6), color!("exited", "dim"),
-    snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "), stay!("triggers", 6), color!("triggers", "work"),
-    snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "), stay!("restarted", 6), color!("restarted", "work"),
+    snd!("approval", "Portal"), push!("approval", true), pushf!("approval"), vol!("approval"), pic!("approval"), ttl!("approval"), txt!("approval", "{{title}}, {{detail}}, {{kind}} and {{action}} (what it wants to run). "), stay!("approval", 0), color!("approval", "need"), bell!("approval", true),
+    snd!("attention", "Call"), push!("attention", true), pushf!("attention"), vol!("attention"), pic!("attention"), ttl!("attention"), txt!("attention", "{{title}}, {{detail}} and {{kind}}. "), stay!("attention", 0), color!("attention", "need"), bell!("attention", true),
+    snd!("failed", "Uh-oh"), push!("failed", false), pushf!("failed"), vol!("failed"), pic!("failed"), ttl!("failed"), txt!("failed", "{{title}}, {{detail}} and {{kind}} (a failed command), or {{reason}} (an agent turn that failed). "), stay!("failed", 0), color!("failed", "err"), bell!("failed", true),
+    snd!("turn_done", "Strum"), push!("turn_done", false), pushf!("turn_done"), vol!("turn_done"), pic!("turn_done"), ttl!("turn_done"), txt!("turn_done", "{{elapsed}} (2m 5s), {{secs}}, {{reply}} (the first line of its reply) and {{message}} (all of it). "), stay!("turn_done", 6), color!("turn_done", "ok"), bell!("turn_done", false),
+    snd!("agent", "Hm"), push!("agent", false), pushf!("agent"), vol!("agent"), pic!("agent"), ttl!("agent"), txt!("agent", "{{title}} and {{body}} (what the agent sent). "), stay!("agent", 6), color!("agent", "accent"), bell!("agent", false),
+    snd!("from_trigger", "Hm"), push!("from_trigger", false), pushf!("from_trigger"), vol!("from_trigger"), pic!("from_trigger"), ttl!("from_trigger"), txt!("from_trigger", "{{title}} and {{body}} (the trigger’s notify action). "), stay!("from_trigger", 6), color!("from_trigger", "work"), bell!("from_trigger", false),
+    snd!("requests", "none"), push!("requests", false), pushf!("requests"), vol!("requests"), pic!("requests"), ttl!("requests"), txt!("requests", "{{title}}, {{detail}} and {{kind}}. "), stay!("requests", 0), color!("requests", "accent"), bell!("requests", true),
+    snd!("background", "none"), push!("background", false), pushf!("background"), vol!("background"), pic!("background"), ttl!("background"), txt!("background", "{{count}} (tasks that finished). "), stay!("background", 6), color!("background", "ok"), bell!("background", false),
+    snd!("pr_checks", "none"), push!("pr_checks", false), pushf!("pr_checks"), vol!("pr_checks"), pic!("pr_checks"), ttl!("pr_checks"), txt!("pr_checks", "{{number}}, {{checks}} (passing or failing) and {{failing}} (how many). "), stay!("pr_checks", 6), color!("pr_checks", "ok"), bell!("pr_checks", false),
+    snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""), stay!("exited", 6), color!("exited", "dim"), bell!("exited", false),
+    snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "), stay!("triggers", 6), color!("triggers", "work"), bell!("triggers", false),
+    snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "), stay!("restarted", 6), color!("restarted", "work"), bell!("restarted", false),
     snd!("approved", "Rise"), vol!("approved"),
     snd!("denied", "Nn-nn"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),
@@ -616,6 +624,9 @@ mod tests {
             assert!(setting(&crate::notify::stay_key(c.key)).is_some_and(|v| v.range == Some((0, 3600))), "{}", c.key);
             let color = setting(&crate::notify::color_key(c.key)).unwrap_or_else(|| panic!("no color setting for {}", c.key));
             assert!(crate::notify::valid_color(color.default.to_json().as_str().unwrap()), "{}", c.key);
+            // Only what needs you, or went wrong, counts on the bell out of the box.
+            let counts = ["approval", "attention", "requests", "failed"].contains(&c.key);
+            assert_eq!(setting(&crate::notify::bell_key(c.key)).map(|b| b.default.to_json()), Some(json!(counts)), "{}", c.key);
         }
         for f in crate::notify::KIND_FIELDS {
             assert!(custom_kind_spec(f).is_some(), "no custom kind spec for `{f}`");
@@ -647,6 +658,7 @@ mod tests {
         use crate::notify::{reserved_kind_key, split_kind_key};
         assert_eq!(split_kind_key("notify.stay.deploys"), Some(("stay", "deploys")));
         assert_eq!(split_kind_key("notify.push_focused.deploys"), Some(("push_focused", "deploys")));
+        assert_eq!(split_kind_key("notify.bell.deploys"), Some(("bell", "deploys")));
         assert_eq!(split_kind_key("notify.deploys"), Some(("", "deploys")));
         assert_eq!(split_kind_key("notify.stay.Deploys"), None);
         assert_eq!(split_kind_key("theme.deploys"), None);

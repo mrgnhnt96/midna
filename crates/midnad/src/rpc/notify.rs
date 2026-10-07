@@ -283,8 +283,12 @@ fn read_seq(d: &Daemon) -> u64 {
     s
 }
 
+/// Unread notifications of the kinds that count on the bell (`notify.bell.<kind>`; a kind
+/// since removed doesn't).
 fn unread(d: &Daemon, read: u64) -> u32 {
-    posted_since(d, read, 10_000, None).len() as u32
+    let posted = posted_since(d, read, 10_000, None);
+    let core = d.core();
+    posted.iter().filter(|e| core.state.setting_bool(&notify::bell_key(e.data["category"].as_str().unwrap_or("")))).count() as u32
 }
 
 pub fn history(d: &Daemon, p: NotifyHistoryParams) -> R {

@@ -300,6 +300,7 @@ fn history_lists_newest_first_and_reading_clears_unread() {
     let r = call(&mut h, "notify.history", json!({}));
     assert_eq!((r["items"].as_array().map(Vec::len), r["unread"].as_u64()), (Some(0), Some(0)), "{r}");
     let sid = open_sh(&mut h);
+    call(&mut h, "settings.set", json!({ "key": "notify.bell.agent", "value": true }));
     let mut a = d.agent(Some(&sid));
     call(&mut a, "notify.send", json!({ "title": "first" }));
     call(&mut a, "notify.send", json!({ "title": "second" }));
@@ -320,6 +321,24 @@ fn history_lists_newest_first_and_reading_clears_unread() {
     // An older seq never marks things unread again.
     assert_eq!(call(&mut h, "notify.read", json!({ "seq": 1 }))["read_seq"], done["read_seq"]);
     assert_eq!(call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.read"] } })).as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn only_kinds_that_count_on_the_bell_are_unread() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    call(&mut h, "notify.history", json!({}));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    call(&mut a, "notify.send", json!({ "title": "one" }));
+    call(&mut a, "notify.send", json!({ "title": "two" }));
+    wait_posted(&mut h, 2);
+    // Agent messages don't count out of the box: still listed (and unread), just not counted.
+    let r = call(&mut h, "notify.history", json!({}));
+    assert_eq!((r["unread"].as_u64(), r["items"].as_array().map(Vec::len)), (Some(0), Some(2)), "{r}");
+
+    call(&mut h, "settings.set", json!({ "key": "notify.bell.agent", "value": true }));
+    assert_eq!(call(&mut h, "notify.history", json!({}))["unread"], 2);
 }
 
 #[test]

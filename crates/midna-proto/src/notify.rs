@@ -176,6 +176,12 @@ pub fn color_key(key: &str) -> String {
     format!("notify.color.{key}")
 }
 
+/// Whether a category counts toward the unread number on the status bar's bell
+/// (`notify.bell.<key>`). Off: it's still in the notifications screen, just not counted.
+pub fn bell_key(key: &str) -> String {
+    format!("notify.bell.{key}")
+}
+
 /// Theme colors a `notify.color.<key>` may name; they follow the theme.
 pub static COLOR_TOKENS: &[&str] = &["need", "ok", "err", "work", "accent", "dim"];
 
@@ -186,7 +192,7 @@ pub fn valid_color(v: &str) -> bool {
 
 /// A notification kind you added (`notify.kinds.add`): agents send to it with
 /// `midna notify send --kind <key>`, triggers with their `notify` action's `kind`. Its
-/// switches, sound, text, duration and color are settings like a built-in kind's
+/// switches, sound, text, duration, color and bell are settings like a built-in kind's
 /// (`notify.<key>`, `notify.sound.<key>`, …; see `settings::custom_kind_spec`), stored with the
 /// rest and dropped when the kind is removed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -201,7 +207,7 @@ pub struct CustomKind {
 
 /// The per-kind settings every kind has, by field: `""` is the kind's own switch
 /// (`notify.<key>`), the rest are `notify.<field>.<key>`.
-pub static KIND_FIELDS: &[&str] = &["", "push", "push_focused", "sound", "volume", "image", "title", "body", "stay", "color"];
+pub static KIND_FIELDS: &[&str] = &["", "push", "push_focused", "sound", "volume", "image", "title", "body", "stay", "color", "bell"];
 
 /// A kind's setting for one of `KIND_FIELDS`: `notify.<key>` for `""`, else
 /// `notify.<field>.<key>`.

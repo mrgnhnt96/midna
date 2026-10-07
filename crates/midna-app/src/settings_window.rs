@@ -156,6 +156,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner", "notify.badge.sharing"]),
     (Sec::Notifications, "How long each kind stays on screen", &["@stay"]),
     (Sec::Notifications, "Colors", &["@colors"]),
+    (Sec::Notifications, "Counted on the bell", &["@bell"]),
     (Sec::Notifications, "Your kinds", &["@custom_kinds"]),
     (Sec::Notifications, "Banners for other terminals", &["@banners"]),
     (Sec::Notifications, "Banners for the terminal in front of you", &["@banners_focused"]),
@@ -1106,7 +1107,7 @@ impl SettingsWindow {
 
     /// The rows for a `@name` in `LAYOUT`.
     fn special_rows(&self, t: &Theme, name: &str) -> Vec<RowSpec> {
-        use midna_proto::notify::{body_key, color_key, push_focused_key, push_key, setting_key, stay_key, title_key};
+        use midna_proto::notify::{bell_key, body_key, color_key, push_focused_key, push_key, setting_key, stay_key, title_key};
         let status = |label: &str, dot: Hsla, value: String, color: Hsla, note: Option<String>, cli: &str| RowSpec {
             label: label.into(),
             note: note.map(|n| (n, Hsla::default())),
@@ -1222,6 +1223,8 @@ impl SettingsWindow {
             // Which kinds become macOS banners: for other terminals, and for the one in front of you.
             "@banners" => silenced(per_kind(push_key)),
             "@banners_focused" => silenced(per_kind(push_focused_key)),
+            // Which kinds count toward the unread number on the status bar's bell.
+            "@bell" => per_kind(bell_key),
             "@images" => silenced(self.notify_image_rows(t)),
             // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates,
             // typed here (↩ saves; empty = midna's own, `none` = no text).
@@ -2834,13 +2837,13 @@ mod tests {
 
     #[test]
     fn every_setting_has_a_place() {
-        use midna_proto::notify::{body_key, color_key, image_key, push_focused_key, push_key, setting_key, sound_key, stay_key, title_key, volume_key};
+        use midna_proto::notify::{bell_key, body_key, color_key, image_key, push_focused_key, push_key, setting_key, sound_key, stay_key, title_key, volume_key};
         let listed: Vec<&str> = LAYOUT.iter().flat_map(|(_, _, items)| items.iter().copied()).filter(|i| !i.starts_with('@')).collect();
         for k in &listed {
             assert!(setting(k).is_some(), "LAYOUT lists {k}, which isn't a setting");
         }
         // the per-kind rows (`@kinds`, `@sounds`, `@images`, …) and `@shortcuts`
-        let kinds: [fn(&str) -> String; 10] = [setting_key, push_key, push_focused_key, sound_key, volume_key, image_key, title_key, body_key, stay_key, color_key];
+        let kinds: [fn(&str) -> String; 11] = [setting_key, push_key, push_focused_key, sound_key, volume_key, image_key, title_key, body_key, stay_key, color_key, bell_key];
         let per_kind = |k: &str| {
             CATEGORIES.iter().any(|c| kinds.iter().any(|f| f(c.key) == k))
                 || EFFECTS.iter().any(|e| sound_key(e.key) == k || volume_key(e.key) == k)
@@ -2856,7 +2859,7 @@ mod tests {
         let known = [
             "@update", "@cli", "@login", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
             "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
-            "@custom_kinds",
+            "@custom_kinds", "@bell",
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {
