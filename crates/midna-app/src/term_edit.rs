@@ -11,6 +11,8 @@
 //!   drawn from where the cursor started to where it is now. ⇧↑ on an input's first line (and
 //!   in a shell, where ↑ is history) selects to the line start instead, ⇧↓ on its last line to
 //!   the line end, as in a text field: Claude Code recalls history on ↑ from the first line.
+//! - ⌘A in an agent's input box selects all its text and puts the cursor at the end (the
+//!   ⇧⌘↓ moves, anchored at the text's start). Elsewhere it selects the whole screen.
 //! - Typing, ⌫, ⌦ or pasting with a selection replaces it. On one row (from the keyboard, or a
 //!   mouse selection such as a double-clicked word) the cursor is moved to its right edge with
 //!   arrows, the selected characters are erased with ⌫, then the text is typed. Across rows
@@ -101,6 +103,22 @@ pub fn text_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> 
         }
         _ => None,
     }
+}
+
+/// ⌘A in an agent's input: where its text starts (past the prompt glyph and its space on the
+/// prompt row), and the moves that put the cursor at its end. None when the cursor isn't in a
+/// recognisable input box.
+pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
+    let row = |y: u16| grid.get(y as usize);
+    let mut y = cursor.1;
+    while !row(y).is_some_and(is_prompt_row) {
+        if y == 0 || !row(y).is_some_and(is_continuation) {
+            return None;
+        }
+        y -= 1;
+    }
+    let glyph = row(y)?.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))? as u16;
+    Some(((glyph + 2, y), text_edge("down", grid, cursor)?))
 }
 
 /// Which agent runs in a terminal ("claude" or "codex"), from `session.processes` (a list;
@@ -351,6 +369,17 @@ mod tests {
         let down = text_edge("down", &g, (4, 1)).unwrap();
         assert_eq!(down, vec![Send::Arrow("down"), Send::Arrow("down"), Send::Bytes(b"\x05")]);
         assert_eq!(text_edge("up", &g, (4, 0)), None, "not in the input");
+    }
+
+    #[test]
+    fn select_all_spans_the_whole_input() {
+        let g = grid(&["────────", "❯\u{a0}one", "  two", "  three", "────────"]);
+        let (start, moves) = select_all(&g, (3, 2)).unwrap();
+        assert_eq!(start, (2, 1), "past the glyph and its space");
+        assert_eq!(moves, vec![Send::Arrow("down"), Send::Bytes(b"\x05")]);
+        let codex = grid(&["", " › one", "", "  GPT-6 status"]);
+        assert_eq!(select_all(&codex, (4, 1)).unwrap(), ((3, 1), vec![Send::Bytes(b"\x05")]));
+        assert_eq!(select_all(&g, (4, 0)), None, "not in the input");
     }
 
     #[test]

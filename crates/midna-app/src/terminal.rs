@@ -1163,7 +1163,21 @@ impl TerminalView {
         });
     }
 
+    /// ⌘A: in an agent's input box, select its text (as ⇧⌘↓ from its start would) and put the
+    /// cursor at the end, so typing replaces it. Anywhere else, the whole screen.
     fn on_select_all(&mut self, _: &TermSelectAll, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_agent()
+            && let Some(c) = self.live_cursor()
+            && let Some((start, moves)) = term_edit::select_all(&self.grid, c)
+        {
+            self.kbd_sel = Some(KbdSel { anchor: start, kill: false });
+            self.ext.selection.clear();
+            for mv in moves {
+                self.send_move(mv);
+            }
+            cx.notify();
+            return;
+        }
         self.call("session.select_all", json!({ "id": self.session_id }), window, cx, |_, _, _, _| {});
     }
 
