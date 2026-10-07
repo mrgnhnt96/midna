@@ -192,7 +192,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
 
     let top = wipe(0, 0., titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false)).into_any_element());
 
-    if m.need_anim.moving() {
+    if m.need_anim.moving() || m.close_anim.moving() {
         window.request_animation_frame();
     }
     let btn_look = m.need_anim.button(need_n > 0);
@@ -330,7 +330,12 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());
         let (mut run, mut ri, mut k) = (vec![], 0, 0);
+        // Closed rows folding away sit where they were (only while the group isn't folding).
+        let ghosts = |next: Option<&str>, cx: &mut Context<MainWindow>| -> Vec<AnyElement> {
+            if fold > 0. { vec![] } else { m.close_anim.ghosts(&key, next).map(|gh| ghost(m, gh, t, compact, cx)).collect() }
+        };
         for s in g.sessions {
+            run.extend(ghosts(Some(&s.id), cx));
             if m.selected.as_deref() == Some(&s.id) {
                 group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., row(m, s, &key, t, compact, cx).into_any_element()));
                 ri += 1;
@@ -341,6 +346,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                 line += 1;
             }
         }
+        run.extend(ghosts(None, cx));
         group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
         list = list.child(group);
     }
@@ -757,6 +763,9 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let line2 = line2.or_else(|| look.leaving.as_ref().filter(|_| !compact).map(|l| (l.text.clone(), crate::ui::need_anim::outcome_color(t, l.tone))));
     let segs = m.row_segments.get(&s.id).cloned().unwrap_or_default();
     let pad_y = if compact { 5. } else { 8. };
+    // Just closed the terminal beside it: the highlight is moving here (`ui::close_anim`).
+    let hl = if selected { m.close_anim.highlight(&s.id) } else { crate::ui::close_anim::Highlight::Own };
+    let own = selected && hl == crate::ui::close_anim::Highlight::Own;
 
     div()
         .id(SharedString::from(format!("row-{}", s.id)))
@@ -768,7 +777,8 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         .px(px(14.))
         .py(px(pad_y))
         .cursor_pointer()
-        .when(selected, |d| d.bg(t.raised))
+        .when(own, |d| d.bg(t.raised))
+        .when_some(match hl { crate::ui::close_anim::Highlight::Shifted(v) => Some(v), _ => None }, |d, v| d.child(highlight(t).top(relative(v)).h_full()))
         .when(marked, |d| d.bg(t.accent_soft))
         .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
         .map(|d| crate::annotate::row_drop_target(d, m, &s.id, t, cx))
@@ -790,7 +800,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
             }
         }))
         .when_some(look.sweep, |d, b| d.overflow_hidden().child(crate::ui::need_anim::band_el(t, b)))
-        .when(selected, |d| d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
+        .when(own, |d| d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
         .when(look.edge > 0., |d| d.child(crate::ui::need_anim::edge_el(t, look.edge)))
         .child(
             div()
@@ -829,6 +839,37 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                     .child(div().min_w_0().truncate().child(text)),
             )
         })
+}
+
+/// The selected row's background and accent edge, on its own: for a highlight on the move.
+fn highlight(t: &Theme) -> Div {
+    div().absolute().left_0().right_0().bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent))
+}
+
+/// A closed row folding away (`ui::close_anim`): its content lifts and fades while its room
+/// closes. With `slot`, it keeps the selection highlight where it was, for the row below to
+/// slide up into. It takes no clicks.
+fn ghost(m: &MainWindow, g: &crate::ui::close_anim::Ghost, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> AnyElement {
+    let (fold, lift) = g.progress();
+    let full = g.height();
+    let measure = g.measure();
+    let content = div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .when_some(full, |d, h| d.h(px(h * (1. - fold))))
+        .on_children_prepainted(move |b, _, _| {
+            if let Some(b) = b.first() {
+                measure.set(f32::from(b.size.height));
+            }
+        })
+        .child(div().flex_none().relative().top(px(-crate::ui::close_anim::LIFT * lift)).opacity(1. - lift).child(row(m, &g.session, &g.group, t, compact, cx)));
+    div()
+        .relative()
+        .when_some(full.filter(|_| g.slot), |d, h| d.child(highlight(t).top_0().h(px(h))))
+        .child(content)
+        .child(div().absolute().inset_0().occlude())
+        .into_any_element()
 }
 
 /// Script segments (`script.run`): gap between segments, a single space when `join`.

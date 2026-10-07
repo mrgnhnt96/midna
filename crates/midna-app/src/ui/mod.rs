@@ -5,6 +5,7 @@ pub mod badge;
 pub mod banner;
 pub mod update_banner;
 pub mod charts;
+pub mod close_anim;
 pub mod close_window;
 pub mod command_bar;
 pub mod footer;
@@ -207,6 +208,7 @@ impl Render for MainWindow {
         }
         twilight::sync_lights(self, window);
         crate::composer::sync(self);
+        self.close_anim.prune();
         let sidebar_anim = sidebar_anim::frame(self, window);
         let sidebar = sidebar::render(self, &t, sidebar_anim, window, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
@@ -230,7 +232,8 @@ impl Render for MainWindow {
                         .child(match &self.terminal {
                             Some(term) => {
                                 let term = term.clone();
-                                split::render(self, &term, &t, window, cx)
+                                let el = split::render(self, &term, &t, window, cx);
+                                close_anim::pane(self, el, window)
                             }
                             None => screens::empty_terminal(self, &t, cx).into_any_element(),
                         })

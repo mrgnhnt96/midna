@@ -145,6 +145,8 @@ pub struct MainWindow {
     pub fold_anim: HashMap<String, Instant>,
     /// Needs-you rows and the "N need you" button sweeping in and out (`ui::need_anim`).
     pub need_anim: crate::ui::need_anim::NeedAnim,
+    /// Closed rows folding away and the pane sliding to the next terminal (`ui::close_anim`).
+    pub close_anim: crate::ui::close_anim::CloseAnim,
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
     pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
@@ -329,6 +331,7 @@ impl MainWindow {
             order,
             fold_anim: HashMap::new(),
             need_anim: Default::default(),
+            close_anim: Default::default(),
             fold_heights: Default::default(),
             webhooks: Value::Null,
             hooks: Value::Null,
@@ -1335,6 +1338,9 @@ impl MainWindow {
             let fh = view.read(cx).focus_handle().clone();
             fh.focus(window, cx);
         }
+        if let Some(old) = self.terminal.clone() {
+            crate::ui::close_anim::on_show(self, &old, &view, cx);
+        }
         self.terminal = Some(view);
     }
 
@@ -1608,6 +1614,8 @@ impl MainWindow {
         }
         self.close_armed = None;
         crate::sounds::play("closed");
+        let next = neighbour(&self.sidebar_rows(Some(&id), cx), &id, |_| true);
+        crate::ui::close_anim::start(self, std::slice::from_ref(&id), next.as_deref(), cx);
         self.select_neighbour(&id, window, cx);
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
@@ -1639,6 +1647,7 @@ impl MainWindow {
         let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
         let last = order.iter().rposition(|x| ids.contains(x)).unwrap_or(0);
         let next = order[last..].iter().chain(order[..last].iter().rev()).find(|x| !ids.contains(x)).cloned();
+        crate::ui::close_anim::start(self, &ids, next.as_deref(), cx);
         self.marked.clear();
         self.mark_anchor = None;
         match next {

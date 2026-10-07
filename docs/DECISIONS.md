@@ -1047,6 +1047,17 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
 - The sweep is removed when it finishes rather than left at its last position, so no tint stays on the row (the canvas board had that bug).
 - The collapsed rail and the floating badge (which has its own pulse) are unchanged.
 
+## Closing a terminal slides the list and the pane together (`ui/close_anim.rs`; 2026-10-06)
+
+- **Picked C "Conveyor"** from three concepts (A fold, B power off, C conveyor) on the tab close canvas (https://claude.ai/artifact/9KAS8NqNU6TCduxbQhjLMq).
+- **The row**: ⌘W keeps the closed row as a ghost for 320 ms (ease-out). Its content lifts 14 px and fades over the first 220 ms while its height folds to nothing, so the rows below slide up. The ghost takes no clicks.
+- **The highlight** follows the terminal shown next (`neighbour`: up first, within the project):
+  - the row right below: the ghost keeps the highlight where it was and the row slides up into it;
+  - the row right above: the highlight glides up to it;
+  - anywhere else, or several rows closed at once: it just moves.
+- **The pane**: when the next terminal is promoted (after its first frame, as before), the closed one slides out the way the list moves (up when the next is below, down when it's above) and the next slides in behind it, in step, over 320 ms. If the next terminal takes longer than 1 s to draw, it just appears.
+- Only ⌘W animates, including a multi-selection. A terminal that exits or is closed elsewhere just leaves. Rows in folded projects don't animate. With Reduce Motion on, nothing moves.
+
 ## Collapsing the sidebar cascades (`ui/sidebar_anim.rs`; 2026-10-06)
 
 - **Picked B "Cascade"** from three concepts (A morph, B cascade, C drawer) on the sidebar collapse canvas (https://claude.ai/artifact/Q4yMJ2jSwxzPboBHrAvH8U).
