@@ -552,7 +552,6 @@ pub fn area_line<V: 'static>(id: &str, data: &ChartData, height: f32, empty_text
 
 #[derive(Clone)]
 pub struct HRow {
-    pub key: String,
     pub label: SharedString,
     pub sub: SharedString,
     /// One value per series.

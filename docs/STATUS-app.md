@@ -143,9 +143,8 @@ Both replace the terminal pane (sidebar stays) and open from the sidebar buttons
 
 **Insights** (`ui/insights.rs`, charts in `ui/charts.rs`) replaces the terminal pane; open it from the Today card, ⌘K, `keys.insights` (⇧⌘I) or `window.command{open_screen: insights}`. Esc goes back.
 - Today / Week / Month switcher; 7 headline tiles with deltas vs the previous period.
-- Agent turns over time, stacked by project (hourly today, daily week/month), with legend totals; hover a column for exact per-project values; click a segment or legend chip to filter the log by that project.
-- Spend over time (line + area, crosshair tooltip), working vs waiting on you per agent terminal (horizontal stacked bars, hover for exact times, click to filter the log), approvals and triggers columns.
-- Activity log filtered by project, terminal, who and what, plus "While you were away"; grouped by day for week/month; click a live terminal's row to open it.
+- Agent turns over time, stacked by project (hourly today, daily week/month), with legend totals; hover a column for exact per-project values.
+- Spend over time (line + area, crosshair tooltip), working vs waiting on you per agent terminal (horizontal stacked bars, hover for exact times), approvals and triggers columns.
 - Friendly empty state; looks right in dark and light.
 - Data: new daemon method `insights.series` (+ `range: month` for `insights.summary`), all from events.
 

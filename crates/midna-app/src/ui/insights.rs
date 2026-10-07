@@ -2,9 +2,8 @@
 //!
 //! Range switcher (Today / Week / Month) → headline numbers with vs-previous deltas →
 //! agent turns over time stacked by project → spend over time → working vs waiting on you
-//! per terminal → approvals and triggers → the activity log with filters (project,
-//! terminal, actor, kind, "while you were away"). Every number comes from midnad
-//! (`insights.summary`, `insights.series`, `insights.activity`), i.e. from events only.
+//! per terminal → approvals and triggers. Every number comes from midnad
+//! (`insights.summary`, `insights.series`), i.e. from events only.
 use crate::app::{MainWindow, Screen};
 use crate::backend::Backend;
 use crate::model::{Event, Project, Session, parse_list, parse_rfc3339};
@@ -15,7 +14,6 @@ use gpui_kit::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -123,65 +121,10 @@ struct Data {
     approvals: SeriesData,
     triggers: SeriesData,
     terminals: Vec<Row>,
-    activity: Vec<Event>,
     /// `session.opened` / `session.renamed` events: names and projects of closed terminals.
     opened: Vec<Event>,
     projects: Vec<Project>,
     sessions: Vec<Session>,
-}
-
-// ------------------------------------------------------------------ filters
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KindFilter {
-    Turns,
-    NeedsYou,
-    Status,
-    Terminals,
-    Rules,
-    Triggers,
-    Settings,
-}
-
-const KINDS: &[(KindFilter, &str)] = &[
-    (KindFilter::Turns, "Turns & messages"),
-    (KindFilter::NeedsYou, "Needs you"),
-    (KindFilter::Status, "Status"),
-    (KindFilter::Terminals, "Terminals"),
-    (KindFilter::Rules, "Rules"),
-    (KindFilter::Triggers, "Triggers"),
-    (KindFilter::Settings, "Settings"),
-];
-
-impl KindFilter {
-    fn matches(self, kind: &str) -> bool {
-        match self {
-            KindFilter::Turns => kind.starts_with("agent."),
-            KindFilter::NeedsYou => kind.starts_with("needs_you."),
-            KindFilter::Status => kind == "session.status",
-            KindFilter::Terminals => kind.starts_with("session.") && kind != "session.status",
-            KindFilter::Rules => kind.starts_with("rule."),
-            KindFilter::Triggers => kind.starts_with("trigger."),
-            KindFilter::Settings => kind.starts_with("settings."),
-        }
-    }
-}
-
-const ACTORS: &[(&str, &str)] = &[("human", "You"), ("agent", "Agents"), ("trigger", "Triggers"), ("system", "midnad")];
-
-#[derive(Clone, Default)]
-struct Filters {
-    project: Option<String>,
-    terminal: Option<String>,
-    actor: Option<String>,
-    kind: Option<KindFilter>,
-    away: bool,
-}
-
-impl Filters {
-    fn any(&self) -> bool {
-        self.project.is_some() || self.terminal.is_some() || self.actor.is_some() || self.kind.is_some() || self.away
-    }
 }
 
 // ------------------------------------------------------------------ view
@@ -193,20 +136,15 @@ pub struct InsightsView {
     data: Data,
     loading: bool,
     error: Option<String>,
-    filters: Filters,
     turns_chart: ChartState,
     spend_chart: ChartState,
     approvals_chart: ChartState,
     triggers_chart: ChartState,
     term_hover: Option<usize>,
-    /// When the window last lost focus, and when it came back (for "while you were away").
-    went_away: Option<i64>,
-    came_back: Option<i64>,
     last_render: Instant,
     stale: bool,
     fetch_gen: u64,
     scroll: ScrollHandle,
-    _subs: Vec<Subscription>,
 }
 
 fn turns_state(v: &mut InsightsView) -> &mut ChartState {
@@ -227,35 +165,25 @@ fn term_hover(v: &mut InsightsView) -> &mut Option<usize> {
 
 impl MainWindow {
     /// The Insights view, created on first use.
-    pub fn insights_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InsightsView> {
+    pub fn insights_view(&mut self, cx: &mut Context<Self>) -> Entity<InsightsView> {
         if let Some(v) = &self.insights {
             return v.clone();
         }
         let backend = self.backend.clone();
         let main = cx.entity().downgrade();
-        let v = cx.new(|cx| InsightsView::new(backend, main, window, cx));
+        let v = cx.new(|cx| InsightsView::new(backend, main, cx));
         self.insights = Some(v.clone());
         v
     }
 }
 
 impl InsightsView {
-    pub fn new(backend: Arc<dyn Backend>, main: WeakEntity<MainWindow>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Arc<dyn Backend>, main: WeakEntity<MainWindow>, cx: &mut Context<Self>) -> Self {
         let range = match crate::dev::var("MIDNA_INSIGHTS_RANGE").as_deref() {
             Ok("week") => Range::Week,
             Ok("month") => Range::Month,
             _ => Range::Today,
         };
-        let sub = cx.observe_window_activation(window, |v, window, _| {
-            if window.is_window_active() {
-                if v.went_away.is_some() {
-                    v.came_back = Some(now_unix());
-                }
-            } else {
-                v.went_away = Some(now_unix());
-                v.came_back = None;
-            }
-        });
         let mut v = InsightsView {
             backend,
             main,
@@ -263,28 +191,21 @@ impl InsightsView {
             data: Data::default(),
             loading: true,
             error: None,
-            filters: Filters::default(),
             turns_chart: ChartState::default(),
             spend_chart: ChartState::default(),
             approvals_chart: ChartState::default(),
             triggers_chart: ChartState::default(),
             term_hover: None,
-            went_away: None,
-            came_back: None,
             last_render: Instant::now(),
             stale: false,
             fetch_gen: 0,
             scroll: ScrollHandle::new(),
-            _subs: vec![sub],
         };
         // dev (screenshots): preset hover on the turns chart / spend chart / a terminal row
         let env_i = |k: &str| crate::dev::var(k).ok().and_then(|x| x.parse::<usize>().ok());
         v.turns_chart.hover = env_i("MIDNA_INSIGHTS_HOVER");
         v.spend_chart.hover = env_i("MIDNA_INSIGHTS_HOVER_SPEND");
         v.term_hover = env_i("MIDNA_INSIGHTS_HOVER_ROW");
-        if crate::dev::var("MIDNA_INSIGHTS_AWAY").is_ok() {
-            v.filters.away = true;
-        }
         v.fetch(cx);
         v
     }
@@ -340,12 +261,6 @@ impl InsightsView {
                         }
                         Ok(serde_json::from_value(call("insights.series", p)?)?)
                     };
-                    let today = local_day_start(now_unix());
-                    let since = match range {
-                        Range::Today => today,
-                        Range::Week => today - 6 * 86_400,
-                        Range::Month => today - 29 * 86_400,
-                    };
                     let summary: Summary = serde_json::from_value(call("insights.summary", json!({"range": r}))?)?;
                     let terms: Summary = serde_json::from_value(call("insights.summary", json!({"range": r, "by": "terminal"}))?)?;
                     anyhow::Ok(Data {
@@ -357,7 +272,6 @@ impl InsightsView {
                         triggers: series("triggers", None)?,
                         terminals: terms.rows,
                         opened: call("events.list", json!({"filter": {"kinds": ["session.opened", "session.renamed"]}, "limit": 5000})).map(|v| parse_list(&v)).unwrap_or_default(),
-                        activity: call("insights.activity", json!({"since": crate::model::rfc3339_from_unix(since), "limit": 1000})).map(|v| parse_list(&v)).unwrap_or_default(),
                         projects: call("project.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default(),
                         sessions: call("session.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default(),
                     })
@@ -371,17 +285,6 @@ impl InsightsView {
                 match res {
                     Ok(d) => {
                         v.data = d;
-                        if crate::dev::var("MIDNA_INSIGHTS_SCROLL").is_ok() {
-                            // dev: screenshot the log (after a layout pass)
-                            cx.spawn(async move |this, cx| {
-                                cx.background_executor().timer(Duration::from_millis(400)).await;
-                                let _ = this.update(cx, |v, cx| {
-                                    v.scroll.scroll_to_item(LOG_INDEX);
-                                    cx.notify();
-                                });
-                            })
-                            .detach();
-                        }
                         v.error = None;
                     }
                     Err(e) => v.error = Some(format!("{e:#}")),
@@ -396,22 +299,6 @@ impl InsightsView {
         if let Some(m) = self.main.upgrade() {
             m.update(cx, |m, cx| m.set_screen(Screen::Terminal, window, cx));
         }
-    }
-
-    fn open_terminal(&mut self, sid: String, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.data.sessions.iter().any(|s| s.id == sid) {
-            return;
-        }
-        if let Some(m) = self.main.upgrade() {
-            m.update(cx, |m, cx| m.select(sid, window, cx));
-        }
-    }
-
-    /// Show the log filtered (and scroll to it).
-    fn filter_log(&mut self, f: impl FnOnce(&mut Filters), cx: &mut Context<Self>) {
-        f(&mut self.filters);
-        self.scroll.scroll_to_item(LOG_INDEX);
-        cx.notify();
     }
 
     // -------------------------------------------------------------- derived
@@ -430,7 +317,7 @@ impl InsightsView {
 
     fn session_names(&self) -> HashMap<String, String> {
         let mut m: HashMap<String, String> = HashMap::new();
-        for e in self.data.opened.iter().chain(self.data.activity.iter().rev()) {
+        for e in self.data.opened.iter() {
             if let (Some(sid), Some(name)) = (&e.session_id, e.data.get("name").and_then(Value::as_str))
                 && (e.kind == "session.opened" || e.kind == "session.renamed")
             {
@@ -454,11 +341,7 @@ impl InsightsView {
         let series: Vec<Series> = keys
             .iter()
             .map(|k| {
-                let mut color = self.project_color(t, k);
-                if self.filters.project.as_ref().is_some_and(|p| p != k) {
-                    color = charts::alpha(color, 0.28);
-                }
-                Series { key: k.clone(), label: self.project_name(k).into(), color }
+                Series { key: k.clone(), label: self.project_name(k).into(), color: self.project_color(t, k) }
             })
             .collect();
         let values = s.buckets.iter().map(|b| keys.iter().map(|k| b.values.get(k).copied().unwrap_or(0.)).collect()).collect();
@@ -511,38 +394,7 @@ impl InsightsView {
             .collect();
         ChartData { unit: Unit::from_str(&s.unit), series, values, x_labels, titles, reached }
     }
-
-    fn away_since(&self) -> (i64, Option<i64>) {
-        if let Some(a) = self.went_away {
-            return (a, self.came_back);
-        }
-        // Not tracked yet this run: everything since your last action.
-        let last_human = self.data.activity.iter().find(|e| e.actor.kind == "human").and_then(|e| parse_rfc3339(&e.at));
-        (last_human.map(|t| t + 1).unwrap_or(0), None)
-    }
-
-    fn filtered_log(&self) -> Vec<&Event> {
-        let f = &self.filters;
-        let (away_from, away_to) = self.away_since();
-        self.data
-            .activity
-            .iter()
-            .filter(|e| f.project.as_ref().is_none_or(|p| e.project_id.as_ref() == Some(p) || (p == "none" && e.project_id.is_none())))
-            .filter(|e| f.terminal.as_ref().is_none_or(|s| e.session_id.as_ref() == Some(s)))
-            .filter(|e| f.actor.as_ref().is_none_or(|a| &e.actor.kind == a))
-            .filter(|e| f.kind.is_none_or(|k| k.matches(&e.kind)))
-            .filter(|e| {
-                !f.away || {
-                    let t = parse_rfc3339(&e.at).unwrap_or(0);
-                    t >= away_from && away_to.is_none_or(|to| t <= to) && e.actor.kind != "human"
-                }
-            })
-            .collect()
-    }
 }
-
-/// Index of the activity log among the scroll body's children (for scroll_to_item).
-const LOG_INDEX: usize = 4;
 
 // ------------------------------------------------------------------ render
 
@@ -559,13 +411,7 @@ impl Render for InsightsView {
         } else if self.data.range.is_none() {
             vec![div().p(px(8.)).text_color(t.dim).child("Loading insights…").into_any_element()]
         } else if self.is_empty() {
-            // no numbers yet, but the log may still have terminal/settings activity
-            let names = self.session_names();
-            let mut v = vec![self.empty_state(&t, cx).into_any_element()];
-            if !self.data.activity.is_empty() {
-                v.push(self.log(&t, &names, cx).into_any_element());
-            }
-            v
+            vec![self.empty_state(&t, cx).into_any_element()]
         } else {
             self.dashboard(&t, cx)
         };
@@ -708,32 +554,14 @@ impl InsightsView {
 
         // 1: turns by project
         let turns = self.turns_chart_data(t);
-        let keys: Vec<String> = turns.series.iter().map(|s| s.key.clone()).collect();
-        let pick_keys = keys.clone();
-        let on_pick: charts::OnPick<InsightsView> = Rc::new(move |v, _bucket, series, _w, cx| {
-            if let Some(k) = series.and_then(|s| pick_keys.get(s)).cloned() {
-                v.filter_log(|f| f.project = if f.project.as_ref() == Some(&k) { None } else { Some(k) }, cx);
-            }
-        });
         let mut legend = div().flex().flex_wrap().gap(px(4.)).justify_end();
         for g in &turns.series {
-            let key = g.key.clone();
             let total = d.turns.groups.iter().find(|x| x.key == g.key).map(|x| x.total).unwrap_or(0.);
-            let active = self.filters.project.as_ref() == Some(&g.key);
-            legend = legend.child(
-                charts::legend_item(t, self.project_color(t, &g.key), g.label.clone(), Some(Unit::Count.fmt(total)), active)
-                    .id(SharedString::from(format!("legend-{}", g.key)))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.raised))
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        let k = key.clone();
-                        v.filter_log(|f| f.project = if f.project.as_ref() == Some(&k) { None } else { Some(k) }, cx);
-                    })),
-            );
+            legend = legend.child(charts::legend_item(t, self.project_color(t, &g.key), g.label.clone(), Some(Unit::Count.fmt(total)), false));
         }
         let turns_card = card(t)
-            .child(card_head(t, "Agent turns by project", &format!("{} · click a bar to filter the log", self.range.per()), Some(legend.into_any_element())))
-            .child(charts::stacked_bars("turns", &turns, 250., "No agent turns in this range", t, &self.turns_chart, turns_state, Some(on_pick), cx));
+            .child(card_head(t, "Agent turns by project", self.range.per(), Some(legend.into_any_element())))
+            .child(charts::stacked_bars("turns", &turns, 250., "No agent turns in this range", t, &self.turns_chart, turns_state, None, cx));
 
         // 2: spend + working/waiting
         let spend = self.single_series(&d.spend, "Spend", t.accent);
@@ -749,33 +577,27 @@ impl InsightsView {
             .sort_by(|a, b| (b.totals.working_secs + b.totals.waiting_secs).partial_cmp(&(a.totals.working_secs + a.totals.waiting_secs)).unwrap_or(std::cmp::Ordering::Equal));
         let extra = term_rows.len().saturating_sub(6);
         term_rows.truncate(6);
-        let project_of: HashMap<String, String> = d.opened.iter().chain(d.activity.iter()).filter_map(|e| Some((e.session_id.clone()?, e.project_id.clone()?))).collect();
+        let project_of: HashMap<String, String> = d.opened.iter().filter_map(|e| Some((e.session_id.clone()?, e.project_id.clone()?))).collect();
         let hrows: Vec<HRow> = term_rows
             .iter()
             .map(|r| {
                 let name = names.get(&r.key).cloned().unwrap_or_else(|| r.label.clone());
                 let proj = d.sessions.iter().find(|s| s.id == r.key).and_then(|s| s.project_id.clone()).or_else(|| project_of.get(&r.key).cloned());
                 let sub = proj.map(|p| self.project_name(&p)).unwrap_or_default();
-                HRow { key: r.key.clone(), label: name.into(), sub: sub.into(), values: vec![r.totals.working_secs, r.totals.waiting_secs] }
+                HRow { label: name.into(), sub: sub.into(), values: vec![r.totals.working_secs, r.totals.waiting_secs] }
             })
             .collect();
         let ww_series =
             vec![Series { key: "working".into(), label: "Working".into(), color: t.work }, Series { key: "waiting".into(), label: "Waiting on you".into(), color: t.need }];
-        let row_keys: Vec<String> = hrows.iter().map(|r| r.key.clone()).collect();
-        let pick_row: crate::ui::charts::RowPick<InsightsView> = Rc::new(move |v, i, _w, cx| {
-            if let Some(k) = row_keys.get(i).cloned() {
-                v.filter_log(|f| f.terminal = if f.terminal.as_ref() == Some(&k) { None } else { Some(k) }, cx);
-            }
-        });
         let ww_legend = div().flex().gap(px(4.)).child(charts::legend_item(t, t.work, "Working", None, false)).child(charts::legend_item(t, t.need, "Waiting on you", None, false));
         let ww_card = card(t)
             .flex_1()
             .min_w(px(300.))
-            .child(card_head(t, "Working vs waiting on you", "per agent terminal · click to filter the log", Some(ww_legend.into_any_element())))
+            .child(card_head(t, "Working vs waiting on you", "per agent terminal", Some(ww_legend.into_any_element())))
             .child(if hrows.is_empty() {
                 div().h(px(190.)).flex().items_center().justify_center().text_size(px(12.)).text_color(t.dim).child("No working or waiting time in this range")
             } else {
-                charts::hbars("ww", &hrows, &ww_series, Unit::Secs, t, self.term_hover, term_hover, Some(pick_row), cx)
+                charts::hbars("ww", &hrows, &ww_series, Unit::Secs, t, self.term_hover, term_hover, None, cx)
             })
             .when(extra > 0, |c| c.child(div().pl(px(8.)).text_size(px(11.5)).text_color(t.dim).child(format!("+ {extra} more terminals"))));
 
@@ -793,197 +615,14 @@ impl InsightsView {
             .child(card_head(t, "Triggers fired", &format!("{} fired · {}", Unit::Count.fmt(d.triggers.total), self.range.per()), None))
             .child(charts::stacked_bars("triggers", &trig, 120., "No triggers fired in this range", t, &self.triggers_chart, triggers_state, None, cx));
 
-        // direct children of the scroll container, so scroll_to_item(LOG_INDEX) reaches the log
         vec![
             tiles.into_any_element(),
             turns_card.into_any_element(),
             div().flex().flex_wrap().gap(px(14.)).child(spend_card).child(ww_card).into_any_element(),
             div().flex().flex_wrap().gap(px(14.)).child(appr_card).child(trig_card).into_any_element(),
-            self.log(t, &names, cx).into_any_element(),
         ]
     }
 
-    fn log(&self, t: &Theme, names: &HashMap<String, String>, cx: &mut Context<Self>) -> Div {
-        let f = &self.filters;
-        let rows = self.filtered_log();
-        let (away_from, _) = self.away_since();
-        let away_count = self.data.activity.iter().filter(|e| parse_rfc3339(&e.at).unwrap_or(0) >= away_from && e.actor.kind != "human").count();
-
-        // filters: one row of chips per dimension
-        let mut fl = div().flex().flex_col().gap(px(6.));
-        let mut top = div().flex().flex_wrap().items_center().gap(px(6.));
-        top = top.child(toggle_chip(t, "f-away", &format!("While you were away · {away_count}"), f.away, true).on_click(cx.listener(|v, _, _, cx| {
-            v.filters.away = !v.filters.away;
-            cx.notify();
-        })));
-        if let Some(sid) = &f.terminal {
-            let name = names.get(sid).cloned().unwrap_or_else(|| sid.clone());
-            top = top.child(toggle_chip(t, "f-term", &format!("Terminal: {name}  ✕"), true, false).on_click(cx.listener(|v, _, _, cx| {
-                v.filters.terminal = None;
-                cx.notify();
-            })));
-        }
-        if f.any() {
-            top = top.child(div().flex_1()).child(
-                div()
-                    .id("f-clear")
-                    .text_size(px(12.))
-                    .text_color(t.accent)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.filters = Filters::default();
-                        cx.notify();
-                    }))
-                    .child("Clear filters"),
-            );
-        }
-        fl = fl.child(top);
-        // projects
-        let mut pr = div().flex().flex_wrap().items_center().gap(px(4.)).child(filter_label(t, "Project"));
-        let mut seen: Vec<String> = self.data.projects.iter().map(|p| p.id.clone()).collect();
-        for e in &self.data.activity {
-            if let Some(p) = &e.project_id
-                && !seen.contains(p)
-            {
-                seen.push(p.clone());
-            }
-        }
-        let used: Vec<String> = seen.into_iter().filter(|p| self.data.activity.iter().any(|e| e.project_id.as_ref() == Some(p))).collect();
-        pr = pr.child(toggle_chip(t, "fp-all", "All", f.project.is_none(), false).on_click(cx.listener(|v, _, _, cx| {
-            v.filters.project = None;
-            cx.notify();
-        })));
-        for p in used {
-            let on = f.project.as_ref() == Some(&p);
-            let key = p.clone();
-            pr = pr.child(
-                toggle_chip(t, &format!("fp-{p}"), &self.project_name(&p), on, false)
-                    .child(div().size(px(8.)).rounded(px(2.)).bg(self.project_color(t, &p)))
-                    .flex_row_reverse()
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        v.filters.project = if v.filters.project.as_ref() == Some(&key) { None } else { Some(key.clone()) };
-                        cx.notify();
-                    })),
-            );
-        }
-        fl = fl.child(pr);
-        // actors
-        let mut ar = div().flex().flex_wrap().items_center().gap(px(4.)).child(filter_label(t, "Who"));
-        ar = ar.child(toggle_chip(t, "fa-all", "Anyone", f.actor.is_none(), false).on_click(cx.listener(|v, _, _, cx| {
-            v.filters.actor = None;
-            cx.notify();
-        })));
-        for (k, label) in ACTORS {
-            let on = f.actor.as_deref() == Some(*k);
-            ar = ar.child(toggle_chip(t, &format!("fa-{k}"), label, on, false).on_click(cx.listener(move |v, _, _, cx| {
-                v.filters.actor = if v.filters.actor.as_deref() == Some(*k) { None } else { Some(k.to_string()) };
-                cx.notify();
-            })));
-        }
-        fl = fl.child(ar);
-        // kinds
-        let mut kr = div().flex().flex_wrap().items_center().gap(px(4.)).child(filter_label(t, "What"));
-        kr = kr.child(toggle_chip(t, "fk-all", "Everything", f.kind.is_none(), false).on_click(cx.listener(|v, _, _, cx| {
-            v.filters.kind = None;
-            cx.notify();
-        })));
-        for (k, label) in KINDS {
-            let on = f.kind == Some(*k);
-            let kk = *k;
-            kr = kr.child(toggle_chip(t, &format!("fk-{label}"), label, on, false).on_click(cx.listener(move |v, _, _, cx| {
-                v.filters.kind = if v.filters.kind == Some(kk) { None } else { Some(kk) };
-                cx.notify();
-            })));
-        }
-        fl = fl.child(kr);
-
-        // rows, grouped by local day
-        let mut list = div().flex().flex_col();
-        let mut last_day = String::new();
-        let shown = rows.len().min(300);
-        for (i, e) in rows.iter().take(shown).enumerate() {
-            let ts = parse_rfc3339(&e.at).unwrap_or(0);
-            let tm = local_tm(ts);
-            let day = format!("{} {} {}", WEEKDAYS[tm.tm_wday as usize % 7], MONTHS[tm.tm_mon as usize % 12], tm.tm_mday);
-            if self.range != Range::Today && day != last_day {
-                list =
-                    list.child(div().pt(px(if i == 0 { 2. } else { 12. })).pb(px(4.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim).child(day.to_uppercase()));
-                last_day = day;
-            }
-            list = list.child(self.log_row(t, e, &tm, names, i, cx));
-        }
-        if rows.is_empty() {
-            list = list.child(div().py(px(24.)).flex().justify_center().text_color(t.dim).child(if f.away {
-                "Nothing happened while you were away."
-            } else {
-                "No activity matches these filters."
-            }));
-        } else if rows.len() > shown {
-            list = list.child(
-                div()
-                    .pt(px(8.))
-                    .text_size(px(11.5))
-                    .text_color(t.dim)
-                    .child(format!("Showing the newest {shown} of {}. Narrow the filters, or `midna events` for everything.", rows.len())),
-            );
-        }
-        let capped = if self.data.activity.len() >= 1000 { " · newest 1000 in this range" } else { "" };
-        let title = format!("{} event{}{capped}", rows.len(), if rows.len() == 1 { "" } else { "s" });
-        card(t).child(card_head(t, "Activity", &title, None)).child(fl).child(div().h(px(1.)).bg(t.line).my(px(4.))).child(list)
-    }
-
-    fn log_row(&self, t: &Theme, e: &Event, tm: &libc::tm, names: &HashMap<String, String>, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
-        let (text, color) = describe(e, t);
-        let who = match e.actor.kind.as_str() {
-            "human" => "You".to_string(),
-            "agent" => e.actor.name.clone().map(|n| capitalize(&n)).unwrap_or_else(|| "Agent".into()),
-            "trigger" => e.actor.name.clone().unwrap_or_else(|| "Trigger".into()),
-            _ => "midnad".into(),
-        };
-        let term = e.session_id.as_ref().map(|s| names.get(s).cloned().unwrap_or_else(|| s.clone()));
-        let proj = e.project_id.as_ref().map(|p| self.project_name(p));
-        let pcolor = e.project_id.as_ref().map(|p| self.project_color(t, p));
-        let live = e.session_id.as_ref().is_some_and(|s| self.data.sessions.iter().any(|x| &x.id == s));
-        let sid = e.session_id.clone();
-        div()
-            .id(SharedString::from(format!("log-{i}-{}", e.seq)))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(8.))
-            .py(px(5.))
-            .rounded(px(6.))
-            .hover(|s| s.bg(charts::alpha(t.fg, 0.04)))
-            .when(live, |d| d.cursor_pointer())
-            .on_click(cx.listener(move |v, _, w, cx| {
-                if let Some(s) = sid.clone() {
-                    v.open_terminal(s, w, cx);
-                }
-            }))
-            .child(div().w(px(42.)).flex_none().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)))
-            .child(div().size(px(7.)).rounded_full().flex_none().bg(color))
-            .child(div().w(px(76.)).flex_none().text_size(px(12.)).text_color(t.dim).whitespace_nowrap().overflow_hidden().text_ellipsis().child(who))
-            .child(div().flex_1().min_w_0().text_size(px(12.5)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(6.))
-                    .max_w(px(260.))
-                    .text_size(px(11.5))
-                    .text_color(t.dim)
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .when_some(pcolor, |d, c| d.child(div().size(px(8.)).rounded(px(2.)).bg(c).flex_none()))
-                    .child(match (proj, term) {
-                        (Some(p), Some(s)) => format!("{p} › {s}"),
-                        (Some(p), None) => p,
-                        (None, Some(s)) => s,
-                        (None, None) => String::new(),
-                    }),
-            )
-    }
 }
 
 // ------------------------------------------------------------------ pieces
@@ -1073,35 +712,6 @@ fn card_head(t: &Theme, title: &str, sub: &str, right: Option<AnyElement>) -> Di
         .children(right.map(|r| div().flex_shrink(1.).min_w_0().child(r)))
 }
 
-fn filter_label(t: &Theme, s: &str) -> Div {
-    div().w(px(56.)).flex_none().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim).child(s.to_uppercase())
-}
-
-fn toggle_chip(t: &Theme, id: &str, label: &str, on: bool, need: bool) -> Stateful<Div> {
-    let (fg, bg, border) = match (on, need) {
-        (true, true) => (t.need, t.need_soft, t.need),
-        (true, false) => (t.fg, t.accent_soft, t.accent),
-        (false, _) => (t.dim, gpui_kit::transparent_black(), t.line),
-    };
-    div()
-        .id(SharedString::from(id.to_string()))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .h(px(24.))
-        .px(px(9.))
-        .rounded(px(7.))
-        .border_1()
-        .border_color(border)
-        .bg(bg)
-        .text_size(px(12.))
-        .text_color(fg)
-        .when(on, |d| d.font_weight(FontWeight::BOLD))
-        .cursor_pointer()
-        .hover(|s| s.text_color(t.fg))
-        .child(label.to_string())
-}
-
 fn message_card(t: &Theme, title: &str, detail: &str, cli: &str) -> Div {
     div().p(px(28.)).child(
         card(t)
@@ -1142,72 +752,6 @@ fn empty_bars(t: &Theme) -> impl IntoElement {
     .h(px(56.))
 }
 
-/// One-line description and dot color for an activity event.
-fn describe(e: &Event, t: &Theme) -> (String, Hsla) {
-    let d = &e.data;
-    let s = |p: &str| d.pointer(p).and_then(Value::as_str).unwrap_or("").to_string();
-    match e.kind.as_str() {
-        "session.opened" => (format!("Opened {}", nonempty(s("/name"), "a terminal")), t.accent),
-        "session.closed" => ("Closed the terminal".into(), t.dim),
-        "session.exited" => (format!("Exited{}", d.get("exit_code").and_then(Value::as_i64).map(|c| format!(" with code {c}")).unwrap_or_default()), t.dim),
-        "session.status" => {
-            let st = s("/state").replace('_', " ");
-            let reason = s("/reason");
-            let c = match st.as_str() {
-                "working" => t.work,
-                "needs you" => t.need,
-                "done" => t.ok,
-                "failed" => t.err,
-                _ => t.dim,
-            };
-            (if reason.is_empty() { format!("Now {st}") } else { format!("Now {st} · {reason}") }, c)
-        }
-        "agent.prompt_submitted" => {
-            let p = s("/prompt");
-            (if p.is_empty() || p == "…" { "Message sent to the agent".into() } else { format!("Message: “{}”", p.lines().next().unwrap_or("")) }, t.accent)
-        }
-        "agent.turn_started" => ("Turn started".into(), t.work),
-        "agent.turn_ended" => ("Turn finished".into(), t.ok),
-        "needs_you.raised" => (format!("Needs you: {}", nonempty(s("/title"), "attention")), t.need),
-        "needs_you.resolved" => {
-            let k = s("/resolution/kind");
-            let text = match k.as_str() {
-                "approve" => "Approved",
-                "deny" => "Denied",
-                "dismiss" => "Dismissed",
-                "done" => "Marked done",
-                "restart" => "Restarted",
-                "timeout" => "Approval timed out",
-                _ => "Resolved",
-            };
-            (text.to_string(), if k == "deny" { t.err } else { t.ok })
-        }
-        "rule.added" => (format!("Rule added: {} {}", s("/effect").to_uppercase(), s("/matcher/pattern")), t.accent),
-        "rule.removed" => ("Rule removed".into(), t.dim),
-        "rule.fired" => ("Rule matched".into(), t.dim),
-        "rule.expired" => ("Rule expired".into(), t.dim),
-        "rule.removal_requested" => ("Asked to remove a rule".into(), t.need),
-        "trigger.fired" => (format!("Trigger fired{}", Some(s("/event")).filter(|x| !x.is_empty()).map(|x| format!(": {x}")).unwrap_or_default()), t.work),
-        "settings.changed" => {
-            let v = d.get("value").map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_default();
-            (format!("Setting {} → {v}", s("/key")), t.dim)
-        }
-        k => (k.to_string(), t.dim),
-    }
-}
-
-fn nonempty(s: String, fallback: &str) -> String {
-    if s.is_empty() { fallback.to_string() } else { s }
-}
-
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
-}
-
 // ------------------------------------------------------------------ local time
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -1224,11 +768,6 @@ fn local_tm(secs: i64) -> libc::tm {
     tm
 }
 
-fn local_day_start(secs: i64) -> i64 {
-    let tm = local_tm(secs);
-    secs - (tm.tm_hour as i64 * 3600 + tm.tm_min as i64 * 60 + tm.tm_sec as i64)
-}
-
 fn hour_label(h: i32) -> String {
     match h {
         0 => "12a".into(),
@@ -1239,14 +778,14 @@ fn hour_label(h: i32) -> String {
 }
 
 /// The Insights screen in place of the terminal pane (Escape returns to the terminal).
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let view = m.insights_view(window, cx);
+pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let view = m.insights_view(cx);
     div().id("screen-insights").key_context("MidnaOverlay").track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{KindFilter, SeriesData, hour_label};
+    use super::{SeriesData, hour_label};
     use serde_json::json;
 
     #[test]
@@ -1254,14 +793,6 @@ mod tests {
         assert_eq!(hour_label(0), "12a");
         assert_eq!(hour_label(15), "3p");
         assert_eq!(hour_label(9), "9a");
-    }
-
-    #[test]
-    fn kind_filters() {
-        assert!(KindFilter::Turns.matches("agent.turn_started"));
-        assert!(KindFilter::Terminals.matches("session.opened"));
-        assert!(!KindFilter::Terminals.matches("session.status"));
-        assert!(KindFilter::Status.matches("session.status"));
     }
 
     #[test]
