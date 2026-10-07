@@ -10,7 +10,7 @@
 use crate::actions::*;
 use crate::backend::{AttachRequest, Backend, TermStream};
 use crate::frame::*;
-use crate::term_edit::{self, EraseJob, KbdSel};
+use crate::term_edit::{self, EraseJob, KbdSel, MoveJob, Pending};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -137,7 +137,7 @@ pub struct TerminalView {
     /// A selection being erased, and the input typed meanwhile, sent once the app has gone quiet
     /// (Claude Code can apply a typed letter in the middle of a burst of deletes). The job is
     /// None when the erase needs no check, only that wait.
-    erasing: Option<(Option<EraseJob>, Vec<ClientMsg>)>,
+    erasing: Option<(Option<term_edit::Pending>, Vec<ClientMsg>)>,
     /// Bumped per scheduled erase check, so only the latest one runs.
     erase_gen: u64,
     font_family: SharedString,
@@ -911,6 +911,10 @@ impl TerminalView {
         }
         let Some(c) = self.live_cursor() else { return false };
         let Some((s, e)) = term_edit::replace_range(kbd, &self.ext.selection, c) else { return false };
+        let mouse = !kbd.is_some_and(|k| k.anchor != c);
+        if mouse && !(s.1 == c.1 && e.1 == c.1) {
+            return self.start_mouse_erase(s, e, c, cx);
+        }
         if s.1 != e.1 {
             return self.start_erase_job(s, e, c, cx);
         }
@@ -928,23 +932,48 @@ impl TerminalView {
         true
     }
 
+    /// A mouse selection off the cursor's row (in the same input): walk the cursor to its
+    /// nearer edge first (`check_erase` goes on to erase it), unless it's at one already.
+    fn start_mouse_erase(&mut self, s: term_edit::Pos, e: term_edit::Pos, c: term_edit::Pos, cx: &mut Context<Self>) -> bool {
+        let (top, bottom) = (s.1.min(c.1), e.1.max(c.1));
+        if !term_edit::one_input(&self.grid, top, bottom, self.is_agent()) {
+            return false;
+        }
+        let (s, e) = term_edit::clamp_to_text(&self.grid, s, e, self.indent());
+        if s == e {
+            return false;
+        }
+        let Some((job, n)) = MoveJob::plan(&self.grid, s, e, c, self.indent()) else { return self.start_erase_job(s, e, c, cx) };
+        for _ in 0..n {
+            self.arrow(job.key);
+        }
+        self.ext.selection.clear();
+        self.settle(Some(Pending::Move(job)), cx);
+        true
+    }
+
     /// A selection across rows: erase what it certainly holds, then check (`check_erase`).
     fn start_erase_job(&mut self, s: term_edit::Pos, e: term_edit::Pos, c: term_edit::Pos, cx: &mut Context<Self>) -> bool {
-        let Some(plan) = EraseJob::plan(&self.grid, s, e, c, self.indent()) else { return false };
-        let (key, n, job) = match plan {
-            term_edit::Erase::Blind(key, n) => (key, n, None),
-            term_edit::Erase::Checked(job, n) => (job.key, n, Some(job)),
-        };
-        for _ in 0..n {
-            self.arrow(key);
-        }
+        let Some(job) = self.send_erase(s, e, c) else { return false };
         self.ext.selection.clear();
         self.settle(job, cx);
         true
     }
 
+    /// Press the keys that erase what `s..e` certainly holds; the check to run after, if any.
+    fn send_erase(&mut self, s: term_edit::Pos, e: term_edit::Pos, c: term_edit::Pos) -> Option<Option<Pending>> {
+        let (key, n, job) = match EraseJob::plan(&self.grid, s, e, c, self.indent())? {
+            term_edit::Erase::Blind(key, n) => (key, n, None),
+            term_edit::Erase::Checked(job, n) => (job.key, n, Some(Pending::Erase(job))),
+        };
+        for _ in 0..n {
+            self.arrow(key);
+        }
+        Some(job)
+    }
+
     /// Hold the input typed from now on until the app has gone quiet (and `job` is done).
-    fn settle(&mut self, job: Option<EraseJob>, cx: &mut Context<Self>) {
+    fn settle(&mut self, job: Option<Pending>, cx: &mut Context<Self>) {
         self.erasing = Some((job, vec![]));
         self.typed();
         self.check_erase_later(250, cx);
@@ -973,13 +1002,28 @@ impl TerminalView {
             self.pull(cx);
             return;
         }
-        let Some((job, _)) = self.erasing.as_mut() else { return };
-        let Some(job) = job.as_mut().filter(|j| !self.cursor.is_some_and(|c| j.done(&self.grid, c))) else {
-            return self.finish_erase(cx);
+        let Some((pending, _)) = self.erasing.as_mut() else { return };
+        let job = match pending {
+            Some(Pending::Move(mv)) => {
+                let Some(c) = self.cursor.filter(|&c| !mv.passed(c)) else { return self.finish_erase(cx) };
+                if c == mv.target {
+                    // There: erase the selection, then check that as usual.
+                    let (s, e) = mv.sel;
+                    let Some(next) = self.send_erase(s, e, c) else { return self.finish_erase(cx) };
+                    if let Some((pending, _)) = self.erasing.as_mut() {
+                        *pending = next;
+                    }
+                    self.check_erase_later(250, cx);
+                    return;
+                }
+                (&mut mv.budget, mv.key)
+            }
+            Some(Pending::Erase(job)) if !self.cursor.is_some_and(|c| job.done(&self.grid, c)) => (&mut job.budget, job.key),
+            _ => return self.finish_erase(cx),
         };
-        if job.budget > 0 {
-            job.budget -= 1;
-            let key = job.key;
+        if *job.0 > 0 {
+            *job.0 -= 1;
+            let key = job.1;
             self.arrow(key);
             self.check_erase_later(250, cx);
             return;

@@ -18,7 +18,9 @@
 //!   arrows, the selected characters are erased with ⌫, then the text is typed. Across rows
 //!   the line breaks and indents aren't visible as characters, so an [`EraseJob`] erases a
 //!   count that can't be too many, then one at a time until the screen shows the text that
-//!   surrounded the selection meeting at the cursor.
+//!   surrounded the selection meeting at the cursor. A mouse selection elsewhere in the same
+//!   input (dragged across rows, say) is reached first by a [`MoveJob`], which walks the
+//!   cursor to its nearer edge the same way, checking the cursor's position on screen.
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
 use crate::frame::{Cell, F_SPACER, RowData};
@@ -234,16 +236,93 @@ pub fn erase_plan(row: &RowData, cursor: u16, lo: u16, hi: u16) -> Option<(i64, 
     Some((moves, n))
 }
 
-/// The selection to replace, start and end: the keyboard selection, else a mouse selection
-/// that lies entirely on the cursor's row.
+/// The selection to replace, start and end: the keyboard selection, else the mouse selection.
 pub fn replace_range(kbd: Option<KbdSel>, mouse: &[(u16, u16, u16)], cursor: Pos) -> Option<(Pos, Pos)> {
     if let Some(k) = kbd.filter(|k| k.anchor != cursor) {
         return Some(ordered(k.anchor, cursor));
     }
-    match mouse {
-        [(y, x0, x1)] if *y == cursor.1 => Some(((*x0, *y), (x1 + 1, *y))),
+    match (mouse.first(), mouse.last()) {
+        (Some(&(y0, x0, _)), Some(&(y1, _, x1))) => Some(((x0, y0), (x1 + 1, y1))),
         _ => None,
     }
+}
+
+/// Whether rows `top..=bottom` are all one input: an agent's box (from its prompt row or a
+/// continuation row on), or a shell line soft-wrapped onto the rows below its first.
+pub fn one_input(grid: &[RowData], top: u16, bottom: u16, agent: bool) -> bool {
+    (top..=bottom).all(|y| {
+        let Some(row) = grid.get(y as usize) else { return false };
+        if agent {
+            is_continuation(row) || (y == top && is_prompt_row(row))
+        } else {
+            y == bottom || text_end(row) as usize >= row.cells.len()
+        }
+    })
+}
+
+/// A mouse selection's ends pulled onto the input's text, where the cursor can go: past an
+/// agent's prompt glyph and its space, past a continuation row's indent, and not beyond a
+/// row's text.
+pub fn clamp_to_text(grid: &[RowData], s: Pos, e: Pos, indent: u16) -> (Pos, Pos) {
+    let first_col = |(x, y): Pos| {
+        let Some(row) = grid.get(y as usize) else { return x };
+        let glyph = row.cells.iter().take(3).position(|c| matches!(c.ch, '❯' | '›' | '>'));
+        let start = match glyph {
+            Some(g) if indent > 0 && is_prompt_row(row) => g as u16 + 2,
+            _ => leading_blanks(row).min(indent),
+        };
+        x.max(start).min(text_end(row).max(start))
+    };
+    let s = (first_col(s), s.1);
+    let e = (first_col(e), e.1);
+    if s.1 == e.1 { (s, e.max(s)) } else { (s, e) }
+}
+
+/// Walking the cursor to an edge of a mouse selection before erasing it, checked against the
+/// screen like an [`EraseJob`]: arrows over the characters certainly in between, then one at
+/// a time until the cursor is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveJob {
+    /// "left" or "right".
+    pub key: &'static str,
+    pub target: Pos,
+    /// The selection to erase once there.
+    pub sel: (Pos, Pos),
+    /// Single keys still allowed past the first batch (line breaks and indents that are text).
+    pub budget: usize,
+}
+
+impl MoveJob {
+    /// The move to the nearer edge of `s..e` (to its end from inside it), and the arrows to
+    /// press first. None when the cursor is already at an edge.
+    pub fn plan(grid: &[RowData], s: Pos, e: Pos, cursor: Pos, indent: u16) -> Option<(MoveJob, usize)> {
+        let at = |p: Pos| (p.1, p.0);
+        let (key, target) = if at(cursor) < at(s) {
+            ("right", s)
+        } else if at(cursor) < at(e) && cursor != s {
+            ("right", e)
+        } else if at(cursor) > at(e) {
+            ("left", e)
+        } else {
+            return None;
+        };
+        let (a, b) = ordered(cursor, target);
+        let budget = (b.1 - a.1) as usize * (1 + indent as usize) + 1;
+        Some((MoveJob { key, target, sel: (s, e), budget }, lower_bound(grid, a, b, indent)))
+    }
+
+    /// The cursor went past the target: something didn't line up, so stop.
+    pub fn passed(&self, cursor: Pos) -> bool {
+        let (c, t) = ((cursor.1, cursor.0), (self.target.1, self.target.0));
+        if self.key == "right" { c > t } else { c < t }
+    }
+}
+
+/// What a selection being erased is waiting on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pending {
+    Move(MoveJob),
+    Erase(EraseJob),
 }
 
 /// Erasing a selection that spans rows, checked against the screen (see the module docs).
@@ -428,8 +507,40 @@ mod tests {
         assert_eq!(replace_range(k, &[], (4, 5)), Some(((10, 3), (4, 5))), "spans rows");
         assert_eq!(replace_range(k, &[], (10, 3)), None, "empty keyboard selection");
         assert_eq!(replace_range(None, &[(3, 5, 8)], (20, 3)), Some(((5, 3), (9, 3))));
-        assert_eq!(replace_range(None, &[(2, 5, 8)], (20, 3)), None, "not the cursor's row");
-        assert_eq!(replace_range(None, &[(2, 0, 9), (3, 0, 4)], (20, 3)), None, "mouse selection across rows");
+        assert_eq!(replace_range(None, &[(2, 5, 8)], (20, 3)), Some(((5, 2), (9, 2))), "not the cursor's row");
+        assert_eq!(replace_range(None, &[(2, 3, 9), (3, 0, 4)], (20, 3)), Some(((3, 2), (5, 3))), "mouse selection across rows");
+        assert_eq!(replace_range(None, &[], (20, 3)), None);
+    }
+
+    #[test]
+    fn mouse_selections_stay_in_the_input() {
+        let g = grid(&["  output", "────────", "❯ line one alpha", "  line two beta", "────────"]);
+        assert!(one_input(&g, 2, 3, true));
+        assert!(!one_input(&g, 0, 3, true), "starts in the output above");
+        assert!(!one_input(&g, 2, 4, true), "runs into the border");
+        let sh = grid(&["$ echo aaaaaaaaaaaaaaaaaaaaaaaaa", "bbb", "next"]);
+        assert!(one_input(&sh, 0, 1, false), "a soft-wrapped command");
+        assert!(!one_input(&sh, 1, 2, false), "the row above isn't full");
+        // Dragged from the prompt glyph to the left margin of the next row.
+        assert_eq!(clamp_to_text(&g, (0, 2), (0, 3), AGENT_INDENT), ((2, 2), (2, 3)));
+        // Past the text on its row.
+        assert_eq!(clamp_to_text(&g, (7, 2), (25, 3), AGENT_INDENT), ((7, 2), (15, 3)));
+    }
+
+    #[test]
+    fn move_job_heads_for_the_nearer_edge() {
+        let g = grid(&["❯ line one alpha", "  line two beta", "  line three gamma"]);
+        let (s, e) = ((7, 0), (6, 1));
+        // Cursor at the end of the input: left to the selection's end.
+        let (job, n) = MoveJob::plan(&g, s, e, (18, 2), AGENT_INDENT).unwrap();
+        assert_eq!((job.key, job.target, n), ("left", e, 9 + 16));
+        assert_eq!(job.budget, 3 + 1);
+        // Before it: right to its start. Inside it: right to its end.
+        assert_eq!(MoveJob::plan(&g, s, e, (2, 0), AGENT_INDENT).unwrap().0.target, s);
+        let (inside, n) = MoveJob::plan(&g, s, e, (10, 0), AGENT_INDENT).unwrap();
+        assert_eq!((inside.key, inside.target, n), ("right", e, 6 + 4));
+        assert_eq!(MoveJob::plan(&g, s, e, e, AGENT_INDENT), None, "already at an edge");
+        assert!(job.passed((5, 1)) && !job.passed((7, 1)));
     }
 
     #[test]
