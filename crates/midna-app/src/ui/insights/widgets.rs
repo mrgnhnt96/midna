@@ -729,7 +729,9 @@ fn heatmap(t: &Theme, p: &Palette, d: &InsightsDetail, cell_h: f32, totals: bool
                     .h(px(cell_h))
                     .rounded(px(3.))
                     .bg(if s == 0 { t.raised } else { charts::alpha(p.agents, step) })
-                    .when(you, |c| c.border_2().border_color(p.you)),
+                    // every cell gets the border, so the outlined ones aren't wider and the columns line up
+                    .border_2()
+                    .border_color(if you { p.you } else { transparent_black() }),
             );
         }
         if totals {

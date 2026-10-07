@@ -30,6 +30,14 @@ pub fn start() {
     std::mem::forget(monitor);
 }
 
+/// One tap on its own, like a snap into place (resizing an Insights card to a new size). Quiet
+/// when `ui.haptics` is off.
+pub fn tap() {
+    if ENABLED.get() {
+        NSHapticFeedbackManager::defaultPerformer().performFeedbackPattern_performanceTime(NSHapticFeedbackPattern::Alignment, NSHapticFeedbackPerformanceTime::Now);
+    }
+}
+
 /// `ui.haptics` changed (or the app connected).
 pub fn sync(enabled: bool) {
     ENABLED.set(enabled);

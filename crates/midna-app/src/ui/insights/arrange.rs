@@ -23,7 +23,9 @@ enum Arrange {
     None,
     /// Moving `id`: `grab` is where the pointer holds the card, `order` the live preview.
     Drag { id: String, grab: Point<Pixels>, at: Point<Pixels>, order: Items, last: Option<String> },
-    Resize { id: String, from: Size, order: Items },
+    /// Resizing `id`: `want` is the size the pointer last asked for, so each new ask taps the
+    /// trackpad once (it fits) or twice (the widget has no such size).
+    Resize { id: String, from: Size, want: Size, order: Items },
 }
 
 pub struct Gallery {
@@ -66,7 +68,7 @@ impl State {
             Ok("resize") if let (Some((id, from)), Some(d)) = (&first, &st.dev_items) => {
                 let mut order = d.clone();
                 order[0].1 = Size::Large;
-                st.arrange = Arrange::Resize { id: id.clone(), from: *from, order }
+                st.arrange = Arrange::Resize { id: id.clone(), from: *from, want: Size::Large, order }
             }
             _ => {}
         }
@@ -345,7 +347,7 @@ impl InsightsView {
                 }))
         });
         let chip = resize_label.filter(|(a, b)| a != b).map(|(from, to)| {
-            div().absolute().right(px(10.)).bottom(px(-30.)).px(px(9.)).py(px(3.)).rounded(px(6.)).bg(t.accent).text_color(t.accent_fg).text_size(px(12.)).font_weight(FontWeight::BOLD).whitespace_nowrap().child(format!("{} → {}", from.label(), to.label()))
+            div().absolute().right(px(24.)).bottom(px(8.)).px(px(9.)).py(px(3.)).rounded(px(6.)).bg(t.accent).text_color(t.accent_fg).text_size(px(12.)).font_weight(FontWeight::BOLD).whitespace_nowrap().child(format!("{} → {}", from.label(), to.label()))
         });
         card(t)
             .id(SharedString::from(format!("widget-{id}")))
@@ -377,7 +379,7 @@ impl InsightsView {
     fn start_resize(&mut self, id: &str, cx: &mut Context<Self>) {
         let items = self.items(cx);
         let Some((_, from)) = items.iter().find(|(i, _)| i == id).cloned() else { return };
-        self.ar.arrange = Arrange::Resize { id: id.to_string(), from, order: items };
+        self.ar.arrange = Arrange::Resize { id: id.to_string(), from, want: from, order: items };
         cx.notify();
     }
 
@@ -405,7 +407,7 @@ impl InsightsView {
                 }
                 cx.notify();
             }
-            Arrange::Resize { id, from, order } => {
+            Arrange::Resize { id, from, want: asked, order } => {
                 let (placed, _) = pack(order, cols);
                 let Some(&(_, c, r, _, _)) = placed.iter().find(|p| order[p.0].0 == *id) else { return };
                 let corner = Self::rect(width, cols, c, r, 1, 1).origin;
@@ -419,6 +421,17 @@ impl InsightsView {
                 };
                 let ok = widgets::sizes(id);
                 let to = if ok.contains(&want) { want } else if want == Size::Large && ok.contains(&Size::Wide) { Size::Wide } else { *from };
+                if *asked != want {
+                    *asked = want;
+                    crate::haptics::tap();
+                    if !ok.contains(&want) {
+                        cx.spawn(async move |_, cx| {
+                            cx.background_executor().timer(std::time::Duration::from_millis(110)).await;
+                            cx.update(|_| crate::haptics::tap());
+                        })
+                        .detach();
+                    }
+                }
                 if let Some(it) = order.iter_mut().find(|(i, _)| i == id)
                     && it.1 != to
                 {
