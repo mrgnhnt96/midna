@@ -401,6 +401,8 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
         marks.push(div().absolute().left(px(x0 * dw)).top(px(y0 * dh)).w(px((x1 - x0) * dw)).h(px((y1 - y0) * dh)).border_2().border_dashed().border_color(t.accent).bg(t.accent.opacity(0.12)).into_any_element());
     }
     let stage_cell = a.stage.clone();
+    let dragging = a.drag.is_some();
+    let entity = cx.entity();
     let image = div()
         .id("annot-image")
         .relative()
@@ -410,14 +412,35 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
         .cursor_crosshair()
         .shadow(vec![ring(t.line, 1.)])
         .on_mouse_down(MouseButton::Left, cx.listener(|v, ev: &MouseDownEvent, w, cx| v.pointer_down(ev.position, w, cx)))
-        .on_mouse_move(cx.listener(|v, ev: &MouseMoveEvent, _, cx| {
-            if ev.pressed_button == Some(MouseButton::Left) {
-                v.pointer_move(ev.position, cx);
-            }
-        }))
-        .on_mouse_up(MouseButton::Left, cx.listener(|v, ev: &MouseUpEvent, w, cx| v.pointer_up(ev.position, w, cx)))
         .child(img(shot.image.clone()).size_full())
-        .child(canvas(move |b, _, _| stage_cell.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+        .child(
+            canvas(
+                move |b, _, _| stage_cell.set(Some(b)),
+                move |_, _, window, _| {
+                    // A drag follows moves and releases anywhere in the window, so letting go
+                    // past the image's edge still ends the box (clamped to the edge).
+                    if !dragging {
+                        return;
+                    }
+                    let e = entity.clone();
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble && ev.pressed_button == Some(MouseButton::Left) {
+                            e.update(cx, |v, cx| v.pointer_move(ev.position, cx));
+                        }
+                    });
+                    let e = entity.clone();
+                    window.on_mouse_event(move |ev: &MouseUpEvent, phase, w, cx| {
+                        if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                            e.update(cx, |v, cx| v.pointer_up(ev.position, w, cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
         .children(marks);
 
     // The viewport scrolls when zoomed past the fit; its size drives the fit.
