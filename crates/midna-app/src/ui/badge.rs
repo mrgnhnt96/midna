@@ -1452,6 +1452,10 @@ impl Badge {
             && self.pressing.is_none()
         {
             self.within = within;
+            // Leaving midna with the list open: it lifts away.
+            if !within && self.list && self.list_closing.is_none() {
+                self.list_closing = Some(now);
+            }
             let to = if within { dock_origin(&ns) } else { origin_at(&ns, self.corner, self.inset) };
             if let Some(to) = to {
                 if self.shown && !super::queue::reduce_motion() {
