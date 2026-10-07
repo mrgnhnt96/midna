@@ -316,12 +316,17 @@ struct ReadCron {
 
 /// Read a cron into the form's terms, or None when the form can't show it.
 fn read_cron(expr: &str, now: i64) -> Option<ReadCron> {
+    if let Some(n) = cron::Cron::parse(expr).ok().and_then(|c| c.every()) {
+        let shape = if n % 3600 == 0 { Shape::Every(Unit::Hours, (n / 3600) as u32) } else { Shape::Every(Unit::Minutes, (n / 60) as u32) };
+        return Some(ReadCron { shape, days: [true; 7], window: None });
+    }
     let f: Vec<&str> = expr.split_whitespace().collect();
     if f.len() != 5 {
         return None;
     }
     let num = |s: &str| s.parse::<u32>().ok();
-    let step = |s: &str| if s == "*" { Some(1) } else { s.strip_prefix("*/").and_then(num) };
+    // Only steps that divide the hour (day) evenly: `*/55` is minutes 0 and 55, not every 55.
+    let step = |s: &str, span: u32| if s == "*" { Some(1) } else { s.strip_prefix("*/").and_then(num).filter(|n| span % n == 0) };
     if let (Some(mi), Some(h), Some(d), Some(mo), "*") = (num(f[0]), num(f[1]), num(f[2]), num(f[3]), f[4]) {
         let (y, ..) = time::local_parts(now);
         let mut at = time::local_unix(y, mo, d, h, mi);
@@ -335,13 +340,13 @@ fn read_cron(expr: &str, now: i64) -> Option<ReadCron> {
     }
     let days = parse_days(f[4])?;
     let (shape, window) = match (f[0], f[1]) {
-        (m, "*") if step(m).is_some() => (Shape::Every(Unit::Minutes, step(m)?), None),
-        (m, h) if step(m).is_some() && h.contains('-') => {
+        (m, "*") if step(m, 60).is_some() => (Shape::Every(Unit::Minutes, step(m, 60)?), None),
+        (m, h) if step(m, 60).is_some() && h.contains('-') => {
             let (a, b) = h.split_once('-')?;
             let (a, b) = (num(a)?, num(b)?);
-            (Shape::Every(Unit::Minutes, step(m)?), Some((format!("{a:02}:00"), format!("{:02}:00", (b + 1) % 24))))
+            (Shape::Every(Unit::Minutes, step(m, 60)?), Some((format!("{a:02}:00"), format!("{:02}:00", (b + 1) % 24))))
         }
-        ("0", h) if step(h).is_some() => (Shape::Every(Unit::Hours, step(h)?), None),
+        ("0", h) if step(h, 24).is_some() => (Shape::Every(Unit::Hours, step(h, 24)?), None),
         (m, h) => {
             let (m, h) = (num(m)?, num(h)?);
             if m > 59 || h > 23 {
@@ -408,10 +413,18 @@ fn build(form: &Form, base: &TriggerFilter, fired: u64, now: i64) -> Result<Buil
         } else {
             match form.unit {
                 Unit::Minutes | Unit::Hours => {
-                    let (max, what) = if form.unit == Unit::Minutes { (59, "minutes") } else { (23, "hours") };
+                    let minutes = form.unit == Unit::Minutes;
+                    let (max, what, span) = if minutes { (1440, "minutes", 60) } else { (168, "hours", 24) };
                     let n: u32 = form.every.parse().ok().filter(|n| (1..=max).contains(n)).ok_or(format!("Every: a number of {what} from 1 to {max}."))?;
                     let every = if n == 1 { "*".to_string() } else { format!("*/{n}") };
-                    if form.unit == Unit::Minutes { format!("{every} * * * {dow}") } else { format!("0 {every} * * {dow}") }
+                    if span % n == 0 {
+                        if minutes { format!("{every} * * * {dow}") } else { format!("0 {every} * * {dow}") }
+                    } else if dow != "*" {
+                        // Cron steps can't say it (`*/55` is :00 and :55), and an interval has no days.
+                        return Err(format!("Every {n} {what} runs every day; pick all days, or a step that divides {}.", if minutes { "an hour (5, 10, 15, 20, 30)" } else { "a day (2, 3, 4, 6, 8, 12)" }));
+                    } else {
+                        format!("@every {n}{}", if minutes { "m" } else { "h" })
+                    }
                 }
                 Unit::Daily => {
                     let m = cron::parse_hm(&form.daily_at).map_err(|e| format!("At: {e}"))?;
@@ -440,6 +453,8 @@ fn build(form: &Form, base: &TriggerFilter, fired: u64, now: i64) -> Result<Buil
         cron
     };
     f.cron = Some(cron);
+    // An interval counts from its start; without one, from now (as the daemon would).
+    cron::anchor_every(&mut f, now);
     if form.new {
         f.session = Some(form.session.clone().ok_or("Send to: pick a terminal.")?);
         if form.prompt.is_empty() {
@@ -925,7 +940,10 @@ mod schedule_tests {
         assert_eq!(read_cron("30 14 6 10 *", now).unwrap().shape, Shape::Once(time::local_unix(2026, 10, 6, 14, 30)));
         // Already past this year: next year's.
         assert_eq!(read_cron("30 9 6 10 *", now).unwrap().shape, Shape::Once(time::local_unix(2027, 10, 6, 9, 30)));
-        for odd in ["5,35 * * * *", "0 9 1 * *", "@daily", "0 9 * * 1/2"] {
+        assert_eq!(read_cron("@every 55m", now).unwrap().shape, Shape::Every(Unit::Minutes, 55));
+        assert_eq!(read_cron("@every 90m", now).unwrap().shape, Shape::Every(Unit::Minutes, 90));
+        assert_eq!(read_cron("@every 5h", now).unwrap().shape, Shape::Every(Unit::Hours, 5));
+        for odd in ["5,35 * * * *", "0 9 1 * *", "@daily", "0 9 * * 1/2", "*/55 * * * *", "0 */5 * * *"] {
             assert_eq!(read_cron(odd, now), None, "{odd}");
         }
     }
@@ -965,10 +983,27 @@ mod schedule_tests {
         let b = build(&d, &base, 7, now).unwrap();
         assert_eq!((b.filter.cron.as_deref(), b.filter.max_runs, b.filter.project.as_deref(), b.filter.session.as_deref()), (Some("57 8 * * *"), Some(3), Some("p_1"), None));
         assert_eq!(b.schedule.upcoming(now, 10).len(), 3, "a new limit counts from zero");
+        // Every 55 minutes isn't `*/55`: an interval, first run 55 minutes from now.
+        let mut e = form();
+        e.every = "55".into();
+        let b = build(&e, &TriggerFilter::default(), 0, now).unwrap();
+        assert_eq!(b.filter.cron.as_deref(), Some("@every 55m"));
+        let at = |h, m| time::local_unix(2026, 10, 6, h, m);
+        assert_eq!(b.schedule.upcoming(now, 3), vec![at(12, 55), at(13, 50), at(14, 45)]);
+        assert_eq!(b.schedule.describe("@every 55m"), "Every 55 min");
+        e.unit = Unit::Hours;
+        e.every = "5".into();
+        assert_eq!(build(&e, &TriggerFilter::default(), 0, now).unwrap().filter.cron.as_deref(), Some("@every 5h"));
+        e.every = "6".into();
+        assert_eq!(build(&e, &TriggerFilter::default(), 0, now).unwrap().filter.cron.as_deref(), Some("0 */6 * * *"));
         // What's wrong, in words.
         for (change, want) in [
             (Box::new(|f: &mut Form| f.days = [false; 7]) as Box<dyn Fn(&mut Form)>, "at least one day"),
-            (Box::new(|f: &mut Form| f.every = "0".into()), "from 1 to 59"),
+            (Box::new(|f: &mut Form| f.every = "0".into()), "from 1 to 1440"),
+            (Box::new(|f: &mut Form| {
+                f.every = "55".into();
+                f.days = [true, true, true, true, true, false, false];
+            }), "pick all days"),
             (Box::new(|f: &mut Form| f.session = None), "pick a terminal"),
             (Box::new(|f: &mut Form| f.prompt = String::new()), "prompt"),
             (Box::new(|f: &mut Form| {

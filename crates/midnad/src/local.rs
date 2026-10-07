@@ -948,6 +948,12 @@ mod tests {
         assert!(due(&[t.clone()], hour - 60, hour).is_empty());
         t.filter.window = Some(TimeWindow { from: format!("{h:02}:00"), until: format!("{:02}:00", (h + 1) % 24) });
         assert_eq!(due(&[t.clone()], hour - 60, hour), vec![(t.clone(), hour)]);
+        // `@every 55m` from its start: due at +0, +55 and +110, not at :00 of the next hour.
+        t.filter = TriggerFilter { cron: Some("@every 55m".into()), starts_at: Some(time::format_unix(hour)), ..Default::default() };
+        assert_eq!(due(&[t.clone()], hour - 60, hour), vec![(t.clone(), hour)]);
+        assert!(due(&[t.clone()], hour, hour + 54 * 60).is_empty() && due(&[t.clone()], hour + 55 * 60, hour + 60 * 60).is_empty());
+        assert_eq!(due(&[t.clone()], hour + 54 * 60, hour + 55 * 60), vec![(t.clone(), hour + 55 * 60)]);
+        assert_eq!(due(&[t.clone()], hour + 109 * 60, hour + 110 * 60), vec![(t.clone(), hour + 110 * 60)]);
     }
 
     #[test]

@@ -890,7 +890,7 @@ pub struct TriggerFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_minutes: Option<u32>,
     /// Local `schedule` triggers: when to fire, a five-field cron expression in local time
-    /// (`0 9 * * mon-fri`, `*/30 * * * *`, `@daily`). See `cron.rs`.
+    /// (`0 9 * * mon-fri`, `*/30 * * * *`, `@daily`), or an interval (`@every 55m`). See `cron.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
     /// Local `schedule` triggers: only fire between these local times of day.

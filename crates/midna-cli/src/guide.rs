@@ -201,7 +201,8 @@ const TOPICS: &[(&str, &str)] = &[
         A local trigger (source local) fires on this Mac. event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, \
         hook.Notification, …), a midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
         session.status, …), `idle` (no turn started/ended for filter idle_minutes) or `schedule` (filter cron: five \
-        fields in local time, `0 9 * * mon-fri`, `*/30 * * * *`, or @hourly/@daily/@weekly/@monthly/@yearly; data \
+        fields in local time, `0 9 * * mon-fri`, `*/30 * * * *`, or @hourly/@daily/@weekly/@monthly/@yearly, or `@every 55m` for an interval cron can't say \
+        (`*/55` is :00 and :55; it counts from starts_at, filled in as one interval after it's added); data \
         {cron, scheduled_for, local_time}; with no session/project/agent filter it fires once about no terminal, with \
         one it acts on every running terminal that matches; a missed run fires late only within 10 minutes; filter window \
         {from, until} (HH:MM local, until not included, may wrap midnight), starts_at / ends_at (RFC 3339) and max_runs \

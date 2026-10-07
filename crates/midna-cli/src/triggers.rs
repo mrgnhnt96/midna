@@ -794,6 +794,9 @@ mod tests {
         assert_eq!(f5, json!({ "cron": "0 9 * * mon-fri", "project": "p_1" }));
         assert_eq!(filter_text(&f5), r#"project=p_1 cron="0 9 * * mon-fri""#);
         assert!(matches!(filter_from(&args(&["t", "--cron", "0 9 * *"]), json!({})), Err(Fail::Usage(e)) if e.contains("cron needs 5")));
+        let (fe, _) = ok(filter_from(&args(&["t", "--cron", "@every 55m"]), json!({})));
+        assert_eq!(fe, json!({ "cron": "@every 55m" }));
+        assert!(matches!(filter_from(&args(&["t", "--cron", "@every 30s"]), json!({})), Err(Fail::Usage(e)) if e.contains("whole minutes")));
         let (fw, _) = ok(filter_from(&args(&["t", "--cron", "*/5 * * * mon-fri", "--between", "13:00-17:00", "--ends", "2026-10-10", "--max-runs", "3"]), json!({})));
         assert_eq!((fw["window"].clone(), fw["max_runs"].clone()), (json!({ "from": "13:00", "until": "17:00" }), json!(3)));
         assert_eq!(midna_proto::time::parse_rfc3339(fw["ends_at"].as_str().unwrap()), Some(midna_proto::time::local_unix(2026, 10, 10, 0, 0)));

@@ -5,6 +5,11 @@
 //! 0 and 7 are Sunday. Like Vixie cron, when both day fields are restricted a day matching either
 //! one counts. Shortcuts: `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`, `@yearly`
 //! (`@annually`).
+//!
+//! `@every <duration>` (`@every 55m`, `@every 1h30m`, as in Go's robfig/cron) is a fixed interval
+//! instead, for the ones cron can't say: `*/55` means minutes 0 and 55, not every 55 minutes. It
+//! counts from an anchor (a schedule's `starts_at`), so its runs are `anchor + n × interval`
+//! whenever the daemon was running, and don't drift after a missed one.
 use crate::time;
 
 const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -23,18 +28,27 @@ pub struct Cron {
     /// Day-of-month / day-of-week were given (not `*`), for the either-day rule.
     days_set: bool,
     weekdays_set: bool,
+    /// `@every`: the interval in seconds (whole minutes), counted from `anchor`. The fields
+    /// above are unused.
+    every: Option<i64>,
+    /// When an `@every` counts from (a minute boundary); `Schedule` sets it from `starts_at`.
+    anchor: i64,
 }
 
 impl Cron {
     pub fn parse(expr: &str) -> Result<Cron, String> {
         let expr = expr.trim();
+        if let Some(d) = expr.get(..6).filter(|p| p.eq_ignore_ascii_case("@every")).map(|_| &expr[6..]) {
+            let secs = parse_every(d).map_err(|e| format!("`{expr}`: {e}"))?;
+            return Ok(Cron { minutes: 0, hours: 0, days: 0, months: 0, weekdays: 0, days_set: false, weekdays_set: false, every: Some(secs), anchor: 0 });
+        }
         let expanded = match expr.to_ascii_lowercase().as_str() {
             "@hourly" => "0 * * * *",
             "@daily" | "@midnight" => "0 0 * * *",
             "@weekly" => "0 0 * * 0",
             "@monthly" => "0 0 1 * *",
             "@yearly" | "@annually" => "0 0 1 1 *",
-            s if s.starts_with('@') => return Err(format!("unknown shortcut `{expr}` (use @hourly, @daily, @weekly, @monthly or @yearly)")),
+            s if s.starts_with('@') => return Err(format!("unknown shortcut `{expr}` (use @hourly, @daily, @weekly, @monthly, @yearly or @every 55m)")),
             _ => expr,
         };
         let f: Vec<&str> = expanded.split_whitespace().collect();
@@ -52,11 +66,28 @@ impl Cron {
             weekdays,
             days_set: !f[2].starts_with('*'),
             weekdays_set: !f[4].starts_with('*'),
+            every: None,
+            anchor: 0,
         })
+    }
+
+    /// The `@every` interval in seconds, if it is one.
+    pub fn every(&self) -> Option<i64> {
+        self.every
+    }
+
+    /// Count an `@every` from `t` (rounded up to the minute) instead of the unix epoch.
+    pub fn anchored(mut self, t: i64) -> Cron {
+        self.anchor = ceil_minute(t);
+        self
     }
 
     /// Does the local minute containing unix time `t` match?
     pub fn matches(&self, t: i64) -> bool {
+        if let Some(n) = self.every {
+            let m = t.div_euclid(60) * 60;
+            return m >= self.anchor && (m - self.anchor) % n == 0;
+        }
         let (_, mo, d, h, mi, wd) = time::local_parts(t);
         self.day_ok(mo, d, wd) && bit(self.hours, h) && bit(self.minutes, mi)
     }
@@ -72,6 +103,10 @@ impl Cron {
     /// The first matching minute strictly after `t` (unix seconds, on a minute boundary), if
     /// any within five years.
     pub fn next_after(&self, t: i64) -> Option<i64> {
+        if let Some(n) = self.every {
+            let m = t.div_euclid(60) * 60;
+            return Some(if m < self.anchor { self.anchor } else { self.anchor + ((m - self.anchor) / n + 1) * n });
+        }
         let mut at = t.div_euclid(60) * 60 + 60;
         let end = t + HORIZON_SECS;
         while at <= end {
@@ -107,6 +142,10 @@ pub fn local_label(t: i64) -> String {
     let (_, mo, d, h, mi, wd) = time::local_parts(t);
     let cap = |x: &str| format!("{}{}", x[..1].to_ascii_uppercase(), &x[1..]);
     format!("{} {} {d} {h:02}:{mi:02}", cap(DAYS[wd as usize]), cap(MONTHS[mo as usize - 1]))
+}
+
+fn ceil_minute(t: i64) -> i64 {
+    t.div_euclid(60) * 60 + if t.rem_euclid(60) == 0 { 0 } else { 60 }
 }
 
 fn bit(set: u64, n: u32) -> bool {
@@ -148,6 +187,9 @@ pub fn describe(expr: &str) -> String {
 
 impl Cron {
     fn words(&self) -> Option<String> {
+        if let Some(n) = self.every {
+            return Some(every_words(n));
+        }
         let mins = members(self.minutes, 0, 59);
         let hours = members(self.hours, 0, 23);
         let all_months = self.months.count_ones() == 12;
@@ -163,7 +205,7 @@ impl Cron {
         let on = self.day_words()?;
         let step = |v: &[u32], span: u32| -> Option<u32> {
             let d = v.get(1)? - v[0];
-            (v[0] == 0 && v.windows(2).all(|w| w[1] - w[0] == d) && v[v.len() - 1] + d >= span).then_some(d)
+            (v[0] == 0 && v.windows(2).all(|w| w[1] - w[0] == d) && v[v.len() - 1] + d == span).then_some(d)
         };
         // A run of whole hours (`13-16` → `1 PM–5 PM`).
         let span = (hours.len() < 24 && hours.windows(2).all(|w| w[1] == w[0] + 1)).then(|| format!("{}–{}", clock(hours[0], 0), clock(hours[hours.len() - 1] + 1, 0)));
@@ -233,6 +275,57 @@ impl Cron {
     }
 }
 
+/// `Every 55 min`, `Every 2 hours`, `Every 1 h 30 min`, `Every day`.
+fn every_words(secs: i64) -> String {
+    let m = secs / 60;
+    let (d, h, mi) = (m / 1440, m / 60 % 24, m % 60);
+    let unit = |n: i64, one: &str, many: &str| if n == 1 { one.to_string() } else { format!("{n} {many}") };
+    match (d, h, mi) {
+        (0, 0, _) => format!("Every {}", unit(mi, "minute", "min")),
+        (0, _, 0) => format!("Every {}", unit(h, "hour", "hours")),
+        (_, 0, 0) => format!("Every {}", unit(d, "day", "days")),
+        (0, _, _) => format!("Every {h} h {mi} min"),
+        _ => format!("Every {m} min"),
+    }
+}
+
+/// An `@every` duration in seconds: Go-style `55m`, `1h30m`, `90s`, `2h`, `1d`; whole minutes,
+/// at least one.
+fn parse_every(d: &str) -> Result<i64, String> {
+    let d = d.trim();
+    let usage = "use a duration like 55m, 1h30m or 2h";
+    if d.is_empty() {
+        return Err(format!("@every needs a duration; {usage}"));
+    }
+    let (mut secs, mut num) = (0i64, String::new());
+    for c in d.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let per = match c.to_ascii_lowercase() {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return Err(format!("`{d}` isn't a duration; {usage}")),
+        };
+        let n: i64 = num.parse().map_err(|_| format!("`{d}` isn't a duration; {usage}"))?;
+        secs = n.checked_mul(per).and_then(|x| x.checked_add(secs)).ok_or_else(|| format!("`{d}` is too long"))?;
+        num.clear();
+    }
+    if !num.is_empty() {
+        return Err(format!("`{d}` needs a unit after {num} (s, m, h or d)"));
+    }
+    if secs < 60 || secs % 60 != 0 {
+        return Err(format!("`{d}`: schedules run on whole minutes, at least 1m"));
+    }
+    if secs > HORIZON_SECS {
+        return Err(format!("`{d}` is too long"));
+    }
+    Ok(secs)
+}
+
 fn ordinal(n: u32) -> String {
     let suffix = match (n % 10, n % 100) {
         (_, 11..=13) => "th",
@@ -297,6 +390,11 @@ impl Schedule {
         if f.max_runs == Some(0) {
             return Err("filter.max_runs must be at least 1".into());
         }
+        // An `@every` counts from its start (`anchor_every` fills one in when a trigger is saved).
+        let cron = match starts {
+            Some(s) if cron.every.is_some() => cron.anchored(s),
+            _ => cron,
+        };
         Ok(Schedule { cron, window, starts, ends, max_runs: f.max_runs, runs_left: f.max_runs.map(|m| m.saturating_sub(fired)) })
     }
 
@@ -354,7 +452,10 @@ impl Schedule {
         if let Some((a, b)) = self.window {
             s.push_str(&format!(", {}–{}", clock(a / 60, a % 60), clock(b / 60, b % 60)));
         }
-        if let Some(st) = self.starts.filter(|st| *st > time::now_unix() && !once) {
+        // An `@every`'s first run (its anchor) is just when it starts counting from.
+        let now = time::now_unix();
+        let anchor_only = |st: i64| self.cron.every.is_some_and(|n| st - now <= n);
+        if let Some(st) = self.starts.filter(|st| *st > now && !once && !anchor_only(*st)) {
             s.push_str(&format!(" · from {}", local_day(st)));
         }
         if let Some(e) = self.ends {
@@ -366,6 +467,17 @@ impl Schedule {
             None => {}
         }
         s
+    }
+}
+
+/// Give an `@every` schedule without a start one: one interval after `created` (rounded up to
+/// the minute), as robfig/cron runs one. Its runs then stay put across restarts and edits.
+pub fn anchor_every(f: &mut crate::TriggerFilter, created: i64) {
+    if f.starts_at.is_some() {
+        return;
+    }
+    if let Some(n) = f.cron.as_deref().and_then(|c| Cron::parse(c).ok()).and_then(|c| c.every) {
+        f.starts_at = Some(time::format_unix(ceil_minute(created) + n));
     }
 }
 
@@ -445,6 +557,12 @@ mod tests {
             ("* 5-2 * * *", "backwards"),
             ("* * * * funday", "isn't a number or a name"),
             ("@often", "unknown shortcut"),
+            ("@every", "needs a duration"),
+            ("@every 55", "needs a unit"),
+            ("@every 30s", "whole minutes"),
+            ("@every 90s", "whole minutes"),
+            ("@every 5 min", "isn't a duration"),
+            ("@every 99999999999999h", "too long"),
         ] {
             let err = Cron::parse(e).unwrap_err();
             assert!(err.contains(why), "{e}: {err}");
@@ -490,6 +608,16 @@ mod tests {
             ("* * * * *", "Every minute"),
             ("0 0 1 jan *", "Jan 1 at 12 AM"),
             ("5,10 * * * *", "5,10 * * * *"),
+            // Uneven steps leave a short gap at the top of the hour (day), so they aren't "every".
+            ("*/55 * * * *", "*/55 * * * *"),
+            ("*/7 * * * *", "*/7 * * * *"),
+            ("0 */5 * * *", "0 */5 * * *"),
+            ("@every 55m", "Every 55 min"),
+            ("@every 1m", "Every minute"),
+            ("@every 2h", "Every 2 hours"),
+            ("@every 1h30m", "Every 1 h 30 min"),
+            ("@every 1d", "Every day"),
+            ("@every 25h", "Every 1500 min"),
             ("not a cron", "not a cron"),
         ] {
             assert_eq!(describe(e), want, "{e}");
@@ -563,6 +691,39 @@ mod tests {
         assert_eq!(time::parse_local(&time::format_unix(t)), Some(t));
         assert_eq!(time::parse_local("Oct 6"), None);
         assert_eq!(time::parse_local("2026-13-01"), None);
+    }
+
+    #[test]
+    fn every_counts_from_its_start() {
+        let at = |h, m| time::local_unix(2026, 10, 6, h, m);
+        let c = Cron::parse("@every 55m").unwrap();
+        assert_eq!(c.every(), Some(3300));
+        assert_eq!(Cron::parse("@EVERY 1h30m").unwrap().every(), Some(5400));
+        assert_eq!(Cron::parse("@every 90s90s").unwrap().every(), Some(180));
+        let c = c.anchored(at(9, 0));
+        assert_eq!(c.upcoming(at(8, 0), 4), vec![at(9, 0), at(9, 55), at(10, 50), at(11, 45)]);
+        assert!(c.matches(at(10, 50)) && c.matches(at(10, 50) + 59) && !c.matches(at(10, 51)) && !c.matches(at(8, 5)));
+        // A start with seconds counts from the next minute.
+        assert_eq!(Cron::parse("@every 5m").unwrap().anchored(at(9, 0) + 1).next_after(at(8, 0)), Some(at(9, 1)));
+        // Through a schedule: starts_at anchors it, and window, end and runs still apply.
+        let mut f = filter("@every 55m");
+        f.starts_at = Some(time::format_unix(at(9, 0)));
+        f.window = Some(crate::TimeWindow { from: "09:00".into(), until: "12:00".into() });
+        f.max_runs = Some(3);
+        let s = Schedule::of(&f, 0).unwrap();
+        assert_eq!(s.upcoming(at(8, 0), 10), vec![at(9, 0), at(9, 55), at(10, 50)]);
+        assert!(s.matches(at(11, 45)) && !s.matches(at(12, 40)));
+        assert_eq!(s.describe("@every 55m"), "Every 55 min, 9 AM–12 PM · 3 runs");
+        // A saved trigger without a start runs one interval after it was made, then keeps its pace.
+        let mut f = filter("@every 55m");
+        anchor_every(&mut f, at(9, 0) + 20);
+        assert_eq!(f.starts_at.as_deref().and_then(time::parse_rfc3339), Some(at(9, 56)));
+        let before = f.starts_at.clone();
+        anchor_every(&mut f, at(15, 0));
+        assert_eq!(f.starts_at, before);
+        let mut plain = filter("*/5 * * * *");
+        anchor_every(&mut plain, at(9, 0));
+        assert_eq!(plain.starts_at, None);
     }
 
     #[test]

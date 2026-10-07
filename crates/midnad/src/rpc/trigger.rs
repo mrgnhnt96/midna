@@ -115,6 +115,13 @@ fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// An `@every` schedule without a start counts from now: its first run is one interval away.
+fn anchor_every(t: &mut Trigger) {
+    if t.source == TriggerSource::Local && t.event.trim().eq_ignore_ascii_case("schedule") {
+        cron::anchor_every(&mut t.filter, time::now_unix());
+    }
+}
+
 fn project_of(t: &Trigger) -> Option<Id> {
     t.action.project_id().cloned()
 }
@@ -169,7 +176,7 @@ pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
         return Err(RpcError::bad_params("only local triggers can be enabled on add; webhook triggers need their secret first"));
     }
     let now = time::now_rfc3339();
-    let t = Trigger {
+    let mut t = Trigger {
         id: format!("t_{}", hex_id(6)),
         name: p.name.trim().to_string(),
         source: p.source,
@@ -196,6 +203,7 @@ pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
         cooldown_secs: p.cooldown_secs,
         builtin: None,
     };
+    anchor_every(&mut t);
     validate(d, &t)?;
     d.core().state.triggers.push(t.clone());
     d.mark_dirty();
@@ -224,6 +232,7 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
             t.fired = 0;
         }
         t.filter = f;
+        anchor_every(&mut t);
         changed.push("filter");
     }
     if let Some(s) = p.source

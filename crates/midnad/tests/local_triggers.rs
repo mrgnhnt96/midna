@@ -319,4 +319,18 @@ fn schedule_windows_starts_ends_and_run_limits() {
     f["max_runs"] = json!(5);
     let u = call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": f }));
     assert_eq!(u["fired"], 0, "{u}");
+
+    // `@every 55m` (which `*/55` isn't): first run one interval after it's added, then 55 apart.
+    let e = add(&mut h, json!({ "cron": "@every 30s", "session": sid }));
+    assert!(e.contains("whole minutes"), "{e}");
+    let before = midna_proto::time::now_unix();
+    let t = call(&mut h, "trigger.add", json!({ "name": "Nudge", "source": "local", "event": "schedule", "filter": { "cron": "@every 55m", "session": sid }, "action": send }));
+    let starts = midna_proto::time::parse_rfc3339(t["filter"]["starts_at"].as_str().unwrap_or_else(|| panic!("{t}"))).unwrap();
+    assert!(starts % 60 == 0 && (before + 55 * 60..=before + 57 * 60).contains(&starts), "{t}");
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "session": sid }));
+    let next = |i: i64| midna_proto::cron::local_label(starts + i * 55 * 60);
+    assert!(r["summary"].as_str().unwrap().ends_with(&format!(" · next: {}, {}, {}", next(0), next(1), next(2))), "{r}");
+    // Editing it keeps its pace.
+    let u = call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": t["filter"], "name": "Nudge 2" }));
+    assert_eq!(u["filter"]["starts_at"], t["filter"]["starts_at"], "{u}");
 }

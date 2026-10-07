@@ -363,7 +363,7 @@ fn build() -> Vec<MethodSpec> {
              data = the hook payload), any midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
              session.status, needs_you.raised; data = the event data), `idle` (filter.idle_minutes: no prompt or turn for that \
              long; fires once per idle stretch), or `schedule` (filter.cron: `min hour dom month dow` in local time, names and \
-             @hourly/@daily/@weekly/@monthly/@yearly ok; data {cron, scheduled_for, local_time}; without a session/project/agent \
+             @hourly/@daily/@weekly/@monthly/@yearly ok, `@every 55m` for an interval that doesn't divide the hour; data {cron, scheduled_for, local_time}; without a session/project/agent \
              filter it fires once about no terminal, with one it acts on every running terminal that matches). \
              filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
              (case-insensitive, every entry must match). Extra actions, acting on the terminal that fired: \

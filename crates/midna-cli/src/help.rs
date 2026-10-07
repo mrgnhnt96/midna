@@ -417,8 +417,10 @@ pub static VERBS: &[Verb] = &[
                   case-insensitive; an empty glob removes the key on update; an empty value clears a filter flag.\n\
                   Durations: 90s, 55m, 1h30m; a bare number is minutes for --idle-for, seconds for --cooldown.\n\
                   --cron (implies --event schedule): minute hour day-of-month month day-of-week in local time, or\n\
-                  @hourly/@daily/@weekly/@monthly/@yearly. Without --session/--in-project/--for-agent it fires once\n\
-                  about no terminal (notify, attention, run, agent); with one it acts on each running match.\n\
+                  @hourly/@daily/@weekly/@monthly/@yearly, or @every 55m for an interval cron can't say (*/55 is\n\
+                  :00 and :55; @every counts from --starts, or runs one interval after it's added). Without\n\
+                  --session/--in-project/--for-agent it fires once about no terminal (notify, attention, run, agent);\n\
+                  with one it acts on each running match.\n\
                   Schedules also take --between HH:MM-HH:MM (local, end not included; may wrap midnight), --starts\n\
                   and --ends (local `2026-10-06 13:00` or a date), --max-runs N (1 = once; a new limit counts again).\n\
                   Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or {{<path>}}.\n\

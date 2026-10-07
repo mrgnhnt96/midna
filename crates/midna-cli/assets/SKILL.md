@@ -177,9 +177,12 @@ events below and for any local-only flag; passing it is always fine.
 - Check one with `midna triggers test <id> --session <terminal> --payload '{"message":"…"}'`.
 - **Schedules** (cron jobs): `--cron` takes `minute hour day-of-month month day-of-week` in local
   time (`*/30 * * * *`, `0 9 * * mon-fri`, `0 18 1 * *`) or `@hourly`, `@daily`, `@weekly`,
-  `@monthly`, `@yearly`. With no `--session`/`--in-project`/`--for-agent` it fires once, about no
-  terminal: use `--notify`, `--attention`, `--run CMD --project P` or
-  `--agent claude --prompt T --project P` (a fresh agent each run). With one of those it acts on
+  `@monthly`, `@yearly`. For an interval that doesn't divide the hour or day use `@every 55m`
+  (`1h30m`, `5h`): `*/55` means minutes 0 and 55, not every 55 minutes. `@every` runs one
+  interval after it's added (or from `--starts`), then keeps that pace. With no
+  `--session`/`--in-project`/`--for-agent` it fires once, about no terminal: use `--notify`,
+  `--attention`, `--run CMD --project P` or `--agent claude --prompt T --project P` (a fresh
+  agent each run). With one of those it acts on
   every running terminal that matches, so `--send` and `--set-status` work. Templates add
   `{{local_time}}` (`09:00`) and `{{scheduled_for}}`. Runs missed while the Mac slept fire late
   only within 10 minutes. `midna triggers show <id>` and `test` list the next runs.
