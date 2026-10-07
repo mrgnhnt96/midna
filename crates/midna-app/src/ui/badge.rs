@@ -1195,7 +1195,13 @@ impl Badge {
         if let Some(p) = self.pressing.as_mut() {
             let m = objc2_app_kit::NSEvent::mouseLocation();
             let (dx, dy) = (m.x - p.mouse.0, m.y - p.mouse.1);
+            let was = p.moved;
             p.moved |= dx.abs() > DRAG_SLOP || dy.abs() > DRAG_SLOP;
+            // A drag starting: an open list's rows lift away (tick closes it after).
+            if p.moved && !was && self.list && self.list_closing.is_none() {
+                self.list_closing = Some(now);
+                changed = true;
+            }
             if p.moved {
                 ns.setFrameOrigin(objc2_foundation::NSPoint::new(p.origin.0 + dx, p.origin.1 + dy));
             }
