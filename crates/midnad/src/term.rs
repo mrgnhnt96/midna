@@ -7,7 +7,8 @@ use midna_proto::Frame;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, sync_channel};
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Weak};
 
 /// Owns the PTY master fd; closed when the last holder (reader, engine, writers) drops it.
@@ -21,6 +22,11 @@ impl Drop for PtyFd {
 pub enum EngineMsg {
     Bytes(Vec<u8>, u64),
     Resize(u16, u16, u32, u32),
+    /// A size from the GUI's layout, applied once it holds still (`settle`). A full-screen app
+    /// told to shrink and grow back faster than it reacts reads its old size, sees no change and
+    /// doesn't redraw, while the engine has already moved its rows: Claude Code's caret and its
+    /// partial redraws then land rows off.
+    SettleResize(u16, u16, u32, u32),
     Attach(u64, SyncSender<Frame>),
     Detach(u64),
     Want(u64),
@@ -150,6 +156,33 @@ pub const MAX_ROWS: u16 = 500;
 
 pub fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.clamp(2, MAX_COLS), rows.clamp(2, MAX_ROWS))
+}
+
+/// A GUI size is applied once no newer one has come for `SETTLE`, and within `SETTLE_MAX` of
+/// the first while a window is being dragged.
+const SETTLE: Duration = Duration::from_millis(50);
+const SETTLE_MAX: Duration = Duration::from_millis(200);
+
+/// A GUI size waiting to settle (`EngineMsg::SettleResize`).
+struct Settling {
+    size: (u16, u16, u32, u32),
+    /// When it's applied: `SETTLE` after the latest size, but no later than `by`.
+    at: Instant,
+    /// `SETTLE_MAX` after the first size of this run.
+    by: Instant,
+}
+
+impl Settling {
+    fn due(&self) -> bool {
+        Instant::now() >= self.at
+    }
+}
+
+fn apply_resize(eng: &mut Engine, fd: RawFd, (c, r, cw, ch): (u16, u16, u32, u32)) {
+    let (c, r) = clamp_size(c, r);
+    let (cw, ch) = (cw.min(1000), ch.min(1000));
+    eng.resize(c, r, cw, ch);
+    pty::resize(fd, c, r);
 }
 
 pub fn start(d: &Arc<Daemon>, mut l: Launch) -> std::io::Result<RtHandle> {
@@ -336,15 +369,25 @@ fn engine_thread(sid: String, generation: u64, make: MakeEngine, title: String, 
         kitty.store(eng.kitty_flags(), Ordering::Relaxed);
         let mut clients: HashMap<u64, Client> = HashMap::new();
         let mut title = title;
+        let mut settling: Option<Settling> = None;
         // Returns false on Stop.
-        let handle = |eng: &mut Engine, clients: &mut HashMap<u64, Client>, m: EngineMsg| -> bool {
+        let handle = |eng: &mut Engine, clients: &mut HashMap<u64, Client>, settling: &mut Option<Settling>, m: EngineMsg| -> bool {
+            // Reads and snapshots see the size the GUI last asked for.
+            if matches!(m, EngineMsg::Read { .. } | EngineMsg::Snapshot(_))
+                && let Some(s) = settling.take()
+            {
+                apply_resize(eng, fd.0, s.size);
+            }
             match m {
                 EngineMsg::Bytes(b, t) => eng.feed(&b, t),
                 EngineMsg::Resize(c, r, cw, ch) => {
-                    let (c, r) = clamp_size(c, r);
-                    let (cw, ch) = (cw.min(1000), ch.min(1000));
-                    eng.resize(c, r, cw, ch);
-                    pty::resize(fd.0, c, r);
+                    *settling = None;
+                    apply_resize(eng, fd.0, (c, r, cw, ch));
+                }
+                EngineMsg::SettleResize(c, r, cw, ch) => {
+                    let now = Instant::now();
+                    let by = settling.as_ref().map_or(now + SETTLE_MAX, |s| s.by);
+                    *settling = Some(Settling { size: (c, r, cw, ch), by, at: (now + SETTLE).min(by) });
                 }
                 EngineMsg::Attach(id, out) => {
                     eng.force_full();
@@ -390,20 +433,34 @@ fn engine_thread(sid: String, generation: u64, make: MakeEngine, title: String, 
             }
             true
         };
-        'outer: while let Ok(m) = rx.recv() {
-            if !handle(&mut eng, &mut clients, m) {
-                break;
-            }
-            // Drain what's queued (bounded so frames keep flowing under a flood).
-            for _ in 0..256 {
-                match rx.try_recv() {
-                    Ok(m) => {
-                        if !handle(&mut eng, &mut clients, m) {
-                            break 'outer;
+        'outer: loop {
+            // While a GUI size settles, wake when it's due even if nothing else arrives.
+            let m = match settling.as_ref().map(|s| s.at.saturating_duration_since(Instant::now())) {
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(wait) => rx.recv_timeout(wait),
+            };
+            match m {
+                Ok(m) => {
+                    if !handle(&mut eng, &mut clients, &mut settling, m) {
+                        break;
+                    }
+                    // Drain what's queued (bounded so frames keep flowing under a flood).
+                    for _ in 0..256 {
+                        match rx.try_recv() {
+                            Ok(m) => {
+                                if !handle(&mut eng, &mut clients, &mut settling, m) {
+                                    break 'outer;
+                                }
+                            }
+                            Err(_) => break,
                         }
                     }
-                    Err(_) => break,
                 }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if let Some(s) = settling.take_if(|s| s.due()) {
+                apply_resize(&mut eng, fd.0, s.size);
             }
             kitty.store(eng.kitty_flags(), Ordering::Relaxed);
             // Title (OSC 0/2) changes are reported to the daemon.

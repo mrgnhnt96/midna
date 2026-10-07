@@ -326,6 +326,46 @@ fn stream_attach_frames_roundtrip() {
 }
 
 #[test]
+fn a_gui_size_undone_at_once_never_reaches_the_app() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    // A full-screen app that, like Claude Code, redraws only when the size it reads has changed:
+    // its footer sits on the last row, and it prints each size it redraws for.
+    let app = r#"import os,signal,sys,time
+last = None
+def draw(*_):
+    global last
+    n = os.get_terminal_size().lines
+    if n != last:
+        last = n
+        sys.stdout.write(f"\x1b[2J\x1b[Hdrawn {n}\x1b[{n};1Hfooter")
+        sys.stdout.flush()
+sys.stdout.write("\x1b[?1049h")
+draw()
+signal.signal(signal.SIGWINCH, draw)
+while True: time.sleep(1)"#;
+    let s = call(&mut c, "session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["python3", "-c", app] }));
+    let id = s["id"].as_str().unwrap().to_string();
+    let mut st = Client::attach_stream(d.socket(), &id, 60, 20, 8, 16).unwrap();
+    let screen = |c: &mut Client| -> Vec<String> {
+        let r = call(c, "session.read", json!({ "id": id, "screen": true }));
+        r["text"].as_str().unwrap().split('\n').map(str::to_string).collect()
+    };
+    wait_for(5, "app drawn", || screen(&mut c).iter().any(|l| l.contains("drawn 20")).then_some(()));
+    // A layout blip (a row taken and given back), faster than the app reacts: it reads 20 rows,
+    // sees no change and doesn't redraw, so the engine mustn't have moved its rows.
+    st.resize(60, 18, 8, 16).unwrap();
+    st.resize(60, 20, 8, 16).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let rows = screen(&mut c);
+    assert_eq!(rows.len(), 20);
+    assert!(rows[0].contains("drawn 20") && rows[19].contains("footer"), "{rows:#?}");
+    // A size that holds still does reach it.
+    st.resize(60, 15, 8, 16).unwrap();
+    wait_for(5, "settled size", || screen(&mut c).first().filter(|l| l.contains("drawn 15")).map(|_| ()));
+}
+
+#[test]
 fn agent_hooks_drive_status_turns_cost_and_insights() {
     let d = TestDaemon::start();
     let mut h = d.human();

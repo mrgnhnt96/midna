@@ -57,7 +57,7 @@ pub fn run(h: RtHandle, mut reader: BufReader<UnixStream>, params: &Value, human
         let ok = match ClientMsg::read(&mut reader) {
             Ok(Some(ClientMsg::Want)) => h.tx.send(EngineMsg::Want(id)).is_ok(),
             Ok(Some(_)) if !human => true,
-            Ok(Some(ClientMsg::Resize { cols, rows, cell_w, cell_h })) => h.tx.send(EngineMsg::Resize(cols, rows, cell_w, cell_h)).is_ok(),
+            Ok(Some(ClientMsg::Resize { cols, rows, cell_w, cell_h })) => h.tx.send(EngineMsg::SettleResize(cols, rows, cell_w, cell_h)).is_ok(),
             Ok(Some(m)) => h.client(m),
             // End of stream, or an unknown tag (protocol error): drop the stream.
             Ok(None) | Err(_) => false,
