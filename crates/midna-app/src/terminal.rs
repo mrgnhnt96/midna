@@ -29,6 +29,7 @@ mod queue_pill;
 mod secret_paste;
 
 pub use link_preview::share as share_preview_env;
+pub use prompt_nav::share as share_prompt_bar;
 
 pub const FONT_SIZE: f32 = 12.5;
 /// Design: line-height 1.6 at 12.5px.
@@ -1677,6 +1678,8 @@ impl Render for TerminalView {
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
         self.update_nav(window, cx);
         let nav = self.render_nav(&theme, cx);
+        // The prompt bar's own row (`terminal.prompt_bar` = always): the grid starts below it.
+        let grid_top = if self.bar_row(cx) { prompt_nav::BAR_H } else { 0. };
         let marked = self.marked.clone();
         let req = self.req_size.clone();
         let stream = self.stream.clone();
@@ -1760,7 +1763,7 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_down))
             .on_scroll_wheel(cx.listener(Self::on_wheel))
-            .child(
+            .child(div().absolute().top(px(grid_top)).left_0().right_0().bottom_0().child(
                 canvas(
                     move |bounds, w, _cx| {
                         bounds_cell.set(Some(bounds));
@@ -1809,7 +1812,7 @@ impl Render for TerminalView {
                     },
                 )
                 .size_full(),
-            )
+            ))
             // An accent edge while image files are dragged over the pane.
             .child(div().absolute().top_0().left_0().size_full().drag_over::<ExternalPaths>(move |s, paths, _, _| {
                 if crate::annotate::image_paths(paths).is_empty() { s } else { s.border_2().border_color(drop_edge).bg(drop_edge.opacity(0.06)) }

@@ -1,6 +1,7 @@
 //! Prompt fast travel in an agent terminal: a bar pinned over the top row while the agent's
 //! view is scrolled back (which prompt you're reading, ‹ › to step, the title scrolls to that
-//! prompt, ▾ opens the searchable list in the command bar, Live to go back), a rail of ticks on the right edge (one
+//! prompt, ▾ opens the searchable list in the command bar, Live to go back; with
+//! `terminal.prompt_bar` = always it has its own row above the grid, live end too), a rail of ticks on the right edge (one
 //! per prompt; hover for the text, click to jump), and ⌥⌘↑ ⌥⌘↓.
 //!
 //! The prompts come from `session.prompts`, fetched when the view opens and again whenever the
@@ -17,6 +18,20 @@ use midna_proto::prompts::{self as scr, Here};
 use serde_json::json;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
+
+/// `terminal.prompt_bar` = always.
+#[derive(Default)]
+struct AlwaysBar(bool);
+
+impl Global for AlwaysBar {}
+
+/// Called by the main window whenever settings change.
+pub fn share(always: bool, cx: &mut App) {
+    cx.set_global(AlwaysBar(always));
+}
+
+/// Height of the bar.
+pub(super) const BAR_H: f32 = PAD_Y + LINE_H;
 
 #[derive(Default)]
 pub struct PromptNav {
@@ -103,6 +118,11 @@ impl PromptNav {
 }
 
 impl TerminalView {
+    /// The bar has its own row above the grid (`terminal.prompt_bar` = always, agents only).
+    pub(super) fn bar_row(&self, cx: &App) -> bool {
+        self.is_agent() && cx.try_global::<AlwaysBar>().is_some_and(|a| a.0)
+    }
+
     /// Fetch the prompt list (agent terminals only).
     pub(super) fn refresh_prompts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.nav.fetching {
@@ -166,11 +186,15 @@ impl TerminalView {
     /// The pinned bar and the rail, over the grid.
     pub(super) fn render_nav(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let nav = &self.nav;
-        if !self.is_agent() || nav.prompts.is_empty() {
-            return vec![];
+        let row = self.bar_row(cx);
+        let mut out = vec![];
+        if !self.is_agent() || (nav.prompts.is_empty() && !row) {
+            return out;
         }
-        let mut out = vec![self.render_rail(theme, cx)];
-        if nav.scrolled {
+        if !nav.prompts.is_empty() {
+            out.push(self.render_rail(theme, cx));
+        }
+        if nav.scrolled || row {
             out.push(self.render_bar(theme, cx));
         }
         out
@@ -191,12 +215,13 @@ impl TerminalView {
         let stop = |d: Stateful<Div>| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         let btn = |id: &'static str| stop(div().id(id)).h(px(24.)).min_w(px(24.)).px(px(6.)).flex().items_center().justify_center().rounded(px(5.)).cursor_pointer().text_color(t.fg).hover(|s| s.bg(t.raised));
         let can_prev = nav.prev().is_some();
+        let can_next = nav.next().is_some();
         stop(div().id("prompt-bar"))
             .absolute()
             .top(px(0.))
             .left(px(0.))
             .right(px(0.))
-            .h(px(PAD_Y + LINE_H))
+            .h(px(BAR_H))
             .flex()
             .items_center()
             .gap(px(4.))
@@ -233,8 +258,8 @@ impl TerminalView {
                     .child(btn("prompt-list").text_color(t.dim).child("▾").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx))),
             )
             .child(div().px(px(6.)).text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(meta))
-            .child(btn("prompt-next").child("›").on_click(cx.listener(|v, _, w, cx| v.on_next_prompt(&NextPrompt, w, cx))))
-            .child(btn("prompt-live").text_color(t.dim).text_size(px(11.5)).child("Live ↓").on_click(cx.listener(|v, _, w, cx| v.jump_to(None, w, cx))))
+            .child(btn("prompt-next").when(!can_next, |d| d.opacity(0.35)).child("›").on_click(cx.listener(|v, _, w, cx| v.on_next_prompt(&NextPrompt, w, cx))))
+            .child(btn("prompt-live").when(!nav.scrolled && nav.pending.is_none(), |d| d.opacity(0.35)).text_color(t.dim).text_size(px(11.5)).child("Live ↓").on_click(cx.listener(|v, _, w, cx| v.jump_to(None, w, cx))))
             .into_any_element()
     }
 
@@ -242,7 +267,7 @@ impl TerminalView {
         let nav = &self.nav;
         let n = nav.prompts.len();
         let current = nav.pending.map(|p| p.0).or(nav.here.filter(|_| nav.scrolled));
-        let top = if nav.scrolled { PAD_Y + LINE_H } else { PAD_Y };
+        let top = if nav.scrolled || self.bar_row(cx) { BAR_H } else { PAD_Y };
         let mut rail = div().id("prompt-rail").absolute().top(px(top)).bottom(px(PAD_Y)).right(px(2.)).w(px(14.));
         for (i, p) in nav.prompts.iter().enumerate() {
             let frac = (i as f32 + 0.5) / n as f32;

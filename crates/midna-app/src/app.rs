@@ -864,6 +864,7 @@ impl MainWindow {
             self.discovered = d;
         }
         crate::terminal::share_preview_env(self, cx);
+        crate::terminal::share_prompt_bar(self.settings.get("terminal.prompt_bar").and_then(Value::as_str) == Some("always"), cx);
         // The selected terminal closing (⌘K, the header menu, its shell exiting): its neighbour
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
