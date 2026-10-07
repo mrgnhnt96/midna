@@ -317,7 +317,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                     }))
                     .child(Icon::Dots.el(14., t.dim))
                     .when(menu_open, |d| {
-                        // ⌘T opens in the current project, so its keys belong on this menu only there
+                        // New terminal opens in the current project, so its keys belong on this menu only there
                         let keys = (m.current_project_id() == pid).then(|| m.key_label("keys.new_terminal")).filter(|k| !k.is_empty());
                         d.child(project_menu(t, pid.clone(), keys, cx))
                     }),

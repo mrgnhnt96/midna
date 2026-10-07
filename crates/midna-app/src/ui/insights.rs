@@ -592,7 +592,7 @@ impl InsightsView {
                     div()
                         .text_color(t.dim)
                         .text_center()
-                        .child("Charts fill in as agents work: turns, messages, spend, time spent working and waiting on you. Start an agent with ⇧⌘T, or ask one from ⌘K."),
+                        .child("Charts fill in as agents work: turns, messages, spend, time spent working and waiting on you. Start an agent with ⌘T, or ask one from ⌘K."),
                 )
                 .child(buttons)
                 .child(div().mt(px(4.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(format!("midna insights --range {}", self.range.wire()))),
