@@ -3,7 +3,9 @@
 //! never raises a needs-you item: Restart / When idle call `session.restart` (same
 //! conversation), Not now calls `session.update_decline`, which hides it until a newer update.
 //! "Don't ask again" also sets `agents.restart_on_update` for every later update: `when_idle`
-//! with Restart / When idle, `off` with Not now.
+//! with Restart / When idle, `off` with Not now. Clicking Claude's own "Restart to update"
+//! notice in the terminal (`terminal::on_update_notice`) shows the prompt again, even after
+//! Not now or before the daemon's next update check has noticed the update.
 use super::border_w;
 use crate::app::{MainWindow, refresh};
 use crate::icons::Icon;
@@ -11,10 +13,30 @@ use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The "Don't ask again" box: one prompt is shown at a time, so one flag for the window.
 static DONT_ASK: AtomicBool = AtomicBool::new(false);
+
+/// Terminals whose update notice was clicked: their prompt shows until it's answered.
+#[derive(Default)]
+pub struct Asked(HashSet<String>);
+
+impl Global for Asked {}
+
+/// The update notice in terminal `sid` was clicked: show its prompt.
+pub fn ask(sid: &str, cx: &mut App) {
+    if !cx.has_global::<Asked>() {
+        cx.set_global(Asked::default());
+    }
+    cx.update_global::<Asked, _>(|a, _| a.0.insert(sid.to_string()));
+    cx.refresh_windows();
+}
+
+fn asked(sid: &str, cx: &App) -> bool {
+    cx.try_global::<Asked>().is_some_and(|a| a.0.contains(sid))
+}
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<impl IntoElement + use<>> {
     if m.approval_for_selected().is_some() {
@@ -23,7 +45,11 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     let s = m.selected_session()?;
     // Only an agent that reported its conversation can come back into it.
     let info = s.agent_info.as_ref().filter(|i| s.agent.is_some() && i.conversation_id.is_some())?;
-    let update = info.update_prompt()?;
+    let update = match info.update_prompt() {
+        Some(u) => u,
+        None if asked(&s.id, cx) && info.restart.is_none() => info.update_available.as_deref().unwrap_or("update"),
+        None => return None,
+    };
     let title = if update == "update" { "A Claude update is installed".to_string() } else { format!("Claude {update} is installed") };
     let in_flight = info.in_flight();
     // Restart now would stop background work, so then only "When idle" restarts.
@@ -117,7 +143,10 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
 }
 
 /// Hide the prompt for this terminal now; the event-driven refresh confirms it.
-fn hide(m: &mut MainWindow, sid: &str, f: impl FnOnce(&mut midna_proto::AgentInfo)) {
+fn hide(m: &mut MainWindow, sid: &str, f: impl FnOnce(&mut midna_proto::AgentInfo), cx: &mut Context<MainWindow>) {
+    if cx.has_global::<Asked>() {
+        cx.update_global::<Asked, _>(|a, _| a.0.remove(sid));
+    }
     if let Some(i) = m.sessions.iter_mut().find(|s| s.id == sid).and_then(|s| s.agent_info.as_mut()) {
         f(i);
     }
@@ -132,14 +161,14 @@ fn remember(m: &mut MainWindow, mode: &'static str, cx: &mut Context<MainWindow>
 
 fn send_restart(m: &mut MainWindow, sid: &str, params: serde_json::Value, cx: &mut Context<MainWindow>) {
     remember(m, "when_idle", cx);
-    hide(m, sid, |i| i.update_declined = i.update_available.clone());
+    hide(m, sid, |i| i.update_declined = i.update_available.clone(), cx);
     m.rpc("session.restart", params, cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS, cx));
     cx.notify();
 }
 
 fn decline(m: &mut MainWindow, sid: &str, cx: &mut Context<MainWindow>) {
     remember(m, "off", cx);
-    hide(m, sid, |i| i.update_declined = i.update_available.clone());
+    hide(m, sid, |i| i.update_declined = i.update_available.clone(), cx);
     m.rpc("session.update_decline", json!({"id": sid}), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS, cx));
     cx.notify();
 }

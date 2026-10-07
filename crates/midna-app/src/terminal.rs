@@ -124,6 +124,8 @@ pub struct TerminalView {
     alt_probed: bool,
     /// Agent terminals: the left press went to midna's selection; (cell, moved since).
     agent_press: Option<((i32, i32), bool)>,
+    /// The cell the left button went down on (a click on Claude's update notice asks to restart).
+    press_at: Option<(i32, i32)>,
     /// A selection being erased, and the input typed meanwhile, sent once the app has gone quiet
     /// (Claude Code can apply a typed letter in the middle of a burst of deletes). The job is
     /// None when the erase needs no check, only that wait.
@@ -347,6 +349,7 @@ impl TerminalView {
             project_id: None,
             secret_sheet: None,
             agent_press: None,
+            press_at: None,
             agent_proc: None,
             alt_probed: false,
             erasing: None,
@@ -1136,6 +1139,7 @@ impl TerminalView {
         let cell = (x.floor() as i32, y.floor() as i32);
         self.last_motion = Some(cell);
         self.agent_press = (button == 1 && self.agent_selects()).then_some((cell, false));
+        self.press_at = (button == 1).then_some(cell);
         let mods = mods_of(&ev.modifiers) | if self.agent_press.is_some() { MOD_SHIFT } else { 0 };
         self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Press, button, mods, x, y }));
         cx.notify();
@@ -1179,7 +1183,7 @@ impl TerminalView {
         }
     }
 
-    fn on_up(&mut self, ev: &MouseUpEvent) {
+    fn on_up(&mut self, ev: &MouseUpEvent, cx: &mut Context<Self>) {
         let button = Self::button_of(ev.button);
         if self.pressed == 0 || button != self.pressed {
             return;
@@ -1187,6 +1191,11 @@ impl TerminalView {
         self.pressed = 0;
         self.drag_out = None;
         let (x, y) = self.cell_pos(ev.position).unwrap_or((0., 0.));
+        let cell = (x.floor() as i32, y.floor() as i32);
+        // A plain click on Claude's "Restart to update" brings back the update prompt.
+        if self.press_at.take() == Some(cell) && ev.click_count == 1 && self.is_agent() && on_update_notice(&self.grid, cell) {
+            crate::ui::update_banner::ask(&self.session_id, cx);
+        }
         let mods = mods_of(&ev.modifiers);
         match self.agent_press.take() {
             Some((_, moved)) => {
@@ -1792,7 +1801,7 @@ impl Render for TerminalView {
                         let e = entity.clone();
                         window.on_mouse_event(move |ev: &MouseUpEvent, phase, _w, cx| {
                             if phase == DispatchPhase::Bubble {
-                                e.update(cx, |t, _| t.on_up(ev));
+                                e.update(cx, |t, cx| t.on_up(ev, cx));
                             }
                         });
                         window.paint_layer(bounds, |window| {
@@ -1870,6 +1879,27 @@ fn not_running_detail(s: &Value) -> String {
         Some(cwd) => format!("{why} Restart it to run it again in {}.", crate::commands::tilde(cwd)),
         None => format!("{why} Restart it to run it again."),
     }
+}
+
+/// Is `(col, row)` on Claude's "✔ Update installed · Restart to update" notice? Like the
+/// daemon (`agent_work::claude_update_notice`), only a notice just above the input box's top
+/// rule counts, so the same words quoted in the transcript aren't clickable.
+pub fn on_update_notice(grid: &[RowData], (col, row): (i32, i32)) -> bool {
+    let (Ok(col), Ok(row)) = (usize::try_from(col), usize::try_from(row)) else { return false };
+    let Some(r) = grid.get(row) else { return false };
+    let chars: Vec<char> = r.cells.iter().map(|c| c.ch).collect();
+    let find = |s: &str| {
+        let s: Vec<char> = s.chars().collect();
+        chars.windows(s.len()).position(|w| w == &s[..]).map(|i| (i, i + s.len()))
+    };
+    let Some((_, end)) = find("Restart to update") else { return false };
+    let start = find("Update installed").map(|(a, _)| a.saturating_sub(2)).unwrap_or(end - "Restart to update".len());
+    let is_rule = |r: &RowData| {
+        let t = r.text();
+        let t = t.trim();
+        t.chars().count() >= 20 && t.chars().all(|c| c == '─')
+    };
+    (start..end).contains(&col) && grid.iter().skip(row + 1).take(3).any(is_rule)
 }
 
 /// Columns `(first, last)` of the link around `col` on one screen row: the whitespace-
@@ -2055,7 +2085,7 @@ fn paint_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::{key_msg, link_span, not_running_detail, other_text};
+    use super::{key_msg, link_span, not_running_detail, on_update_notice, other_text};
     use serde_json::json;
 
     #[test]
@@ -2066,6 +2096,24 @@ mod tests {
         let agent = json!({"kind": "agent", "cwd": "/tmp/x", "status": {"state": "exited", "exit_code": 2}});
         assert_eq!(not_running_detail(&agent), "Its process exited with code 2. Restart it to run it again in /tmp/x.");
         assert_eq!(not_running_detail(&json!(null)), "Its process ended. Restart it to run it again.");
+    }
+
+    #[test]
+    fn update_notice_clicks() {
+        use midna_proto::frame::{Cell, RowData};
+        let row = |s: &str| RowData { cells: s.chars().map(|ch| Cell { ch, fg: [0; 3], bg: [0; 3], flags: 0 }).collect(), extras: vec![] };
+        let rule = "─".repeat(40);
+        let notice = "          ✔ Update installed · Restart to update";
+        let grid = vec![row(notice), row(&rule), row("❯ hi"), row(&rule)];
+        assert!(on_update_notice(&grid, (12, 0))); // "Update"
+        assert!(on_update_notice(&grid, (10, 0))); // the check mark
+        assert!(on_update_notice(&grid, (47, 0))); // the last "e"
+        assert!(!on_update_notice(&grid, (5, 0))); // blank before it
+        assert!(!on_update_notice(&grid, (48, 0))); // past it
+        assert!(!on_update_notice(&grid, (2, 2)));
+        // Quoted in the transcript, far from the input box: not the notice.
+        let quoted = vec![row(notice), row("a"), row("b"), row("c"), row(&rule), row("❯"), row(&rule)];
+        assert!(!on_update_notice(&quoted, (12, 0)));
     }
 
     #[test]
