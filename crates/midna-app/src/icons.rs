@@ -24,6 +24,8 @@ pub enum Icon {
     Rules,
     Settings,
     Chevron,
+    /// → (the floating badge's "open the terminal").
+    Arrow,
     // command bar / needs-you (CommandBar-A, NeedsYou-C)
     Project,
     Play,
@@ -100,6 +102,7 @@ impl Icon {
             Icon::Rules => "icons/rules.svg",
             Icon::Settings => "icons/settings.svg",
             Icon::Chevron => "icons/chevron.svg",
+            Icon::Arrow => "icons/arrow.svg",
             Icon::Project => "icons/project.svg",
             Icon::Play => "icons/play.svg",
             Icon::Screen => "icons/screen.svg",
@@ -238,6 +241,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/queue.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6"/></svg>"##
+        }
+        "icons/arrow.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M8.5 3.5 13 8l-4.5 4.5"/></svg>"##
         }
         "icons/sendnow.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>"##

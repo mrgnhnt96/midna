@@ -156,7 +156,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     ),
     (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
     (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
-    (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner", "notify.badge.sharing"]),
+    (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner", "notify.badge.snap", "notify.badge.inset_x", "notify.badge.inset_y", "notify.badge.sharing"]),
     (Sec::Notifications, "How long each kind stays on screen", &["@stay"]),
     (Sec::Notifications, "Colors", &["@colors"]),
     (Sec::Notifications, "Counted on the bell", &["@bell"]),
@@ -853,6 +853,9 @@ fn label_for(key: &str) -> String {
         "notify.when_app_closed" => "When the app isn't running",
         "notify.badge" => "Show the badge",
         "notify.badge.corner" => "Corner",
+        "notify.badge.snap" => "When you drop it",
+        "notify.badge.inset_x" => "From the side (points)",
+        "notify.badge.inset_y" => "From the top or bottom (points)",
         "notify.badge.sharing" => "While you share your screen",
         k if k.starts_with("notify.") => {
             let kind = k.rsplit('.').next().unwrap_or(k);
@@ -905,6 +908,8 @@ fn option_label(key: &str, v: &str) -> String {
         ("notify.badge", "background") => "In the background".into(),
         ("notify.badge", "always") => "Always".into(),
         ("notify.badge", "off") => "Off".into(),
+        ("notify.badge.snap", "corner") => "Snap to a corner".into(),
+        ("notify.badge.snap", "free") => "Stay where it lands".into(),
         ("notify.badge.sharing", "hide") => "Hide the badge".into(),
         ("notify.badge.sharing", "count") => "Only the number".into(),
         ("notify.badge.sharing", "show") => "Show as usual".into(),
