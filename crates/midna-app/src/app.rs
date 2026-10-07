@@ -674,9 +674,12 @@ impl MainWindow {
         }
         let on_screen = e.session_id.as_deref().is_some_and(|s| crate::windows::on_screen(s, window, self.id, self.selected.as_deref(), cx));
         let looking = crate::notify::looking_at(on_screen, e.session_id.as_deref(), e.session_id.as_deref());
-        // The floating badge takes every notification (not only banners) while it's up: its
-        // capsule instead of a macOS banner, with the sound a banner would have had.
-        if (!looking || p.test) && crate::ui::badge::takes(cx) {
+        // The floating badge takes every notification (not only banners) while it's on, in midna
+        // too (docked in its window): its capsule instead of a banner or a card, with the sound a
+        // banner would have had. The terminal you're looking at only gets one if its kind pushes
+        // there (`push_focused`).
+        let pushes_here = !looking || p.test || matches!(crate::notify::show(&p, looking), crate::notify::Show::Banner);
+        if pushes_here && crate::ui::badge::takes(cx) {
             let banner = matches!(crate::notify::show(&p, looking), crate::notify::Show::Banner);
             if let (true, true, Some(file)) = (banner, p.sound, p.sound_file.as_deref()) {
                 crate::sounds::play_file(file, p.volume.unwrap_or(100));
@@ -1201,6 +1204,7 @@ impl MainWindow {
         }
         if window.is_window_active() {
             crate::notify::clear(&id);
+            self.seen(&id, cx);
         }
         if self.selected.as_deref() != Some(&id) {
             crate::windows::save_soon(cx);
@@ -1215,6 +1219,28 @@ impl MainWindow {
         }
         self.ensure_terminal(window, cx);
         cx.notify();
+    }
+
+    /// You opened terminal `id`: its notes (from an agent or a person, not midna's own notices,
+    /// which can offer an action) are done (`needs_you.clear_notes_on_open`), and its
+    /// notifications leave the badge (`notify.badge.clear_on_open`).
+    fn seen(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.settings.get("needs_you.clear_notes_on_open").and_then(Value::as_bool).unwrap_or(true) {
+            let notes: Vec<String> = self
+                .needs
+                .iter()
+                .filter(|n| n.kind == NeedsYouKind::Note && n.session_id.as_deref() == Some(id))
+                .filter(|n| matches!(n.asked_by.kind.as_str(), "agent" | "human"))
+                .map(|n| n.id.clone())
+                .collect();
+            for n in notes {
+                self.resolve(n, Resolution::Done, cx);
+            }
+        }
+        if self.settings.get("notify.badge.clear_on_open").and_then(Value::as_bool).unwrap_or(true) {
+            let id = id.to_string();
+            cx.defer(move |cx| crate::ui::badge::seen(&id, cx));
+        }
     }
 
     /// Whether `id` is part of the sidebar selection.
@@ -1474,8 +1500,11 @@ impl MainWindow {
     /// ⌘J / the sidebar "N need you" button: open the needs-you card stack (NeedsYou-C).
     /// Inside the stack ⌘J skips to the next card (handled by the stack).
     pub fn next_needs_you(&mut self, _: &NextNeedsYou, window: &mut Window, cx: &mut Context<Self>) {
-        // A banner card showing: ⌘J is its "Go to terminal".
-        if self.overlay == Overlay::None && crate::ui::toast::can_go(self) {
+        // The badge's newest capsule showing (docked in this window): ⌘J goes to its terminal.
+        // A banner card showing (badge off): ⌘J is its "Go to terminal".
+        if self.overlay == Overlay::None && crate::ui::badge::newest(cx) {
+            cx.defer(crate::ui::badge::go_newest);
+        } else if self.overlay == Overlay::None && crate::ui::toast::can_go(self) {
             crate::ui::toast::go(self, window, cx);
         } else if self.overlay == Overlay::NeedsYou {
             crate::ui::needs_you::skip(self, cx);

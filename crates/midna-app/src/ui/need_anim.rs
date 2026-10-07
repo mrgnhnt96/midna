@@ -41,7 +41,7 @@ const REMIND_MS: f32 = 1400.;
 /// The band's brightest point (alpha of the need color) and its width (of the row).
 const SWEEP_ALPHA: f32 = 0.28;
 const REMIND_ALPHA: f32 = 0.16;
-const BAND: f32 = 0.45;
+pub const BAND: f32 = 0.45;
 /// The reason line's height, for folding it in and out.
 pub const LINE_H: f32 = 16.;
 

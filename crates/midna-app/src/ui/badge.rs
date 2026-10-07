@@ -18,8 +18,14 @@
 //! Notification settings…, Open midna. Drag it anywhere; let go and it slings to the nearest
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
-//! `notify.badge`: `background` (only while no midna, this build or another, is the app in
-//! front; in front, the in-app cards show instead), `always`, or `off`. While the screen is
+//! `notify.badge`: `background` (hidden only while another midna build is the app in front),
+//! `always`, or `off` (in-app cards show instead, `ui/toast.rs`).
+//!
+//! Within midna (this build in front), the badge springs from its screen corner onto the front
+//! window's top right and follows it there (laid out as top right, whatever its corner; it can't
+//! be dragged), a band of the need color sweeping across it when something comes in and every
+//! `REMIND` while anything waits. Leaving midna, it springs back to its corner. ⌘J goes to the
+//! newest capsule's terminal while one shows (`newest`, `go_newest`). While the screen is
 //! shared (`notify.badge.sharing`), it hides, or shows only its number, or carries on.
 //!
 //! The window is a borderless non-activating panel (GPUI `PopUp`: every Space, over full-screen
@@ -127,6 +133,15 @@ const PULSE: Duration = Duration::from_millis(650);
 const ROLL: Duration = Duration::from_millis(420);
 /// How long a needs-you item counted from its notification outlives a list without it.
 const PENDING: Duration = Duration::from_secs(3);
+/// Within midna: the badge's distance from the front window's right and top edges.
+const DOCK: (f64, f64) = (12., 56.);
+/// Within midna: a band of the need color sweeps across the badge when something comes in
+/// (`SHIMMER_ALPHA`) and every `REMIND` while anything waits (`REMIND_ALPHA`), as the sidebar's
+/// needs-you rows do (`need_anim`).
+const SHIMMER: Duration = Duration::from_millis(900);
+const SHIMMER_ALPHA: f32 = 0.28;
+const REMIND_ALPHA: f32 = 0.16;
+const REMIND: Duration = Duration::from_secs(60);
 /// The badge wears a capsule's image: it grows from the diamond's size over `WEAR` and shrinks
 /// back as the capsule leaves (`LINE_OUT`).
 const WEAR: Duration = Duration::from_millis(420);
@@ -222,6 +237,32 @@ fn midna_in_front(badge: &objc2_app_kit::NSWindow) -> bool {
     app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("com.mrgnhnt.midna"))
 }
 
+/// This midna's own window is in front (`Some(true)`), or another app is (`Some(false)`);
+/// `None` when the badge itself is midna's key window (a click on it), which says neither.
+fn here(badge: &objc2_app_kit::NSWindow) -> Option<bool> {
+    if !crate::sounds::app_active() {
+        return Some(false);
+    }
+    let mtm = objc2::MainThreadMarker::new()?;
+    match objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() {
+        Some(k) if std::ptr::eq(&*k, badge) => None,
+        Some(_) => Some(true),
+        None => Some(false),
+    }
+}
+
+/// Where the window goes for the badge docked in midna's front window (`DOCK` from its top
+/// right): its Cocoa origin.
+fn dock_origin(badge: &objc2_app_kit::NSWindow) -> Option<(f64, f64)> {
+    let mtm = objc2::MainThreadMarker::new()?;
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    let w = app.keyWindow().filter(|k| !std::ptr::eq(&**k, badge)).or_else(|| app.mainWindow().filter(|k| !std::ptr::eq(&**k, badge)))?;
+    let f = w.frame();
+    let size = SIZE as f64;
+    let (bx, by) = (f.origin.x + f.size.width - DOCK.0 - size, f.origin.y + f.size.height - DOCK.1 - size);
+    Some((bx - MX as f64, by - MY as f64))
+}
+
 /// Whether a click on the badge may make midna the active app. A style mask set after the
 /// window's made doesn't reach the WindowServer's "never activate" flag; this (private, so only
 /// when it's there) does. While it's on, nothing can bring midna forward (itself, an app
@@ -253,6 +294,10 @@ struct Waiting {
     detail: Option<String>,
     command: Option<String>,
     approval: bool,
+    /// A question's options (label, description), numbered as in the terminal, and whether
+    /// any number of them can be picked.
+    options: Vec<(String, String)>,
+    multi: bool,
     /// Its kind's image (`notify.image[.<kind>]`): the list row's thumbnail and the card's.
     image: Option<PathBuf>,
     /// When it came in (RFC 3339): the list shows the newest first.
@@ -347,6 +392,10 @@ pub struct Badge {
     count: usize,
     from: usize,
     roll: u64,
+    /// When the count and the pulse last changed: only a fresh one animates (the badge showing
+    /// again, say coming back from another midna build, doesn't replay them).
+    roll_at: Instant,
+    pulse_at: Instant,
     /// The last pulse: its id and color.
     pulse: (u64, String),
     /// The list is open (clicking the badge), since when, and closing since when (it's shown
@@ -392,6 +441,13 @@ pub struct Badge {
     pressing: Option<Press>,
     /// The window slinging to its corner.
     slide: Option<Slide>,
+    /// Docked in midna's front window (this build is in front).
+    within: bool,
+    /// `needs_you.replace`: a terminal's new blocked or note item replaces its older ones.
+    replace: bool,
+    /// The last sweep across the badge: its id, strength and when.
+    shimmer: Option<(u64, f32, Instant)>,
+    shimmers: u64,
     shown: bool,
     zones: Zones,
     /// The window, for `bring_forward` (it's made with the badge, on the main thread).
@@ -451,14 +507,40 @@ pub fn init(backend: Arc<dyn Backend>, cx: &mut App) {
     cx.set_global(BadgeWindow(h.ok()));
 }
 
-/// The badge takes notifications now: on, and midna isn't in front (or `always`).
+/// The badge takes notifications: it's on (in midna too, docked in its window).
 pub fn takes(cx: &App) -> bool {
     let Some(h) = handle(cx) else { return false };
-    h.read(cx).is_ok_and(|b| match b.mode {
-        Mode::Off => false,
-        Mode::Always => true,
-        Mode::Background => !crate::sounds::app_active(),
-    })
+    h.read(cx).is_ok_and(|b| b.mode != Mode::Off)
+}
+
+/// You opened terminal `session` (`notify.badge.clear_on_open`): its held notifications and its
+/// capsule go (needs-you items stay until they're handled).
+pub fn seen(session: &str, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |b, _, cx| {
+        b.held.retain(|w| w.session.as_deref() != Some(session));
+        for l in b.lines.iter_mut().filter(|l| l.session.as_deref() == Some(session) && l.need.is_none()) {
+            l.leaving.get_or_insert(Instant::now());
+        }
+        b.recount(cx);
+    });
+}
+
+/// Docked in midna's window with a capsule showing beside it: ⌘J goes to it (`go_newest`).
+pub fn newest(cx: &App) -> bool {
+    let Some(h) = handle(cx) else { return false };
+    h.read(cx).is_ok_and(|b| b.shown && b.within && b.lines.front().is_some_and(|l| l.leaving.is_none() && (l.session.is_some() || l.need.is_some())))
+}
+
+/// Go to the newest capsule's terminal (or its needs-you card), as clicking it does.
+pub fn go_newest(cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |b, _, cx| {
+        let Some(l) = b.lines.front().filter(|l| l.leaving.is_none()) else { return };
+        let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
+        let (session, need) = (l.session.clone(), l.need.clone());
+        b.open(session, need, held, cx);
+    });
 }
 
 /// A notification the home window got while the badge takes them (`app.rs` `on_notification`).
@@ -486,6 +568,14 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         Some("count") => Sharing::Count,
         Some("show") => Sharing::Show,
         _ => Sharing::Hide,
+    };
+    let flag = |k: &str| m.settings.get(k).and_then(Value::as_bool).unwrap_or(true);
+    let replace = flag("needs_you.replace");
+    // `needs_you.clear_failed_on_run`: a terminal working again since a failure clears it.
+    let working: HashMap<String, String> = if flag("needs_you.clear_failed_on_run") {
+        m.sessions.iter().filter(|s| s.status.state == StatusState::Working).filter_map(|s| Some((s.id.clone(), s.status.since.clone()?))).collect()
+    } else {
+        HashMap::new()
     };
     let colors: HashMap<String, String> =
         m.settings.iter().filter_map(|(k, v)| Some((k.strip_prefix("notify.color.")?.to_string(), v.as_str()?.to_string()))).collect();
@@ -516,6 +606,8 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 detail,
                 command,
                 approval: n.is_approval(),
+                options: options_of(n),
+                multi: n.question.as_ref().is_some_and(|q| q.multi_select),
                 image,
                 at: n.created_at.clone(),
             }
@@ -526,6 +618,8 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         let moved = (b.corner != corner || b.inset != inset) && b.pressing.is_none() && b.slide.is_none();
         b.free = free;
         b.inset = inset;
+        b.replace = replace;
+        b.held.retain(|w| !(w.category == "failed" && w.session.as_ref().and_then(|s| working.get(s)).is_some_and(|since| *since > w.at)));
         b.mode = mode;
         b.sharing = sharing;
         b.colors = colors;
@@ -540,6 +634,11 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         }
         cx.notify();
     });
+}
+
+/// A question's options (label, description).
+fn options_of(n: &NeedsYou) -> Vec<(String, String)> {
+    n.question.as_ref().map(|q| q.options.iter().map(|o| (o.label.clone(), o.description.trim().to_string())).collect()).unwrap_or_default()
 }
 
 /// A needs-you item's notification kind (as midnad picks it).
@@ -672,7 +771,15 @@ impl Badge {
     fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ticker = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let every = this.update(cx, |b, _| if b.slide.is_some() || b.pressing.is_some() { 8 } else if b.shown { 33 } else { 250 }).unwrap_or(250);
+                // Docked, it follows its window closely as that moves.
+                let every = this
+                    .update(cx, |b, _| match () {
+                        _ if b.slide.is_some() || b.pressing.is_some() => 8,
+                        _ if b.shown && b.within => 16,
+                        _ if b.shown => 33,
+                        _ => 250,
+                    })
+                    .unwrap_or(250);
                 cx.background_executor().timer(Duration::from_millis(every)).await;
                 if this.update_in(cx, |b, window, cx| b.tick(window, cx)).is_err() {
                     break;
@@ -702,6 +809,8 @@ impl Badge {
             count: 0,
             from: 0,
             roll: 0,
+            roll_at: Instant::now(),
+            pulse_at: Instant::now(),
             pulse: (0, String::new()),
             list: false,
             list_since: Instant::now(),
@@ -725,6 +834,10 @@ impl Badge {
             hover_opened: None,
             pressing: None,
             slide: None,
+            within: false,
+            replace: true,
+            shimmer: None,
+            shimmers: 0,
             shown: false,
             zones: Zones::default(),
             ns: super::twilight::ns_window(window),
@@ -732,6 +845,17 @@ impl Badge {
             preventing: false,
             _ticker: ticker,
         }
+    }
+
+    /// Where it lays out from: its corner, or top right while docked in midna's window.
+    fn side(&self) -> Corner {
+        if self.within { Corner::TopRight } else { self.corner }
+    }
+
+    /// Sweep a band across the badge (within midna).
+    fn shine(&mut self, alpha: f32) {
+        self.shimmers += 1;
+        self.shimmer = Some((self.shimmers, alpha, Instant::now()));
     }
 
     /// The screen is shared and the badge mustn't say what came in.
@@ -819,7 +943,8 @@ impl Badge {
         let card = self.card_height();
         let span = LIST_TOP + rows.len() as f32 * (ROW + GAP) - GAP + card - ROW;
         // A list that fits (card and all) doesn't move.
-        let to = if span <= LIST_H { 0. } else { LIST_TOP + top + card / 2. - LIST_H / 2. };
+        // Otherwise it glides toward the middle, as far as the list goes.
+        let to = if span <= LIST_H { 0. } else { (LIST_TOP + top + card / 2. - LIST_H / 2.).clamp(0., span + LIST_TOP - LIST_H) };
         let from = self.scroll_now(now);
         self.expanded = Some((id.to_string(), now));
         if super::queue::reduce_motion() {
@@ -919,12 +1044,11 @@ impl Badge {
         }
     }
 
-    /// How far the list scrolls: until its first or its last row reaches the middle.
-    fn scroll_range(&self, tops: &[f32]) -> (f32, f32) {
-        let at = |top: f32| LIST_TOP + top + ROW / 2. - LIST_H / 2.;
-        let lo = at(0.).min(0.);
-        let hi = tops.last().map_or(0., |t| at(*t)).max(0.);
-        (lo, hi)
+    /// How far the list scrolls: from its first row at the top to its last at the bottom (no
+    /// room above the first or below the last).
+    fn scroll_range(&self, tops: &[f32], heights: &[f32]) -> (f32, f32) {
+        let end = tops.last().zip(heights.last()).map_or(0., |(t, h)| LIST_TOP + t + h + LIST_TOP);
+        (0., (end - LIST_H).max(0.))
     }
 
     fn wheel(&mut self, dy: f32, cx: &mut Context<Self>) {
@@ -933,7 +1057,7 @@ impl Badge {
         let s = self.scroll_now(now);
         let rows = self.rows();
         let (tops, heights) = self.layout(&rows, now);
-        let (lo, hi) = self.scroll_range(&tops);
+        let (lo, hi) = self.scroll_range(&tops, &heights);
         // A list that fits doesn't scroll (and settles back if a card had moved it).
         let fits = tops.last().zip(heights.last()).is_none_or(|(t, h)| LIST_TOP + t + h <= LIST_H);
         self.glide = None;
@@ -992,6 +1116,7 @@ impl Badge {
             self.from = self.count;
             self.count = n;
             self.roll += 1;
+            self.roll_at = Instant::now();
         }
         self.failed.retain(|id, _| self.needs.iter().any(|w| w.id == *id));
         if let Some(id) = self.reopen.clone()
@@ -1015,6 +1140,11 @@ impl Badge {
         let mut waiting = None;
         if let Some(id) = p.needs_you_id.clone() {
             if !self.needs.iter().any(|w| w.id == id) {
+                // It replaces the terminal's older ones (`needs_you.replace`): they go now too, so
+                // the count doesn't go up and back down when the refresh lands.
+                if self.replace && p.category == "attention" && session.is_some() {
+                    self.needs.retain(|w| !(w.category == "attention" && w.session == session));
+                }
                 // The notification can beat the needs-you refresh: count it now (the next sync
                 // fills it in, or drops it if it's already answered).
                 let first = p.body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string();
@@ -1031,6 +1161,8 @@ impl Badge {
                     detail: need.as_ref().map(|n| n.detail.trim().to_string()).filter(|d| !d.is_empty()),
                     command: need.as_ref().and_then(|n| n.approval.as_ref()).map(|a| a.action.value.clone()).filter(|v| !v.is_empty()),
                     approval: need.as_ref().map_or(p.category == "approval", |n| n.is_approval()),
+                    options: need.as_ref().map(options_of).unwrap_or_default(),
+                    multi: need.as_ref().and_then(|n| n.question.as_ref()).is_some_and(|q| q.multi_select),
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                 });
@@ -1053,6 +1185,8 @@ impl Badge {
                 detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
                 command: None,
                 approval: false,
+                options: vec![],
+                multi: false,
                 image: p.image.clone().map(PathBuf::from),
                 at: midna_proto::time::now_rfc3339(),
             });
@@ -1060,6 +1194,10 @@ impl Badge {
         }
         self.serial += 1;
         self.pulse = (self.serial, color.clone());
+        self.pulse_at = Instant::now();
+        if self.within {
+            self.shine(SHIMMER_ALPHA);
+        }
         // Shared screen: it's counted, but no line says what it is.
         if self.quiet() {
             self.recount(cx);
@@ -1190,6 +1328,10 @@ impl Badge {
     fn snap(&mut self, corner: Corner, vel: (f64, f64), window: &mut Window, cx: &mut Context<Self>) {
         self.corner = corner;
         cx.notify();
+        // Docked in midna's window: it goes there when midna's left.
+        if self.within {
+            return;
+        }
         let Some(ns) = super::twilight::ns_window(window) else { return };
         let Some(to) = origin_at(&ns, corner, self.inset) else { return };
         if super::queue::reduce_motion() {
@@ -1215,11 +1357,13 @@ impl Badge {
         }
 
         // The badge follows the pointer while it's pressed (and moved past the slop).
+        // Docked in midna's window, it stays put: a press is a click.
+        let within = self.within;
         if let Some(p) = self.pressing.as_mut() {
             let m = objc2_app_kit::NSEvent::mouseLocation();
             let (dx, dy) = (m.x - p.mouse.0, m.y - p.mouse.1);
             let was = p.moved;
-            p.moved |= dx.abs() > DRAG_SLOP || dy.abs() > DRAG_SLOP;
+            p.moved |= !within && (dx.abs() > DRAG_SLOP || dy.abs() > DRAG_SLOP);
             // A drag starting: an open list's rows lift away (tick closes it after).
             if p.moved && !was && self.list && self.list_closing.is_none() {
                 self.list_closing = Some(now);
@@ -1234,6 +1378,46 @@ impl Badge {
                 p.vel = (p.vel.0 * 0.4 + v.0 * 0.6, p.vel.1 * 0.4 + v.1 * 0.6);
                 p.last = ((m.x, m.y), now);
             }
+        }
+
+        // Midna came to the front or went: spring onto its window's top right, or back to the
+        // corner (straight there while it's hidden). A press on the badge says neither.
+        if let Some(within) = here(&ns)
+            && within != self.within
+            && self.pressing.is_none()
+        {
+            self.within = within;
+            let to = if within { dock_origin(&ns) } else { origin_at(&ns, self.corner, self.inset) };
+            if let Some(to) = to {
+                if self.shown && !super::queue::reduce_motion() {
+                    let f = ns.frame();
+                    self.slide = Some(Slide { pos: (f.origin.x, f.origin.y), vel: (0., 0.), to, at: now });
+                } else {
+                    self.slide = None;
+                    ns.setFrameOrigin(objc2_foundation::NSPoint::new(to.0, to.1));
+                }
+            }
+            changed = true;
+        }
+        // Docked: it follows its window (and the window it's springing to).
+        if self.within
+            && self.pressing.is_none()
+            && let Some(to) = dock_origin(&ns)
+        {
+            match self.slide.as_mut() {
+                Some(sl) => sl.to = to,
+                None => {
+                    let f = ns.frame();
+                    if (f.origin.x - to.0).abs() > 0.25 || (f.origin.y - to.1).abs() > 0.25 {
+                        ns.setFrameOrigin(objc2_foundation::NSPoint::new(to.0, to.1));
+                    }
+                }
+            }
+        }
+        // Docked, with something waiting: a softer sweep now and then (not under the pointer).
+        if self.within && self.count > 0 && !self.list && self.hover != Some("badge") && self.shimmer.is_none_or(|(_, _, at)| now.duration_since(at) >= REMIND) {
+            self.shine(REMIND_ALPHA);
+            changed = true;
         }
 
         // The sling: a damped spring to the corner, stepped in small slices.
@@ -1288,15 +1472,15 @@ impl Badge {
             changed = true;
         }
 
-        // In a midna, its own cards show instead (an open stack or menu closes); a press or a
-        // sling finishes first.
+        // In another midna build, that one's shows instead (an open stack or menu closes); a
+        // press or a sling finishes first.
         let busy = self.pressing.is_some() || self.slide.is_some();
         // `MIDNA_DEBUG_BADGE` (dev screenshots): shown whatever's in front.
         let enabled = match self.mode {
             _ if crate::dev::var("MIDNA_DEBUG_BADGE").is_ok() => true,
             Mode::Off => false,
             Mode::Always => true,
-            Mode::Background => busy || !midna_in_front(&ns),
+            Mode::Background => busy || self.within || !midna_in_front(&ns),
         } && !(self.shared && self.sharing == Sharing::Hide);
         if !enabled && (self.list || self.menu) {
             self.close_list();
@@ -1444,6 +1628,38 @@ fn measure(cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
     canvas(move |b, _, _| cell.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
 }
 
+/// A question's options, numbered as in the terminal (where you pick one).
+fn options(t: &Theme, w: &Waiting) -> Div {
+    let mut col = div().flex().flex_col().gap(px(5.));
+    if w.multi {
+        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child("Pick any number of these in the terminal"));
+    }
+    for (i, (label, description)) in w.options.iter().enumerate() {
+        col = col.child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(t.line)
+                .bg(t.panel)
+                .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child((i + 1).to_string()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(label.clone()))
+                        .when(!description.is_empty(), |d| d.child(div().text_size(px(12.)).line_height(px(17.)).text_color(t.dim).child(description.clone()))),
+                ),
+        );
+    }
+    col
+}
+
 fn button(t: &Theme, id: impl Into<ElementId>, label: &str, primary: bool) -> Stateful<Div> {
     div()
         .id(id)
@@ -1503,7 +1719,7 @@ impl Badge {
             .text_size(px(16.))
             .font_weight(FontWeight::BOLD)
             .text_color(t.fg)
-            .child(if reduce || from == to {
+            .child(if reduce || from == to || self.roll_at.elapsed() >= ROLL {
                 div().absolute().top_0().left_0().right_0().child(digits(to)).into_any_element()
             } else {
                 column
@@ -1572,6 +1788,7 @@ impl Badge {
             .cursor_pointer()
             .shadow(vec![BoxShadow { color: hsla(0., 0., 0., if lift { 0.5 } else { 0.4 }), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false }])
             .child(shine)
+            .children(self.shimmer.filter(|(_, _, at)| self.within && !reduce && at.elapsed() < SHIMMER).map(|(n, alpha, _)| self.sweep(t, n, alpha)))
             .child(inner)
             .child(measure(self.zones.badge.clone()))
             .on_mouse_down(
@@ -1596,7 +1813,7 @@ impl Badge {
                     cx.notify();
                 }),
             );
-        if reduce || self.pulse.0 == 0 {
+        if reduce || self.pulse.0 == 0 || self.pulse_at.elapsed() >= PULSE {
             return el.into_any_element();
         }
         el.with_animation(SharedString::from(format!("pulse-{}", self.pulse.0)), Animation::new(PULSE), move |el, d| {
@@ -1648,12 +1865,40 @@ impl Badge {
             .into_any_element()
     }
 
+    /// The band sweeping across the badge (within midna), under its contents. Clipping is only
+    /// ever square, so it isn't clipped: it's a pill of the badge's height with its own round
+    /// ends, kept inside the badge's, and fades in as it sets off and out as it arrives.
+    fn sweep(&self, t: &Theme, n: u64, alpha: f32) -> AnyElement {
+        let h = SIZE - 2.;
+        let w = self.badge_w.get().max(h);
+        let band_w = (w * super::need_anim::BAND).max(h);
+        let travel = (w - band_w).max(0.);
+        let c = t.need;
+        let half = |from: f32, to: f32| linear_gradient(90., linear_color_stop(c.opacity(from), 0.), linear_color_stop(c.opacity(to), 1.));
+        let band = move |a: f32| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(px(band_w))
+                .flex()
+                .child(div().flex_1().h_full().rounded_l(px(h / 2.)).bg(half(0., a)))
+                .child(div().flex_1().h_full().rounded_r(px(h / 2.)).bg(half(a, 0.)))
+        };
+        band(alpha)
+            .with_animation(SharedString::from(format!("shimmer-{n}")), Animation::new(SHIMMER), move |el, d| {
+                let k = (d * 4.).min(1.) * ((1. - d) * 4.).min(1.);
+                el.left(px(travel * d)).opacity(k)
+            })
+            .into_any_element()
+    }
+
     /// The capsule beside the badge: springs out, holds, slides back in.
     fn line(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let l = self.lines.front()?;
         let reduce = super::queue::reduce_motion();
         let color = self.color(t, &l.color);
-        let right = self.corner.right();
+        let right = self.side().right();
         let extra = l.burst;
         let hover = self.hover == Some("line");
         let need = l.need.clone().filter(|id| self.needs.iter().any(|w| w.id == *id && w.approval));
@@ -1738,11 +1983,14 @@ impl Badge {
             return None;
         }
         let now = Instant::now();
-        let right = self.corner.right();
+        let right = self.side().right();
         let (tops, heights) = self.layout(&rows, now);
         let s = self.scroll_now(now);
         let mid = s + LIST_H / 2. - LIST_TOP;
         let tall = tops.last().zip(heights.last()).is_some_and(|(t, h)| LIST_TOP + t + h > LIST_H);
+        // Rows fade out at an edge only while there's more past it.
+        let (lo, hi) = self.scroll_range(&tops, &heights);
+        let (more_above, more_below) = (s > lo + 0.5, s < hi - 0.5);
         let mut col = div()
             .absolute()
             .left_0()
@@ -1769,7 +2017,9 @@ impl Badge {
                     // and arrow grow in.
                     let k = if tall { ((tops[i] + ROW / 2. - mid).abs() / (ROW + GAP)).min(3.) / 3. } else { 0. };
                     let y = LIST_TOP + tops[i] + heights[i] / 2. - s;
-                    let edge = (y / 26.).clamp(0., 1.) * ((LIST_H - y) / 52.).clamp(0., 1.);
+                    let above = if more_above { (y / 26.).clamp(0., 1.) } else { 1. };
+                    let below = if more_below { ((LIST_H - y) / 52.).clamp(0., 1.) } else { 1. };
+                    let edge = above * below;
                     let lift = self.grow(&w.id, now).clamp(0., 1.);
                     let fade = |floor: f32| 1. - (1. - floor) * k * (1. - lift);
                     let capsule = self.capsule(t, w, now, fade(ROW_FILL), fade(ROW_WORDS), cx);
@@ -1779,7 +2029,6 @@ impl Badge {
             col = col.child(el);
         }
         // Where you are in it (when it runs past the list).
-        let (lo, hi) = self.scroll_range(&tops);
         let thumb = (tall && hi - lo > 1.).then(|| {
             let track = LIST_H - 54.;
             let span = hi - lo + LIST_H;
@@ -1824,7 +2073,7 @@ impl Badge {
             .on_click(cx.listener(|b, _, _, cx| b.clear_all(cx)))
             .child("Clear");
         let header = div().relative().opacity(self.cascade(if self.list_closing.is_some() { CASCADE_ROWS - 1 } else { 0 }, now).clamp(0., 1.)).w(px(LIST_W)).h(px(26.)).px(px(6.)).flex().items_center().map(|d| if right { d.justify_end() } else { d.justify_start() }).child(clear);
-        let top = self.corner.top();
+        let top = self.side().top();
         Some(
             div()
                 .relative()
@@ -2025,6 +2274,7 @@ impl Badge {
             }))
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
             .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
+            .when(!w.options.is_empty(), |d| d.child(options(t, w)))
             .child(buttons);
         div()
             .id(SharedString::from(format!("card-{}", w.id)))
@@ -2084,7 +2334,7 @@ impl Render for Badge {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         self.zones.clear();
-        let (top, right) = (self.corner.top(), self.corner.right());
+        let (top, right) = (self.side().top(), self.side().right());
         // `inset` is from the screen's edge, as if the badge's corner were the window's.
         let edge = |d: Div, inset: f32| {
             let d = if top { d.top(px(inset - PAD + MY)) } else { d.bottom(px(inset - PAD + MY)) };
