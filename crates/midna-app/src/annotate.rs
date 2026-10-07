@@ -19,6 +19,7 @@
 //! the terminal offers Edit (⌘E) and Remove. The next plain ↩ in that terminal delivers it:
 //! each image's path as its own paste (Claude Code turns a pasted image path into
 //! `[Image #N]`), then a newline (Ctrl+J), then the notes as one paste, then the ↩ itself.
+//! The composer's send (Kass, `composer.rs`) takes it too: the images, then its text and notes.
 //!
 //! Images are normalized into `$TMPDIR/midna-images/`: PNG, JPEG, GIF and WebP are kept as
 //! they are; anything else (HEIC, TIFF, …) is converted to PNG with `sips`.

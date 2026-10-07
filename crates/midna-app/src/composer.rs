@@ -14,7 +14,7 @@
 //! Keys: ↩ sends the text to the target terminal with `session.input{enter:true}` (multi-line
 //! text goes as one bracketed paste when the terminal asked for it) and closes; ⇧↩ / ⌥↩ insert
 //! a newline; Esc cancels (clears and hides). The target is the terminal selected when the
-//! composer opened.
+//! composer opened. Images attached to it (`annotate.rs`) go with the text.
 //!
 //! Focus has two layers. AppKit's first responder gets the keystrokes; GPUI has its own focus
 //! and sees every key *equivalent* first (performKeyEquivalent goes to the GPUI view before
@@ -264,7 +264,6 @@ fn submit(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Contex
         return;
     }
     let bpaste = m.terminal.as_ref().filter(|t| t.read(cx).session_id == id).map(|t| t.read(cx).bracketed_paste()).unwrap_or(true);
-    let data = encode(&text, bpaste);
     close(m, window, cx);
     // A secret in the text: the terminal asks whether to store it first (`terminal/secret_paste.rs`).
     if let Some(t) = m.terminal.clone().filter(|t| t.read(cx).session_id == id)
@@ -272,7 +271,20 @@ fn submit(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Contex
     {
         return;
     }
-    m.rpc("session.input", json!({"id": id, "text": data, "enter": true}), cx, |_, _, _, _| {});
+    // Images attached to this terminal (`annotate.rs`) wait for its next ↩, which this send
+    // replaces: they go with the text, or one of the two would be left behind.
+    let out = crate::annotate::take(&id, cx);
+    let images: Vec<String> = out.iter().flat_map(|o| o.paths.iter().map(|p| p.display().to_string())).collect();
+    let data = encode(&with_notes(&text, out.as_ref().map_or("", |o| o.text.as_str())), bpaste);
+    m.rpc("session.input", json!({"id": id, "text": data, "enter": true, "images": images}), cx, |_, _, _, _| {});
+}
+
+/// The text, then an attachment's notes on their own line.
+fn with_notes(text: &str, notes: &str) -> String {
+    if notes.is_empty() {
+        return text.to_string();
+    }
+    format!("{}\n{notes}", text.trim_end_matches(['\n', '\r']))
 }
 
 /// What goes to the terminal for `text` (Enter is sent separately by `session.input`).
@@ -716,8 +728,15 @@ fn undo(m: &MainWindow, redo: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::encode;
+    use super::{encode, with_notes};
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn notes_follow_the_text_on_their_own_line() {
+        assert_eq!(with_notes("look at this\n", ""), "look at this\n");
+        assert_eq!(with_notes("look at this\n", "Annotations"), "look at this\nAnnotations");
+        assert_eq!(encode(&with_notes("look", "1. fix"), true), "\x1b[200~look\r1. fix\x1b[201~");
+    }
 
     #[test]
     fn encode_single_and_multi_line() {
