@@ -193,24 +193,48 @@ fn key_msg(ks: &Keystroke, held: bool, option_as_meta: bool) -> Option<KeyMsg> {
     Some(KeyMsg { action: if held { KeyAction::Repeat } else { KeyAction::Press }, mods, key: ks.key.clone(), text })
 }
 
+/// [`key_msg`] for the key event being handled, with Caps Lock applied to its text: GPUI's
+/// `key_char` ignores Caps Lock, so the event's own characters say what it typed.
+fn key_msg_now(ks: &Keystroke, held: bool) -> Option<KeyMsg> {
+    let mut k = key_msg(ks, held, OPTION_AS_META.load(Ordering::Relaxed))?;
+    if !k.text.is_empty() {
+        if let Some((chars, caps_lock)) = current_event_chars(ks) {
+            if let Some(t) = caps_text(&k.text, &chars, caps_lock) {
+                k.text = t;
+            }
+        }
+    }
+    Some(k)
+}
+
+/// The characters of the key event being handled, and whether Caps Lock is on.
+fn current_event_chars(ks: &Keystroke) -> Option<(String, bool)> {
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType};
+    let m = &ks.modifiers;
+    if m.control || m.platform || m.function {
+        return None;
+    }
+    let ev = NSApplication::sharedApplication(objc2::MainThreadMarker::new()?).currentEvent()?;
+    if !matches!(ev.r#type(), NSEventType::KeyDown | NSEventType::KeyUp) {
+        return None;
+    }
+    let chars = ev.characters().map(|s| s.to_string()).unwrap_or_default();
+    Some((chars, ev.modifierFlags().contains(NSEventModifierFlags::CapsLock)))
+}
+
+/// What a key typed with Caps Lock on, when it differs from `text` only in case.
+fn caps_text(text: &str, chars: &str, caps_lock: bool) -> Option<String> {
+    (caps_lock && chars != text && chars.to_lowercase() == text.to_lowercase()).then(|| chars.to_string())
+}
+
 /// Does the key event being handled carry text other than what its key types? Apps that type
 /// text for you (Kass, when it can't write through Accessibility) post key events whose
 /// characters are replaced with a chunk of the text, on keycode 0 (A). GPUI names keys from
 /// the keycode, so `ks` says "a". Left unhandled, the event goes to the input handler, which
 /// gets its real text (the path option characters take).
 fn carries_other_text(ks: &Keystroke) -> bool {
-    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType};
-    let m = &ks.modifiers;
-    if m.control || m.platform || m.function {
-        return false;
-    }
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
-    let Some(ev) = NSApplication::sharedApplication(mtm).currentEvent() else { return false };
-    if !matches!(ev.r#type(), NSEventType::KeyDown | NSEventType::KeyUp) {
-        return false;
-    }
-    let chars = ev.characters().map(|s| s.to_string()).unwrap_or_default();
-    other_text(ks.key_char.as_deref(), &chars, ev.modifierFlags().contains(NSEventModifierFlags::CapsLock))
+    let Some((chars, caps_lock)) = current_event_chars(ks) else { return false };
+    other_text(ks.key_char.as_deref(), &chars, caps_lock)
 }
 
 /// [`carries_other_text`] once the event's `chars` are read. Caps Lock changes the case of
@@ -663,7 +687,7 @@ impl TerminalView {
             return;
         }
         if self.erasing.is_some() && !m.platform {
-            if let Some(k) = key_msg(ks, ev.is_held, OPTION_AS_META.load(Ordering::Relaxed)) {
+            if let Some(k) = key_msg_now(ks, ev.is_held) {
                 self.deliver(ClientMsg::Key(k));
                 cx.stop_propagation();
             }
@@ -727,7 +751,7 @@ impl TerminalView {
                 return;
             }
         }
-        if let Some(k) = key_msg(ks, ev.is_held, OPTION_AS_META.load(Ordering::Relaxed)) {
+        if let Some(k) = key_msg_now(ks, ev.is_held) {
             if ks.key == "enter" && k.mods == 0 && !ev.is_held && self.marked.is_none() && self.deliver_attachment(&k, cx) {
                 self.typed();
                 cx.stop_propagation();
@@ -978,7 +1002,7 @@ impl TerminalView {
             return;
         }
         // Releases only matter to apps that asked for kitty event reporting.
-        if let Some(mut k) = key_msg(ks, false, OPTION_AS_META.load(Ordering::Relaxed)) {
+        if let Some(mut k) = key_msg_now(ks, false) {
             k.action = KeyAction::Release;
             self.send_msg(ClientMsg::Key(k));
         }
@@ -1519,8 +1543,9 @@ impl TerminalView {
             _ => {
                 // Text keys type into the query; other keys are swallowed while finding.
                 if let Some(t) = ks.key_char.as_ref().filter(|t| !m.control && !t.is_empty() && t.chars().all(|c| !c.is_control())) {
+                    let caps = current_event_chars(ks).and_then(|(chars, caps_lock)| caps_text(t, &chars, caps_lock));
                     if let Some(f) = self.find.as_mut() {
-                        f.query.push_str(t);
+                        f.query.push_str(caps.as_deref().unwrap_or(t));
                     }
                     self.run_find(true, true, window, cx);
                 }
@@ -2144,7 +2169,7 @@ fn paint_grid(
 
 #[cfg(test)]
 mod tests {
-    use super::{key_msg, link_span, not_running_detail, on_update_notice, other_text};
+    use super::{caps_text, key_msg, link_span, not_running_detail, on_update_notice, other_text};
     use serde_json::json;
 
     #[test]
@@ -2228,5 +2253,14 @@ mod tests {
         assert!(!other_text(Some("e"), "", false));
         assert!(!other_text(Some("\n"), "\r", false));
         assert!(!other_text(None, "x", false));
+    }
+
+    #[test]
+    fn caps_lock() {
+        assert_eq!(caps_text("a", "A", true).as_deref(), Some("A"));
+        assert_eq!(caps_text("a", "a", true), None);
+        assert_eq!(caps_text("a", "A", false), None);
+        assert_eq!(caps_text("1", "1", true), None);
+        assert_eq!(caps_text("a", "hello", true), None);
     }
 }
