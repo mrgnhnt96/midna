@@ -322,6 +322,7 @@ impl Daemon {
     /// Change a session's status (no-op when unchanged). Emits `session.status`.
     pub fn set_status(&self, sid: &str, state: StatusState, reason: Option<String>, exit_code: Option<i32>, actor: Actor) {
         let mut core = self.core();
+        let clear_failed_on_run = core.state.setting_bool("needs_you.clear_failed_on_run");
         let Some(s) = core.state.session_mut(sid) else { return };
         if s.status.state == state && s.status.reason == reason && s.status.exit_code == exit_code {
             return;
@@ -329,6 +330,8 @@ impl Daemon {
         let from = s.status.state;
         s.status = Status { state, reason: reason.clone(), exit_code, since: time::now_rfc3339() };
         let project = s.project_id.clone();
+        // `needs_you.clear_failed_on_run`: working again, its failures are behind it.
+        let clear_failed = state == StatusState::Working && from != StatusState::Working && clear_failed_on_run;
         self.mark_dirty();
         self.emit(
             kinds::SESSION_STATUS,
@@ -337,6 +340,10 @@ impl Daemon {
             Some(sid.to_string()),
             json!({ "state": state, "from": from, "reason": reason, "exit_code": exit_code }),
         );
+        drop(core);
+        if clear_failed {
+            self.clear_session_needs_you(sid, NeedsYouKind::Failed);
+        }
     }
 
     // ---------------------------------------------------------------- needs-you
@@ -419,6 +426,26 @@ impl Daemon {
             .collect();
         for id in ids {
             self.close_needs_you(&id, json!({ "kind": "done", "auto": true }), Actor::system());
+        }
+    }
+
+    /// `sid` raised a new blocked or note item (`needs_you.replace`): the open ones it raised
+    /// before are stale. A custom status's item keeps its own clear rule.
+    pub fn clear_raised(&self, sid: &str) {
+        let ids: Vec<Id> = {
+            let core = self.core();
+            let custom = core.state.session(sid).and_then(|s| s.custom_status.as_ref()).and_then(|c| c.needs_you_id.clone());
+            core.state
+                .needs_you
+                .iter()
+                .filter(|n| matches!(n.kind, NeedsYouKind::Blocked | NeedsYouKind::Note) && n.session_id.as_deref() == Some(sid))
+                .filter(|n| n.asked_by.session.as_deref() == Some(sid))
+                .filter(|n| custom.as_deref() != Some(n.id.as_str()))
+                .map(|n| n.id.clone())
+                .collect()
+        };
+        for id in ids {
+            self.close_needs_you(&id, json!({ "kind": "done", "auto": true, "reason": "replaced" }), Actor::system());
         }
     }
 

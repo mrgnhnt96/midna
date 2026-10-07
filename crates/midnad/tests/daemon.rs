@@ -485,6 +485,28 @@ fn needs_you_raise_and_agent_resolve_own() {
 }
 
 #[test]
+fn needs_you_raise_replaces_the_terminals_earlier_ones() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let (sid, other) = (open_sh(&mut h), open_sh(&mut h));
+    let mut a = d.agent(Some(&sid));
+    let mut b = d.agent(Some(&other));
+    call(&mut a, "needs_you.raise", json!({ "kind": "blocked", "message": "first" }));
+    call(&mut b, "needs_you.raise", json!({ "kind": "note", "message": "elsewhere" }));
+    call(&mut a, "needs_you.raise", json!({ "kind": "note", "message": "second" }));
+    let titles = |h: &mut Client| -> Vec<String> {
+        let mut t: Vec<String> = call(h, "needs_you.list", json!({})).as_array().unwrap().iter().map(|n| n["title"].as_str().unwrap().to_string()).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(titles(&mut h), ["elsewhere", "second"]);
+    // Off: they pile up.
+    call(&mut h, "settings.set", json!({ "key": "needs_you.replace", "value": false }));
+    call(&mut a, "needs_you.raise", json!({ "kind": "blocked", "message": "third" }));
+    assert_eq!(titles(&mut h), ["elsewhere", "second", "third"]);
+}
+
+#[test]
 fn script_run_builtins_and_custom() {
     let d = TestDaemon::start();
     let mut h = d.human();

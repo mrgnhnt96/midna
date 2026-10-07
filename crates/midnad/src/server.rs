@@ -222,6 +222,9 @@ fn background(d: &Arc<Daemon>) {
                 crate::rpc::policy::expire_rules(&d);
                 crate::global_hooks::poll(&d);
             }
+            if ticks.is_multiple_of(300) {
+                crate::rpc::needs_you::sweep(&d);
+            }
         }
     });
     let w = Arc::downgrade(d);

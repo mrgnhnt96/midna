@@ -320,6 +320,8 @@ fn no_typed_in_the_terminal_saves_nothing() {
 fn a_new_prompt_closes_the_agents_own_blocked_item() {
     let d = TestDaemon::start();
     let mut h = d.human();
+    // Without replacing, so its blocked item and note are both open.
+    call(&mut h, "settings.set", json!({ "key": "needs_you.replace", "value": false }));
     let sid = open_sh(&mut h);
     let other = open_sh(&mut h);
     let mut a = d.agent(Some(&sid));

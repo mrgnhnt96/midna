@@ -113,8 +113,73 @@ pub fn raise(d: &Daemon, ctx: &Ctx, p: NeedsYouRaiseParams) -> R {
     item.bulk_safe = p.kind == NeedsYouKind::Note;
     if let Some(sid) = &ctx.session {
         item.screen_excerpt = d.rt(sid).and_then(|rt| rt.read(true)).map(|(l, _, _)| super::session::tail_nonempty(l, 8));
+        // `needs_you.replace`: its latest says where it stands; the ones before it are stale.
+        if d.core().state.setting_bool("needs_you.replace") {
+            d.clear_raised(sid);
+        }
     }
     ok(d.raise_needs_you(item))
+}
+
+/// Kinds that never expire: requests the human acts on in their own time.
+fn lasts(k: NeedsYouKind) -> bool {
+    matches!(k, NeedsYouKind::RuleRemoval | NeedsYouKind::SecretNeeded | NeedsYouKind::TriggerWaiting)
+}
+
+/// The open items older than `hours` at `now` (unix seconds) that may expire.
+fn stale(items: &[NeedsYou], now: i64, hours: i64) -> Vec<Id> {
+    if hours <= 0 {
+        return vec![];
+    }
+    let cutoff = now - hours * 3600;
+    items.iter().filter(|n| !lasts(n.kind) && time::parse_rfc3339(&n.created_at).is_some_and(|t| t < cutoff)).map(|n| n.id.clone()).collect()
+}
+
+/// Every minute or so: take back items nobody answered in time (`needs_you.expire_hours`) and
+/// approvals nobody can act on (`needs_you.withdraw_orphans`).
+pub fn sweep(d: &Daemon) {
+    let (hours, ids) = {
+        let core = d.core();
+        let hours = core.state.setting_i64("needs_you.expire_hours");
+        (hours, stale(&core.state.needs_you, time::now_unix(), hours))
+    };
+    for id in ids {
+        d.withdraw_needs_you(&id, &format!("nobody answered it in {hours}h"));
+    }
+    for (id, why) in orphans(d) {
+        d.withdraw_needs_you(&id, why);
+    }
+}
+
+/// Approvals nobody can act on any more: a policy request with no caller waiting on it (midnad
+/// restarted under it), or an agent's human-only call whose target changed since it asked (the
+/// approval would be turned down).
+fn orphans(d: &Daemon) -> Vec<(Id, &'static str)> {
+    let (approvals, deferred) = {
+        let core = d.core();
+        if !core.state.setting_bool("needs_you.withdraw_orphans") {
+            return vec![];
+        }
+        let approvals: Vec<Id> = core.state.needs_you.iter().filter(|n| n.kind == NeedsYouKind::Approval).map(|n| n.id.clone()).collect();
+        let deferred: Vec<(Id, crate::state::Deferred)> = approvals.iter().filter_map(|id| core.state.deferred.get(id).map(|def| (id.clone(), def.clone()))).collect();
+        (approvals, deferred)
+    };
+    let waiting: HashSet<Id> = d.waiters.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+    let mut out = vec![];
+    for id in approvals {
+        match deferred.iter().find(|(d, _)| *d == id) {
+            // A policy request raises its item after it starts waiting, so one with no waiter
+            // has lost its caller.
+            None if !waiting.contains(&id) => out.push((id, "nobody is waiting on the answer any more")),
+            None => {}
+            Some((_, def)) => {
+                if def.guard.is_some() && super::deferred_guard(d, &def.method, &def.params).0 != def.guard {
+                    out.push((id, "what it would act on changed since it was asked"));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// May this caller apply this resolution to this item?
@@ -209,4 +274,40 @@ fn answer_prompt(d: &Daemon, item: &NeedsYou, res: &Resolution) {
     // app's keyboard mode (Claude runs with the kitty protocol on).
     let key = if matches!(res, Resolution::Approve { .. }) { crate::term::Key::Enter } else { crate::term::Key::Escape };
     rt.key(key);
+}
+
+#[cfg(test)]
+mod expire_tests {
+    use super::*;
+
+    fn item(id: &str, kind: NeedsYouKind, created_at: &str) -> NeedsYou {
+        NeedsYou {
+            id: id.into(),
+            session_id: None,
+            project_id: None,
+            kind,
+            title: String::new(),
+            detail: String::new(),
+            screen_excerpt: None,
+            asked_by: Actor::system(),
+            created_at: created_at.into(),
+            bulk_safe: false,
+            approval: None,
+            trigger_id: None,
+            question: None,
+        }
+    }
+
+    #[test]
+    fn stale_takes_old_items_but_not_lasting_kinds() {
+        let now = time::parse_rfc3339("2026-10-07T12:00:00Z").unwrap();
+        let items = [
+            item("old", NeedsYouKind::Blocked, "2026-10-06T11:00:00Z"),
+            item("fresh", NeedsYouKind::Approval, "2026-10-07T11:00:00Z"),
+            item("rule", NeedsYouKind::RuleRemoval, "2026-10-01T00:00:00Z"),
+            item("secret", NeedsYouKind::SecretNeeded, "2026-10-01T00:00:00Z"),
+        ];
+        assert_eq!(stale(&items, now, 24), vec!["old".to_string()]);
+        assert_eq!(stale(&items, now, 0), Vec::<Id>::new());
+    }
 }
