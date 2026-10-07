@@ -836,6 +836,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             .top_0()
             .left_0()
             .size_full()
+            // Wheel and hover must stop here, or the terminal under the bar scrolls.
+            .occlude()
             .bg(scrim)
             .flex()
             .justify_center()
