@@ -4,7 +4,9 @@
 //! beside it, the badge pulses in the kind's color and the number slides (up: the new one rises
 //! from below; down: it drops in from above). Kinds that stay (`notify.stay.<kind>` 0, and
 //! every needs-you item) are counted until they're handled; the others pass, their capsule's
-//! tinted fill clearing from left to right over the kind's duration.
+//! tinted fill clearing from left to right over the kind's duration. A kind with an image
+//! (`notify.image[.<kind>]`): the badge wears it in its diamond's place while the capsule shows,
+//! and the list's rows and cards show it as a thumbnail.
 //!
 //! Clicking the badge opens the list: what's waiting as capsules, newest first, scrolling (the
 //! row at the middle is the clearest; the others fade with their distance from it). With the
@@ -36,6 +38,7 @@ use midna_proto::notify::Posted;
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -124,6 +127,10 @@ const PULSE: Duration = Duration::from_millis(650);
 const ROLL: Duration = Duration::from_millis(420);
 /// How long a needs-you item counted from its notification outlives a list without it.
 const PENDING: Duration = Duration::from_secs(3);
+/// The badge wears a capsule's image: it grows from the diamond's size over `WEAR` and shrinks
+/// back as the capsule leaves (`LINE_OUT`).
+const WEAR: Duration = Duration::from_millis(420);
+const WEAR_FROM: f32 = 12.;
 /// A press that moves the window less than this is a click, not a drag.
 const DRAG_SLOP: f64 = 3.;
 /// How often to ask macOS whether the screen is being shared.
@@ -246,6 +253,8 @@ struct Waiting {
     detail: Option<String>,
     command: Option<String>,
     approval: bool,
+    /// Its kind's image (`notify.image[.<kind>]`): the list row's thumbnail and the card's.
+    image: Option<PathBuf>,
     /// When it came in (RFC 3339): the list shows the newest first.
     at: String,
 }
@@ -263,6 +272,8 @@ struct Line {
     name: String,
     text: String,
     color: String,
+    /// Its kind's image: the badge wears it while the capsule shows.
+    image: Option<PathBuf>,
     /// Passing kinds: how long it shows, its fill clearing over it. None: a kind that stays.
     stay: Option<Duration>,
     until: Instant,
@@ -478,11 +489,14 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
     };
     let colors: HashMap<String, String> =
         m.settings.iter().filter_map(|(k, v)| Some((k.strip_prefix("notify.color.")?.to_string(), v.as_str()?.to_string()))).collect();
+    let home = midna_proto::paths::midna_home();
+    let image = |kind: &str| midna_proto::notify::kind_image(&home, kind, |k| setting(k).unwrap_or_default());
     let needs: Vec<Waiting> = m
         .needs
         .iter()
         .map(|n| {
             let category = category_of(n.kind).to_string();
+            let image = image(&category);
             let command = n.approval.as_ref().map(|a| a.action.value.clone()).filter(|v| !v.is_empty());
             let title = match n.question.as_ref().filter(|q| !q.text.trim().is_empty()) {
                 Some(q) if !q.header.trim().is_empty() => q.header.trim().to_string(),
@@ -502,6 +516,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 detail,
                 command,
                 approval: n.is_approval(),
+                image,
                 at: n.created_at.clone(),
             }
         })
@@ -571,6 +586,11 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Ease out with a little overshoot (`cubic-bezier(.34, 1.56, .64, 1)`-like).
+/// A notification's image, cropped to a rounded square.
+pub fn thumb(path: PathBuf, size: f32, radius: f32) -> Img {
+    img(path).flex_none().size(px(size)).rounded(px(radius)).object_fit(ObjectFit::Cover)
+}
+
 fn back_out(x: f32) -> f32 {
     let (c1, c3) = (1.70158, 2.70158);
     1. + c3 * (x - 1.).powi(3) + c1 * (x - 1.).powi(2)
@@ -1011,6 +1031,7 @@ impl Badge {
                     detail: need.as_ref().map(|n| n.detail.trim().to_string()).filter(|d| !d.is_empty()),
                     command: need.as_ref().and_then(|n| n.approval.as_ref()).map(|a| a.action.value.clone()).filter(|v| !v.is_empty()),
                     approval: need.as_ref().map_or(p.category == "approval", |n| n.is_approval()),
+                    image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                 });
             }
@@ -1032,6 +1053,7 @@ impl Badge {
                 detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
                 command: None,
                 approval: false,
+                image: p.image.clone().map(PathBuf::from),
                 at: midna_proto::time::now_rfc3339(),
             });
             waiting = Some(id);
@@ -1059,6 +1081,7 @@ impl Badge {
             name,
             text,
             color: color.clone(),
+            image: p.image.clone().map(PathBuf::from),
             stay,
             until: now + stay.unwrap_or(LINE_SHOW),
             leaving: None,
@@ -1502,6 +1525,8 @@ impl Badge {
             .child(div().absolute().size(px(6.)).rounded_full().shadow(vec![BoxShadow { color: lead.opacity(0.7), offset: point(px(0.), px(0.)), blur_radius: px(9.), spread_radius: px(1.), inset: false }]))
             .child(diamond(9., lead));
         let kinds = div().flex().items_center().gap(px(4.)).children(tally.iter().take(3).map(|(c, _)| diamond(6., self.color(t, c))));
+        // While a capsule with an image shows, the badge wears it in the diamond's place.
+        let worn = self.lines.front().filter(|_| !self.quiet()).and_then(|l| Some(self.worn(l.serial, l.leaving.is_some(), l.image.clone()?, self.color(t, &l.color), reduce)));
         // The shine: the theme's cyan (Twilight's teal), fading out toward both ends.
         let glow = t.ansi[6];
         let shine = div()
@@ -1523,7 +1548,10 @@ impl Badge {
             .items_center()
             .gap(px(9.))
             .child(canvas(move |b, _, _| width.set(f32::from(b.size.width)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .child(mark)
+            .map(|d| match worn {
+                Some(w) => d.child(w),
+                None => d.child(mark),
+            })
             .map(|d| match passing {
                 Some(l) if self.count == 0 => d.child(Icon::Check.el(16., self.color(t, &l.color))),
                 _ => d.child(number),
@@ -1580,6 +1608,44 @@ impl Badge {
             ])
         })
         .into_any_element()
+    }
+
+    /// The image the badge wears while its capsule shows, ringed in the kind's color: it grows
+    /// out of the diamond's place when the capsule springs out, and shrinks back as it leaves.
+    fn worn(&self, serial: u64, leaving: bool, path: PathBuf, color: Hsla, reduce: bool) -> AnyElement {
+        let full = SIZE - 10.;
+        // The badge's start padding, taken back as it grows, so it sits evenly in the round end.
+        let at = move |k: f32| (WEAR_FROM + (full - WEAR_FROM) * k, -8. * k.max(0.));
+        let el = |k: f32| {
+            let (size, ml) = at(k);
+            div()
+                .flex_none()
+                .size(px(size))
+                .ml(px(ml))
+                .rounded_full()
+                .border_2()
+                .border_color(color)
+                .overflow_hidden()
+                .child(img(path.clone()).size_full().rounded_full().object_fit(ObjectFit::Cover))
+        };
+        if reduce {
+            return el(1.).into_any_element();
+        }
+        if leaving {
+            let base = el(1.);
+            return base
+                .with_animation(SharedString::from(format!("unwear-{serial}")), Animation::new(LINE_OUT).with_easing(ease_in), move |d, p| {
+                    let (size, ml) = at(1. - p);
+                    d.size(px(size)).ml(px(ml)).opacity(1. - p)
+                })
+                .into_any_element();
+        }
+        el(0.)
+            .with_animation(SharedString::from(format!("wear-{serial}")), Animation::new(WEAR).with_easing(back_out), move |d, p| {
+                let (size, ml) = at(p);
+                d.size(px(size)).ml(px(ml))
+            })
+            .into_any_element()
     }
 
     /// The capsule beside the badge: springs out, holds, slides back in.
@@ -1840,7 +1906,7 @@ impl Badge {
                 .items_center()
                 .gap(px(8.))
                 .pl(px(14. - 6. * k.min(1.)))
-                .pr(px(14. - 6. * k.min(1.)))
+                .pr(px(if w.image.is_some() { 8. } else { 14. - 6. * k.min(1.) }))
                 .opacity(words)
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(color))
                 .child(div().flex_none().max_w(px(130.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(w.name.clone()))
@@ -1870,6 +1936,9 @@ impl Badge {
                         b.open(session.clone(), need.clone(), held.clone(), cx);
                     })),
             );
+        }
+        if let Some(path) = w.image.clone() {
+            row = row.child(div().flex_none().size(px(26.)).mr(px(4.)).opacity(words).child(thumb(path, 26., 7.)));
         }
         row
     }
@@ -1932,12 +2001,30 @@ impl Badge {
             .flex_col()
             .gap(px(9.))
             .opacity(fade)
-            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(w.title.clone()))
+            .child(match w.image.clone() {
+                // Its image beside the title, the card's detail under the title beside it too.
+                Some(path) => div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(w.title.clone()))
+                            .children(w.detail.clone().filter(|_| w.command.is_none()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d))),
+                    )
+                    .child(thumb(path, 56., 10.)),
+                None => div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(w.title.clone()),
+            })
             .children(self.failed.get(&w.id).map(|e| {
                 div().px(px(10.)).py(px(7.)).rounded(px(7.)).bg(t.err.opacity(0.14)).text_size(px(12.5)).line_height(px(18.)).text_color(t.err).child(format!("Didn't go through: {e}"))
             }))
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
-            .children(w.detail.clone().map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
+            .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
             .child(buttons);
         div()
             .id(SharedString::from(format!("card-{}", w.id)))

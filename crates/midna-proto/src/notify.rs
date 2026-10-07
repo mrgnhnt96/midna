@@ -292,6 +292,23 @@ pub fn sound_file(home: &std::path::Path, value: &str) -> Option<std::path::Path
     (plain && SOUND_EXTS.contains(&ext.as_str())).then(|| home.join("notify/sounds").join(value)).filter(|p| p.is_file())
 }
 
+/// The file an image setting's value shows: an image imported into `home` (`MIDNA_HOME`).
+/// None: empty, `none`, or a file that isn't there.
+pub fn image_file(home: &std::path::Path, value: &str) -> Option<std::path::PathBuf> {
+    let ext = std::path::Path::new(value).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let plain = !value.is_empty() && !value.starts_with('.') && !value.contains(['/', '\\', '\0']);
+    (plain && IMAGE_EXTS.contains(&ext.as_str())).then(|| home.join("notify/images").join(value)).filter(|p| p.is_file())
+}
+
+/// The image a kind's notifications carry: `notify.image.<kind>`, or `notify.image` when that's
+/// empty (`setting` reads a setting's string value).
+pub fn kind_image(home: &std::path::Path, kind: &str, setting: impl Fn(&str) -> String) -> Option<std::path::PathBuf> {
+    match setting(&image_key(kind)).as_str() {
+        "" => image_file(home, &setting("notify.image")),
+        v => image_file(home, v),
+    }
+}
+
 /// `notify.sound` event data (`notify.play`): the app plays it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -367,4 +384,27 @@ pub struct Posted {
 
 fn yes() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_image_falls_back_to_every_notifications_image() {
+        let home = std::env::temp_dir().join(format!("midna-kind-image-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("notify/images")).unwrap();
+        for f in ["all.png", "approval.jpg"] {
+            std::fs::write(home.join("notify/images").join(f), b"x").unwrap();
+        }
+        let settings = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map_or(String::new(), |(_, v)| v.to_string());
+        let set = settings(&[("notify.image", "all.png"), ("notify.image.approval", "approval.jpg"), ("notify.image.failed", "none")]);
+        assert_eq!(kind_image(&home, "approval", &set), Some(home.join("notify/images/approval.jpg")));
+        assert_eq!(kind_image(&home, "done", &set), Some(home.join("notify/images/all.png")));
+        assert_eq!(kind_image(&home, "failed", &set), None);
+        assert_eq!(kind_image(&home, "done", settings(&[])), None);
+        assert_eq!(image_file(&home, "missing.png"), None);
+        assert_eq!(image_file(&home, "../notify/images/all.png"), None);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 }

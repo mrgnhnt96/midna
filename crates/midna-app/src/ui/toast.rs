@@ -457,7 +457,16 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
                 .overflow_y_scroll()
                 .px(px(14.))
                 .pt(px(4.))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(headline))
+                .child(match c.posted.image.clone() {
+                    // Its kind's image, beside the headline.
+                    Some(path) => div()
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::BOLD).child(headline))
+                        .child(super::badge::thumb(path.into(), 48., 9.)),
+                    None => div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(headline),
+                })
                 .children(command.map(|cmd| {
                     div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(cmd)
                 }))

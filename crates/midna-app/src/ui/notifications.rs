@@ -325,7 +325,11 @@ fn rows(m: &MainWindow, t: &Theme, list: &[&NotifyHistoryItem], cur: Option<u64>
                     cx.notify();
                 }))
                 .child(div().flex_none().w(px(52.)).text_size(px(12.)).text_color(t.dim).child(clock(&i.at).chars().take(5).collect::<String>()))
-                .child(div().flex_none().mt(px(6.)).size(px(8.)).rounded_full().bg(color))
+                // Its kind's image in the dot's place.
+                .child(match i.notification.image.clone() {
+                    Some(path) => super::badge::thumb(path.into(), 32., 7.).into_any_element(),
+                    None => div().flex_none().mt(px(6.)).size(px(8.)).rounded_full().bg(color).into_any_element(),
+                })
                 .child(
                     div()
                         .flex_1()
@@ -439,24 +443,40 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
         .px(px(26.))
         .py(px(22.))
         .child(
+            // What it said, its kind's image beside it.
             div()
                 .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(div().size(px(9.)).rounded_full().bg(color))
-                .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(color).child(label.to_uppercase()))
-                .child(div().text_color(t.dim).child(format!("· {} · {}", ago(Some(&i.at)), clock_or_day(&i.at))))
-                .when(need.is_some(), |d| d.child(badge(t, "Still waiting", t.need_soft, t.need))),
+                .items_start()
+                .gap(px(22.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(div().size(px(9.)).rounded_full().bg(color))
+                                .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(color).child(label.to_uppercase()))
+                                .child(div().text_color(t.dim).child(format!("· {} · {}", ago(Some(&i.at)), clock_or_day(&i.at))))
+                                .when(need.is_some(), |d| d.child(badge(t, "Still waiting", t.need_soft, t.need))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_baseline()
+                                .gap(px(8.))
+                                .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(name))
+                                .children(project.map(|p| div().text_color(t.dim).child(format!("in {p}")))),
+                        )
+                        .when(!i.notification.body.is_empty(), |d| d.child(div().text_size(px(13.5)).line_height(px(21.)).child(i.notification.body.clone()))),
+                )
+                .children(i.notification.image.clone().map(|path| super::badge::thumb(path.into(), 160., 12.))),
         )
-        .child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(px(8.))
-                .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(name))
-                .children(project.map(|p| div().text_color(t.dim).child(format!("in {p}")))),
-        )
-        .when(!i.notification.body.is_empty(), |d| d.child(div().text_size(px(13.5)).line_height(px(21.)).child(i.notification.body.clone())))
         .children(need.and_then(|n| n.screen_excerpt).filter(|e| !e.is_empty()).map(|lines| {
             div()
                 .p(px(12.))
