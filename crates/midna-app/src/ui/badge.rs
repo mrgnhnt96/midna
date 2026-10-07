@@ -10,7 +10,8 @@
 //! terminal. Hovering a capsule holds it and shows the same buttons. Right-click: Hide badge,
 //! Notification settings…, Open midna. Drag it anywhere; it snaps to the nearest corner of that
 //! screen (`notify.badge.corner`). `notify.badge`: `background` (only while midna isn't the
-//! app in front; in front, the in-app cards show instead), `always`, or `off`.
+//! app in front; in front, the in-app cards show instead), `always`, or `off`. While the
+//! screen is shared (`notify.badge.sharing`), it hides, or shows only its number, or carries on.
 //!
 //! The window is a non-activating panel (GPUI `PopUp`: every Space, over full-screen apps)
 //! that never takes focus, so clicking it leaves the app you're in in front. It's a fixed
@@ -50,6 +51,8 @@ const ROLL: Duration = Duration::from_millis(420);
 const PENDING: Duration = Duration::from_secs(3);
 /// A press that moves the window less than this is a click, not a drag.
 const DRAG_SLOP: f64 = 3.;
+/// How often to ask macOS whether the screen is being shared.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Corner {
@@ -92,6 +95,29 @@ enum Mode {
     Background,
     Always,
     Off,
+}
+
+/// `notify.badge.sharing`: what the badge does while the screen is shared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sharing {
+    Hide,
+    Count,
+    Show,
+}
+
+/// Something is watching the screen: a share (Zoom, Meet, Teams, …), a recording or Screen
+/// Sharing. macOS has no public call for it; this is the WindowServer's own (private, looked up
+/// at run time, so a macOS without it just never hides). `MIDNA_DEBUG_SHARING=1` fakes one.
+fn screen_watched() -> bool {
+    static WATCHER: std::sync::OnceLock<Option<unsafe extern "C" fn() -> bool>> = std::sync::OnceLock::new();
+    if crate::dev::var("MIDNA_DEBUG_SHARING").is_ok_and(|v| v == "1") {
+        return true;
+    }
+    let f = WATCHER.get_or_init(|| {
+        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"CGSIsScreenWatcherPresent".as_ptr()) };
+        (!sym.is_null()).then(|| unsafe { std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn() -> bool>(sym) })
+    });
+    f.is_some_and(|f| unsafe { f() })
 }
 
 /// Something waiting on you: a needs-you item, or a notification of a kind that stays.
@@ -155,6 +181,10 @@ pub struct Badge {
     backend: Arc<dyn Backend>,
     mode: Mode,
     corner: Corner,
+    sharing: Sharing,
+    /// The screen is being shared (`screen_watched`), as of `watched_at`.
+    shared: bool,
+    watched_at: Option<Instant>,
     /// `notify.color.<kind>` for every kind (a needs-you item's color comes from its kind's).
     colors: HashMap<String, String>,
     needs: Vec<Waiting>,
@@ -254,6 +284,11 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         _ => Mode::Background,
     };
     let corner = Corner::parse(&setting("notify.badge.corner").unwrap_or_default());
+    let sharing = match setting("notify.badge.sharing").as_deref() {
+        Some("count") => Sharing::Count,
+        Some("show") => Sharing::Show,
+        _ => Sharing::Hide,
+    };
     let colors: HashMap<String, String> =
         m.settings.iter().filter_map(|(k, v)| Some((k.strip_prefix("notify.color.")?.to_string(), v.as_str()?.to_string()))).collect();
     let needs: Vec<Waiting> = m
@@ -287,6 +322,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         let moved = b.corner != corner;
         b.mode = mode;
         b.corner = corner;
+        b.sharing = sharing;
         b.colors = colors;
         // A list fetched just before an item came in doesn't drop it (it'd count down, then up).
         let fresh: Vec<Waiting> = b.needs.iter().filter(|w| b.pending.iter().any(|(id, at)| *id == w.id && at.elapsed() < PENDING) && !needs.iter().any(|n| n.id == w.id)).cloned().collect();
@@ -405,6 +441,9 @@ impl Badge {
             backend,
             mode: Mode::Background,
             corner: Corner::TopRight,
+            sharing: Sharing::Hide,
+            shared: false,
+            watched_at: None,
             colors: HashMap::new(),
             needs: vec![],
             held: vec![],
@@ -423,6 +462,11 @@ impl Badge {
             zones: Zones::default(),
             _ticker: ticker,
         }
+    }
+
+    /// The screen is shared and the badge mustn't say what came in.
+    fn quiet(&self) -> bool {
+        self.shared && self.sharing != Sharing::Show
     }
 
     fn waiting(&self) -> Vec<&Waiting> {
@@ -503,8 +547,14 @@ impl Badge {
             });
             waiting = Some(id);
         }
-        let text = p.body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&p.title).to_string();
         self.serial += 1;
+        self.pulse = (self.serial, color.clone());
+        // Shared screen: it's counted, but no line says what it is.
+        if self.quiet() {
+            self.recount(cx);
+            return;
+        }
+        let text = p.body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&p.title).to_string();
         // The newest shows at once; the ones it cut short are its "+N" (what they're about is
         // still counted, or in the stack).
         let burst = self.lines.front().filter(|l| l.leaving.is_none()).map_or(0, |l| l.burst + 1);
@@ -524,7 +574,6 @@ impl Badge {
             until: now + stay.unwrap_or(LINE_SHOW),
             leaving: None,
         });
-        self.pulse = (self.serial, color);
         self.recount(cx);
     }
 
@@ -602,11 +651,26 @@ impl Badge {
             }
         }
 
+        if self.watched_at.is_none_or(|t| now.duration_since(t) >= WATCH_EVERY) {
+            self.watched_at = Some(now);
+            let shared = self.sharing != Sharing::Show && screen_watched();
+            if shared != self.shared {
+                self.shared = shared;
+                changed = true;
+            }
+        }
+        // Sharing started: what's out goes now, before anyone reads it.
+        if self.quiet() && (!self.lines.is_empty() || self.panel.is_some()) {
+            self.lines.clear();
+            self.panel = None;
+            changed = true;
+        }
+
         let enabled = match self.mode {
             Mode::Off => false,
             Mode::Always => true,
             Mode::Background => !crate::sounds::app_active(),
-        };
+        } && !(self.shared && self.sharing == Sharing::Hide);
         if !enabled && (self.panel.is_some() || self.menu) {
             self.panel = None;
             self.menu = false;
@@ -654,7 +718,7 @@ impl Badge {
                 } else {
                     self.panel = match self.panel {
                         Some(_) => None,
-                        None if self.count > 0 => Some(0),
+                        None if self.count > 0 && !self.quiet() => Some(0),
                         None => None,
                     };
                 }

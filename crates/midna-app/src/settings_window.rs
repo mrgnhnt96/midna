@@ -153,7 +153,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     ),
     (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
     (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
-    (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner"]),
+    (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.corner", "notify.badge.sharing"]),
     (Sec::Notifications, "How long each kind stays on screen", &["@stay"]),
     (Sec::Notifications, "Colors", &["@colors"]),
     (Sec::Notifications, "Your kinds", &["@custom_kinds"]),
@@ -838,6 +838,7 @@ fn label_for(key: &str) -> String {
         "notify.when_app_closed" => "When the app isn't running",
         "notify.badge" => "Show the badge",
         "notify.badge.corner" => "Corner",
+        "notify.badge.sharing" => "While you share your screen",
         k if k.starts_with("notify.") => {
             let kind = k.rsplit('.').next().unwrap_or(k);
             match (midna_proto::notify::category(kind), midna_proto::notify::effect(kind)) {
@@ -887,6 +888,9 @@ fn option_label(key: &str, v: &str) -> String {
         ("notify.badge", "background") => "In the background".into(),
         ("notify.badge", "always") => "Always".into(),
         ("notify.badge", "off") => "Off".into(),
+        ("notify.badge.sharing", "hide") => "Hide the badge".into(),
+        ("notify.badge.sharing", "count") => "Only the number".into(),
+        ("notify.badge.sharing", "show") => "Show as usual".into(),
         // script names are names: keep them as typed
         ("ui.ask.agent" | "ui.ask.scope", v) => capitalize(v),
         (k, v) if k.starts_with("ui.") => v.to_string(),

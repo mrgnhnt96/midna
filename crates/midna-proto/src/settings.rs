@@ -521,6 +521,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "The floating badge in a corner of the screen: it counts what needs you, and a line springs out beside it when a notification comes in. background = only while midna isn't the app in front (in front, the in-app cards show instead), always, or off."),
     s!("notify.badge.corner", en(&["top_right", "top_left", "bottom_right", "bottom_left"]), S("top_right"), "notifications", false,
         "Which corner of the screen the floating badge sits in. Drag the badge to move it; it snaps to the nearest corner."),
+    s!("notify.badge.sharing", en(&["hide", "count", "show"]), S("hide"), "notifications", false,
+        "While your screen is being shared or recorded: hide = no badge until it stops (what came in is counted; the lines aren't replayed), count = the badge and its number only, no lines and no text, show = as usual. midna asks macOS whether something is watching the screen, so it covers Zoom, Meet, Teams, screen recording and Screen Sharing."),
     s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
         "When the midna app isn't running, midnad posts the notification itself (shown as a system notification; clicking it doesn't open midna)."),
     s!("keys.command_bar", KB, S("cmd-k"), "keys", false, "Open the command bar."),
