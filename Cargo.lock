@@ -3962,7 +3962,7 @@ dependencies = [
 
 [[package]]
 name = "midna-app"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3989,7 +3989,7 @@ dependencies = [
 
 [[package]]
 name = "midna-cli"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "libc",
  "midna-proto",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "midna-proto"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "schemars",
  "serde",
@@ -4009,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "midnad"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
