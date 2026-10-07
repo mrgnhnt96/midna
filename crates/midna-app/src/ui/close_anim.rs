@@ -11,7 +11,8 @@
 //! Opening a terminal (⌘T and the like, `open`) runs it in reverse: the new row unfolds where
 //! it lands, its content dropping in and fading up, and the rows below slide down. The
 //! highlight glides down to it from the row right above, or stays put for it to unfold into
-//! from the row right below; anywhere else it fills the new row's room, solid, as it opens.
+//! from the row right below; further away it glides to the new row from where the shown row
+//! was laid out (`rows`), or, with nothing to go by, fills the new row's room, solid, as it opens.
 //! The pane slides the new terminal in the same way.
 //!
 //! Moving to the terminal above or below (⌥⌘↑ / ⌥⌘↓, `switch`) slides too: the highlight glides
@@ -63,9 +64,23 @@ pub struct Opening {
     from: Option<String>,
     /// Where it sits from `from`, when they're side by side: the highlight moves to it.
     pub glide: Option<Dir>,
+    /// Further away: the highlight travels to it from `from`.
+    travel: Option<Travel>,
     at: Instant,
     /// Its measured height (0 until the first frame).
     height: Rc<Cell<f32>>,
+}
+
+/// A highlight travelling to a row just opened from a row further away, as laid out before it
+/// opened.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Travel {
+    /// Where the new row sits from `from`.
+    dir: Dir,
+    /// `from`'s top and height.
+    from_at: (f32, f32),
+    /// The new row's top (it unfolds there: the rows above it stay put).
+    to_top: f32,
 }
 
 /// How a row draws its selection highlight.
@@ -165,6 +180,17 @@ pub fn plan_move(groups: &[PlanGroup], order: &[String], from: Option<&str>, new
     (beside.then_some(dir), Some(dir))
 }
 
+/// Where `new`, just added to its group's rows, will sit: the top of the row it pushes down,
+/// or the bottom of the row above it, as last laid out.
+fn slot_top(groups: &[PlanGroup], rows: &std::collections::HashMap<String, (f32, f32)>, new: &str) -> Option<f32> {
+    let g = groups.iter().find(|g| !g.folded && g.rows.iter().any(|r| r == new))?;
+    let i = g.rows.iter().position(|r| r == new)?;
+    match g.rows.get(i + 1).and_then(|r| rows.get(r)) {
+        Some(&(top, _)) => Some(top),
+        None => g.rows[..i].last().and_then(|r| rows.get(r)).map(|&(top, h)| top + h),
+    }
+}
+
 fn plan_groups(m: &MainWindow) -> Vec<PlanGroup> {
     m.groups()
         .into_iter()
@@ -220,10 +246,19 @@ pub fn open(m: &mut MainWindow, new: &str, old: Option<Entity<TerminalView>>, cx
     }
     let order: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
     let from = m.selected.clone();
-    let (glide, pane) = plan_move(&plan_groups(m), &order, from.as_deref(), new);
+    let groups = plan_groups(m);
+    let (glide, pane) = plan_move(&groups, &order, from.as_deref(), new);
+    let shown = |id: &str| groups.iter().any(|g| !g.folded && g.rows.iter().any(|r| r == id));
+    let travel = {
+        let rows = m.close_anim.rows.borrow();
+        match (glide, pane, from.as_deref().filter(|f| shown(f)).and_then(|f| rows.get(f)), slot_top(&groups, &rows, new)) {
+            (None, Some(dir), Some(&from_at), Some(to_top)) => Some(Travel { dir, from_at, to_top }),
+            _ => None,
+        }
+    };
     let now = Instant::now();
     let a = &mut m.close_anim;
-    a.opening = Some(Opening { id: new.to_string(), from, glide, at: now, height: Rc::new(Cell::new(0.)) });
+    a.opening = Some(Opening { id: new.to_string(), from, glide, travel, at: now, height: Rc::new(Cell::new(0.)) });
     a.pane_due = None;
     a.pane = old.filter(|o| o.read(cx).session_id != new).zip(pane).map(|(o, d)| (o, d, now));
     cx.notify();
@@ -306,6 +341,13 @@ impl CloseAnim {
             if o.glide == Some(Dir::Below) && o.from.as_deref() == Some(id) && !selected {
                 return Highlight::Shifted(ease_out(ms(o.at) / SLIDE_MS));
             }
+            // Travelling down from further up: the row it leaves draws it, so the rows and
+            // headings below draw over it (`Opening::travel_from`).
+            if o.from.as_deref() == Some(id) && !selected {
+                if let Some(at) = o.travel_from() {
+                    return at;
+                }
+            }
         }
         // Moved with ⌥⌘↑ / ⌥⌘↓: the upper of the two rows draws the highlight on its way, so
         // the rows and headings below it draw over it.
@@ -351,6 +393,41 @@ impl Opening {
     pub fn progress(&self) -> (f32, f32) {
         let t = ms(self.at);
         (ease_out(t / SLIDE_MS), 1. - (1. - t / LIFT_MS).clamp(0., 1.).powi(2))
+    }
+
+    /// The travelling highlight's top (from the drawing row's top) and height, eased `e`.
+    fn travel(&self, e: f32) -> Option<(Dir, f32, f32)> {
+        let t = self.travel?;
+        let (from_top, from_h) = t.from_at;
+        let h = self.height().unwrap_or(from_h);
+        let h_now = from_h + (h - from_h) * e;
+        Some(match t.dir {
+            // `from` sits above: it stays put and the highlight drops to the new row's top.
+            Dir::Below => (Dir::Below, (t.to_top - from_top) * e, h_now),
+            // `from` sits below, pushed down as the new row unfolds: the highlight rises from it.
+            Dir::Above => (Dir::Above, (from_top + h * e - t.to_top) * (1. - e), h_now),
+        })
+    }
+
+    /// Travelling down to it: where the row it left draws the highlight.
+    fn travel_from(&self) -> Option<Highlight> {
+        match self.travel(ease_out(ms(self.at) / SLIDE_MS))? {
+            (Dir::Below, top, h) => Some(Highlight::At { top, h }),
+            _ => None,
+        }
+    }
+
+    /// Travelling up to it: where it draws the highlight itself, from its own top.
+    pub fn travel_to(&self) -> Option<(f32, f32)> {
+        match self.travel(self.progress().0)? {
+            (Dir::Above, top, h) => Some((top, h)),
+            _ => None,
+        }
+    }
+
+    /// The highlight comes to it from a row further away.
+    pub fn travels(&self) -> bool {
+        self.travel.is_some()
     }
 
     /// Its full height, once measured.
@@ -451,6 +528,18 @@ mod tests {
     fn opening_beside_glides_the_highlight() {
         assert_eq!(plan_move(&groups(), &order(), Some("a2"), "a3"), (Some(Dir::Below), Some(Dir::Below)));
         assert_eq!(plan_move(&groups(), &order(), Some("a2"), "a1"), (Some(Dir::Above), Some(Dir::Above)));
+    }
+
+    #[test]
+    fn a_row_opens_where_the_row_it_pushes_down_was() {
+        let rows: std::collections::HashMap<String, (f32, f32)> = [("a1", (0., 30.)), ("a3", (30., 30.)), ("b1", (100., 30.))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let g = groups();
+        assert_eq!(slot_top(&g, &rows, "a2"), Some(30.));
+        let mut g2 = groups();
+        g2[0].rows.push("a4".into());
+        assert_eq!(slot_top(&g2, &rows, "a4"), Some(60.));
+        g2[0].folded = true;
+        assert_eq!(slot_top(&g2, &rows, "a4"), None);
     }
 
     #[test]

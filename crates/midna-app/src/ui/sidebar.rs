@@ -910,7 +910,9 @@ fn measured(m: &MainWindow, id: &str, el: AnyElement) -> AnyElement {
 /// A row just opened unfolding (`ui::close_anim`), a ghost in reverse: its room opens while
 /// its content drops in and fades up. Opened right below the terminal shown before, the
 /// highlight slides down to it from that row (`row`); right above, it holds the highlight in
-/// place for the new row to unfold into; anywhere else, the highlight fills the room, solid.
+/// place for the new row to unfold into; further up, it rises to it, drawn here so the rows
+/// below draw over it; further down, the row it leaves draws it; with nothing laid out to go
+/// by, the highlight fills the room, solid.
 fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyElement {
     let (grow, drop) = o.progress();
     let full = o.height();
@@ -929,6 +931,10 @@ fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyE
     div()
         .relative()
         .map(|d| match (o.glide, full) {
+            _ if o.travels() => match o.travel_to() {
+                Some((top, h)) => d.child(highlight(t).top(px(top)).h(px(h))),
+                None => d,
+            },
             (Some(crate::ui::close_anim::Dir::Below), _) => d,
             (Some(crate::ui::close_anim::Dir::Above), Some(h)) => d.child(highlight(t).top_0().h(px(h))),
             _ => d.child(highlight(t).top_0().bottom_0()),
