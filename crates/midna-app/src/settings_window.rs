@@ -1159,7 +1159,7 @@ impl SettingsWindow {
                 .collect::<Vec<_>>()
         };
         match name {
-            "@update" => vec![lifecycle_rows(t).update],
+            "@update" => vec![lifecycle_rows(t).update, changelog_row(t)],
             "@cli" => vec![lifecycle_rows(t).cli],
             "@login" => vec![lifecycle_rows(t).login],
             "@hooks.claude" => vec![self.hooks_row(t, "claude")],
@@ -1505,6 +1505,20 @@ fn marked(t: &Theme, text: String, words: &[String]) -> StyledText {
     StyledText::new(SharedString::from(text)).with_highlights(merged.into_iter().map(|r| (r, style)))
 }
 
+/// What's new in each release, on the website (the site renders CHANGELOG.md).
+fn changelog_row(t: &Theme) -> RowSpec {
+    RowSpec {
+        label: "Changelog".into(),
+        note: Some(("What's new in each release, on midna.mrgnhnt.com.".into(), Hsla::default())),
+        control: Control::Text { dot: None, text: String::new(), color: t.fg, action: Some(("Open".into(), Act::Url(CHANGELOG_URL.into()), false)) },
+        cli: String::new(),
+        who: Who::ReadOnly,
+        warn: false,
+    }
+}
+
+const CHANGELOG_URL: &str = "https://midna.mrgnhnt.com/changelog/";
+
 struct LifeRows {
     update: RowSpec,
     login: RowSpec,
@@ -1526,13 +1540,13 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
         warn,
     };
     let update = match snap.as_ref().map(|s| &s.update) {
-        Some(UpdateState::Ready { version, notes, .. }) => row(
+        Some(UpdateState::Ready { version, .. }) => row(
             "Update",
             t.accent,
             format!("{version} ready"),
             t.fg,
             Some(("Restart to apply".into(), Act::Life(Cmd::Apply), true)),
-            if notes.is_empty() { "Downloaded and verified. Terminals keep running through the restart.".into() } else { notes.clone() },
+            "Downloaded and verified. Terminals keep running through the restart.".into(),
             "midna updates install",
             Who::Human,
             false,
