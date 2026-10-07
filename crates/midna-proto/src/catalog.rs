@@ -371,9 +371,11 @@ fn build() -> Vec<MethodSpec> {
             "Create a webhook trigger. It starts as needs_secret and never fires until a human sets its secret and enables it; \
              agents can draft freely. event: GitHub `pull_request.opened`/`push`/`check_run.completed` (event[.action]), \
              Bitbucket `pullrequest:created`. filter: repo (owner/name), branch, action, label (globs). action: \
-             {kind:start_agent, project_id, agent, prompt_template} | {kind:run_command, project_id, command} | {kind:attention, message}. \
+             {kind:start_agent, project_id, agent, prompt_template} | {kind:run_command, project_id, command, background?, headless?, timeout_secs?} | {kind:attention, message}. \
              Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path like {{pull_request.head.ref}}. \
-             In run_command each value is shell-quoted. Set github_hook_id to enable missed-delivery recovery. \
+             In run_command each value is shell-quoted; it opens a monitor terminal as a tab, or with background:true in the sidebar's \
+             Background group, or with headless:true runs with no terminal (exit code and output tail go on the delivery's command_runs; \
+             stopped after timeout_secs, default 1800). Set github_hook_id to enable missed-delivery recovery. \
              LOCAL triggers (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human \
              asked for it). event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, hook.Notification, hook.PreCompact; \
              data = the hook payload), any midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
@@ -409,7 +411,9 @@ fn build() -> Vec<MethodSpec> {
              asks the human."),
         m::<TriggerDeliveriesParams, Vec<Delivery>>("trigger.deliveries").d(
             "List received webhook deliveries and local firings (source local), oldest first (default last 50). verdict: verified (fired), bad_signature, \
-             filtered (a trigger listens but filters/state said no), no_trigger, replayed, recovered (missed, then fetched from GitHub)."),
+             filtered (a trigger listens but filters/state said no), no_trigger, replayed, recovered (missed, then fetched from GitHub). \
+             command_runs: headless run_command runs {command, started_at, finished_at (none while running), exit_code, signal, \
+             timed_out, output (last 50 lines), error}; `trigger.command_finished` is emitted when one ends."),
         m::<TriggerReplayParams, Delivery>("trigger.replay").mutating().d(
             "Run a past delivery through the triggers again (same filters, no signature check since it was verified when it \
              arrived). Deliveries that failed signature checks can't be replayed."),

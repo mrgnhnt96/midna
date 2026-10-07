@@ -401,7 +401,8 @@ pub static VERBS: &[Verb] = &[
         aliases: &["trigger"],
         usage: "triggers list | show <id> | deliveries [--trigger ID] [--limit N] | replay <delivery-id>\n       \
                 triggers add --name N --event E [--source github|bitbucket] [--repo R] [--branch B] [--action A]\n            \
-                [--label L] (--agent claude|codex --prompt TEMPLATE | --run CMD | --attention MSG)\n            \
+                [--label L] (--agent claude|codex --prompt TEMPLATE | --run CMD [--background | --headless [--timeout 30m]]\n            \
+                | --attention MSG)\n            \
                 [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
                 triggers add --name N --event hook.<Hook>|<midna event kind>|idle|schedule [--source local]\n            \
                 [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
@@ -409,7 +410,7 @@ pub static VERBS: &[Verb] = &[
                 [--match path=glob]...\n            \
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
                 [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--notify-open URL] [--notify-id ID] [--silent]\n             \
-                | --attention MSG | --run CMD --project P)\n            \
+                | --attention MSG | --run CMD --project P [--background | --headless [--timeout 30m]])\n            \
                 [--cooldown 60s] [--enable]\n       \
                 triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \
                 triggers update <id> [same flags] | enable <id> | disable <id> | remove <id>\n       \
@@ -419,6 +420,10 @@ pub static VERBS: &[Verb] = &[
         details: "Webhook triggers: agents draft freely; they start as needs_secret. Only the human pastes the signing\n\
                   secret and enables one (`enable` from an agent asks the human). Anyone may pause.\n\
                   Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} or any payload path.\n\
+                  --run opens a monitor terminal as a tab; --background opens it in the sidebar's Background group;\n\
+                  --headless runs it with no terminal: `deliveries` / `replay` show its exit code and output tail\n\
+                  (stopped after --timeout, default 30m). On update, --background/--headless alone change the current\n\
+                  command; --run CMD alone makes it a tab again.\n\
                   \n\
                   Local triggers (source local; inferred for hook.*, agent.*, session.*, needs_you.*, idle, schedule, or any\n\
                   local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\

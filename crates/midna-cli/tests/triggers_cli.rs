@@ -152,3 +152,43 @@ fn local_triggers_cli() {
         ok(&d.midna(&["triggers", "remove", t], None));
     }
 }
+
+#[test]
+fn run_command_background_and_headless_cli() {
+    let d = D::start("run");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}{}", out(o), String::from_utf8_lossy(&o.stderr));
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = midna_proto::Client::connect(d.home.join("midnad.sock")).unwrap();
+    h.set_caller(None);
+    let p: Value = h.call("project.add", json!({ "path": dir })).unwrap();
+    let pid = p["id"].as_str().unwrap();
+
+    let o = d.midna(&["triggers", "add", "--name", "Compaction", "--cron", "0 6 * * mon-fri", "--run", "echo compacted", "--project", pid, "--headless", "--timeout", "10m", "--enable", "--json"], None);
+    ok(&o);
+    let t: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(t["action"], json!({ "kind": "run_command", "project_id": pid, "command": "echo compacted", "headless": true, "timeout_secs": 600 }));
+    let id = t["id"].as_str().unwrap().to_string();
+    assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--cron", "@daily", "--run", "true", "--project", pid, "--background", "--headless"], None).status.code(), Some(2));
+
+    // It runs with no terminal; `deliveries` shows how it ended.
+    let at = midna_proto::cron::Cron::parse("0 6 * * mon-fri").unwrap().next_after(midna_proto::time::now_unix()).unwrap();
+    midnad::local::fire_schedule_now(&d.handle.as_ref().unwrap().daemon, &id, at);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let text = loop {
+        let text = out(&d.midna(&["triggers", "deliveries", "--trigger", &id], None));
+        if text.contains("(exit 0)") || std::time::Instant::now() > deadline {
+            break text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert!(text.contains("Running with no terminal › Compaction (exit 0)"), "{text}");
+    let list = out(&d.midna(&["triggers", "list"], None));
+    assert!(list.contains("with no terminal (timeout 600s)"), "{list}");
+
+    // --background alone moves it to a terminal in the Background group.
+    let o = d.midna(&["triggers", "update", &id, "--background", "--json"], None);
+    ok(&o);
+    let t: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(t["action"], json!({ "kind": "run_command", "project_id": pid, "command": "echo compacted", "background": true }));
+}

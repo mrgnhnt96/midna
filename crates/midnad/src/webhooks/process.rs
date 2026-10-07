@@ -87,6 +87,7 @@ fn new_delivery(source: TriggerSource, event: &str, guid: &str) -> Delivery {
         recovered: false,
         replay_of: None,
         body_sha256: None,
+        command_runs: vec![],
     }
 }
 
@@ -339,8 +340,9 @@ pub fn evaluate(triggers: &[Trigger], source: TriggerSource, event: &str, mut de
 pub fn complete(d: &Arc<Daemon>, w: Work) -> Delivery {
     let Work { mut delivery, firing, facts, payload, store } = w;
     let mut outcomes = vec![];
+    let id = delivery.id.clone();
     for t in &firing {
-        let (session, outcome) = run_action(d, t, &facts, &payload);
+        let (session, outcome) = run_action(d, t, &facts, &payload, &id, &mut delivery.command_runs);
         if let Some(sid) = &session {
             delivery.sessions_started.push(sid.clone());
         }
@@ -387,8 +389,9 @@ fn agent_label(a: AgentKind) -> &'static str {
     }
 }
 
-/// Run one trigger's action. Returns (session started, one-line outcome).
-pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value) -> (Option<Id>, String) {
+/// Run one trigger's action for delivery `del_id`. Returns (session started, one-line outcome);
+/// a headless command's run goes in `runs`.
+pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_id: &str, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
     let ctx = Ctx::internal_trigger(trigger_actor(t));
     let name = || {
         let tpl = t.session_name_template.clone().unwrap_or_else(|| match &f.pr_number {
@@ -412,11 +415,20 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value) -> (
                 Err(e) => (None, format!("Could not start {}: {e}", agent_label(*agent))),
             }
         }
-        TriggerAction::RunCommand { project_id, command } => {
+        TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let cmd = payload::render(command, f, payload, true);
             let n = name();
-            match open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [cmd] })) {
-                Ok(id) => (Some(id), format!("Ran command › {n}")),
+            if *headless {
+                let run = crate::headless::start(d, t, del_id, project_id, &cmd, *timeout_secs);
+                let out = match &run.error {
+                    Some(e) => (None, format!("Could not run command: {e}")),
+                    None => (None, format!("Running with no terminal › {n}")),
+                };
+                runs.push(run);
+                return out;
+            }
+            match open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [cmd], "background": background })) {
+                Ok(id) => (Some(id), format!("Ran command{} › {n}", if *background { " in Background" } else { "" })),
                 Err(e) => (None, format!("Could not run command: {e}")),
             }
         }
@@ -513,7 +525,9 @@ pub fn dry_run(t: &Trigger, event: &str, payload: Value) -> Delivery {
     w.delivery.http_status = None;
     let would = match &t.action {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent_label(*agent), payload::render_prompt(prompt_template, &facts, &payload)),
-        TriggerAction::RunCommand { command, .. } => format!("would run: {}", payload::render(command, &facts, &payload, true)),
+        TriggerAction::RunCommand { command, background, headless, .. } => {
+            format!("would run{}: {}", crate::local::run_where(*background, *headless), payload::render(command, &facts, &payload, true))
+        }
         TriggerAction::Attention { message } => format!("would raise attention: {}", payload::render(message, &facts, &payload, false)),
         TriggerAction::Notify { title, body, .. } => format!("would notify: {} {}", payload::render(title, &facts, &payload, false), payload::render(body, &facts, &payload, false)).trim().to_string(),
         a => format!("would do nothing: {} needs a local trigger", crate::local::action_name(a)),

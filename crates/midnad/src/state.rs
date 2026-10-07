@@ -64,6 +64,7 @@ impl State {
             Ok(b) => match serde_json::from_slice::<State>(&b) {
                 Ok(mut s) => {
                     s.drop_filesystem_root_project();
+                    crate::headless::settle_lost(&mut s);
                     s
                 }
                 Err(e) => {

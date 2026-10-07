@@ -73,9 +73,18 @@ fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             }
             d.core().state.project(project_id).ok_or_else(|| RpcError::not_found(format!("no project {project_id}")))?;
         }
-        TriggerAction::RunCommand { project_id, command } => {
+        TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             if command.trim().is_empty() {
                 return Err(RpcError::bad_params("run_command needs a command"));
+            }
+            if *background && *headless {
+                return Err(RpcError::bad_params("run_command: background opens a terminal and headless runs without one; pick one"));
+            }
+            if timeout_secs.is_some() && !*headless {
+                return Err(RpcError::bad_params("run_command: timeout_secs is for headless runs (a terminal runs until it exits)"));
+            }
+            if timeout_secs.is_some_and(|t| t == 0 || t > crate::headless::MAX_TIMEOUT_SECS) {
+                return Err(RpcError::bad_params(format!("run_command: timeout_secs must be 1–{}", crate::headless::MAX_TIMEOUT_SECS)));
             }
             d.core().state.project(project_id).ok_or_else(|| RpcError::not_found(format!("no project {project_id}")))?;
         }

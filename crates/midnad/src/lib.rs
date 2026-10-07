@@ -11,6 +11,7 @@ pub mod engine;
 pub mod eventlog;
 pub mod git;
 pub mod global_hooks;
+pub mod headless;
 pub mod hooks;
 pub mod images;
 pub mod insights;

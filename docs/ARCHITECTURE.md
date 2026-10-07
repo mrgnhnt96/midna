@@ -115,9 +115,9 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
   - Fields: `{ id, name, source: github|bitbucket, event: string, filter: {repo?, branch?, action?, label?}, action: TriggerAction, enabled: bool, state: draft|needs_secret|active|paused, secret_set: bool, created_by: Actor, created_at, last_fired_at?, fired: u64 }`
   - **TriggerAction** is one of:
     - `start_agent{ project_id, agent, prompt_template }`, where templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`
-    - `run_command{ project_id, command }`
+    - `run_command{ project_id, command, background?, headless?, timeout_secs? }`: a monitor terminal as a tab, or in the sidebar's Background group (`background`), or no terminal at all (`headless`, stopped after `timeout_secs`, default 1800; its run goes on the delivery's `command_runs`)
     - `attention{ message }`
-- **Delivery** `{ id, source, event, delivery_guid, received_at, verdict: verified|bad_signature|filtered|replayed|recovered|no_trigger, trigger_id?, session_started?: id, summary }`
+- **Delivery** `{ id, source, event, delivery_guid, received_at, verdict: verified|bad_signature|filtered|replayed|recovered|no_trigger, trigger_id?, session_started?: id, summary, command_runs?: [{ trigger_id, command, started_at, finished_at?, exit_code?, signal?, timed_out?, output?, error? }] }`. A headless run finishing emits `trigger.command_finished { trigger_id, delivery_id, run }`.
 - **Setting**
   - The settings catalog is in code. Each entry is `{ key, type: bool|string|enum([..])|int|keybinding, default, description, human_only: bool, section }`.
   - Values are stored in state. `settings.list` returns key, value, default, description, human_only, and `cli: "midna settings set <key> <value>"`.

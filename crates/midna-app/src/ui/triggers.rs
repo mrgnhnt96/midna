@@ -59,7 +59,8 @@ pub struct TriggerItem {
     pub source: String,
     pub event: String,
     pub filter: FilterItem,
-    /// Tagged by `kind`: start_agent{project_id, agent, prompt_template} | run_command{project_id, command} | attention{message}
+    /// Tagged by `kind`: start_agent{project_id, agent, prompt_template} | run_command{project_id, command, background, headless,
+    /// timeout_secs} | attention{message}
     /// | send_to_session{steps} | set_status{label, color, icon, base, clear_on} | clear_status{}.
     pub action: Value,
     pub enabled: bool,
@@ -184,7 +185,14 @@ impl TriggerItem {
         let proj = self.project_id().map(|p| format!(" in {}", n.project(&p))).unwrap_or_default();
         match self.action_kind().as_str() {
             "start_agent" => format!("Start {}{proj}", if self.s("agent") == "codex" { "Codex" } else { "Claude" }),
-            "run_command" => format!("Run a command{proj}"),
+            "run_command" => {
+                let how = match (self.action.get("background").and_then(Value::as_bool), self.action.get("headless").and_then(Value::as_bool)) {
+                    (_, Some(true)) => " with no terminal",
+                    (Some(true), _) => " in Background",
+                    _ => "",
+                };
+                format!("Run a command{proj}{how}")
+            }
             "attention" => "Raise attention".into(),
             "send_to_session" => {
                 let steps = self.steps();
@@ -384,9 +392,32 @@ pub struct DeliveryItem {
     pub sessions_started: Vec<String>,
     pub recovered: bool,
     pub replay_of: Option<String>,
+    /// Headless `run_command` runs: {command, finished_at, exit_code, signal, timed_out, output, error}.
+    pub command_runs: Vec<Value>,
 }
 
 impl DeliveryItem {
+    /// How its headless commands ended, e.g. "exit 0", "running", "timed out" (empty with none).
+    fn runs_text(&self) -> String {
+        let one = |r: &Value| {
+            if r.get("finished_at").is_none_or(Value::is_null) {
+                return "running".to_string();
+            }
+            if r.get("timed_out").and_then(Value::as_bool) == Some(true) {
+                return "timed out".into();
+            }
+            if let Some(e) = r.get("error").and_then(Value::as_str) {
+                return e.to_string();
+            }
+            match (r.get("exit_code").and_then(Value::as_i64), r.get("signal").and_then(Value::as_i64)) {
+                (Some(c), _) => format!("exit {c}"),
+                (None, Some(s)) => format!("killed by signal {s}"),
+                _ => "finished".into(),
+            }
+        };
+        self.command_runs.iter().map(one).collect::<Vec<_>>().join(", ")
+    }
+
     fn concerns(&self, trigger: &str) -> bool {
         self.trigger_id.as_deref() == Some(trigger) || self.triggers_fired.iter().any(|t| t == trigger)
     }
@@ -1679,7 +1710,11 @@ impl TriggersView {
         let can_replay = d.verdict != "bad_signature";
         let what = d.subject.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| d.summary.clone());
         let started = d.session_started.as_deref().map(|s| format!("Started {}", n.term(s)));
-        let outcome = if d.summary.is_empty() || (d.subject.is_none() && !orphan) { started.clone().unwrap_or_default() } else { d.summary.clone() };
+        let mut outcome = if d.summary.is_empty() || (d.subject.is_none() && !orphan) { started.clone().unwrap_or_default() } else { d.summary.clone() };
+        let runs = d.runs_text();
+        if !runs.is_empty() {
+            outcome = if outcome.is_empty() { format!("Ran with no terminal · {runs}") } else { format!("{outcome} · {runs}") };
+        }
         let recovered = d.recovered || d.verdict == "recovered";
         let replay_btn = if can_replay {
             let dd = d.clone();

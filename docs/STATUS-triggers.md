@@ -59,7 +59,7 @@ target/debug/midna triggers deliveries
 
 **Actions:**
 - `start_agent` opens an agent session through the normal `session.open` path, with actor `trigger`.
-- `run_command` opens a monitor; template values are shell-quoted.
+- `run_command` opens a monitor; template values are shell-quoted. `background: true` opens it in the sidebar's Background group. `headless: true` runs it with no terminal (`midnad/src/headless.rs`): login shell, project folder, the terminal env less `MIDNA_SESSION` plus `MIDNA_TRIGGER`/`MIDNA_DELIVERY`, stdin closed, its own process group. The delivery gets a `command_runs` entry at once; when it ends, its exit code (or signal), `timed_out` and output tail (last 50 lines, 4 KB) fill in and `trigger.command_finished` is emitted. Past `timeout_secs` (default 30 min, at most a day) the group gets SIGTERM, then SIGKILL after 5 s. A run still going when midnad stops is marked `error: midnad restarted while it ran` on the next load.
 - `attention` raises a needs-you note.
 - They emit `trigger.fired` (counted by Insights) and `trigger.delivery`.
 

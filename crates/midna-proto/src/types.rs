@@ -955,7 +955,22 @@ pub enum StatusClear {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TriggerAction {
     StartAgent { project_id: Id, agent: AgentKind, prompt_template: String },
-    RunCommand { project_id: Id, command: String },
+    /// Run `command` (through the login shell) in a monitor terminal in the project. With
+    /// `background` the terminal opens in the sidebar's folded Background group instead of as a
+    /// tab. With `headless` there's no terminal at all: it runs in the project's folder, and its
+    /// exit code and the end of its output go on the delivery (`Delivery::command_runs`). It's
+    /// stopped after `timeout_secs` (default 30 minutes). `background` and `headless` don't mix.
+    RunCommand {
+        project_id: Id,
+        command: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        headless: bool,
+        /// Headless only: stop it after this many seconds (default 1800, at most 86400).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_secs: Option<u64>,
+    },
     Attention { message: String },
     /// Local only: type `steps` into the terminal that fired, in order. Each step after the
     /// first waits until the agent is ready for input again.
@@ -1194,6 +1209,37 @@ pub struct Delivery {
     /// body + signature could be resent under a fresh GUID; the digest catches that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_sha256: Option<String>,
+    /// Commands a headless `run_command` ran for it (no terminal), each running until it has a
+    /// `finished_at`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_runs: Vec<CommandRun>,
+}
+
+/// One headless `run_command` run, kept on its delivery.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CommandRun {
+    pub trigger_id: Id,
+    /// The command as run (templates filled in).
+    pub command: String,
+    pub started_at: Timestamp,
+    /// None while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<Timestamp>,
+    /// Its exit status; None while it runs, or when a signal ended it (`signal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    /// Stopped because it ran past the action's `timeout_secs`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub timed_out: bool,
+    /// The end of what it printed (stdout and stderr together): the last 50 lines, at most 4 KB.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
+    /// Why it didn't run or didn't finish (couldn't start, midnad restarted while it ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ------------------------------------------------------------------ events
@@ -1249,6 +1295,8 @@ pub mod kinds {
     pub const TRIGGER_UPDATED: &str = "trigger.updated";
     pub const TRIGGER_DELIVERY: &str = "trigger.delivery";
     pub const TRIGGER_FIRED: &str = "trigger.fired";
+    /// A headless `run_command` finished: {trigger_id, delivery_id, run}.
+    pub const TRIGGER_COMMAND_FINISHED: &str = "trigger.command_finished";
     pub const TRIGGER_REMOVED: &str = "trigger.removed";
     pub const SECRET_SET: &str = "secret.set";
     pub const SECRET_REMOVED: &str = "secret.removed";

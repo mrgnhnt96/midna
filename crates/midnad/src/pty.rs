@@ -12,7 +12,7 @@ use std::sync::Mutex;
 /// messaging socket and pid leak into the child. Host-terminal markers (Saggar, iTerm,
 /// Terminal.app) would make the user's global hooks attribute a midna agent to the wrong
 /// terminal. User configuration (e.g. `CLAUDE_CODE_ENABLE_TODO_TOOLS`) is kept.
-const ENV_SCRUB: &[&str] = &[
+pub(crate) const ENV_SCRUB: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SSE_PORT",

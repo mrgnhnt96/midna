@@ -1087,6 +1087,12 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
 - **The terminal resizes once.** While the panel's width moves it draws over a rail-wide slot, and the pane beside it slides along as one block, so its left edge follows the panel's. The pane always keeps the wider of its two sizes, which runs off the right edge of the window. Collapsing, the terminal grows at the start. Expanding, it shrinks at the end. A width that changed every frame would resize the PTY every frame, and agents' TUIs redraw on every resize.
 - Lines are clipped, not reflowed, so the text never rewraps. The right-edge resize handle is hidden while it moves. Pressing ⌘B mid-animation starts the other direction from its beginning. With Reduce Motion on, it switches at once, as before.
 
+## Trigger commands in the Background group or with no terminal (issue #4; `midnad/src/headless.rs`; 2026-10-07)
+
+- `run_command` takes `background` (the monitor terminal opens in the sidebar's folded Background group, through `session.open`'s existing `background`) or `headless` (no terminal). They don't mix, and `timeout_secs` is refused without `headless`. CLI: `--run CMD --background` / `--headless [--timeout 30m]`; on `triggers update` either alone changes the current command, and `--run CMD` alone makes it a tab again.
+- **Headless results live on the delivery**, not a new store: `Delivery.command_runs` (one per headless trigger that fired for it), filled in by the run's own thread when it ends, so the trigger thread never waits. `triggers deliveries` appends `(exit 0)` / `(timed out)` to the outcome, `deliveries` detail and the app's firing rows show the same.
+- Runs aren't adopted across a daemon restart or upgrade: the output pipe goes with the old process, so they're marked lost rather than left "running" forever.
+
 ## notify.send: a URL to open, buttons that report back, an id to replace or withdraw (GitHub #3, #5, #6; 2026-10-07)
 
 - **Why**: the PR review log and the task board used terminal-notifier for `-open`, `-action` and `-group`/`-remove`, which kept those notifications out of midna's settings, kinds and history. `notify.send` now covers all three, from any process (it never needed a terminal).

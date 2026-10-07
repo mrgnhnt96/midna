@@ -506,6 +506,15 @@ fn actor_of(t: &Trigger) -> Actor {
     crate::webhooks::process::trigger_actor(t)
 }
 
+/// Where a `run_command` runs, for dry runs: "" (a tab), " in Background", " with no terminal".
+pub fn run_where(background: bool, headless: bool) -> &'static str {
+    match (background, headless) {
+        (_, true) => " with no terminal",
+        (true, _) => " in Background",
+        _ => "",
+    }
+}
+
 pub fn action_name(a: &TriggerAction) -> &'static str {
     match a {
         TriggerAction::StartAgent { .. } => "start_agent",
@@ -519,7 +528,9 @@ pub fn action_name(a: &TriggerAction) -> &'static str {
 }
 
 fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, line: String) {
-    let (started, outcome) = run(d, t, event, s, data);
+    let id = format!("d_{}", hex_id(6));
+    let mut runs = vec![];
+    let (started, outcome) = run(d, t, event, s, data, &id, &mut runs);
     let summary = s.map(|s| s.name.clone());
     {
         let mut core = d.core();
@@ -531,7 +542,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
     }
     d.mark_dirty();
     let del = Delivery {
-        id: format!("d_{}", hex_id(6)),
+        id,
         source: TriggerSource::Local,
         event: event.to_string(),
         delivery_guid: format!("local-{}", hex_id(8)),
@@ -550,6 +561,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         recovered: false,
         replay_of: None,
         body_sha256: None,
+        command_runs: runs,
     };
     let project = t.action.project_id().cloned().or_else(|| s.map(|s| s.project_id.clone()));
     d.emit(
@@ -562,8 +574,9 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
     crate::webhooks::process::record(d, &del, None);
 }
 
-/// Run one local trigger's action. Returns (terminal started, one-line outcome).
-fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value) -> (Option<Id>, String) {
+/// Run one local trigger's action for delivery `del_id`. Returns (terminal started, one-line
+/// outcome); a headless command's run goes in `runs`.
+fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, del_id: &str, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
     let actor = actor_of(t);
     let prompt = if uses_last_prompt(t) { s.and_then(|s| last_prompt(d, &s.id)) } else { None };
     let r = |tpl: &str, quote: bool| render(tpl, event, s, data, prompt.as_deref(), quote);
@@ -582,9 +595,20 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
             let n = name();
             open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": r(prompt_template, false) })).map(|id| (Some(id), format!("Started {} › {n}", agent.as_str())))
         }
-        TriggerAction::RunCommand { project_id, command } => {
+        TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let n = name();
-            open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [r(command, true)] })).map(|id| (Some(id), format!("Ran command › {n}")))
+            if *headless {
+                let run = crate::headless::start(d, t, del_id, project_id, &r(command, true), *timeout_secs);
+                let out = match &run.error {
+                    Some(e) => Err(e.clone()),
+                    None => Ok((None, format!("Running with no terminal › {n}"))),
+                };
+                runs.push(run);
+                out
+            } else {
+                open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [r(command, true)], "background": background }))
+                    .map(|id| (Some(id), format!("Ran command{} › {n}", if *background { " in Background" } else { "" })))
+            }
         }
         TriggerAction::Attention { message } => {
             let msg = r(message, false);
@@ -823,7 +847,7 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
     let on = s.as_ref().map(|s| format!(" on {}", s.name)).unwrap_or_default();
     let would = match &t.action {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent.as_str(), r(prompt_template, false)),
-        TriggerAction::RunCommand { command, .. } => format!("would run: {}", r(command, true)),
+        TriggerAction::RunCommand { command, background, headless, .. } => format!("would run{}: {}", run_where(*background, *headless), r(command, true)),
         TriggerAction::Attention { message } => format!("would raise attention: {}", r(message, false)),
         TriggerAction::SendToSession { steps } => {
             let shown: Vec<String> = steps.iter().map(|x| format!("“{}”", clip(&r(&x.text, false), 80))).collect();
@@ -859,6 +883,7 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
         recovered: false,
         replay_of: None,
         body_sha256: None,
+        command_runs: vec![],
     }
 }
 

@@ -196,7 +196,9 @@ const TOPICS: &[(&str, &str)] = &[
         withdrawn if the terminal it is about closes, or its asker disconnects or closes, before anyone answers."),
     ("triggers", "A webhook trigger maps a GitHub/Bitbucket event (`pull_request.opened`, `pullrequest:created`, globs \
         ok) plus filters (repo, branch, action, label) to an action: start_agent (prompt template), run_command (a \
-        monitor terminal; values shell-quoted) or attention. States: needs_secret → draft → active ⇄ paused. Agents \
+        monitor terminal; values shell-quoted; background: true opens it in the sidebar's Background group, headless: true \
+        runs it with no terminal and keeps its exit code and the last 50 lines of output on the delivery's command_runs, \
+        stopped after timeout_secs, default 30 minutes) or attention. States: needs_secret → draft → active ⇄ paused. Agents \
         draft; the human pastes the secret and enables. `midna triggers test <id> --payload f.json` dry-runs one.\n\
         A local trigger (source local) fires on this Mac. event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, \
         hook.Notification, …), a midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
@@ -497,6 +499,12 @@ fn explain_rule(call: Caller, id: &str, surface: Surface) -> Result<String, RpcE
 fn action_text(a: &Value) -> String {
     match a["kind"].as_str() {
         Some("start_agent") => format!("starts a {} agent in project {} with the prompt “{}”", s(a, "agent"), s(a, "project_id"), s(a, "prompt_template")),
+        Some("run_command") if a["headless"].as_bool() == Some(true) => {
+            format!("runs `{}` with no terminal in project {} (exit code and output on its deliveries)", s(a, "command"), s(a, "project_id"))
+        }
+        Some("run_command") if a["background"].as_bool() == Some(true) => {
+            format!("runs `{}` in a monitor terminal in the Background group, project {}", s(a, "command"), s(a, "project_id"))
+        }
         Some("run_command") => format!("runs `{}` in a monitor terminal in project {}", s(a, "command"), s(a, "project_id")),
         Some("attention") => format!("raises a note for the human: “{}”", s(a, "message")),
         Some("send_to_session" | "set_status" | "clear_status") => format!("acts on the terminal that fired: {}", crate::triggers::action_text(a)),

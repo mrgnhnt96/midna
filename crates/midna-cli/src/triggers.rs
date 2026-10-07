@@ -35,7 +35,17 @@ fn q(v: &str) -> String {
 pub fn action_text(a: &Value) -> String {
     match a["kind"].as_str() {
         Some("start_agent") => format!("start {} in {}", s(a, "agent"), s(a, "project_id")),
-        Some("run_command") => format!("run `{}` in {}", s(a, "command"), s(a, "project_id")),
+        Some("run_command") => {
+            let how = match (a["background"].as_bool(), a["headless"].as_bool()) {
+                (_, Some(true)) => match a["timeout_secs"].as_u64() {
+                    Some(t) => format!(" with no terminal (timeout {t}s)"),
+                    None => " with no terminal".into(),
+                },
+                (Some(true), _) => " in Background".into(),
+                _ => String::new(),
+            };
+            format!("run `{}` in {}{how}", s(a, "command"), s(a, "project_id"))
+        }
         Some("attention") => format!("attention: {}", s(a, "message")),
         Some("send_to_session") => {
             let steps: Vec<String> = a["steps"]
@@ -172,7 +182,12 @@ fn print_deliveries(v: &Value) {
         if d["recovered"].as_bool() == Some(true) && verdict != "recovered" {
             verdict.push_str(" (recovered)");
         }
-        rows.push(vec![s(&d, "id"), s(&d, "received_at"), verdict, ev, s(&d, "repo"), s(&d, "subject"), s(&d, "summary")]);
+        let mut outcome = s(&d, "summary");
+        let runs: Vec<String> = d["command_runs"].as_array().into_iter().flatten().map(run_result).collect();
+        if !runs.is_empty() {
+            outcome.push_str(&format!(" ({})", runs.join(", ")));
+        }
+        rows.push(vec![s(&d, "id"), s(&d, "received_at"), verdict, ev, s(&d, "repo"), s(&d, "subject"), outcome]);
     }
     table(rows);
 }
@@ -181,6 +196,30 @@ fn print_delivery(d: &Value) {
     println!("{} {}  {}", s(d, "id"), s(d, "verdict"), s(d, "summary"));
     for e in d["eval"].as_array().into_iter().flatten() {
         println!("  {}", plain(e));
+    }
+    for r in d["command_runs"].as_array().into_iter().flatten() {
+        println!("  ran `{}`: {}", s(r, "command"), run_result(r));
+        for line in r["output"].as_str().unwrap_or("").lines() {
+            println!("    {line}");
+        }
+    }
+}
+
+/// How a headless command run ended: `running`, `exit 0`, `timed out`, `killed by signal 9`, or its error.
+fn run_result(r: &Value) -> String {
+    if r["finished_at"].is_null() {
+        return "running".into();
+    }
+    if r["timed_out"].as_bool() == Some(true) {
+        return "timed out".into();
+    }
+    if let Some(e) = r["error"].as_str() {
+        return e.to_string();
+    }
+    match (r["exit_code"].as_i64(), r["signal"].as_i64()) {
+        (Some(c), _) => format!("exit {c}"),
+        (None, Some(sig)) => format!("killed by signal {sig}"),
+        _ => "finished".into(),
     }
 }
 
@@ -314,6 +353,15 @@ fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result
         }
         return Ok(Some(act));
     }
+    // --background / --headless / --timeout alone edit the current run_command (update).
+    if !a.has("run") && RUN_MODS.iter().any(|f| a.has(f)) {
+        let Some(cur) = cur.filter(|c| c["kind"] == "run_command" && picked.is_empty()) else {
+            return Err(Fail::Usage("--background, --headless and --timeout go with --run CMD".into()));
+        };
+        let mut act = cur.clone();
+        run_mods(a, &mut act)?;
+        return Ok(Some(act));
+    }
     let need_project = || project.clone().ok_or_else(|| Fail::Usage("--project is required for this action".into()));
     if let Some(v) = json_arg(a, "action-json")? {
         if !v["kind"].is_string() {
@@ -326,7 +374,9 @@ fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result
         return Ok(Some(json!({ "kind": "start_agent", "project_id": need_project()?, "agent": agent, "prompt_template": prompt })));
     }
     if let Some(cmd) = a.get("run") {
-        return Ok(Some(json!({ "kind": "run_command", "project_id": need_project()?, "command": cmd })));
+        let mut act = json!({ "kind": "run_command", "project_id": need_project()?, "command": cmd });
+        run_mods(a, &mut act)?;
+        return Ok(Some(act));
     }
     if let Some(msg) = a.get("attention") {
         return Ok(Some(json!({ "kind": "attention", "message": msg })));
@@ -473,6 +523,35 @@ fn filter_from(a: &Args, base: Value) -> Result<(Value, bool), Fail> {
     Ok((f, touched))
 }
 
+/// Flags that change where a `--run` command runs.
+const RUN_MODS: &[&str] = &["background", "headless", "timeout"];
+
+/// Apply --background (a terminal in the Background group), --headless (no terminal) and
+/// --timeout (headless only) to a run_command action.
+fn run_mods(a: &Args, act: &mut Value) -> Result<(), Fail> {
+    if a.has("background") && a.has("headless") {
+        return Err(Fail::Usage("pick --background (a terminal in the Background group) or --headless (no terminal), not both".into()));
+    }
+    let m = act.as_object_mut().expect("an action object");
+    if a.has("background") {
+        m.insert("background".into(), json!(true));
+        m.remove("headless");
+        m.remove("timeout_secs");
+    }
+    if a.has("headless") {
+        m.insert("headless".into(), json!(true));
+        m.remove("background");
+    }
+    if let Some(v) = a.get("timeout") {
+        if m.get("headless").and_then(Value::as_bool) != Some(true) {
+            return Err(Fail::Usage("--timeout is for --headless commands (a terminal runs until it exits)".into()));
+        }
+        let secs = parse_duration(v, 1).map_err(|e| Fail::Usage(format!("--timeout {e}")))?;
+        m.insert("timeout_secs".into(), json!(secs));
+    }
+    Ok(())
+}
+
 fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
     a.get("cooldown").map(|v| parse_duration(v, 1).map_err(|e| Fail::Usage(format!("--cooldown {e}")))).transpose()
 }
@@ -481,6 +560,7 @@ const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
     "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter",
     "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
+    "background", "headless", "timeout",
 ];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).
@@ -556,7 +636,7 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             let action = action_from(a, a.get("project").map(str::to_string), None)?.ok_or_else(|| {
                 Fail::Usage(if source == "local" {
                     "pick an action: --send TEXT (repeatable), --set-status LABEL --color C --base B, --clear-status, --notify TITLE, \
-                     --attention MSG, --run CMD --project P, --agent claude|codex --prompt T --project P, or --action-json JSON"
+                     --attention MSG, --run CMD --project P [--background|--headless], --agent claude|codex --prompt T --project P, or --action-json JSON"
                         .into()
                 } else {
                     "pick an action: --agent claude|codex --prompt T, --run CMD, --attention MSG, or --notify TITLE".into()
@@ -712,6 +792,27 @@ mod tests {
         assert!(parse_duration("5x", 1).is_err());
         assert!(parse_duration("1h30", 1).is_err());
         assert!(parse_duration("m", 1).is_err());
+    }
+
+    #[test]
+    fn run_in_background_or_headless() {
+        let p = Some("p_1".to_string());
+        let act = |v: &[&str], cur: Option<&Value>| action_from(&args(v), p.clone(), cur);
+        assert_eq!(ok(act(&["t", "--run", "make"], None)), Some(json!({ "kind": "run_command", "project_id": "p_1", "command": "make" })));
+        assert_eq!(ok(act(&["t", "--run", "make", "--background"], None)).unwrap()["background"], true);
+        let h = ok(act(&["t", "--run", "make", "--headless", "--timeout", "10m"], None)).unwrap();
+        assert_eq!((h["headless"].as_bool(), h["timeout_secs"].as_u64(), h.get("background")), (Some(true), Some(600), None));
+        assert!(act(&["t", "--run", "make", "--background", "--headless"], None).is_err());
+        assert!(act(&["t", "--run", "make", "--timeout", "10m"], None).is_err());
+        assert!(act(&["t", "--headless"], None).is_err());
+        // On update, alone they change the current command; --background drops headless and its timeout.
+        let cur = json!({ "kind": "run_command", "project_id": "p_1", "command": "make", "headless": true, "timeout_secs": 60 });
+        let u = ok(act(&["t", "--background"], Some(&cur))).unwrap();
+        assert_eq!(u, json!({ "kind": "run_command", "project_id": "p_1", "command": "make", "background": true }));
+        assert_eq!(ok(act(&["t", "--timeout", "90s"], Some(&cur))).unwrap()["timeout_secs"], 90);
+        assert!(act(&["t", "--background"], Some(&json!({ "kind": "attention", "message": "x" }))).is_err());
+        assert_eq!(action_text(&u), "run `make` in p_1 in Background");
+        assert_eq!(action_text(&cur), "run `make` in p_1 with no terminal (timeout 60s)");
     }
 
     #[test]

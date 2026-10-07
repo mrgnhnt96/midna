@@ -334,3 +334,78 @@ fn schedule_windows_starts_ends_and_run_limits() {
     let u = call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": t["filter"], "name": "Nudge 2" }));
     assert_eq!(u["filter"]["starts_at"], t["filter"]["starts_at"], "{u}");
 }
+
+/// Fire a no-terminal `@daily` schedule trigger now.
+fn fire_daily(d: &TestDaemon, id: &Value) {
+    let at = midna_proto::cron::Cron::parse("@daily").unwrap().next_after(midna_proto::time::now_unix()).unwrap();
+    midnad::local::fire_schedule_now(&d.daemon(), id.as_str().unwrap(), at);
+}
+
+/// A trigger's latest delivery once its headless run has finished.
+fn finished_run(h: &mut Client, trigger: &Value, secs: u64) -> Value {
+    wait_for(secs, "headless run finished", || {
+        let list = call(h, "trigger.deliveries", json!({ "trigger_id": trigger }));
+        list.as_array().and_then(|a| a.first().cloned()).filter(|d| !d["command_runs"][0]["finished_at"].is_null())
+    })
+}
+
+#[test]
+fn run_command_in_background_or_with_no_terminal() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let p = call(&mut h, "project.add", json!({ "path": dir }));
+    let pid = p["id"].as_str().unwrap().to_string();
+    let add = |h: &mut Client, name: &str, action: Value| {
+        call(h, "trigger.add", json!({ "name": name, "source": "local", "event": "schedule", "filter": { "cron": "@daily" }, "action": action, "enabled": true }))
+    };
+    let run = |cmd: &str, extra: Value| {
+        let mut a = json!({ "kind": "run_command", "project_id": pid, "command": cmd });
+        a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        a
+    };
+
+    // background and headless don't mix; a timeout is for headless runs.
+    let bad = |h: &mut Client, action: Value| call_err(h, "trigger.add", json!({ "name": "x", "source": "local", "event": "hook.Stop", "action": action })).message;
+    let e = bad(&mut h, run("true", json!({ "background": true, "headless": true })));
+    assert!(e.contains("pick one"), "{e}");
+    let e = bad(&mut h, run("true", json!({ "timeout_secs": 5 })));
+    assert!(e.contains("timeout_secs is for headless"), "{e}");
+    let e = bad(&mut h, run("true", json!({ "headless": true, "timeout_secs": 0 })));
+    assert!(e.contains("timeout_secs must be"), "{e}");
+
+    // Background: a monitor terminal in the Background group.
+    let bg = add(&mut h, "Compaction", run("echo compacting; sleep 5", json!({ "background": true })));
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": bg["id"] }));
+    assert!(r["summary"].as_str().unwrap().starts_with("Matches · would run in Background: echo compacting"), "{r}");
+    fire_daily(&d, &bg["id"]);
+    let del = wait_for(5, "background firing", || call(&mut h, "trigger.deliveries", json!({ "trigger_id": bg["id"] })).as_array().and_then(|a| a.first().cloned()));
+    assert_eq!(del["summary"], "Ran command in Background › Compaction", "{del}");
+    let s = call(&mut h, "session.get", json!({ "id": del["session_started"] }));
+    assert_eq!((s["kind"].as_str(), s["background"].as_bool(), s["project_id"].as_str()), (Some("monitor"), Some(true), Some(pid.as_str())), "{s}");
+
+    // Headless: no terminal; the exit code and output end up on the delivery.
+    let before = call(&mut h, "session.list", json!({})).as_array().unwrap().len();
+    let hl = add(&mut h, "Housekeeping", run("echo from $MIDNA_TRIGGER in $(pwd); echo oops >&2; test -z \"$MIDNA_SESSION\" && exit 3", json!({ "headless": true })));
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": hl["id"] }));
+    assert!(r["summary"].as_str().unwrap().starts_with("Matches · would run with no terminal: "), "{r}");
+    fire_daily(&d, &hl["id"]);
+    let del = finished_run(&mut h, &hl["id"], 10);
+    assert_eq!(del["summary"], "Running with no terminal › Housekeeping", "{del}");
+    assert!(del["session_started"].is_null(), "{del}");
+    let ran = &del["command_runs"][0];
+    assert_eq!((ran["exit_code"].as_i64(), ran["trigger_id"].as_str()), (Some(3), hl["id"].as_str()), "{ran}");
+    assert_eq!(ran["output"].as_str().unwrap(), format!("from {} in {}\noops", hl["id"].as_str().unwrap(), dir.display()), "{ran}");
+    assert_eq!(call(&mut h, "session.list", json!({})).as_array().unwrap().len(), before, "no terminal opened");
+    let done = wait_for(5, "command_finished event", || events(&mut h, "trigger.command_finished").pop());
+    assert_eq!((done["data"]["delivery_id"].as_str(), done["data"]["run"]["exit_code"].as_i64()), (del["id"].as_str(), Some(3)), "{done}");
+
+    // Past its timeout the run is stopped.
+    let slow = add(&mut h, "Slow", run("echo started; sleep 30", json!({ "headless": true, "timeout_secs": 1 })));
+    fire_daily(&d, &slow["id"]);
+    let del = finished_run(&mut h, &slow["id"], 15);
+    let ran = &del["command_runs"][0];
+    assert_eq!((ran["timed_out"].as_bool(), ran["exit_code"].as_i64(), ran["output"].as_str()), (Some(true), None, Some("started")), "{ran}");
+}

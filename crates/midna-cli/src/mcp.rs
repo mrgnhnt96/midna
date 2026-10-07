@@ -74,7 +74,8 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             ends_at (RFC 3339) and max_runs (1 = once)); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
             (case-insensitive). action: {kind:send_to_session, steps:[{text, enter:true}]} (in order, each waits for the agent) | \
             {kind:set_status, label, color, icon?, base, clear_on: prompt|turn|status|never} | {kind:clear_status} | {kind:notify, title, body?, sound:true} | attention | \
-            run_command | start_agent. Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or bare {{<path>}}. \
+            run_command {project_id, command, background?, headless?, timeout_secs?} (background: a terminal in the Background group; \
+            headless: no terminal, exit code and output tail on the delivery's command_runs) | start_agent. Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or bare {{<path>}}. \
             cooldown_secs defaults to 60 per terminal; events triggers cause never fire triggers. enabled:true (add, local only) or \
             trigger_set_enabled turns a local trigger on with no approval; do it when the human asked for the trigger. trigger_test takes \
             session for local triggers. The `guide` tool (section “Local triggers”) has worked examples.",
