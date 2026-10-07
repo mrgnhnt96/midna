@@ -131,6 +131,8 @@ pub struct MainWindow {
     pub sidebar_width: f32,
     /// Its right edge is being dragged; the width is saved on release.
     pub sidebar_resizing: bool,
+    /// When ⌘B last collapsed or expanded the sidebar, to animate it (`ui::sidebar_anim`).
+    pub sidebar_anim: Option<Instant>,
     /// The sidebar's Background group is unfolded (same file as `seen`; folded by default).
     pub background_open: bool,
     /// The Background group is left out of the sidebar and rail entirely (same file as `seen`).
@@ -321,6 +323,7 @@ impl MainWindow {
             sidebar_collapsed,
             sidebar_width,
             sidebar_resizing: false,
+            sidebar_anim: None,
             background_open,
             background_hidden,
             order,

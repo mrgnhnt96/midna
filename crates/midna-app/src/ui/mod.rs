@@ -27,6 +27,7 @@ pub mod screens;
 pub mod setup_screen;
 pub mod settings;
 pub mod sidebar;
+pub mod sidebar_anim;
 pub mod split;
 pub mod statusbar;
 pub mod subagent_window;
@@ -206,7 +207,8 @@ impl Render for MainWindow {
         }
         twilight::sync_lights(self, window);
         crate::composer::sync(self);
-        let sidebar = sidebar::render(self, &t, window, cx);
+        let sidebar_anim = sidebar_anim::frame(self, window);
+        let sidebar = sidebar::render(self, &t, sidebar_anim, window, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
             (ConnState::NotRunning { .. }, _) | (ConnState::Connecting, _) => screens::not_running(self, &t, cx).into_any_element(),
             // NeedsYou-C replaces the pane right of the sidebar, whatever screen is under it.
@@ -256,7 +258,12 @@ impl Render for MainWindow {
             .font_family(t.ui_font.clone())
             .text_size(px(13.))
             .line_height(px(13. * 1.45))
-            .child(div().flex().flex_1().min_h_0().child(sidebar).child(main))
+            .child(
+                div().flex().flex_1().min_h_0().child(sidebar).child(
+                    // the sidebar collapsing or expanding: the pane slides along with its edge
+                    div().relative().left(px(sidebar_anim.map_or(0., |f| f.pane_offset(sidebar::RAIL_WIDTH)))).flex().flex_1().min_w_0().h_full().child(main),
+                ),
+            )
             .child(statusbar::render(self, &t, cx))
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
             .when(self.overlay == Overlay::Annotate, |d| d.child(self.annot.clone()))

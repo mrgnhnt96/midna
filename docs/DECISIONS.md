@@ -1046,3 +1046,11 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
 - **Not animated**: the first lists after launch, terminals that close, and anything while macOS Reduce Motion is on. Those changes show as they are.
 - The sweep is removed when it finishes rather than left at its last position, so no tint stays on the row (the canvas board had that bug).
 - The collapsed rail and the floating badge (which has its own pulse) are unchanged.
+
+## Collapsing the sidebar cascades (`ui/sidebar_anim.rs`; 2026-10-06)
+
+- **Picked B "Cascade"** from three concepts (A morph, B cascade, C drawer) on the sidebar collapse canvas (https://claude.ai/artifact/Q4yMJ2jSwxzPboBHrAvH8U).
+- **Collapsing (⌘B)**: each line's text wipes back toward its status dot, from the top line (strip and needs-you button) down through each heading and row to the Background group and footer. Lines start 22 ms apart, closer together when there are many, so the whole cascade takes at most 160 ms plus one 130 ms wipe. Three quarters of the way through, the panel closes to the 76 px rail over 240 ms. As it lands, each rail dot pops (grows 60% and settles over 280 ms) in the same order, and its icon fades in.
+- **Expanding**: the panel opens over 240 ms first. From 140 ms the lines write themselves back in, in the same order, 170 ms each.
+- **The terminal resizes once.** While the panel's width moves it draws over a rail-wide slot, and the pane beside it slides along as one block, so its left edge follows the panel's. The pane always keeps the wider of its two sizes, which runs off the right edge of the window. Collapsing, the terminal grows at the start. Expanding, it shrinks at the end. A width that changed every frame would resize the PTY every frame, and agents' TUIs redraw on every resize.
+- Lines are clipped, not reflowed, so the text never rewraps. The right-edge resize handle is hidden while it moves. Pressing ⌘B mid-animation starts the other direction from its beginning. With Reduce Motion on, it switches at once, as before.

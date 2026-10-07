@@ -8,6 +8,7 @@ use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
 use crate::model::*;
 use crate::theme::Theme;
+use crate::ui::sidebar_anim::Frame;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -40,8 +41,19 @@ impl Render for NoGhost {
 
 /// The sidebar, which also tracks a row dragged out of the window (to move it to another
 /// main window, or a new one) and lights up while another window's row is over it.
-pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let inner = if m.sidebar_collapsed { rail(m, t, cx).into_any_element() } else { full(m, t, window, cx) };
+/// `anim`: ⌘B collapsing or expanding it (`ui::sidebar_anim`); while its width moves, the
+/// panel draws over a rail-wide slot.
+pub fn render(m: &MainWindow, t: &Theme, anim: Option<Frame>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let inner = match anim {
+        Some(f) if !f.rail => full(m, t, Some(f), window, cx),
+        _ if m.sidebar_collapsed => rail(m, t, anim, cx).into_any_element(),
+        _ => full(m, t, None, window, cx),
+    };
+    let overlay = anim.filter(|f| f.overlay);
+    let inner = match overlay {
+        Some(f) => div().absolute().top_0().left_0().h_full().w(px(f.panel_w)).overflow_hidden().child(inner).into_any_element(),
+        None => inner,
+    };
     let hint = m.windows.borrow().drop_hint == Some(m.id);
     div()
         .id("sidebar")
@@ -49,6 +61,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         .flex()
         .flex_none()
         .h_full()
+        .when(overlay.is_some(), |d| d.w(px(RAIL_WIDTH)))
         .on_drag_move(cx.listener(drag_out_move))
         .on_drag_move(cx.listener(|m, ev: &DragMoveEvent<ResizeDrag>, _, cx| {
             m.sidebar_width = clamp_width(f32::from(ev.event.position.x - ev.bounds.left()));
@@ -64,7 +77,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
             drag_out_end(m, ev.position, w, cx)
         }))
         .child(inner)
-        .when(!m.sidebar_collapsed, |d| d.child(resize_handle(m, t, cx)))
+        .when(!m.sidebar_collapsed && anim.is_none(), |d| d.child(resize_handle(m, t, cx)))
         .when(hint, |d| {
             d.child(
                 div()
@@ -161,12 +174,23 @@ fn drag_out_end(m: &mut MainWindow, pos: Point<Pixels>, window: &mut Window, cx:
     });
 }
 
-fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// `sb_anim`: ⌘B collapsing or expanding it: each line's text wipes back toward its status dot
+/// (the top line first), or writes itself back in, clipped without reflowing.
+fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let compact = m.compact();
     let need_n = m.needs.len();
     let jump_key = m.key_label("keys.next_needs_you");
+    let w = m.sidebar_width;
+    // `keep`: px at the left that stay (a row's dot).
+    let wipe = |k: usize, keep: f32, el: AnyElement| -> AnyElement {
+        match sb_anim.map(|f| f.wipe(k)).filter(|v| *v > 0.) {
+            Some(v) => div().flex_none().w(px(keep + (w - keep) * (1. - v))).overflow_hidden().child(div().w(px(w)).flex().flex_col().child(el)).into_any_element(),
+            None => el,
+        }
+    };
+    let mut line = 1;
 
-    let top = titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false));
+    let top = wipe(0, 0., titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false)).into_any_element());
 
     if m.need_anim.moving() {
         window.request_animation_frame();
@@ -202,7 +226,7 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
             .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).font_weight(FontWeight::NORMAL).child(jump_key))
     };
     // Opening and folding: the room (button + its 6px below) grows or shrinks with it.
-    let need_btn = div().flex_none().h(px(40. * btn_look.open)).opacity(btn_look.open).overflow_hidden().child(need_btn);
+    let need_btn = wipe(0, 30., div().flex_none().h(px(40. * btn_look.open)).opacity(btn_look.open).overflow_hidden().child(need_btn).into_any_element());
 
     let mut list = div().id("sessions").flex().flex_col().flex_1().min_h_0().py(px(4.)).overflow_y_scroll();
     for (gi, g) in m.groups().into_iter().enumerate() {
@@ -298,6 +322,8 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
                         d.child(project_menu(t, pid.clone(), keys, cx))
                     }),
             );
+        let header = wipe(line, 0., header.into_any_element());
+        line += usize::from(g.project.is_some());
         // Root terminals belong to no project: no heading, just rows.
         let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
@@ -306,11 +332,13 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         let (mut run, mut ri, mut k) = (vec![], 0, 0);
         for s in g.sessions {
             if m.selected.as_deref() == Some(&s.id) {
-                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(row(m, s, &key, t, compact, cx));
+                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., row(m, s, &key, t, compact, cx).into_any_element()));
                 ri += 1;
+                line += 1;
             } else if fold < 1. {
-                run.push(cascade(k, row(m, s, &key, t, compact, cx).into_any_element()));
+                run.push(cascade(k, wipe(line, 26., row(m, s, &key, t, compact, cx).into_any_element())));
                 k += 1;
+                line += 1;
             }
         }
         group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
@@ -337,8 +365,8 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         .child(top)
         .when(btn_look.shown, |d| d.child(need_btn))
         .child(list)
-        .children(background)
-        .child(footer)
+        .children(background.map(|b| wipe(line, 0., b.into_any_element())))
+        .child(wipe(line, 0., footer.into_any_element()))
         .into_any_element()
 }
 
@@ -486,14 +514,22 @@ fn collapse_button(t: &Theme, collapsed: bool) -> Stateful<Div> {
 /// Collapse the sidebar to its rail, or expand it again (remembered in app-state.json).
 pub fn toggle_collapsed(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     m.sidebar_collapsed = !m.sidebar_collapsed;
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    m.sidebar_anim = (!cx.reduce_motion()).then(std::time::Instant::now);
     crate::ui::statusbar::save_state(m);
     cx.notify();
 }
 
 /// The collapsed sidebar: expand button, a needs-you count, one status dot per terminal (groups
 /// split by a rule; folded groups keep only the selected terminal), and Triggers / Rules / Settings.
-fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// `anim`: just collapsed (⌘B): each dot pops as it lands, top to bottom, its icon fading in.
+fn rail(m: &MainWindow, t: &Theme, anim: Option<Frame>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let need_n = m.needs.len();
+    let mut k = 0;
+    let mut pop = || {
+        k += 1;
+        anim.map_or((0., 1.), |f| f.pop(k - 1))
+    };
     let mut list = div().id("rail-sessions").flex().flex_col().items_center().gap(px(2.)).flex_1().min_h_0().py(px(4.)).overflow_y_scroll();
     let mut first = true;
     for g in m.groups() {
@@ -507,7 +543,7 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
         }
         let project = if g.project.is_some() { g.name.as_str() } else { "" };
         for s in sessions {
-            list = list.child(rail_row(m, s, project, t, cx));
+            list = list.child(rail_row(m, s, project, pop(), t, cx));
         }
     }
     // Background terminals: dimmed after a rule, only while their group is unfolded (the
@@ -519,7 +555,7 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
         }
         for s in bg {
             let selected = m.selected.as_deref() == Some(&s.id);
-            list = list.child(div().when(!selected, |d| d.opacity(0.55)).child(rail_row(m, s, "background", t, cx)));
+            list = list.child(div().when(!selected, |d| d.opacity(0.55)).child(rail_row(m, s, "background", pop(), t, cx)));
         }
     }
     let btn = |id: &'static str, icon: Icon, label: &'static str, setting: &'static str, active: bool| {
@@ -589,7 +625,9 @@ fn rail(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoEle
 
 /// A terminal on the rail: its agent icon with the status dot in the corner; the name (and
 /// project) in the tooltip.
-fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// `(grow, fade)`: its dot popping (extra size, 0 at rest) and its icon fading in (1 = fully)
+/// as the rail lands (`ui::sidebar_anim`).
+fn rail_row(m: &MainWindow, s: &Session, project: &str, (grow, fade): (f32, f32), t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
     let marked = !selected && m.marked.len() > 1 && m.is_marked(&s.id);
     let id = s.id.clone();
@@ -616,8 +654,8 @@ fn rail_row(m: &MainWindow, s: &Session, project: &str, t: &Theme, cx: &mut Cont
             }
         }))
         .when(selected, |d| d.child(div().absolute().left(px(-18.)).top(px(8.)).bottom(px(8.)).w(px(2.)).bg(t.accent)))
-        .child(super::terminal_icon(m, t, s, 16., if selected { t.fg } else { t.dim }))
-        .child(div().absolute().top(px(5.)).right(px(5.)).child(super::terminal_dot(m, t, s, 8.)))
+        .child(div().flex().opacity(fade).child(super::terminal_icon(m, t, s, 16., if selected { t.fg } else { t.dim })))
+        .child(div().absolute().top(px(5. - 4. * grow)).right(px(5. - 4. * grow)).child(super::terminal_dot(m, t, s, 8. * (1. + grow))))
 }
 
 /// ⌘-click toggles `id` in the selection, ⌘⇧-click selects the range to it. False for a
