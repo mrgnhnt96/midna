@@ -555,8 +555,28 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                 // Not the sheet's click-away: `edit` finishes the other note and keeps the numbering.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |v, _, w, cx| v.edit(i, w, cx)))
+                .group("annot-note")
                 .child(num)
-                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text)),
+                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text))
+                // The note being edited has its own trash under the field. Always in the tree,
+                // shown on hover by style, like the thumbnails' ✕.
+                .when(!editing, |d| {
+                    d.child(
+                        div()
+                            .id(("annot-note-trash", i))
+                            .flex_none()
+                            .self_center()
+                            .opacity(0.)
+                            .group_hover("annot-note", |s| s.opacity(1.))
+                            .cursor_pointer()
+                            .tooltip(crate::ui::header::tip("Remove note"))
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                cx.stop_propagation();
+                                v.remove_note(i, cx);
+                            }))
+                            .child(Icon::Trash.el(14., t.dim)),
+                    )
+                }),
         );
     }
 
