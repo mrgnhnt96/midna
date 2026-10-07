@@ -741,8 +741,8 @@ pub fn pane_session(m: &MainWindow, window: &Window, cx: &App) -> Option<String>
     m.selected.clone()
 }
 
-/// Whether `session` runs an agent: images only help there, so ⌘I and the toolbar button
-/// wait for one.
+/// Whether `session` runs an agent: images only help there, so the sheet (⌘I, the toolbar
+/// button, a sidebar row taking dropped images) waits for one.
 pub fn is_agent(m: &MainWindow, session: &str) -> bool {
     m.sessions.iter().any(|s| s.id == session && s.agent.is_some())
 }
@@ -787,9 +787,10 @@ struct Spring(Option<String>);
 impl Global for Spring {}
 
 /// A sidebar row as a target for image files: held over it for a moment, they select its
-/// terminal; dropped on it, they open its sheet. Rows another main window shows are left alone.
+/// terminal; dropped on it, they open its sheet. Rows without an agent, and rows another main
+/// window shows, are left alone.
 pub fn row_drop_target(row: Stateful<Div>, m: &MainWindow, session: &str, t: &crate::theme::Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    if m.windows.borrow().owned(session) && !m.shows(session) {
+    if !is_agent(m, session) || (m.windows.borrow().owned(session) && !m.shows(session)) {
         return row;
     }
     let (hover_id, drop_id) = (session.to_string(), session.to_string());

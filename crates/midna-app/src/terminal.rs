@@ -1140,8 +1140,9 @@ impl TerminalView {
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() && crate::annotate::clipboard_is_image(cx) {
-            // A bare image (a screenshot): open the image sheet with it, or paste it inline.
-            if IMAGE_PASTE_INLINE.load(Ordering::Relaxed) {
+            // A bare image (a screenshot): open the image sheet with it, or paste it inline. The
+            // sheet is for agents; any other app gets the file.
+            if IMAGE_PASTE_INLINE.load(Ordering::Relaxed) || !self.is_agent() {
                 self.paste_images_inline(crate::annotate::clipboard_sources(cx), cx);
             } else {
                 window.dispatch_action(Box::new(crate::annotate::PasteImage), cx);
@@ -1200,10 +1201,16 @@ impl TerminalView {
         .detach();
     }
 
-    /// Dropped image files go to the image sheet, like ⌘V of a screenshot.
+    /// Dropped image files go to the image sheet, like ⌘V of a screenshot; outside an agent
+    /// they're pasted as files.
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         let paths = crate::annotate::image_paths(paths);
-        if !paths.is_empty() {
+        if paths.is_empty() {
+            return;
+        }
+        if !self.is_agent() {
+            self.paste_images_inline(paths.into_iter().map(crate::annotate::Source::Path).collect(), cx);
+        } else {
             window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths }), cx);
         }
     }
