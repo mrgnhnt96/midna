@@ -264,6 +264,9 @@ impl TerminalView {
         let fid = ts.resolve_font(&font(font_family.clone()));
         let cell_w = f32::from(ts.advance(fid, px(FONT_SIZE), 'M').map(|s| s.width).unwrap_or(px(7.5)));
         let focus = cx.focus_handle();
+        // Focus sent back to the terminal (a click, the app restoring it) while the secret sheet
+        // is open goes to its name field, so typing keeps working there.
+        cx.on_focus(&focus, window, |t, window, cx| t.refocus_secret_sheet(window, cx)).detach();
 
         let (wtx, wrx) = async_channel::bounded::<()>(1);
         let sink = Arc::new(FrameSink::new(wtx));
@@ -1091,7 +1094,8 @@ impl TerminalView {
             self.run_find(true, true, window, cx);
             return;
         }
-        if self.paste_checks_secrets(text, window, cx) {
+        // The secret sheet is open: nothing reaches the terminal behind it.
+        if self.secret_sheet.is_some() || self.paste_checks_secrets(text, window, cx) {
             return;
         }
         self.redo.clear();
@@ -1957,16 +1961,20 @@ impl Render for TerminalView {
             }))
             .on_key_down(cx.listener(Self::on_key))
             .on_key_up(cx.listener(Self::on_key_up))
-            .on_action(cx.listener(Self::on_paste))
-            .on_action(cx.listener(Self::on_paste_image_inline))
-            .on_action(cx.listener(|t, _: &TermPasteSecret, w, cx| t.paste_as_secret(w, cx)))
+            // With the secret sheet open, ⌘V/⌘C/⌘A belong to its name field (its key handler),
+            // never the terminal: a second ⌘V there would paste the token into the agent.
+            .when(self.secret_sheet.is_none(), |d| {
+                d.on_action(cx.listener(Self::on_paste))
+                    .on_action(cx.listener(Self::on_paste_image_inline))
+                    .on_action(cx.listener(|t, _: &TermPasteSecret, w, cx| t.paste_as_secret(w, cx)))
+                    .on_action(cx.listener(Self::on_copy))
+                    .on_action(cx.listener(Self::on_select_all))
+                    .on_action(cx.listener(|t, _: &TermClear, w, cx| t.menu_action("clear", w, cx)))
+                    .on_action(cx.listener(Self::on_prev_prompt))
+                    .on_action(cx.listener(Self::on_next_prompt))
+            })
             .on_drop(cx.listener(Self::on_drop))
             .on_drag_move(cx.listener(Self::on_file_drag))
-            .on_action(cx.listener(Self::on_copy))
-            .on_action(cx.listener(Self::on_select_all))
-            .on_action(cx.listener(|t, _: &TermClear, w, cx| t.menu_action("clear", w, cx)))
-            .on_action(cx.listener(Self::on_prev_prompt))
-            .on_action(cx.listener(Self::on_next_prompt))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_down))

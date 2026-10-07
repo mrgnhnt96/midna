@@ -124,6 +124,13 @@ impl TerminalView {
         self.project_id.clone().filter(|p| p != midna_proto::ROOT_PROJECT_ID)
     }
 
+    pub(super) fn refocus_secret_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(r) = self.secret_sheet.as_ref().and_then(|s| s.rows.first()) {
+            r.input.focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
     fn close_secret_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.secret_sheet = None;
         self.focus.focus(window, cx);
