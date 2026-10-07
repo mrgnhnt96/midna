@@ -1548,7 +1548,8 @@ impl Badge {
             .id(SharedString::from(format!("line-{}", l.serial)))
             .relative()
             .h(px(36.))
-            .max_w(px(W - SIZE - PAD * 2. - 8.))
+            // No wider than the room the window leaves past a widened badge, or its start is cut off.
+            .max_w(px((W - SIZE - PAD * 2. - 8.).min(MX + SIZE - self.badge_w.get().max(SIZE) - 8. - 4.)))
             .pl(px(14.))
             .pr(px(if need.is_some() && hover { 6. } else { 14. }))
             .flex()
@@ -1574,7 +1575,7 @@ impl Badge {
         row = row
             .child(measure(self.zones.line.clone()))
             .child(icon_of(&l.category).el(14., color))
-            .child(div().flex_none().font_weight(FontWeight::BOLD).text_color(t.fg).child(l.name.clone()))
+            .child(div().flex_none().max_w(px(180.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(l.name.clone()))
             .child(div().min_w_0().truncate().text_color(t.dim).child(l.text.clone()))
             .when(extra > 0, |d| {
                 d.child(div().flex_none().px(px(7.)).rounded(px(9.)).bg(t.raised).text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(t.fg).child(format!("+{extra}")))
