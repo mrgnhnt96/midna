@@ -9,7 +9,7 @@ const VALUE_FLAGS: &[&str] = &[
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",
     "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn", "stay", "description", "set",
     // local triggers
-    "in-project", "for-agent", "idle-for", "cron", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
+    "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
     "action-json", "filter-json", "notify", "notify-body", "notify-kind",
 ];
 

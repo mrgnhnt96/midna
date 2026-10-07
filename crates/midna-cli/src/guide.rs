@@ -203,7 +203,9 @@ const TOPICS: &[(&str, &str)] = &[
         session.status, …), `idle` (no turn started/ended for filter idle_minutes) or `schedule` (filter cron: five \
         fields in local time, `0 9 * * mon-fri`, `*/30 * * * *`, or @hourly/@daily/@weekly/@monthly/@yearly; data \
         {cron, scheduled_for, local_time}; with no session/project/agent filter it fires once about no terminal, with \
-        one it acts on every running terminal that matches; a missed run fires late only within 10 minutes); globs ok. \
+        one it acts on every running terminal that matches; a missed run fires late only within 10 minutes; filter window \
+        {from, until} (HH:MM local, until not included, may wrap midnight), starts_at / ends_at (RFC 3339) and max_runs \
+        (1 = once; a new value restarts the count) narrow it); globs ok. \
         Filters: session, project, agent (claude|codex), idle_minutes, cron, match {dotted.path: glob} (case-insensitive, all must match the \
         hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
         order, each waits until the agent is ready), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \

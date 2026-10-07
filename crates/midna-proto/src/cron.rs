@@ -113,6 +113,262 @@ fn bit(set: u64, n: u32) -> bool {
     set & (1 << n) != 0
 }
 
+fn members(set: u64, lo: u32, hi: u32) -> Vec<u32> {
+    (lo..=hi).filter(|n| bit(set, *n)).collect()
+}
+
+// ------------------------------------------------------------------ plain words
+
+/// `9 AM`, `2:30 PM`, `12 PM` (noon), `12 AM` (midnight; also hour 24).
+pub fn clock(h: u32, m: u32) -> String {
+    let (h12, ap) = match h % 24 {
+        0 => (12, "AM"),
+        h @ 1..=11 => (h, "AM"),
+        12 => (12, "PM"),
+        h => (h - 12, "PM"),
+    };
+    if m == 0 { format!("{h12} {ap}") } else { format!("{h12}:{m:02} {ap}") }
+}
+
+/// `Oct 6` in local time.
+pub fn local_day(t: i64) -> String {
+    let (_, mo, d, ..) = time::local_parts(t);
+    format!("{} {d}", cap(MONTHS[mo as usize - 1]))
+}
+
+fn cap(x: &str) -> String {
+    format!("{}{}", x[..1].to_ascii_uppercase(), &x[1..])
+}
+
+/// The cron in plain words (`Every 5 min, 1 PM–5 PM, weekdays`, `Weekdays at 9 AM`,
+/// `Oct 6 at 2:30 PM`), or the expression itself when it's too unusual to say simply.
+pub fn describe(expr: &str) -> String {
+    Cron::parse(expr).ok().and_then(|c| c.words()).unwrap_or_else(|| expr.trim().to_string())
+}
+
+impl Cron {
+    fn words(&self) -> Option<String> {
+        let mins = members(self.minutes, 0, 59);
+        let hours = members(self.hours, 0, 23);
+        let all_months = self.months.count_ones() == 12;
+        // One pinned date: `30 14 6 10 *`.
+        let days = members(self.days, 1, 31);
+        let months = members(self.months, 1, 12);
+        if self.days_set && !self.weekdays_set && days.len() == 1 && months.len() == 1 && mins.len() == 1 && hours.len() == 1 {
+            return Some(format!("{} {} at {}", cap(MONTHS[months[0] as usize - 1]), days[0], clock(hours[0], mins[0])));
+        }
+        if !all_months {
+            return None;
+        }
+        let on = self.day_words()?;
+        let step = |v: &[u32], span: u32| -> Option<u32> {
+            let d = v.get(1)? - v[0];
+            (v[0] == 0 && v.windows(2).all(|w| w[1] - w[0] == d) && v[v.len() - 1] + d >= span).then_some(d)
+        };
+        // A run of whole hours (`13-16` → `1 PM–5 PM`).
+        let span = (hours.len() < 24 && hours.windows(2).all(|w| w[1] == w[0] + 1)).then(|| format!("{}–{}", clock(hours[0], 0), clock(hours[hours.len() - 1] + 1, 0)));
+        let join = |head: String, rest: &[Option<String>]| -> String {
+            let mut parts = vec![head];
+            parts.extend(rest.iter().flatten().filter(|s| !s.is_empty()).cloned());
+            parts.join(", ")
+        };
+        let days_tail = (!on.is_empty()).then(|| on.clone());
+        if mins.len() == 60 {
+            if hours.len() == 24 {
+                return Some(join("Every minute".into(), &[days_tail]));
+            }
+            return Some(join("Every minute".into(), &[Some(span?), days_tail]));
+        }
+        if let Some(n) = step(&mins, 60) {
+            let head = format!("Every {n} min");
+            if hours.len() == 24 {
+                return Some(join(head, &[days_tail]));
+            }
+            return Some(join(head, &[Some(span?), days_tail]));
+        }
+        if mins.len() != 1 {
+            return None;
+        }
+        let m = mins[0];
+        if hours.len() == 24 {
+            let head = if m == 0 { "Hourly".to_string() } else { format!("Hourly at :{m:02}") };
+            return Some(join(head, &[days_tail]));
+        }
+        if let Some(n) = step(&hours, 24).filter(|_| hours.len() > 1) {
+            let head = if m == 0 { format!("Every {n} hours") } else { format!("Every {n} hours at :{m:02}") };
+            return Some(join(head, &[days_tail]));
+        }
+        if hours.len() > 4 {
+            return Some(join(format!("Hourly at :{m:02}"), &[Some(span?), days_tail]));
+        }
+        let at: Vec<String> = hours.iter().map(|h| clock(*h, m)).collect();
+        let lead = if on.is_empty() { "Daily".to_string() } else { cap(&on) };
+        Some(format!("{lead} at {}", at.join(", ")))
+    }
+
+    /// `` (every day), `weekdays`, `weekends`, `Mon, Wed`, `on the 1st`, `on days 1, 15`.
+    fn day_words(&self) -> Option<String> {
+        let wd = self.weekdays & 0x7f;
+        match (self.days_set, self.weekdays_set) {
+            (false, false) => Some(String::new()),
+            (false, true) => Some(match wd {
+                0x7f => String::new(),
+                0b011_1110 => "weekdays".into(),
+                0b100_0001 => "weekends".into(),
+                _ => {
+                    // Monday first.
+                    let order = [1, 2, 3, 4, 5, 6, 0];
+                    order.iter().filter(|d| bit(wd, **d)).map(|d| cap(DAYS[*d as usize])).collect::<Vec<_>>().join(", ")
+                }
+            }),
+            (true, false) => {
+                let days = members(self.days, 1, 31);
+                Some(match days.as_slice() {
+                    [d] => format!("on the {}", ordinal(*d)),
+                    _ => format!("on days {}", days.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")),
+                })
+            }
+            (true, true) => None,
+        }
+    }
+}
+
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+// ------------------------------------------------------------------ schedules
+
+/// `HH:MM` (24-hour) as minutes past midnight.
+pub fn parse_hm(s: &str) -> Result<u32, String> {
+    let bad = || format!("`{s}` isn't a time of day; use HH:MM, 24-hour (e.g. 13:00)");
+    let (h, m) = s.trim().split_once(':').ok_or_else(bad)?;
+    let (h, m): (u32, u32) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+    if h > 23 || m > 59 || s.trim().len() > 5 {
+        return Err(bad());
+    }
+    Ok(h * 60 + m)
+}
+
+/// A local `schedule` trigger's full rule: its cron, plus the optional time-of-day window,
+/// start, end and run limit from its filter.
+#[derive(Clone, Debug)]
+pub struct Schedule {
+    pub cron: Cron,
+    /// Minutes past local midnight: from (inclusive), until (exclusive).
+    window: Option<(u32, u32)>,
+    starts: Option<i64>,
+    ends: Option<i64>,
+    max_runs: Option<u64>,
+    /// Firings left before `max_runs` is reached.
+    runs_left: Option<u64>,
+}
+
+impl Schedule {
+    /// From a trigger's filter and how often it has fired. Errors name the bad field.
+    pub fn of(f: &crate::TriggerFilter, fired: u64) -> Result<Schedule, String> {
+        let cron = Cron::parse(f.cron.as_deref().ok_or("a schedule needs filter.cron")?).map_err(|e| format!("filter.cron: {e}"))?;
+        let window = match &f.window {
+            None => None,
+            Some(w) => {
+                let (a, b) = (parse_hm(&w.from).map_err(|e| format!("filter.window.from: {e}"))?, parse_hm(&w.until).map_err(|e| format!("filter.window.until: {e}"))?);
+                if a == b {
+                    return Err("filter.window: from and until are the same time".into());
+                }
+                Some((a, b))
+            }
+        };
+        let at = |v: &Option<String>, k: &str| -> Result<Option<i64>, String> {
+            v.as_deref().map(|s| time::parse_rfc3339(s).ok_or_else(|| format!("filter.{k}: `{s}` isn't an RFC 3339 time (e.g. 2026-10-06T13:00:00Z)"))).transpose()
+        };
+        let (starts, ends) = (at(&f.starts_at, "starts_at")?, at(&f.ends_at, "ends_at")?);
+        if let (Some(s), Some(e)) = (starts, ends)
+            && e <= s
+        {
+            return Err("filter.ends_at must be after filter.starts_at".into());
+        }
+        if f.max_runs == Some(0) {
+            return Err("filter.max_runs must be at least 1".into());
+        }
+        Ok(Schedule { cron, window, starts, ends, max_runs: f.max_runs, runs_left: f.max_runs.map(|m| m.saturating_sub(fired)) })
+    }
+
+    fn in_window(&self, t: i64) -> bool {
+        let Some((a, b)) = self.window else { return true };
+        let (_, _, _, h, mi, _) = time::local_parts(t);
+        let m = h * 60 + mi;
+        if a < b { a <= m && m < b } else { m >= a || m < b }
+    }
+
+    /// Is minute `t` inside the start, end, window and run limit (whatever the cron says)?
+    pub fn allows(&self, t: i64) -> bool {
+        self.runs_left != Some(0) && self.starts.is_none_or(|s| t >= s) && self.ends.is_none_or(|e| t < e) && self.in_window(t)
+    }
+
+    /// Does the local minute containing `t` fire?
+    pub fn matches(&self, t: i64) -> bool {
+        self.cron.matches(t) && self.allows(t)
+    }
+
+    /// The next `n` firings after `t` (fewer when it ends sooner).
+    pub fn upcoming(&self, t: i64, n: usize) -> Vec<i64> {
+        let n = self.runs_left.map_or(n, |r| n.min(r as usize));
+        let mut out = vec![];
+        let mut at = match self.starts {
+            Some(s) if s > t => s - 60,
+            _ => t,
+        };
+        // Bounded: a one-minute window on an every-minute cron skips ~1440 minutes per run.
+        let mut tries = 0;
+        while out.len() < n && tries < 20_000 {
+            tries += 1;
+            let Some(next) = self.cron.next_after(at) else { break };
+            if self.ends.is_some_and(|e| next >= e) {
+                break;
+            }
+            if self.allows(next) {
+                out.push(next);
+            }
+            at = next;
+        }
+        out
+    }
+
+    /// Done for good: past its end, out of runs, or never matching again.
+    pub fn ended(&self, now: i64) -> bool {
+        self.runs_left == Some(0) || self.ends.is_some_and(|e| e <= now) || self.upcoming(now, 1).is_empty()
+    }
+
+    /// Plain words for the whole rule: `Every 5 min, weekdays, 1 PM–5 PM · from Oct 7 · until
+    /// Oct 10`, `Once, Oct 6 at 2:30 PM`.
+    pub fn describe(&self, expr: &str) -> String {
+        let once = self.max_runs == Some(1);
+        let mut s = describe(expr);
+        if let Some((a, b)) = self.window {
+            s.push_str(&format!(", {}–{}", clock(a / 60, a % 60), clock(b / 60, b % 60)));
+        }
+        if let Some(st) = self.starts.filter(|st| *st > time::now_unix() && !once) {
+            s.push_str(&format!(" · from {}", local_day(st)));
+        }
+        if let Some(e) = self.ends {
+            s.push_str(&format!(" · until {}", local_day(e)));
+        }
+        match self.max_runs {
+            Some(1) => return format!("Once, {s}"),
+            Some(n) => s.push_str(&format!(" · {n} runs")),
+            None => {}
+        }
+        s
+    }
+}
+
 /// One field as a bit set. `names[i]` stands for `i + name_base`.
 fn field(s: &str, what: &str, lo: u32, hi: u32, names: &[&str], name_base: u32) -> Result<u64, String> {
     let num = |x: &str| -> Result<u32, String> {
@@ -215,6 +471,98 @@ mod tests {
         // Feb 29 is found years out; Feb 30 never.
         assert!(Cron::parse("0 0 29 2 *").unwrap().next_after(base).is_some());
         assert_eq!(Cron::parse("0 0 30 2 *").unwrap().next_after(base), None);
+    }
+
+    #[test]
+    fn describes_in_plain_words() {
+        for (e, want) in [
+            ("*/5 13-16 * * 1-5", "Every 5 min, 1 PM–5 PM, weekdays"),
+            ("*/30 * * * *", "Every 30 min"),
+            ("0 9 * * mon-fri", "Weekdays at 9 AM"),
+            ("57 8 * * *", "Daily at 8:57 AM"),
+            ("30 14 6 10 *", "Oct 6 at 2:30 PM"),
+            ("0 * * * *", "Hourly"),
+            ("7 * * * *", "Hourly at :07"),
+            ("0 */2 * * *", "Every 2 hours"),
+            ("0 10 * * mon,wed", "Mon, Wed at 10 AM"),
+            ("0 0 1 * *", "On the 1st at 12 AM"),
+            ("0 9,17 * * sat,sun", "Weekends at 9 AM, 5 PM"),
+            ("* * * * *", "Every minute"),
+            ("0 0 1 jan *", "Jan 1 at 12 AM"),
+            ("5,10 * * * *", "5,10 * * * *"),
+            ("not a cron", "not a cron"),
+        ] {
+            assert_eq!(describe(e), want, "{e}");
+        }
+        assert_eq!((clock(0, 0), clock(12, 0), clock(23, 5), clock(24, 0)), ("12 AM".into(), "12 PM".into(), "11:05 PM".into(), "12 AM".into()));
+    }
+
+    fn filter(cron: &str) -> crate::TriggerFilter {
+        crate::TriggerFilter { cron: Some(cron.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn schedules_honor_window_start_end_and_runs() {
+        let at = |h, m| time::local_unix(2026, 10, 6, h, m);
+        let mut f = filter("*/5 * * * *");
+        f.window = Some(crate::TimeWindow { from: "13:00".into(), until: "17:00".into() });
+        let s = Schedule::of(&f, 0).unwrap();
+        assert!(s.matches(at(13, 0)) && s.matches(at(16, 55)) && !s.matches(at(17, 0)) && !s.matches(at(12, 55)));
+        assert_eq!(s.upcoming(at(16, 50), 2), vec![at(16, 55), time::local_unix(2026, 10, 7, 13, 0)]);
+        assert_eq!(s.describe("*/5 * * * *"), "Every 5 min, 1 PM–5 PM");
+        // Past midnight.
+        f.window = Some(crate::TimeWindow { from: "22:00".into(), until: "02:00".into() });
+        let s = Schedule::of(&f, 0).unwrap();
+        assert!(s.matches(at(23, 0)) && s.matches(at(1, 55)) && !s.matches(at(2, 0)) && !s.matches(at(12, 0)));
+        // Starts and ends.
+        f.window = None;
+        f.starts_at = Some(time::format_unix(at(10, 2)));
+        f.ends_at = Some(time::format_unix(at(10, 20)));
+        let s = Schedule::of(&f, 0).unwrap();
+        assert_eq!(s.upcoming(at(9, 0), 10), vec![at(10, 5), at(10, 10), at(10, 15)]);
+        assert!(!s.matches(at(10, 0)) && !s.matches(at(10, 20)));
+        assert!(s.ended(at(10, 20)) && !s.ended(at(10, 0)));
+        // Run limits count what already fired.
+        f.starts_at = None;
+        f.ends_at = None;
+        f.max_runs = Some(3);
+        assert_eq!(Schedule::of(&f, 1).unwrap().upcoming(at(9, 0), 10).len(), 2);
+        assert!(Schedule::of(&f, 3).unwrap().ended(at(9, 0)) && !Schedule::of(&f, 3).unwrap().matches(at(9, 5)));
+        let mut once = filter("30 14 6 10 *");
+        once.max_runs = Some(1);
+        assert_eq!(Schedule::of(&once, 0).unwrap().describe("30 14 6 10 *"), "Once, Oct 6 at 2:30 PM");
+    }
+
+    #[test]
+    fn rejects_bad_schedules() {
+        let mut f = filter("*/5 * * * *");
+        f.window = Some(crate::TimeWindow { from: "1pm".into(), until: "17:00".into() });
+        assert!(Schedule::of(&f, 0).unwrap_err().contains("window.from"));
+        f.window = Some(crate::TimeWindow { from: "13:00".into(), until: "13:00".into() });
+        assert!(Schedule::of(&f, 0).unwrap_err().contains("same time"));
+        f.window = None;
+        f.starts_at = Some("2026-10-07T00:00:00Z".into());
+        f.ends_at = Some("2026-10-06T00:00:00Z".into());
+        assert!(Schedule::of(&f, 0).unwrap_err().contains("after"));
+        f.ends_at = Some("tomorrow".into());
+        assert!(Schedule::of(&f, 0).unwrap_err().contains("ends_at"));
+        f.ends_at = None;
+        f.max_runs = Some(0);
+        assert!(Schedule::of(&f, 0).unwrap_err().contains("at least 1"));
+        assert_eq!(parse_hm("09:30"), Ok(570));
+        assert!(parse_hm("24:00").is_err() && parse_hm("9").is_err());
+    }
+
+    #[test]
+    fn reads_local_times() {
+        let t = time::local_unix(2026, 10, 6, 13, 30);
+        assert_eq!(time::parse_local("2026-10-06 13:30"), Some(t));
+        assert_eq!(time::parse_local("2026-10-06T13:30"), Some(t));
+        assert_eq!(time::parse_local("2026-10-06"), Some(time::local_unix(2026, 10, 6, 0, 0)));
+        assert_eq!(time::format_local(t), "2026-10-06 13:30");
+        assert_eq!(time::parse_local(&time::format_unix(t)), Some(t));
+        assert_eq!(time::parse_local("Oct 6"), None);
+        assert_eq!(time::parse_local("2026-13-01"), None);
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //!
 //! While midnad still answers trigger/webhook methods with error 5 ("not implemented"),
 //! the screen says so and rechecks every 20s.
+mod schedule;
+
 use super::rules::{Names, ask};
 use super::screen_kit::{self as kit, KeyOutcome, LineInput};
 use crate::app::{MainWindow, Overlay, refresh};
@@ -13,6 +15,7 @@ use crate::backend::{Backend, BackendEvent, ConnState};
 use crate::icons::Icon;
 use crate::model::{Actor, parse_list, parse_rfc3339};
 use crate::theme::Theme;
+use midna_proto::kinds;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
@@ -37,6 +40,12 @@ pub struct FilterItem {
     pub idle_minutes: Option<u32>,
     /// Local `schedule`: a cron expression in local time.
     pub cron: Option<String>,
+    /// Local `schedule`: only between these local times of day (`HH:MM`).
+    pub window: Option<midna_proto::TimeWindow>,
+    pub starts_at: Option<String>,
+    pub ends_at: Option<String>,
+    /// Local `schedule`: stop after this many firings.
+    pub max_runs: Option<u64>,
     /// Local: dotted path into the hook payload / event data -> glob.
     #[serde(rename = "match")]
     pub fields: std::collections::BTreeMap<String, String>,
@@ -244,10 +253,26 @@ impl TriggerItem {
         (!parts.is_empty()).then(|| parts.join(" && "))
     }
 
+    /// A local schedule's full rule (cron, window, start, end, run limit).
+    pub fn schedule(&self) -> Option<midna_proto::cron::Schedule> {
+        self.filter.cron.as_ref()?;
+        let f: midna_proto::TriggerFilter = serde_json::from_value(serde_json::to_value(&self.filter).ok()?).ok()?;
+        midna_proto::cron::Schedule::of(&f, self.fired).ok()
+    }
+
+    /// `Every 5 min, weekdays, 1 PM–5 PM · until Oct 10`.
+    pub fn schedule_words(&self) -> Option<String> {
+        Some(self.schedule()?.describe(self.filter.cron.as_deref()?))
+    }
+
+    /// Out of runs or past its end: it won't fire again.
+    pub fn ended(&self) -> bool {
+        self.schedule().is_some_and(|s| s.ended(midna_proto::time::now_unix()))
+    }
+
     /// A schedule's next run (`Tue Oct 6 09:00`, local time).
     fn next_run(&self) -> Option<String> {
-        let c = midna_proto::cron::Cron::parse(self.filter.cron.as_deref()?).ok()?;
-        c.next_after(midna_proto::time::now_unix()).map(midna_proto::cron::local_label)
+        self.schedule()?.upcoming(midna_proto::time::now_unix(), 1).first().copied().map(midna_proto::cron::local_label)
     }
 
     /// The `midna triggers add` command that makes this local trigger.
@@ -268,6 +293,17 @@ impl TriggerItem {
         }
         if let Some(c) = &f.cron {
             a.push(format!("--cron {}", sh_quote(c)));
+        }
+        if let Some(w) = &f.window {
+            a.push(format!("--between {}-{}", w.from, w.until));
+        }
+        for (flag, at) in [("starts", &f.starts_at), ("ends", &f.ends_at)] {
+            if let Some(t) = at.as_deref().and_then(midna_proto::time::parse_rfc3339) {
+                a.push(format!("--{flag} {}", sh_quote(&midna_proto::time::format_local(t))));
+            }
+        }
+        if let Some(n) = f.max_runs {
+            a.push(format!("--max-runs {n}"));
         }
         for (k, v) in &f.fields {
             a.push(format!("--match {}", sh_quote(&format!("{k}={v}"))));
@@ -317,6 +353,9 @@ impl TriggerItem {
     }
 
     fn last_short(&self) -> String {
+        if self.ended() {
+            return "ended".into();
+        }
         match &self.last_fired_at {
             None => "never".into(),
             Some(ts) => kit::ago(Some(ts)),
@@ -421,6 +460,13 @@ fn not_implemented(e: &anyhow::Error) -> bool {
 
 // ------------------------------------------------------------------ view
 
+/// The list column's tabs: midna's triggers, or Claude's session crons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Triggers,
+    Crons,
+}
+
 pub struct TriggersView {
     main: WeakEntity<MainWindow>,
     backend: Arc<dyn Backend>,
@@ -444,6 +490,11 @@ pub struct TriggersView {
     confirm_discard: Option<String>,
     recon_dismissed: Option<String>,
     refetch_scheduled: bool,
+    tab: Tab,
+    /// The selected cron on the Crons tab (`CronRow::key`).
+    sel_cron: Option<String>,
+    /// The schedule editor, open in place of the detail pane.
+    editor: Option<schedule::ScheduleEditor>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -488,6 +539,9 @@ impl TriggersView {
             confirm_discard: None,
             recon_dismissed: None,
             refetch_scheduled: false,
+            tab: if crate::dev::var("MIDNA_DEBUG_TRIGGERS_TAB").is_ok_and(|v| v == "crons") { Tab::Crons } else { Tab::Triggers },
+            sel_cron: None,
+            editor: None,
             _tasks: vec![tick],
         };
         v.refetch(cx);
@@ -556,6 +610,10 @@ impl TriggersView {
                 if k.starts_with("trigger.") || k.starts_with("webhooks.") || wh {
                     self.refetch(cx);
                 }
+                // A terminal's crons changed (or it went away).
+                if [kinds::SESSION_AGENT, kinds::SESSION_EXITED, kinds::SESSION_CLOSED, kinds::SESSION_RENAMED].contains(&k) {
+                    cx.notify();
+                }
             }
             _ => {}
         }
@@ -582,7 +640,8 @@ impl TriggersView {
         .detach();
     }
 
-    /// Dev: `MIDNA_DEBUG_TRIGGERS="secret:t_1=abc;enable:t_1;disable:t_2;replay:d_1;select:t_3;type:xyz"`
+    /// Dev: `MIDNA_DEBUG_TRIGGERS="secret:t_1=abc;enable:t_1;disable:t_2;replay:d_1;select:t_3;type:xyz"`,
+    /// `new-schedule`, `edit:t_1`, `copy-cron:0`; `MIDNA_DEBUG_TRIGGERS_TAB=crons` opens on the Crons tab.
     /// drives the real code paths for screenshots (test secrets only, file store).
     fn debug_actions(&mut self, cx: &mut Context<Self>) {
         let Ok(spec) = crate::dev::var("MIDNA_DEBUG_TRIGGERS") else {
@@ -605,6 +664,19 @@ impl TriggersView {
                 "replay" => {
                     if let Some(d) = self.deliveries.iter().find(|d| d.id == v).cloned() {
                         self.replay(d, cx);
+                    }
+                }
+                // Schedules: `new-schedule`, `edit:t_1`, `copy-cron:0` (the Nth cron, soonest first).
+                "new-schedule" => self.open_editor(None, None, None, cx),
+                "edit" => {
+                    if let Some(t) = self.triggers.iter().find(|t| t.id == v).cloned() {
+                        self.open_editor(Some(&t), None, None, cx);
+                    }
+                }
+                "copy-cron" => {
+                    let rows = self.main.upgrade().map(|m| schedule::cron_rows(m.read(cx))).unwrap_or_default();
+                    if let Some(r) = rows.get(v.parse::<usize>().unwrap_or(0)).cloned() {
+                        self.open_editor(None, Some(&r), None, cx);
                     }
                 }
                 _ => {}
@@ -737,7 +809,8 @@ impl Render for TriggersView {
         let t = cx.global::<Theme>().clone();
         let names = self.main.upgrade().map(|m| Names::from_main(m.read(cx))).unwrap_or_default();
         let cmdk = self.main.upgrade().map(|m| m.read(cx).key_label("keys.command_bar")).unwrap_or_else(|| "⌘K".into());
-        let empty = self.loaded && self.triggers.is_empty() && self.list_error.is_none();
+        let crons = self.main.upgrade().map(|m| schedule::cron_rows(m.read(cx)).len()).unwrap_or(0);
+        let empty = self.loaded && self.triggers.is_empty() && crons == 0 && self.editor.is_none() && self.list_error.is_none();
         let down = self.status.as_ref().is_some_and(|s| s.health == "down");
         let recon = self.status.as_ref().map(|s| &s.reconcile).filter(|r| r.recovered > 0 && r.last_run_at != self.recon_dismissed).cloned();
         div()
@@ -788,6 +861,7 @@ impl TriggersView {
             .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Triggers"))
             .child(div().text_color(t.dim).child(count))
             .child(div().flex_1())
+            .child(kit::btn(t, "trig-new-schedule", "New schedule").on_click(cx.listener(|v, _, window, cx| v.open_editor(None, None, Some(window), cx))))
             .child(kit::btn(t, "trig-new", "New trigger: just ask").child(kit::mono(t, cmdk.to_string(), 11.).text_color(t.dim)).on_click(cx.listener(move |_, _, window, cx| {
                 let _ = main.update(cx, |m, cx| {
                     if m.overlay != Overlay::CommandBar {
@@ -1062,21 +1136,70 @@ impl TriggersView {
 
     fn render_body(&mut self, t: &Theme, n: &Names, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let sel = self.selected.as_ref().and_then(|id| self.triggers.iter().find(|t| &t.id == id)).cloned().or_else(|| self.triggers.first().cloned());
+        let crons = self.main.upgrade().map(|m| schedule::cron_rows(m.read(cx))).unwrap_or_default();
+        let cron_sel = self.sel_cron.as_ref().and_then(|k| crons.iter().find(|c| &c.key() == k)).or(crons.first()).cloned();
+        let column = div()
+            .flex()
+            .flex_col()
+            .w(px(360.))
+            .flex_none()
+            .min_h_0()
+            .border_r_1()
+            .border_color(t.line)
+            .child(self.render_tabs(t, crons.len(), cx))
+            .child(match self.tab {
+                Tab::Triggers => self.render_list(t, n, sel.as_ref().map(|s| s.id.clone()), cx).into_any_element(),
+                Tab::Crons => self.render_cron_list(t, &crons, cron_sel.as_ref().map(|c| c.key()), cx).into_any_element(),
+            });
+        let detail = if self.editor.is_some() {
+            Some(self.render_editor(t, window, cx).into_any_element())
+        } else {
+            match self.tab {
+                Tab::Triggers => sel.map(|s| self.render_detail(t, n, &s, window, cx).into_any_element()),
+                Tab::Crons => Some(self.render_cron_detail(t, cron_sel.as_ref(), cx).into_any_element()),
+            }
+        };
+        div().flex().flex_1().min_h_0().mt(px(12.)).border_t_1().border_color(t.line).child(column).children(detail)
+    }
+
+    fn render_tabs(&self, t: &Theme, crons: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tab = |id: &'static str, label: &'static str, count: usize, which: Tab, cx: &mut Context<Self>| {
+            let on = self.tab == which;
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(38.))
+                .px(px(2.))
+                .border_b_2()
+                .border_color(if on { t.accent } else { transparent_black() })
+                .text_color(if on { t.fg } else { t.dim })
+                .font_weight(FontWeight::BOLD)
+                .cursor_pointer()
+                .hover(|s| s.text_color(t.fg))
+                .on_click(cx.listener(move |v, _, _, cx| {
+                    v.tab = which;
+                    cx.notify();
+                }))
+                .child(label)
+                .child(div().px(px(6.)).rounded(px(8.)).bg(t.line).text_size(px(11.)).text_color(t.dim).child(count.to_string()))
+        };
         div()
             .flex()
-            .flex_1()
-            .min_h_0()
-            .mt(px(12.))
-            .border_t_1()
+            .flex_none()
+            .gap(px(18.))
+            .px(px(16.))
+            .border_b_1()
             .border_color(t.line)
-            .child(self.render_list(t, n, sel.as_ref().map(|s| s.id.clone()), cx))
-            .children(sel.map(|s| self.render_detail(t, n, &s, window, cx)))
+            .child(tab("trig-tab-triggers", "Triggers", self.triggers.len(), Tab::Triggers, cx))
+            .child(tab("trig-tab-crons", "Crons", crons, Tab::Crons, cx))
     }
 
     fn render_list(&self, t: &Theme, n: &Names, sel: Option<String>, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let pending: Vec<&TriggerItem> = self.triggers.iter().filter(|t| t.pending().is_some()).collect();
         let active: Vec<&TriggerItem> = self.triggers.iter().filter(|t| t.pending().is_none()).collect();
-        let mut list = div().id("trig-list").flex().flex_col().w(px(360.)).flex_none().border_r_1().border_color(t.line).overflow_y_scroll();
+        let mut list = div().id("trig-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll();
         let row_bg = |on: bool, d: Stateful<Div>| {
             if on { d.bg(t.raised).border_l_2().border_color(t.accent) } else { d.border_l_2().border_color(transparent_black()) }
         };
@@ -1179,7 +1302,7 @@ impl TriggersView {
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
-                                .child(kit::mono(t, format!("{} · {}", tr.event, tr.scope(n)), 11.5).flex_1().min_w_0().truncate().text_color(t.dim))
+                                .child(kit::mono(t, format!("{} · {}", tr.schedule_words().unwrap_or_else(|| tr.event.clone()), tr.scope(n)), 11.5).flex_1().min_w_0().truncate().text_color(t.dim))
                                 .child(div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(tr.last_short())),
                         ),
                 ),
@@ -1285,7 +1408,12 @@ impl TriggersView {
                 None => kit::chip(t, s.source_label()),
             })
             .when(s.builtin.is_some(), |d| d.child(builtin_tag(t)))
+            .when(s.ended(), |d| d.child(kit::chip(t, "Ended")))
             .child(div().flex_1())
+            .when(s.is_local() && s.filter.cron.is_some(), |d| {
+                let tr = s.clone();
+                d.child(kit::btn(t, "trig-edit-schedule", "Edit schedule").on_click(cx.listener(move |v, _, window, cx| v.open_editor(Some(&tr), None, Some(window), cx))))
+            })
             .when(pending.is_none(), |d| {
                 d.child(div().text_size(px(12.)).text_color(t.dim).child(s.last_text()))
                     .child(kit::switch(t, "trig-detail-sw", on).on_click(cx.listener(move |v, _, _, cx| v.set_enabled(id_sw.clone(), !on, cx))))
@@ -1350,7 +1478,10 @@ impl TriggersView {
                 .flex_wrap()
                 .items_baseline()
                 .gap(px(5.))
-                .child(kit::mono(t, s.event.clone(), 13.).text_color(t.accent))
+                .child(match s.schedule_words() {
+                    Some(w) => div().font_weight(FontWeight::BOLD).child(w),
+                    None => kit::mono(t, s.event.clone(), 13.).text_color(t.accent),
+                })
                 .child(div().text_color(t.dim).child("on"))
                 .child(if s.is_local() { div().child(s.scope(n)) } else { kit::mono(t, s.scope(n), 12.5) })
                 .child(div().text_color(t.dim).child(format!("· {}", s.source_label()))),

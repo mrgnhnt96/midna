@@ -97,6 +97,50 @@ pub fn local_parts(t: i64) -> (i64, u32, u32, u32, u32, u32) {
     (y, m, d, (rem / 3600) as u32, (rem % 3600 / 60) as u32, (days + 4).rem_euclid(7) as u32)
 }
 
+/// Unix time of a local wall-clock minute (the inverse of [`local_parts`]). A time skipped by a
+/// DST change lands an hour later.
+pub fn local_unix(y: i64, m: u32, d: u32, h: u32, mi: u32) -> i64 {
+    let wall = days_from_civil(y, m, d) * 86_400 + i64::from(h) * 3600 + i64::from(mi) * 60;
+    let guess = wall - local_offset_at(wall);
+    wall - local_offset_at(guess)
+}
+
+/// A local date and time typed by a person: `2026-10-06 13:30`, `2026-10-06T13:30` or
+/// `2026-10-06` (midnight). An RFC 3339 time with its own offset works too.
+pub fn parse_local(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if let Some(t) = parse_rfc3339(s) {
+        return Some(t);
+    }
+    let (date, clock) = match s.split_once([' ', 'T']) {
+        Some((d, c)) => (d, Some(c.trim())),
+        None => (s, None),
+    };
+    let mut d = date.split('-');
+    let (y, m, day): (i64, u32, u32) = (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
+    if d.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&day) || date.len() != 10 {
+        return None;
+    }
+    let (h, mi) = match clock {
+        None => (0, 0),
+        Some(c) => {
+            let (h, mi) = c.split_once(':')?;
+            let (h, mi): (u32, u32) = (h.parse().ok()?, mi.get(..2).unwrap_or(mi).parse().ok()?);
+            if h > 23 || mi > 59 {
+                return None;
+            }
+            (h, mi)
+        }
+    };
+    Some(local_unix(y, m, day, h, mi))
+}
+
+/// `2026-10-06 13:30` in local time (what [`parse_local`] reads back).
+pub fn format_local(t: i64) -> String {
+    let (y, m, d, h, mi, _) = local_parts(t);
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}")
+}
+
 /// Unix seconds of local midnight for the day containing `secs`.
 pub fn local_day_start(secs: i64) -> i64 {
     let off = local_offset_secs();

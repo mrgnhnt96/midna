@@ -183,6 +183,12 @@ events below and for any local-only flag; passing it is always fine.
   every running terminal that matches, so `--send` and `--set-status` work. Templates add
   `{{local_time}}` (`09:00`) and `{{scheduled_for}}`. Runs missed while the Mac slept fire late
   only within 10 minutes. `midna triggers show <id>` and `test` list the next runs.
+  Narrow one with `--between 13:00-17:00` (local time of day; the end isn't included, and
+  `22:00-06:00` wraps midnight), `--starts '2026-10-06 13:00'` / `--ends 2026-10-31` (local), and
+  `--max-runs N` (`1` runs once; setting a new limit starts the count again). Every 5 minutes
+  from 1 to 5 PM on weekdays until Friday:
+  `--cron '*/5 * * * mon-fri' --between 13:00-17:00 --ends 2026-10-10`.
+  An empty value clears one on update.
 
 Auto-compact when a hook blocks a prompt for context, then resend the prompt:
 

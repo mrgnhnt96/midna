@@ -47,11 +47,15 @@ fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
         return Err(RpcError::bad_params("idle triggers need filter.idle_minutes (e.g. 55)"));
     }
     let schedule = local && event.trim().eq_ignore_ascii_case("schedule");
+    let f = &t.filter;
+    if !schedule && (f.window.is_some() || f.starts_at.is_some() || f.ends_at.is_some() || f.max_runs.is_some()) {
+        return Err(RpcError::bad_params("filter.window, starts_at, ends_at and max_runs only apply to local triggers with event schedule"));
+    }
     match (&t.filter.cron, schedule) {
         (None, true) => return Err(RpcError::bad_params("schedule triggers need filter.cron, e.g. \"0 9 * * mon-fri\" (local time)")),
         (Some(_), false) => return Err(RpcError::bad_params("filter.cron only applies to local triggers with event schedule")),
-        (Some(c), true) => {
-            cron::Cron::parse(c).map_err(|e| RpcError::bad_params(format!("filter.cron: {e}")))?;
+        (Some(_), true) => {
+            cron::Schedule::of(&t.filter, t.fired).map_err(RpcError::bad_params)?;
             let f = &t.filter;
             if action.needs_session() && f.session.is_none() && f.project.is_none() {
                 return Err(RpcError::bad_params(format!(
@@ -215,6 +219,10 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
         changed.push("event");
     }
     if let Some(f) = p.filter {
+        // A new run limit counts from now.
+        if f.max_runs != t.filter.max_runs {
+            t.fired = 0;
+        }
         t.filter = f;
         changed.push("filter");
     }

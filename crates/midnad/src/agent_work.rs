@@ -6,7 +6,8 @@
 //! - the running `version` and `model.id` in its status line, and on subscription plans the
 //!   account's usage limits (`rate_limits.five_hour|seven_day {used_percentage, resets_at: unix secs}`);
 //! - a full snapshot of background work, `background_tasks`, and of scheduled wakeups,
-//!   `session_crons`, in every `Stop` and `SubagentStop` (REPLACE semantics);
+//!   `session_crons`, in every `Stop` and `SubagentStop` (REPLACE semantics, without times: a
+//!   cron's creation is taken from its `CronCreate` PostToolUse, `tool_response.id`);
 //! - subagents as `SubagentStart` / `SubagentStop`. Its internal prompt-suggestion agent fires
 //!   a `SubagentStop` with an empty `agent_type` (and no start) after most turns: ignored;
 //! - a shell sent to the background as PostToolUse `tool_response.backgroundTaskId`, a
@@ -154,7 +155,12 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
                 info.background_at = Some(now.to_string());
             }
             if let Some(crons) = p.get("session_crons").and_then(Value::as_array) {
+                // The snapshot has no times: keep when each was made.
+                let made: Vec<(String, Option<String>)> = info.crons.iter().map(|c| (c.id.clone(), c.created_at.clone())).collect();
                 info.crons = crons.iter().filter_map(cron).collect();
+                for c in &mut info.crons {
+                    c.created_at = made.iter().find(|(id, _)| *id == c.id).and_then(|(_, at)| at.clone());
+                }
             }
         }
         "PostToolUseFailure" => {
@@ -204,6 +210,30 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
             {
                 info.background.push(t);
             }
+            // Session crons show up at once (the next Stop confirms them), stamped with when
+            // they were made: Claude deletes a recurring one 7 days later.
+            match p.get("tool_name").and_then(Value::as_str) {
+                Some("CronCreate") => {
+                    if let Some(id) = str_at(r, "/id")
+                        && !info.crons.iter().any(|c| c.id == id)
+                    {
+                        info.crons.push(AgentCron {
+                            id,
+                            schedule: str_at(p, "/tool_input/cron").unwrap_or_default(),
+                            // The tool's default is recurring.
+                            recurring: r.get("recurring").or(p.pointer("/tool_input/recurring")).and_then(Value::as_bool).unwrap_or(true),
+                            prompt: str_at(p, "/tool_input/prompt").unwrap_or_default(),
+                            created_at: Some(now.to_string()),
+                        });
+                    }
+                }
+                Some("CronDelete") => {
+                    if let Some(id) = str_at(p, "/tool_input/id") {
+                        info.crons.retain(|c| c.id != id);
+                    }
+                }
+                _ => {}
+            }
         }
         _ => {}
     }
@@ -247,6 +277,7 @@ fn cron(v: &Value) -> Option<AgentCron> {
         schedule: str_at(v, "/schedule").unwrap_or_default(),
         recurring: v.get("recurring").and_then(Value::as_bool).unwrap_or(false),
         prompt: str_at(v, "/prompt").unwrap_or_default(),
+        created_at: None,
     })
 }
 
@@ -435,6 +466,33 @@ mod tests {
 
     fn hook(info: &mut AgentInfo, ev: &str, p: Value) -> bool {
         apply_hook(info, AgentKind::Claude, ev, &p, NOW)
+    }
+
+    #[test]
+    fn cron_create_stamps_when_it_was_made() {
+        let mut i = AgentInfo::default();
+        let create = |id: &str, recurring: Option<bool>| {
+            let mut input = json!({"cron": "*/5 13-16 * * 1-5", "prompt": "poll the deploy"});
+            if let Some(r) = recurring {
+                input["recurring"] = json!(r);
+            }
+            json!({"session_id": "c1", "tool_name": "CronCreate", "tool_input": input, "tool_response": {"id": id, "humanSchedule": "*/5 13-16 * * 1-5"}, "tool_use_id": "tu1"})
+        };
+        assert!(hook(&mut i, "PostToolUse", create("k1", None)));
+        assert!(hook(&mut i, "PostToolUse", create("k2", Some(false))));
+        assert_eq!((i.crons[0].recurring, i.crons[1].recurring), (true, false), "recurring is the tool's default");
+        assert_eq!(i.crons[0].created_at.as_deref(), Some(NOW));
+        assert_eq!(i.crons[0].expires_at(), time::parse_rfc3339(NOW).map(|t| t + midna_proto::CLAUDE_CRON_LIFETIME_SECS));
+        assert_eq!(i.crons[1].expires_at(), None, "one-time crons end after their run");
+        // The Stop snapshot (no times) keeps the stamps; a cron it hasn't seen made has none.
+        let snap = json!({"session_id": "c1", "session_crons": [
+            {"id": "k1", "schedule": "*/5 13-16 * * 1-5", "recurring": true, "prompt": "poll the deploy"},
+            {"id": "k3", "schedule": "0 9 * * *", "recurring": true, "prompt": "standup"},
+        ]});
+        assert!(hook(&mut i, "Stop", snap));
+        assert_eq!(i.crons.iter().map(|c| (c.id.as_str(), c.created_at.is_some())).collect::<Vec<_>>(), vec![("k1", true), ("k3", false)]);
+        assert!(hook(&mut i, "PostToolUse", json!({"session_id": "c1", "tool_name": "CronDelete", "tool_input": {"id": "k1"}, "tool_response": {}})));
+        assert_eq!(i.crons.len(), 1);
     }
 
     #[test]

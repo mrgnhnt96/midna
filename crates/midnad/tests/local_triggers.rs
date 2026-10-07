@@ -275,3 +275,48 @@ fn schedule_triggers_validate_fire_per_terminal_and_dry_run() {
     let item = items.as_array().unwrap().iter().find(|i| i["title"] == "Daily at 00:00").unwrap_or_else(|| panic!("{items}"));
     assert!(item["session_id"].is_null(), "{item}");
 }
+
+#[test]
+fn schedule_windows_starts_ends_and_run_limits() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let send = json!({ "kind": "send_to_session", "steps": [{ "text": "echo poll" }] });
+    let add = |h: &mut Client, f: Value| call_err(h, "trigger.add", json!({ "name": "x", "source": "local", "event": "schedule", "filter": f, "action": send })).message;
+    let e = add(&mut h, json!({ "cron": "*/5 * * * *", "session": sid, "window": { "from": "1pm", "until": "17:00" } }));
+    assert!(e.contains("window.from"), "{e}");
+    let e = add(&mut h, json!({ "cron": "*/5 * * * *", "session": sid, "starts_at": "2026-10-07T00:00:00Z", "ends_at": "2026-10-06T00:00:00Z" }));
+    assert!(e.contains("after filter.starts_at"), "{e}");
+    let e = add(&mut h, json!({ "cron": "*/5 * * * *", "session": sid, "max_runs": 0 }));
+    assert!(e.contains("at least 1"), "{e}");
+    let e = call_err(&mut h, "trigger.add", json!({ "name": "x", "source": "local", "event": "hook.Stop", "filter": { "max_runs": 2 }, "action": send })).message;
+    assert!(e.contains("only apply to local triggers with event schedule"), "{e}");
+
+    // A window and an end date round-trip, and the dry run's next runs fall inside them.
+    let ends = midna_proto::time::format_unix(midna_proto::time::now_unix() + 30 * 86_400);
+    let t = call(
+        &mut h,
+        "trigger.add",
+        json!({ "name": "Poll", "source": "local", "event": "schedule", "filter": { "cron": "*/5 * * * *", "session": sid, "window": { "from": "13:00", "until": "17:00" }, "ends_at": ends, "max_runs": 3 }, "action": send, "enabled": true }),
+    );
+    assert_eq!((t["filter"]["window"]["from"].as_str(), t["filter"]["max_runs"].as_u64()), (Some("13:00"), Some(3)), "{t}");
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "session": sid }));
+    let summary = r["summary"].as_str().unwrap();
+    let hours: Vec<&str> = summary.split(" · next: ").nth(1).unwrap().split(", ").map(|x| &x[x.len() - 5..x.len() - 3]).collect();
+    assert!(hours.len() == 3 && hours.iter().all(|h| ["13", "14", "15", "16"].contains(h)), "{summary}");
+
+    // Out of runs: never runs again. A new limit counts from then.
+    let sched = midna_proto::cron::Schedule::of(&serde_json::from_value(t["filter"].clone()).unwrap(), 0).unwrap();
+    let at = sched.upcoming(midna_proto::time::now_unix(), 1)[0];
+    for _ in 0..3 {
+        midnad::local::fire_schedule_now(&d.daemon(), t["id"].as_str().unwrap(), at);
+    }
+    let fired = |h: &mut Client| call(h, "trigger.list", json!({})).as_array().unwrap().iter().find(|x| x["id"] == t["id"]).map(|x| x["fired"].clone());
+    wait_for(10, "three firings", || fired(&mut h).filter(|f| *f == 3));
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "session": sid }));
+    assert!(r["summary"].as_str().unwrap().ends_with("never runs again"), "{r}");
+    let mut f = t["filter"].clone();
+    f["max_runs"] = json!(5);
+    let u = call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": f }));
+    assert_eq!(u["fired"], 0, "{u}");
+}

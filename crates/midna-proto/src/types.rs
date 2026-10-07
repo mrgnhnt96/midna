@@ -536,6 +536,22 @@ pub struct AgentCron {
     pub recurring: bool,
     #[serde(default)]
     pub prompt: String,
+    /// When midnad saw Claude create it (its `CronCreate`). None for crons that came back with
+    /// a resume or were made before midnad watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<Timestamp>,
+}
+
+/// Claude deletes a recurring session cron this long after creating it (after one last run).
+pub const CLAUDE_CRON_LIFETIME_SECS: i64 = 7 * 86_400;
+
+impl AgentCron {
+    /// When Claude will delete it: a recurring cron 7 days after it was made. One-time crons
+    /// end after their run instead (None).
+    pub fn expires_at(&self) -> Option<i64> {
+        let made = crate::time::parse_rfc3339(self.created_at.as_deref()?)?;
+        self.recurring.then_some(made + CLAUDE_CRON_LIFETIME_SECS)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -877,10 +893,32 @@ pub struct TriggerFilter {
     /// (`0 9 * * mon-fri`, `*/30 * * * *`, `@daily`). See `cron.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
+    /// Local `schedule` triggers: only fire between these local times of day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<TimeWindow>,
+    /// Local `schedule` triggers: don't fire before this time (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<Timestamp>,
+    /// Local `schedule` triggers: stop firing at this time (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<Timestamp>,
+    /// Local `schedule` triggers: stop after firing this many times (`1` = run once). Changing
+    /// it starts the count again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_runs: Option<u64>,
     /// Local: dotted path into the hook payload or event data -> case-insensitive glob, e.g.
     /// `{"message": "*Compact first*"}`. Every entry must match.
     #[serde(default, rename = "match", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub fields: std::collections::BTreeMap<String, String>,
+}
+
+/// Local times of day, `HH:MM` (24-hour): `from` counts, `until` doesn't, so `13:00`–`17:00`
+/// with `*/5` runs 13:00 … 16:55. `until` before `from` wraps past midnight (`22:00`–`06:00`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct TimeWindow {
+    pub from: String,
+    pub until: String,
 }
 
 /// One step of `send_to_session`: text typed into the terminal, then Enter. `{{last_prompt}}`

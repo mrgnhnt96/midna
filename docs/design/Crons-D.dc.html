@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Triggers with list tabs</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--accent-fg:#15111C;--accent-soft:rgba(183,154,232,.12);--need:#F2A93B;--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--work-soft:rgba(110,162,255,.18);--term:#0B0D12}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--accent-fg:#FFFFFF;--accent-soft:rgba(98,55,160,.08);--need:#9A5300;--ok:#1B7346;--err:#AE2219;--work:#2758B8;--work-soft:rgba(39,88,184,.14);--term:#FCFCFD}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.cap{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.mono{font-family:'JetBrains Mono',monospace}
+.btn{height:30px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:var(--raised);cursor:pointer}
+.sw{width:30px;height:18px;border-radius:9px;border:0;background:var(--accent);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:3px;right:3px;width:12px;height:12px;border-radius:50%;background:var(--accent-fg)}
+.sw.off{background:var(--line)}.sw.off::after{right:auto;left:3px;background:var(--dim)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="width: 1280px; height: 800px; display: flex; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45; overflow: hidden">
+
+  <nav aria-label="Projects and terminals" style="flex: 0 0 232px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line)">
+    <div style="display: flex; gap: 8px; align-items: center; height: 44px; padding: 0 14px" aria-hidden="true">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+    </div>
+    <div class="cap" style="padding: 8px 14px 2px">midna</div>
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="4">
+      <button type="button" style="display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 14px; border: 0; background: transparent; text-align: left; cursor: pointer">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: {{r.dot}}"></span>
+        <span style="flex: 1; font-weight: 500">{{r.name}}</span>
+        <span class="mono" style="color: var(--dim); font-size: 11px">{{r.agent}}</span>
+      </button>
+    </sc-for>
+    <div style="flex: 1"></div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 10px">
+      <button type="button" style="height: 30px; border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-weight: 700">Triggers</button>
+      <button type="button" style="height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--dim)">Rules</button>
+      <button type="button" style="height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--dim)">Settings</button>
+    </div>
+  </nav>
+
+  <main style="flex: 1; display: flex; flex-direction: column; min-width: 0">
+    <header style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--panel)">
+      <span style="font-weight: 700">Triggers</span>
+    </header>
+
+    <div style="flex: 1; min-height: 0; display: flex">
+      <div style="flex: 0 0 380px; display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0">
+        <div role="tablist" aria-label="Lists" style="flex: none; display: flex; gap: 18px; padding: 0 16px; border-bottom: 1px solid var(--line)">
+          <sc-for list="{{tabs}}" as="t" hint-placeholder-count="2">
+            <button type="button" role="tab" aria-selected="{{t.on}}" onClick="{{t.pick}}" style="height: 40px; padding: 0 2px; border: 0; border-bottom: 2px solid {{t.under}}; background: transparent; color: {{t.fg}}; font-weight: 700; cursor: pointer">{{t.label}} <span style="margin-left: 4px; padding: 1px 6px; border-radius: 8px; background: var(--line); color: var(--dim); font-size: 11px">{{t.n}}</span></button>
+          </sc-for>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 4px 0 10px">
+          <sc-if value="{{isTriggers}}" hint-placeholder-val="{{ false }}">
+            <sc-for list="{{triggers}}" as="t" hint-placeholder-count="10">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 7px 16px">
+                <button type="button" class="{{t.swClass}}" role="switch" aria-checked="{{t.on}}" aria-label="{{t.name}}"></button>
+                <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+                  <span style="font-weight: 500">{{t.name}}</span>
+                  <span style="color: var(--dim); font-size: 11.5px">{{t.sub}}</span>
+                </span>
+              </div>
+            </sc-for>
+          </sc-if>
+          <sc-if value="{{isClaude}}" hint-placeholder-val="{{ true }}">
+            <sc-for list="{{crons}}" as="c" hint-placeholder-count="8">
+              <button type="button" onClick="{{c.pick}}" aria-pressed="{{c.selected}}" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; width: 100%; padding: 8px 16px; border: 0; background: {{c.bg}}; text-align: left; cursor: pointer">
+                <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500">{{c.prompt}}</span>
+                <span style="display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; font-weight: 700; color: {{c.pillFg}}; background: {{c.pillBg}}">{{c.kind}}</span>
+                <span style="color: var(--dim); font-size: 11.5px">{{c.when}} · <span class="mono">{{c.term}}</span></span>
+              </button>
+            </sc-for>
+          </sc-if>
+        </div>
+      </div>
+
+      <section aria-label="Detail" style="flex: 1; min-width: 0; overflow: auto; padding: 20px 26px">
+        <div style="display: flex; align-items: center; gap: 10px">
+          <span style="display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 11.5px; font-weight: 700; color: {{sel.pillFg}}; background: {{sel.pillBg}}">{{sel.kind}}</span>
+          <span style="color: var(--dim)">Set by Claude in <span class="mono">{{sel.term}}</span></span>
+        </div>
+        <h2 style="margin: 10px 0 0; font-size: 19px; line-height: 1.35">{{sel.prompt}}</h2>
+        <div style="display: grid; grid-template-columns: 110px minmax(0, 1fr); row-gap: 12px; margin-top: 20px">
+          <span class="cap" style="padding-top: 2px">When</span>
+          <span><b>{{sel.when}}</b> <span class="mono" style="color: var(--dim); font-size: 12px; margin-left: 6px">{{sel.cron}}</span></span>
+          <span class="cap" style="padding-top: 2px">Next</span>
+          <span>{{sel.next}}</span>
+          <span class="cap" style="padding-top: 2px">Created</span>
+          <span>{{sel.created}}</span>
+          <span class="cap" style="padding-top: 2px">Expires</span>
+          <span>{{sel.expires}}</span>
+        </div>
+        <p style="margin: 18px 0 0; color: var(--dim)">Ends when <span class="mono">{{sel.term}}</span> exits; back with a resume.</p>
+        <div style="display: flex; gap: 8px; margin-top: 14px">
+          <button type="button" class="btn">Open terminal</button>
+          <a href="ScheduleEditor.dc.html" class="btn" style="display: inline-flex; align-items: center; color: var(--fg); text-decoration: none">Copy to a trigger…</a>
+          <button type="button" class="btn">Ask Claude to cancel it</button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const tab = this.state.tab ?? 'claude';
+    const sel = this.state.sel ?? 0;
+    const pill = (once) => once ? { pillFg: 'var(--need)', pillBg: 'rgba(242,169,59,.14)', kind: 'Once', created: 'Today 1:48 PM', expires: 'After its one run' } : { pillFg: 'var(--accent)', pillBg: 'var(--accent-soft)', kind: '↻ Repeats', created: 'Today 1:48 PM', expires: 'Mon Oct 13, 1:48 PM · 7-day limit' };
+    const raw = [
+      ['Poll the deploy and tell me when it is live', false, 'Every 5 min, 1–5 PM, weekdays', '*/5 13-16 * * 1-5', '1:50 PM (in 2 min)', 'api-refactor'],
+      ['Check CI on #241 and fix anything that failed', true, 'Today 2:30 PM', '30 14 6 10 *', '2:30 PM (in 42 min)', 'api-refactor'],
+      ['Re-run the flaky auth tests', true, 'Today 4:00 PM', '0 16 6 10 *', '4:00 PM', 'api-refactor'],
+      ['Summarize overnight PR comments', false, 'Weekdays 9:00 AM', '0 9 * * 1-5', 'Tomorrow 9:00 AM', 'docs-site'],
+      ['Check the docs build for broken links', false, 'Every 2 hours', '0 */2 * * *', '2:00 PM', 'docs-site'],
+      ['Watch the Terraform plan and report drift', false, 'Hourly', '0 * * * *', '2:00 PM', 'infra'],
+      ['Remind me to rotate the staging key', true, 'Fri 10:00 AM', '0 10 10 10 *', 'Fri 10:00 AM', 'infra'],
+      ['See if the migration finished', true, 'Today 3:15 PM', '15 15 6 10 *', '3:15 PM', 'db-migrate'],
+    ];
+    const crons = raw.map(([prompt, once, when, cron, next, term], i) => ({ prompt, when, cron, next, term, ...pill(once), selected: i === sel, bg: i === sel ? 'var(--accent-soft)' : 'transparent', pick: () => this.setState({ sel: i }) }));
+    const triggers = [
+      ['PR review requested', 'GitHub webhook · start Claude in api', true], ['CI failed on main', 'GitHub webhook · start Claude in api', true],
+      ['Issue labeled bug', 'GitHub webhook · attention', true], ['Release published', 'GitHub webhook · run command', false],
+      ['Push to main', 'GitHub webhook · set status', true], ['Morning standup notes', 'Schedule weekdays 9:00 AM · start Claude', true],
+      ['Weekly dependency check', 'Schedule Mon 8:00 AM · start Claude', true], ['Nightly flaky-test sweep', 'Schedule daily 2:00 AM · start Claude', false],
+      ['Agent idle 20 min', 'Idle · attention', true], ['Claude finished in api', 'Hook Stop · send to session', true],
+      ['Approval waiting 5 min', 'Event · attention', true], ['Codex error', 'Event · set status', true],
+    ].map(([name, sub, on]) => ({ name, sub, on, swClass: on ? 'sw' : 'sw off' }));
+    const tabs = [['triggers', 'Triggers', 12], ['claude', 'Crons', 8]].map(([id, label, n]) => ({ label, n, on: tab === id, under: tab === id ? 'var(--accent)' : 'transparent', fg: tab === id ? 'var(--fg)' : 'var(--dim)', pick: () => this.setState({ tab: id }) }));
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      tabs, triggers, crons, sel: crons[sel], isTriggers: tab === 'triggers', isClaude: tab === 'claude',
+      rows: [
+        { name: 'api-refactor', agent: 'claude', dot: 'var(--work)' }, { name: 'docs-site', agent: 'claude', dot: 'var(--ok)' },
+        { name: 'infra', agent: 'claude', dot: 'var(--ok)' }, { name: 'db-migrate', agent: 'claude', dot: 'var(--ok)' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

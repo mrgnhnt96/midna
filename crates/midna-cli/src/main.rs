@@ -307,7 +307,11 @@ fn run(a: &Args) -> Res {
                     println!("subagent {} ({}) finished: {}", print::plain(&x["id"]), print::plain(&x["agent_type"]), x["description"].as_str().unwrap_or(""));
                 }
                 for c in list("crons") {
-                    println!("scheduled {} {}: {}", print::plain(&c["id"]), print::plain(&c["schedule"]), print::plain(&c["prompt"]));
+                    let cron: midna_proto::AgentCron = serde_json::from_value(c.clone()).unwrap_or_default();
+                    let when = if cron.recurring { "repeats" } else { "once" };
+                    let ends = cron.expires_at().map(|t| format!(", expires {}", midna_proto::cron::local_label(t))).unwrap_or_default();
+                    let words = midna_proto::cron::describe(&cron.schedule);
+                    println!("scheduled {} {} ({when}: {words}{ends}): {}", print::plain(&c["id"]), print::plain(&c["schedule"]), print::plain(&c["prompt"]));
                 }
                 if let Some(q) = info.get("restart").filter(|q| q.is_object()) {
                     println!("restart queued: {}", print::plain(&q["reason"]));

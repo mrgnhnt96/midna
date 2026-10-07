@@ -70,7 +70,8 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             act on the terminal that fired. event: hook.<HookEvent> (hook.Stop, hook.Notification, …), a midna event kind \
             (agent.prompt_blocked data {hook, message, prompt}, agent.turn_ended, session.status, …), idle (with \
             filter.idle_minutes) or schedule (filter.cron: 5 fields in local time or @daily etc.; without a session/project/agent \
-            filter it fires once about no terminal); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
+            filter it fires once about no terminal; also filter.window {from, until} HH:MM local, until excluded, starts_at, \
+            ends_at (RFC 3339) and max_runs (1 = once)); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
             (case-insensitive). action: {kind:send_to_session, steps:[{text, enter:true}]} (in order, each waits for the agent) | \
             {kind:set_status, label, color, icon?, base, clear_on: prompt|turn|status|never} | {kind:clear_status} | {kind:notify, title, body?, sound:true} | attention | \
             run_command | start_agent. Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or bare {{<path>}}. \

@@ -272,12 +272,13 @@ fn schedule_tick(d: &Arc<Daemon>) {
 }
 
 /// Schedule triggers due after minute `prev` up to and including `minute`, each once, at its
-/// latest matching minute (looking back at most `SCHEDULE_CATCH_UP_SECS`).
+/// latest matching minute (looking back at most `SCHEDULE_CATCH_UP_SECS`). The window, start,
+/// end and run limit count as well as the cron.
 pub fn due(triggers: &[Trigger], prev: i64, minute: i64) -> Vec<(Trigger, i64)> {
     let from = (prev + 60).max(minute - SCHEDULE_CATCH_UP_SECS);
     let mut out = vec![];
     for t in triggers {
-        let Some(c) = t.filter.cron.as_deref().and_then(|c| cron::Cron::parse(c).ok()) else { continue };
+        let Ok(c) = cron::Schedule::of(&t.filter, t.fired) else { continue };
         let mut at = minute;
         while at >= from {
             if c.matches(at) {
@@ -793,16 +794,16 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
     let mut next = String::new();
     let mut sched = None;
     if let Some(c) = t.filter.cron.as_deref().filter(|_| event.eq_ignore_ascii_case("schedule")) {
-        match cron::Cron::parse(c) {
-            Ok(cr) => {
-                let runs = cr.upcoming(time::now_unix(), 3);
+        match cron::Schedule::of(&t.filter, t.fired) {
+            Ok(sc) => {
+                let runs = sc.upcoming(time::now_unix(), 3);
                 if let Some(first) = runs.first().filter(|_| data.get("scheduled_for").is_none()) {
                     sched = Some(schedule_data(c, *first));
                 }
                 let shown: Vec<String> = runs.iter().map(|r| cron::local_label(*r)).collect();
-                next = if shown.is_empty() { " · never runs".into() } else { format!(" · next: {}", shown.join(", ")) };
+                next = if shown.is_empty() { " · never runs again".into() } else { format!(" · next: {}", shown.join(", ")) };
             }
-            Err(e) => next = format!(" · cron: {e}"),
+            Err(e) => next = format!(" · {e}"),
         }
     }
     let data = sched.as_ref().unwrap_or(data);
@@ -937,6 +938,16 @@ mod tests {
         let hour = m - i64::from(time::local_parts(m).4) * 60;
         assert!(due(&[t.clone()], hour - 60, hour + 30 * 60).is_empty());
         assert_eq!(due(&[t.clone()], hour - 60, hour + 9 * 60), vec![(t.clone(), hour)]);
+        // A run limit that's used up, or a window the minute is outside, holds it back.
+        t.filter.max_runs = Some(1);
+        t.fired = 1;
+        assert!(due(&[t.clone()], hour - 60, hour).is_empty());
+        t.filter.max_runs = None;
+        let (_, _, _, h, ..) = time::local_parts(hour);
+        t.filter.window = Some(TimeWindow { from: format!("{:02}:00", (h + 1) % 24), until: format!("{:02}:00", (h + 2) % 24) });
+        assert!(due(&[t.clone()], hour - 60, hour).is_empty());
+        t.filter.window = Some(TimeWindow { from: format!("{h:02}:00"), until: format!("{:02}:00", (h + 1) % 24) });
+        assert_eq!(due(&[t.clone()], hour - 60, hour), vec![(t.clone(), hour)]);
     }
 
     #[test]

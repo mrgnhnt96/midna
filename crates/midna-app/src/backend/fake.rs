@@ -918,6 +918,11 @@ fn fake_subagents() -> midna_proto::AgentInfo {
         started_at: ago(started),
         ended_at: ended.map(ago),
     };
+    // A one-time cron pinned two hours from now, the way Claude writes them.
+    let in_2h = {
+        let (_, mo, d, h, mi, _) = midna_proto::time::local_parts(midna_proto::time::now_unix() + 7200);
+        format!("{mi} {h} {d} {mo} *")
+    };
     midna_proto::AgentInfo {
         conversation_id: Some("c0ffee00-fake".into()),
         subagents: vec![
@@ -926,6 +931,11 @@ fn fake_subagents() -> midna_proto::AgentInfo {
             sub("a0000000000000003", "qa-reviewer", "Review daemon changes", 185, None, true),
         ],
         finished_subagents: vec![sub("a0000000000000000", "Explore", "Find where hooks set agent status", 140, Some(99), false)],
+        crons: vec![
+            midna_proto::AgentCron { id: "k1".into(), schedule: "*/5 13-16 * * 1-5".into(), recurring: true, prompt: "Poll the deploy and tell me when it is live".into(), created_at: Some(ago(3600)) },
+            midna_proto::AgentCron { id: "k2".into(), schedule: in_2h, recurring: false, prompt: "Check CI on #241 and fix anything that failed".into(), created_at: Some(ago(600)) },
+            midna_proto::AgentCron { id: "k3".into(), schedule: "57 8 * * 1-5".into(), recurring: true, prompt: "Summarize overnight PR comments".into(), created_at: None },
+        ],
         ..Default::default()
     }
 }
