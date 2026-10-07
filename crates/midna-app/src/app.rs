@@ -966,6 +966,7 @@ impl MainWindow {
             self.needs = n;
         }
         crate::ui::need_anim::sync(self, cx);
+        crate::ui::toast::sync(self, cx);
         if badge && self.is_home() {
             crate::ui::badge::sync(self, cx);
         }
@@ -1205,6 +1206,7 @@ impl MainWindow {
             crate::windows::save_soon(cx);
             self.selected = Some(id.clone());
             self.menu = Menu::None;
+            crate::ui::toast::sync(self, cx);
             self.request_refresh(refresh::HEADER, cx);
             crate::ui::links::fetch(self, id, cx);
         }
@@ -1444,6 +1446,7 @@ impl MainWindow {
         // Optimistic: hide the item now; the event-driven refresh confirms it.
         self.needs.retain(|n| n.id != need_id);
         crate::ui::need_anim::sync(self, cx);
+        crate::ui::toast::sync(self, cx);
         match res {
             Resolution::Approve { .. } | Resolution::Done | Resolution::Restart => crate::sounds::play("approved"),
             Resolution::Deny => crate::sounds::play("denied"),

@@ -5,6 +5,8 @@
 //! preview card does (holding near full strength, then falling away), and stays while the
 //! pointer is on it, easing back in if it had started to fade. A long question is cut at a few
 //! lines with "Show all". It goes when its needs-you item is answered or you open its terminal.
+//! Going any way but running out its time (opened, answered, Go, ✕), the card fades and sinks
+//! away as it last looked, over whichever card is now on top.
 //! Not in front: the floating badge (`ui/badge.rs`) or macOS banners (`app.rs` `on_notification`).
 use crate::app::MainWindow;
 use crate::model::*;
@@ -19,6 +21,8 @@ const STAY: Duration = Duration::from_secs(8);
 const RECOVER: Duration = Duration::from_millis(160);
 /// How far the card sinks as it fades.
 const SINK: f32 = 6.;
+/// How long a card takes to fade and sink away as it goes.
+const LEAVE: Duration = Duration::from_millis(180);
 /// Lines of a question shown before "Show all".
 const CLAMP_LINES: usize = 6;
 
@@ -31,8 +35,9 @@ pub struct Card {
     stay: Option<Duration>,
     /// When it goes (pushed back while hovered); None = it stays.
     until: Option<Instant>,
-    /// Its needs-you item was seen open: when it's gone, so is the card.
-    need_seen: bool,
+    /// Its needs-you item as last seen open: when it's gone, so is the card (which goes saying
+    /// what it asked).
+    need: Option<NeedsYou>,
 }
 
 #[derive(Default)]
@@ -46,6 +51,30 @@ pub struct Cards {
     /// generation it cut short).
     recover: Option<(u64, f32)>,
     ticking: bool,
+    /// Cards on their way out, newest last.
+    leaving: Vec<Leaving>,
+}
+
+/// A card on its way out, drawn as it last looked, fading and sinking away from how strong it
+/// showed.
+struct Leaving {
+    card: Card,
+    look: Look,
+    expanded: bool,
+    from: f32,
+    at: Instant,
+}
+
+/// What a card says and offers, from its needs-you item.
+#[derive(Clone)]
+struct Look {
+    headline: String,
+    detail: Option<String>,
+    command: Option<String>,
+    question: Option<NeedsYouQuestion>,
+    /// Its open approval: Approve / Deny show.
+    approval: Option<String>,
+    go_label: &'static str,
 }
 
 /// The card's opacity `x` of the way through its stay: the link preview's fade
@@ -70,7 +99,7 @@ pub fn push(m: &mut MainWindow, seq: u64, session: Option<String>, p: Posted, cx
     let now = Instant::now();
     m.cards.list.retain(|c| c.session != session || c.posted.category != p.category);
     let stay = stay_of(&p);
-    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need_seen: false });
+    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need: None });
     m.cards.expanded = false;
     m.cards.generation += 1;
     tick(m, cx);
@@ -95,11 +124,42 @@ pub fn can_go(m: &MainWindow) -> bool {
 
 pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     if !m.cards.list.is_empty() {
-        m.cards.list.remove(0);
+        remove(m, 0, true, cx);
         m.cards.expanded = false;
         m.cards.generation += 1;
         cx.notify();
     }
+}
+
+/// Drop card `i`. On top and `leave`, it fades and sinks away as it last looked.
+fn remove(m: &mut MainWindow, i: usize, leave: bool, cx: &mut Context<MainWindow>) {
+    let leave = leave && i == 0 && !super::queue::reduce_motion();
+    let last = leave.then(|| (look(m, &m.cards.list[0], true), shown(m, &m.cards.list[0])));
+    let card = m.cards.list.remove(i);
+    if let Some((look, from)) = last {
+        let now = Instant::now();
+        m.cards.leaving.retain(|l| now < l.at + LEAVE);
+        m.cards.leaving.push(Leaving { card, look, expanded: m.cards.expanded, from, at: now });
+        notify_at(now + LEAVE, cx);
+    }
+}
+
+/// How strong the top card `c` shows right now.
+fn shown(m: &MainWindow, c: &Card) -> f32 {
+    match (c.until, c.stay) {
+        (Some(until), Some(stay)) if !m.cards.hovered => fade(1. - until.saturating_duration_since(Instant::now()).as_secs_f32() / stay.as_secs_f32()),
+        _ => 1.,
+    }
+}
+
+/// Render again at `at` (an animation's end, where what's drawn changes).
+fn notify_at(at: Instant, cx: &mut Context<MainWindow>) {
+    let wait = at.saturating_duration_since(Instant::now()) + Duration::from_millis(16);
+    cx.spawn(async move |this, cx| {
+        cx.background_executor().timer(wait).await;
+        this.update(cx, |_, cx| cx.notify()).ok();
+    })
+    .detach();
 }
 
 /// Open the top card's terminal, or its needs-you card when it has none, and drop the card. With
@@ -119,30 +179,50 @@ pub fn go(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     cx.defer(move |cx| crate::windows::reveal(sid, cx));
 }
 
+/// Drop the cards that should go now (after a refresh, or a terminal opened), not on the next
+/// tick.
+pub fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if prune(m, cx) {
+        cx.notify();
+    }
+}
+
 /// Drop cards whose time is up, whose item was answered, or whose terminal you opened.
-fn prune(m: &mut MainWindow) -> bool {
+fn prune(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> bool {
     let now = Instant::now();
-    let hovered = m.cards.hovered;
-    let selected = m.selected.clone();
-    let needs: Vec<String> = m.needs.iter().map(|n| n.id.clone()).collect();
     let before = m.cards.list.len();
     let top = m.cards.list.first().map(|c| c.seq);
     for c in m.cards.list.iter_mut() {
-        if c.posted.needs_you_id.as_ref().is_some_and(|id| needs.contains(id)) {
-            c.need_seen = true;
+        if let Some(n) = c.posted.needs_you_id.as_ref().and_then(|id| m.needs.iter().find(|n| n.id == *id)) {
+            c.need = Some(n.clone());
         }
     }
-    m.cards.list.retain(|c| {
-        let answered = c.need_seen && !c.posted.needs_you_id.as_ref().is_some_and(|id| needs.contains(id));
-        let opened = c.session.is_some() && c.session == selected;
-        let expired = c.until.is_some_and(|u| now >= u) && !(hovered && Some(c.seq) == top);
-        !(answered || opened || expired)
-    });
+    let mut i = 0;
+    while i < m.cards.list.len() {
+        match gone(m, i, now) {
+            Some(leave) => remove(m, i, leave, cx),
+            None => i += 1,
+        }
+    }
     if m.cards.list.first().map(|c| c.seq) != top {
         m.cards.expanded = false;
         m.cards.generation += 1;
     }
     m.cards.list.len() != before
+}
+
+/// Card `i` should go: Some(true) answered or opened (it fades away), Some(false) its time is up
+/// (it has faded already).
+fn gone(m: &MainWindow, i: usize, now: Instant) -> Option<bool> {
+    let c = &m.cards.list[i];
+    let answered = c.need.is_some() && !c.posted.needs_you_id.as_ref().is_some_and(|id| m.needs.iter().any(|n| n.id == *id));
+    let opened = c.session.is_some() && c.session == m.selected;
+    let expired = c.until.is_some_and(|u| now >= u) && !(m.cards.hovered && i == 0);
+    match () {
+        _ if answered || opened => Some(true),
+        _ if expired => Some(false),
+        _ => None,
+    }
 }
 
 /// While cards show, check twice a second whether any should go.
@@ -156,7 +236,7 @@ fn tick(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
             cx.background_executor().timer(Duration::from_millis(500)).await;
             let more = this
                 .update(cx, |m, cx| {
-                    if prune(m) {
+                    if prune(m, cx) {
                         cx.notify();
                     }
                     m.cards.ticking = !m.cards.list.is_empty();
@@ -171,9 +251,24 @@ fn tick(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     .detach();
 }
 
+/// What the top card `c` says and offers. `last`: from its needs-you item as last seen when it's
+/// no longer open (it's leaving, answered).
+fn look(m: &MainWindow, c: &Card, last: bool) -> Look {
+    let open = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id));
+    let need = open.or(c.need.as_ref().filter(|_| last));
+    let (headline, detail, command) = texts(c, need);
+    let approval = need.filter(|n| n.approval.is_some()).map(|n| n.id.clone());
+    let go_label = match () {
+        _ if top_need(m).is_some() => "Open",
+        _ if top_session(m).is_none() => "Dismiss",
+        _ if c.posted.category == "approval" && approval.is_none() => "Answer in the terminal",
+        _ => "Go to terminal",
+    };
+    Look { headline, detail, command, question: need.and_then(|n| n.question.clone()), approval, go_label }
+}
+
 /// What the card says: a headline and the text under it (a question's whole text, a command).
-fn texts(m: &MainWindow, c: &Card) -> (String, Option<String>, Option<String>) {
-    let need = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id));
+fn texts(c: &Card, need: Option<&NeedsYou>) -> (String, Option<String>, Option<String>) {
     if let Some(q) = need.and_then(|n| n.question.as_ref()).filter(|q| !q.text.trim().is_empty()) {
         let head = if q.header.trim().is_empty() { "Asked a question".to_string() } else { q.header.trim().to_string() };
         return (head, Some(q.text.trim().to_string()), None);
@@ -190,7 +285,22 @@ fn texts(m: &MainWindow, c: &Card) -> (String, Option<String>, Option<String>) {
 }
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let c = m.cards.list.first()?;
+    let now = Instant::now();
+    let leaving: Vec<&Leaving> = m.cards.leaving.iter().filter(|l| now < l.at + LEAVE).collect();
+    if m.cards.list.is_empty() && leaving.is_empty() {
+        return None;
+    }
+    let front = m.cards.list.first().map(|c| card_el(m, t, c, &look(m, c, false), None, cx));
+    // Cards on their way out, over the one now on top.
+    let leaving = leaving.into_iter().map(|l| div().absolute().top_0().left_0().child(card_el(m, t, &l.card, &l.look, Some(l), cx)));
+    Some(div().relative().w(px(420.)).children(front).children(leaving).into_any_element())
+}
+
+/// Card `c` on top; or, `ghost`, a card on its way out, drawn as it last looked (deaf to the
+/// pointer), fading and sinking away.
+fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leaving>, cx: &mut Context<MainWindow>) -> AnyElement {
+    let Look { headline, detail, command, question, approval: need, go_label } = look.clone();
+    let live = ghost.is_none();
     let (label, color) = super::notifications::kind(t, &c.posted);
     let needs = matches!(c.posted.category.as_str(), "approval" | "attention");
     let kind_label = if needs { "Needs you".to_string() } else { label.to_string() };
@@ -203,23 +313,14 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         .and_then(|p| m.projects.iter().find(|x| x.id == p))
         .map(|p| p.name.clone())
         .filter(|p| *p != name);
-    let (headline, detail, command) = texts(m, c);
     let long = detail.as_ref().is_some_and(|d| d.lines().count() > CLAMP_LINES || d.chars().count() > CLAMP_LINES * 60);
-    let expanded = m.cards.expanded;
-    let more = m.cards.list.len() - 1;
-    let need = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id)).filter(|n| n.approval.is_some()).map(|n| n.id.clone());
+    let expanded = ghost.map_or(m.cards.expanded, |g| g.expanded);
+    let more = if live { m.cards.list.len() - 1 } else { 0 };
     let go_key = m.key_label("keys.next_needs_you");
-    let question = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id)).and_then(|n| n.question.clone());
-    let go_label = match () {
-        _ if top_need(m).is_some() => "Open",
-        _ if top_session(m).is_none() => "Dismiss",
-        _ if c.posted.category == "approval" && need.is_none() => "Answer in the terminal",
-        _ => "Go to terminal",
-    };
     let generation = m.cards.generation;
     let stay = c.stay;
-    let hovered = m.cards.hovered;
-    let recover = m.cards.recover;
+    let hovered = live && m.cards.hovered;
+    let recover = m.cards.recover.filter(|_| live);
 
     let text = detail.map(|d| {
         let shown = if long && !expanded { clamp(&d) } else { d };
@@ -237,11 +338,11 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                         .text_color(t.accent)
                         .cursor_pointer()
                         .child(if expanded { "Show less".to_string() } else { "Show all".to_string() })
-                        .on_click(cx.listener(|m, _, _, cx| {
+                        .when(live, |d| d.on_click(cx.listener(|m, _, _, cx| {
                             m.cards.expanded = !m.cards.expanded;
                             cx.stop_propagation();
                             cx.notify();
-                        })),
+                        }))),
                 )
             })
     });
@@ -262,25 +363,28 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .cursor_pointer()
             .child(go_label)
             .child(div().opacity(0.75).text_size(px(11.)).font_family(t.mono_font.clone()).child(go_key))
-            .on_click(cx.listener(|m, _, w, cx| go(m, w, cx))),
+            .when(live, |d| d.on_click(cx.listener(|m, _, w, cx| go(m, w, cx)))),
     );
     if let Some(id) = need {
         let (a, d) = (id.clone(), id);
         buttons = buttons
-            .child(super::screen_kit::btn(t, "toast-approve", "Approve").h(px(34.)).on_click(cx.listener(move |m, _, _, cx| {
-                m.resolve(a.clone(), Resolution::Approve { scope: ApprovalScope::Once }, cx);
-                dismiss_top(m, cx);
-            })))
-            .child(super::screen_kit::btn(t, "toast-deny", "Deny").h(px(34.)).on_click(cx.listener(move |m, _, _, cx| {
-                m.resolve(d.clone(), Resolution::Deny, cx);
-                dismiss_top(m, cx);
-            })));
+            .child(super::screen_kit::btn(t, "toast-approve", "Approve").h(px(34.)).when(live, |b| {
+                b.on_click(cx.listener(move |m, _, _, cx| {
+                    dismiss_top(m, cx);
+                    m.resolve(a.clone(), Resolution::Approve { scope: ApprovalScope::Once }, cx);
+                }))
+            }))
+            .child(super::screen_kit::btn(t, "toast-deny", "Deny").h(px(34.)).when(live, |b| {
+                b.on_click(cx.listener(move |m, _, _, cx| {
+                    dismiss_top(m, cx);
+                    m.resolve(d.clone(), Resolution::Deny, cx);
+                }))
+            }));
     }
 
     let card = div()
         .id("toast-card")
         .relative()
-        .occlude()
         .w(px(420.))
         .max_h(px(600.))
         .flex()
@@ -291,7 +395,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         .rounded(px(12.))
         .shadow_lg()
         .overflow_hidden()
-        .on_hover(cx.listener(|m, on: &bool, _, cx| {
+        .when(live, |d| d.occlude().on_hover(cx.listener(|m, on: &bool, _, cx| {
             m.cards.hovered = *on;
             m.cards.recover = None;
             if *on {
@@ -311,7 +415,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                 m.cards.generation += 1;
             }
             cx.notify();
-        }))
+        })))
         .child(
             div()
                 .flex()
@@ -339,7 +443,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                         .cursor_pointer()
                         .hover(|s| s.bg(t.panel))
                         .child("✕")
-                        .on_click(cx.listener(|m, _, _, cx| dismiss_top(m, cx))),
+                        .when(live, |d| d.on_click(cx.listener(|m, _, _, cx| dismiss_top(m, cx)))),
                 ),
         )
         .child(
@@ -377,11 +481,21 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                 })
                 .child(if stay.is_some() { "Stays while you hover" } else { "Stays until you're done with it" }),
         );
+    // Leaving: from how strong it showed (and how far it had sunk) to gone.
+    if let Some(g) = ghost {
+        let (from, sunk) = (g.from, SINK * (1. - g.from));
+        let ease = |x: f32| 1. - (1. - x).powi(3);
+        return card
+            .with_animation(SharedString::from(format!("toast-leave-{}", c.seq)), Animation::new(LEAVE).with_easing(ease), move |el, d| {
+                el.opacity(from * (1. - d)).top(px(sunk + SINK * d))
+            })
+            .into_any_element();
+    }
     // Fading out over its stay, or easing back in from wherever the pointer caught it.
     let at = |el: Stateful<Div>, o: f32| el.opacity(o).top(px(SINK * (1. - o)));
     let reduce = super::queue::reduce_motion();
-    let Some(stay) = stay else { return Some(card.into_any_element()) };
-    Some(match recover {
+    let Some(stay) = stay else { return card.into_any_element() };
+    match recover {
         _ if reduce => card.into_any_element(),
         Some((seq, from)) if hovered => {
             let ease = |x: f32| 1. - (1. - x).powi(3);
@@ -390,7 +504,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         }
         _ if hovered => card.into_any_element(),
         _ => card.with_animation(SharedString::from(format!("toast-fade-{generation}")), Animation::new(stay), move |el, d| at(el, fade(d))).into_any_element(),
-    })
+    }
 }
 
 /// A question's options, numbered as in the terminal (where you pick one).
