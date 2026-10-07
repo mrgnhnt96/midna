@@ -334,10 +334,17 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let ghosts = |next: Option<&str>, cx: &mut Context<MainWindow>| -> Vec<AnyElement> {
             if fold > 0. { vec![] } else { m.close_anim.ghosts(&key, next).map(|gh| ghost(m, gh, t, compact, cx)).collect() }
         };
+        let leaving = leaving(m, &key, collapsed, &g.sessions, window, cx);
         for s in g.sessions {
             run.extend(ghosts(Some(&s.id), cx));
-            if m.selected.as_deref() == Some(&s.id) {
-                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., row(m, s, &key, t, compact, cx).into_any_element()));
+            if let Some((_, e, h)) = leaving.as_ref().filter(|l| l.0 == s.id && fold >= 1.) {
+                let el = row(m, s, &key, t, compact, cx).into_any_element();
+                let el = div().flex_none().overflow_hidden().h(px(h * (1. - e))).child(div().flex_none().relative().top(px(-h * e)).opacity(1. - e).child(el));
+                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., el.into_any_element()));
+                ri += 1;
+                line += 1;
+            } else if m.selected.as_deref() == Some(&s.id) {
+                group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(wipe(line, 26., shown_row(m, &key, collapsed, row(m, s, &key, t, compact, cx).into_any_element())));
                 ri += 1;
                 line += 1;
             } else if fold < 1. {
@@ -965,6 +972,65 @@ fn project_menu(t: &Theme, pid: Option<String>, terminal_keys: Option<String>, c
         ),
     )
     .with_priority(1)
+}
+
+/// How long a folded group's row takes to slide up into its heading once it's no longer selected.
+const LEAVE_MS: f32 = 220.;
+
+/// A folded group keeps only the selected terminal's row; once another terminal is selected,
+/// that row slides up into the heading instead of vanishing. Returns it (id, eased progress,
+/// height) while it moves.
+fn leaving(m: &MainWindow, key: &str, folded: bool, sessions: &[&Session], window: &mut Window, cx: &mut Context<MainWindow>) -> Option<(String, f32, f32)> {
+    let mut shown = m.fold_shown.borrow_mut();
+    if !folded {
+        shown.remove(key);
+        return None;
+    }
+    let sel = sessions.iter().find(|s| m.selected.as_deref() == Some(&s.id)).map(|s| s.id.clone());
+    let present = |id: &str| sessions.iter().any(|s| s.id == id);
+    match shown.get(key).cloned() {
+        Some((id, h, Some(at))) if sel.as_ref() != Some(&id) && present(&id) => {
+            let ms = at.elapsed().as_secs_f32() * 1000.;
+            if ms < LEAVE_MS {
+                window.request_animation_frame();
+                let v = ms / LEAVE_MS;
+                let e = if v < 0.5 { 4. * v * v * v } else { 1. - (-2. * v + 2.).powi(3) / 2. };
+                return Some((id, e, h));
+            }
+        }
+        Some((id, h, None)) if sel.as_ref() != Some(&id) && present(&id) && h > 0. && !cx.reduce_motion() => {
+            window.request_animation_frame();
+            shown.insert(key.to_string(), (id.clone(), h, Some(std::time::Instant::now())));
+            return Some((id, 0., h));
+        }
+        _ => {}
+    }
+    match sel {
+        Some(id) => {
+            let h = shown.get(key).filter(|v| v.0 == id).map_or(0., |v| v.1);
+            shown.insert(key.to_string(), (id, h, None))
+        }
+        None => shown.remove(key),
+    };
+    None
+}
+
+/// `el`, the selected row of a folded group, noting its height for `leaving`.
+fn shown_row(m: &MainWindow, key: &str, folded: bool, el: AnyElement) -> AnyElement {
+    if !folded {
+        return el;
+    }
+    let (shown, key) = (m.fold_shown.clone(), key.to_string());
+    div()
+        .flex()
+        .flex_col()
+        .on_children_prepainted(move |b, _, _| {
+            if let (Some(b), Some(v)) = (b.first(), shown.borrow_mut().get_mut(&key)) {
+                v.1 = f32::from(b.size.height);
+            }
+        })
+        .child(el)
+        .into_any_element()
 }
 
 /// Fold or unfold a project's group (animated unless Reduce Motion is on).

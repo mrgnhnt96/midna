@@ -143,6 +143,9 @@ pub struct MainWindow {
     pub order: Vec<String>,
     /// When each group heading was last clicked, to animate the fold (`ui::sidebar`).
     pub fold_anim: HashMap<String, Instant>,
+    /// Per folded group: the terminal it last showed, that row's height, and since when it has
+    /// been sliding up into the heading because another terminal was selected (`ui::sidebar`).
+    pub fold_shown: std::rc::Rc<std::cell::RefCell<HashMap<String, (String, f32, Option<Instant>)>>>,
     /// Needs-you rows and the "N need you" button sweeping in and out (`ui::need_anim`).
     pub need_anim: crate::ui::need_anim::NeedAnim,
     /// Closed rows folding away and the pane sliding to the next terminal (`ui::close_anim`).
@@ -330,6 +333,7 @@ impl MainWindow {
             background_hidden,
             order,
             fold_anim: HashMap::new(),
+            fold_shown: Default::default(),
             need_anim: Default::default(),
             close_anim: Default::default(),
             fold_heights: Default::default(),
