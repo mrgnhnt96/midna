@@ -125,6 +125,14 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
                 v.close(w, cx);
             }
         }))
+        // ⌘W removes the image on screen; with none left it closes the sheet.
+        .on_action(cx.listener(|v, _: &crate::actions::CloseWindow, w, cx| {
+            if v.draft(cx).is_some_and(|d| !d.shots.is_empty()) {
+                v.remove_image(v.cur, w, cx);
+            } else {
+                v.close(w, cx);
+            }
+        }))
         .on_action(cx.listener(|v, _: &crate::actions::ApproveOnce, w, cx| v.attach(w, cx)))
         .on_action(cx.listener(|_, _: &an::AddImage, _, _| {}))
         .on_drop(cx.listener(|v, paths: &ExternalPaths, w, cx| v.add(paths.paths().iter().cloned().map(an::Source::Path).collect(), w, cx)))
@@ -203,16 +211,9 @@ fn strip(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                 .flex_col()
                 .flex_none()
                 .gap(px(4.))
+                .group("annot-thumb")
                 .cursor_pointer()
                 .on_click(cx.listener(move |v, _, w, cx| v.select_image(i, w, cx)))
-                .on_hover(cx.listener(move |v, on: &bool, _, cx| {
-                    if *on {
-                        v.hover_thumb = Some(i);
-                    } else if v.hover_thumb == Some(i) {
-                        v.hover_thumb = None;
-                    }
-                    cx.notify();
-                }))
                 .child(
                     div()
                         .w(px(THUMB_W))
@@ -244,28 +245,29 @@ fn strip(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                             .child(count.to_string()),
                     )
                 })
-                .when(on || a.hover_thumb == Some(i), |d| {
-                    d.child(
-                        div()
-                            .id(("annot-thumb-remove", i))
-                            .absolute()
-                            .top(px(4.))
-                            .left(px(4.))
-                            .size(px(20.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(hsla(0., 0., 0., 0.6))
-                            .cursor_pointer()
-                            .tooltip(crate::ui::header::tip("Remove image"))
-                            .on_click(cx.listener(move |v, _, w, cx| {
-                                cx.stop_propagation();
-                                v.remove_image(i, w, cx);
-                            }))
-                            .child(Icon::Cross.el(11., white())),
-                    )
-                }),
+                // Always in the tree, shown on hover by style: an on_hover flag drops to false
+                // as the mouse moves with the button down, so the ✕ vanished mid-click.
+                .child(
+                    div()
+                        .id(("annot-thumb-remove", i))
+                        .when(!on, |d| d.opacity(0.).group_hover("annot-thumb", |s| s.opacity(1.)))
+                        .absolute()
+                        .top(px(4.))
+                        .left(px(4.))
+                        .size(px(20.))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(hsla(0., 0., 0., 0.6))
+                        .cursor_pointer()
+                        .tooltip(crate::ui::header::tip("Remove image"))
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            cx.stop_propagation();
+                            v.remove_image(i, w, cx);
+                        }))
+                        .child(Icon::Cross.el(11., white())),
+                ),
         );
     }
     let raised = t.raised;

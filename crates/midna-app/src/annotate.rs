@@ -236,8 +236,6 @@ pub struct AnnotateView {
     open: bool,
     /// Index of the shown image.
     pub cur: usize,
-    /// The strip thumbnail under the mouse, which shows its Remove button.
-    pub hover_thumb: Option<usize>,
     pub sel: Option<usize>,
     pub editing: Option<usize>,
     pub tool: Tool,
@@ -278,7 +276,6 @@ impl AnnotateView {
             drag: None,
             show_text: false,
             loading: 0,
-            hover_thumb: None,
             stage: Rc::new(Cell::new(None)),
             viewport: Rc::new(Cell::new(None)),
         }
@@ -527,6 +524,10 @@ impl AnnotateView {
         }) else {
             return;
         };
+        // Removing one before the shown image keeps showing the same image.
+        if i < self.cur {
+            self.cur -= 1;
+        }
         self.cur = self.cur.min(n.saturating_sub(1));
         self.sel = None;
         self.sync(cx);
