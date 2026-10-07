@@ -2203,11 +2203,6 @@ impl SettingsWindow {
         let (inline, below) = if wide { (None, Some(control)) } else { (Some(control), None) };
         let cli = r.cli;
         let copied = self.copied.as_ref().is_some_and(|(c, _)| *c == cli);
-        let who = match r.who {
-            Who::Agents => "agents too",
-            Who::Human => "only you",
-            Who::ReadOnly => "read-only",
-        };
         let cli_line = (self.cli && !cli.is_empty()).then(|| {
             let text = cli.clone();
             div()
@@ -2224,7 +2219,6 @@ impl SettingsWindow {
                 .text_size(px(11.5))
                 .child(div().flex_none().text_color(t.accent).child("$"))
                 .child(div().flex_1().min_w_0().truncate().text_color(t.fg).child(cli.clone()))
-                .child(div().flex_none().font_family(t.ui_font.clone()).text_size(px(11.)).text_color(t.dim).child(who))
                 .child(
                     div()
                         .id(SharedString::from(format!("copy-{id}")))
