@@ -2,8 +2,10 @@
 //! (design: the "D · Sheet + image strip" and "Added, not sent yet" boards).
 //!
 //! ⌘I (`keys.add_image`), the header's image button, ⌘V of a bare image in a terminal, or
-//! image files dropped on a terminal open the sheet for that terminal. Dragging image files
-//! over a pane focuses it, and holding them over a sidebar row selects that terminal. Each
+//! image files dropped on a terminal open the sheet for that terminal. `terminal.image_paste` =
+//! inline makes ⌘V paste the image's path instead, as ⌘⇧V (`keys.paste_image_inline`) always
+//! does. Dragging image files over a pane focuses it, and holding them over a sidebar row
+//! selects that terminal. Each
 //! terminal has one draft: a list of images, each with notes that are a pin (click) or an area
 //! (drag), stored as fractions of the image so they survive zooming. Closing the sheet keeps
 //! the draft; "Add to chat" (⌘↩) attaches it.
@@ -932,6 +934,11 @@ fn load(src: Source) -> anyhow::Result<Shot> {
     };
     let (w, h) = ::image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?.into_dimensions().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
     Ok(Shot { name, path, image: Arc::new(Image::from_bytes(format, bytes)), w, h, notes: vec![] })
+}
+
+/// Normalize an image into `$TMPDIR/midna-images/` and return the file to paste (⌘V inline).
+pub fn save(src: Source) -> anyhow::Result<PathBuf> {
+    load(src).map(|s| s.path)
 }
 
 /// Drop converted images older than a day (called at startup).

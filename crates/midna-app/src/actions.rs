@@ -47,6 +47,8 @@ actions!(
         TermCopy,
         TermPaste,
         TermPasteSecret,
+        /// Paste the clipboard's image as its path, skipping the image sheet.
+        TermPasteImageInline,
         TermSelectAll,
         TermClear,
         /// Agent terminals: scroll to the previous / next prompt you sent (`terminal::prompt_nav`).
@@ -127,6 +129,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.composer", crate::composer::OpenComposer, MAIN),
     shortcut!("keys.add_image", crate::annotate::AddImage, MAIN),
     shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, MAIN),
+    shortcut!("keys.paste_image_inline", TermPasteImageInline, TERM),
     shortcut!("keys.note_newline", crate::ui::text_input::Newline, Some(crate::ui::text_input::CTX_WRAP)),
     shortcut!("keys.links", crate::ui::links::ToggleLinks, MAIN),
     shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, MAIN),
@@ -184,7 +187,7 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["cmd-h"], "Hide midna", "Anywhere"),
     fixed(&["cmd-alt-h"], "Hide other apps", "Anywhere"),
     fixed(&["cmd-c"], "Copy the selection", "Terminal"),
-    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet; a secret pasted into an agent asks to store it)", "Terminal"),
+    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet, or pastes its path with terminal.image_paste = inline; a secret pasted into an agent asks to store it)", "Terminal"),
     fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", "Terminal"),
     fixed(&["cmd-a"], "Select all", "Terminal"),
     fixed(&["cmd-f"], "Find in the terminal", "Terminal"),

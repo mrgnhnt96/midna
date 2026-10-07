@@ -48,6 +48,14 @@ pub fn set_option_as_meta(on: bool) {
     OPTION_AS_META.store(on, Ordering::Relaxed);
 }
 
+/// `terminal.image_paste` = inline: ⌘V of an image pastes its path instead of opening the
+/// image sheet. Set by the main window from settings.
+static IMAGE_PASTE_INLINE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_image_paste_inline(on: bool) {
+    IMAGE_PASTE_INLINE.store(on, Ordering::Relaxed);
+}
+
 type StreamSlot = Rc<RefCell<Option<Arc<dyn TermStream>>>>;
 
 /// ⌘F find bar state.
@@ -1015,14 +1023,64 @@ impl TerminalView {
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() && crate::annotate::clipboard_is_image(cx) {
-            // A bare image (a screenshot): open the image sheet with it.
-            window.dispatch_action(Box::new(crate::annotate::PasteImage), cx);
+            // A bare image (a screenshot): open the image sheet with it, or paste it inline.
+            if IMAGE_PASTE_INLINE.load(Ordering::Relaxed) {
+                self.paste_images_inline(crate::annotate::clipboard_sources(cx), cx);
+            } else {
+                window.dispatch_action(Box::new(crate::annotate::PasteImage), cx);
+            }
             return;
         }
+        self.paste_clipboard_text(window, cx);
+    }
+
+    fn paste_clipboard_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
             self.paste_text(&t, window, cx);
             cx.notify();
         }
+    }
+
+    /// ⌘⇧V (`keys.paste_image_inline`): the clipboard's images (image data, or image files
+    /// copied in Finder) as their paths, even when there's text too; text when there's no image.
+    fn on_paste_image_inline(&mut self, _: &TermPasteImageInline, window: &mut Window, cx: &mut Context<Self>) {
+        let sources = if self.find.is_none() { crate::annotate::clipboard_sources(cx) } else { vec![] };
+        if sources.is_empty() {
+            self.paste_clipboard_text(window, cx);
+        } else {
+            self.paste_images_inline(sources, cx);
+        }
+    }
+
+    /// Normalize the images (off the UI thread, as the sheet does) and paste each path, spaced
+    /// out so Claude Code turns each one into its own `[Image #N]`.
+    fn paste_images_inline(&mut self, sources: Vec<crate::annotate::Source>, cx: &mut Context<Self>) {
+        self.erase_selection(cx);
+        cx.spawn(async move |this, cx| {
+            let saved = cx.background_executor().spawn(async move { sources.into_iter().map(crate::annotate::save).collect::<Vec<_>>() }).await;
+            let mut first = true;
+            for r in saved {
+                match r {
+                    Ok(p) => {
+                        if !first {
+                            cx.background_executor().timer(Duration::from_millis(250)).await;
+                        }
+                        first = false;
+                        let msg = ClientMsg::Paste(p.display().to_string());
+                        if this.update(cx, |t, cx| {
+                            t.deliver(msg);
+                            cx.notify();
+                        })
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(e) => eprintln!("midna-app: couldn't paste image: {e}"),
+                }
+            }
+        })
+        .detach();
     }
 
     /// Dropped image files go to the image sheet, like ⌘V of a screenshot.
@@ -1760,6 +1818,7 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_action(cx.listener(Self::on_paste))
+            .on_action(cx.listener(Self::on_paste_image_inline))
             .on_action(cx.listener(|t, _: &TermPasteSecret, w, cx| t.paste_as_secret(w, cx)))
             .on_drop(cx.listener(Self::on_drop))
             .on_drag_move(cx.listener(Self::on_file_drag))

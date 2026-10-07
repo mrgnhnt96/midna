@@ -868,6 +868,7 @@ impl MainWindow {
                 self.apply_theme(window, cx);
                 self.rebind(cx);
                 crate::terminal::set_option_as_meta(self.settings.get("terminal.option_as_meta").and_then(Value::as_bool).unwrap_or(true));
+                crate::terminal::set_image_paste_inline(self.settings.get("terminal.image_paste").and_then(Value::as_str) == Some("inline"));
                 crate::finder::sync(self.settings.get("finder.quick_action").and_then(Value::as_bool).unwrap_or(true));
                 crate::haptics::sync(self.settings.get("ui.haptics").and_then(Value::as_bool).unwrap_or(true));
             }
