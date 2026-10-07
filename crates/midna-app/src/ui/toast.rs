@@ -77,20 +77,20 @@ pub fn push(m: &mut MainWindow, seq: u64, session: Option<String>, p: Posted, cx
     cx.notify();
 }
 
-/// The card on top, if any: ⌘J goes to its terminal while one shows.
+/// The top card's terminal, if it has one that's still open: ⌘J goes there while one shows.
 pub fn top_session(m: &MainWindow) -> Option<String> {
-    m.cards.list.first().and_then(|c| c.session.clone())
+    m.cards.list.first().and_then(|c| c.session.clone()).filter(|s| m.sessions.iter().any(|x| x.id == *s))
 }
 
 /// The top card's open needs-you item, when it has no terminal to go to: "Go" opens its card.
 fn top_need(m: &MainWindow) -> Option<String> {
-    let c = m.cards.list.first().filter(|c| c.session.as_ref().is_none_or(|s| !m.sessions.iter().any(|x| x.id == *s)))?;
+    let c = m.cards.list.first().filter(|_| top_session(m).is_none())?;
     c.posted.needs_you_id.clone().filter(|id| m.needs.iter().any(|n| n.id == *id))
 }
 
-/// The top card has somewhere to go (its terminal, or its needs-you card).
+/// A card shows: ⌘J is its button (Go to terminal, Open, or Dismiss when it has neither).
 pub fn can_go(m: &MainWindow) -> bool {
-    top_need(m).is_some() || top_session(m).is_some()
+    !m.cards.list.is_empty()
 }
 
 pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -102,14 +102,17 @@ pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
-/// Open the top card's terminal, or its needs-you card when it has none (and drop the card).
+/// Open the top card's terminal, or its needs-you card when it has none, and drop the card. With
+/// neither (sent from outside a terminal, or its terminal closed), it only drops it: otherwise a
+/// kind that stays until handled could never go but by its ✕.
 pub fn go(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    if let Some(id) = top_need(m) {
-        dismiss_top(m, cx);
+    let need = top_need(m);
+    let sid = top_session(m);
+    dismiss_top(m, cx);
+    if let Some(id) = need {
         return super::needs_you::show(m, id, window, cx);
     }
-    let Some(sid) = top_session(m) else { return };
-    dismiss_top(m, cx);
+    let Some(sid) = sid else { return };
     if m.screen != crate::app::Screen::Terminal {
         m.set_screen(crate::app::Screen::Terminal, window, cx);
     }
@@ -209,6 +212,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     let question = c.posted.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id)).and_then(|n| n.question.clone());
     let go_label = match () {
         _ if top_need(m).is_some() => "Open",
+        _ if top_session(m).is_none() => "Dismiss",
         _ if c.posted.category == "approval" && need.is_none() => "Answer in the terminal",
         _ => "Go to terminal",
     };
