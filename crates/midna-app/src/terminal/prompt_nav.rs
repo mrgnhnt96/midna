@@ -1,8 +1,8 @@
-//! Prompt fast travel in an agent terminal: a bar pinned over the top row while the agent's
-//! view is scrolled back (which prompt you're reading, ‹ › to step, the title scrolls to that
-//! prompt, ▾ opens the searchable list in the command bar, Live to go back; with
-//! `terminal.prompt_bar` = always it has its own row above the grid, live end too), a rail of ticks on the right edge (one
-//! per prompt; hover for the text, click to jump), and ⌥⌘↑ ⌥⌘↓.
+//! Prompt fast travel in an agent terminal: a bar floating on the top row (Live ↓ while scrolled
+//! back, then a pill with the prompt you're reading; click it for the searchable list in the
+//! command bar), shown while the agent's view is scrolled back, or always with
+//! `terminal.prompt_bar` = always (the default); a rail of ticks on the right edge (one per
+//! prompt; hover for the text, click to jump); and `keys.prev_prompt` / `keys.next_prompt`.
 //!
 //! The prompts come from `session.prompts`, fetched when the view opens and again whenever the
 //! screen shows a prompt row the list doesn't know (a new prompt, or a new conversation after
@@ -16,7 +16,9 @@ use gpui_kit::*;
 use midna_proto::PromptMark;
 use midna_proto::prompts::{self as scr, Here};
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// `terminal.prompt_bar` = always.
@@ -33,12 +35,56 @@ pub fn share(always: bool, cx: &mut App) {
 /// Height of the bar.
 pub(super) const BAR_H: f32 = PAD_Y + LINE_H;
 
+/// Live ↓: its width (the gap after it included), and how long it takes to slide in or out.
+const LIVE_W: f32 = 70.;
+const LIVE_MS: f32 = 180.;
+
+/// The prompt pill's width, eased to its new content's (another prompt's title) over `LIVE_MS`.
+/// `to` = 0 until first measured.
+#[derive(Default)]
+struct PillWidth {
+    from: f32,
+    to: f32,
+    at: Option<Instant>,
+}
+
+impl PillWidth {
+    fn now(&self) -> Option<f32> {
+        let e = self.at.map_or(1., |at| 1. - (1. - (at.elapsed().as_secs_f32() * 1000. / LIVE_MS).min(1.)).powi(3));
+        (self.to > 0.).then(|| self.from + (self.to - self.from) * e)
+    }
+
+    fn moving(&self) -> bool {
+        self.at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS)
+    }
+
+    /// Its content measured `w` wide (at prepaint): ease there from where it is.
+    fn measured(&mut self, w: f32, animate: bool) -> bool {
+        if (w - self.to).abs() < 0.5 {
+            return false;
+        }
+        self.from = if animate { self.now().unwrap_or(w) } else { w };
+        self.to = w;
+        self.at = animate.then(Instant::now);
+        animate
+    }
+}
+
 #[derive(Default)]
 pub struct PromptNav {
     pub prompts: Vec<PromptMark>,
     /// The prompt the top of the view belongs to (index into `prompts`).
     here: Option<usize>,
     before_first: bool,
+    /// The oldest prompt whose row is on screen.
+    top_shown: Option<usize>,
+    /// The prompt Claude pins on row 0 while scrolled back, as it reads: the bar's title when
+    /// the list doesn't have it (e.g. a conversation resumed here, its prompts typed elsewhere).
+    pinned: Option<String>,
+    /// Live ↓ is in the bar, and since when it has been sliding in or out (`LIVE_MS`).
+    live: bool,
+    live_at: Option<Instant>,
+    pill: Rc<RefCell<PillWidth>>,
     /// The agent's view (or the scrollback) is scrolled back from the live end.
     scrolled: bool,
     /// Rail tick under the pointer.
@@ -65,6 +111,8 @@ impl PromptNav {
         let hint = self.here.and_then(|h| vis.iter().position(|&i| i == h));
         let a = scr::assign(&sc.rows, &texts, hint);
         self.scrolled = if alt { sc.scrolled } else { !at_bottom };
+        self.top_shown = a.iter().flatten().next().and_then(|&i| vis.get(i).copied());
+        self.pinned = sc.rows.first().filter(|(r, _)| *r == 0 && self.scrolled).map(|(_, t)| scr::key(t));
         match scr::here(&sc.rows, &a) {
             Here::At(i) => {
                 self.here = vis.get(i).copied();
@@ -95,14 +143,17 @@ impl PromptNav {
         unknown
     }
 
-    /// The prompt ⌥⌘↑ goes to: from the live end, the last one.
+    /// The prompt ⌥⌘↑ goes to: from the live end, the last one not already on screen.
     fn prev(&self) -> Option<usize> {
         let vis = self.on_screen();
         let from = self.pending.map(|p| p.0).or(self.here.filter(|_| self.scrolled));
         match from {
             Some(i) => vis.iter().rev().find(|&&j| j < i).copied(),
             None if self.before_first => None,
-            None => vis.last().copied(),
+            None => match self.top_shown {
+                Some(top) => vis.iter().rev().find(|&&j| j < top).copied(),
+                None => vis.last().copied(),
+            },
         }
     }
 
@@ -118,9 +169,15 @@ impl PromptNav {
 }
 
 impl TerminalView {
-    /// The bar has its own row above the grid (`terminal.prompt_bar` = always, agents only).
+    /// The bar shows at the live end too (`terminal.prompt_bar` = always, agents only).
     pub(super) fn bar_row(&self, cx: &App) -> bool {
         self.is_agent() && cx.try_global::<AlwaysBar>().is_some_and(|a| a.0)
+    }
+
+    /// The grid's top row is Claude's pinned copy of the prompt: the grid slides up a row so the
+    /// next line sits on the bar's row instead.
+    pub(super) fn hides_top_row(&self) -> bool {
+        self.is_agent() && self.nav.pinned.is_some()
     }
 
     /// Fetch the prompt list (agent terminals only).
@@ -150,6 +207,15 @@ impl TerminalView {
         let cursor = self.cursor.filter(|_| at_bottom).map(|c| c.1);
         if self.nav.scan(&lines, cursor, self.ext.alt_screen, at_bottom) {
             self.refresh_prompts(window, cx);
+        }
+        let live = self.nav.scrolled || self.nav.pending.is_some();
+        if live != self.nav.live {
+            self.nav.live = live;
+            gpui_kit::base::apply_system_reduce_motion(cx);
+            self.nav.live_at = (!cx.reduce_motion()).then(Instant::now);
+        }
+        if self.nav.live_at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS) || self.nav.pill.borrow().moving() {
+            window.request_animation_frame();
         }
     }
 
@@ -188,8 +254,15 @@ impl TerminalView {
         let nav = &self.nav;
         let row = self.bar_row(cx);
         let mut out = vec![];
-        if !self.is_agent() || (nav.prompts.is_empty() && !row) {
+        // Scrolled back, the bar shows even with no prompts listed: it covers Claude's own pinned
+        // copy of the prompt on row 0.
+        if !self.is_agent() || (nav.prompts.is_empty() && !row && !nav.scrolled) {
             return out;
+        }
+        // The bar floats on the grid's top row. Claude's pinned copy of the prompt there (which the
+        // bar already names) slides out above (`hides_top_row`): cover what's left in the padding.
+        if self.hides_top_row() {
+            out.push(div().absolute().top_0().left_0().right_0().h(px(PAD_Y)).bg(theme.term).into_any_element());
         }
         if !nav.prompts.is_empty() {
             out.push(self.render_rail(theme, cx));
@@ -204,62 +277,92 @@ impl TerminalView {
         let nav = &self.nav;
         let shown = nav.pending.map(|p| p.0).or(nav.here);
         let vis = nav.on_screen();
-        let (num, title, meta) = match shown.and_then(|i| nav.prompts.get(i).map(|p| (i, p))) {
+        let (num, title, pos) = match shown.and_then(|i| nav.prompts.get(i).map(|p| (i, p))) {
             Some((i, p)) => {
-                let pos = vis.iter().position(|&j| j == i).map(|k| format!(" · {} of {}", k + 1, vis.len())).unwrap_or_default();
-                (format!("#{}", p.n), scr::key(&p.text), format!("{}{pos}", hhmm(&p.at)))
+                let pos = vis.iter().position(|&j| j == i).map(|k| format!("{}/{}", k + 1, vis.len())).unwrap_or_default();
+                (format!("#{}", p.n), scr::key(&p.text), pos)
             }
             None if nav.before_first => (String::new(), "Before your first prompt".to_string(), String::new()),
+            None if nav.pinned.is_some() => (String::new(), nav.pinned.clone().unwrap_or_default(), String::new()),
             None => (String::new(), "Your prompts".to_string(), String::new()),
         };
+        // Live ↓ slides in from the left edge, pushing the pill over, and back out at the live end.
+        let e = nav.live_at.map_or(1., |at| 1. - (1. - (at.elapsed().as_secs_f32() * 1000. / LIVE_MS).min(1.)).powi(3));
+        let live = if nav.live { e } else { 1. - e };
         let stop = |d: Stateful<Div>| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        let btn = |id: &'static str| stop(div().id(id)).h(px(24.)).min_w(px(24.)).px(px(6.)).flex().items_center().justify_center().rounded(px(5.)).cursor_pointer().text_color(t.fg).hover(|s| s.bg(t.raised));
-        let can_prev = nav.prev().is_some();
-        let can_next = nav.next().is_some();
+        // Live ↓ leads while scrolled back, then the prompt pill (a click opens the list); the
+        // rest of the row stays the terminal's.
+        // Only as wide as its buttons, centred on the top row: the rest of the row stays the
+        // terminal's, text and clicks.
         stop(div().id("prompt-bar"))
             .absolute()
-            .top(px(0.))
+            .top(px(PAD_Y + (LINE_H - 24.) / 2.))
             .left(px(0.))
-            .right(px(0.))
-            .h(px(BAR_H))
+            .h(px(24.))
             .flex()
             .items_center()
-            .gap(px(4.))
             .px(px(8.))
-            .bg(t.panel)
-            .border_b_1()
-            .border_color(t.line)
             .text_size(px(12.5))
             .font_family(t.ui_font.clone())
-            .child(btn("prompt-prev").when(!can_prev, |d| d.opacity(0.35)).child("‹").on_click(cx.listener(|v, _, w, cx| v.on_prev_prompt(&PrevPrompt, w, cx))))
+            .when(live > 0., |d| {
+                d.child(div().flex_none().w(px(LIVE_W * live)).h(px(24.)).overflow_hidden().opacity(live).child(
+                    stop(div().id("prompt-live"))
+                        .w(px(LIVE_W - 6.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .bg(t.accent)
+                        .text_color(t.accent_fg)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(12.))
+                        .hover(|s| s.opacity(0.85))
+                        .child("Live ↓")
+                        .on_click(cx.listener(|v, _, w, cx| v.jump_to(None, w, cx))),
+                ))
+            })
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(5.))
+                // The pill is as wide as its content (up to 520px), easing to a new prompt's width.
+                stop(div().id("prompt-title"))
+                    .flex_none()
+                    .when_some(nav.pill.borrow().now(), |d, w| d.w(px(w + 2.)))
+                    .h(px(24.))
+                    .overflow_hidden()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(t.line)
                     .bg(t.raised)
-                    .child(
-                        btn("prompt-title")
-                            .flex_1()
-                            .min_w(px(0.))
-                            .justify_start()
-                            .gap(px(10.))
-                            .px(px(10.))
-                            .child(div().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.accent).child(num))
-                            .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
-                            .on_click(cx.listener(move |v, _, w, cx| match shown {
-                                // Scroll so the prompt itself is in view, not just its reply.
-                                Some(i) => v.jump_to(Some(i), w, cx),
-                                None => w.dispatch_action(Box::new(OpenPrompts), cx),
-                            })),
-                    )
-                    .child(btn("prompt-list").text_color(t.dim).child("▾").on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx))),
+                    .text_color(t.fg)
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(t.dim))
+                    .child(div().flex().h_full().on_children_prepainted({
+                        let pill = nav.pill.clone();
+                        move |b, window, cx| {
+                            if let Some(b) = b.first()
+                                && pill.borrow_mut().measured(f32::from(b.size.width), !cx.reduce_motion())
+                            {
+                                window.request_animation_frame();
+                            }
+                        }
+                    }).child(
+                        div()
+                            .flex_none()
+                            .max_w(px(518.))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .pl(px(10.))
+                            .pr(px(8.))
+                            .when(!num.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.accent).child(num)))
+                            .child(div().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                            .when(!pos.is_empty(), |d| d.child(div().flex_none().text_size(px(11.5)).text_color(t.dim).child(pos)))
+                            .child(crate::icons::Icon::Chevron.el(10., t.dim)),
+                    ))
+                    .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx)),
             )
-            .child(div().px(px(6.)).text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(meta))
-            .child(btn("prompt-next").when(!can_next, |d| d.opacity(0.35)).child("›").on_click(cx.listener(|v, _, w, cx| v.on_next_prompt(&NextPrompt, w, cx))))
-            .child(btn("prompt-live").when(!nav.scrolled && nav.pending.is_none(), |d| d.opacity(0.35)).text_color(t.dim).text_size(px(11.5)).child("Live ↓").on_click(cx.listener(|v, _, w, cx| v.jump_to(None, w, cx))))
             .into_any_element()
     }
 
@@ -375,6 +478,27 @@ mod tests {
         assert_eq!(n.prev(), None);
         n.pending = Some((2, Instant::now()));
         assert_eq!(n.next(), Some(Err(())), "past the last: live");
+    }
+
+    #[test]
+    fn from_live_steps_past_a_prompt_already_on_screen() {
+        let mut n = nav(&["alpha one two", "bravo one two", "charlie one two"]);
+        let live: Vec<String> = ["❯ charlie one two", "  1. Norway", RULE, "❯", RULE].map(String::from).to_vec();
+        assert!(!n.scan(&live, Some(3), true, true));
+        assert!(!n.scrolled);
+        assert_eq!(n.prev(), Some(1), "charlie is in view: ‹ goes to bravo");
+    }
+
+    #[test]
+    fn a_pinned_prompt_the_list_lacks_still_names_the_bar() {
+        let mut n = nav(&[]);
+        let back: Vec<String> = ["❯ [Image #3]", "  Ran 1 shell command", "  done  Jump to bottom (click) ↓", RULE, "❯", RULE].map(String::from).to_vec();
+        n.scan(&back, Some(4), true, true);
+        assert!(n.scrolled);
+        assert_eq!(n.pinned.as_deref(), Some("[Image #3]"));
+        let live: Vec<String> = ["❯ [Image #3]", "  Ran 1 shell command", RULE, "❯", RULE].map(String::from).to_vec();
+        n.scan(&live, Some(3), true, true);
+        assert_eq!(n.pinned, None, "only while scrolled back");
     }
 
     #[test]
