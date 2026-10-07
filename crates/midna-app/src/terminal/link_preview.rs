@@ -176,6 +176,8 @@ struct Card {
     body: Body,
     /// The editor the IDE rules pick for this path, and whether the user chose it.
     ide: Option<(Ide, bool)>,
+    /// Opened from a links-popover row, so it's in the links already: no "Add to links".
+    listed: bool,
     _load: Task<()>,
 }
 
@@ -228,7 +230,8 @@ impl TerminalView {
             self.preview_grace(cx);
             return;
         };
-        if self.preview.card.as_ref().is_some_and(|c| c.link == link) {
+        if let Some(c) = self.preview.card.as_mut().filter(|c| c.link == link) {
+            c.listed |= self.preview.external;
             self.preview_hold(cx);
             return;
         }
@@ -264,7 +267,7 @@ impl TerminalView {
         self.preview.recover = None;
         self.preview.menu = false;
         self.preview.flash = None;
-        self.preview.card = Some(Card { link, is_dir, project, name, sub, body: Body::Loading, ide, _load: load });
+        self.preview.card = Some(Card { link, is_dir, project, name, sub, body: Body::Loading, ide, listed: self.preview.external, _load: load });
         cx.notify();
     }
 
@@ -648,7 +651,7 @@ impl TerminalView {
             row = row
                 .child(primary("lp-browse").on_click(cx.listener(|t, _, _, cx| t.preview_browse(cx))).child("Open in browser"))
                 .child(secondary("lp-copy", "Copy URL").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))))
-                .child(secondary("lp-add", "Add to links").on_click(cx.listener(|t, _, _, cx| t.preview_add_link(cx))));
+                .when(!c.listed, |r| r.child(secondary("lp-add", "Add to links").on_click(cx.listener(|t, _, _, cx| t.preview_add_link(cx)))));
         } else {
             let open = if c.is_dir {
                 primary("lp-new-term").on_click(cx.listener(|t, _, _, cx| t.preview_new_terminal(cx))).child("New terminal here").into_any_element()
