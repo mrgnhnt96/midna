@@ -124,7 +124,13 @@ impl Render for PopOut {
             .on_action(cx.listener(|p, _: &crate::actions::PopOut, w, cx| p.dock(w, cx)))
             .on_action(cx.listener(move |p, _: &crate::actions::ToggleKeepOnTop, w, cx| p.set_on_top(!on, w, cx)))
             .on_action(cx.listener(|p, _: &crate::ui::queue::ToggleQueue, w, cx| p.toggle_queue(w, cx)))
-            .on_action(cx.listener(|p, _: &crate::annotate::AddImage, w, cx| p.open_sheet(w, cx)))
+            .on_action(cx.listener(|p, _: &crate::annotate::AddImage, w, cx| {
+                if p.main.upgrade().is_some_and(|m| crate::annotate::is_agent(m.read(cx), &p.session)) {
+                    p.open_sheet(w, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|p, _: &crate::annotate::PasteImage, w, cx| p.add_images(crate::annotate::clipboard_sources(cx), w, cx)))
             .on_action(cx.listener(|p, a: &crate::annotate::DropImages, w, cx| p.add_images(a.paths.iter().cloned().map(crate::annotate::Source::Path).collect(), w, cx)))
             .on_action(cx.listener(|p, _: &crate::annotate::EditAttachment, w, cx| {

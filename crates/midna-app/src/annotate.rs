@@ -741,6 +741,12 @@ pub fn pane_session(m: &MainWindow, window: &Window, cx: &App) -> Option<String>
     m.selected.clone()
 }
 
+/// Whether `session` runs an agent: images only help there, so ⌘I and the toolbar button
+/// wait for one.
+pub fn is_agent(m: &MainWindow, session: &str) -> bool {
+    m.sessions.iter().any(|s| s.id == session && s.agent.is_some())
+}
+
 /// Open the main window's sheet for `session` (the focused pane's when None).
 pub fn open(m: &mut MainWindow, session: Option<String>, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
     let Some(id) = session.or_else(|| pane_session(m, window, cx)) else {

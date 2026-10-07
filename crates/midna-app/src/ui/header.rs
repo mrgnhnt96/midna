@@ -111,6 +111,11 @@ pub fn hidden(m: &MainWindow) -> Vec<String> {
     midna_proto::settings::HEADER_BUTTONS.iter().filter(|b| !shown.iter().any(|s| s == *b)).map(|s| s.to_string()).collect()
 }
 
+/// Add image shows only while the selected terminal, or the split beside it, runs an agent.
+fn image_target(m: &MainWindow, cx: &App) -> bool {
+    m.selected.iter().cloned().chain(m.split.as_ref().map(|s| s.session_id(cx))).any(|id| crate::annotate::is_agent(m, &id))
+}
+
 fn tool(t: &Theme, id: &'static str, icon: Icon, text: &'static str, setting: &'static str) -> Stateful<Div> {
     div()
         .id(id)
@@ -170,6 +175,7 @@ fn toolbar_button(m: &MainWindow, b: String, t: &Theme, cx: &mut Context<MainWin
         "subagents" => crate::ui::subagents::button(m, t, cx)?,
         "links" => crate::ui::links::button(m, t, cx)?,
         "ide" => crate::ide::button(m, t, cx)?,
+        "image" if !image_target(m, cx) => return None,
         "image" => tool(t, "tb-image", Icon::Image, "Add image", "keys.add_image")
             .on_click(cx.listener(|m, _, window, cx| {
                 crate::annotate::open(m, None, window, cx);
@@ -268,6 +274,7 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
     let muted = m.selected_session().is_some_and(|s| s.notify_muted());
     // hidden toolbar buttons, in toolbar order, above the terminal's own actions
     let mut moved = div().flex().flex_col();
+    let mut any_moved = false;
     for b in midna_proto::settings::HEADER_BUTTONS.iter().filter(|b| hidden.iter().any(|h| h == *b)) {
         let id = format!("more-{b}");
         let item = match *b {
@@ -290,6 +297,7 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                 );
                 menu_item(t, &id, "Open in…", "", cx.listener(|m, _, w, cx| crate::ide::toggle(m, w, cx))).children(keys("keys.choose_ide"))
             }
+            "image" if !image_target(m, cx) => continue,
             "image" => menu_item(t, &id, "Add image", "", cx.listener(|m, _, w, cx| {
                 m.menu = Menu::None;
                 crate::annotate::open(m, None, w, cx);
@@ -315,8 +323,8 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
             _ => continue,
         };
         moved = moved.child(item);
+        any_moved = true;
     }
-    let any_moved = hidden.iter().any(|h| midna_proto::settings::HEADER_BUTTONS.contains(&h.as_str()));
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             menu_box(t)

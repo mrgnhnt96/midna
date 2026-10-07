@@ -1788,7 +1788,11 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenPrompts, w, cx| crate::ui::command_bar::open_prompts(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| {
-                crate::annotate::open(m, None, w, cx);
+                if crate::annotate::pane_session(m, w, cx).is_some_and(|id| crate::annotate::is_agent(m, &id)) {
+                    crate::annotate::open(m, None, w, cx);
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|m, _: &crate::ui::links::ToggleLinks, w, cx| crate::ui::links::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::subagents::ToggleSubagents, w, cx| crate::ui::subagents::toggle(m, w, cx)))
