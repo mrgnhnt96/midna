@@ -851,7 +851,7 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
                     div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(cmd)
                 }))
                 .children(text)
-                .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q))),
+                .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q, c.session.clone().filter(|_| live), cx))),
         )
         .child(buttons)
         .when(more > 0, |d| {
@@ -911,36 +911,54 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
     }
 }
 
-/// A question's options, numbered as in the terminal (where you pick one).
-fn options(t: &Theme, q: &NeedsYouQuestion) -> impl IntoElement + use<> {
+/// A question's options, numbered as in the terminal. With its terminal (`session`), clicking
+/// one types its number there, as picking it in the terminal does.
+fn options(t: &Theme, q: &NeedsYouQuestion, session: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let mut col = div().flex().flex_col().gap(px(6.)).pt(px(2.));
-    if q.multi_select {
-        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child("Pick any number of these in the terminal"));
+    let multi = q.multi_select;
+    if multi {
+        let hint = if session.is_some() { "Pick any number of these, then submit in the terminal" } else { "Pick any number of these in the terminal" };
+        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child(hint));
     }
     for (i, o) in q.options.iter().enumerate() {
-        col = col.child(
-            div()
-                .flex()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(7.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(t.line)
-                .bg(t.panel)
-                .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child((i + 1).to_string()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().font_weight(FontWeight::BOLD).child(o.label.clone()))
-                        .when(!o.description.trim().is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.dim).child(o.description.clone()))),
-                ),
-        );
+        let row = div()
+            .id(("toast-option", i))
+            .flex()
+            .gap(px(8.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.line)
+            .bg(t.panel)
+            .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child((i + 1).to_string()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().font_weight(FontWeight::BOLD).child(o.label.clone()))
+                    .when(!o.description.trim().is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.dim).child(o.description.clone()))),
+            );
+        col = col.child(match session.clone() {
+            Some(sid) => row.cursor_pointer().hover(|s| s.border_color(t.accent)).on_click(cx.listener(move |m, _, _, cx| {
+                cx.stop_propagation();
+                choose(m, &sid, i + 1, multi, cx);
+            })),
+            None => row,
+        });
     }
     col
+}
+
+/// Pick option `n` of a question in terminal `sid` by typing its number. One pick answers it, so
+/// the card goes; with any number to pick, it stays for the rest.
+fn choose(m: &mut MainWindow, sid: &str, n: usize, multi: bool, cx: &mut Context<MainWindow>) {
+    m.rpc("session.input", serde_json::json!({ "id": sid, "text": n.to_string(), "enter": false }), cx, |_, _, _, _| {});
+    if !multi {
+        dismiss_top(m, cx);
+    }
 }
 
 fn capitalize(s: &str) -> String {
