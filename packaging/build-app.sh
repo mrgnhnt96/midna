@@ -98,6 +98,13 @@ fi
 # ship too so the licenses travel with the binary.
 cp crates/midna-app/assets/fonts/* "$APP/Contents/Resources/Fonts/"
 
+# Finder's "Open in Midna" (packaging/finder-sync). /usr/bin/xcrun, not env.sh's SDK shim.
+APPEX="$APP/Contents/PlugIns/MidnaFinderSync.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+/usr/bin/xcrun --sdk macosx swiftc -O -module-name MidnaFinderSync -parse-as-library -application-extension \
+  -target "$(uname -m)-apple-macos12.0" -framework FinderSync -Xlinker -e -Xlinker _NSExtensionMain \
+  -o "$APPEX/Contents/MacOS/MidnaFinderSync" packaging/finder-sync/FinderSync.swift
+
 env_dict() {  # <dict> body for EXTRA_ENV (+ any fixed pairs given as args)
   local kv
   for kv in "$@" ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do
@@ -130,6 +137,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
+      <key>CFBundleURLSchemes</key><array><string>$BUNDLE_ID</string></array>
+    </dict>
+  </array>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -147,6 +161,30 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>KassDictationHandshake</key><true/>
   <key>MidnaDaemonLabel</key><string>$LABEL</string>
 $LSENV
+</dict>
+</plist>
+PLIST
+
+cat > "$APPEX/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID.finder-sync</string>
+  <key>CFBundleName</key><string>MidnaFinderSync</string>
+  <key>CFBundleDisplayName</key><string>$NAME</string>
+  <key>CFBundleExecutable</key><string>MidnaFinderSync</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key><string>com.apple.FinderSync</string>
+    <key>NSExtensionPrincipalClass</key><string>MidnaFinderSync.FinderSync</string>
+    <key>NSExtensionAttributes</key><dict/>
+  </dict>
 </dict>
 </plist>
 PLIST
@@ -175,7 +213,7 @@ $(env_dict MIDNA_SIGTERM=stop)
 </dict>
 </plist>
 PLIST
-plutil -lint -s "$APP/Contents/Info.plist" "$APP/Contents/Library/LaunchAgents/$LABEL.plist"
+plutil -lint -s "$APP/Contents/Info.plist" "$APP/Contents/Library/LaunchAgents/$LABEL.plist" "$APPEX/Contents/Info.plist"
 
 # ---------------------------------------------------------------- sign (inside out)
 IDENTITY="${MIDNA_SIGN_IDENTITY:-}"
@@ -183,8 +221,10 @@ if [ -z "$IDENTITY" ] && [ "$ADHOC" = 0 ]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
 fi
 [ -n "$IDENTITY" ] || IDENTITY="-"
-SIGN=(/usr/bin/codesign --force --sign "$IDENTITY" --options runtime --entitlements packaging/entitlements.plist)
+SIGN=(/usr/bin/codesign --force --sign "$IDENTITY" --options runtime)
 if [ "$IDENTITY" != "-" ] && [ "${MIDNA_SIGN_TIMESTAMP:-1}" != 0 ]; then SIGN+=(--timestamp); else SIGN+=(--timestamp=none); fi
+"${SIGN[@]}" --entitlements packaging/finder-sync/entitlements.plist "$APPEX"
+SIGN+=(--entitlements packaging/entitlements.plist)
 echo "==> signing as: $( [ "$IDENTITY" = "-" ] && echo "ad-hoc (no Developer ID certificate)" || echo "$IDENTITY")"
 "${SIGN[@]}" -i "$BUNDLE_ID.daemon" "$APP/Contents/MacOS/midnad"
 "${SIGN[@]}" -i "$BUNDLE_ID.cli" "$APP/Contents/MacOS/midna"

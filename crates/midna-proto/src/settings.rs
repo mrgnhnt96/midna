@@ -410,7 +410,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("ui.ask.scope", en(&["project", "root"]), S("project"), "general", false,
         "Where the command bar's \"Ask an agent\" starts the agent: the current project or the root (shift-tab toggles it)."),
     s!("finder.quick_action", SettingKind::Bool, B(true), "general", false,
-        "Show \"Open in Midna\" when you right-click a folder in Finder (under Quick Actions): it opens a terminal in that folder. midna keeps a Quick Action in ~/Library/Services while this is on and removes it when off."),
+        "Show \"Open in Midna\", with Midna's icon, when you right-click a folder in Finder: it opens a terminal in that folder. It's midna's Finder extension, the same switch as System Settings › Login Items & Extensions › Finder."),
     s!("terminal.option_as_meta", SettingKind::Bool, B(true), "terminal", false,
         "Option (alt) acts as Meta in terminals: option-b sends ESC b (word back in shells). Off = option types macOS characters (option-e e = é)."),
     s!("terminal.link_preview", en(&["hover", "cmd", "off"]), S("hover"), "terminal", false,
