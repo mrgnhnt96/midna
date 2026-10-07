@@ -439,6 +439,11 @@ fn cup((x, y): (u16, u16)) -> String {
     format!("\x1b[{};{}H", y + 1, x + 1)
 }
 
+/// Into the alternate screen with the full-screen scroll region: the export writes its rows
+/// with CRLF and sets its own region after them, so a region left over from the primary screen
+/// (or the alternate screen before a snapshot) would scroll the top rows away.
+const ALT_ENTER: &[u8] = b"\x1b[?1049h\x1b[r\x1b[H";
+
 /// Replay a snapshot into `t` (a fresh terminal of the snapshot's size). Order matters: the
 /// screens, then title and cursor shape, then the cursor position, then the half-parsed tail.
 fn replay(t: &mut Terminal<'static, 'static>, s: &TermSnap) {
@@ -446,7 +451,7 @@ fn replay(t: &mut Terminal<'static, 'static>, s: &TermSnap) {
     write_primary(t, s);
     t.vt_write(cup(s.primary_cursor).as_bytes());
     if let Some(alt) = &s.alt_vt {
-        t.vt_write(b"\x1b[?1049h\x1b[H");
+        t.vt_write(ALT_ENTER);
         t.vt_write(alt);
     }
     let title: String = s.title.chars().filter(|c| !c.is_control()).collect();
@@ -548,7 +553,7 @@ impl Engine {
         let snap = TermSnap { cols, rows, alt_active: alt, primary_vt, alt_vt, title, cursor_shape, primary_cursor, alt_cursor, scrollback_rows, pending: self.tail.clone() };
         if alt {
             // Back into the alternate screen the same way a restore gets there.
-            t.vt_write(b"\x1b[?1049h\x1b[H");
+            t.vt_write(ALT_ENTER);
             if let Some(a) = &snap.alt_vt {
                 t.vt_write(a);
             }
@@ -775,5 +780,35 @@ mod snapshot_tests {
         assert_eq!(cell(&mut e, 0).0, [1, 2, 3]);
         set_theme_colors(None);
         assert_ne!(cell(&mut e, 0).0, [1, 2, 3]);
+    }
+
+    #[test]
+    fn snapshot_alt_screen_with_scroll_region_and_full_bottom_row() {
+        // Claude Code's fullscreen UI: a header at the top, a scroll region above the footer,
+        // and text on the last row.
+        for region in [&b"\x1b[1;28r"[..], b"\x1b[5;30r", b"\x1b[?6h\x1b[1;28r\x1b[?6l"] {
+            let mut e = Engine::new(60, 34, None);
+            e.feed(b"$ claude\r\n\x1b[?1049h\x1b[H\x1b[2Jheader 1\x1b[2;1Hheader 2\x1b[30;1H> prompt\x1b[34;1Hfooter", 1);
+            e.feed(region, 1);
+            e.feed(b"\x1b[30;3H", 1);
+            let before = plain(&e);
+            for pass in 0..3 {
+                let snap = e.snapshot();
+                assert_eq!(plain(&e), before, "live engine, pass {pass}, region {region:?}");
+                let r = Engine::restored(&snap, None);
+                assert_eq!(plain(&r), before, "restored, pass {pass}, region {region:?}");
+                assert_eq!(r.cursor(), e.cursor());
+                e = r;
+            }
+            // The region survives: scrolling inside it scrolls the same rows.
+            let mut fresh = Engine::new(60, 34, None);
+            fresh.feed(b"$ claude\r\n\x1b[?1049h\x1b[H\x1b[2Jheader 1\x1b[2;1Hheader 2\x1b[30;1H> prompt\x1b[34;1Hfooter", 1);
+            fresh.feed(region, 1);
+            fresh.feed(b"\x1b[30;3H", 1);
+            for d in [&mut e, &mut fresh] {
+                d.feed(b"\x1b[27;1H\r\nmore\r\nand more", 1);
+            }
+            assert_eq!(plain(&e), plain(&fresh), "region {region:?}");
+        }
     }
 }
