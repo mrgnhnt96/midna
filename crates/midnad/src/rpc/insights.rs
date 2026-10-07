@@ -1,4 +1,4 @@
-//! insights.summary / insights.activity (computed in crate::insights from events only).
+//! insights.summary / insights.series / insights.detail / insights.activity (computed in crate::insights from events only).
 use super::{R, ok};
 use crate::daemon::Daemon;
 use crate::insights::{self, Labels};
@@ -35,4 +35,16 @@ pub fn series(d: &Daemon, p: InsightsSeriesParams) -> R {
     };
     let now = time::now_unix();
     ok(d.log.with_events(|ev| insights::series(ev, &p, now, &labels)))
+}
+
+pub fn detail(d: &Daemon, p: InsightsDetailParams) -> R {
+    let labels = {
+        let core = d.core();
+        Labels {
+            projects: core.state.projects.iter().map(|p| (p.id.clone(), p.name.clone())).collect(),
+            sessions: core.state.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+        }
+    };
+    let now = time::now_unix();
+    ok(d.log.with_events(|ev| insights::detail(ev, p.range, now, &labels)))
 }

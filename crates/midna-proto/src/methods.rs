@@ -1518,6 +1518,129 @@ pub struct InsightsSeries {
     pub previous_total: f64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsDetailParams {
+    #[serde(default = "default_range")]
+    pub range: InsightsRange,
+}
+
+/// The Insights widgets' data for a range (`insights.detail`), all from the event log.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsDetail {
+    pub from: Timestamp,
+    pub to: Timestamp,
+    pub concurrency: InsightsConcurrency,
+    pub turns: InsightsTurnLengths,
+    /// Needs-you items resolved in the range, oldest first.
+    pub waits: Vec<InsightsWait>,
+    /// Per terminal, most time lost to you first.
+    pub agent_time: Vec<InsightsAgentTime>,
+    /// Approved needs-you items grouped by title, most first (at most 10).
+    pub approved: Vec<InsightsCount>,
+    /// One per local day in the range.
+    pub corrections: Vec<InsightsCorrections>,
+    /// The last 7 local days (oldest first) × 24 hours, whatever the range.
+    pub heatmap: Vec<InsightsHeatDay>,
+    /// Agent working time per project, most first.
+    pub projects: Vec<InsightsCount>,
+    /// Spend per model, most first.
+    pub models: Vec<InsightsCount>,
+    /// Records over the whole log.
+    pub bests: InsightsBests,
+}
+
+/// Agents in the `working` state at once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsConcurrency {
+    /// Width of each sample: 600 (today / yesterday) or 3600.
+    pub step_secs: i64,
+    /// Average number of agents working during each step, from `from` to the axis end.
+    pub samples: Vec<f64>,
+    /// Most agents working at the same moment.
+    pub peak: u32,
+    #[serde(default)]
+    pub peak_at: Option<Timestamp>,
+    /// Average count over the time at least one agent worked.
+    pub avg_while_working: f64,
+    /// Seconds with two or more agents working.
+    pub multi_secs: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsTurnLengths {
+    /// Turns ended in the range by length: <1m, 1–5m, 5–15m, 15–30m, 30–60m, 1h+.
+    pub bins: Vec<i64>,
+    pub median_secs: i64,
+    pub longest_secs: i64,
+    #[serde(default)]
+    pub longest_session: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsWait {
+    /// Raised → resolved.
+    pub secs: i64,
+    pub resolved_at: Timestamp,
+    #[serde(default)]
+    pub session_id: Option<Id>,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsAgentTime {
+    /// Session id.
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub project_id: Option<Id>,
+    pub working_secs: i64,
+    /// In `needs_you`.
+    pub blocked_secs: i64,
+    /// From a turn's end to your next prompt (gaps over 4 hours left out: you were away).
+    pub idle_secs: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsCount {
+    pub key: String,
+    pub label: String,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsCorrections {
+    /// Local midnight.
+    pub day: Timestamp,
+    /// Needs-you items you denied.
+    pub denied: i64,
+    /// Turns you stopped (prompt dismissed / Esc).
+    pub stopped: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsHeatDay {
+    /// Local midnight.
+    pub day: Timestamp,
+    /// Agent working seconds per hour (summed over agents, so it can pass 3600).
+    pub working_secs: Vec<i64>,
+    /// Hours you sent a prompt or answered a needs-you item.
+    pub you: Vec<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsBests {
+    #[serde(default)]
+    pub busiest_day: Option<Timestamp>,
+    /// Agent working seconds on that day.
+    pub busiest_day_secs: i64,
+    pub longest_turn_secs: i64,
+    #[serde(default)]
+    pub longest_turn_at: Option<Timestamp>,
+    pub peak_agents: u32,
+    #[serde(default)]
+    pub peak_at: Option<Timestamp>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct InsightsActivityParams {
     /// RFC 3339 lower bound (default: 24h ago).

@@ -952,6 +952,10 @@ fn insights(a: &Args, out: OutFn) -> Res {
                 }
             });
         }
+        Some("detail") => {
+            let v = call("insights.detail", json!({ "range": a.get("range").unwrap_or("today") }))?;
+            out(&v, &print::insights_detail);
+        }
         Some("activity") => {
             let v = call("insights.activity", json!({ "limit": a.num::<u32>("limit")? }))?;
             if a.has("json") {
@@ -962,7 +966,7 @@ fn insights(a: &Args, out: OutFn) -> Res {
                 }
             }
         }
-        Some(other) => return Err(Fail::Usage(format!("unknown insights subcommand `{other}` (summary|series|activity)"))),
+        Some(other) => return Err(Fail::Usage(format!("unknown insights subcommand `{other}` (summary|series|detail|activity)"))),
     }
     Ok(())
 }

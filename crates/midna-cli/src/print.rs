@@ -220,6 +220,49 @@ pub fn insights(v: &Value) {
     table(rows);
 }
 
+/// `insights detail`: one line per widget.
+pub fn insights_detail(v: &Value) {
+    let i = |v: &Value, k: &str| v[k].as_i64().unwrap_or(0);
+    println!("{} → {}", s(v, "from"), s(v, "to"));
+    // " at <when>" / " (<session>)" only when there is one
+    let at = |x: &Value, k: &str| x[k].as_str().filter(|t| !t.is_empty()).map(|t| format!(" at {t}")).unwrap_or_default();
+    let none = |list: String| if list.is_empty() { "none".to_string() } else { list };
+    let c = &v["concurrency"];
+    if i(c, "peak") == 0 {
+        println!("agents at once  none working");
+    } else {
+        println!("agents at once  peak {}{}, avg {} while working, {} with 2+", i(c, "peak"), at(c, "peak_at"), plain(&c["avg_while_working"]), dur(i(c, "multi_secs")));
+    }
+    let t = &v["turns"];
+    let bins: Vec<String> = t["bins"].as_array().into_iter().flatten().map(plain).collect();
+    let longest_in = t["longest_session"].as_str().map(|sid| format!(" ({sid})")).unwrap_or_default();
+    println!("turns           <1m/5m/15m/30m/1h/1h+ {}, median {}, longest {}{longest_in}", bins.join("/"), dur(i(t, "median_secs")), dur(i(t, "longest_secs")));
+    let waits = v["waits"].as_array().cloned().unwrap_or_default();
+    println!("waits           {} answered, {} total", waits.len(), dur(waits.iter().map(|w| i(w, "secs")).sum()));
+    let counts = |k: &str, f: &dyn Fn(&Value) -> String| none(v[k].as_array().into_iter().flatten().take(5).map(|x| format!("{} {}", s(x, "label"), f(&x["value"]))).collect::<Vec<_>>().join(", "));
+    println!("approved        {}", counts("approved", &plain));
+    let (denied, stopped) = v["corrections"].as_array().into_iter().flatten().fold((0, 0), |(d, st), x| (d + i(x, "denied"), st + i(x, "stopped")));
+    println!("corrections     {denied} denied, {stopped} stopped");
+    println!("projects        {}", counts("projects", &|x| dur(x.as_f64().unwrap_or(0.0) as i64)));
+    println!("models          {}", counts("models", &|x| format!("${:.2}", x.as_f64().unwrap_or(0.0))));
+    let b = &v["bests"];
+    if i(b, "peak_agents") == 0 && i(b, "longest_turn_secs") == 0 {
+        println!("records         none yet");
+    } else {
+        println!(
+            "records         busiest day {} ({}), longest turn {}{}, peak {} agents{}",
+            s(b, "busiest_day"), dur(i(b, "busiest_day_secs")), dur(i(b, "longest_turn_secs")), at(b, "longest_turn_at"), i(b, "peak_agents"), at(b, "peak_at")
+        );
+    }
+    let mut rows = vec![["TERMINAL", "WORKING", "BLOCKED", "IDLE"].map(String::from).to_vec()];
+    for r in v["agent_time"].as_array().into_iter().flatten() {
+        rows.push(vec![s(r, "label"), dur(i(r, "working_secs")), dur(i(r, "blocked_secs")), dur(i(r, "idle_secs"))]);
+    }
+    if rows.len() > 1 {
+        table(rows);
+    }
+}
+
 pub fn event(e: &Value) {
     let who = match (e["actor"]["kind"].as_str(), e["actor"]["session"].as_str()) {
         (Some(k), Some(sid)) => format!("{k}:{sid}"),

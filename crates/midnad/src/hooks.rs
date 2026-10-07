@@ -60,7 +60,7 @@ pub const SKILL_MD: &str = include_str!("../../midna-cli/assets/SKILL.md");
 const CLAUDE_MCP_READ_ONLY: &[&str] = &[
     "capabilities", "explain", "guide", "rpc_discover", "daemon_info", "project_list", "project_discover", "session_list", "session_get", "session_read", "session_prompts",
     "needs_you_list", "policy_check", "rule_list", "trigger_list", "trigger_deliveries", "trigger_test", "webhooks_status",
-    "settings_list", "settings_get", "insights_summary", "insights_series", "insights_activity", "events_list", "window_list", "links_list", "queue_list", "session_subagent_log", "usage_get",
+    "settings_list", "settings_get", "insights_summary", "insights_series", "insights_detail", "insights_activity", "events_list", "window_list", "links_list", "queue_list", "session_subagent_log", "usage_get",
 ];
 
 /// Two or three lines appended to the agent's system prompt (setting `agents.system_hint`).

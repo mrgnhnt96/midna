@@ -353,6 +353,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "insights.summary" => insights::summary(d, parse(p)?),
         "insights.activity" => insights::activity(d, parse(p)?),
         "insights.series" => insights::series(d, parse(p)?),
+        "insights.detail" => insights::detail(d, parse(p)?),
         "usage.get" => ok(crate::usage::get(d)),
         "window.list" => window::list(d),
         "window.command" => window::command(d, ctx, parse(p)?),

@@ -487,10 +487,12 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "insights [--range today|yesterday|week|month] [--by project|agent|terminal|day]\n       \
                 insights series <turns|messages|spend|working|waiting|approvals|triggers> [--range R] [--bucket hour|day] [--by B]\n       \
+                insights detail [--range R]\n       \
                 insights activity [--limit N]",
-        summary: "totals, time series and recent activity, computed from the event log",
-        details: "Turns, human messages, spend, working and waiting time, approvals and triggers fired.",
-        methods: &["insights.summary", "insights.series", "insights.activity"],
+        summary: "totals, time series, widget detail and recent activity, computed from the event log",
+        details: "Turns, human messages, spend, working and waiting time, approvals and triggers fired. `detail`: agents\n\
+                  working at once, turn lengths, waits on you, idle time, approvals, corrections, heatmap and records.",
+        methods: &["insights.summary", "insights.series", "insights.detail", "insights.activity"],
     },
     Verb {
         name: "usage",

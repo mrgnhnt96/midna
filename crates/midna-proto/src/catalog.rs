@@ -449,6 +449,12 @@ fn build() -> Vec<MethodSpec> {
              metric: turns|messages|spend|working|waiting|approvals|triggers; bucket: hour|day (default hour for today, day \
              otherwise); by: project|agent|terminal splits each bucket into per-group values. Returns every bucket in the range \
              (oldest first, empty ones included), the groups largest first with labels, the total and the previous period's total."),
+        m::<InsightsDetailParams, InsightsDetail>("insights.detail").d(
+            "The Insights widgets' data for a range (today|yesterday|week|month), computed from the event log: agents \
+             working at once (samples per 10 min or hour, peak, time with two or more), turn lengths (bins, median, \
+             longest), needs-you waits, per-terminal working / blocked-on-you / idle-after-a-turn time, approvals by \
+             what was approved, denials and interrupted turns per day, a 7-day × 24-hour heatmap of agent work and \
+             your activity, working time per project, spend per model, and records over the whole log."),
         m::<InsightsActivityParams, Vec<Event>>("insights.activity").d(
             "Recent meaningful activity (status changes, turns, approvals, rules, needs-you), newest first. Use events.list for the raw log."),
         // usage

@@ -205,6 +205,22 @@ fn seeded_history_feeds_series() {
     let wait = call(&mut c, "insights.series", json!({"range": "month", "metric": "waiting", "by": "agent"}));
     assert!(wait["groups"].as_array().unwrap().iter().any(|g| g["label"] == "Claude"));
 
+    // the widgets' detail over the same history
+    let detail = call(&mut c, "insights.detail", json!({"range": "week"}));
+    assert_eq!(detail["concurrency"]["step_secs"], 3600);
+    assert_eq!(detail["concurrency"]["samples"].as_array().unwrap().len(), 7 * 24);
+    assert!(detail["concurrency"]["peak"].as_u64().unwrap() >= 1);
+    let bins: i64 = detail["turns"]["bins"].as_array().unwrap().iter().map(|b| b.as_i64().unwrap()).sum();
+    assert!(bins > 0 && bins <= week["total"].as_f64().unwrap() as i64 + 10, "turns ended in the week: {bins}");
+    assert!(!detail["waits"].as_array().unwrap().is_empty());
+    assert_eq!(detail["approved"][0]["label"], "Allow Bash(cargo test)?");
+    assert_eq!(detail["corrections"].as_array().unwrap().len(), 7);
+    assert_eq!(detail["heatmap"].as_array().unwrap().len(), 7);
+    assert_eq!(detail["models"][0]["label"], "opus");
+    assert!(PROJECTS.iter().any(|(_, name, _)| detail["projects"][0]["label"] == *name));
+    assert!(detail["agent_time"].as_array().unwrap().iter().all(|r| TERMINAL_NAMES.contains(&r["label"].as_str().unwrap())));
+    assert!(detail["bests"]["busiest_day_secs"].as_i64().unwrap() > 0);
+
     // live: a real terminal driven by agent.hook shows up in today's hourly series
     let before = call(&mut c, "insights.series", json!({"range": "today", "metric": "turns"}))["total"].as_f64().unwrap();
     let opened = call(&mut c, "session.open", json!({"project_id": "p_4b2a55", "kind": "shell", "command": ["/bin/cat"]}));
