@@ -353,7 +353,6 @@ impl AnnotateView {
         }
         self.update_draft(cx, |d| d.attached = true);
         self.sync(cx);
-        crate::sounds::play("image_added");
         self.close(window, cx);
     }
 
@@ -583,6 +582,7 @@ impl AnnotateView {
                     }
                 }
                 if !shots.is_empty() {
+                    crate::sounds::play("image_added");
                     let first = cx.update_global::<Drafts, _>(|d, _| {
                         let d = d.0.entry(target.clone()).or_default();
                         d.shots.extend(shots);
