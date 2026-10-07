@@ -32,7 +32,7 @@ use gpui_kit::*;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSBorderType, NSColor, NSEventModifierFlags, NSFont, NSResponder, NSScrollView, NSText, NSTextView, NSView};
+use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSBorderType, NSColor, NSEventModifierFlags, NSEventType, NSFont, NSResponder, NSScrollView, NSText, NSTextView, NSView};
 use objc2_foundation::{NSObject, NSPoint, NSRange, NSRect, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::json;
@@ -674,6 +674,30 @@ fn place(n: Option<&Native>, b: Bounds<Pixels>, t: &Theme) {
             emit(ComposerEvent::Changed); // wrapping may have changed the line count
         }
     }
+}
+
+/// Arrows and the other navigation keys, while the field is first responder: hand the key to
+/// the field and report it taken. AppKit offers these as key *equivalents*, to the GPUI view
+/// first; with no GPUI binding, GPUI feeds them to its own input context, which swallows them
+/// some of the time, so they never reached the field. ⌃ (Spaces) and ⌘⌥ (switch terminal)
+/// stay GPUI's.
+pub fn forward_nav_key(m: &MainWindow, ev: &KeyDownEvent) -> bool {
+    let k = &ev.keystroke;
+    let nav = matches!(k.key.as_str(), "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" | "delete");
+    if !nav || k.modifiers.control || (k.modifiers.platform && k.modifiers.alt) {
+        return false;
+    }
+    native(m, |n| {
+        let Some(w) = n.tv.window() else { return false };
+        let is_tv = w.firstResponder().is_some_and(|r| std::ptr::eq(&*r as *const NSResponder as *const AnyObject, &**n.tv as *const NSTextView as *const AnyObject));
+        let Some(e) = NSApplication::sharedApplication(n.tv.mtm()).currentEvent() else { return false };
+        if !is_tv || e.r#type() != NSEventType::KeyDown {
+            return false;
+        }
+        n.tv.keyDown(&e);
+        true
+    })
+    .unwrap_or(false)
 }
 
 fn send_to_text_view(m: &MainWindow, s: Sel) {
