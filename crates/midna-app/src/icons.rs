@@ -40,8 +40,6 @@ pub enum Icon {
     BellOff,
     // image annotations
     Image,
-    Pin,
-    Area,
     Trash,
     // session links
     Link,
@@ -114,8 +112,6 @@ impl Icon {
             Icon::Bell => "icons/bell.svg",
             Icon::BellOff => "icons/bell-off.svg",
             Icon::Image => "icons/image.svg",
-            Icon::Pin => "icons/pin.svg",
-            Icon::Area => "icons/area.svg",
             Icon::Trash => "icons/trash.svg",
             Icon::Link => "icons/link.svg",
             Icon::Artifact => "icons/artifact.svg",
@@ -295,12 +291,6 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/image.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6.2" r="1.3"/><path d="m14.5 10.5-3.5-3.5-7.5 6.5"/></svg>"##
-        }
-        "icons/pin.svg" => {
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="6" r="3"/><path d="M8 9v5.5"/></svg>"##
-        }
-        "icons/area.svg" => {
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-dasharray="2 2"><rect x="2" y="3" width="12" height="10" rx="1"/></svg>"##
         }
         "icons/trash.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5v-2h4v2M4 4.5l.8 9h6.4l.8-9"/></svg>"##

@@ -211,8 +211,6 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["tab"], "Change when it goes in", "Queue"),
     fixed(&["cmd-o"], "Open the card's terminal", "Needs-you cards"),
     fixed(&["cmd-shift-enter"], "Approve all", "Needs-you cards"),
-    fixed(&["p"], "Pin tool", "Image sheet"),
-    fixed(&["b"], "Box tool", "Image sheet"),
     fixed(&["enter"], "Edit the selected note", "Image sheet"),
     fixed(&["backspace"], "Remove the selected note", "Image sheet"),
     fixed(&["cmd-up", "cmd-down"], "Previous / next image", "Image sheet"),

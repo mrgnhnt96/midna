@@ -1,6 +1,6 @@
 //! The image sheet (design: "D · Sheet + image strip") and the "added, not sent yet" tray
 //! under the terminal. State and behavior live in `crate::annotate`; this draws `AnnotateView`.
-use crate::annotate::{self as an, AnnotateView, Mark, Outbox, Tool};
+use crate::annotate::{self as an, AnnotateView, Mark, Outbox};
 use crate::icons::Icon;
 use crate::theme::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
@@ -11,8 +11,7 @@ const THUMB_W: f32 = 104.;
 const THUMB_H: f32 = 65.;
 const RAIL_W: f32 = 300.;
 const RAIL_W_NARROW: f32 = 220.;
-/// Below this window width (a pop-out) the sheet tightens: less margin, a narrower notes rail,
-/// tool buttons without their keys.
+/// Below this window width (a pop-out) the sheet tightens: less margin, a narrower notes rail.
 const NARROW: f32 = 960.;
 
 fn narrow(window: &Window) -> bool {
@@ -67,6 +66,11 @@ fn badge(t: &Theme, n: usize, size: f32) -> Div {
         .child(n.to_string())
 }
 
+/// An area note's badge in the notes rail: a dashed square, drawn like the box on the image.
+fn area_badge(t: &Theme, n: usize, size: f32) -> Div {
+    badge(t, n, size).rounded(px(4.)).border_2().border_dashed().border_color(t.accent).bg(t.accent.opacity(0.18)).text_color(t.accent)
+}
+
 impl Render for AnnotateView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
@@ -107,7 +111,7 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
         );
 
     let body: AnyElement = if has_images {
-        div().flex().flex_1().min_h_0().child(strip(a, t, cx)).child(stage(a, t, window, cx)).child(rail(a, t, narrow(window), cx)).into_any_element()
+        div().flex().flex_1().min_h_0().child(strip(a, t, cx)).child(stage(a, t, cx)).child(rail(a, t, narrow(window), cx)).into_any_element()
     } else {
         empty(a, t, cx).into_any_element()
     };
@@ -299,33 +303,13 @@ fn strip(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
 
 // ------------------------------------------------------------------ middle: the image
 
-fn stage(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<AnnotateView>) -> impl IntoElement + use<> {
-    let narrow = narrow(window);
+fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl IntoElement + use<> {
     let Some(shot) = a.shot(cx).cloned() else {
         return div().flex_1().into_any_element();
     };
     let scale = a.current_scale(cx);
     let (dw, dh) = ((shot.w as f32 * scale).max(1.), (shot.h as f32 * scale).max(1.));
 
-    let tool = |id: &'static str, icon: Icon, label: &'static str, key: &'static str, on: bool, which: Tool| {
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .map(|d| if on { d.bg(t.accent.opacity(0.14)).text_color(t.accent).font_weight(FontWeight::BOLD) } else { d.text_color(t.dim) })
-            .on_click(cx.listener(move |v, _, _, cx| {
-                v.tool = which;
-                cx.notify();
-            }))
-            .child(icon.el(14., if on { t.accent } else { t.dim }))
-            .child(label)
-            .when(!narrow, |d| d.child(kbd(t, key, false)))
-    };
     let zbtn = |id: &'static str, label: &'static str, by: Option<f32>| {
         let raised = t.raised;
         div()
@@ -349,19 +333,6 @@ fn stage(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .flex()
-                .p(px(2.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(t.line)
-                .bg(t.bg)
-                .child(tool("annot-tool-pin", Icon::Pin, "Pin", "P", a.tool == Tool::Pin, Tool::Pin))
-                .child(tool("annot-tool-box", Icon::Area, "Box", "B", a.tool == Tool::Area, Tool::Area)),
-        )
-        .when(!narrow, |d| d.child(div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).whitespace_nowrap().overflow_hidden().text_ellipsis().min_w_0().child(format!("{} · {}×{}", shot.name, shot.w, shot.h))))
         .child(div().flex_1())
         .child(
             div()
@@ -493,7 +464,6 @@ fn stage(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
         .bg(t.term)
         .child(toolbar)
         .child(viewport)
-        .child(div().flex_none().text_center().text_size(px(11.)).text_color(t.dim).child("Scroll to pan · ⌘− ⌘+ ⌘0 zoom · ⌘↑ ⌘↓ switch image"))
         .into_any_element()
 }
 
@@ -520,8 +490,6 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
         let selected = editing || a.sel == Some(i);
         let raised = t.raised;
         let text: AnyElement = if editing {
-            let nl = crate::actions::label(cx, "keys.note_newline");
-            let hint = if nl.is_empty() { "↩ save · esc done".to_string() } else { format!("↩ save · {nl} new line · esc done") };
             div().flex().flex_col().gap(px(6.)).child(div().min_h(px(20.)).child(a.field.clone())).child(
                 div()
                     .flex()
@@ -529,7 +497,7 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                     .gap(px(8.))
                     .text_size(px(11.))
                     .text_color(t.dim)
-                    .child(div().flex_1().child(hint))
+                    .child(div().flex_1())
                     .child(
                         div()
                             .id(("annot-note-remove", i))
@@ -550,7 +518,7 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
         } else {
             div().child(n.text.clone()).into_any_element()
         };
-        let kind = matches!(n.mark, Mark::Area { .. }).then(|| div().text_size(px(11.)).text_color(t.dim).child("Area"));
+        let num = if matches!(n.mark, Mark::Area { .. }) { area_badge(t, i + 1, 22.) } else { badge(t, i + 1, 22.) };
         list = list.child(
             div()
                 .id(("annot-note", i))
@@ -564,8 +532,8 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                 // Not the sheet's click-away: `edit` finishes the other note and keeps the numbering.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |v, _, w, cx| v.edit(i, w, cx)))
-                .child(badge(t, i + 1, 22.))
-                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text).children(kind)),
+                .child(num)
+                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text)),
         );
     }
 
@@ -638,7 +606,7 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                 .px(px(18.))
                 .pt(px(14.))
                 .pb(px(8.))
-                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(crate::ui::caps_label(t, &shot.name)))
+                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(crate::ui::caps_label(t, &format!("Image {}", a.cur + 1))))
                 .child(crate::ui::caps_label(t, &format!("{count} note{}", if count == 1 { "" } else { "s" }))),
         )
         .child(list)

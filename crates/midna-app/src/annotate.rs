@@ -214,12 +214,6 @@ pub fn remove(id: &str, cx: &mut App) {
     cx.update_global::<Outbox, _>(|o, _| o.0.remove(id));
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tool {
-    Pin,
-    Area,
-}
-
 /// What the sheet tells its window: it closed (refocus the terminal), or something to say.
 pub enum AnnotateEvent {
     Closed,
@@ -238,7 +232,6 @@ pub struct AnnotateView {
     pub cur: usize,
     pub sel: Option<usize>,
     pub editing: Option<usize>,
-    pub tool: Tool,
     /// None = fit. Otherwise screen px per image px.
     pub zoom: Option<f32>,
     /// Drag in progress on the image: start and current point, as fractions.
@@ -271,7 +264,6 @@ impl AnnotateView {
             cur: 0,
             sel: None,
             editing: None,
-            tool: Tool::Pin,
             zoom: None,
             drag: None,
             show_text: false,
@@ -495,7 +487,7 @@ impl AnnotateView {
         };
         if area {
             self.add_note(Mark::area(a, b), window, cx);
-        } else if self.tool == Tool::Pin {
+        } else {
             self.add_note(Mark::Pin { x: a.0, y: a.1 }, window, cx);
         }
         cx.notify();
@@ -677,14 +669,6 @@ impl AnnotateView {
             false
         } else {
             match ks.key.as_str() {
-                "p" => {
-                    self.tool = Tool::Pin;
-                    true
-                }
-                "b" => {
-                    self.tool = Tool::Area;
-                    true
-                }
                 "enter" => match self.sel {
                     Some(i) => {
                         self.edit(i, window, cx);

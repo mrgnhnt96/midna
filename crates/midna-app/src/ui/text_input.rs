@@ -390,6 +390,21 @@ impl Shaped {
     }
 }
 
+/// The double-clicked word at byte offset `off`: a run of word characters, of spaces, or the
+/// one other character there (the one before it at the end of a line).
+pub fn word_at(s: &str, off: usize) -> Range<usize> {
+    let class = |c: char| if c.is_alphanumeric() || c == '_' { 0 } else if c == ' ' || c == '\t' { 1 } else { 2 };
+    let at = s[off..].chars().next().filter(|&c| c != '\n').map(|c| (off, c)).or_else(|| s[..off].char_indices().next_back().filter(|&(_, c)| c != '\n'));
+    let Some((i, c)) = at else { return off..off };
+    let k = class(c);
+    if k == 2 {
+        return i..i + c.len_utf8();
+    }
+    let start = s[..i].char_indices().rev().take_while(|&(_, c)| class(c) == k).last().map_or(i, |(j, _)| j);
+    let end = s[i..].char_indices().find(|&(_, c)| class(c) != k).map_or(s.len(), |(j, _)| i + j);
+    start..end
+}
+
 /// Byte offset of the start of the word left of `off` (spaces skipped first). Right after
 /// punctuation (`foo.`, `--`), that run of punctuation is the word, so it always moves.
 pub fn word_left(s: &str, off: usize) -> usize {
@@ -500,6 +515,10 @@ impl Render for TextField {
                     let i = f.index_for_point(ev.position);
                     if ev.modifiers.shift {
                         f.select_to(i, cx);
+                    } else if ev.click_count == 2 && !f.secret {
+                        f.selected = word_at(&f.content, i);
+                        f.reversed = false;
+                        cx.notify();
                     } else if ev.click_count >= 2 {
                         f.selected = 0..f.content.len();
                         f.reversed = false;
@@ -705,7 +724,7 @@ fn size_of(w: Pixels, h: Pixels) -> Size<Pixels> {
 
 #[cfg(test)]
 mod tests {
-    use super::{word_left, word_right};
+    use super::{word_at, word_left, word_right};
 
     #[test]
     fn word_moves() {
@@ -722,5 +741,21 @@ mod tests {
         assert_eq!(word_left("see foo. ", 9), 7);
         assert_eq!(word_left("a/b/", 4), 3);
         assert_eq!(word_left("...", 3), 0);
+    }
+
+    #[test]
+    fn double_click_word() {
+        let s = "These shortcuts don't work.";
+        let w = |off| &s[word_at(s, off)];
+        assert_eq!(w(8), "shortcuts");
+        assert_eq!(w(6), "shortcuts");
+        assert_eq!(w(0), "These");
+        assert_eq!(w(5), " ");
+        assert_eq!(w(19), "'");
+        assert_eq!(w(s.len()), ".");
+        assert_eq!(w(s.len() - 1), ".");
+        assert_eq!(word_at("a\nbc", 1), 0..1);
+        assert_eq!(word_at("", 0), 0..0);
+        assert_eq!(&"héllo wörld"[word_at("héllo wörld", 8)], "wörld");
     }
 }
