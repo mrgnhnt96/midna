@@ -3,7 +3,8 @@
 //! never raises a needs-you item: Restart / When idle call `session.restart` (same
 //! conversation), Not now calls `session.update_decline`, which hides it until a newer update.
 //! "Don't ask again" also sets `agents.restart_on_update` for every later update: `when_idle`
-//! with Restart / When idle, `off` with Not now. Clicking Claude's own "Restart to update"
+//! with Restart / When idle, `off` with Not now, and the daemon applies it to every terminal
+//! still showing a prompt. Clicking Claude's own "Restart to update"
 //! notice in the terminal (`terminal::on_update_notice`) shows the prompt again, even after
 //! Not now or before the daemon's next update check has noticed the update.
 use super::border_w;

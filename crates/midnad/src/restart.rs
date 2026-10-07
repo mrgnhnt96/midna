@@ -59,6 +59,28 @@ pub fn decline_update(d: &Daemon, sid: &str) {
     });
 }
 
+/// `agents.restart_on_update` changed: terminals still holding an unanswered update prompt
+/// get the new answer too, so "Don't ask again" on one prompt settles all of them.
+pub fn apply_update_mode(d: &Daemon) {
+    let mode = d.core().state.setting_str("agents.restart_on_update");
+    let pending: Vec<(Id, String)> = {
+        let core = d.core();
+        core.state
+            .sessions
+            .iter()
+            .filter(|s| s.pid.is_some())
+            .filter_map(|s| Some((s.id.clone(), s.agent_info.as_ref()?.update_prompt()?.to_string())))
+            .collect()
+    };
+    for (sid, update) in pending {
+        match mode.as_str() {
+            "when_idle" => queue(d, &sid, &format!("Claude {update} installed"), Actor::system()),
+            "off" => decline_update(d, &sid),
+            _ => {}
+        }
+    }
+}
+
 /// Why `sid` can't be restarted without losing anything right now (empty = go).
 pub fn blockers(d: &Daemon, sid: &str) -> Vec<String> {
     let (s, in_turn, open_items, idle_secs) = {

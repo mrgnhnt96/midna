@@ -152,8 +152,11 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     assert_eq!(info(&mut h, &sid)["update_available"], "2.1.291");
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert_eq!(fake.launches().len(), 3, "ask never restarts on its own");
-    call(&mut h, "session.restart", json!({ "id": sid, "when": "idle" }));
+    // "Don't ask again" + When idle sets when_idle: the prompt already showing is queued too.
+    call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "when_idle" }));
     wait_for(10, "restart when idle", || (fake.launches().len() == 4).then_some(()));
+    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
+    assert_eq!(ev.as_array().unwrap().last().unwrap()["data"]["reason"], "Claude 2.1.291 installed");
 }
 
 #[test]
@@ -190,6 +193,11 @@ fn on_screen_update_notice_is_offered_without_a_status_line() {
     midnad::restart::check_updates(&d.daemon());
     let i = info(&mut h, &sid);
     assert_eq!((i["update_available"].as_str(), i["update_declined"].as_str()), (Some("2.1.291"), Some("2.1.290")));
+
+    // "Don't ask again" + Not now sets off: prompts already showing are declined too.
+    call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "off" }));
+    assert_eq!(info(&mut h, &sid)["update_declined"], "2.1.291");
+    call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "ask" }));
 
     // Restart (now): same conversation, and the update state is gone.
     call(&mut h, "session.restart", json!({ "id": sid }));
