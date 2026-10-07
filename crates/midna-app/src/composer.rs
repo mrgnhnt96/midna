@@ -4,7 +4,7 @@
 //! `NSTextView` passes them (role AXTextArea, settable AXSelectedText, readable value and
 //! selection, AXStringForRange).
 //!
-//! Layout follows Main.dc.html (`mode=dictating`): a "Kass · listening" pill, then an
+//! Layout follows Main.dc.html (`mode=dictating`), without its "Kass · listening" pill: an
 //! accent-bordered box with `❯`, the field and "↩ send · esc cancel". GPUI draws the box; the
 //! `NSTextView` (inside an `NSScrollView`) is a sibling *above* the GPUI view, moved onto the
 //! box's field area every paint (`place`). Every main window gets its own text view: one shared
@@ -86,8 +86,6 @@ pub enum Source {
 pub struct Composer {
     pub open: bool,
     pub source: Source,
-    /// Between Kass's `dictationWillBegin` and `dictationDidEnd`.
-    pub listening: bool,
     /// The terminal the text goes to (selected when the composer opened).
     pub target: Option<String>,
     pub lines: usize,
@@ -132,13 +130,12 @@ impl Composer {
                 let _ = this.update_in(cx, |m, window, cx| {
                     open(m, Source::Manual, window, cx);
                     native(m, |n| n.tv.setString(&NSString::from_str(&text.replace("\\n", "\n"))));
-                    m.composer.listening = crate::dev::var("MIDNA_DEBUG_COMPOSER_LISTENING").is_ok();
                     on_event(m, ComposerEvent::Changed, window, cx);
                 });
             }));
         }
         let subs = vec![cx.on_blur(&focus, window, |m, _, _| release_native_focus(m))];
-        Composer { open: false, source: Source::Manual, listening: false, target: None, lines: 1, focus, native: None, _tasks: tasks, _subs: subs }
+        Composer { open: false, source: Source::Manual, target: None, lines: 1, focus, native: None, _tasks: tasks, _subs: subs }
     }
 }
 
@@ -168,7 +165,6 @@ fn open(m: &mut MainWindow, source: Source, window: &mut Window, cx: &mut Contex
 
 fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     m.composer.open = false;
-    m.composer.listening = false;
     m.composer.target = None;
     // Hand focus back before hiding: hiding the first responder makes AppKit give it to the
     // bare window, and plain keys (and ⌘'s release) would then go nowhere.
@@ -208,7 +204,6 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Cont
                 return;
             }
             let ok = open(m, Source::Kass, window, cx);
-            m.composer.listening = true;
             if ok {
                 kass::post_ready();
             }
@@ -217,7 +212,6 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Cont
             }
         }
         KassEvent::DidEnd { outcome } => {
-            m.composer.listening = false;
             if !m.composer.open {
                 return;
             }
@@ -349,22 +343,6 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     } else {
         field.into_any_element()
     };
-    let pill = m.composer.listening.then(|| {
-        let bar = |h: f32| div().w(px(2.)).h(px(h)).bg(t.accent);
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .px(px(12.))
-            .py(px(4.))
-            .rounded_full()
-            .border_1()
-            .border_color(t.line)
-            .bg(t.raised)
-            .text_size(px(12.))
-            .child(div().flex().items_center().gap(px(2.)).h(px(12.)).child(bar(5.)).child(bar(11.)).child(bar(7.)).child(bar(12.)).child(bar(4.)))
-            .child("Kass · listening")
-    });
     let key = |k: &'static str| crate::ui::header::key_chip(t, k.into()).bg(t.raised);
     let hint = div()
         .flex_none()
@@ -419,7 +397,6 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .pt(px(8.))
             .pb(px(16.))
             .on_mouse_down_out(cx.listener(|m, _, _, _| release_native_focus(m)))
-            .children(pill)
             .child(boxed)
             .into_any_element(),
     )
