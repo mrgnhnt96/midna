@@ -145,6 +145,22 @@ fn waiting<'a>(m: &'a MainWindow, i: &NotifyHistoryItem) -> Option<&'a NeedsYou>
     i.notification.needs_you_id.as_deref().and_then(|id| m.needs.iter().find(|n| n.id == id))
 }
 
+/// The open terminal a notification is about, if it's still there.
+fn terminal<'a>(m: &'a MainWindow, i: &NotifyHistoryItem) -> Option<&'a Session> {
+    i.session_id.as_deref().and_then(|id| m.sessions.iter().find(|s| s.id == id))
+}
+
+fn state_text(state: StatusState) -> &'static str {
+    match state {
+        StatusState::Working => "Working",
+        StatusState::NeedsYou => "Needs you",
+        StatusState::Done => "Done",
+        StatusState::Failed => "Failed",
+        StatusState::Exited => "Exited",
+        _ => "Idle",
+    }
+}
+
 fn go_to(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.screen != Screen::Terminal {
         m.set_screen(Screen::Terminal, window, cx);
@@ -169,9 +185,11 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
         "up" | "k" => step(m, -1, cx),
         "enter" => {
             let list = shown(m);
-            let cur = m.inbox.sel.and_then(|s| list.iter().find(|i| i.seq == s)).or(list.first()).and_then(|i| i.session_id.clone());
-            if let Some(sid) = cur {
-                go_to(m, sid, window, cx);
+            let Some(cur) = m.inbox.sel.and_then(|s| list.iter().copied().find(|i| i.seq == s)).or(list.first().copied()) else { return };
+            match terminal(m, cur).map(|s| s.id.clone()) {
+                Some(sid) => go_to(m, sid, window, cx),
+                None if cur.session_id.is_some() => m.toast("Its terminal has been closed.", cx),
+                None => {}
             }
         }
         _ => return,
@@ -183,6 +201,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
     let m = &*m;
     let list = shown(m);
     let cur = m.inbox.sel.and_then(|s| list.iter().copied().find(|i| i.seq == s)).or(list.first().copied()).cloned();
+    let hint = if cur.as_ref().is_some_and(|c| terminal(m, c).is_some()) { "↑↓ move · ↵ go to terminal · esc back" } else { "↑↓ move · esc back" };
     let new_n = m.inbox.items.iter().filter(|i| is_new(m, i)).count();
     let subtitle = match new_n {
         0 => "Everything midna told you, newest first".to_string(),
@@ -232,7 +251,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("Notifications"))
         .child(div().text_color(t.dim).child(subtitle))
         .child(div().flex_1())
-        .child(div().text_color(t.dim).text_size(px(11.5)).child("↑↓ move · ↵ go to terminal · esc back"));
+        .child(div().text_color(t.dim).text_size(px(11.5)).child(hint));
 
     let body: AnyElement = if m.inbox.items.is_empty() {
         div()
@@ -349,6 +368,47 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
     };
     let category = i.notification.category.clone();
 
+    // Where it came from and what that terminal is doing now; click it to go there. Sent from
+    // outside (a script, a webhook): no terminal, and nothing to say about it.
+    let term = match terminal(m, i) {
+        Some(s) => {
+            let state = m.effective_state(s);
+            let label = super::status_label(m, s).map(|c| c.label).unwrap_or_else(|| state_text(state).to_string());
+            let sid = s.id.clone();
+            div()
+                .id("nt-term")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(9.))
+                .rounded(px(9.))
+                .border_1()
+                .border_color(t.line)
+                .cursor_pointer()
+                .hover(|d| d.bg(t.raised))
+                .child(super::terminal_dot(m, t, s, 8.))
+                .child(div().font_weight(FontWeight::BOLD).truncate().child(s.name.clone()))
+                .child(div().flex_none().text_color(t.dim).child(format!("· {label} · since {}", ago(s.status.since.as_deref()))))
+                .child(div().flex_1())
+                .child(div().flex_none().text_size(px(12.)).text_color(t.dim).child("↵ go to terminal"))
+                .on_click(cx.listener(move |m, _, w, cx| go_to(m, sid.clone(), w, cx)))
+                .into_any_element()
+                .into()
+        }
+        None if i.session_id.is_none() => None,
+        None => div()
+            .px(px(12.))
+            .py(px(9.))
+            .rounded(px(9.))
+            .border_1()
+            .border_color(t.line)
+            .text_color(t.dim)
+            .child("Its terminal has been closed.")
+            .into_any_element()
+            .into(),
+    };
+
     let mut actions = div().flex().flex_wrap().gap(px(8.));
     if let Some(sid) = session.clone() {
         actions = actions.child(super::screen_kit::btn_primary(t, "nt-go", "Go to terminal").on_click(cx.listener(move |m, _, w, cx| go_to(m, sid.clone(), w, cx))));
@@ -409,6 +469,7 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
                 .text_color(t.dim)
                 .children(lines.into_iter().map(|l| div().whitespace_nowrap().child(l)))
         }))
+        .children(term)
         .child(actions)
         .child(div().text_size(px(12.)).text_color(t.dim).child(format!("Shown as {shown_as}.")))
 }
