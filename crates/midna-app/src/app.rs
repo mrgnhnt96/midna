@@ -141,6 +141,8 @@ pub struct MainWindow {
     pub order: Vec<String>,
     /// When each group heading was last clicked, to animate the fold (`ui::sidebar`).
     pub fold_anim: HashMap<String, Instant>,
+    /// Needs-you rows and the "N need you" button sweeping in and out (`ui::need_anim`).
+    pub need_anim: crate::ui::need_anim::NeedAnim,
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
     pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
@@ -323,6 +325,7 @@ impl MainWindow {
             background_hidden,
             order,
             fold_anim: HashMap::new(),
+            need_anim: Default::default(),
             fold_heights: Default::default(),
             webhooks: Value::Null,
             hooks: Value::Null,
@@ -952,6 +955,7 @@ impl MainWindow {
         if let Some(n) = r.needs {
             self.needs = n;
         }
+        crate::ui::need_anim::sync(self, cx);
         if badge && self.is_home() {
             crate::ui::badge::sync(self, cx);
         }
@@ -1421,8 +1425,12 @@ impl MainWindow {
 
     pub fn resolve(&mut self, need_id: String, res: Resolution, cx: &mut Context<Self>) {
         self.menu = Menu::None;
+        if let Some(sid) = self.needs.iter().find(|n| n.id == need_id).and_then(|n| n.session_id.clone()) {
+            crate::ui::need_anim::note_outcome(self, &sid, &res);
+        }
         // Optimistic: hide the item now; the event-driven refresh confirms it.
         self.needs.retain(|n| n.id != need_id);
+        crate::ui::need_anim::sync(self, cx);
         match res {
             Resolution::Approve { .. } | Resolution::Done | Resolution::Restart => crate::sounds::play("approved"),
             Resolution::Deny => crate::sounds::play("denied"),

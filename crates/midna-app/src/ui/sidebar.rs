@@ -168,11 +168,18 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
 
     let top = titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false));
 
+    if m.need_anim.moving() {
+        window.request_animation_frame();
+    }
+    let btn_look = m.need_anim.button(need_n > 0);
     let need_btn = {
-        let has = need_n > 0;
+        let has = need_n > 0 || btn_look.leaving;
         let (fg, bg, border) = if has { (t.need, t.need_soft, t.need) } else { (t.dim, t.raised.opacity(0.0), t.line) };
+        let label = if btn_look.leaving { "0 need you".to_string() } else if has { format!("{need_n} need you") } else { "Nothing needs you".to_string() };
         div()
             .id("need-you")
+            .relative()
+            .overflow_hidden()
             .flex()
             .items_center()
             .gap(px(8.))
@@ -189,10 +196,13 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
             .cursor_pointer()
             .tooltip(super::header::tip_keys("Open the needs-you cards", "keys.needs_you"))
             .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenNeedsYou), cx))
+            .children(btn_look.sweep.map(|b| crate::ui::need_anim::band_el(t, b)))
             .child(div().size(px(8.)).rounded_full().flex_none().when(has, |d| d.bg(t.need)).when(!has, |d| super::border_w(d, 1.5).border_color(t.dim)))
-            .child(div().flex_1().child(if has { format!("{need_n} need you") } else { "Nothing needs you".to_string() }))
+            .child(div().flex_1().when(btn_look.leaving, |d| d.opacity(0.45)).child(label))
             .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).font_weight(FontWeight::NORMAL).child(jump_key))
     };
+    // Opening and folding: the room (button + its 6px below) grows or shrinks with it.
+    let need_btn = div().flex_none().h(px(40. * btn_look.open)).opacity(btn_look.open).overflow_hidden().child(need_btn);
 
     let mut list = div().id("sessions").flex().flex_col().flex_1().min_h_0().py(px(4.)).overflow_y_scroll();
     for (gi, g) in m.groups().into_iter().enumerate() {
@@ -325,7 +335,7 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         .border_r_1()
         .border_color(t.line)
         .child(top)
-        .when(need_n > 0, |d| d.child(need_btn))
+        .when(btn_look.shown, |d| d.child(need_btn))
         .child(list)
         .children(background)
         .child(footer)
@@ -704,6 +714,9 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         let text = if since.is_empty() { text } else { format!("{text} · {since}") };
         (text, if state == StatusState::Failed { t.err } else { t.need })
     }));
+    let look = m.need_anim.row(&s.id, state == StatusState::NeedsYou);
+    // Handled: the reason line says what you did while it folds away.
+    let line2 = line2.or_else(|| look.leaving.as_ref().filter(|_| !compact).map(|l| (l.text.clone(), crate::ui::need_anim::outcome_color(t, l.tone))));
     let segs = m.row_segments.get(&s.id).cloned().unwrap_or_default();
     let pad_y = if compact { 5. } else { 8. };
 
@@ -738,7 +751,9 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 m.select_only(id.clone(), w, cx);
             }
         }))
+        .when_some(look.sweep, |d, b| d.overflow_hidden().child(crate::ui::need_anim::band_el(t, b)))
         .when(selected, |d| d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
+        .when(look.edge > 0., |d| d.child(crate::ui::need_anim::edge_el(t, look.edge)))
         .child(
             div()
                 .flex()
@@ -762,12 +777,14 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 .child(super::terminal_icon(m, t, s, 14., t.dim)),
         )
         .when_some(line2, |d, (text, color)| {
+            let unfold = look.line;
             d.child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(5.))
                     .pl(px(21.))
+                    .when(unfold < 1., |d| d.h(px(crate::ui::need_anim::LINE_H * unfold)).opacity(unfold).overflow_hidden())
                     .text_size(px(12.))
                     .text_color(color)
                     .children(custom_icon.filter(|_| custom.is_some()).map(|i| i.el(12., color)))

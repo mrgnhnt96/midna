@@ -14,6 +14,7 @@ pub mod insights;
 pub mod onboarding;
 pub mod links;
 pub mod queue;
+pub mod need_anim;
 pub mod needs_you;
 pub mod notifications;
 pub mod toast;

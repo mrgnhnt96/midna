@@ -1029,3 +1029,20 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
   - With both hidden, an 8 px strip keeps the right-click menu reachable.
   - peak, reply and longest come from `insights.detail`, which is fetched only when one of them is shown or while customizing.
 - Dev: `MIDNA_INSIGHTS_WIDGETS=parallelism:large,heatmap` (shown instead of the setting, changes kept in memory), `MIDNA_INSIGHTS_ARRANGE=menu|gallery|drag|resize`, `MIDNA_DEBUG_FOOTER=edit|pick|add|menu|compact`; the fake backend serves `insights.detail`.
+
+## Needs-you sweep in the sidebar (`ui/need_anim.rs`; 2026-10-06)
+
+- **Picked C "Sweep"** from three concepts (A ripple, B spring, C sweep) on the needs-you animations canvas, plus its reverse for when you handle the last item.
+- **Coming in**:
+  - a band of the need color crosses the row left to right;
+  - the "N need you" button opens (only when nothing needed you before) and the band carries on across it;
+  - a 2 px need-colored bar grows from the middle of the row's left edge and stays while the item waits. It draws over the selected row's accent bar.
+  - the reason line unfolds.
+- **Going out**, the reverse:
+  - the band crosses the button right to left and the button folds away, reading "0 need you" (only when nothing else waits);
+  - then the band crosses the row, the edge bar shrinks to its middle, and the reason line folds up.
+  - Answered from midna (`resolve`), the line first says what you did in the outcome's color: Approved once / for N min / for this session / always, Done, Restarting (ok), Denied (err), Dismissed (dim). Gone some other way, it keeps its reason in the need color.
+- **Reminder**: while anything waits, a softer sweep runs every 60 s over the button and every row that has waited since the last reminder. There is no setting for it.
+- **Not animated**: the first lists after launch, terminals that close, and anything while macOS Reduce Motion is on. Those changes show as they are.
+- The sweep is removed when it finishes rather than left at its last position, so no tint stays on the row (the canvas board had that bug).
+- The collapsed rail and the floating badge (which has its own pulse) are unchanged.
