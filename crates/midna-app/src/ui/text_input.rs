@@ -5,12 +5,14 @@
 //! Typing arrives through GPUI's input handler (so dead keys, option characters and IME
 //! composition work, with the candidate window anchored at the cursor). The field's own key
 //! handler takes the editing keys (arrows, ⌥/⌘ word and line moves, ⇧ selection, ⌫/⌦, ⌘A/C/X/V);
-//! everything else (↩, esc, ⇥, ↑/↓, ⌘-shortcuts) bubbles to the parent, which decides what
+//! everything else (↩, esc, ⇥, ↑/↓ outside `wrap`, ⌘-shortcuts) bubbles to the parent, which decides what
 //! submit/cancel mean. Font, size and color are inherited from the parent element.
 //!
 //! With `wrap` set (the image sheet's note field) the text wraps at the field's width and the
 //! field grows a line at a time instead of scrolling sideways. The [`Newline`] action
-//! (`keys.note_newline`, ⇧↩ by default) starts a new line there; ↩ stays the parent's.
+//! (`keys.note_newline`, ⇧↩ by default) starts a new line there; ↩ stays the parent's. ↑/↓
+//! (⇧ to select) move a row there, to the start or end past the first or last row; ⌘↑/↓ still
+//! bubble.
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -152,6 +154,24 @@ impl TextField {
         word_right(&self.content, off)
     }
 
+    /// The offset one drawn row above (`up`) or below `off` at the same x, from the last paint:
+    /// the start of the text above the first row, its end below the last. `None` when not wrapping.
+    fn vertical(&self, off: usize, up: bool) -> Option<usize> {
+        let line = self.last_layout.as_ref().filter(|_| self.wrap)?;
+        let Shaped::Wrapped(ps) = line else { return None };
+        let lh = self.last_line_h;
+        let at = line.pos(self.display_offset(off), lh);
+        let y = at.y + lh * 0.5 + if up { -lh } else { lh };
+        let rows: usize = ps.iter().map(Para::rows).sum();
+        Some(if y < px(0.) {
+            0
+        } else if y >= lh * rows as f32 {
+            self.content.len()
+        } else {
+            self.content_offset(line.closest(point(at.x, y), lh))
+        })
+    }
+
     fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
         let text = if self.wrap { text.replace("\r\n", "\n").replace('\r', "\n") } else { text.replace(['\r', '\n'], " ") };
         self.content.replace_range(range.clone(), &text);
@@ -216,6 +236,19 @@ impl TextField {
                     let t = target(self, left);
                     self.move_to(t, cx);
                 }
+            }
+            "up" | "down" if self.wrap && !m.platform && !m.control && !m.alt => {
+                let up = ks.key == "up";
+                // Without ⇧ a selection collapses from its edge on that side.
+                let from = if m.shift || self.selected.is_empty() {
+                    c
+                } else if up {
+                    self.selected.start
+                } else {
+                    self.selected.end
+                };
+                let Some(t) = self.vertical(from, up) else { return };
+                if m.shift { self.select_to(t, cx) } else { self.move_to(t, cx) }
             }
             "home" => self.move_to(0, cx),
             "end" => self.move_to(len, cx),
