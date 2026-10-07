@@ -140,6 +140,9 @@ pub struct TerminalView {
     erasing: Option<(Option<term_edit::Pending>, Vec<ClientMsg>)>,
     /// Bumped per scheduled erase check, so only the latest one runs.
     erase_gen: u64,
+    /// Claude's input text before each ⌘Z, latest last: ⇧⌘Z / ⌘Y types it back (Claude Code
+    /// has undo but no redo). Any other input empties it.
+    redo: Vec<String>,
     font_family: SharedString,
     /// Prompt fast travel (agent terminals): the pinned bar, the rail, ⌥⌘↑ ⌥⌘↓.
     nav: prompt_nav::PromptNav,
@@ -386,6 +389,7 @@ impl TerminalView {
             alt_probed: false,
             erasing: None,
             erase_gen: 0,
+            redo: Vec::new(),
             menu: None,
             marked: None,
             font_family,
@@ -686,6 +690,10 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
+        let undo_key = m.platform && !m.alt && !m.control && matches!((ks.key.as_str(), m.shift), ("z", _) | ("y", false));
+        if !undo_key {
+            self.redo.clear();
+        }
         if self.erasing.is_some() && !m.platform {
             if let Some(k) = key_msg_now(ks, ev.is_held) {
                 self.deliver(ClientMsg::Key(k));
@@ -721,6 +729,7 @@ impl TerminalView {
                     self.open_find(cx);
                     true
                 }
+                _ if undo_key => self.undo_input(ks.key == "z" && !m.shift, cx),
                 _ => false,
             };
             if handled {
@@ -1085,8 +1094,48 @@ impl TerminalView {
         if self.paste_checks_secrets(text, window, cx) {
             return;
         }
+        self.redo.clear();
         self.erase_selection(cx);
         self.deliver(ClientMsg::Paste(text.to_string()));
+    }
+
+    /// ⌘Z in Claude Code's input box: its own undo (ctrl-_), remembering the text first. ⇧⌘Z /
+    /// ⌘Y: the text from before the last ⌘Z, typed back in place of what's there (erased from
+    /// its end, then pasted). False outside Claude's input, or with nothing to redo.
+    fn undo_input(&mut self, undo: bool, cx: &mut Context<Self>) -> bool {
+        if self.agent_kind() != Some("claude") || self.erasing.is_some() {
+            return false;
+        }
+        let Some(c) = self.live_cursor() else { return false };
+        let Some(now) = term_edit::input_text(&self.grid, c) else { return false };
+        if undo {
+            self.kbd_sel = None;
+            // A pasted-text or image chip shows only its label, which typed back is just words.
+            if now.contains("[Pasted text #") || now.contains("[Image #") {
+                self.redo.clear();
+            } else {
+                self.redo.push(now);
+            }
+            self.send(b"\x1f");
+            return true;
+        }
+        let Some(text) = self.redo.pop() else { return false };
+        self.kbd_sel = None;
+        if !now.is_empty() {
+            for mv in term_edit::input_end(&self.grid, c).unwrap_or_default() {
+                self.send_move(mv);
+            }
+            // Extra ⌫ at the input's start do nothing: a few spare for spaces the screen hid.
+            for _ in 0..now.chars().count() + 2 * now.lines().count() + 2 {
+                self.arrow("backspace");
+            }
+            self.ext.selection.clear();
+            self.settle(None, cx);
+        }
+        if !text.is_empty() {
+            self.deliver(ClientMsg::Paste(text));
+        }
+        true
     }
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {

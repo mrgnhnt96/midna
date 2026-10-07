@@ -123,6 +123,85 @@ pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
     Some(((glyph + 2, y), text_edge("down", grid, cursor)?))
 }
 
+/// Claude Code's input box around the cursor: its prompt row and last row. Rows run from the
+/// prompt row down to the box's bottom rule; blank rows are empty lines. None when the cursor
+/// isn't in a box.
+fn claude_box(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
+    let row = |y: u16| grid.get(y as usize);
+    let is_rule = |r: &RowData| text_of(r, 0, text_end(r)).trim_start().starts_with("──");
+    let inside = |r: &RowData| !is_rule(r) && (is_continuation(r) || text_end(r) == 0);
+    let mut top = cursor.1;
+    while !row(top).is_some_and(is_prompt_row) {
+        if top == 0 || !row(top).is_some_and(inside) {
+            return None;
+        }
+        top -= 1;
+    }
+    let mut bottom = top;
+    while row(bottom + 1).is_some_and(inside) {
+        bottom += 1;
+    }
+    if !row(bottom + 1).is_some_and(is_rule) {
+        // No bottom rule: a blank row ended it, as in Codex's box. Trailing blank rows aren't text.
+        while bottom > top.max(cursor.1) && row(bottom).is_some_and(|r| text_end(r) == 0) {
+            bottom -= 1;
+        }
+    }
+    Some((top, bottom))
+}
+
+/// The text in Claude Code's input box around the cursor, rebuilt from the screen (for ⇧⌘Z,
+/// which types it back after ⌘Z). Claude wraps at words, `cols - 4` cells wide, and drops the
+/// space it wrapped at, so a row ends in a wrap when the next row's first word wouldn't have
+/// fit after it, and in a line break when it would. Some("") for the dim placeholder; None
+/// when the cursor isn't in a box.
+pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
+    let (top, bottom) = claude_box(grid, cursor)?;
+    let first = grid.get(top as usize)?;
+    let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '>'))? as u16;
+    let start = glyph + 2;
+    // The placeholder ("Try …") is dim; the cursor's cell on it is drawn plainly.
+    let shown: Vec<&Cell> = first.cells.get(start as usize + 1..text_end(first) as usize).unwrap_or_default().iter().filter(|c| !matches!(c.ch, ' ' | '\0')).collect();
+    if !shown.is_empty() && shown.iter().all(|c| is_dim(c)) {
+        return Some(String::new());
+    }
+    let mut lines = vec![text_of(first, start, text_end(first))];
+    for r in &grid[top as usize + 1..=bottom as usize] {
+        lines.push(text_of(r, AGENT_INDENT, text_end(r).max(AGENT_INDENT)));
+    }
+    let width = first.cells.len().saturating_sub(4);
+    let mut text = lines[0].clone();
+    for pair in lines.windows(2) {
+        let (prev, next) = (pair[0].chars().count(), &pair[1]);
+        let word = next.chars().take_while(|c| *c != ' ').count();
+        if prev >= width {
+            // Cut mid-word (a path, a URL): nothing was dropped.
+        } else if word > 0 && prev > 0 && prev + 1 + word > width {
+            text.push(' ');
+        } else {
+            text.push('\n');
+        }
+        text.push_str(next);
+    }
+    Some(text)
+}
+
+/// The moves to the end of Claude Code's input from the cursor: down to its last row, then
+/// to that row's end (↓ moves a screen row; on the last row it would recall history).
+pub fn input_end(grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
+    let (_, bottom) = claude_box(grid, cursor)?;
+    let mut v = vec![Send::Arrow("down"); bottom.saturating_sub(cursor.1) as usize];
+    v.push(Send::Bytes(b"\x05"));
+    Some(v)
+}
+
+/// Dim text: faint, or grey (Claude draws its placeholder in a grey).
+fn is_dim(c: &Cell) -> bool {
+    let [r, g, b] = c.fg;
+    let (lo, hi) = (r.min(g).min(b), r.max(g).max(b));
+    c.flags & crate::frame::F_FAINT != 0 || (hi - lo <= 16 && (70..=185).contains(&hi))
+}
+
 /// Which agent runs in a terminal ("claude" or "codex"), from `session.processes` (a list;
 /// the CLI's `--json` wraps it as `{"processes": …}`). They may be started from a shell rather
 /// than as an agent terminal.
@@ -459,6 +538,26 @@ mod tests {
         let codex = grid(&["", " › one", "", "  GPT-6 status"]);
         assert_eq!(select_all(&codex, (4, 1)).unwrap(), ((3, 1), vec![Send::Bytes(b"\x05")]));
         assert_eq!(select_all(&g, (4, 0)), None, "not in the input");
+    }
+
+    #[test]
+    fn reads_claudes_input_back() {
+        // 30 columns: Claude wraps at 26.
+        let rule = "─".repeat(30);
+        let g = grid(&[&rule, "❯ the quick brown fox jumps", "  over the lazy dog", &rule, "  status"]);
+        assert_eq!(input_text(&g, (10, 2)).as_deref(), Some("the quick brown fox jumps over the lazy dog"), "\"over\" didn't fit: a wrap");
+        let g = grid(&[&rule, "❯ first line", "    indented", "", "  after blank", &rule]);
+        assert_eq!(input_text(&g, (13, 4)).as_deref(), Some("first line\n  indented\n\nafter blank"));
+        let g = grid(&[&rule, "❯ abcdefghijklmnopqrstuvwxyz", "  0123", &rule]);
+        assert_eq!(input_text(&g, (6, 2)).as_deref(), Some("abcdefghijklmnopqrstuvwxyz0123"), "cut mid-word");
+        assert_eq!(input_text(&g, (0, 0)), None, "not in the box");
+        let mut empty = grid(&[&rule, "❯ Try \"edit\"", &rule]);
+        for c in &mut empty[1].cells[2..12] {
+            c.fg = [128, 128, 128];
+        }
+        assert_eq!(input_text(&empty, (2, 1)).as_deref(), Some(""), "the placeholder");
+        let g = grid(&[&rule, "❯ one", "", "  two", &rule]);
+        assert_eq!(input_end(&g, (0, 2)), Some(vec![Send::Arrow("down"), Send::Bytes(b"\x05")]), "from a blank line");
     }
 
     #[test]

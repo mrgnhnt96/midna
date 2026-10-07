@@ -190,6 +190,7 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet, or pastes its path with terminal.image_paste = inline; a secret pasted into an agent asks to store it)", "Terminal"),
     fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", "Terminal"),
     fixed(&["cmd-a"], "Select all", "Terminal"),
+    fixed(&["cmd-z", "cmd-shift-z", "cmd-y"], "Undo / redo in Claude Code's input", "Terminal"),
     fixed(&["cmd-f"], "Find in the terminal", "Terminal"),
     fixed(&["cmd-g", "enter"], "Find: older match", "Terminal find"),
     fixed(&["cmd-shift-g", "shift-enter"], "Find: newer match", "Terminal find"),
