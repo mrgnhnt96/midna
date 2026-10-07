@@ -482,8 +482,9 @@ enum Meta {
     Ease(SharedString, Duration, f32, f32),
 }
 
-/// A card's header row: its kind and terminal, "+N" (`count`, opening the list) and its age and ✕.
-fn head(m: &MainWindow, t: &Theme, c: &Card, meta: Meta, count: Option<usize>, cx: &mut Context<MainWindow>) -> Div {
+/// A card's header row: its kind and terminal, "+N" (`count`, opening the list), its kind's image
+/// (`thumb`: folded, where the headline and its image don't show) and its age and ✕.
+fn head(m: &MainWindow, t: &Theme, c: &Card, meta: Meta, count: Option<usize>, thumb: bool, cx: &mut Context<MainWindow>) -> Div {
     let (label, color) = super::notifications::kind(t, &c.posted);
     let needs = matches!(c.posted.category.as_str(), "approval" | "attention");
     let kind_label = if needs { "Needs you".to_string() } else { label.to_string() };
@@ -546,6 +547,7 @@ fn head(m: &MainWindow, t: &Theme, c: &Card, meta: Meta, count: Option<usize>, c
                     open_list(m, cx);
                 }))
         }))
+        .children(c.posted.image.clone().filter(|_| thumb).map(|path| super::badge::thumb(path.into(), 22., 6.)))
         .child(end)
 }
 
@@ -655,7 +657,7 @@ fn list(m: &MainWindow, t: &Theme, anim: Option<(u64, bool)>, cx: &mut Context<M
             .shadow_lg()
             .cursor_pointer()
             .hover(|s| s.opacity(1.))
-            .child(head(m, t, c, Meta::RowHover, None, cx))
+            .child(head(m, t, c, Meta::RowHover, None, true, cx))
             .on_click(cx.listener(move |m, _, _, cx| pick(m, seq, cx)));
         let at = move |el: Stateful<Div>, k: f32| {
             let (top, inset, o) = place(i, k, n);
@@ -825,7 +827,7 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
         .shadow_lg()
         .overflow_hidden()
         .child(
-            head(m, t, c, meta, (collapsed && more > 0).then_some(more), cx)
+            head(m, t, c, meta, (collapsed && more > 0).then_some(more), collapsed, cx)
                 .id("toast-head")
                 .flex_none()
                 .pl(px(14.))
