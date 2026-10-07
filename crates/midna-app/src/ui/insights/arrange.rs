@@ -230,6 +230,8 @@ impl InsightsView {
         )
     }
 
+    /// A fixed-height box of absolutely placed cards; `flex_none` so the scroll column
+    /// doesn't shrink it to the window (which stopped the page scrolling).
     pub(super) fn grid(&mut self, t: &Theme, width: f32, cx: &mut Context<Self>) -> Div {
         let items = self.items(cx);
         let settings = self.main.upgrade().map(|m| m.read(cx).settings.clone()).unwrap_or_default();
@@ -246,7 +248,7 @@ impl InsightsView {
             _ => None,
         };
         let origin = self.ar.origin.clone();
-        let mut grid = div().relative().w_full().h(px(height.max(WIDGET_H))).child(
+        let mut grid = div().relative().flex_none().w_full().h(px(height.max(WIDGET_H))).child(
             canvas(move |b, _, _| origin.set(b.origin), |_, _, _, _| {}).absolute().top_0().left_0().size_full(),
         );
         if moving.is_some() || resizing.is_some() {

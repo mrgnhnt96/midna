@@ -452,6 +452,10 @@ impl Render for InsightsView {
         )
         .w_full()
         .h(px(0.));
+        // dev (screenshots): MIDNA_INSIGHTS_SCROLL=<px> scrolls the page down that far
+        if let Some(y) = crate::dev::var("MIDNA_INSIGHTS_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
+            self.scroll.set_offset(point(px(0.), px(-y)));
+        }
         let overlays = self.overlays(&t, cx);
         let root = div().id("insights-root").relative().flex_1().min_w_0().h_full().flex().flex_col().bg(t.bg);
         self.arrange_events(root, cx).child(header).child(
