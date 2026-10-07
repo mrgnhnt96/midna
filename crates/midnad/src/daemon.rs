@@ -421,4 +421,25 @@ impl Daemon {
             self.close_needs_you(&id, json!({ "kind": "done", "auto": true }), Actor::system());
         }
     }
+
+    /// The agent in `sid` got a new prompt: the `blocked` items it raised itself (`midna
+    /// attention`) are stale, since it was answered or moved on. It raises a fresh one if it is
+    /// still stuck. A custom status's item keeps its own clear rule.
+    pub fn clear_agent_blocked(&self, sid: &str) {
+        let ids: Vec<Id> = {
+            let core = self.core();
+            let custom = core.state.session(sid).and_then(|s| s.custom_status.as_ref()).and_then(|c| c.needs_you_id.clone());
+            core.state
+                .needs_you
+                .iter()
+                .filter(|n| n.kind == NeedsYouKind::Blocked && n.session_id.as_deref() == Some(sid))
+                .filter(|n| n.asked_by.kind == ActorKind::Agent && n.asked_by.session.as_deref() == Some(sid))
+                .filter(|n| custom.as_deref() != Some(n.id.as_str()))
+                .map(|n| n.id.clone())
+                .collect()
+        };
+        for id in ids {
+            self.close_needs_you(&id, json!({ "kind": "done", "auto": true, "reason": "prompt" }), Actor::system());
+        }
+    }
 }

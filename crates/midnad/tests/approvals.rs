@@ -312,3 +312,31 @@ fn no_typed_in_the_terminal_saves_nothing() {
     let (saved, _) = answer_in_terminal("typed-no", "\r");
     assert_eq!(saved, json!([]));
 }
+
+/// An agent that said it was blocked and then got a new prompt (the human's answer, or a
+/// message from elsewhere) moved on: its own `blocked` item closes. Notes, and items other
+/// terminals raised about it, stay.
+#[test]
+fn a_new_prompt_closes_the_agents_own_blocked_item() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let mut b = d.agent(Some(&other));
+    let hook = |c: &mut Client, ev: &str| call(c, "agent.hook", json!({ "agent": "claude", "event": ev, "payload": { "session_id": "c1", "prompt": "go" } }));
+    hook(&mut a, "UserPromptSubmit");
+    let blocked = call(&mut a, "needs_you.raise", json!({ "kind": "blocked", "message": "which option?" }))["id"].as_str().unwrap().to_string();
+    let note = call(&mut a, "needs_you.raise", json!({ "kind": "note", "message": "fyi" }))["id"].as_str().unwrap().to_string();
+    let elsewhere = call(&mut b, "needs_you.raise", json!({ "kind": "blocked", "message": "mine" }))["id"].as_str().unwrap().to_string();
+    hook(&mut a, "Stop");
+    let open = |h: &mut Client| call(h, "needs_you.list", json!({})).as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert!(open(&mut h).contains(&blocked), "a finished turn keeps the question open");
+
+    hook(&mut a, "UserPromptSubmit");
+    let ids = open(&mut h);
+    assert!(!ids.contains(&blocked), "{ids:?}");
+    assert!(ids.contains(&note) && ids.contains(&elsewhere), "{ids:?}");
+    let got = call(&mut h, "needs_you.get", json!({ "id": blocked }));
+    assert_eq!(got["resolution"], json!({ "kind": "done", "auto": true, "reason": "prompt" }), "{got}");
+}

@@ -85,6 +85,7 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - `midna attention --note "<one line>"` = FYI, no action needed.
 - Keep it to one short line and put details in `--detail`. Don't raise one per step, and don't
   raise one for something you can decide yourself. Check `midna needs` first so you don't duplicate.
+- Your next prompt closes your own `attention` items. If it didn't unblock you, raise a new one.
 - Before you speak up, `midna list` shows which terminals are busy.
 - `midna notify send "<title>" --detail "<line>"` posts a macOS notification (click = your
   terminal). Use it when the human asked to be told ("ping me when CI is green") or a result

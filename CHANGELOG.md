@@ -20,6 +20,7 @@ The first public release.
 - **Your own agent arguments.** `midna open --agent claude --resume <id> -- --append-system-prompt "…" --settings board.json` (and `session.open {agent_args, resume}`) start an agent with its own flags and conversation. A `--settings` or `--append-system-prompt` is merged with midna's own, so midna's hooks keep working.
 - **Unattended closes.** Turn on **Settings › Agents may force-close terminals** to let an agent close working terminals and use `close --force` without asking you. Off by default.
 - **Approvals clean up after themselves.** An approval about a terminal that has since closed, or from an agent that went away, leaves Needs you on its own.
+- **An agent that moves on stops needing you.** When an agent raised `midna attention` and then gets a new prompt (your answer, or a message from a tool or another agent), its request leaves Needs you. If it's still stuck, it asks again.
 - **Folder trust in Needs you.** When a new Claude asks "Do you trust the files in this folder?", its terminal shows as needs you and you can answer from Needs you.
 - **Terminals that close themselves.** `midna open --close-on-exit` (`session.open {close_on_exit: true}`) closes an agent's or command's terminal when it exits normally. A failed exit stays open so you can see why.
 - **Unattended updates.** Turn on **Settings › Agents may install updates** (`agents.may_install_updates`) to let an agent run `midna updates install` without asking you, e.g. one that tests each beta as it lands. Signature checks still apply. Off by default.

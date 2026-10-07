@@ -37,6 +37,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             let conversation = payload.get("session_id").and_then(Value::as_str);
             d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
             crate::auto_name::on_prompt(d, &sid, prompt);
+            d.clear_agent_blocked(&sid);
             start_turn(d, &sid, &project, &actor);
         }
         "Stop" | "StopFailure" => {
