@@ -147,16 +147,31 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         let menu_key = pid.clone().unwrap_or_else(|| "root".into());
         let menu_open = m.menu == Menu::Project(menu_key.clone());
         let collapsed = pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
-        // 0 = open, 1 = folded; eased between the two for FOLD_MS after a heading click.
-        let fold = match pid.as_ref().and_then(|p| m.fold_anim.get(p)) {
-            Some(at) if at.elapsed().as_secs_f32() * 1000. < FOLD_MS => {
+        // A heading click cascades the rows (as the badge's list does): unfolding, the room opens
+        // over FOLD_MS while they drop in one after another; folding, they lift away (the bottom
+        // one first), then the room closes. `fold`: 0 = open, 1 = folded (the room's height).
+        let ease = |ms: f32| 1. - (1. - (ms / FOLD_MS).min(1.)).powi(3);
+        let n_rows = g.sessions.iter().filter(|s| m.selected.as_deref() != Some(&s.id)).count();
+        let anim = pid.as_ref().and_then(|p| m.fold_anim.get(p)).map(|at| at.elapsed());
+        let lift = anim.filter(|_| collapsed).map_or(0., |_| crate::ui::badge::cascade_len(n_rows, true).as_secs_f32() * 1000.);
+        let (fold, turn) = match anim {
+            Some(e) if e.as_secs_f32() * 1000. < (lift + FOLD_MS).max(crate::ui::badge::cascade_len(n_rows, false).as_secs_f32() * 1000.) => {
                 window.request_animation_frame();
-                let e = 1. - (1. - at.elapsed().as_secs_f32() * 1000. / FOLD_MS).powi(3);
-                if collapsed { e } else { 1. - e }
+                let ms = e.as_secs_f32() * 1000.;
+                if collapsed { (ease((ms - lift).max(0.)), ease(ms)) } else { (1. - ease(ms), 1. - ease(ms)) }
             }
-            _ => if collapsed { 1. } else { 0. },
+            _ => if collapsed { (1., 1.) } else { (0., 0.) },
         };
-        let chevron = Icon::Chevron.el(10., t.dim).when(fold > 0., |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2 * fold))));
+        let cascade = |k: usize, el: AnyElement| -> AnyElement {
+            match anim.filter(|_| fold < 1.) {
+                Some(e) => {
+                    let v = crate::ui::badge::cascade_at(k, n_rows, e, collapsed);
+                    div().relative().top(px((1. - v) * -crate::ui::badge::CASCADE_DROP)).opacity((v * 1.4).clamp(0., 1.)).child(el).into_any_element()
+                }
+                None => el,
+            }
+        };
+        let chevron = Icon::Chevron.el(10., t.dim).when(turn > 0., |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2 * turn))));
         let toggle_key = pid.clone();
         let header = div()
             .id(SharedString::from(format!("group-{gi}")))
@@ -224,13 +239,14 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());
-        let (mut run, mut ri) = (vec![], 0);
+        let (mut run, mut ri, mut k) = (vec![], 0, 0);
         for s in g.sessions {
             if m.selected.as_deref() == Some(&s.id) {
                 group = group.children(fold_run(std::mem::take(&mut run), format!("{key}/{ri}"), fold, m)).child(row(m, s, &key, t, compact, cx));
                 ri += 1;
             } else if fold < 1. {
-                run.push(row(m, s, &key, t, compact, cx).into_any_element());
+                run.push(cascade(k, row(m, s, &key, t, compact, cx).into_any_element()));
+                k += 1;
             }
         }
         group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
