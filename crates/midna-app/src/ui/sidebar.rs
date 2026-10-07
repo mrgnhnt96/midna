@@ -1,4 +1,5 @@
-//! Left sidebar (264px): traffic-light strip, "N need you", project groups with terminal
+//! Left sidebar (264px by default; drag its right edge for 200–480px, double-click it for the
+//! default, remembered in app-state.json): traffic-light strip, "N need you", project groups with terminal
 //! rows (click a heading to fold it; remembered in app-state.json), and the footer (Today card + Triggers / Rules / Settings).
 //! Collapsed (⌘B, also in app-state.json) it's a 76px rail: one status dot per terminal.
 use super::caps_label;
@@ -10,7 +11,10 @@ use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+/// Default width; dragging the right edge keeps it within `MIN_WIDTH`..=`MAX_WIDTH`.
 pub const WIDTH: f32 = 264.;
+pub const MIN_WIDTH: f32 = 200.;
+pub const MAX_WIDTH: f32 = 480.;
 /// Collapsed: just wide enough for the traffic lights.
 pub const RAIL_WIDTH: f32 = 76.;
 /// Group fold/unfold duration (skipped under the system's Reduce motion).
@@ -21,6 +25,9 @@ struct DraggedRow {
     id: String,
     group: String,
 }
+
+/// The sidebar's right edge being dragged to resize it.
+struct ResizeDrag;
 
 /// Nothing follows the cursor: the row itself moves as the drag crosses its neighbours.
 struct NoGhost;
@@ -43,9 +50,21 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         .flex_none()
         .h_full()
         .on_drag_move(cx.listener(drag_out_move))
-        .on_mouse_up(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| drag_out_end(m, ev.position, w, cx)))
-        .on_mouse_up_out(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| drag_out_end(m, ev.position, w, cx)))
+        .on_drag_move(cx.listener(|m, ev: &DragMoveEvent<ResizeDrag>, _, cx| {
+            m.sidebar_width = clamp_width(f32::from(ev.event.position.x - ev.bounds.left()));
+            m.sidebar_resizing = true;
+            cx.notify();
+        }))
+        .on_mouse_up(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| {
+            resize_end(m);
+            drag_out_end(m, ev.position, w, cx)
+        }))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(|m, ev: &MouseUpEvent, w, cx| {
+            resize_end(m);
+            drag_out_end(m, ev.position, w, cx)
+        }))
         .child(inner)
+        .when(!m.sidebar_collapsed, |d| d.child(resize_handle(m, t, cx)))
         .when(hint, |d| {
             d.child(
                 div()
@@ -64,6 +83,41 @@ pub fn render(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
             )
         })
         .into_any_element()
+}
+
+pub fn clamp_width(w: f32) -> f32 {
+    w.clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// A thin strip on the sidebar's right edge (below the titlebar, which moves the window):
+/// drag to resize, double-click for the default width.
+fn resize_handle(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let accent = t.accent;
+    div()
+        .id("sidebar-resize")
+        .absolute()
+        .top(px(44.))
+        .bottom_0()
+        .right_0()
+        .w(px(5.))
+        .cursor(CursorStyle::ResizeLeftRight)
+        .when(m.sidebar_resizing, |d| d.bg(accent))
+        .hover(move |s| s.bg(accent.opacity(0.6)))
+        .on_drag(ResizeDrag, |_, _, _, cx| cx.new(|_| NoGhost))
+        .on_click(cx.listener(|m, ev: &ClickEvent, _, cx| {
+            if ev.click_count() >= 2 {
+                m.sidebar_width = WIDTH;
+                crate::ui::statusbar::update_state(&m.backend, "sidebar_width", serde_json::json!(WIDTH));
+                cx.notify();
+            }
+        }))
+}
+
+/// Released after resizing: remember the width.
+fn resize_end(m: &mut MainWindow) {
+    if std::mem::take(&mut m.sidebar_resizing) {
+        crate::ui::statusbar::update_state(&m.backend, "sidebar_width", serde_json::json!(m.sidebar_width));
+    }
 }
 
 /// The rows a drag moves: the dragged one, or its group's selected rows when it's selected.
@@ -262,7 +316,7 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
     let footer = crate::ui::footer::render(m, t, cx);
 
     div()
-        .w(px(WIDTH))
+        .w(px(m.sidebar_width))
         .flex_none()
         .h_full()
         .flex()

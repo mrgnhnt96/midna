@@ -127,6 +127,10 @@ pub struct MainWindow {
     pub collapsed: std::collections::HashSet<String>,
     /// The sidebar is collapsed to its rail (`ui::sidebar::rail`; same file as `seen`).
     pub sidebar_collapsed: bool,
+    /// The full sidebar's width, dragged by its right edge (`ui::sidebar`; same file as `seen`).
+    pub sidebar_width: f32,
+    /// Its right edge is being dragged; the width is saved on release.
+    pub sidebar_resizing: bool,
     /// The sidebar's Background group is unfolded (same file as `seen`; folded by default).
     pub background_open: bool,
     /// The Background group is left out of the sidebar and rail entirely (same file as `seen`).
@@ -220,6 +224,7 @@ impl MainWindow {
         let collapsed = crate::ui::statusbar::load_state(&backend, "collapsed");
         let order = crate::ui::statusbar::load_state(&backend, "order");
         let sidebar_collapsed = crate::ui::statusbar::load_state(&backend, "sidebar_collapsed");
+        let sidebar_width = crate::ui::statusbar::load_state::<Option<f32>>(&backend, "sidebar_width").map_or(crate::ui::sidebar::WIDTH, crate::ui::sidebar::clamp_width);
         let background_open = crate::ui::statusbar::load_state(&backend, "background_open");
         let background_hidden = crate::ui::statusbar::load_state(&backend, "background_hidden");
         let onboarding = crate::ui::onboarding::load(&backend);
@@ -312,6 +317,8 @@ impl MainWindow {
             seen,
             collapsed,
             sidebar_collapsed,
+            sidebar_width,
+            sidebar_resizing: false,
             background_open,
             background_hidden,
             order,

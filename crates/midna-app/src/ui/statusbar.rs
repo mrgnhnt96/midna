@@ -21,10 +21,11 @@ pub fn webhooks_label(path: &str) -> &'static str {
 }
 
 /// App-side UI memory, kept out of the daemon's settings so it doesn't clutter Settings:
-/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...], "order": [...], "sidebar_collapsed": bool, "background_open": bool, "background_hidden": bool}`.
+/// `$MIDNA_HOME/app-state.json` `{"seen": [...], "collapsed": [...], "order": [...], "sidebar_collapsed": bool, "sidebar_width": f32, "background_open": bool, "background_hidden": bool}`.
 /// `seen` = status bar items clicked at least once; `collapsed` = sidebar project groups folded
 /// away; `order` = terminal ids in the order they were dragged to in the sidebar;
-/// `sidebar_collapsed` = the sidebar is down to its rail; `background_open` = the sidebar's
+/// `sidebar_collapsed` = the sidebar is down to its rail; `sidebar_width` = the full sidebar's
+/// dragged width; `background_open` = the sidebar's
 /// Background group is unfolded; `background_hidden` = it is left out of the sidebar.
 fn state_file(backend: &Arc<dyn Backend>) -> Option<std::path::PathBuf> {
     backend.socket_path().parent().map(|h| h.join("app-state.json"))

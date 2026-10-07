@@ -1197,8 +1197,16 @@ impl SettingsWindow {
                 vec![self.permission(t, "Notifications", ok, state, why, PANE_NOTIF)]
             }
             "@version" => {
-                let daemon = self.info.get("version").and_then(Value::as_str).unwrap_or("not connected");
-                vec![status("Version", t.ok, format!("midna {} · midnad {daemon}", midna_proto::VERSION), t.fg, None, "midna info")]
+                let daemon = self.info.get("version").and_then(Value::as_str);
+                let (dot, note) = match daemon {
+                    None => (t.dim, None),
+                    Some(v) if v == midna_proto::VERSION => (t.ok, None),
+                    Some(_) => (t.err, Some("Doesn't match the app. The daemon picks up the new version when it restarts.".into())),
+                };
+                vec![
+                    status("App version", t.ok, midna_proto::VERSION.into(), t.fg, None, "midna info"),
+                    status("Daemon version", dot, daemon.unwrap_or("not connected").into(), if daemon.is_some() { t.fg } else { t.dim }, note, "midna info"),
+                ]
             }
             "@daemon" => {
                 let uptime = self.info.get("uptime_secs").and_then(Value::as_u64).map(|s| crate::ui::charts::duration(s as f64)).unwrap_or_default();
