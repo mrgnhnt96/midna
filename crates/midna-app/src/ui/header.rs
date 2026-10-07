@@ -266,12 +266,12 @@ fn save_list(m: &mut MainWindow, key: &'static str, value: Vec<String>, cx: &mut
 }
 
 fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
-    let id = m.selected.clone().unwrap_or_default();
     let keys = |setting: &str| {
         let k = m.key_label(setting);
         (!k.is_empty()).then(|| key_chip(t, k.into()))
     };
     let muted = m.selected_session().is_some_and(|s| s.notify_muted());
+    let copy_what = m.session_id_to_copy().map_or_else(|| "session id".into(), |(_, what)| what);
     // hidden toolbar buttons, in toolbar order, above the terminal's own actions
     let mut moved = div().flex().flex_col();
     let mut any_moved = false;
@@ -327,14 +327,16 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
     }
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
+            // occludes so a click reaches the item, not the click-away layer that closes the menu first
             menu_box(t)
+                .occlude()
                 .mt(px(36.))
                 .when(any_moved, |d| d.child(moved).child(div().h(px(1.)).my(px(4.)).bg(t.line)))
                 .child(menu_item(
                     t,
                     "more-copy",
-                    "Copy session id",
-                    &id,
+                    &format!("Copy {copy_what}"),
+                    "",
                     cx.listener(|m, _, _, cx| m.copy_session_id(cx)),
                 )
                 .children(keys("keys.copy_session_id")))
@@ -342,7 +344,7 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                     t,
                     "more-mute",
                     if muted { "Unmute notifications" } else { "Mute notifications" },
-                    "this terminal",
+                    "",
                     cx.listener(|m, _, _, cx| m.toggle_mute(cx)),
                 )
                 .children(keys("keys.mute")))

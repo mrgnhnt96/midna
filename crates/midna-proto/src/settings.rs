@@ -682,7 +682,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.rename", KB, S("cmd-shift-e"), "keys", false, "Rename the selected terminal."),
     s!("keys.restart", KB, S("cmd-alt-r"), "keys", false, "Restart the selected terminal."),
     s!("keys.terminal_menu", KB, S("cmd-alt-m"), "keys", false, "Open the selected terminal's … menu."),
-    s!("keys.copy_session_id", KB, S("cmd-alt-c"), "keys", false, "Copy the selected terminal's session id."),
+    s!("keys.copy_session_id", KB, S("cmd-alt-c"), "keys", false, "Copy the selected terminal's session id: its Claude or Codex conversation id when it has one, else Midna's."),
     s!("keys.mute", KB, S("cmd-shift-m"), "keys", false, "Mute or unmute notifications for the selected terminal."),
     s!("keys.clear", KB, S("cmd-shift-k"), "keys", false, "Clear the focused terminal's screen and scrollback."),
     s!("keys.split", KB, S("cmd-d"), "keys", false, "Split: open a shell next to the selected terminal, or close the split."),

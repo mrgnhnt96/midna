@@ -1733,11 +1733,24 @@ impl MainWindow {
         self.rpc("session.close", json!({"id": id}), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
     }
 
+    /// The id "Copy session id" copies, and what to call it: an agent's own conversation id
+    /// (what `claude --resume` takes) once its hooks reported one, else Midna's terminal id.
+    pub fn session_id_to_copy(&self) -> Option<(String, String)> {
+        let s = self.selected_session()?;
+        let agent = s.agent.as_ref().zip(s.agent_info.as_ref().and_then(|i| i.conversation_id.clone()));
+        Some(match agent {
+            Some((AgentKind::Claude, c)) => (c, "Claude session id".into()),
+            Some((AgentKind::Codex, c)) => (c, "Codex thread id".into()),
+            Some((AgentKind::Other, c)) => (c, "agent session id".into()),
+            None => (s.id.clone(), "session id".into()),
+        })
+    }
+
     pub fn copy_session_id(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected.clone() {
+        if let Some((id, what)) = self.session_id_to_copy() {
             cx.write_to_clipboard(ClipboardItem::new_string(id));
             crate::sounds::play("copied");
-            self.toast("Copied the session id.", cx);
+            self.toast(format!("Copied the {what}."), cx);
         }
         self.menu = Menu::None;
         cx.notify();
