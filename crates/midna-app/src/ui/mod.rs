@@ -7,6 +7,7 @@ pub mod update_banner;
 pub mod charts;
 pub mod close_window;
 pub mod command_bar;
+pub mod footer;
 pub mod header;
 pub mod hooks;
 pub mod insights;

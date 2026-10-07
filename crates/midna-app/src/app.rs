@@ -57,6 +57,12 @@ pub enum Menu {
     StatusBar,
     /// Right-click menu on the header toolbar: show/hide its buttons (`ui/header.rs`).
     HeaderButtons,
+    /// Right-click menu on the sidebar footer (`ui/footer.rs`).
+    Footer,
+    /// The stat picker for one of the footer card's slots while customizing.
+    FooterStat(usize),
+    /// The footer's "Add a button" menu while customizing.
+    FooterAdd,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -150,6 +156,8 @@ pub struct MainWindow {
     pub screen: Screen,
     pub overlay: Overlay,
     pub menu: Menu,
+    /// The sidebar footer is in Customize mode (`ui/footer.rs`).
+    pub footer_editing: bool,
     pub header_segments: HashMap<String, Vec<Segment>>,
     pub row_segments: HashMap<String, Vec<Segment>>,
     /// The status bar's script items, per terminal they ran for: `script` (`ui.status.script`)
@@ -333,7 +341,14 @@ impl MainWindow {
             mark_anchor: None,
             screen: Screen::Terminal,
             overlay: Overlay::None,
-            menu: Menu::None,
+            menu: match crate::dev::var("MIDNA_DEBUG_FOOTER").as_deref() {
+                Ok("pick") => Menu::FooterStat(1),
+                Ok("add") => Menu::FooterAdd,
+                Ok("menu") => Menu::Footer,
+                _ => Menu::None,
+            },
+            // dev (screenshots): MIDNA_DEBUG_FOOTER=edit|pick|add|menu
+            footer_editing: matches!(crate::dev::var("MIDNA_DEBUG_FOOTER").as_deref(), Ok("edit" | "pick" | "add")),
             header_segments: HashMap::new(),
             row_segments: HashMap::new(),
             status_segments: HashMap::new(),
@@ -768,6 +783,7 @@ impl MainWindow {
         let row_script_on = self.setting_str("ui.row.script").map(|s| s != "none" && !s.is_empty()).unwrap_or(false);
         let buttons_now = crate::ui::header::custom_buttons(self);
         let status_scripts = crate::ui::statusbar::scripts_wanted(self.settings.get("ui.status.items"), self.settings.get("ui.status.script"));
+        let (footer_range, footer_detail) = crate::ui::footer::wants(self);
         cx.spawn(async move |this, cx| {
             let res = cx
                 .background_executor()
@@ -796,7 +812,16 @@ impl MainWindow {
                         r.needs = call("needs_you.list", json!({})).map(|v| parse_list(&v));
                     }
                     if what & refresh::INSIGHTS != 0 {
-                        r.today = call("insights.summary", json!({"range": "today"})).map(|v| Today::from_value(&v));
+                        r.today = call("insights.summary", json!({"range": footer_range})).map(|v| {
+                            let mut t = Today::from_value(&v);
+                            if footer_detail
+                                && let Some(d) = call("insights.detail", json!({"range": footer_range})).and_then(|d| serde_json::from_value::<midna_proto::InsightsDetail>(d).ok())
+                            {
+                                t.add_detail(&d);
+                            }
+                            t.range = footer_range.to_string();
+                            t
+                        });
                     }
                     if what & refresh::RULES != 0 {
                         r.rules = call("rule.list", json!({})).map(|v| parse_list::<Value>(&v).len());
@@ -863,7 +888,11 @@ impl MainWindow {
         if let Some(s) = r.settings {
             let new: HashMap<String, Value> = s.into_iter().map(|e| (e.key, e.value)).collect();
             if new != self.settings {
+                let footer_changed = ["sidebar.footer.range", "sidebar.footer.stats"].iter().any(|k| new.get(*k) != self.settings.get(*k));
                 self.settings = new;
+                if footer_changed {
+                    self.request_refresh(refresh::INSIGHTS, cx);
+                }
                 crate::sounds::sync(&self.settings, self.backend.socket_path().parent());
                 self.apply_theme(window, cx);
                 self.rebind(cx);

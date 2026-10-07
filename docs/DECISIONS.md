@@ -985,3 +985,47 @@ Why: Claude's session crons (CronCreate) were only visible as a `scheduled` line
 - **Editor.** Runs Once (a date and time → a pinned cron + `starts_at` + `max_runs: 1`) or Repeats (every N minutes or hours, or daily at a time; a Between window; day buttons; Starts; Ends never / on a date / after N runs). A cron the form can't show stays as a custom cron field. Copying a Claude cron reads it into the form (`*/5 13-16 * * 1-5` → every 5 minutes, 13:00–17:00, weekdays) and sends the same prompt to the same terminal (`send_to_session`). Editing an existing trigger changes only its schedule and name. The summary under the form shows the rule in words, the next three runs and the cron it saves. This is the one place a trigger is made by a form rather than by asking: picking hours and dates is easier to do than to say.
 - **CLI.** `midna triggers add|update --between 13:00-17:00 --starts '2026-10-06 13:00' --ends 2026-10-31 --max-runs N` (empty clears); `triggers show` prints the rule in words; `midna show`'s `scheduled` line adds the words and the expiry.
 - Dev: `MIDNA_DEBUG_TRIGGERS_TAB=crons`, `MIDNA_DEBUG_TRIGGERS="new-schedule|edit:<id>|copy-cron:<n>"`; the fake backend's `api` terminal has three crons.
+
+## Insights widgets and a customizable sidebar footer (`ui/insights/widgets.rs`, `ui/footer.rs`, midnad `insights::detail`; 2026-10-06)
+
+Why: the Insights screen was one fixed report and the sidebar's Today card always showed turns, messages and spend. The human wanted their own choice of numbers and charts, arranged their way, and a footer that can be swapped, hidden or made compact. Canvas "Midna Insight Widgets" (https://claude.ai/artifact/99F2LPALX57tcTFE68r457): the sidebar footer states, the widget grid, and one board per widget idea.
+
+- **Layouts** (picked from the canvas as concept D: A's in-place editing and gallery with B's grid and corner resize). `insights.layouts` holds saved layouts, one rule per layout: `<name> = <widget>[:<size>] …`. `insights.layout` names the one shown. Validation rejects an unknown widget, a size the widget doesn't come in (`settings::INSIGHTS_WIDGETS` lists each widget's sizes and usual size), and two layouts with one name. Defaults: My layout, Overview, Am I the bottleneck?, Spend. The Layout ▾ menu switches layouts and has Save as new (named "Layout N", then renamed in place), Rename, Delete, Undo (⌘Z, this session's changes) and Reset. Agents change layouts through the same settings. "Ask an agent" was left out of the menu on purpose.
+- **Grid**: 1, 2 or 4 columns of at least 270 px. Small is 1×1, Wide 2×1, Large 2×2, packed first-fit in order (`arrange::pack`), so a Large card leaves no holes beside it. No edit mode:
+  - hovering a card shows ⋮⋮ (move) and ✕ (remove), and a resize corner if it comes in more than one size;
+  - moving lifts the real card under the pointer and reflows the others live, with a dashed slot where it lands;
+  - resizing snaps to the sizes the widget has, with a "Wide → Large" chip;
+  - dots every 20 px and dashed column edges show only while moving or resizing;
+  - release saves.
+- **Sizes show more, not bigger**:
+  - parallelism: Small is the peak plus a spark; Large adds a lane per terminal from `insights.series working by terminal`, hourly through a week.
+  - latency: Small is the median and a fast/slow split; Large adds the median wait by hour of day and the three longest waits.
+  - agent_time: Small is the total waited; Large shows up to 12 terminals with their projects.
+  - heatmap: Small is the busiest hour and an hour profile; Large has taller cells plus totals per day and per hour. The canvas's "last 4 weeks" needs more data from the daemon and isn't built.
+  - approved: Large shows up to 12, grouped by tool.
+  - The rest come in their usual size, and most also come Wide.
+- **Add widget** opens a gallery with search, group tabs and a tile per widget. Each tile previews the widget with real data, using its Small version when it has one. Picking a tile shows it full size, with Size and Place (top or end). Adding a widget that's already on screen moves it there.
+- **Data**: the new widgets come from `insights.detail {range}` (midnad `insights::detail`), computed from the event log like summary and series. Semantics are in the proto doc comments. The judgment calls:
+  - "you" = a prompt not sent by an agent, the queue or a trigger within 30 s before it, or a needs-you answered by a human;
+  - stopped = `stopped (title)` (Esc) or `prompt dismissed`;
+  - idle = from a turn's end to the next prompt, counting only gaps of 4 h or less;
+  - an approval answered in Claude's own dialog counts when the prompt closes `auto` and the terminal is working again within 5 s, so `approved` can be more than summary's approvals.
+  
+  CLI `midna insights detail`, MCP `insights_detail`.
+- **Ideas from the canvas not built yet**, because they need data midna doesn't record:
+  - leverage / your hours (needs keystroke time);
+  - human-equivalent hours, lines kept, survival (git blame);
+  - CI first push (gh);
+  - tool mix, rework hot spots, prompt economy (per-tool hook counts);
+  - tokens and cache (transcripts);
+  - who started the work, as its own widget.
+- **Colors** (`insights.colors.agents|you|waiting`, a theme color name or `#RRGGBB`; defaults accent, fg, need): the same three meanings in every widget, so they follow the theme. The canvas's blue/green pair was dropped: the human found it ugly. In the heatmap, an hour you were active gets a border in the "you" color, on top of the agents fill.
+- **Footer**:
+  - `sidebar.footer.stats`: the first three show, chosen from turns, messages, spend, working, waiting, approvals, triggers, peak, reply, longest. Empty hides the card.
+  - `sidebar.footer.range`: today or week.
+  - `sidebar.footer.buttons`: up to four of triggers, rules, settings, insights, needs_you. Empty hides them.
+  - `sidebar.footer.compact`: the card on one line and the buttons as icons. It is independent of `density`, so terminal rows don't change.
+  - Right-click the footer for Customize… / Count the last 7 days / Compact / Hide stats / Hide buttons / Reset. Customize puts the footer in place: click a number to pick another (picking one already shown swaps the two), TODAY / WEEK, ✕ hides the card, ✕ on a button removes it, + Add adds one.
+  - With both hidden, an 8 px strip keeps the right-click menu reachable.
+  - peak, reply and longest come from `insights.detail`, which is fetched only when one of them is shown or while customizing.
+- Dev: `MIDNA_INSIGHTS_WIDGETS=parallelism:large,heatmap` (shown instead of the setting, changes kept in memory), `MIDNA_INSIGHTS_ARRANGE=menu|gallery|drag|resize`, `MIDNA_DEBUG_FOOTER=edit|pick|add|menu|compact`; the fake backend serves `insights.detail`.

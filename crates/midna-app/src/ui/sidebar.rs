@@ -243,7 +243,7 @@ fn full(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWin
     }
 
     let background = background_group(m, t, compact, window, cx);
-    let footer = footer(m, t, cx);
+    let footer = crate::ui::footer::render(m, t, cx);
 
     div()
         .w(px(WIDTH))
@@ -848,65 +848,3 @@ pub fn menu_item(t: &Theme, id: &str, label: &str, hint: &str, on: impl Fn(&Clic
         .when(!hint.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child(hint.to_string())))
 }
 
-fn footer(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
-    let stat = |n: String, label: &str| {
-        div()
-            .flex()
-            .flex_col()
-            .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(n))
-            .child(div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(label.to_string()))
-    };
-    let today = &m.today;
-    let card = div()
-        .id("today")
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .px(px(12.))
-        .py(px(10.))
-        .rounded(px(9.))
-        .border_1()
-        .border_color(if m.screen == Screen::Insights { t.accent } else { t.line })
-        .bg(t.raised)
-        .cursor_pointer()
-        .tooltip(super::header::tip_keys("Insights", "keys.insights"))
-        .on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Insights, w, cx)))
-        .child(div().flex().items_baseline().gap(px(8.)).child(caps_label(t, "Today").flex_1()).child(div().text_size(px(11.)).text_color(t.dim).child("Insights ›")))
-        .child(
-            div()
-                .flex()
-                .justify_between()
-                .gap(px(8.))
-                .child(stat(today.turns.to_string(), "agent turns"))
-                .child(stat(today.messages.to_string(), "messages sent"))
-                .child(stat(format!("${:.2}", today.spend_usd), "spent")),
-        );
-    let btn = |id: &'static str, icon: Icon, label: &'static str, setting: &'static str, active: bool| {
-        div()
-            .id(id)
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(3.))
-            .flex_1()
-            .pt(px(7.))
-            .pb(px(5.))
-            .rounded(px(7.))
-            .text_size(px(10.5))
-            .text_color(if active { t.fg } else { t.dim })
-            .when(active, |d| d.bg(t.raised))
-            .cursor_pointer()
-            .hover(|s| s.bg(t.raised))
-            .tooltip(super::header::tip_keys(label, setting))
-            .child(icon.el(16., if active { t.fg } else { t.dim }))
-            .child(label)
-    };
-    div().flex().flex_col().gap(px(8.)).p(px(10.)).border_t_1().border_color(t.line).children(super::onboarding::checklist(m, t, cx)).child(card).child(
-        div()
-            .flex()
-            .gap(px(4.))
-            .child(btn("btn-triggers", Icon::Triggers, "Triggers", "keys.triggers", m.screen == Screen::Triggers).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Triggers, w, cx))))
-            .child(btn("btn-rules", Icon::Rules, "Rules", "keys.rules", m.screen == Screen::Rules).on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Rules, w, cx))))
-            .child(btn("btn-settings", Icon::Settings, "Settings", "keys.settings", false).on_click(cx.listener(|m, _, _, cx| crate::ui::settings::open(m.backend.clone(), cx)))),
-    )
-}

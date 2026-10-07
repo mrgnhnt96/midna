@@ -508,6 +508,10 @@ impl Backend for FakeBackend {
             "insights.series" => {
                 json!({"unit": "count", "bucket": "hour", "buckets": [], "groups": [], "total": 0, "previous_total": 0})
             }
+            "insights.detail" => {
+                let range = params.get("range").and_then(Value::as_str).unwrap_or("today");
+                serde_json::to_value(fake_insights_detail(range, &st.sessions, &st.projects))?
+            }
             "insights.activity" => json!([]),
             "webhooks.status" => json!({"path": st.setting("webhooks.path"), "health": "ok"}),
             // MIDNA_FAKE_HOOKS = not_installed | stale | current (default) for screenshots.
@@ -1008,4 +1012,95 @@ fn fake_history() -> Value {
         item(650, 95_000, "a1f00001", "failed", "Turn failed: API error (overloaded)", false, None),
     ];
     json!({ "items": items, "unread": if read { 0 } else { 3 }, "read_seq": if read { 900 } else { 890 } })
+}
+
+/// Sample data for the Insights widgets (`insights.detail`), so they can be screenshotted
+/// without a daemon. Shaped like a busy day; deterministic.
+fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project]) -> midna_proto::InsightsDetail {
+    use midna_proto::{InsightsAgentTime, InsightsBests, InsightsConcurrency, InsightsCorrections, InsightsCount, InsightsDetail, InsightsHeatDay, InsightsTurnLengths, InsightsWait, time};
+    let now = time::now_unix();
+    let agents: Vec<&Session> = sessions.iter().filter(|s| s.agent.is_some()).collect();
+    let sessions: Vec<&Session> = if agents.is_empty() { sessions.iter().collect() } else { agents };
+    let today = time::local_day_start(now);
+    let at = |t: i64| time::format_unix(t);
+    let (from, days, step) = match range {
+        "yesterday" => (today - 86_400, 1, 600),
+        "week" => (today - 6 * 86_400, 7, 3600),
+        "month" => (today - 29 * 86_400, 30, 3600),
+        _ => (today, 1, 600),
+    };
+    let axis_end = if range == "yesterday" { today } else { today + 86_400 };
+    let reached = if range == "yesterday" { today } else { now };
+    // agents at work through the day: quiet nights, a morning and an afternoon peak
+    let load = |t: i64| -> f64 {
+        let h = ((t - time::local_day_start(t)) as f64) / 3600.0;
+        let bump = |c: f64, w: f64, top: f64| top * (-((h - c) / w).powi(2)).exp();
+        let wobble = ((t / step) as f64 * 1.7).sin() * 0.25;
+        (bump(10.5, 1.8, 2.6) + bump(15.0, 2.2, 3.4) + bump(21.0, 1.0, 0.8) + wobble).max(0.0)
+    };
+    let n = ((axis_end - from + step - 1) / step) as usize;
+    let samples: Vec<f64> = (0..n).map(|i| from + i as i64 * step).map(|t| if t < reached { (load(t) * 100.0).round() / 100.0 } else { 0.0 }).collect();
+    let scale = days as i64;
+    let sid = |i: usize| sessions.get(i).map(|s| s.id.clone()).unwrap_or_else(|| format!("s_fake{i}"));
+    let row = |i: usize, w: i64, b: i64, idle: i64| {
+        let s = sessions.get(i);
+        InsightsAgentTime {
+            key: sid(i),
+            label: s.map(|s| s.name.clone()).unwrap_or_else(|| format!("terminal {i}")),
+            project_id: s.and_then(|s| s.project_id.clone()),
+            working_secs: w * scale,
+            blocked_secs: b * scale,
+            idle_secs: idle * scale,
+        }
+    };
+    let titles = ["permission Bash(cargo test -p midnad)", "permission Edit(src/ui/insights.rs)", "question: Which chart style?", "permission Bash(git push)", "permission WebFetch(docs.rs)"];
+    let waits = [(42, 5400), (310, 4700), (18, 3900), (1260, 3000), (75, 2100), (640, 1300), (25, 600), (95, 240)]
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, ago))| range != "yesterday" || *ago > 0)
+        .map(|(i, &(secs, ago))| {
+            let resolved = if range == "yesterday" { today - ago } else { (now - ago).max(from + secs) };
+            InsightsWait { secs, resolved_at: at(resolved), session_id: Some(sid(i % 4)), title: titles[i % titles.len()].into() }
+        })
+        .collect();
+    let count = |key: &str, label: &str, value: f64| InsightsCount { key: key.into(), label: label.into(), value };
+    let project = |i: usize| projects.get(i).map(|p| (p.id.clone(), p.name.clone())).unwrap_or_else(|| (format!("p_{i}"), format!("project {i}")));
+    let projects_out = [11_400, 6_300, 2_700]
+        .iter()
+        .enumerate()
+        .map(|(i, secs)| {
+            let (k, l) = project(i);
+            count(&k, &l, (*secs * scale) as f64)
+        })
+        .collect();
+    let heatmap = (0..7)
+        .map(|d| {
+            let day = today - (6 - d) * 86_400;
+            let weekend = d == 1 || d == 2;
+            let working_secs: Vec<i64> = (0..24).map(|h| day + h * 3600).map(|t| if t > now { 0 } else { (load(t) * if weekend { 400.0 } else { 1500.0 }) as i64 }).collect();
+            let you = (0..24).map(|h| working_secs[h] > 900 && (h + d as usize) % 5 != 0).collect();
+            InsightsHeatDay { day: at(day), working_secs, you }
+        })
+        .collect();
+    InsightsDetail {
+        from: at(from),
+        to: at(axis_end),
+        concurrency: InsightsConcurrency { step_secs: step, samples, peak: 5, peak_at: Some(at(from.max(today - 86_400 * i64::from(range == "yesterday")) + 15 * 3600 + 600)), avg_while_working: 2.3, multi_secs: 13_800 * scale },
+        turns: InsightsTurnLengths { bins: [14, 22, 11, 5, 2, 1].map(|b| b * scale).to_vec(), median_secs: 212, longest_secs: 4_380, longest_session: Some(sid(1)) },
+        waits,
+        agent_time: vec![row(0, 9_600, 1_900, 2_400), row(1, 7_200, 620, 1_100), row(2, 3_300, 1_250, 300), row(3, 1_800, 0, 420)],
+        approved: vec![count("Bash(cargo test)", "Bash(cargo test)", 12.0 * scale as f64), count("Edit", "Edit", 9.0), count("Bash(git push)", "Bash(git push)", 4.0), count("WebFetch", "WebFetch", 3.0), count("Question", "Question", 2.0)],
+        corrections: (0..days).map(|i| InsightsCorrections { day: at(from + i * 86_400), denied: (i * 7 + 3) % 4, stopped: (i * 5 + 1) % 3 }).collect(),
+        heatmap,
+        projects: projects_out,
+        models: vec![count("Opus 5.5", "Opus 5.5", 18.42 * scale as f64), count("Sonnet 5", "Sonnet 5", 3.17 * scale as f64), count("Haiku 4.5", "Haiku 4.5", 0.21 * scale as f64)],
+        bests: InsightsBests {
+            busiest_day: Some(at(today - 3 * 86_400)),
+            busiest_day_secs: 41_200,
+            longest_turn_secs: 7_940,
+            longest_turn_at: Some(at(today - 5 * 86_400 + 16 * 3600)),
+            peak_agents: 7,
+            peak_at: Some(at(today - 2 * 86_400 + 14 * 3600 + 1200)),
+        },
+    }
 }

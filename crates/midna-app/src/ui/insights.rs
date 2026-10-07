@@ -8,7 +8,7 @@ use crate::app::{MainWindow, Screen};
 use crate::backend::Backend;
 use crate::model::{Event, Project, Session, parse_list, parse_rfc3339};
 use crate::theme::Theme;
-use crate::ui::charts::{self, ChartData, ChartState, HRow, Series, Unit};
+use crate::ui::charts::{self, ChartData, ChartState, Series, Unit};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde::Deserialize;
@@ -16,6 +16,10 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+mod arrange;
+mod widgets;
+use widgets::COL_MIN;
 
 // ------------------------------------------------------------------ data
 
@@ -125,6 +129,10 @@ struct Data {
     opened: Vec<Event>,
     projects: Vec<Project>,
     sessions: Vec<Session>,
+    /// Working time per terminal per bucket (hourly through a week): the large "agents at once".
+    working_terms: SeriesData,
+    /// `insights.detail` (empty when the daemon is older than the widgets).
+    detail: midna_proto::InsightsDetail,
 }
 
 // ------------------------------------------------------------------ view
@@ -145,6 +153,10 @@ pub struct InsightsView {
     stale: bool,
     fetch_gen: u64,
     scroll: ScrollHandle,
+    /// Width of the grid area at the last paint.
+    grid_w: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Arranging the grid: moving, resizing, the Layout menu, the Add gallery (`insights/arrange.rs`).
+    ar: arrange::State,
 }
 
 fn turns_state(v: &mut InsightsView) -> &mut ChartState {
@@ -200,6 +212,8 @@ impl InsightsView {
             stale: false,
             fetch_gen: 0,
             scroll: ScrollHandle::new(),
+            grid_w: std::rc::Rc::new(std::cell::Cell::new(0.)),
+            ar: arrange::State::from_env(cx),
         };
         // dev (screenshots): preset hover on the turns chart / spend chart / a terminal row
         let env_i = |k: &str| crate::dev::var(k).ok().and_then(|x| x.parse::<usize>().ok());
@@ -259,6 +273,9 @@ impl InsightsView {
                         if let Some(b) = by {
                             p["by"] = json!(b);
                         }
+                        if metric == "working" && range != Range::Month {
+                            p["bucket"] = json!("hour");
+                        }
                         Ok(serde_json::from_value(call("insights.series", p)?)?)
                     };
                     let summary: Summary = serde_json::from_value(call("insights.summary", json!({"range": r}))?)?;
@@ -270,10 +287,12 @@ impl InsightsView {
                         spend: series("spend", None)?,
                         approvals: series("approvals", None)?,
                         triggers: series("triggers", None)?,
+                        working_terms: series("working", Some("terminal")).unwrap_or_default(),
                         terminals: terms.rows,
                         opened: call("events.list", json!({"filter": {"kinds": ["session.opened", "session.renamed"]}, "limit": 5000})).map(|v| parse_list(&v)).unwrap_or_default(),
                         projects: call("project.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default(),
                         sessions: call("session.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default(),
+                        detail: call("insights.detail", json!({"range": r})).ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                     })
                 })
                 .await;
@@ -399,8 +418,12 @@ impl InsightsView {
 // ------------------------------------------------------------------ render
 
 impl Render for InsightsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.last_render = Instant::now();
+        if self.grid_w.get() <= 0. {
+            // first frame: the window minus the sidebar and padding, until the grid is measured
+            self.grid_w.set((f32::from(window.viewport_size().width) - crate::ui::sidebar::WIDTH - 40.).max(COL_MIN));
+        }
         if self.data.range.is_none() && !self.loading {
             self.fetch(cx);
         }
@@ -413,11 +436,47 @@ impl Render for InsightsView {
         } else if self.is_empty() {
             vec![self.empty_state(&t, cx).into_any_element()]
         } else {
-            self.dashboard(&t, cx)
+            vec![self.grid(&t, self.grid_w.get(), cx).into_any_element()]
         };
-        div().flex_1().min_w_0().h_full().flex().flex_col().bg(t.bg).child(header).child(
-            div().id("insights-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(14.)).p(px(20.)).pb(px(28.)).children(body),
+        // The grid's column count follows the pane's width, measured as it paints.
+        let grid_w = self.grid_w.clone();
+        let measure = canvas(
+            move |b, window, _| {
+                let w = f32::from(b.size.width);
+                if (w - grid_w.get()).abs() > 1. {
+                    grid_w.set(w);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
         )
+        .w_full()
+        .h(px(0.));
+        let overlays = self.overlays(&t, cx);
+        let root = div().id("insights-root").relative().flex_1().min_w_0().h_full().flex().flex_col().bg(t.bg);
+        self.arrange_events(root, cx).child(header).child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .id("insights-scroll")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .p(px(20.))
+                        .pb(px(28.))
+                        .child(measure)
+                        .children(body),
+                ),
+        )
+        .children(overlays)
     }
 }
 
@@ -470,6 +529,8 @@ impl InsightsView {
             .child(div().text_size(px(12.)).text_color(t.dim).child(format!("deltas {}", self.range.vs())))
             .when(self.loading && self.data.range.is_some(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child("updating…")))
             .child(div().flex_1())
+            .child(self.layout_button(t, cx))
+            .child(self.add_button(t, cx))
             .child(
                 div()
                     .id("insights-back")
@@ -533,94 +594,6 @@ impl InsightsView {
                 .child(buttons)
                 .child(div().mt(px(4.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(format!("midna insights --range {}", self.range.wire()))),
         )
-    }
-
-    fn dashboard(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let d = &self.data;
-        let s = &d.summary;
-        let vs = self.range.vs();
-        // 0: headline tiles
-        let tiles = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(10.))
-            .child(tile(t, "Agent turns", Unit::Count.fmt(s.totals.turns), s.vs_previous.turns, Unit::Count, vs, Tone::MoreIsGood))
-            .child(tile(t, "Messages sent", Unit::Count.fmt(s.totals.messages), s.vs_previous.messages, Unit::Count, vs, Tone::MoreIsGood))
-            .child(tile(t, "Spend", Unit::Usd.fmt(s.totals.spend_usd), s.vs_previous.spend_usd, Unit::Usd, vs, Tone::MoreIsCost))
-            .child(tile(t, "Agents working", Unit::Secs.fmt(s.totals.working_secs), s.vs_previous.working_secs, Unit::Secs, vs, Tone::MoreIsGood))
-            .child(tile(t, "Waiting on you", Unit::Secs.fmt(s.totals.waiting_secs), s.vs_previous.waiting_secs, Unit::Secs, vs, Tone::MoreIsCost))
-            .child(tile(t, "Approvals", Unit::Count.fmt(s.totals.approvals), s.vs_previous.approvals, Unit::Count, vs, Tone::Neutral))
-            .child(tile(t, "Triggers fired", Unit::Count.fmt(s.totals.triggers_fired), s.vs_previous.triggers_fired, Unit::Count, vs, Tone::Neutral));
-
-        // 1: turns by project
-        let turns = self.turns_chart_data(t);
-        let mut legend = div().flex().flex_wrap().gap(px(4.)).justify_end();
-        for g in &turns.series {
-            let total = d.turns.groups.iter().find(|x| x.key == g.key).map(|x| x.total).unwrap_or(0.);
-            legend = legend.child(charts::legend_item(t, self.project_color(t, &g.key), g.label.clone(), Some(Unit::Count.fmt(total)), false));
-        }
-        let turns_card = card(t)
-            .child(card_head(t, "Agent turns by project", self.range.per(), Some(legend.into_any_element())))
-            .child(charts::stacked_bars("turns", &turns, 250., "No agent turns in this range", t, &self.turns_chart, turns_state, None, cx));
-
-        // 2: spend + working/waiting
-        let spend = self.single_series(&d.spend, "Spend", t.accent);
-        let spend_card = card(t)
-            .flex_1()
-            .min_w(px(300.))
-            .child(card_head(t, "Spend", &format!("{} · {} total", self.range.per(), Unit::Usd.fmt(d.spend.total)), None))
-            .child(charts::area_line("spend", &spend, 250., "No spend recorded (Claude's status line reports cost)", t, &self.spend_chart, spend_state, cx));
-
-        let names = self.session_names();
-        let mut term_rows: Vec<&Row> = d.terminals.iter().filter(|r| r.totals.working_secs + r.totals.waiting_secs > 0.).collect();
-        term_rows
-            .sort_by(|a, b| (b.totals.working_secs + b.totals.waiting_secs).partial_cmp(&(a.totals.working_secs + a.totals.waiting_secs)).unwrap_or(std::cmp::Ordering::Equal));
-        let extra = term_rows.len().saturating_sub(6);
-        term_rows.truncate(6);
-        let project_of: HashMap<String, String> = d.opened.iter().filter_map(|e| Some((e.session_id.clone()?, e.project_id.clone()?))).collect();
-        let hrows: Vec<HRow> = term_rows
-            .iter()
-            .map(|r| {
-                let name = names.get(&r.key).cloned().unwrap_or_else(|| r.label.clone());
-                let proj = d.sessions.iter().find(|s| s.id == r.key).and_then(|s| s.project_id.clone()).or_else(|| project_of.get(&r.key).cloned());
-                let sub = proj.map(|p| self.project_name(&p)).unwrap_or_default();
-                HRow { label: name.into(), sub: sub.into(), values: vec![r.totals.working_secs, r.totals.waiting_secs] }
-            })
-            .collect();
-        let ww_series =
-            vec![Series { key: "working".into(), label: "Working".into(), color: t.work }, Series { key: "waiting".into(), label: "Waiting on you".into(), color: t.need }];
-        let ww_legend = div().flex().gap(px(4.)).child(charts::legend_item(t, t.work, "Working", None, false)).child(charts::legend_item(t, t.need, "Waiting on you", None, false));
-        let ww_card = card(t)
-            .flex_1()
-            .min_w(px(300.))
-            .child(card_head(t, "Working vs waiting on you", "per agent terminal", Some(ww_legend.into_any_element())))
-            .child(if hrows.is_empty() {
-                div().h(px(190.)).flex().items_center().justify_center().text_size(px(12.)).text_color(t.dim).child("No working or waiting time in this range")
-            } else {
-                charts::hbars("ww", &hrows, &ww_series, Unit::Secs, t, self.term_hover, term_hover, None, cx)
-            })
-            .when(extra > 0, |c| c.child(div().pl(px(8.)).text_size(px(11.5)).text_color(t.dim).child(format!("+ {extra} more terminals"))));
-
-        // 3: approvals + triggers
-        let appr = self.single_series(&d.approvals, "Approvals", t.ok);
-        let trig = self.single_series(&d.triggers, "Triggers fired", t.work);
-        let appr_card = card(t)
-            .flex_1()
-            .min_w(px(300.))
-            .child(card_head(t, "Approvals", &format!("{} granted · {}", Unit::Count.fmt(d.approvals.total), self.range.per()), None))
-            .child(charts::stacked_bars("approvals", &appr, 120., "No approvals in this range", t, &self.approvals_chart, approvals_state, None, cx));
-        let trig_card = card(t)
-            .flex_1()
-            .min_w(px(300.))
-            .child(card_head(t, "Triggers fired", &format!("{} fired · {}", Unit::Count.fmt(d.triggers.total), self.range.per()), None))
-            .child(charts::stacked_bars("triggers", &trig, 120., "No triggers fired in this range", t, &self.triggers_chart, triggers_state, None, cx));
-
-        vec![
-            tiles.into_any_element(),
-            turns_card.into_any_element(),
-            div().flex().flex_wrap().gap(px(14.)).child(spend_card).child(ww_card).into_any_element(),
-            div().flex().flex_wrap().gap(px(14.)).child(appr_card).child(trig_card).into_any_element(),
-        ]
     }
 
 }

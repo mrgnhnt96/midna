@@ -315,10 +315,19 @@ pub struct Event {
 /// The numbers the Today card and the status bar show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Today {
+    /// `today` or `week` (`sidebar.footer.range`).
+    pub range: String,
     pub turns: u64,
     pub messages: u64,
     pub spend_usd: f64,
     pub triggers_fired: u64,
+    pub working_secs: u64,
+    pub waiting_secs: u64,
+    pub approvals: u64,
+    /// From `insights.detail`, fetched only when the footer shows one of these.
+    pub peak: Option<u32>,
+    pub reply_secs: Option<i64>,
+    pub longest_secs: Option<i64>,
 }
 
 impl Today {
@@ -326,7 +335,24 @@ impl Today {
         // `insights.summary` returns totals; accept them nested under "totals" or at the top.
         let t = v.get("totals").unwrap_or(v);
         let n = |k: &str| t.get(k).and_then(|x| x.as_u64().or_else(|| x.as_f64().map(|f| f as u64))).unwrap_or(0);
-        Today { turns: n("turns"), messages: n("messages"), spend_usd: t.get("spend_usd").and_then(|x| x.as_f64()).unwrap_or(0.0), triggers_fired: n("triggers_fired") }
+        Today {
+            turns: n("turns"),
+            messages: n("messages"),
+            spend_usd: t.get("spend_usd").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            triggers_fired: n("triggers_fired"),
+            working_secs: n("working_secs"),
+            waiting_secs: n("waiting_secs"),
+            approvals: n("approvals"),
+            ..Default::default()
+        }
+    }
+
+    pub fn add_detail(&mut self, d: &midna_proto::InsightsDetail) {
+        self.peak = Some(d.concurrency.peak);
+        let mut waits: Vec<i64> = d.waits.iter().map(|w| w.secs).collect();
+        waits.sort();
+        self.reply_secs = waits.get(waits.len() / 2).copied();
+        self.longest_secs = Some(d.turns.longest_secs);
     }
 }
 

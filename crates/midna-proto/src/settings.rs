@@ -145,6 +145,12 @@ impl SettingSpec {
                     if self.key == "theme.colors" {
                         crate::themes::check_override(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                     }
+                    if self.key == "insights.layouts" {
+                        check_insights_layout(val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
+                        if out.iter().any(|r| r.split_once(" = ").is_some_and(|(n, _)| n == m)) {
+                            return Err(format!("{}: two layouts are named `{m}`", self.key));
+                        }
+                    }
                     let rule = format!("{m} = {val}");
                     if !out.contains(&rule) {
                         out.push(rule);
@@ -290,7 +296,87 @@ const fn en(options: &'static [&'static str]) -> SettingKind {
 const fn en_path(options: &'static [&'static str]) -> SettingKind {
     SettingKind::Enum { options, allow_other: true }
 }
+/// Named options plus any other value (a `#RRGGBB` color).
+const fn en_other(options: &'static [&'static str]) -> SettingKind {
+    SettingKind::Enum { options, allow_other: true }
+}
 const KB: SettingKind = SettingKind::Keybinding;
+
+/// The numbers the sidebar's Insights card can show (`sidebar.footer.stats`).
+pub const FOOTER_STATS: &[&str] = &["turns", "messages", "spend", "working", "waiting", "approvals", "triggers", "peak", "reply", "longest"];
+pub const DEFAULT_FOOTER_STATS: &[&str] = &["turns", "messages", "spend"];
+/// The sidebar footer's buttons (`sidebar.footer.buttons`).
+pub const FOOTER_BUTTONS: &[&str] = &["triggers", "rules", "settings", "insights", "needs_you"];
+pub const DEFAULT_FOOTER_BUTTONS: &[&str] = &["triggers", "rules", "settings"];
+/// The Insights screen's widgets: id, usual size, the sizes it comes in (`insights.layouts`).
+/// small = one grid cell, wide = two across, large = two across and two down.
+pub const INSIGHTS_WIDGETS: &[(&str, &str, &[&str])] = &[
+    ("headline", "wide", &["wide"]),
+    ("turns", "wide", &["wide", "large"]),
+    ("spend", "small", &["small", "wide"]),
+    ("working_waiting", "small", &["small", "wide"]),
+    ("approvals", "small", &["small", "wide"]),
+    ("triggers", "small", &["small", "wide"]),
+    ("parallelism", "wide", &["small", "wide", "large"]),
+    ("autonomy", "small", &["small", "wide"]),
+    ("latency", "wide", &["small", "wide", "large"]),
+    ("agent_time", "wide", &["small", "wide", "large"]),
+    ("approved", "small", &["small", "wide", "large"]),
+    ("corrections", "small", &["small", "wide"]),
+    ("heatmap", "wide", &["small", "wide", "large"]),
+    ("projects", "small", &["small", "wide"]),
+    ("models", "small", &["small", "wide"]),
+    ("bests", "small", &["small", "wide"]),
+];
+pub const DEFAULT_INSIGHTS_LAYOUTS: &[&str] = &[
+    "My layout = headline turns parallelism agent_time heatmap latency approved spend working_waiting",
+    "Overview = headline turns spend working_waiting approvals triggers",
+    "Am I the bottleneck? = latency:large agent_time approved corrections parallelism:small",
+    "Spend = models:wide spend:wide projects bests",
+];
+
+/// One layout's widgets in order, each with its size (unknown widgets and sizes dropped; a
+/// size the widget doesn't come in falls back to its usual one).
+pub fn parse_insights_layout(value: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![];
+    for tok in value.split_whitespace() {
+        let (id, size) = tok.split_once(':').unwrap_or((tok, ""));
+        let Some((_, usual, sizes)) = INSIGHTS_WIDGETS.iter().find(|w| w.0 == id) else { continue };
+        if out.iter().any(|(i, _)| i == id) {
+            continue;
+        }
+        let size = if sizes.contains(&size) { size } else { usual };
+        out.push((id.to_string(), size.to_string()));
+    }
+    out
+}
+
+/// A layout's value written back: `id` alone when it has its usual size.
+pub fn format_insights_layout(items: &[(String, String)]) -> String {
+    items
+        .iter()
+        .map(|(id, size)| match INSIGHTS_WIDGETS.iter().find(|w| w.0 == id) {
+            Some((_, usual, _)) if usual == size => id.clone(),
+            _ => format!("{id}:{size}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn check_insights_layout(value: &str) -> Result<(), String> {
+    for tok in value.split_whitespace() {
+        let (id, size) = tok.split_once(':').unwrap_or((tok, ""));
+        let Some((_, _, sizes)) = INSIGHTS_WIDGETS.iter().find(|w| w.0 == id) else {
+            return Err(format!("unknown widget `{id}` (one of: {})", INSIGHTS_WIDGETS.iter().map(|w| w.0).collect::<Vec<_>>().join(", ")));
+        };
+        if !size.is_empty() && !sizes.contains(&size) {
+            return Err(format!("{id} comes in {}, not {size}", sizes.join(", ")));
+        }
+    }
+    Ok(())
+}
+/// Theme colors an Insights color setting can name (or `#RRGGBB`).
+pub const CHART_COLORS: &[&str] = &["accent", "work", "need", "ok", "err", "fg", "dim"];
 
 /// Built-in parts of `ui.header.script` / `ui.row.script` / `ui.status.script`. Join them
 /// with `+` (`worktree+branch`); `github` = worktree+branch+sync+diff+files+pr.
@@ -407,6 +493,24 @@ pub static SETTINGS: &[SettingSpec] = &[
         "What the status bar shows, left to right: daemon, policy, webhooks, triggers, hooks, accessibility, script (ui.status.script), spacer (the rest goes right), update, keys, or an absolute path to your own script (one item each; see `midna explain scripts`). Leave one out to hide it. Adding a script path is human only."),
     s!("ui.haptics", SettingKind::Bool, B(true), "appearance", false,
         "A light tap on a Force Touch trackpad when you click a button, row or link anywhere in the app. A mouse or an older trackpad ignores it."),
+    s!("sidebar.footer.stats", SettingKind::ItemList { options: FOOTER_STATS, allow_paths: false }, L(DEFAULT_FOOTER_STATS), "appearance", false,
+        "The numbers on the sidebar's Insights card, left to right (the first three show): turns, messages, spend, working (agent hours), waiting (blocked on you), approvals, triggers, peak (most agents working at once), reply (median time to answer a needs-you item), longest (longest turn). Empty hides the card."),
+    s!("sidebar.footer.range", en(&["today", "week"]), S("today"), "appearance", false,
+        "What the sidebar's Insights card counts: today, or the last 7 days."),
+    s!("sidebar.footer.buttons", SettingKind::ItemList { options: FOOTER_BUTTONS, allow_paths: false }, L(DEFAULT_FOOTER_BUTTONS), "appearance", false,
+        "The buttons under the sidebar's Insights card, left to right (at most four): triggers, rules, settings, insights, needs_you. Empty hides the row."),
+    s!("sidebar.footer.compact", SettingKind::Bool, B(false), "appearance", false,
+        "A shorter sidebar footer: the Insights card on one line and icon-only buttons. Terminal rows keep the `density` setting."),
+    s!("insights.layouts", SettingKind::RuleList, L(DEFAULT_INSIGHTS_LAYOUTS), "appearance", false,
+        "Saved layouts of the Insights screen, one per line: `<name> = <widget>[:<size>] …` in order, size small, wide or large (left out = the widget's usual size). Widgets: headline, turns, spend, working_waiting, approvals, triggers, parallelism, autonomy, latency, agent_time, approved, corrections, heatmap, projects, models, bests (`midna explain insights.layouts` for their sizes). E.g. `Mine = parallelism:large heatmap approved:small`. Arrange them on the Insights screen, or ask an agent."),
+    s!("insights.layout", SettingKind::String, S("My layout"), "appearance", false,
+        "The name of the layout in insights.layouts the Insights screen shows."),
+    s!("insights.colors.agents", en_other(CHART_COLORS), S("accent"), "appearance", false,
+        "The color for agent work in Insights charts: a theme color (accent, work, need, ok, err, fg, dim) or #RRGGBB."),
+    s!("insights.colors.you", en_other(CHART_COLORS), S("fg"), "appearance", false,
+        "The color for your own activity in Insights charts: a theme color (accent, work, need, ok, err, fg, dim) or #RRGGBB."),
+    s!("insights.colors.waiting", en_other(CHART_COLORS), S("need"), "appearance", false,
+        "The color for agents blocked on you in Insights charts: a theme color (accent, work, need, ok, err, fg, dim) or #RRGGBB."),
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
         "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
@@ -688,6 +792,21 @@ mod tests {
         assert_eq!(s.coerce(&json!("script, daemon,spacer,daemon")), Ok(json!(["script", "daemon", "spacer"])));
         assert_eq!(s.coerce(&json!(["daemon", "/Users/me/bin/ci.sh"])), Ok(json!(["daemon", "/Users/me/bin/ci.sh"])));
         assert_eq!(s.coerce(&json!([])), Ok(json!([])));
+    #[test]
+    fn insights_layouts_check_widgets_sizes_and_names() {
+        let s = setting("insights.layouts").unwrap();
+        assert_eq!(s.coerce(&json!(["Mine = heatmap:large approved"])).unwrap(), json!(["Mine = heatmap:large approved"]));
+        assert!(s.coerce(&json!(["Mine = nope"])).unwrap_err().contains("unknown widget `nope`"));
+        assert!(s.coerce(&json!(["Mine = headline:small"])).unwrap_err().contains("headline comes in wide"));
+        assert!(s.coerce(&json!(["A = turns", "A = spend"])).unwrap_err().contains("two layouts"));
+        for l in DEFAULT_INSIGHTS_LAYOUTS {
+            assert!(s.coerce(&json!([l])).is_ok(), "{l}");
+        }
+        let items = parse_insights_layout("heatmap:large approved spend:huge heatmap nope");
+        assert_eq!(items, vec![("heatmap".into(), "large".into()), ("approved".into(), "small".into()), ("spend".into(), "small".into())]);
+        assert_eq!(format_insights_layout(&items), "heatmap:large approved spend");
+    }
+
         assert!(s.coerce(&json!("daemon, clock")).is_err());
         assert!(s.coerce(&json!("bin/ci.sh")).is_err());
         assert!(s.default.to_json().as_array().unwrap().iter().all(|v| STATUS_ITEMS.contains(&v.as_str().unwrap())));
