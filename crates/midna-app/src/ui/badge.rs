@@ -61,9 +61,16 @@ const LIST_BLEED: f32 = 40.;
 /// The list closes itself after this long with nothing happening (the pointer resting on it
 /// counts).
 const LIST_IDLE: Duration = Duration::from_secs(5);
+/// Resting the pointer on the badge this long opens the list; a click up to `HOVER_GRACE` after
+/// it opened that way leaves it open (it was meant to open it), the next one closes it.
+const HOVER_OPEN: Duration = Duration::from_millis(600);
+const HOVER_GRACE: Duration = Duration::from_millis(800);
 const LIST_H: f32 = 440.;
 const LIST_TOP: f32 = 10.;
 const ROW: f32 = 36.;
+/// How strong a scrolling list's farthest rows show: their fill and their words.
+const ROW_FILL: f32 = 0.88;
+const ROW_WORDS: f32 = 0.4;
 const GAP: f32 = 8.;
 const CARD_W: f32 = 380.;
 /// A capsule's × and arrow: they grow in, and stay this long after the pointer leaves (a quick
@@ -363,6 +370,11 @@ pub struct Badge {
     menu: bool,
     /// The pointer is over a zone.
     hover: Option<&'static str>,
+    /// Since when the pointer's been on the badge, while resting there may still open the list
+    /// (a click or opening it ends that until it comes back).
+    hover_since: Option<Instant>,
+    /// The list opened by resting on the badge, and when.
+    hover_opened: Option<Instant>,
     /// A press on the badge: the badge follows the pointer (it's dragged by hand, not by
     /// AppKit's window drag, which can bring midna to the front).
     pressing: Option<Press>,
@@ -687,6 +699,8 @@ impl Badge {
             reopen: None,
             menu: false,
             hover: None,
+            hover_since: None,
+            hover_opened: None,
             pressing: None,
             slide: None,
             shown: false,
@@ -727,6 +741,7 @@ impl Badge {
 
     fn close_list(&mut self) {
         self.list = false;
+        self.hover_opened = None;
         self.list_closing = None;
         self.expanded = None;
         self.collapsing.clear();
@@ -1284,8 +1299,22 @@ impl Badge {
             let p = point(px((mouse.x - f.origin.x) as f32), px((f.origin.y + f.size.height - mouse.y) as f32));
             let hover = self.zones.hit(p);
             if hover != self.hover {
+                if hover == Some("badge") {
+                    self.hover_since = Some(now);
+                } else if self.hover == Some("badge") {
+                    self.hover_since = None;
+                }
                 self.hover = hover;
                 changed = true;
+            }
+            // Resting on the badge opens the list.
+            if self.hover_since.is_some_and(|t| now.duration_since(t) >= HOVER_OPEN) && self.pressing.is_none() {
+                self.hover_since = None;
+                if !self.list && !self.menu && self.count > 0 && !self.quiet() {
+                    self.open_list();
+                    self.hover_opened = Some(now);
+                    changed = true;
+                }
             }
             ns.setIgnoresMouseEvents(hover.is_none() && self.pressing.is_none());
 
@@ -1294,6 +1323,8 @@ impl Badge {
                 && objc2_app_kit::NSEvent::pressedMouseButtons() & 1 == 0
             {
                 self.pressing = None;
+                // A click or a drag ends the wait to open the list by resting there.
+                self.hover_since = None;
                 if p.moved {
                     // A pause before letting go is a drop, not a throw.
                     let vel = if now.duration_since(p.last.1) > Duration::from_millis(80) { (0., 0.) } else { p.vel };
@@ -1314,7 +1345,9 @@ impl Badge {
                 } else if self.menu {
                     self.menu = false;
                 } else {
-                    if self.list && self.list_closing.is_none() {
+                    if self.hover_opened.take().is_some_and(|t| now.duration_since(t) < HOVER_GRACE) {
+                        // Clicked as resting there opened it: it stays open.
+                    } else if self.list && self.list_closing.is_none() {
                         // Its rows lift away first (tick closes it after).
                         self.list_closing = Some(now);
                     } else if self.count > 0 && !self.quiet() {
@@ -1647,15 +1680,18 @@ impl Badge {
             let el = match self.card_k(&w.id, now) {
                 Some(k) => drop(self.card(t, w, k, now, cx)),
                 None => {
-                    // Clearest at the middle line, faded toward the list's edges; only the one
-                    // under the pointer comes up to full, as its × and arrow grow in.
-                    let d = ((tops[i] + ROW / 2. - mid).abs() / (ROW + GAP)).min(3.);
+                    // When it scrolls, clearest at the middle line and softer away from it: the
+                    // words fade, the capsule's fill only a little (what's behind the window
+                    // never shows through enough to muddle them). Rows fade out whole only at
+                    // the list's edges. The one under the pointer comes up to full, as its ×
+                    // and arrow grow in.
+                    let k = if tall { ((tops[i] + ROW / 2. - mid).abs() / (ROW + GAP)).min(3.) / 3. } else { 0. };
                     let y = LIST_TOP + tops[i] + heights[i] / 2. - s;
                     let edge = (y / 26.).clamp(0., 1.) * ((LIST_H - y) / 52.).clamp(0., 1.);
-                    let base = (1. - d * 0.22).max(0.3);
                     let lift = self.grow(&w.id, now).clamp(0., 1.);
-                    let o = (base + (1. - base) * lift) * (edge + (1. - edge) * lift);
-                    drop(div().flex().opacity(o).child(self.capsule(t, w, now, cx)).into_any_element())
+                    let fade = |floor: f32| 1. - (1. - floor) * k * (1. - lift);
+                    let capsule = self.capsule(t, w, now, fade(ROW_FILL), fade(ROW_WORDS), cx);
+                    drop(div().flex().opacity(edge + (1. - edge) * lift).child(capsule).into_any_element())
                 }
             };
             col = col.child(el);
@@ -1691,28 +1727,21 @@ impl Badge {
             .px(px(10.))
             .py(px(3.))
             .rounded(px(11.))
-            .bg(t.panel)
+            .bg(t.raised)
             .border_1()
-            .border_color(t.line)
-            .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.35), offset: point(px(0.), px(4.)), blur_radius: px(12.), spread_radius: px(0.), inset: false }])
+            .border_color(t.dim.opacity(0.3))
+            // A faint dark ring keeps it apart from a busy window behind.
+            .shadow(vec![
+                BoxShadow { color: t.bg.opacity(0.35), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(4.), inset: false },
+                BoxShadow { color: hsla(0., 0., 0., 0.5), offset: point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.), inset: false },
+            ])
             .text_size(px(12.))
-            .text_color(t.dim)
+            .text_color(t.fg.opacity(0.85))
             .cursor_pointer()
-            .hover(|s| s.bg(t.raised).text_color(t.fg))
+            .hover(|s| s.bg(t.line).text_color(t.fg))
             .on_click(cx.listener(|b, _, _, cx| b.clear_all(cx)))
             .child("Clear");
-        // Over a busy window it'd be lost: a soft dark patch behind it (GPUI can't blur what's
-        // behind the window), feathered by its own shadow.
-        let scrim = div()
-            .absolute()
-            .top(px(2.))
-            .bottom(px(2.))
-            .w(px(90.))
-            .map(|d| if right { d.right(px(2.)) } else { d.left(px(2.)) })
-            .rounded(px(12.))
-            .bg(t.bg.opacity(0.7))
-            .shadow(vec![BoxShadow { color: t.bg.opacity(0.7), offset: point(px(0.), px(0.)), blur_radius: px(18.), spread_radius: px(6.), inset: false }]);
-        let header = div().relative().opacity(self.cascade(if self.list_closing.is_some() { CASCADE_ROWS - 1 } else { 0 }, now).clamp(0., 1.)).w(px(LIST_W)).h(px(26.)).px(px(6.)).flex().items_center().map(|d| if right { d.justify_end() } else { d.justify_start() }).child(scrim).child(clear);
+        let header = div().relative().opacity(self.cascade(if self.list_closing.is_some() { CASCADE_ROWS - 1 } else { 0 }, now).clamp(0., 1.)).w(px(LIST_W)).h(px(26.)).px(px(6.)).flex().items_center().map(|d| if right { d.justify_end() } else { d.justify_start() }).child(clear);
         let top = self.corner.top();
         Some(
             div()
@@ -1730,8 +1759,9 @@ impl Badge {
 
     /// A row as a capsule: dot, terminal, what it's about. With the pointer on it, an × grows
     /// in at its start (off the list) and an arrow at its end (to the terminal); a click
-    /// anywhere else opens its card.
-    fn capsule(&self, t: &Theme, w: &Waiting, now: Instant, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// anywhere else opens its card. `fill`, `words`: how strong its fill (and edge and shadow)
+    /// and its dot and words show.
+    fn capsule(&self, t: &Theme, w: &Waiting, now: Instant, fill: f32, words: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let k = self.grow(&w.id, now).max(0.);
         let out = k > 0.01;
         let color = self.color(t, &w.color);
@@ -1744,10 +1774,10 @@ impl Badge {
             .flex()
             .items_center()
             .rounded(px(18.))
-            .bg(t.panel)
+            .bg(t.panel.opacity(fill))
             .border_1()
-            .border_color(if hot { t.dim.opacity(0.55) } else { t.line })
-            .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.4), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false }])
+            .border_color(if hot { t.dim.opacity(0.55) } else { t.line.opacity(fill) })
+            .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.4 * (1. - (1. - fill) * 5.)), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false }])
             .overflow_hidden()
             .cursor_pointer()
             .text_size(px(13.))
@@ -1795,6 +1825,7 @@ impl Badge {
                 .gap(px(8.))
                 .pl(px(14. - 6. * k.min(1.)))
                 .pr(px(14. - 6. * k.min(1.)))
+                .opacity(words)
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(color))
                 .child(div().flex_none().max_w(px(130.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(w.name.clone()))
                 .child(div().min_w_0().truncate().text_color(t.dim).child(w.title.clone())),
