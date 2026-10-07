@@ -19,7 +19,7 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
         return;
     }
     m.quit_hold = Some(Instant::now());
-    crate::lifecycle::log(&format!("⌘Q hold started (first responder: {})", crate::composer::first_responder()));
+    crate::lifecycle::log(&format!("⌘Q hold started (first responder: {})", crate::composer::first_responder(m)));
     cx.spawn_in(window, async move |this, cx| {
         loop {
             cx.background_executor().timer(Duration::from_millis(16)).await;

@@ -7,7 +7,9 @@
 //! Layout follows Main.dc.html (`mode=dictating`): a "Kass · listening" pill, then an
 //! accent-bordered box with `❯`, the field and "↩ send · esc cancel". GPUI draws the box; the
 //! `NSTextView` (inside an `NSScrollView`) is a sibling *above* the GPUI view, moved onto the
-//! box's field area every paint (`place`).
+//! box's field area every paint (`place`). Every main window gets its own text view: one shared
+//! view lives in the window that opened it first, and a composer in any other window had no
+//! field to type into.
 //!
 //! Keys: ↩ sends the text to the target terminal with `session.input{enter:true}` (multi-line
 //! text goes as one bracketed paste when the terminal asked for it) and closes; ⇧↩ / ⌥↩ insert
@@ -35,6 +37,7 @@ use objc2_foundation::{NSObject, NSPoint, NSRange, NSRect, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::json;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -89,6 +92,9 @@ pub struct Composer {
     pub target: Option<String>,
     pub lines: usize,
     pub focus: FocusHandle,
+    /// This window's text view, added on first open. Each main window has its own: AppKit
+    /// can only give keys to a view inside the key window.
+    native: Option<Rc<Native>>,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -125,14 +131,14 @@ impl Composer {
                 cx.background_executor().timer(Duration::from_millis(1500)).await;
                 let _ = this.update_in(cx, |m, window, cx| {
                     open(m, Source::Manual, window, cx);
-                    native(|n| n.tv.setString(&NSString::from_str(&text.replace("\\n", "\n"))));
+                    native(m, |n| n.tv.setString(&NSString::from_str(&text.replace("\\n", "\n"))));
                     m.composer.listening = crate::dev::var("MIDNA_DEBUG_COMPOSER_LISTENING").is_ok();
                     on_event(m, ComposerEvent::Changed, window, cx);
                 });
             }));
         }
-        let subs = vec![cx.on_blur(&focus, window, |_, _, _| release_native_focus())];
-        Composer { open: false, source: Source::Manual, listening: false, target: None, lines: 1, focus, _tasks: tasks, _subs: subs }
+        let subs = vec![cx.on_blur(&focus, window, |m, _, _| release_native_focus(m))];
+        Composer { open: false, source: Source::Manual, listening: false, target: None, lines: 1, focus, native: None, _tasks: tasks, _subs: subs }
     }
 }
 
@@ -149,12 +155,12 @@ fn open(m: &mut MainWindow, source: Source, window: &mut Window, cx: &mut Contex
         m.composer.source = source;
         m.composer.target = m.selected.clone();
         m.composer.lines = 1;
-        native(|n| n.tv.setString(&NSString::from_str("")));
+        native(m, |n| n.tv.setString(&NSString::from_str("")));
     } else if source == Source::Kass {
         m.composer.source = Source::Kass;
     }
     let t = cx.global::<Theme>().clone();
-    let ok = show_native(window, &t);
+    let ok = show_native(m, window, &t);
     m.composer.focus.focus(window, cx);
     cx.notify();
     ok
@@ -166,8 +172,8 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
     m.composer.target = None;
     // Hand focus back before hiding: hiding the first responder makes AppKit give it to the
     // bare window, and plain keys (and ⌘'s release) would then go nowhere.
-    release_native_focus();
-    native(|n| {
+    release_native_focus(m);
+    native(m, |n| {
         n.tv.setString(&NSString::from_str(""));
         n.scroll.setHidden(true);
     });
@@ -215,7 +221,7 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Cont
             if !m.composer.open {
                 return;
             }
-            let text = text();
+            let text = text(m);
             if debug {
                 eprintln!("midna-app: kass didEnd ({outcome:?}): {} chars", text.chars().count());
             }
@@ -239,7 +245,7 @@ fn on_event(m: &mut MainWindow, ev: ComposerEvent, window: &mut Window, cx: &mut
         ComposerEvent::Submit(text) => submit(m, text, window, cx),
         ComposerEvent::Cancel => close(m, window, cx),
         ComposerEvent::Changed => {
-            let lines = native(|n| n.lines()).unwrap_or(1);
+            let lines = native(m, |n| n.lines()).unwrap_or(1);
             if lines != m.composer.lines {
                 m.composer.lines = lines;
             }
@@ -290,8 +296,8 @@ pub fn encode(text: &str, bracketed_paste: bool) -> String {
 }
 
 /// Current text of the field.
-pub fn text() -> String {
-    native(|n| n.tv.string().to_string()).unwrap_or_default()
+pub fn text(m: &MainWindow) -> String {
+    native(m, |n| n.tv.string().to_string()).unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ rendering
@@ -299,7 +305,7 @@ pub fn text() -> String {
 /// Keep the native view's visibility in step with the layout (called every render).
 pub fn sync(m: &MainWindow) {
     let visible = m.composer.open && can_show(m);
-    native(|n| {
+    native(m, |n| {
         // Every render, not just on hide: whatever stranded AppKit's first responder (an AX
         // client poking the hidden field, a hide racing a focus), keys must reach GPUI.
         if !visible {
@@ -315,11 +321,11 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     if !m.composer.open || !can_show(m) {
         return None;
     }
-    let line_h = native(|n| n.line_h).unwrap_or(16.) as f32;
+    let line_h = native(m, |n| n.line_h).unwrap_or(16.) as f32;
     let field_h = line_h * m.composer.lines.clamp(1, MAX_LINES) as f32;
-    let target = m.composer.target.as_ref().and_then(|id| m.sessions.iter().find(|s| &s.id == id)).map(|s| s.name.clone()).unwrap_or_default();
     let theme = t.clone();
-    let field = canvas(|b, _, _| b, move |_, b, _, _| place(b, &theme)).flex_1().min_w_0().h(px(field_h));
+    let nat = m.composer.native.clone();
+    let field = canvas(|b, _, _| b, move |_, b, _, _| place(nat.as_deref(), b, &theme)).flex_1().min_w_0().h(px(field_h));
     // Offscreen snapshots (`--features snapshot`) can't see native views, so draw the field's
     // text with GPUI there. Dev only; the live app always shows the NSTextView.
     let field = if cfg!(feature = "snapshot") && std::env::var("MIDNA_SNAPSHOT").is_ok() {
@@ -337,7 +343,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                     .text_size(px(FONT_SIZE as f32))
                     .line_height(px(line_h))
                     .text_color(t.fg)
-                    .child(format!("{}▏", text())),
+                    .child(format!("{}▏", text(m))),
             )
             .into_any_element()
     } else {
@@ -359,7 +365,21 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .child(div().flex().items_center().gap(px(2.)).h(px(12.)).child(bar(5.)).child(bar(11.)).child(bar(7.)).child(bar(12.)).child(bar(4.)))
             .child("Kass · listening")
     });
-    let hint = if target.is_empty() { "↩ send · esc cancel".to_string() } else { format!("↩ send to {target} · esc cancel") };
+    let key = |k: &'static str| crate::ui::header::key_chip(t, k.into()).bg(t.raised);
+    let hint = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .h(px(line_h))
+        .text_size(px(11.))
+        .text_color(t.dim)
+        .whitespace_nowrap()
+        .child(key("↩"))
+        .child("send")
+        .child(div().w(px(4.)))
+        .child(key("esc"))
+        .child("cancel");
     let boxed = crate::ui::border_w(div(), 1.5)
         .id("composer-box")
         .w_full()
@@ -376,7 +396,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             MouseButton::Left,
             cx.listener(|m, _, window, cx| {
                 m.composer.focus.focus(window, cx);
-                native(|n| {
+                native(m, |n| {
                     if let Some(w) = n.tv.window() {
                         w.makeFirstResponder(Some(&n.tv));
                     }
@@ -385,7 +405,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         )
         .child(div().font_family(t.mono_font.clone()).text_size(px(FONT_SIZE as f32)).line_height(px(line_h)).text_color(t.accent).child("❯"))
         .child(field)
-        .child(div().flex_none().text_size(px(11.)).line_height(px(line_h)).text_color(t.dim).whitespace_nowrap().child(hint));
+        .child(hint);
     Some(
         div()
             .id("composer")
@@ -398,7 +418,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .px(px(16.))
             .pt(px(8.))
             .pb(px(16.))
-            .on_mouse_down_out(cx.listener(|_, _, _, _| release_native_focus()))
+            .on_mouse_down_out(cx.listener(|m, _, _, _| release_native_focus(m)))
             .children(pill)
             .child(boxed)
             .into_any_element(),
@@ -406,7 +426,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
 }
 
 pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E {
-    let fwd = |s: Sel| move |_: &mut MainWindow, _: &mut Window, _: &mut Context<MainWindow>| send_to_text_view(s);
+    let fwd = |s: Sel| move |m: &mut MainWindow, _: &mut Window, _: &mut Context<MainWindow>| send_to_text_view(m, s);
     let paste = fwd(sel!(paste:));
     let copy = fwd(sel!(copy:));
     let cut = fwd(sel!(cut:));
@@ -416,8 +436,8 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
         .on_action(cx.listener(move |m, _: &ComposerCopy, w, cx| copy(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerCut, w, cx| cut(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerSelectAll, w, cx| all(m, w, cx)))
-        .on_action(cx.listener(|_, _: &ComposerUndo, _, _| undo(false)))
-        .on_action(cx.listener(|_, _: &ComposerRedo, _, _| undo(true)))
+        .on_action(cx.listener(|m, _: &ComposerUndo, _, _| undo(m, false)))
+        .on_action(cx.listener(|m, _: &ComposerRedo, _, _| undo(m, true)))
 }
 
 /// ⌘-shortcuts for the field (GPUI sees key equivalents before the text view does, and the
@@ -519,17 +539,13 @@ impl Native {
     }
 }
 
-thread_local! {
-    static NATIVE: RefCell<Option<Native>> = const { RefCell::new(None) };
+fn native<R>(m: &MainWindow, f: impl FnOnce(&Native) -> R) -> Option<R> {
+    m.composer.native.as_deref().map(f)
 }
 
-fn native<R>(f: impl FnOnce(&Native) -> R) -> Option<R> {
-    NATIVE.with(|n| n.borrow().as_ref().map(f))
-}
-
-/// Add the (hidden) scroll view + text view above the GPUI view, once.
-fn install(window: &Window) {
-    if NATIVE.with(|n| n.borrow().is_some()) {
+/// Add the (hidden) scroll view + text view above this window's GPUI view, once.
+fn install(m: &mut MainWindow, window: &Window) {
+    if m.composer.native.is_some() {
         return;
     }
     let Some(mtm) = MainThreadMarker::new() else {
@@ -585,7 +601,7 @@ fn install(window: &Window) {
     scroll.setHidden(true);
     container.addSubview(&scroll);
     let line_h = unsafe { tv.layoutManager() }.map(|lm| lm.defaultLineHeightForFont(&font)).unwrap_or(16.).ceil();
-    NATIVE.with(|n| *n.borrow_mut() = Some(Native { scroll, tv, gpui, line_h, font, styled_for: RefCell::new(None) }));
+    m.composer.native = Some(Rc::new(Native { scroll, tv, gpui, line_h, font, styled_for: RefCell::new(None) }));
 }
 
 fn ns_color(c: Hsla) -> Retained<NSColor> {
@@ -605,9 +621,9 @@ fn style(n: &Native, t: &Theme) {
 }
 
 /// Unhide the field and make it first responder. True when AppKit accepted it.
-fn show_native(window: &Window, t: &Theme) -> bool {
-    install(window);
-    native(|n| {
+fn show_native(m: &mut MainWindow, window: &Window, t: &Theme) -> bool {
+    install(m, window);
+    native(m, |n| {
         style(n, t);
         n.scroll.setHidden(false);
         let len = n.tv.string().length();
@@ -635,13 +651,13 @@ fn release_native_focus_inner(n: &Native) {
 }
 
 /// Hand AppKit's first responder back to the GPUI view if the field has it.
-fn release_native_focus() {
-    native(release_native_focus_inner);
+fn release_native_focus(m: &MainWindow) {
+    native(m, release_native_focus_inner);
 }
 
 /// Who holds AppKit's first responder in the main window, for logs.
-pub fn first_responder() -> String {
-    native(|n| {
+pub fn first_responder(m: &MainWindow) -> String {
+    native(m, |n| {
         let Some(w) = n.tv.window() else { return "no window".to_string() };
         let is = |r: &NSResponder, o: *const AnyObject| std::ptr::eq(r as *const NSResponder as *const AnyObject, o);
         let who = match w.firstResponder() {
@@ -657,41 +673,40 @@ pub fn first_responder() -> String {
 }
 
 /// Move the field onto `b` (GPUI window coordinates, top-left origin).
-fn place(b: Bounds<Pixels>, t: &Theme) {
-    native(|n| {
-        style(n, t);
-        let Some(container) = (unsafe { n.gpui.superview() }) else {
-            return;
-        };
-        let (x, y, w, h) = (f64::from(b.origin.x), f64::from(b.origin.y), f64::from(b.size.width), f64::from(b.size.height));
-        let vh = n.gpui.bounds().size.height;
-        let local = if n.gpui.isFlipped() { NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)) } else { NSRect::new(NSPoint::new(x, vh - y - h), NSSize::new(w, h)) };
-        let frame = n.gpui.convertRect_toView(local, Some(&container));
-        let cur = n.scroll.frame();
-        if (cur.origin.x - frame.origin.x).abs() > 0.5
-            || (cur.origin.y - frame.origin.y).abs() > 0.5
-            || (cur.size.width - frame.size.width).abs() > 0.5
-            || (cur.size.height - frame.size.height).abs() > 0.5
-        {
-            let width_changed = (cur.size.width - frame.size.width).abs() > 0.5;
-            n.scroll.setFrame(frame);
-            let len = n.tv.string().length();
-            n.tv.scrollRangeToVisible(NSRange::new(len, 0));
-            if width_changed {
-                emit(ComposerEvent::Changed); // wrapping may have changed the line count
-            }
+fn place(n: Option<&Native>, b: Bounds<Pixels>, t: &Theme) {
+    let Some(n) = n else { return };
+    style(n, t);
+    let Some(container) = (unsafe { n.gpui.superview() }) else {
+        return;
+    };
+    let (x, y, w, h) = (f64::from(b.origin.x), f64::from(b.origin.y), f64::from(b.size.width), f64::from(b.size.height));
+    let vh = n.gpui.bounds().size.height;
+    let local = if n.gpui.isFlipped() { NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)) } else { NSRect::new(NSPoint::new(x, vh - y - h), NSSize::new(w, h)) };
+    let frame = n.gpui.convertRect_toView(local, Some(&container));
+    let cur = n.scroll.frame();
+    if (cur.origin.x - frame.origin.x).abs() > 0.5
+        || (cur.origin.y - frame.origin.y).abs() > 0.5
+        || (cur.size.width - frame.size.width).abs() > 0.5
+        || (cur.size.height - frame.size.height).abs() > 0.5
+    {
+        let width_changed = (cur.size.width - frame.size.width).abs() > 0.5;
+        n.scroll.setFrame(frame);
+        let len = n.tv.string().length();
+        n.tv.scrollRangeToVisible(NSRange::new(len, 0));
+        if width_changed {
+            emit(ComposerEvent::Changed); // wrapping may have changed the line count
         }
-    });
+    }
 }
 
-fn send_to_text_view(s: Sel) {
-    native(|n| unsafe {
+fn send_to_text_view(m: &MainWindow, s: Sel) {
+    native(m, |n| unsafe {
         let _: () = msg_send![&*n.tv, performSelector: s, withObject: std::ptr::null::<AnyObject>()];
     });
 }
 
-fn undo(redo: bool) {
-    native(|n| {
+fn undo(m: &MainWindow, redo: bool) {
+    native(m, |n| {
         if let Some(um) = n.tv.undoManager() {
             if redo { um.redo() } else { um.undo() }
         }
