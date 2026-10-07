@@ -987,6 +987,13 @@ pub enum TriggerAction {
         /// `from_trigger`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<String>,
+        /// A URL a click opens instead of selecting the terminal (templates work).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<String>,
+        /// The notification's id (templates work): a firing with the same id replaces the
+        /// one still showing (see `notify.send`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
 }
 
@@ -1291,6 +1298,12 @@ pub mod kinds {
     /// `notify.clear`: remove notifications from Notification Center (`{session?}`, none = all);
     /// the app removes them.
     pub const NOTIFY_CLEARED: &str = "notify.cleared";
+    /// `notify.withdraw`: take notification `{id}` away (Notification Center, the in-app card,
+    /// the floating badge); the app removes it.
+    pub const NOTIFY_WITHDRAWN: &str = "notify.withdrawn";
+    /// The human picked a button on, clicked or dismissed a `notify.send` notification
+    /// (`{id, kind: action|clicked|dismissed, action?, category, title}`).
+    pub const NOTIFY_RESPONDED: &str = "notify.responded";
     /// `notify.read`: notifications up to `read_seq` are read (`{read_seq, unread}`).
     pub const NOTIFY_READ: &str = "notify.read";
     /// A terminal's notification overrides changed (`{notify}`, the whole map).

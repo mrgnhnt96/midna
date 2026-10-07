@@ -246,8 +246,24 @@ fn build() -> Vec<MethodSpec> {
         m::<NotifySendParams, NotifySendResult>("notify.send").mutating().d(
             "Send the human a macOS notification (category `agent`): use it when they asked to be told about something \
              (\"ping me when the build is green\") or when a result needs them and they may be away. Clicking it selects \
-             your terminal. Not for routine progress: approvals, failures and finished turns already notify. Duplicates \
-             within a few seconds are dropped and an agent can send at most 6 a minute."),
+             your terminal, or opens `open` (a URL) instead; it works from outside midna terminals too. `id` names it: \
+             sending again with the same id replaces the one showing (a repeating alert), and notify.withdraw removes it. \
+             `actions` (up to 4 buttons, e.g. [\"Snooze 15 min\", \"Snooze 1 hour\"]) report the human's pick as \
+             `response` {kind: action|clicked|dismissed, action?}: wait for it with `wait_secs`, ask later with \
+             notify.response, or react to the `notify.responded` event (a local trigger on it). Buttons and clicks need the \
+             app running (`via: app`). Not for routine progress: approvals, failures and finished turns already notify. \
+             Duplicates within a few seconds are dropped and an agent can send at most 6 a minute per terminal."),
+        m::<NotifyWithdrawParams, NotifyWithdrawResult>("notify.withdraw").mutating().d(
+            "Take a notification sent with notify.send away by its `id` (Notification Center, the in-app card and the \
+             floating badge), e.g. once the alert it was about has cleared. It stays in notify.history. With no app \
+             connected nothing changes (`delivered: false`)."),
+        m::<NotifyResponseParams, NotifyResponseResult>("notify.response").d(
+            "What the human did with a notification sent with notify.send: `response` {kind: action (a button, `action` \
+             = its label), clicked or dismissed}, or none yet. `wait_secs` (max 600) waits for one. midnad remembers \
+             responses until it restarts."),
+        m::<NotifyRespondParams, NotifyResponseResult>("notify.respond").mutating().human().d(
+            "Internal: the GUI reports the human's click, button or dismissal on a notify.send notification (emits \
+             `notify.responded`)."),
         m::<NoParams, NotifyKindsList>("notify.kinds.list").d(
             "The notification kinds the human added, beside the built-in ones (notify.list): each with its label, \
              whether it's on, how long it stays on screen (`stay`, 0 = until handled), its color and sound. Send to one \
@@ -370,8 +386,9 @@ fn build() -> Vec<MethodSpec> {
              {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready), \
              {kind:set_status, label, color (red|orange|amber|yellow|green|teal|blue|purple|pink|gray|#rrggbb), icon?, \
              base (idle|working|needs_you|done|failed: still drives sorting, notifications, Needs You), clear_on (prompt|turn|status|never)}, \
-             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true, category?} (a macOS notification, \
-             category from_trigger; clicking it selects the terminal that fired). Local templates: {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, \
+             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true, category?, open?, id?} (a macOS notification, \
+             category from_trigger; clicking it selects the terminal that fired, or opens `open`, a URL (a webhook's defaults \
+             to what it's about); a firing with the same `id` replaces the one still showing). Local templates: {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, \
              {{session.id|name|project_id|agent|status}}, {{data.<path>}} or {{<path>}}. cooldown_secs (default 60) spaces \
              firings per terminal; what a trigger causes never fires triggers. Example (compact, then resend): \
              {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact first*\"}}, \

@@ -107,9 +107,11 @@ fn mark_read(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     });
 }
 
-/// `notify.posted` (a new one: fetch) and `notify.read` (another window looked: clear the badge).
+/// `notify.posted` (a new one: fetch), `notify.withdrawn` (it stops counting: fetch) and
+/// `notify.read` (another window looked: clear the badge).
 pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
-    if e.kind == midna_proto::kinds::NOTIFY_POSTED && e.data.get("test") != Some(&json!(true)) {
+    let posted = e.kind == midna_proto::kinds::NOTIFY_POSTED && e.data.get("test") != Some(&json!(true));
+    if posted || e.kind == midna_proto::kinds::NOTIFY_WITHDRAWN {
         fetch(m, cx);
     } else if e.kind == midna_proto::kinds::NOTIFY_READ {
         m.inbox.read_seq = e.data["read_seq"].as_u64().unwrap_or(m.inbox.read_seq);
@@ -414,6 +416,10 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
     };
 
     let mut actions = div().flex().flex_wrap().gap(px(8.));
+    // A `notify.send` notification's URL (what clicking it opened).
+    if let Some(url) = i.notification.open.clone() {
+        actions = actions.child(super::screen_kit::btn_primary(t, "nt-open", "Open").on_click(move |_, _, _| crate::notify::open_url(&url)));
+    }
     if let Some(sid) = session.clone() {
         actions = actions.child(super::screen_kit::btn_primary(t, "nt-go", "Go to terminal").on_click(cx.listener(move |m, _, w, cx| go_to(m, sid.clone(), w, cx))));
     }

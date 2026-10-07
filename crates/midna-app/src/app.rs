@@ -596,11 +596,21 @@ impl MainWindow {
                 {
                     crate::ui::links::fetch(self, sid, cx);
                 }
-                if k == midna_proto::kinds::NOTIFY_POSTED || k == midna_proto::kinds::NOTIFY_READ {
+                if k == midna_proto::kinds::NOTIFY_POSTED || k == midna_proto::kinds::NOTIFY_READ || k == midna_proto::kinds::NOTIFY_WITHDRAWN {
                     crate::ui::notifications::on_event(self, &e, cx);
                 }
                 if k == midna_proto::kinds::NOTIFY_POSTED && self.is_home() {
                     self.on_notification(&e, window, cx);
+                }
+                if k == midna_proto::kinds::NOTIFY_WITHDRAWN
+                    && let Some(id) = e.data["id"].as_str()
+                {
+                    // Every window drops its card; the home one also clears the banner and badge.
+                    crate::ui::toast::withdraw(self, id, cx);
+                    if self.is_home() {
+                        crate::notify::withdraw(id);
+                        crate::ui::badge::withdraw(id, cx);
+                    }
                 }
                 if k == midna_proto::kinds::NOTIFY_CLEARED && self.is_home() {
                     match e.session_id.as_deref() {

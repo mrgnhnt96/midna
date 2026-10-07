@@ -101,9 +101,16 @@ fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             }
         }
         TriggerAction::ClearStatus {} => {}
-        TriggerAction::Notify { title, category, .. } => {
+        TriggerAction::Notify { title, category, open, id, .. } => {
             if title.trim().is_empty() {
                 return Err(RpcError::bad_params("notify needs a title"));
+            }
+            // Checked now unless a template fills it in at firing time.
+            if let Some(u) = open.as_deref().filter(|u| !u.contains("{{") && !midna_proto::notify::valid_open_url(u.trim())) {
+                return Err(RpcError::bad_params(format!("notify open `{u}` isn't a URL: give one with a scheme (https://…)")));
+            }
+            if let Some(i) = id.as_deref().filter(|i| !i.contains("{{") && !midna_proto::notify::valid_id(i.trim())) {
+                return Err(RpcError::bad_params(format!("notify id `{i}` must be 1–64 of A-Z a-z 0-9 . _ : -")));
             }
             if let Some(k) = category.as_deref().filter(|k| *k != "from_trigger")
                 && d.core().state.notify_kind(k).is_none()

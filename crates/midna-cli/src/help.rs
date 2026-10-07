@@ -248,7 +248,9 @@ pub static VERBS: &[Verb] = &[
         usage: "notify [--session <id> | --global]\n       \
                 notify set <key> on|off|default [--session <id> | --global]\n       \
                 notify mute|unmute [--session <id>]\n       \
-                notify send \"<title>\" [--detail \"<body>\"] [--sound] [--kind <kind>] [--session <id>]\n       \
+                notify send \"<title>\" [--detail \"<body>\"] [--sound] [--kind <kind>] [--session <id>] [--id <id>] [--open <url>]\n       \
+                            [--action <label>]… [--wait <secs>]\n       \
+                notify withdraw <id> | response <id> [--wait <secs>]\n       \
                 notify kinds [list | add|update <key> [--label L] [--description D] [--color C] [--stay S] [--set field=value]… | rm <key>]\n       \
                 notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
                 notify play <kind>|<sound> [--volume 0-100] [--session <id>]\n       \
@@ -261,6 +263,14 @@ pub static VERBS: &[Verb] = &[
                   when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
                   a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
                   turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
+                  It works from outside midna terminals too (a background server, a cron job). --open <url> makes a\n\
+                  click open that URL instead of selecting the terminal. --id <id> names it: sending again with the\n\
+                  same id replaces the one still showing (a repeating alert), and `withdraw <id>` takes it away once\n\
+                  it no longer applies. --action <label> (up to 4) adds buttons: --wait 10m blocks until the human\n\
+                  picks one, clicks or dismisses it and prints the label, `clicked`, `dismissed` or `no response`;\n\
+                  without --wait, `response <id>` asks later, and every response is a `notify.responded` event\n\
+                  (`midna trigger add --event notify.responded --match action='Snooze*' …` reacts to it). Buttons\n\
+                  and clicks need the app running.\n\
                   `kinds` lists the kinds the human added (deploys, ci, …); `send --kind <key>` sends as one, with its\n\
                   own sound, color and switch. `kinds add` makes one when the human asks (--stay 0 = it stays on\n\
                   screen until handled; --color a theme color need|ok|err|work|accent|dim or #rrggbb; --set\n\
@@ -283,7 +293,7 @@ pub static VERBS: &[Verb] = &[
                   plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.\n\
                   `clear` removes every midna notification from Notification Center (--session: only that\n\
                   terminal's); opening a terminal already removes its own.",
-        methods: &["notify.list", "notify.set", "notify.send", "notify.kinds.list", "notify.kinds.add", "notify.kinds.remove", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.history", "notify.read"],
+        methods: &["notify.list", "notify.set", "notify.send", "notify.kinds.list", "notify.kinds.add", "notify.kinds.remove", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.withdraw", "notify.response", "notify.history", "notify.read"],
     },
     Verb {
         name: "read",
@@ -398,7 +408,7 @@ pub static VERBS: &[Verb] = &[
                 [--between 13:00-17:00] [--starts '2026-10-06 13:00'] [--ends 2026-10-31] [--max-runs N]\n            \
                 [--match path=glob]...\n            \
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
-                [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--silent]\n             \
+                [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--notify-open URL] [--notify-id ID] [--silent]\n             \
                 | --attention MSG | --run CMD --project P)\n            \
                 [--cooldown 60s] [--enable]\n       \
                 triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \
@@ -694,7 +704,7 @@ mod tests {
         // method has to be placed deliberately.
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
-            "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report",
+            "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report", "notify.respond",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

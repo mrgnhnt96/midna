@@ -60,7 +60,8 @@ pub fn action_text(a: &Value) -> String {
         Some("notify") => {
             let body = a["body"].as_str().filter(|b| !b.is_empty()).map(|b| format!(" — \"{b}\"")).unwrap_or_default();
             let silent = if a["sound"].as_bool() == Some(false) { " (silent)" } else { "" };
-            format!("notify: \"{}\"{body}{silent}", s(a, "title"))
+            let open = a["open"].as_str().map(|u| format!(" → {u}")).unwrap_or_default();
+            format!("notify: \"{}\"{body}{silent}{open}", s(a, "title"))
         }
         _ => a.to_string(),
     }
@@ -358,10 +359,16 @@ fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result
         if let Some(k) = a.get("notify-kind") {
             action["category"] = json!(k);
         }
+        if let Some(u) = a.get("notify-open") {
+            action["open"] = json!(u);
+        }
+        if let Some(i) = a.get("notify-id") {
+            action["id"] = json!(i);
+        }
         return Ok(Some(action));
     }
-    if a.has("notify-body") || a.has("notify-kind") || a.has("silent") {
-        return Err(Fail::Usage("--notify-body, --notify-kind and --silent go with --notify TITLE".into()));
+    if ["notify-body", "notify-kind", "notify-open", "notify-id", "silent"].iter().any(|f| a.has(f)) {
+        return Err(Fail::Usage("--notify-body, --notify-kind, --notify-open, --notify-id and --silent go with --notify TITLE".into()));
     }
     Ok(None)
 }
@@ -473,7 +480,7 @@ fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
 const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
     "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter",
-    "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "silent",
+    "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
 ];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).

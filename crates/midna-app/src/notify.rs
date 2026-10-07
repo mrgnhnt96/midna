@@ -21,24 +21,80 @@
 //!
 //! Images: `UNNotificationAttachment` moves the file it's given into its own store, so each
 //! notification attaches a fresh copy of the imported image.
+//!
+//! `notify.send` extras (`Posted::id`, `open`, `actions`): the request identifier is `id:<id>`,
+//! so a later one with the same id replaces it and `withdraw` finds it; the id and URL ride in
+//! `userInfo`; buttons come from a `UNNotificationCategory` registered for that set of labels
+//! (with a custom dismiss action, so a dismissal is reported too). A click, button or dismissal
+//! comes back as `Clicked::response`, which the app reports with `notify.respond`.
 use block2::{DynBlock, RcBlock};
-use midna_proto::notify::Posted;
+use midna_proto::notify::{Posted, Response, ResponseKind};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, define_class, msg_send};
 use objc2_app_kit::NSSound;
-use objc2_foundation::{NSArray, NSBundle, NSError, NSString, NSURL, NSUserDefaults};
+use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSSet, NSString, NSURL, NSUserDefaults};
 use objc2_user_notifications::*;
 use std::ptr::NonNull;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// A notification was clicked: select this terminal (empty = none), and show this needs-you
-/// item if it was about one.
+/// item if it was about one. A `notify.send` one may open a URL instead, and reports what the
+/// human did (`response`) under its `id`.
 pub struct Clicked {
     pub session: String,
     pub needs_you: Option<String>,
+    pub id: Option<String>,
+    pub open: Option<String>,
+    /// None for midna's own notifications (nothing to report).
+    pub response: Option<Response>,
 }
+
+/// What a click on a notification does, wherever it shows (banner, in-app card, badge,
+/// Notifications screen): open its URL, else select its terminal (`reveal`). Then report it.
+pub fn on_click(backend: &std::sync::Arc<dyn crate::backend::Backend>, c: Clicked, reveal: impl FnOnce(String, Option<String>)) {
+    let opens = c.open.is_some() && c.response.as_ref().is_none_or(|r| r.kind == ResponseKind::Clicked);
+    match &c.open {
+        Some(url) if opens => open_url(url),
+        _ if c.response.as_ref().is_none_or(|r| r.kind == ResponseKind::Clicked) => reveal(c.session, c.needs_you),
+        _ => {}
+    }
+    if let (Some(id), Some(r)) = (c.id, c.response) {
+        respond(backend, &id, r);
+    }
+}
+
+/// Tell midnad what the human did with notification `id` (`notify.respond`), off the main thread.
+pub fn respond(backend: &std::sync::Arc<dyn crate::backend::Backend>, id: &str, r: Response) {
+    let (b, params) = (backend.clone(), serde_json::json!({ "id": id, "response": r }));
+    std::thread::spawn(move || {
+        if let Err(e) = b.call("notify.respond", params) {
+            eprintln!("notify.respond: {e}");
+        }
+    });
+}
+
+/// Open a notification's URL with whatever handles it (the browser, Finder, another app).
+pub fn open_url(url: &str) {
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("/usr/bin/open").arg(&url).stdin(std::process::Stdio::null()).output();
+    });
+}
+
+/// The request identifier for a `notify.send` id (so the same id replaces it).
+fn request_id(id: &str) -> String {
+    format!("id:{id}")
+}
+
+/// Button `label`'s action identifier.
+const ACTION_PREFIX: &str = "action:";
+/// The `userInfo` key holding `{id, open}` as JSON.
+const INFO_KEY: &str = "midna";
+/// Categories registered for sets of buttons, oldest first (at most CATEGORIES_MAX).
+static CATEGORIES: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
+const CATEGORIES_MAX: usize = 64;
 
 static CLICKS: OnceLock<async_channel::Sender<Clicked>> = OnceLock::new();
 /// `UNAuthorizationStatus` as last seen (-1 = not checked yet).
@@ -143,8 +199,18 @@ pub fn post(p: &Posted, session: Option<&str>) {
     if let Some(n) = p.needs_you_id.as_deref() {
         content.setTargetContentIdentifier(Some(&NSString::from_str(n)));
     }
+    if let Some(sent) = p.id.as_deref() {
+        let info = serde_json::json!({ "id": sent, "open": p.open }).to_string();
+        let dict = NSDictionary::from_slices::<NSString>(&[&*NSString::from_str(INFO_KEY)], &[&*NSString::from_str(&info)]);
+        // SAFETY: an NSDictionary of NSStrings is an NSDictionary of objects.
+        unsafe { content.setUserInfo(&Retained::cast_unchecked::<NSDictionary>(dict)) };
+        content.setCategoryIdentifier(&NSString::from_str(&category_for(&p.actions)));
+    }
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let id = format!("{}-{}-{}", session.unwrap_or("midna"), midna_proto::time::now_unix(), N.fetch_add(1, Ordering::Relaxed));
+    let id = match p.id.as_deref() {
+        Some(sent) => request_id(sent),
+        None => format!("{}-{}-{}", session.unwrap_or("midna"), midna_proto::time::now_unix(), N.fetch_add(1, Ordering::Relaxed)),
+    };
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(&id), &content, None);
     // Asking again once decided returns at once without a prompt.
     let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge;
@@ -160,6 +226,51 @@ pub fn post(p: &Posted, session: Option<&str>) {
     if named.is_none() && STATUS.load(Ordering::Relaxed) != 1 && SOUNDS.load(Ordering::Relaxed) != 1 {
         play_posted(p);
     }
+}
+
+/// The category for a set of buttons (none: only the custom dismiss action), registered with
+/// the center the first time it's used.
+fn category_for(actions: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    actions.hash(&mut h);
+    let key = format!("midna.respond.{:016x}", h.finish());
+    let mut cats = CATEGORIES.lock().unwrap_or_else(|e| e.into_inner());
+    if cats.iter().any(|(k, _)| *k == key) {
+        return key;
+    }
+    if cats.len() >= CATEGORIES_MAX {
+        cats.remove(0);
+    }
+    cats.push((key.clone(), actions.to_vec()));
+    let all: Vec<Retained<UNNotificationCategory>> = cats
+        .iter()
+        .map(|(k, labels)| {
+            let buttons: Vec<Retained<UNNotificationAction>> = labels
+                .iter()
+                .map(|l| UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(&format!("{ACTION_PREFIX}{l}")), &NSString::from_str(l), UNNotificationActionOptions::empty()))
+                .collect();
+            UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+                &NSString::from_str(k),
+                &NSArray::from_retained_slice(&buttons),
+                &NSArray::new(),
+                UNNotificationCategoryOptions::CustomDismissAction,
+            )
+        })
+        .collect();
+    UNUserNotificationCenter::currentNotificationCenter().setNotificationCategories(&NSSet::from_retained_slice(&all));
+    key
+}
+
+/// Take a `notify.send` notification out of Notification Center (`notify.withdraw`).
+pub fn withdraw(id: &str) {
+    if !native() {
+        return;
+    }
+    let ids = NSArray::from_retained_slice(&[NSString::from_str(&request_id(id))]);
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    center.removeDeliveredNotificationsWithIdentifiers(&ids);
+    center.removePendingNotificationRequestsWithIdentifiers(&ids);
 }
 
 /// Take every midna notification out of Notification Center (`notify.clear`, ⌘K).
@@ -273,8 +384,21 @@ define_class!(
             let content = response.notification().request().content();
             let session = content.threadIdentifier().to_string();
             let needs_you = content.targetContentIdentifier().map(|n| n.to_string()).filter(|n| !n.is_empty());
+            let info = content.userInfo().objectForKey(&NSString::from_str(INFO_KEY)).and_then(|o| o.downcast::<NSString>().ok());
+            let info: serde_json::Value = info.and_then(|s| serde_json::from_str(&s.to_string()).ok()).unwrap_or_default();
+            let id = info["id"].as_str().map(str::to_string);
+            let open = info["open"].as_str().map(str::to_string);
+            let action = response.actionIdentifier().to_string();
+            let response = if action == unsafe { UNNotificationDismissActionIdentifier }.to_string() {
+                Response { kind: ResponseKind::Dismissed, action: None }
+            } else if let Some(label) = action.strip_prefix(ACTION_PREFIX) {
+                Response { kind: ResponseKind::Action, action: Some(label.to_string()) }
+            } else {
+                Response { kind: ResponseKind::Clicked, action: None }
+            };
             if let Some(tx) = CLICKS.get() {
-                let _ = tx.try_send(Clicked { session, needs_you });
+                let response = id.is_some().then_some(response);
+                let _ = tx.try_send(Clicked { session, needs_you, id, open, response });
             }
             done.call(());
         }

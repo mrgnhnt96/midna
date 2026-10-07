@@ -107,11 +107,14 @@ fn main() {
         // A clicked notification shows its terminal, in whichever window has it (notify.rs).
         let (ntx, nrx) = async_channel::unbounded::<notify::Clicked>();
         notify::start(ntx);
+        let b = backend.clone();
         cx.spawn(async move |cx| {
             while let Ok(c) = nrx.recv().await {
                 cx.update(|cx| {
-                    cx.activate(true);
-                    windows::reveal_need(c.session, c.needs_you, cx);
+                    notify::on_click(&b, c, |session, needs_you| {
+                        cx.activate(true);
+                        windows::reveal_need(session, needs_you, cx);
+                    });
                 });
             }
         })

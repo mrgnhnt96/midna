@@ -122,7 +122,7 @@ fn agents_send_with_dedupe_and_a_rate_limit() {
     let sid = open_sh(&mut h);
     let mut a = d.agent(Some(&sid));
     let r = call(&mut a, "notify.send", json!({ "title": "Build is green", "body": "main @ 3f2a" }));
-    assert_eq!(r, json!({ "posted": true }));
+    assert_eq!(r["posted"], true, "{r}");
     assert_eq!(call(&mut a, "notify.send", json!({ "title": "Build is green", "body": "main @ 3f2a" }))["reason"], "duplicate");
     for i in 0..5 {
         assert_eq!(call(&mut a, "notify.send", json!({ "title": format!("step {i}") }))["posted"], true);
@@ -211,7 +211,7 @@ fn imported_sounds_and_images() {
     // A test shows a kind's style even while that kind is off.
     call(&mut h, "settings.set", json!({ "key": "notify.approval", "value": false }));
     let r = call(&mut h, "notify.test", json!({ "category": "approval" }));
-    assert_eq!(r, json!({ "posted": true }));
+    assert_eq!(r["posted"], true, "{r}");
     call(&mut h, "notify.test", json!({ "category": "failed" }));
     let p = wait_posted(&mut h, 2);
     let (t, f) = (&p[0]["data"], &p[1]["data"]);
@@ -392,7 +392,7 @@ fn kinds_you_add_get_their_own_settings_and_can_be_sent_to() {
     assert!(listed["categories"].as_array().unwrap().iter().any(|c| c["key"] == "deploys" && c["custom"] == true), "{listed}");
 
     // Agents send to it by name; unknown kinds are refused.
-    assert_eq!(call(&mut a, "notify.send", json!({ "title": "staging is up", "category": "deploys" })), json!({ "posted": true }));
+    assert_eq!(call(&mut a, "notify.send", json!({ "title": "staging is up", "category": "deploys" }))["posted"], true);
     let n = &wait_posted(&mut h, 1)[0]["data"];
     assert_eq!((n["category"].as_str(), n["label"].as_str(), n["color"].as_str(), n["stay_secs"].as_u64()), (Some("deploys"), Some("Ships"), Some("ok"), Some(0)), "{n}");
     assert_eq!(call_err(&mut a, "notify.send", json!({ "title": "x", "category": "nope" })).code, -32602);
@@ -419,4 +419,84 @@ fn kinds_you_add_get_their_own_settings_and_can_be_sent_to() {
     // Added again, it starts from the defaults.
     call(&mut h, "notify.kinds.add", json!({ "key": "deploys" }));
     assert_eq!(call(&mut h, "settings.get", json!({ "key": "notify.deploys" }))["value"], true);
+}
+
+/// Issues #3, #5, #6: a URL to open, buttons that report back, and an id to replace or
+/// withdraw a notification, from a sender outside any terminal.
+#[test]
+fn send_with_open_url_actions_and_id() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let mut a = d.agent(None);
+    let p = json!({ "title": "PR 16483 needs your OK", "open": "http://morgan.harman/reviews/#v=needs", "id": "pr-16483", "actions": ["Snooze 15 min", "Snooze 1 hour"] });
+    let r = call(&mut a, "notify.send", p.clone());
+    assert_eq!((r["posted"].as_bool(), r["id"].as_str()), (Some(true), Some("pr-16483")), "{r}");
+    let n = &wait_posted(&mut h, 1)[0]["data"];
+    assert_eq!((n["open"].as_str(), n["id"].as_str()), (Some("http://morgan.harman/reviews/#v=needs"), Some("pr-16483")), "{n}");
+    assert_eq!(n["actions"], json!(["Snooze 15 min", "Snooze 1 hour"]));
+
+    // Bad ids, URLs and buttons are refused up front.
+    for (k, v) in [("id", json!("has space")), ("open", json!("morgan.harman/reviews")), ("actions", json!(["a", "b", "c", "d", "e"])), ("actions", json!(["x", "x"]))] {
+        let mut bad = json!({ "title": "t" });
+        bad[k] = v;
+        assert!(call_err(&mut a, "notify.send", bad).message.contains(k.trim_end_matches('s')), "{k}");
+    }
+
+    // No response yet; an agent can't answer for the human.
+    assert_eq!(call(&mut a, "notify.response", json!({ "id": "pr-16483" }))["response"], Value::Null);
+    let err = call_err(&mut a, "notify.respond", json!({ "id": "pr-16483", "response": { "kind": "clicked" } }));
+    assert!(!err.message.is_empty());
+
+    // The app reports a button; a waiting sender gets it; it's an event triggers can use.
+    let waiter = {
+        let mut a = d.agent(None);
+        std::thread::spawn(move || call(&mut a, "notify.response", json!({ "id": "pr-16483", "wait_secs": 10 })))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let err = call_err(&mut h, "notify.respond", json!({ "id": "pr-16483", "response": { "kind": "action", "action": "Snooze 2 days" } }));
+    assert!(err.message.contains("no button"), "{}", err.message);
+    call(&mut h, "notify.respond", json!({ "id": "pr-16483", "response": { "kind": "action", "action": "Snooze 1 hour" } }));
+    let got = waiter.join().unwrap();
+    assert_eq!(got["response"], json!({ "kind": "action", "action": "Snooze 1 hour" }), "{got}");
+    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.responded"] } }));
+    assert_eq!((ev[0]["data"]["id"].as_str(), ev[0]["data"]["action"].as_str()), (Some("pr-16483"), Some("Snooze 1 hour")), "{ev}");
+
+    // `wait_secs` on send itself: nothing answers, so it comes back without a response.
+    let r = call(&mut a, "notify.send", json!({ "title": "Board alert", "id": "alert", "actions": ["Snooze 15 min"], "wait_secs": 1 }));
+    assert_eq!((r["posted"].as_bool(), r.get("response")), (Some(true), None), "{r}");
+
+    // Same id again: replaces it. History keeps only the newest; withdrawing it stops it counting.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    call(&mut a, "notify.send", json!({ "title": "Board alert", "body": "still firing", "id": "alert" }));
+    wait_posted(&mut h, 3);
+    let hist = call(&mut h, "notify.history", json!({}));
+    let alerts: Vec<&Value> = hist["items"].as_array().unwrap().iter().filter(|i| i["notification"]["id"] == "alert").collect();
+    assert_eq!(alerts.len(), 1, "{hist}");
+    assert_eq!(alerts[0]["notification"]["body"].as_str().map(|b| b.contains("still firing")), Some(true));
+    let w = call(&mut a, "notify.withdraw", json!({ "id": "alert" }));
+    assert_eq!(w["id"], "alert");
+    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.withdrawn"] } }));
+    assert_eq!(ev[0]["data"]["id"], "alert");
+    let hist = call(&mut h, "notify.history", json!({}));
+    let alert = hist["items"].as_array().unwrap().iter().find(|i| i["notification"]["id"] == "alert").unwrap();
+    assert_eq!((alert["withdrawn"].as_bool(), alert["unread"].as_bool()), (Some(true), Some(false)), "{alert}");
+}
+
+#[test]
+fn trigger_notify_carries_open_and_id() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let t = json!({
+        "name": "done", "source": "local", "event": "hook.Stop", "enabled": true,
+        "action": { "kind": "notify", "title": "Done", "open": "https://example.com/{{session.name}}", "id": "done-{{session.name}}" },
+    });
+    call(&mut h, "trigger.add", t);
+    hook(&mut a, "Stop", json!({ "session_id": "c1", "last_assistant_message": "ok" }));
+    let p = wait_for(5, "trigger notification", || posted(&mut h).into_iter().find(|e| e["data"]["category"] == "from_trigger"));
+    let n = &p["data"];
+    assert_eq!((n["id"].as_str(), n["open"].as_str()), (Some("done-sh"), Some("https://example.com/sh")), "{n}");
+    let bad = json!({ "name": "x", "source": "local", "event": "hook.Stop", "action": { "kind": "notify", "title": "t", "open": "not a url" } });
+    assert!(call_err(&mut h, "trigger.add", bad).message.contains("isn't a URL"));
 }

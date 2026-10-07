@@ -14,13 +14,15 @@
 //! clicking a row slides the list back into the pile with that one on top, open. It goes when its needs-you item is answered or you open its terminal.
 //! Going any way but running out its time (opened, answered, Go, ✕), the top card fades and sinks
 //! away as it last looked, over whichever card is now on top.
+//! A `notify.send` card may open a URL instead (Open), show its buttons, be replaced by a later
+//! one with the same id, or be withdrawn; what you do with it is reported (`notify.respond`).
 //! Not in front: the floating badge (`ui/badge.rs`) or macOS banners (`app.rs` `on_notification`).
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use midna_proto::notify::Posted;
+use midna_proto::notify::{Posted, Response, ResponseKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -136,8 +138,11 @@ fn fade(x: f32) -> f32 {
 }
 
 /// How long a notification shows (`notify.stay.<kind>`, 0 = until handled or dismissed; a
-/// daemon from before it: `STAY`).
+/// daemon from before it: `STAY`). One with buttons stays until handled.
 pub fn stay_of(p: &Posted) -> Option<Duration> {
+    if !p.actions.is_empty() {
+        return None;
+    }
     match p.stay_secs {
         Some(0) => None,
         Some(s) => Some(Duration::from_secs(s.into())),
@@ -148,7 +153,11 @@ pub fn stay_of(p: &Posted) -> Option<Duration> {
 /// Show `p` as a card (newest on top).
 pub fn push(m: &mut MainWindow, seq: u64, session: Option<String>, p: Posted, cx: &mut Context<MainWindow>) {
     let now = Instant::now();
-    m.cards.list.retain(|c| c.session != session || c.posted.category != p.category);
+    match p.id.as_deref() {
+        // A `notify.send` id replaces only its own card.
+        Some(id) => m.cards.list.retain(|c| c.posted.id.as_deref() != Some(id)),
+        None => m.cards.list.retain(|c| c.session != session || c.posted.category != p.category),
+    }
     let stay = stay_of(&p);
     m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need: None, collapsed: false });
     m.cards.expanded = false;
@@ -173,6 +182,25 @@ fn top_need(m: &MainWindow) -> Option<String> {
 /// A card shows: ⌘J is its button (Go to terminal, Open, or Dismiss when it has neither).
 pub fn can_go(m: &MainWindow) -> bool {
     !m.cards.list.is_empty()
+}
+
+/// The top card's URL to open (`notify.send` `open`).
+fn top_open(m: &MainWindow) -> Option<String> {
+    m.cards.list.first().and_then(|c| c.posted.open.clone())
+}
+
+/// Report what you did with card `seq`, if it came from `notify.send`.
+fn respond(m: &MainWindow, seq: u64, kind: ResponseKind, action: Option<String>) {
+    if let Some(id) = m.cards.list.iter().find(|c| c.seq == seq).and_then(|c| c.posted.id.clone()) {
+        crate::notify::respond(&m.backend, &id, Response { kind, action });
+    }
+}
+
+/// Take away the card for `notify.send` id `id` (`notify.withdraw`).
+pub fn withdraw(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
+    while let Some(seq) = m.cards.list.iter().find(|c| c.posted.id.as_deref() == Some(id)).map(|c| c.seq) {
+        dismiss(m, seq, cx);
+    }
 }
 
 pub fn dismiss_top(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -318,9 +346,15 @@ fn toggle_collapsed(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 /// neither (sent from outside a terminal, or its terminal closed), it only drops it: otherwise a
 /// kind that stays until handled could never go but by its ✕.
 pub fn go(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let need = top_need(m);
-    let sid = top_session(m);
+    let (url, need, sid) = (top_open(m), top_need(m), top_session(m));
+    if let Some(seq) = m.cards.list.first().map(|c| c.seq) {
+        let goes = url.is_some() || need.is_some() || sid.is_some();
+        respond(m, seq, if goes { ResponseKind::Clicked } else { ResponseKind::Dismissed }, None);
+    }
     dismiss_top(m, cx);
+    if let Some(url) = url {
+        return crate::notify::open_url(&url);
+    }
     if let Some(id) = need {
         return super::needs_you::show(m, id, window, cx);
     }
@@ -412,7 +446,7 @@ fn look(m: &MainWindow, c: &Card, last: bool) -> Look {
     let (headline, detail, command) = texts(c, need);
     let approval = need.filter(|n| n.approval.is_some()).map(|n| n.id.clone());
     let go_label = match () {
-        _ if top_need(m).is_some() => "Open",
+        _ if top_open(m).is_some() || top_need(m).is_some() => "Open",
         _ if top_session(m).is_none() => "Dismiss",
         _ if c.posted.category == "approval" && approval.is_none() => "Answer in the terminal",
         _ => "Go to terminal",
@@ -474,6 +508,7 @@ fn head(m: &MainWindow, t: &Theme, c: &Card, meta: Meta, count: Option<usize>, c
                 .child("✕")
                 .on_click(cx.listener(move |m, _, _, cx| {
                     cx.stop_propagation();
+                    respond(m, seq, ResponseKind::Dismissed, None);
                     dismiss(m, seq, cx);
                 })),
         );
@@ -723,6 +758,20 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
             .child(div().opacity(0.75).text_size(px(11.)).font_family(t.mono_font.clone()).child(go_key))
             .when(live, |d| d.on_click(cx.listener(|m, _, w, cx| go(m, w, cx)))),
     );
+    // A `notify.send` card's own buttons, a row of their own (they report back, then it goes).
+    let actions = (!c.posted.actions.is_empty()).then(|| {
+        let mut row = div().flex().flex_none().flex_wrap().gap(px(8.)).px(px(14.)).pt(px(12.));
+        for (i, label) in c.posted.actions.iter().enumerate() {
+            let (picked, seq) = (label.clone(), c.seq);
+            row = row.child(super::screen_kit::btn(t, ("toast-action", i), label.clone()).h(px(34.)).when(live, |b| {
+                b.on_click(cx.listener(move |m, _, _, cx| {
+                    respond(m, seq, ResponseKind::Action, Some(picked.clone()));
+                    dismiss(m, seq, cx);
+                }))
+            }));
+        }
+        row
+    });
     if let Some(id) = need {
         let (a, d) = (id.clone(), id);
         buttons = buttons
@@ -853,6 +902,7 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
                 .children(text)
                 .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q, c.session.clone().filter(|_| live), cx))),
         )
+        .children(actions)
         .child(buttons)
         .when(more > 0, |d| {
             d.child(

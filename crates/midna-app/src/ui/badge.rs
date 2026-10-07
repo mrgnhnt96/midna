@@ -27,6 +27,8 @@
 //! `REMIND` while anything waits. Leaving midna, it springs back to its corner. ⌘J goes to the
 //! newest capsule's terminal while one shows (`newest`, `go_newest`). While the screen is
 //! shared (`notify.badge.sharing`), it hides, or shows only its number, or carries on.
+//! A `notify.send` notification (`Sent`) replaces the one with its id, may open a URL instead of
+//! a terminal and have buttons on its card, and reports what you did with it (`notify.respond`).
 //!
 //! The window is a borderless non-activating panel (GPUI `PopUp`: every Space, over full-screen
 //! apps) that never takes focus, so clicking it leaves the app you're in in front. It's a fixed
@@ -278,11 +280,26 @@ fn prevent_activation(ns: &objc2_app_kit::NSWindow, on: bool) {
     }
 }
 
+/// A `notify.send` notification's id, URL and buttons.
+#[derive(Clone)]
+struct Sent {
+    id: String,
+    open: Option<String>,
+    actions: Vec<String>,
+}
+
+impl Sent {
+    fn of(p: &Posted) -> Option<Sent> {
+        Some(Sent { id: p.id.clone()?, open: p.open.clone(), actions: p.actions.clone() })
+    }
+}
+
 /// Something waiting on you: a needs-you item, or a notification of a kind that stays.
 #[derive(Clone)]
 struct Waiting {
     /// The needs-you id, or `n<seq>` for a notification.
     id: String,
+    sent: Option<Sent>,
     need: Option<String>,
     session: Option<String>,
     category: String,
@@ -313,6 +330,7 @@ struct Line {
     waiting: Option<String>,
     session: Option<String>,
     need: Option<String>,
+    sent: Option<Sent>,
     category: String,
     name: String,
     text: String,
@@ -551,6 +569,12 @@ pub fn push(m: &crate::app::MainWindow, seq: u64, session: Option<String>, p: Po
     let _ = h.update(cx, |b, _, cx| b.add(seq, session, p, name, need, cx));
 }
 
+/// `notify.withdraw`: take notification `id` off the badge.
+pub fn withdraw(id: &str, cx: &mut App) {
+    let Some(h) = handle(cx) else { return };
+    let _ = h.update(cx, |b, _, cx| b.withdraw(id, cx));
+}
+
 /// The home window's needs-you items and settings changed.
 pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
@@ -596,6 +620,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
             let detail = n.question.as_ref().map(|q| q.text.trim().to_string()).or_else(|| Some(n.detail.trim().to_string())).filter(|d| !d.is_empty() && Some(d) != command.as_ref());
             Waiting {
                 id: n.id.clone(),
+                sent: None,
                 need: Some(n.id.clone()),
                 session: n.session_id.clone(),
                 name: super::notifications::source(m, n.session_id.as_deref(), n.project_id.as_deref()),
@@ -901,6 +926,9 @@ impl Badge {
     /// Take something off the list (its ×): a held notification is dismissed; a needs-you item
     /// stays in midna, just not here.
     fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(sent) = self.held.iter().find(|w| w.id == id).and_then(|w| w.sent.clone()) {
+            self.respond(&sent, midna_proto::notify::ResponseKind::Dismissed, None);
+        }
         if self.held.iter().any(|w| w.id == id) {
             self.dismiss(id, cx);
         } else {
@@ -1151,6 +1179,7 @@ impl Badge {
                 self.pending.push((id.clone(), Instant::now()));
                 self.needs.push(Waiting {
                     id: id.clone(),
+                    sent: None,
                     need: Some(id.clone()),
                     session: session.clone(),
                     category: p.category.clone(),
@@ -1169,12 +1198,17 @@ impl Badge {
             }
             waiting = Some(id);
         } else if stay.is_none() {
-            // A kind that stays: counted until you dismiss it (one per terminal and kind).
-            self.held.retain(|w| !(w.session == session && w.category == p.category));
+            // A kind that stays: counted until you dismiss it (one per terminal and kind, or
+            // per `notify.send` id).
+            match p.id.as_deref() {
+                Some(sent) => self.held.retain(|w| w.sent.as_ref().is_none_or(|s| s.id != sent)),
+                None => self.held.retain(|w| !(w.session == session && w.category == p.category)),
+            }
             let mut lines = p.body.lines().map(str::trim).filter(|l| !l.is_empty());
             let id = format!("n{seq}");
             self.held.push(Waiting {
                 id: id.clone(),
+                sent: Sent::of(&p),
                 need: None,
                 session: session.clone(),
                 category: p.category.clone(),
@@ -1215,6 +1249,7 @@ impl Badge {
             waiting,
             session,
             need: p.needs_you_id.clone(),
+            sent: Sent::of(&p),
             category: p.category.clone(),
             name,
             text,
@@ -1225,6 +1260,28 @@ impl Badge {
             leaving: None,
         });
         self.recount(cx);
+    }
+
+    /// Take away `notify.send` notification `sent` (`notify.withdraw`).
+    fn withdraw(&mut self, sent: &str, cx: &mut Context<Self>) {
+        let is = |s: &Option<Sent>| s.as_ref().is_some_and(|s| s.id == sent);
+        self.held.retain(|w| !is(&w.sent));
+        let now = Instant::now();
+        for l in self.lines.iter_mut().filter(|l| is(&l.sent)) {
+            l.leaving.get_or_insert(now);
+        }
+        self.recount(cx);
+    }
+
+    /// Report what you did with a `notify.send` notification.
+    fn respond(&self, sent: &Sent, kind: midna_proto::notify::ResponseKind, action: Option<String>) {
+        crate::notify::respond(&self.backend, &sent.id, midna_proto::notify::Response { kind, action });
+    }
+
+    /// One of a `notify.send` notification's buttons: report it, and it's handled.
+    fn pick(&mut self, id: &str, sent: &Sent, action: String, cx: &mut Context<Self>) {
+        self.respond(sent, midna_proto::notify::ResponseKind::Action, Some(action));
+        self.dismiss(id, cx);
     }
 
     /// Drop a held notification (the stack's Dismiss).
@@ -1262,14 +1319,22 @@ impl Badge {
         .detach();
     }
 
-    /// Bring midna forward on the item's terminal (as a clicked notification does).
-    fn open(&mut self, session: Option<String>, need: Option<String>, held: Option<String>, cx: &mut Context<Self>) {
+    /// Bring midna forward on the item's terminal (as a clicked notification does), or open a
+    /// `notify.send` notification's URL.
+    fn open(&mut self, session: Option<String>, need: Option<String>, held: Option<String>, sent: Option<Sent>, cx: &mut Context<Self>) {
         self.close_list();
         self.menu = false;
         // What you clicked is seen: its capsule doesn't come back when the badge does.
         self.lines.clear();
         if let Some(id) = held {
             self.dismiss(&id, cx);
+        }
+        if let Some(sent) = &sent {
+            self.respond(sent, midna_proto::notify::ResponseKind::Clicked, None);
+            if let Some(url) = &sent.open {
+                crate::notify::open_url(url);
+                return cx.notify();
+            }
         }
         self.bring_forward(cx);
         match session {
@@ -1902,7 +1967,7 @@ impl Badge {
         let extra = l.burst;
         let hover = self.hover == Some("line");
         let need = l.need.clone().filter(|id| self.needs.iter().any(|w| w.id == *id && w.approval));
-        let (session, need_id, waiting) = (l.session.clone(), l.need.clone(), l.waiting.clone());
+        let (session, need_id, waiting, sent) = (l.session.clone(), l.need.clone(), l.waiting.clone(), l.sent.clone());
         let held = waiting.filter(|w| self.held.iter().any(|h| h.id == *w));
         let mut row = div()
             .id(SharedString::from(format!("line-{}", l.serial)))
@@ -1924,7 +1989,7 @@ impl Badge {
             .text_size(px(13.))
             .whitespace_nowrap()
             .cursor_pointer()
-            .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need_id.clone(), held.clone(), cx)));
+            .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), cx)));
         // A passing kind's tint clears from left to right over its time. Not while it slides
         // away (its animation would start over, full width), and rounded like the capsule (GPUI
         // doesn't clip a child to its parent's corners).
@@ -2162,7 +2227,7 @@ impl Badge {
                 .child(div().min_w_0().truncate().text_color(t.dim).child(w.title.clone())),
         );
         if out {
-            let (session, need) = (w.session.clone(), w.need.clone());
+            let (session, need, sent) = (w.session.clone(), w.need.clone(), w.sent.clone());
             let held = w.need.is_none().then(|| w.id.clone());
             row = row.child(
                 div()
@@ -2182,7 +2247,7 @@ impl Badge {
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
-                        b.open(session.clone(), need.clone(), held.clone(), cx);
+                        b.open(session.clone(), need.clone(), held.clone(), sent.clone(), cx);
                     })),
             );
         }
@@ -2231,18 +2296,30 @@ impl Badge {
             buttons = buttons
                 .child(button(t, "card-approve", "Approve", true).flex_1().on_click(cx.listener(move |b, _, _, cx| b.approve(a.clone(), false, cx))))
                 .child(button(t, "card-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| b.approve(d.clone(), true, cx))));
+        } else if let Some(sent) = w.sent.clone().filter(|s| !s.actions.is_empty()) {
+            // A `notify.send` notification's own buttons.
+            for (i, label) in sent.actions.iter().enumerate() {
+                let (id, sent, label) = (w.id.clone(), sent.clone(), label.clone());
+                let first = i == 0;
+                buttons = buttons.child(button(t, ("card-action", i), &label, first).on_click(cx.listener(move |b, _, _, cx| b.pick(&id, &sent, label.clone(), cx))));
+            }
+            buttons = buttons.child(div().flex_1());
         } else {
             let id = w.id.clone();
             buttons = buttons.child(button(t, "card-dismiss", "Dismiss", false).on_click(cx.listener(move |b, _, _, cx| b.forget(&id, cx)))).child(div().flex_1());
         }
-        let (session, need) = (w.session.clone(), w.need.clone());
+        let (session, need, sent) = (w.session.clone(), w.need.clone(), w.sent.clone());
         let held = w.need.is_none().then(|| w.id.clone());
-        buttons = buttons.child(
-            button(t, "card-open", "Terminal", false)
-                .gap(px(6.))
-                .child(Icon::Arrow.el(12., t.fg))
-                .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need.clone(), held.clone(), cx))),
-        );
+        let opens = sent.as_ref().is_some_and(|s| s.open.is_some());
+        // Somewhere to go: its URL, its terminal, or its needs-you card.
+        if opens || session.is_some() || need.is_some() {
+            buttons = buttons.child(
+                button(t, "card-open", if opens { "Open" } else { "Terminal" }, false)
+                    .gap(px(6.))
+                    .child(Icon::Arrow.el(12., t.fg))
+                    .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need.clone(), held.clone(), sent.clone(), cx))),
+            );
+        }
         let content = div()
             .relative()
             .flex_none()
@@ -2315,7 +2392,7 @@ impl Badge {
                 .relative()
                 .text_size(px(13.))
                 .child(measure(self.zones.panel.clone()))
-                .child(item("menu-open", "Open midna").on_click(cx.listener(|b, _, _, cx| b.open(None, None, None, cx))))
+                .child(item("menu-open", "Open midna").on_click(cx.listener(|b, _, _, cx| b.open(None, None, None, None, cx))))
                 .child(item("menu-settings", "Notification settings…").on_click(cx.listener(|b, _, _, cx| {
                     b.menu = false;
                     b.bring_forward(cx);

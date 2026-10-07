@@ -5,6 +5,7 @@ use crate::daemon::Daemon;
 use midna_proto::notify::{self, CATEGORIES, is_override_key, setting_key};
 use midna_proto::*;
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 
 /// The terminal a call is about: `session`, else the caller's own; None with `global`.
 fn target(d: &Daemon, ctx: &Ctx, sid: Option<Id>, global: bool) -> Result<Option<Id>, RpcError> {
@@ -111,8 +112,64 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: NotifySendParams) -> R {
             return Err(RpcError::bad_params(format!("no kind `{k}` to send as; kinds you can send to: agent, {known}")));
         }
     };
+    let extras = extras(p.id, p.open, p.actions)?;
     let sid = target(d, ctx, p.session, false)?;
-    ok(crate::notify::send_as(d, &category, sid, &p.title, &p.body, p.sound, !ctx.is_human()))
+    let mut r = crate::notify::send_as(d, &category, sid, &p.title, &p.body, p.sound, !ctx.is_human(), extras);
+    if let (true, Some(secs), Some(id)) = (r.posted, p.wait_secs, r.id.as_deref()) {
+        r.response = crate::notify::wait_response(d, id, secs);
+    }
+    ok(r)
+}
+
+/// Check `notify.send`'s id, URL and buttons.
+pub fn extras(id: Option<String>, open: Option<String>, actions: Vec<String>) -> Result<crate::notify::Extras, RpcError> {
+    let id = id.map(|i| i.trim().to_string()).filter(|i| !i.is_empty());
+    if let Some(i) = id.as_deref().filter(|i| !notify::valid_id(i)) {
+        return Err(RpcError::bad_params(format!("`{i}` isn't a notification id: 1–64 of A-Z a-z 0-9 . _ : -")));
+    }
+    let open = open.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    if let Some(u) = open.as_deref().filter(|u| !notify::valid_open_url(u)) {
+        return Err(RpcError::bad_params(format!("`{u}` isn't a URL to open: give one with a scheme (https://…, file://…)")));
+    }
+    let actions: Vec<String> = actions.iter().map(|a| a.trim().to_string()).collect();
+    if actions.len() > notify::MAX_ACTIONS {
+        return Err(RpcError::bad_params(format!("at most {} actions", notify::MAX_ACTIONS)));
+    }
+    if let Some(a) = actions.iter().find(|a| a.is_empty() || a.chars().count() > notify::ACTION_MAX) {
+        return Err(RpcError::bad_params(format!("action {a:?} must be 1–{} characters", notify::ACTION_MAX)));
+    }
+    if let Some(a) = actions.iter().enumerate().find(|(i, a)| actions[..*i].contains(a)).map(|(_, a)| a) {
+        return Err(RpcError::bad_params(format!("action {a:?} is listed twice")));
+    }
+    Ok(crate::notify::Extras { id, open, actions })
+}
+
+/// Ask the app to take a `notify.send` notification away, wherever it shows.
+pub fn withdraw(d: &Daemon, ctx: &Ctx, p: NotifyWithdrawParams) -> R {
+    let id = p.id.trim();
+    if !notify::valid_id(id) {
+        return Err(RpcError::bad_params(format!("`{id}` isn't a notification id")));
+    }
+    let sent = crate::notify::sent(d, id);
+    let delivered = d.gui_connected();
+    let (project, session) = sent.map(|s| (s.project, s.session)).unwrap_or_default();
+    d.emit(kinds::NOTIFY_WITHDRAWN, ctx.actor(), project, session, json!({ "id": id }));
+    ok(NotifyWithdrawResult { id: id.into(), delivered })
+}
+
+/// What the human did with a `notify.send` notification, waiting up to `wait_secs` for it.
+pub fn response(d: &Daemon, p: NotifyResponseParams) -> R {
+    if crate::notify::sent(d, &p.id).is_none() {
+        return Err(RpcError::not_found(format!("no notification `{}` (unknown, or sent before midnad last restarted)", p.id)));
+    }
+    let response = crate::notify::wait_response(d, &p.id, p.wait_secs.unwrap_or(0));
+    ok(NotifyResponseResult { id: p.id, response })
+}
+
+/// The app reports a click, button or dismissal (human only: agents can't answer for the human).
+pub fn respond(d: &Daemon, p: NotifyRespondParams) -> R {
+    let s = crate::notify::respond(d, &p.id, p.response).map_err(RpcError::not_found)?;
+    ok(NotifyResponseResult { id: s.id, response: s.response })
 }
 
 /// At most this many kinds you added.
@@ -262,12 +319,26 @@ pub fn clear(d: &Daemon, ctx: &Ctx, p: NotifyClearParams) -> R {
     ok(NotifyClearResult { delivered, session: p.session })
 }
 
-/// Notifications posted after `since`, newest first (tests left out).
+/// Notifications posted after `since`, newest first (tests left out). A notification a later
+/// one with the same `id` replaced is left out too.
 fn posted_since(d: &Daemon, since: u64, limit: usize, session: Option<Id>) -> Vec<Event> {
     let filter = EventFilter { kinds: Some(vec![kinds::NOTIFY_POSTED.into()]), session_id: session, project_id: None };
     let mut v: Vec<Event> = d.log.list(since, limit, &filter).into_iter().filter(|e| e.data.get("test") != Some(&json!(true))).collect();
     v.reverse();
+    let mut ids = HashSet::new();
+    v.retain(|e| e.data["id"].as_str().is_none_or(|id| ids.insert(id.to_string())));
     v
+}
+
+/// When each notification id was last withdrawn (`notify.withdraw`): a post with that id
+/// before then is withdrawn.
+fn withdrawn(d: &Daemon) -> HashMap<String, u64> {
+    let filter = EventFilter { kinds: Some(vec![kinds::NOTIFY_WITHDRAWN.into()]), session_id: None, project_id: None };
+    d.log.list(0, 10_000, &filter).into_iter().filter_map(|e| Some((e.data["id"].as_str()?.to_string(), e.seq))).collect()
+}
+
+fn is_withdrawn(gone: &HashMap<String, u64>, e: &Event) -> bool {
+    e.data["id"].as_str().and_then(|id| gone.get(id)).is_some_and(|w| *w > e.seq)
 }
 
 /// The read marker, started at the log's end the first time it's needed.
@@ -287,18 +358,22 @@ fn read_seq(d: &Daemon) -> u64 {
 /// since removed doesn't).
 fn unread(d: &Daemon, read: u64) -> u32 {
     let posted = posted_since(d, read, 10_000, None);
+    let gone = withdrawn(d);
     let core = d.core();
-    posted.iter().filter(|e| core.state.setting_bool(&notify::bell_key(e.data["category"].as_str().unwrap_or("")))).count() as u32
+    let rings = |e: &&Event| core.state.setting_bool(&notify::bell_key(e.data["category"].as_str().unwrap_or("")));
+    posted.iter().filter(rings).filter(|e| !is_withdrawn(&gone, e)).count() as u32
 }
 
 pub fn history(d: &Daemon, p: NotifyHistoryParams) -> R {
     let read = read_seq(d);
     let limit = p.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let gone = withdrawn(d);
     let items = posted_since(d, 0, limit, p.session)
         .into_iter()
         .filter_map(|e| {
+            let withdrawn = is_withdrawn(&gone, &e);
             let notification = serde_json::from_value(e.data).ok()?;
-            Some(NotifyHistoryItem { seq: e.seq, at: e.at, session_id: e.session_id, project_id: e.project_id, unread: e.seq > read, notification })
+            Some(NotifyHistoryItem { seq: e.seq, at: e.at, session_id: e.session_id, project_id: e.project_id, unread: e.seq > read && !withdrawn, withdrawn, notification })
         })
         .collect();
     ok(NotifyHistoryResult { items, unread: unread(d, read), read_seq: read })

@@ -38,6 +38,33 @@ pub struct State {
     checks: HashMap<Id, (u64, ChecksState)>,
     /// Each agent terminal's running background task ids.
     background: HashMap<Id, HashSet<String>>,
+    /// `notify.send` notifications by id, oldest first (at most SENT_MAX): what clicks and
+    /// buttons are checked against and recorded on.
+    sent: VecDeque<Sent>,
+}
+
+/// A notification `notify.send` posted, and what the human did with it.
+#[derive(Clone, Debug)]
+pub struct Sent {
+    pub id: String,
+    pub category: String,
+    pub title: String,
+    pub session: Option<Id>,
+    pub project: Option<Id>,
+    pub actions: Vec<String>,
+    pub response: Option<notify::Response>,
+}
+
+/// How many `notify.send` notifications midnad remembers responses for.
+const SENT_MAX: usize = 500;
+
+/// What `notify.send` adds to a notification beyond its text.
+#[derive(Clone, Debug, Default)]
+pub struct Extras {
+    /// The caller's id (None: midna makes one up).
+    pub id: Option<String>,
+    pub open: Option<String>,
+    pub actions: Vec<String>,
 }
 
 /// Why a notification is not posted (None = post it).
@@ -84,6 +111,8 @@ struct Draft {
     key: Option<String>,
     /// `notify.test`: shown whatever the switches say, never deduped.
     test: bool,
+    /// `notify.send`'s id, URL and buttons.
+    extras: Extras,
 }
 
 impl Draft {
@@ -100,6 +129,7 @@ impl Draft {
             sound: None,
             key: None,
             test: false,
+            extras: Extras::default(),
         }
     }
 
@@ -266,40 +296,86 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
     }
 }
 
-/// Post an agent's own notification (`notify.send`).
-pub fn send(d: &Daemon, session: Option<Id>, title: &str, body: &str, sound: bool, from_agent: bool) -> NotifySendResult {
-    send_as(d, "agent", session, title, body, sound, from_agent)
-}
-
 /// A notification in `category` ("agent" for `notify.send`, "from_trigger" for a trigger's
-/// `notify` action). `rate_limit`: at most AGENT_PER_MINUTE a minute per terminal.
-pub fn send_as(d: &Daemon, category: &str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool) -> NotifySendResult {
+/// `notify` action). `rate_limit`: at most AGENT_PER_MINUTE a minute per terminal. Remembered
+/// by its id (`Sent`) so clicks and buttons can be reported back.
+pub fn send_as(d: &Daemon, category: &str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool, extras: Extras) -> NotifySendResult {
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
+    let id = extras.id.clone().unwrap_or_else(|| format!("n-{}", crate::state::hex_id(6)));
+    let not = |reason: &str| NotifySendResult { posted: false, reason: Some(reason.into()), id: Some(id.clone()), via: None, response: None };
     if rate_limit && let Some(sid) = &session {
         let prefix = format!("{category}:{sid}:");
         let st = d.notify();
         let minute = Instant::now().checked_sub(Duration::from_secs(60));
         let sent = st.recent.iter().filter(|(t, k)| k.starts_with(&prefix) && minute.is_none_or(|m| *t > m)).count();
         if sent >= AGENT_PER_MINUTE {
-            return NotifySendResult { posted: false, reason: Some("rate_limited".into()) };
+            return not("rate_limited");
         }
     }
     let text = if body.trim().is_empty() { title.trim().to_string() } else { format!("{}\n{}", title.trim(), body.trim()) };
     let draft = Draft {
         category: category.into(),
-        key: Some(format!("{category}:{}:{}", session.as_deref().unwrap_or(""), text)),
-        session,
-        project,
+        key: Some(format!("{category}:{}:{}:{}", session.as_deref().unwrap_or(""), extras.id.as_deref().unwrap_or(""), text)),
+        session: session.clone(),
+        project: project.clone(),
         body: text,
         event: String::new(),
         vars: json!({ "title": title.trim(), "body": body.trim() }),
         needs_you_id: None,
         sound: Some(sound),
         test: false,
+        extras: Extras { id: Some(id.clone()), ..extras },
     };
+    let actions = draft.extras.actions.clone();
     match post(d, draft) {
-        Ok(_) => NotifySendResult { posted: true, reason: None },
-        Err(r) => NotifySendResult { posted: false, reason: Some(r.into()) },
+        Ok(p) => {
+            let mut st = d.notify();
+            st.sent.retain(|s| s.id != id);
+            if st.sent.len() >= SENT_MAX {
+                st.sent.pop_front();
+            }
+            st.sent.push_back(Sent { id: id.clone(), category: category.into(), title: p.title, session, project, actions, response: None });
+            NotifySendResult { posted: true, reason: None, id: Some(id), via: Some(p.via), response: None }
+        }
+        Err(r) => not(r),
+    }
+}
+
+/// The `notify.send` notification `id`, while midnad remembers it.
+pub fn sent(d: &Daemon, id: &str) -> Option<Sent> {
+    d.notify().sent.iter().find(|s| s.id == id).cloned()
+}
+
+/// Record what the human did with notification `id` (the first response counts) and emit
+/// `notify.responded`. Err: no such notification, or a button it doesn't have.
+pub fn respond(d: &Daemon, id: &str, r: notify::Response) -> Result<Sent, String> {
+    let s = {
+        let mut st = d.notify();
+        let Some(s) = st.sent.iter_mut().find(|s| s.id == id) else { return Err(format!("no notification `{id}` (unknown, or sent before midnad last restarted)")) };
+        if r.kind == notify::ResponseKind::Action && !r.action.as_ref().is_some_and(|a| s.actions.contains(a)) {
+            return Err(format!("notification `{id}` has no button {:?}; it has {:?}", r.action.as_deref().unwrap_or(""), s.actions));
+        }
+        if s.response.is_some() {
+            return Ok(s.clone());
+        }
+        s.response = Some(r.clone());
+        s.clone()
+    };
+    let data = json!({ "id": s.id, "kind": r.kind, "action": r.action, "category": s.category, "title": s.title });
+    d.emit(kinds::NOTIFY_RESPONDED, Actor::human(), s.project.clone(), s.session.clone(), data);
+    Ok(s)
+}
+
+/// Wait up to `secs` for a response to notification `id` (None: none by then, or midnad
+/// forgot it).
+pub fn wait_response(d: &Daemon, id: &str, secs: u64) -> Option<notify::Response> {
+    let deadline = Instant::now() + Duration::from_secs(secs.min(600));
+    loop {
+        let r = d.notify().sent.iter().find(|s| s.id == id).and_then(|s| s.response.clone());
+        if r.is_some() || Instant::now() >= deadline {
+            return r;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -308,7 +384,7 @@ pub fn test(d: &Daemon, session: Option<Id>, category: &str) -> NotifySendResult
     let label = match (notify::category(category), d.core().state.notify_kind(category)) {
         (Some(c), _) => c.label.to_string(),
         (None, Some(k)) => k.label.clone(),
-        (None, None) => return NotifySendResult { posted: false, reason: Some("unknown_category".into()) },
+        (None, None) => return NotifySendResult { posted: false, reason: Some("unknown_category".into()), ..Default::default() },
     };
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
     let draft = Draft {
@@ -322,10 +398,11 @@ pub fn test(d: &Daemon, session: Option<Id>, category: &str) -> NotifySendResult
         sound: None,
         key: None,
         test: true,
+        extras: Extras::default(),
     };
     match post(d, draft) {
-        Ok(_) => NotifySendResult { posted: true, reason: None },
-        Err(r) => NotifySendResult { posted: false, reason: Some(r.into()) },
+        Ok(p) => NotifySendResult { posted: true, reason: None, id: None, via: Some(p.via), response: None },
+        Err(r) => NotifySendResult { posted: false, reason: Some(r.into()), id: None, via: None, response: None },
     }
 }
 
@@ -504,6 +581,9 @@ fn post(d: &Daemon, draft: Draft) -> Result<Posted, &'static str> {
         stay_secs: look.0,
         color: look.1,
         label: look.2,
+        id: draft.extras.id,
+        open: draft.extras.open,
+        actions: draft.extras.actions,
     };
     d.emit(kinds::NOTIFY_POSTED, Actor::system(), draft.project, draft.session, serde_json::to_value(&posted).unwrap_or_default());
     if via == "system" {

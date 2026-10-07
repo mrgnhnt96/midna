@@ -1025,6 +1025,16 @@ fn links(a: &Args, out: OutFn) -> Res {
     Ok(())
 }
 
+/// A notification's `response` as a line: the button's label, `clicked`, `dismissed`, or
+/// `no response`.
+fn response_line(r: &Value) -> String {
+    match (r["kind"].as_str(), r["action"].as_str()) {
+        (Some("action"), Some(a)) => a.to_string(),
+        (Some(k), _) => k.to_string(),
+        (None, _) => "no response".into(),
+    }
+}
+
 fn notify(a: &Args, out: OutFn) -> Res {
     let print_list = |v: &Value| {
         let scope = match v["session"].as_str() {
@@ -1083,14 +1093,33 @@ fn notify(a: &Args, out: OutFn) -> Res {
             out(&v, &print_list);
         }
         "send" => {
-            a.check(&["session", "detail", "sound", "kind"])?;
+            a.check(&["session", "detail", "sound", "kind", "id", "open", "action", "wait"])?;
             let title = a.need(2, "title")?;
-            let p = json!({ "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound"), "category": a.get("kind") });
+            let wait = a.get("wait").map(|w| crate::triggers::parse_duration(w, 1)).transpose().map_err(|e| Fail::Usage(format!("--wait: {e}")))?;
+            let p = json!({
+                "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound"), "category": a.get("kind"),
+                "id": a.get("id"), "open": a.get("open"), "actions": a.all("action"), "wait_secs": wait,
+            });
             let v = call("notify.send", p)?;
             out(&v, &|v| match v["reason"].as_str() {
-                None => println!("sent"),
+                None if wait.is_some() => println!("{}", response_line(&v["response"])),
+                None => println!("sent {}{}", s_(v, "id"), if v["via"] == "app" || v["via"].is_null() { String::new() } else { format!(" (via {})", s_(v, "via")) }),
                 Some(r) => println!("not sent: {r}"),
             });
+        }
+        "withdraw" => {
+            a.check(&[])?;
+            let v = call("notify.withdraw", json!({ "id": a.need(2, "a notification id (from notify send --id)")? }))?;
+            out(&v, &|v| match v["delivered"] == true {
+                true => println!("withdrew {}", s_(v, "id")),
+                false => println!("not withdrawn: the midna app isn't running"),
+            });
+        }
+        "response" => {
+            a.check(&["wait"])?;
+            let wait = a.get("wait").map(|w| crate::triggers::parse_duration(w, 1)).transpose().map_err(|e| Fail::Usage(format!("--wait: {e}")))?;
+            let v = call("notify.response", json!({ "id": a.need(2, "a notification id")?, "wait_secs": wait }))?;
+            out(&v, &|v| println!("{}", response_line(&v["response"])));
         }
         "kinds" | "kind" => {
             let print_kinds = |v: &Value| {

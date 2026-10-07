@@ -380,6 +380,54 @@ pub struct Posted {
     /// A kind you added: its label (built-in kinds are named by the app).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// `notify.send`'s id: a later one with the same id replaces this one, `notify.withdraw`
+    /// removes it, and the app reports clicks and buttons on it (`notify.respond`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A URL a click opens, instead of selecting the terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<String>,
+    /// Buttons to show; the human's pick goes back through `notify.respond`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+}
+
+/// What the human did with a notification sent with `notify.send`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Response {
+    /// `action` (picked a button), `clicked` (the notification itself) or `dismissed`.
+    pub kind: ResponseKind,
+    /// The button picked (`kind: action`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseKind {
+    Action,
+    Clicked,
+    Dismissed,
+}
+
+/// At most this many buttons on a notification.
+pub const MAX_ACTIONS: usize = 4;
+/// A button's label, at most this many characters.
+pub const ACTION_MAX: usize = 40;
+
+/// A `notify.send` id: 1–64 of `A-Z a-z 0-9 . _ : -`.
+pub fn valid_id(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+}
+
+/// A URL a notification may open: `scheme:` then something, no spaces or control characters,
+/// at most 2048 bytes.
+pub fn valid_open_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else { return false };
+    let scheme_ok = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c));
+    scheme_ok && !rest.is_empty() && url.len() <= 2048 && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 fn yes() -> bool {
@@ -406,5 +454,13 @@ mod tests {
         assert_eq!(image_file(&home, "missing.png"), None);
         assert_eq!(image_file(&home, "../notify/images/all.png"), None);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn ids_and_urls() {
+        assert!(valid_id("board:alert-42") && valid_id("a.b_c"));
+        assert!(!valid_id("") && !valid_id("has space") && !valid_id(&"x".repeat(65)));
+        assert!(valid_open_url("http://morgan.harman/reviews/#v=needs") && valid_open_url("file:///tmp/x.html") && valid_open_url("slack://open"));
+        assert!(!valid_open_url("morgan.harman/reviews") && !valid_open_url("https:") && !valid_open_url("1http://x") && !valid_open_url("https://a b"));
     }
 }

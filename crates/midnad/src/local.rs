@@ -619,7 +619,10 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
             set_custom(d, &s.id, cs, actor.clone());
             (None, format!("Status “{label}” on {}", s.name))
         }),
-        TriggerAction::Notify { title, body, sound, category } => Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref()))),
+        TriggerAction::Notify { title, body, sound, category, open, id } => {
+            let extras = crate::notify::Extras { id: id.as_deref().map(|i| r(i, false)), open: open.as_deref().map(|u| r(u, false)), actions: vec![] };
+            Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref(), extras)))
+        }
         TriggerAction::ClearStatus {} => target().map(|s| {
             let had = clear_custom(d, &s.id, actor.clone(), "clear_status", true);
             (None, if had { format!("Cleared the status on {}", s.name) } else { format!("{} had no custom status", s.name) })
@@ -629,11 +632,17 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
 }
 
 /// A trigger's `notify` action (local and webhook): one line saying what happened.
-pub fn notify(d: &Daemon, t: &Trigger, session: Option<Id>, title: &str, body: &str, sound: bool, category: Option<&str>) -> String {
+pub fn notify(d: &Daemon, t: &Trigger, session: Option<Id>, title: &str, body: &str, sound: bool, category: Option<&str>, extras: crate::notify::Extras) -> String {
     let title = if title.trim().is_empty() { t.name.as_str() } else { title };
     // A kind the human added, while it still exists; else `from_trigger`.
     let category = category.filter(|k| d.core().state.notify_kind(k).is_some()).unwrap_or("from_trigger");
-    let r = crate::notify::send_as(d, category, session, title, body, sound, false);
+    // A rendered id or URL that doesn't check out is left off rather than losing the notification.
+    let extras = crate::notify::Extras {
+        id: extras.id.map(|i| i.trim().to_string()).filter(|i| midna_proto::notify::valid_id(i)),
+        open: extras.open.map(|u| u.trim().to_string()).filter(|u| midna_proto::notify::valid_open_url(u)),
+        actions: vec![],
+    };
+    let r = crate::notify::send_as(d, category, session, title, body, sound, false, extras);
     match r.reason {
         None => format!("Notified “{}”", clip(title, 60)),
         Some(why) => format!("Notification not shown ({why})"),

@@ -10,7 +10,9 @@ const VALUE_FLAGS: &[&str] = &[
     "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn", "stay", "description", "set",
     // local triggers
     "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
-    "action-json", "filter-json", "notify", "notify-body", "notify-kind",
+    "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id",
+    // notify send
+    "open", "wait",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).

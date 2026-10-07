@@ -329,6 +329,59 @@ pub struct NotifySendParams {
     /// color and duration. Omitted: `agent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Your name for it (1–64 of `A-Z a-z 0-9 . _ : -`). Sending again with the same id
+    /// replaces the one still showing instead of stacking another; `notify.withdraw` takes it
+    /// away. Omitted: midna makes one up (returned as `id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A URL to open when it's clicked (`https://…`, `file://…`, any `scheme:`), instead of
+    /// selecting a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<String>,
+    /// Buttons to show (at most 4, each 1–40 characters). The human's pick comes back as
+    /// `response` (with `wait_secs`), from `notify.response`, and as a `notify.responded` event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// Wait up to this many seconds (at most 600) for the human to pick an action, click or
+    /// dismiss it. Omitted: return at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyWithdrawParams {
+    /// The `id` it was sent with (or the one `notify.send` returned).
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyWithdrawResult {
+    pub id: String,
+    /// The app got the request (false: no app connected, nothing to remove from here).
+    pub delivered: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyResponseParams {
+    pub id: String,
+    /// Wait up to this many seconds (at most 600) for a response. Omitted: answer at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyResponseResult {
+    pub id: String,
+    /// What the human did; None: nothing yet (or not before `wait_secs` ran out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<crate::notify::Response>,
+}
+
+/// The app reports what the human did with a notification (`notify.respond`, app only).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyRespondParams {
+    pub id: String,
+    pub response: crate::notify::Response,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -473,6 +526,9 @@ pub struct NotifyHistoryItem {
     pub project_id: Option<Id>,
     /// Posted after the human last opened the notifications (`notify.read`).
     pub unread: bool,
+    /// Taken away with `notify.withdraw` (it no longer counts as unread).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withdrawn: bool,
     pub notification: crate::notify::Posted,
 }
 
@@ -534,12 +590,22 @@ pub struct NotifyPlayResult {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct NotifySendResult {
     pub posted: bool,
     /// Why it wasn't posted: `disabled`, `muted`, `category_off`, `duplicate`, `rate_limited`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// `notify.send`: its id (for `notify.withdraw` and `notify.response`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Who shows it: `app`, `system` (no app running: a plain banner, no buttons or click) or
+    /// `none` (recorded only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// With `wait_secs`: what the human did (None: nothing before it ran out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<crate::notify::Response>,
 }
 
 // ------------------------------------------------------------------ daemon
