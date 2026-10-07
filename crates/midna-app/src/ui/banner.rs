@@ -34,7 +34,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     ];
 
     let menu = menu_open.then(|| {
-        let mut b = menu_box(t).min_w(px(260.));
+        let mut b = menu_box(t).occlude().min_w(px(260.));
         for (i, (label, hint, scope)) in options.into_iter().enumerate() {
             let nid = need.id.clone();
             b = b.child(super::sidebar::menu_item(

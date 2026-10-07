@@ -466,7 +466,7 @@ fn background_group(m: &MainWindow, t: &Theme, compact: bool, window: &mut Windo
 fn background_menu(t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     deferred(
         anchored().anchor(Anchor::BottomLeft).snap_to_window_with_margin(px(8.)).child(
-            menu_box(t).mb(px(4.)).child(menu_item(
+            menu_box(t).occlude().mb(px(4.)).child(menu_item(
                 t,
                 "background-hide",
                 "Hide from sidebar",
@@ -1009,6 +1009,7 @@ fn project_menu(t: &Theme, pid: Option<String>, terminal_keys: Option<String>, c
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             menu_box(t)
+                .occlude()
                 .mt(px(30.))
                 .child(menu_item(
                     t,
