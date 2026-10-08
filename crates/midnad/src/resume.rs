@@ -3,7 +3,7 @@
 //!
 //! An agent mid-turn when the Mac goes to sleep or the network drops loses its API connection;
 //! Claude ends that turn with `StopFailure` (status `failed`, process still running). On wake
-//! (wall clock jumped past the monotonic one, which stops while asleep) every agent that was
+//! (`clock.rs` noticed the wall clock jump past the monotonic one) every agent that was
 //! working is watched for `WATCH_FOR`; a `StopFailure` whose error reads like a connection error
 //! puts that agent on a watch for `NETWORK_WATCH_FOR`. When a watched agent stops on an error,
 //! midna waits until the API host is reachable again, then its terminal gets
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 const TICK: Duration = Duration::from_secs(1);
 const WATCH_FOR: Duration = Duration::from_secs(30 * 60);
@@ -131,27 +131,19 @@ pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str) {
 pub fn start(d: &Arc<Daemon>) {
     let w = Arc::downgrade(d);
     let _ = std::thread::Builder::new().name("resume".into()).spawn(move || {
-        let mut mono = Instant::now();
-        let mut wall = SystemTime::now();
         loop {
             std::thread::sleep(TICK);
             let Some(d) = w.upgrade() else { return };
             if d.shutting_down.load(Ordering::Relaxed) {
                 return;
             }
-            let woke = SystemTime::now().duration_since(wall).unwrap_or_default() > mono.elapsed() + Duration::from_secs(60);
-            if woke {
-                let slept_at = wall.duration_since(SystemTime::UNIX_EPOCH).map(|t| t.as_secs() as i64).unwrap_or(0);
-                on_wake(&d, slept_at);
-            }
-            mono = Instant::now();
-            wall = SystemTime::now();
             tick(&d);
         }
     });
 }
 
 /// Watch the agents that were mid-turn at `slept_at` (unix): working then, or failed since.
+/// `clock.rs` calls it on wake.
 pub fn on_wake(d: &Daemon, slept_at: i64) {
     if !d.core().state.setting_bool(Cause::Sleep.setting()) {
         return;

@@ -126,13 +126,13 @@ fn lasts(k: NeedsYouKind) -> bool {
     matches!(k, NeedsYouKind::RuleRemoval | NeedsYouKind::SecretNeeded | NeedsYouKind::TriggerWaiting)
 }
 
-/// The open items older than `hours` at `now` (unix seconds) that may expire.
-fn stale(items: &[NeedsYou], now: i64, hours: i64) -> Vec<Id> {
+/// The open items that may expire and have been open more than `hours` of awake time
+/// (`awake_since(unix)`): a night asleep is no chance to answer.
+fn stale(items: &[NeedsYou], hours: i64, awake_since: impl Fn(i64) -> i64) -> Vec<Id> {
     if hours <= 0 {
         return vec![];
     }
-    let cutoff = now - hours * 3600;
-    items.iter().filter(|n| !lasts(n.kind) && time::parse_rfc3339(&n.created_at).is_some_and(|t| t < cutoff)).map(|n| n.id.clone()).collect()
+    items.iter().filter(|n| !lasts(n.kind) && time::parse_rfc3339(&n.created_at).is_some_and(|t| awake_since(t) > hours * 3600)).map(|n| n.id.clone()).collect()
 }
 
 /// Every minute or so: take back items nobody answered in time (`needs_you.expire_hours`) and
@@ -141,7 +141,7 @@ pub fn sweep(d: &Daemon) {
     let (hours, ids) = {
         let core = d.core();
         let hours = core.state.setting_i64("needs_you.expire_hours");
-        (hours, stale(&core.state.needs_you, time::now_unix(), hours))
+        (hours, stale(&core.state.needs_you, hours, |t| d.clock.awake_secs_since(t)))
     };
     for id in ids {
         d.withdraw_needs_you(&id, &format!("nobody answered it in {hours}h"));
@@ -307,7 +307,18 @@ mod expire_tests {
             item("rule", NeedsYouKind::RuleRemoval, "2026-10-01T00:00:00Z"),
             item("secret", NeedsYouKind::SecretNeeded, "2026-10-01T00:00:00Z"),
         ];
-        assert_eq!(stale(&items, now, 24), vec!["old".to_string()]);
-        assert_eq!(stale(&items, now, 0), Vec::<Id>::new());
+        let awake = |t| crate::clock::awake_between(&[], t, now);
+        assert_eq!(stale(&items, 24, awake), vec!["old".to_string()]);
+        assert_eq!(stale(&items, 0, awake), Vec::<Id>::new());
+    }
+
+    #[test]
+    fn a_night_asleep_doesnt_expire_anything() {
+        let now = time::parse_rfc3339("2026-10-07T12:00:00Z").unwrap();
+        let items = [item("approval", NeedsYouKind::Approval, "2026-10-06T11:00:00Z")];
+        // Asked at 11:00 yesterday, then the Mac slept 18:00 to 08:00: 11h awake, not 25h.
+        let night = [crate::clock::Sleep { from: time::parse_rfc3339("2026-10-06T18:00:00Z").unwrap(), to: time::parse_rfc3339("2026-10-07T08:00:00Z").unwrap() }];
+        assert_eq!(stale(&items, 24, |t| crate::clock::awake_between(&night, t, now)), Vec::<Id>::new());
+        assert_eq!(stale(&items, 10, |t| crate::clock::awake_between(&night, t, now)), vec!["approval".to_string()]);
     }
 }

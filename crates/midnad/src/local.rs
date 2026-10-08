@@ -220,7 +220,6 @@ fn idle_tick(d: &Arc<Daemon>) {
     if triggers.is_empty() {
         return;
     }
-    let now = time::now_unix();
     let sessions: Vec<(SessionFacts, bool)> = {
         let core = d.core();
         core.state
@@ -239,7 +238,8 @@ fn idle_tick(d: &Arc<Daemon>) {
             let last = d.local.book().activity.get(&s.id).copied();
             let sending = crate::queue::pending(d, &s.id);
             let Some(last) = last else { continue };
-            let idle = now - last;
+            // Awake time: a night asleep isn't hours of idle for every terminal at once.
+            let idle = d.clock.awake_secs_since(last);
             if *busy || sending || idle < i64::from(mins) * 60 {
                 continue;
             }
