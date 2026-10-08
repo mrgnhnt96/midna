@@ -13,8 +13,9 @@
 //! pointer on a capsule, an × grows in at its start (off the list) and an arrow at its end (to
 //! the terminal), and they linger a beat after it leaves. Clicking a capsule grows it into its
 //! card (Approve / Deny, or Dismiss, and Terminal), one at a time, and glides the list to put
-//! it in the middle; the card's top row collapses it. Clear takes everything off. Hovering a
-//! notification's capsule beside the badge holds it and shows Approve / Deny. Right-click: Hide badge,
+//! it in the middle; the card's top row collapses it. Clear takes everything off. The capsule
+//! beside the badge works like a row: hovering holds it and grows in its × and arrow (and
+//! Approve / Deny for an approval), and a click opens its card in the list. Right-click: Hide badge,
 //! Notification settings…, Open midna. Drag it anywhere; let go and it slings to the nearest
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
@@ -334,6 +335,9 @@ struct Line {
     category: String,
     name: String,
     text: String,
+    /// What it says past its first line, and its kind's name: its card (clicking it).
+    detail: Option<String>,
+    label: String,
     color: String,
     /// Its kind's image: the badge wears it while the capsule shows.
     image: Option<PathBuf>,
@@ -423,6 +427,9 @@ pub struct Badge {
     list_closing: Option<Instant>,
     /// The last thing you did with the list (pointer on it or the badge, a scroll, a click).
     list_touched: Instant,
+    /// The last time the pointer was on the capsule beside the badge while its card is open:
+    /// left alone, the card goes with it.
+    line_touched: Instant,
     /// Needs-you items you cleared from the list (× or Clear): they stay in midna, not here.
     cleared: Vec<String>,
     /// The open card and since when; the ones collapsing back into their capsules (since when,
@@ -841,6 +848,7 @@ impl Badge {
             list_since: Instant::now(),
             list_closing: None,
             list_touched: Instant::now(),
+            line_touched: Instant::now(),
             cleared: vec![],
             expanded: None,
             collapsing: vec![],
@@ -926,6 +934,12 @@ impl Badge {
     /// Take something off the list (its ×): a held notification is dismissed; a needs-you item
     /// stays in midna, just not here.
     fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(serial) = line_serial(id) {
+            return self.dismiss_line(serial, cx);
+        }
+        for l in self.lines.iter_mut().filter(|l| l.waiting.as_deref() == Some(id)) {
+            l.leaving.get_or_insert(Instant::now());
+        }
         if let Some(sent) = self.held.iter().find(|w| w.id == id).and_then(|w| w.sent.clone()) {
             self.respond(&sent, midna_proto::notify::ResponseKind::Dismissed, None);
         }
@@ -1156,7 +1170,7 @@ impl Badge {
         }
         if n == 0 {
             self.close_list();
-        } else if self.expanded.as_ref().is_some_and(|(id, _)| !self.rows().iter().any(|w| w.id == *id)) {
+        } else if self.expanded.as_ref().is_some_and(|(id, _)| line_serial(id).is_none() && !self.rows().iter().any(|w| w.id == *id)) {
             self.expanded = None;
         }
         cx.notify();
@@ -1237,7 +1251,10 @@ impl Badge {
             self.recount(cx);
             return;
         }
-        let text = p.body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&p.title).to_string();
+        let mut body = p.body.lines().map(str::trim).filter(|l| !l.is_empty());
+        let text = body.next().unwrap_or(&p.title).to_string();
+        let detail = Some(body.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty());
+        let label = p.label.clone().or_else(|| midna_proto::notify::category(&p.category).map(|c| c.label.to_string())).unwrap_or_default();
         // The newest shows at once; the ones it cut short are its "+N" (what they're about is
         // still counted, or in the stack).
         let burst = self.lines.front().filter(|l| l.leaving.is_none()).map_or(0, |l| l.burst + 1);
@@ -1253,6 +1270,8 @@ impl Badge {
             category: p.category.clone(),
             name,
             text,
+            detail,
+            label,
             color: color.clone(),
             image: p.image.clone().map(PathBuf::from),
             stay,
@@ -1284,8 +1303,72 @@ impl Badge {
         self.dismiss(id, cx);
     }
 
+    /// What the capsule beside the badge shows as its card: what's waiting, while the list has
+    /// it, or the notification itself (its id `line:<serial>`).
+    fn line_waiting(&self, l: &Line) -> Waiting {
+        if let Some(w) = l.waiting.as_ref().and_then(|id| self.rows().into_iter().find(|w| w.id == *id)) {
+            return w.clone();
+        }
+        Waiting {
+            id: format!("line:{}", l.serial),
+            sent: l.sent.clone(),
+            need: None,
+            session: l.session.clone(),
+            category: l.category.clone(),
+            name: l.name.clone(),
+            label: l.label.clone(),
+            color: l.color.clone(),
+            title: l.text.clone(),
+            detail: l.detail.clone(),
+            command: None,
+            approval: false,
+            options: vec![],
+            multi: false,
+            image: l.image.clone(),
+            at: String::new(),
+        }
+    }
+
+    /// Grow the capsule beside the badge into its card, where it is (the list's card, so its
+    /// buttons and arrow are what go somewhere). It stays while the card's open.
+    fn open_line_card(&mut self, id: &str) {
+        let now = Instant::now();
+        if let Some((e, _)) = self.expanded.take() {
+            let height = self.card_height();
+            self.collapsing.retain(|(c, _, _)| *c != e);
+            self.collapsing.push((e, now, height));
+        }
+        self.collapsing.retain(|(c, _, _)| c != id);
+        self.card_box.set(None);
+        self.expanded = Some((id.to_string(), now));
+        self.line_touched = now;
+    }
+
+    /// The capsule beside the badge's ×: it goes now, and what it's about comes off the list as
+    /// a row's × would (a passing `notify.send` one reports it was dismissed).
+    fn dismiss_line(&mut self, serial: u64, cx: &mut Context<Self>) {
+        let Some(l) = self.lines.iter_mut().find(|l| l.serial == serial) else { return };
+        l.leaving.get_or_insert(Instant::now());
+        let (waiting, sent) = (l.waiting.clone(), l.sent.clone());
+        match waiting {
+            Some(id) => self.forget(&id, cx),
+            None => {
+                if let Some(sent) = sent {
+                    self.respond(&sent, midna_proto::notify::ResponseKind::Dismissed, None);
+                }
+                cx.notify();
+            }
+        }
+    }
+
     /// Drop a held notification (the stack's Dismiss).
     fn dismiss(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(serial) = line_serial(id) {
+            for l in self.lines.iter_mut().filter(|l| l.serial == serial) {
+                l.leaving.get_or_insert(Instant::now());
+            }
+            return cx.notify();
+        }
         self.held.retain(|w| w.id != id);
         for l in self.lines.iter_mut().filter(|l| l.waiting.as_deref() == Some(id)) {
             l.leaving.get_or_insert(Instant::now());
@@ -1510,8 +1593,20 @@ impl Badge {
         }
 
         // Capsules: the front one shows until its time (held while the pointer's on it).
+        // Its card open: it stays while the pointer comes back to it; left alone, both go.
+        let carded = self.lines.front().is_some_and(|l| self.expanded.as_ref().is_some_and(|(e, _)| *e == self.line_waiting(l).id));
+        if carded && self.hover == Some("line") {
+            self.line_touched = now;
+        }
+        let card_idle = carded && now.duration_since(self.line_touched) >= LIST_IDLE;
+        if card_idle {
+            self.expanded = None;
+        }
         if let Some(front) = self.lines.front_mut() {
-            if self.hover == Some("line") {
+            if card_idle {
+                front.leaving.get_or_insert(now);
+                changed = true;
+            } else if self.hover == Some("line") || carded {
                 front.until = front.until.max(now + LINE_LINGER);
             } else if front.leaving.is_none() && now >= front.until {
                 front.leaving = Some(now);
@@ -1650,7 +1745,7 @@ impl Badge {
             prevent_activation(&ns, prevent);
         }
         // The list: × and arrow linger, then shrink; finished animations end.
-        if self.hot.is_some() && self.hot_left.is_none() && self.hover != Some("panel") {
+        if self.hot.is_some() && self.hot_left.is_none() && !matches!(self.hover, Some("panel" | "line")) {
             // The pointer left the window's list without a hover-out reaching us.
             self.hot_left = Some(now);
         }
@@ -1691,6 +1786,11 @@ impl Badge {
 }
 
 // ------------------------------------------------------------------ drawing
+
+/// The capsule beside the badge's serial, from its card's id (`line:<serial>`).
+fn line_serial(id: &str) -> Option<u64> {
+    id.strip_prefix("line:")?.parse().ok()
+}
 
 /// Record an element's painted bounds in `cell` (its zone).
 fn measure(cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
@@ -1882,15 +1982,18 @@ impl Badge {
                     cx.notify();
                 }),
             );
-        if reduce || self.pulse.0 == 0 || self.pulse_at.elapsed() >= PULSE {
+        if reduce || self.pulse.0 == 0 {
             return el.into_any_element();
         }
+        // It stays wrapped once the pulse is over (its ring at nothing): unwrapping it would change
+        // what's inside's element ids, and the image the badge wears would grow in again.
+        let shade = if lift { 0.5 } else { 0.4 };
         el.with_animation(SharedString::from(format!("pulse-{}", self.pulse.0)), Animation::new(PULSE), move |el, d| {
             // Up fast, then fade: a ring of the kind's color around the badge.
             let k = if d < 0.25 { d / 0.25 } else { 1. - (d - 0.25) / 0.75 };
             el.shadow(vec![
                 BoxShadow { color: pulse.opacity(0.28 * k), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(7. * k), inset: false },
-                BoxShadow { color: hsla(0., 0., 0., 0.4), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false },
+                BoxShadow { color: hsla(0., 0., 0., shade), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false },
             ])
         })
         .into_any_element()
@@ -1962,7 +2065,10 @@ impl Badge {
             .into_any_element()
     }
 
-    /// The capsule beside the badge: springs out, holds, slides back in.
+    /// The capsule beside the badge: springs out, holds, slides back in. Like a list row, with
+    /// the pointer on it an × grows in at its start (it goes, and off the list if it's waiting)
+    /// and an arrow at its end (to the terminal); a click anywhere else opens its card in the
+    /// list (a passing one's terminal).
     fn line(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let l = self.lines.front()?;
         let reduce = super::queue::reduce_motion();
@@ -1970,30 +2076,50 @@ impl Badge {
         let right = self.side().right();
         let extra = l.burst;
         let hover = self.hover == Some("line");
+        let key = format!("line:{}", l.serial);
+        let k = self.grow(&key, Instant::now()).max(0.);
+        let out = k > 0.01;
+        let hot = self.hot.as_ref().is_some_and(|(h, _)| *h == key);
         let need = l.need.clone().filter(|id| self.needs.iter().any(|w| w.id == *id && w.approval));
         let (session, need_id, waiting, sent) = (l.session.clone(), l.need.clone(), l.waiting.clone(), l.sent.clone());
-        let held = waiting.filter(|w| self.held.iter().any(|h| h.id == *w));
+        let held = waiting.clone().filter(|w| self.held.iter().any(|h| h.id == *w));
+        let serial = l.serial;
+        let room = (W - SIZE - PAD * 2. - 8.).min(MX + SIZE - self.badge_w.get().max(SIZE) - 8. - 4.);
+        let card = self.line_waiting(l);
+        let card_id = card.id.clone();
+        if let Some(k) = self.card_k(&card_id, Instant::now()) {
+            let el = div()
+                .id(SharedString::from(format!("line-card-{}", l.serial)))
+                .relative()
+                .child(measure(self.zones.line.clone()))
+                .child(self.card(t, &card, k, CARD_W.min(room), Instant::now(), cx));
+            return Some(self.line_motion(el, l, right, reduce));
+        }
         let mut row = div()
             .id(SharedString::from(format!("line-{}", l.serial)))
             .relative()
             .h(px(36.))
             // No wider than the room the window leaves past a widened badge, or its start is cut off.
-            .max_w(px((W - SIZE - PAD * 2. - 8.).min(MX + SIZE - self.badge_w.get().max(SIZE) - 8. - 4.)))
-            .pl(px(14.))
-            .pr(px(if need.is_some() && hover { 6. } else { 14. }))
+            .max_w(px(room))
             .flex()
             .items_center()
-            .gap(px(8.))
             .rounded(px(18.))
             .overflow_hidden()
             .bg(t.panel)
             .border_1()
-            .border_color(if hover { color.opacity(0.6) } else { t.line })
+            .border_color(if hot { t.dim.opacity(0.55) } else { t.line })
             .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.4), offset: point(px(0.), px(10.)), blur_radius: px(26.), spread_radius: px(0.), inset: false }])
             .text_size(px(13.))
             .whitespace_nowrap()
             .cursor_pointer()
-            .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), cx)));
+            .on_hover(cx.listener({
+                let key = key.clone();
+                move |b, on: &bool, _, cx| b.hover_row(&key, *on, cx)
+            }))
+            .on_click(cx.listener(move |b, _, _, cx| {
+                b.open_line_card(&card_id);
+                cx.notify();
+            }));
         // A passing kind's tint clears from left to right over its time. Not while it slides
         // away (its animation would start over, full width), and rounded like the capsule (GPUI
         // doesn't clip a child to its parent's corners).
@@ -2001,32 +2127,98 @@ impl Badge {
             let tint = div().absolute().top_0().bottom_0().left_0().right_0().rounded(px(18.)).bg(color.opacity(0.16));
             row = row.child(tint.with_animation(SharedString::from(format!("fill-{}", l.serial)), Animation::new(stay), |el, d| el.left(relative(d))));
         }
-        row = row
-            .child(measure(self.zones.line.clone()))
-            .child(icon_of(&l.category).el(14., color))
-            .child(div().flex_none().max_w(px(180.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(l.name.clone()))
-            .child(div().min_w_0().truncate().text_color(t.dim).child(l.text.clone()))
-            .when(extra > 0, |d| {
-                d.child(div().flex_none().px(px(7.)).rounded(px(9.)).bg(t.raised).text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(t.fg).child(format!("+{extra}")))
-            });
+        row = row.child(measure(self.zones.line.clone()));
+        if out {
+            row = row.child(
+                div()
+                    .id("line-x")
+                    .flex_none()
+                    .h(px(24.))
+                    .w(px(24. * k))
+                    .ml(px(6. * k))
+                    .rounded(px(12.))
+                    .bg(t.raised)
+                    .opacity(k.min(1.))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(t.line))
+                    .child(Icon::Cross.el(10., t.dim))
+                    .on_click(cx.listener(move |b, _, _, cx| {
+                        cx.stop_propagation();
+                        b.dismiss_line(serial, cx);
+                    })),
+            );
+        }
+        row = row.child(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .pl(px(14. - 6. * k.min(1.)))
+                .pr(px(if out || need.as_ref().is_some_and(|_| hover) { 6. } else { 14. }))
+                .child(icon_of(&l.category).el(14., color))
+                .child(div().flex_none().max_w(px(180.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(l.name.clone()))
+                .child(div().min_w_0().truncate().text_color(t.dim).child(l.text.clone()))
+                .when(extra > 0, |d| {
+                    d.child(div().flex_none().px(px(7.)).rounded(px(9.)).bg(t.raised).text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(t.fg).child(format!("+{extra}")))
+                }),
+        );
         if let (Some(id), true) = (need, hover) {
             let (a, d) = (id.clone(), id);
-            row = row
-                .child(button(t, "line-approve", "Approve", true).on_click(cx.listener(move |b, _, _, cx| {
-                    cx.stop_propagation();
-                    b.approve(a.clone(), false, cx);
-                })))
-                .child(button(t, "line-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| {
-                    cx.stop_propagation();
-                    b.approve(d.clone(), true, cx);
-                })));
+            row = row.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .mr(px(6.))
+                    .child(button(t, "line-approve", "Approve", true).on_click(cx.listener(move |b, _, _, cx| {
+                        cx.stop_propagation();
+                        b.approve(a.clone(), false, cx);
+                    })))
+                    .child(button(t, "line-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| {
+                        cx.stop_propagation();
+                        b.approve(d.clone(), true, cx);
+                    }))),
+            );
         }
+        if out {
+            row = row.child(
+                div()
+                    .id("line-go")
+                    .flex_none()
+                    .h(px(28.))
+                    .w(px(28. * k))
+                    .mr(px(4. * k))
+                    .rounded(px(14.))
+                    .bg(t.raised)
+                    .opacity(k.min(1.))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(t.line))
+                    .child(Icon::Arrow.el(12., t.fg))
+                    .on_click(cx.listener(move |b, _, _, cx| {
+                        cx.stop_propagation();
+                        b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), cx);
+                    })),
+            );
+        }
+        Some(self.line_motion(row, l, right, reduce))
+    }
+
+    /// The capsule (or its card) beside the badge: out from behind the badge with a little
+    /// overshoot; back the way it came.
+    fn line_motion(&self, row: Stateful<Div>, l: &Line, right: bool, reduce: bool) -> AnyElement {
         if reduce {
-            return Some(row.into_any_element());
+            return row.into_any_element();
         }
-        // Out from behind the badge with a little overshoot; back the way it came.
         let dir = if right { 1. } else { -1. };
-        Some(match l.leaving {
+        match l.leaving {
             Some(_) => row
                 .with_animation(SharedString::from(format!("line-out-{}", l.serial)), Animation::new(LINE_OUT).with_easing(ease_in), move |el, d| {
                     el.opacity(1. - d).left(px(dir * 20. * d))
@@ -2037,7 +2229,7 @@ impl Badge {
                     el.opacity((d * 2.).min(1.)).left(px(dir * 28. * (1. - d)))
                 })
                 .into_any_element(),
-        })
+        }
     }
 
     /// The list: what's waiting as capsules, newest first, scrolling; the row at the middle is
@@ -2077,7 +2269,7 @@ impl Badge {
             let v = self.cascade(step(i), now);
             let drop = |el: AnyElement| div().relative().top(px((1. - v) * -CASCADE_DROP)).opacity((v * 1.4).clamp(0., 1.)).child(el).into_any_element();
             let el = match self.card_k(&w.id, now) {
-                Some(k) => drop(self.card(t, w, k, now, cx)),
+                Some(k) => drop(self.card(t, w, k, CARD_W, now, cx)),
                 None => {
                     // When it scrolls, clearest at the middle line and softer away from it: the
                     // words fade, the capsule's fill only a little (what's behind the window
@@ -2263,7 +2455,7 @@ impl Badge {
 
     /// A row's card, `k` of the way grown out of its capsule: what it's about in full and its
     /// buttons. Its top row (dot, terminal, kind, ⌃) collapses it.
-    fn card(&self, t: &Theme, w: &Waiting, k: f32, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+    fn card(&self, t: &Theme, w: &Waiting, k: f32, width: f32, now: Instant, cx: &mut Context<Self>) -> AnyElement {
         let color = self.color(t, &w.color);
         let fade = match &self.expanded {
             Some((e, at)) if *e == w.id => {
@@ -2360,7 +2552,7 @@ impl Badge {
         div()
             .id(SharedString::from(format!("card-{}", w.id)))
             .flex_none()
-            .w(px(300. + (CARD_W - 300.) * k))
+            .w(px(300f32.min(width) + (width - 300f32.min(width)) * k))
             .max_h(px(ROW + (self.card_height_of(&w.id) - ROW) * k.clamp(0., 1.)))
             .overflow_hidden()
             .px(px(14.))
@@ -2426,7 +2618,10 @@ impl Render for Badge {
             return root;
         }
         root = root.child(edge(div().absolute(), PAD).child(self.badge(&t, cx)));
-        if self.list_moving(Instant::now()) {
+        let now = Instant::now();
+        // The list's, or the capsule beside the badge's × and arrow growing in or shrinking away.
+        let card_moving = !self.collapsing.is_empty() || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE);
+        if self.list_moving(now) || card_moving || self.cool.is_some() || self.hot.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < GROW) {
             window.request_animation_frame();
         }
         if let Some(line) = self.line(&t, cx).filter(|_| !self.list) {
