@@ -482,6 +482,84 @@ fn send_with_open_url_actions_and_id() {
     assert_eq!((alert["withdrawn"].as_bool(), alert["unread"].as_bool()), (Some(true), Some(false)), "{alert}");
 }
 
+/// `on`: a button runs its action the moment the human picks it, once, even after midnad
+/// restarts, and the sender can still ask what happened.
+#[test]
+fn buttons_run_their_on_actions_across_a_restart() {
+    let mut d = TestDaemon::start();
+    let mut h = d.human();
+    let dir = d.home.join("shop");
+    std::fs::create_dir_all(&dir).unwrap();
+    call(&mut h, "project.add", json!({ "path": dir.canonicalize().unwrap(), "name": "shop" }));
+    let mut a = d.agent(None);
+    let run = |cmd: &str| json!({ "kind": "run_command", "project_id": "shop", "command": cmd, "headless": true });
+    let send = |on: Value| json!({ "title": "Deploy staging?", "id": "deploy-1", "actions": ["Deploy", "Skip"], "on": on });
+
+    // Each key is a button, clicked or dismissed; actions are checked like a trigger's.
+    let err = |a: &mut Client, on: Value| call_err(a, "notify.send", send(on)).message;
+    assert!(err(&mut a, json!({ "Ship": run("true") })).contains("no button"));
+    assert!(err(&mut a, json!({ "Deploy": { "kind": "run_command", "project_id": "", "command": "true" } })).contains("needs a project"));
+    assert!(err(&mut a, json!({ "Deploy": { "kind": "clear_status" } })).contains("terminal"));
+    assert!(err(&mut a, json!({ "Deploy": run("") })).contains("needs a command"));
+    assert!(err(&mut a, json!({ "Deploy": { "kind": "run_command", "project_id": "nope", "command": "true" } })).contains("no project nope"));
+
+    let on = json!({ "Deploy": run("echo deployed > out.txt"), "dismissed": { "kind": "attention", "message": "Deploy wasn't answered" } });
+    let r = call(&mut a, "notify.send", send(on));
+    assert_eq!(r["posted"], true, "{r}");
+
+    // It's on disk: a new midnad still knows it, its buttons and what they run.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    d.restart();
+    let mut h = d.human();
+    let mut a = d.agent(None);
+    assert_eq!(call(&mut a, "notify.response", json!({ "id": "deploy-1" }))["response"], Value::Null);
+
+    // The human picks Deploy: it runs at once, with nobody waiting on it.
+    let r = call(&mut h, "notify.respond", json!({ "id": "deploy-1", "response": { "kind": "action", "action": "Deploy" } }));
+    let cb = &r["callback"];
+    assert_eq!((cb["on"].as_str(), cb["outcome"].as_str()), (Some("Deploy"), Some("Running with no terminal › Notification “Deploy staging?” › Deploy")), "{r}");
+    let out = dir.join("out.txt");
+    wait_for(10, "the deploy ran", || std::fs::read_to_string(&out).ok().filter(|s| s.trim() == "deployed"));
+
+    // The sender can follow up: the response, and what it ran (a delivery, as a trigger's would be).
+    let got = call(&mut a, "notify.response", json!({ "id": "deploy-1" }));
+    assert_eq!((got["response"]["action"].as_str(), &got["callback"]), (Some("Deploy"), cb), "{got}");
+    let del = wait_for(10, "headless run finished", || {
+        let list = call(&mut h, "trigger.deliveries", json!({ "trigger_id": "notify:deploy-1" }));
+        list.as_array().and_then(|l| l.first().cloned()).filter(|d| !d["command_runs"][0]["finished_at"].is_null())
+    });
+    assert_eq!((del["id"].as_str(), del["command_runs"][0]["exit_code"].as_i64()), (cb["delivery_id"].as_str(), Some(0)), "{del}");
+    assert!(del["eval"][0].as_str().unwrap().contains("sent by"), "{del}");
+    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["notify.responded"] } }));
+    assert_eq!(ev[0]["data"]["callback"], *cb, "{ev}");
+
+    // Only the first response counts, so it never runs twice.
+    std::fs::remove_file(&out).unwrap();
+    call(&mut h, "notify.respond", json!({ "id": "deploy-1", "response": { "kind": "dismissed" } }));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!out.exists());
+    assert_eq!(call(&mut h, "trigger.deliveries", json!({ "trigger_id": "notify:deploy-1" })).as_array().unwrap().len(), 1);
+
+    // A response with no `on` action just reports back.
+    call(&mut a, "notify.send", json!({ "title": "Again?", "id": "deploy-2", "actions": ["Deploy", "Skip"], "on": { "Deploy": run("true") } }));
+    let r = call(&mut h, "notify.respond", json!({ "id": "deploy-2", "response": { "kind": "action", "action": "Skip" } }));
+    assert!(r.get("callback").is_none(), "{r}");
+
+    // `dismissed` runs too, and a sender waiting on it gets what it did.
+    let on = json!({ "dismissed": { "kind": "attention", "message": "Nobody deployed" } });
+    call(&mut a, "notify.send", json!({ "title": "Deploy?", "id": "deploy-3", "actions": ["Deploy"], "on": on }));
+    let waiter = {
+        let mut a = d.agent(None);
+        std::thread::spawn(move || call(&mut a, "notify.response", json!({ "id": "deploy-3", "wait_secs": 10 })))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    call(&mut h, "notify.respond", json!({ "id": "deploy-3", "response": { "kind": "dismissed" } }));
+    let got = waiter.join().unwrap();
+    assert!(got["callback"]["outcome"].as_str().unwrap().starts_with("Raised attention"), "{got}");
+    let items = call(&mut h, "needs_you.list", json!({}));
+    assert!(items.to_string().contains("Nobody deployed"), "{items}");
+}
+
 #[test]
 fn trigger_notify_carries_open_and_id() {
     let d = TestDaemon::start();

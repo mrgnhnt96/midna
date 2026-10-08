@@ -250,7 +250,7 @@ pub static VERBS: &[Verb] = &[
                 notify set <key> on|off|default [--session <id> | --global]\n       \
                 notify mute|unmute [--session <id>]\n       \
                 notify send \"<title>\" [--detail \"<body>\"] [--sound] [--kind <kind>] [--session <id>] [--id <id>] [--open <url>]\n       \
-                            [--action <label>]… [--wait <secs>]\n       \
+                            [--action <label>]… [--on <label>|clicked|dismissed <action flags>]… [--wait <secs>]\n       \
                 notify withdraw <id> | response <id> [--wait <secs>]\n       \
                 notify kinds [list | add|update <key> [--label L] [--description D] [--color C] [--stay S] [--set field=value]… | rm <key>]\n       \
                 notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
@@ -273,6 +273,13 @@ pub static VERBS: &[Verb] = &[
                   without --wait, `response <id>` asks later, and every response is a `notify.responded` event\n\
                   (`midna trigger add --event notify.responded --match action='Snooze*' …` reacts to it). Buttons\n\
                   and clicks need the app running.\n\
+                  --on <label> runs an action the moment the human picks that button (or `clicked`, `dismissed`),\n\
+                  with nothing waiting on it: the flags after it, up to the next --on, are a trigger's action\n\
+                  (--run CMD [--headless|--background] [--project P], --attention MSG, --send TEXT, --notify TITLE,\n\
+                  --agent A --prompt T, --set-status …, --clear-status, --action-json JSON). --project defaults to\n\
+                  the terminal's project. It runs once, survives a midnad restart, shows in `triggers deliveries`, and\n\
+                  `response <id>` (or --wait) also prints what it did. e.g. notify send \"Deploy staging?\"\n\
+                  --action Deploy --action Skip --on Deploy --run ./deploy.sh --headless --on clicked --attention \"Deploy?\"\n\
                   `kinds` lists the kinds the human added (deploys, ci, …); `send --kind <key>` sends as one, with its\n\
                   own sound, color and switch. `kinds add` makes one when the human asks (--stay 0 = it stays on\n\
                   screen until handled; --color a theme color need|ok|err|work|accent|dim or #rrggbb; --set\n\

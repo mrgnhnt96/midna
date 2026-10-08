@@ -411,6 +411,29 @@ pub enum ResponseKind {
     Dismissed,
 }
 
+impl Response {
+    /// The `notify.send` `on` key this response runs: the button's label, `clicked` or
+    /// `dismissed`.
+    pub fn on_key(&self) -> &str {
+        match self.kind {
+            ResponseKind::Action => self.action.as_deref().unwrap_or(""),
+            ResponseKind::Clicked => "clicked",
+            ResponseKind::Dismissed => "dismissed",
+        }
+    }
+}
+
+/// What a `notify.send` `on` action did when the human responded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CallbackRun {
+    /// The `on` key that ran (a button's label, `clicked` or `dismissed`).
+    pub on: String,
+    /// Its delivery (`trigger.deliveries`): a headless command's exit code and output land there.
+    pub delivery_id: String,
+    /// One line: what it did, or why it couldn't.
+    pub outcome: String,
+}
+
 /// At most this many buttons on a notification.
 pub const MAX_ACTIONS: usize = 4;
 /// A button's label, at most this many characters.

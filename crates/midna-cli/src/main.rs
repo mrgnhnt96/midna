@@ -1035,6 +1035,42 @@ fn response_line(r: &Value) -> String {
     }
 }
 
+/// ` → <what the --on action did> (delivery d_…)`, or nothing.
+fn callback_line(c: &Value) -> String {
+    match c["outcome"].as_str() {
+        Some(o) => format!(" → {o} (delivery {})", s_(c, "delivery_id")),
+        None => String::new(),
+    }
+}
+
+/// `notify send`'s `--on <response> <action flags>` groups as its `on` map.
+fn on_actions(groups: Vec<(String, Vec<String>)>) -> Result<serde_json::Map<String, Value>, Fail> {
+    const FLAGS: &[&str] = &[
+        "project", "agent", "prompt", "run", "background", "headless", "timeout", "attention", "send", "send-no-enter", "set-status", "color", "base",
+        "clear-on", "icon", "clear-status", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent", "action-json",
+    ];
+    let mut on = serde_json::Map::new();
+    for (key, raw) in groups {
+        let g = Args::parse(raw)?;
+        g.check(FLAGS).map_err(|e| Fail::Usage(format!("--on {key}: {}", e.0)))?;
+        if let Some(extra) = g.pos.first() {
+            return Err(Fail::Usage(format!("--on {key}: unexpected `{extra}` (quote a command with spaces: --run './deploy.sh staging')")));
+        }
+        if on.contains_key(&key) {
+            return Err(Fail::Usage(format!("--on {key} is given twice")));
+        }
+        // An empty project is the notification's terminal's (midnad fills it in).
+        let action = crate::triggers::action_from(&g, Some(g.get("project").unwrap_or("").to_string()), None)?.ok_or_else(|| {
+            Fail::Usage(format!(
+                "--on {key} needs an action: --run CMD [--headless|--background], --attention MSG, --send TEXT, --notify TITLE, --agent A --prompt T, \
+                 --set-status LABEL --color C --base B, --clear-status or --action-json JSON"
+            ))
+        })?;
+        on.insert(key, action);
+    }
+    Ok(on)
+}
+
 fn notify(a: &Args, out: OutFn) -> Res {
     let print_list = |v: &Value| {
         let scope = match v["session"].as_str() {
@@ -1093,16 +1129,20 @@ fn notify(a: &Args, out: OutFn) -> Res {
             out(&v, &print_list);
         }
         "send" => {
+            // Each `--on <response>` starts its own action flags (`--run make --headless`).
+            let (head, groups) = a.split_on("on")?;
+            let a = &Args::parse(head)?;
             a.check(&["session", "detail", "sound", "kind", "id", "open", "action", "wait"])?;
             let title = a.need(2, "title")?;
             let wait = a.get("wait").map(|w| crate::triggers::parse_duration(w, 1)).transpose().map_err(|e| Fail::Usage(format!("--wait: {e}")))?;
+            let on = on_actions(groups)?;
             let p = json!({
                 "session": session, "title": title, "body": a.get("detail").unwrap_or(""), "sound": a.has("sound"), "category": a.get("kind"),
-                "id": a.get("id"), "open": a.get("open"), "actions": a.all("action"), "wait_secs": wait,
+                "id": a.get("id"), "open": a.get("open"), "actions": a.all("action"), "on": on, "wait_secs": wait,
             });
             let v = call("notify.send", p)?;
             out(&v, &|v| match v["reason"].as_str() {
-                None if wait.is_some() => println!("{}", response_line(&v["response"])),
+                None if wait.is_some() => println!("{}{}", response_line(&v["response"]), callback_line(&v["callback"])),
                 None => println!("sent {}{}", s_(v, "id"), if v["via"] == "app" || v["via"].is_null() { String::new() } else { format!(" (via {})", s_(v, "via")) }),
                 Some(r) => println!("not sent: {r}"),
             });
@@ -1119,7 +1159,7 @@ fn notify(a: &Args, out: OutFn) -> Res {
             a.check(&["wait"])?;
             let wait = a.get("wait").map(|w| crate::triggers::parse_duration(w, 1)).transpose().map_err(|e| Fail::Usage(format!("--wait: {e}")))?;
             let v = call("notify.response", json!({ "id": a.need(2, "a notification id")?, "wait_secs": wait }))?;
-            out(&v, &|v| println!("{}", response_line(&v["response"])));
+            out(&v, &|v| println!("{}{}", response_line(&v["response"]), callback_line(&v["callback"])));
         }
         "kinds" | "kind" => {
             let print_kinds = |v: &Value| {

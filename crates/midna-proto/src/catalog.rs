@@ -250,8 +250,12 @@ fn build() -> Vec<MethodSpec> {
              sending again with the same id replaces the one showing (a repeating alert), and notify.withdraw removes it. \
              `actions` (up to 4 buttons, e.g. [\"Snooze 15 min\", \"Snooze 1 hour\"]) report the human's pick as \
              `response` {kind: action|clicked|dismissed, action?}: wait for it with `wait_secs`, ask later with \
-             notify.response, or react to the `notify.responded` event (a local trigger on it). Buttons and clicks need the \
-             app running (`via: app`). Not for routine progress: approvals, failures and finished turns already notify. \
+             notify.response, or react to the `notify.responded` event (a local trigger on it). `on` runs something the \
+             moment the human responds, with nothing waiting: {\"<button label>\"|\"clicked\"|\"dismissed\": <trigger action>}, \
+             e.g. {\"Deploy\": {\"kind\": \"run_command\", \"project_id\": \"\", \"command\": \"./deploy.sh\", \"headless\": true}} \
+             (an empty project_id is the terminal's project; a name works too). It runs once, as a local trigger would, \
+             survives a midnad restart, and its delivery and outcome come back as `callback` from notify.response. Buttons \
+             and clicks need the app running (`via: app`). Not for routine progress: approvals, failures and finished turns already notify. \
              Duplicates within a few seconds are dropped and an agent can send at most 6 a minute per terminal."),
         m::<NotifyWithdrawParams, NotifyWithdrawResult>("notify.withdraw").mutating().d(
             "Take a notification sent with notify.send away by its `id` (Notification Center, the in-app card and the \
@@ -259,11 +263,12 @@ fn build() -> Vec<MethodSpec> {
              connected nothing changes (`delivered: false`)."),
         m::<NotifyResponseParams, NotifyResponseResult>("notify.response").d(
             "What the human did with a notification sent with notify.send: `response` {kind: action (a button, `action` \
-             = its label), clicked or dismissed}, or none yet. `wait_secs` (max 600) waits for one. midnad remembers \
-             responses until it restarts."),
+             = its label), clicked or dismissed}, or none yet, and `callback`: what its `on` action did (`outcome`, \
+             `delivery_id` for trigger.deliveries). `wait_secs` (max 600) waits for one. midnad remembers the last 500 \
+             notifications, across restarts."),
         m::<NotifyRespondParams, NotifyResponseResult>("notify.respond").mutating().human().d(
             "Internal: the GUI reports the human's click, button or dismissal on a notify.send notification (emits \
-             `notify.responded`)."),
+             `notify.responded` and runs its `on` action for that response)."),
         m::<NoParams, NotifyKindsList>("notify.kinds.list").d(
             "The notification kinds the human added, beside the built-in ones (notify.list): each with its label, \
              whether it's on, how long it stays on screen (`stay`, 0 = until handled), its color and sound. Send to one \

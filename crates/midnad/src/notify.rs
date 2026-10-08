@@ -14,6 +14,7 @@
 use crate::daemon::Daemon;
 use midna_proto::notify::{self, Posted};
 use midna_proto::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -38,25 +39,37 @@ pub struct State {
     checks: HashMap<Id, (u64, ChecksState)>,
     /// Each agent terminal's running background task ids.
     background: HashMap<Id, HashSet<String>>,
-    /// `notify.send` notifications by id, oldest first (at most SENT_MAX): what clicks and
-    /// buttons are checked against and recorded on.
-    sent: VecDeque<Sent>,
 }
 
-/// A notification `notify.send` posted, and what the human did with it.
-#[derive(Clone, Debug)]
+/// A notification `notify.send` posted, and what the human did with it. Kept in `state.json`
+/// (`notify_sent`, oldest first, at most SENT_MAX), so clicks, buttons and their `on` actions
+/// still work after midnad restarts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sent {
     pub id: String,
     pub category: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<Id>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// What to run for each response (`notify.send`'s `on`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub on: BTreeMap<String, TriggerAction>,
+    /// Who sent it (the `on` actions run on their say-so).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_by: Option<Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<notify::Response>,
+    /// What the `on` action for `response` did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<notify::CallbackRun>,
 }
 
 /// How many `notify.send` notifications midnad remembers responses for.
-const SENT_MAX: usize = 500;
+pub const SENT_MAX: usize = 500;
 
 /// What `notify.send` adds to a notification beyond its text.
 #[derive(Clone, Debug, Default)]
@@ -65,6 +78,10 @@ pub struct Extras {
     pub id: Option<String>,
     pub open: Option<String>,
     pub actions: Vec<String>,
+    /// What to run for each response, checked (`rpc::notify::callbacks`).
+    pub on: BTreeMap<String, TriggerAction>,
+    /// Who sent it.
+    pub sent_by: Option<Actor>,
 }
 
 /// Why a notification is not posted (None = post it).
@@ -302,7 +319,7 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
 pub fn send_as(d: &Daemon, category: &str, session: Option<Id>, title: &str, body: &str, sound: bool, rate_limit: bool, extras: Extras) -> NotifySendResult {
     let project = session.as_deref().and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
     let id = extras.id.clone().unwrap_or_else(|| format!("n-{}", crate::state::hex_id(6)));
-    let not = |reason: &str| NotifySendResult { posted: false, reason: Some(reason.into()), id: Some(id.clone()), via: None, response: None };
+    let not = |reason: &str| NotifySendResult { posted: false, reason: Some(reason.into()), id: Some(id.clone()), ..Default::default() };
     if rate_limit && let Some(sid) = &session {
         let prefix = format!("{category}:{sid}:");
         let st = d.notify();
@@ -326,32 +343,53 @@ pub fn send_as(d: &Daemon, category: &str, session: Option<Id>, title: &str, bod
         test: false,
         extras: Extras { id: Some(id.clone()), ..extras },
     };
-    let actions = draft.extras.actions.clone();
+    let (actions, on, sent_by) = (draft.extras.actions.clone(), draft.extras.on.clone(), draft.extras.sent_by.clone());
+    // Remembered before it's shown, so a response can't arrive for a notification midnad
+    // doesn't know yet; taken back if it isn't shown.
+    let sent = Sent { id: id.clone(), category: category.into(), title: title.trim().into(), session, project, actions, on, sent_by, response: None, callback: None };
+    let replaced = remember(d, sent);
     match post(d, draft) {
         Ok(p) => {
-            let mut st = d.notify();
-            st.sent.retain(|s| s.id != id);
-            if st.sent.len() >= SENT_MAX {
-                st.sent.pop_front();
-            }
-            st.sent.push_back(Sent { id: id.clone(), category: category.into(), title: p.title, session, project, actions, response: None });
-            NotifySendResult { posted: true, reason: None, id: Some(id), via: Some(p.via), response: None }
+            d.mark_dirty();
+            NotifySendResult { posted: true, reason: None, id: Some(id), via: Some(p.via), ..Default::default() }
         }
-        Err(r) => not(r),
+        Err(r) => {
+            {
+                let mut core = d.core();
+                core.state.notify_sent.retain(|s| s.id != id);
+                core.state.notify_sent.extend(replaced);
+            }
+            d.mark_dirty();
+            not(r)
+        }
     }
+}
+
+/// Keep `s` (replacing one with its id, dropping the oldest past SENT_MAX). Returns the one
+/// it replaced.
+fn remember(d: &Daemon, s: Sent) -> Option<Sent> {
+    let mut core = d.core();
+    let list = &mut core.state.notify_sent;
+    let replaced = list.iter().position(|x| x.id == s.id).and_then(|i| list.remove(i));
+    while list.len() >= SENT_MAX {
+        list.pop_front();
+    }
+    list.push_back(s);
+    replaced
 }
 
 /// The `notify.send` notification `id`, while midnad remembers it.
 pub fn sent(d: &Daemon, id: &str) -> Option<Sent> {
-    d.notify().sent.iter().find(|s| s.id == id).cloned()
+    d.core().state.notify_sent.iter().find(|s| s.id == id).cloned()
 }
 
-/// Record what the human did with notification `id` (the first response counts) and emit
-/// `notify.responded`. Err: no such notification, or a button it doesn't have.
-pub fn respond(d: &Daemon, id: &str, r: notify::Response) -> Result<Sent, String> {
+/// Record what the human did with notification `id` (the first response counts), run its
+/// `on` action for that response, and emit `notify.responded`. Err: no such notification, or
+/// a button it doesn't have.
+pub fn respond(d: &Arc<Daemon>, id: &str, r: notify::Response) -> Result<Sent, String> {
     let s = {
-        let mut st = d.notify();
-        let Some(s) = st.sent.iter_mut().find(|s| s.id == id) else { return Err(format!("no notification `{id}` (unknown, or sent before midnad last restarted)")) };
+        let mut core = d.core();
+        let Some(s) = core.state.notify_sent.iter_mut().find(|s| s.id == id) else { return Err(format!("no notification `{id}` (unknown, or midnad forgot it)")) };
         if r.kind == notify::ResponseKind::Action && !r.action.as_ref().is_some_and(|a| s.actions.contains(a)) {
             return Err(format!("notification `{id}` has no button {:?}; it has {:?}", r.action.as_deref().unwrap_or(""), s.actions));
         }
@@ -361,19 +399,76 @@ pub fn respond(d: &Daemon, id: &str, r: notify::Response) -> Result<Sent, String
         s.response = Some(r.clone());
         s.clone()
     };
-    let data = json!({ "id": s.id, "kind": r.kind, "action": r.action, "category": s.category, "title": s.title });
+    d.mark_dirty();
+    let mut data = json!({ "id": s.id, "kind": r.kind, "action": r.action, "category": s.category, "title": s.title });
+    let callback = s.on.get(r.on_key()).map(|action| run_callback(d, &s, &r, action, &data));
+    let s = match callback {
+        Some(cb) => {
+            data["callback"] = json!(cb);
+            let mut core = d.core();
+            let stored = core.state.notify_sent.iter_mut().find(|x| x.id == s.id);
+            stored.map(|x| {
+                x.callback = Some(cb.clone());
+                x.clone()
+            })
+            .unwrap_or(Sent { callback: Some(cb), ..s })
+        }
+        None => s,
+    };
+    d.mark_dirty();
     d.emit(kinds::NOTIFY_RESPONDED, Actor::human(), s.project.clone(), s.session.clone(), data);
     Ok(s)
 }
 
+/// Run notification `s`'s `on` action for response `r`, as a one-off local trigger named
+/// after it (`notify:<id>`), so it runs, is recorded and shows in deliveries the way a local
+/// trigger on `notify.responded` would.
+fn run_callback(d: &Arc<Daemon>, s: &Sent, r: &notify::Response, action: &TriggerAction, data: &Value) -> notify::CallbackRun {
+    let on = r.on_key().to_string();
+    let t = callback_trigger(&s.id, &s.title, &on, action.clone(), s.sent_by.clone());
+    let (delivery_id, outcome) = crate::local::fire_once(d, &t, kinds::NOTIFY_RESPONDED, s.session.as_deref(), data);
+    notify::CallbackRun { on, delivery_id, outcome }
+}
+
+/// The one-off trigger notification `id`'s `on` action runs as (never stored with the
+/// triggers).
+pub fn callback_trigger(id: &str, title: &str, on: &str, action: TriggerAction, sent_by: Option<Actor>) -> Trigger {
+    let title: String = title.trim().chars().take(40).collect();
+    Trigger {
+        id: format!("notify:{id}"),
+        name: format!("Notification “{title}” › {on}"),
+        source: TriggerSource::Local,
+        event: kinds::NOTIFY_RESPONDED.into(),
+        filter: TriggerFilter::default(),
+        action,
+        enabled: true,
+        state: TriggerState::Active,
+        secret_set: false,
+        created_by: sent_by.unwrap_or_else(Actor::system),
+        created_at: time::now_rfc3339(),
+        last_fired_at: None,
+        fired: 0,
+        last_fired_summary: None,
+        enabled_at: None,
+        secret_set_at: None,
+        secret_store: None,
+        github_hook_id: None,
+        session_name_template: None,
+        cooldown_secs: None,
+        builtin: None,
+    }
+}
+
 /// Wait up to `secs` for a response to notification `id` (None: none by then, or midnad
-/// forgot it).
-pub fn wait_response(d: &Daemon, id: &str, secs: u64) -> Option<notify::Response> {
+/// forgot it). With it, what its `on` action did.
+pub fn wait_response(d: &Daemon, id: &str, secs: u64) -> (Option<notify::Response>, Option<notify::CallbackRun>) {
     let deadline = Instant::now() + Duration::from_secs(secs.min(600));
     loop {
-        let r = d.notify().sent.iter().find(|s| s.id == id).and_then(|s| s.response.clone());
-        if r.is_some() || Instant::now() >= deadline {
-            return r;
+        let s = sent(d, id);
+        // The response is recorded before its `on` action runs: wait for both.
+        let done = s.as_ref().and_then(|s| s.response.as_ref().map(|r| s.callback.is_some() || !s.on.contains_key(r.on_key())));
+        if done == Some(true) || Instant::now() >= deadline {
+            return s.map(|s| (s.response, s.callback)).unwrap_or_default();
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -401,8 +496,8 @@ pub fn test(d: &Daemon, session: Option<Id>, category: &str) -> NotifySendResult
         extras: Extras::default(),
     };
     match post(d, draft) {
-        Ok(p) => NotifySendResult { posted: true, reason: None, id: None, via: Some(p.via), response: None },
-        Err(r) => NotifySendResult { posted: false, reason: Some(r.into()), id: None, via: None, response: None },
+        Ok(p) => NotifySendResult { posted: true, reason: None, id: None, via: Some(p.via), ..Default::default() },
+        Err(r) => NotifySendResult { posted: false, reason: Some(r.into()), ..Default::default() },
     }
 }
 

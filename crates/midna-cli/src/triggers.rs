@@ -318,7 +318,7 @@ fn one_of(flag: &str, v: &str, ok: &[&str]) -> Result<(), Fail> {
 
 /// Build a TriggerAction from flags, if any action flag was given. `cur` is the current
 /// action (update), so `--color`/`--base`/`--clear-on`/`--icon` alone can edit a set_status.
-fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result<Option<Value>, Fail> {
+pub fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Result<Option<Value>, Fail> {
     let picked: Vec<&str> = ["agent", "run", "attention", "send", "send-no-enter", "set-status", "clear-status", "notify", "action-json"]
         .into_iter()
         .filter(|f| a.has(f))

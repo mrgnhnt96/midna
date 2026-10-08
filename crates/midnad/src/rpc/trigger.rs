@@ -27,7 +27,7 @@ fn get(d: &Daemon, id: &str) -> Result<Trigger, RpcError> {
     d.core().state.triggers.iter().find(|t| t.id == id).cloned().ok_or_else(|| not_found(id))
 }
 
-fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
+pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
     let (name, event, action) = (&t.name, &t.event, &t.action);
     if name.trim().is_empty() {
         return Err(RpcError::bad_params("name must not be empty"));

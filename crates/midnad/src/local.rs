@@ -527,7 +527,22 @@ pub fn action_name(a: &TriggerAction) -> &'static str {
     }
 }
 
-fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, line: String) {
+/// Run `t` once, now, as if it matched `event` about terminal `sid` (no filters, no cooldown):
+/// a `notify.send` `on` action. Returns (delivery id, one-line outcome).
+pub fn fire_once(d: &Arc<Daemon>, t: &Trigger, event: &str, sid: Option<&str>, data: &Value) -> (Id, String) {
+    let s = sid.and_then(|sid| SessionFacts::lookup(d, sid));
+    let by = &t.created_by;
+    let by = match (by.kind, by.session.as_deref(), by.name.as_deref()) {
+        (ActorKind::Human, ..) => "the human".to_string(),
+        (_, Some(sid), _) => format!("{} in terminal {sid}", serde_json::to_value(by.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()),
+        (_, None, Some(n)) => n.to_string(),
+        _ => "a process outside midna".to_string(),
+    };
+    let line = format!("{}: response ✓ · sent by {by}", t.name);
+    fire(d, t, event, s.as_ref(), data, line)
+}
+
+fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, line: String) -> (Id, String) {
     let id = format!("d_{}", hex_id(6));
     let mut runs = vec![];
     let (started, outcome) = run(d, t, event, s, data, &id, &mut runs);
@@ -572,6 +587,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         json!({ "trigger_id": t.id, "delivery_id": del.id, "session_id": started, "outcome": outcome, "event": event, "local": true }),
     );
     crate::webhooks::process::record(d, &del, None);
+    (del.id, outcome)
 }
 
 /// Run one local trigger's action for delivery `del_id`. Returns (terminal started, one-line
@@ -644,7 +660,7 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
             (None, format!("Status “{label}” on {}", s.name))
         }),
         TriggerAction::Notify { title, body, sound, category, open, id } => {
-            let extras = crate::notify::Extras { id: id.as_deref().map(|i| r(i, false)), open: open.as_deref().map(|u| r(u, false)), actions: vec![] };
+            let extras = crate::notify::Extras { id: id.as_deref().map(|i| r(i, false)), open: open.as_deref().map(|u| r(u, false)), actions: vec![], ..Default::default() };
             Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref(), extras)))
         }
         TriggerAction::ClearStatus {} => target().map(|s| {
@@ -665,6 +681,7 @@ pub fn notify(d: &Daemon, t: &Trigger, session: Option<Id>, title: &str, body: &
         id: extras.id.map(|i| i.trim().to_string()).filter(|i| midna_proto::notify::valid_id(i)),
         open: extras.open.map(|u| u.trim().to_string()).filter(|u| midna_proto::notify::valid_open_url(u)),
         actions: vec![],
+        ..Default::default()
     };
     let r = crate::notify::send_as(d, category, session, title, body, sound, false, extras);
     match r.reason {

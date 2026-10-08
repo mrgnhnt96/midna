@@ -12,7 +12,7 @@ const VALUE_FLAGS: &[&str] = &[
     "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
     "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id",
     // notify send
-    "open", "wait",
+    "open", "wait", "on",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).
@@ -28,6 +28,8 @@ pub struct Args {
     seq: Vec<(String, String)>,
     /// Everything after `--`.
     pub rest: Vec<String>,
+    /// The arguments as given (`notify send --on` splits them into groups).
+    pub raw: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -40,7 +42,8 @@ impl Args {
 
     /// `parse`, with `extra` also taking a value (flags one verb uses differently, e.g. `queue --idle 10m`).
     pub fn parse_with(raw: impl IntoIterator<Item = String>, extra: &[&str]) -> Result<Args, ArgError> {
-        let mut a = Args::default();
+        let raw: Vec<String> = raw.into_iter().collect();
+        let mut a = Args { raw: raw.clone(), ..Args::default() };
         let mut it = raw.into_iter().peekable();
         while let Some(s) = it.next() {
             if s == "--" {
@@ -117,6 +120,34 @@ impl Args {
         self.pos.get(from..).map(|p| p.join(" ")).unwrap_or_default()
     }
 
+    /// Split at each `--on <value>`: the arguments before the first, then (value, the arguments
+    /// up to the next `--on`) for each. Nothing after `--` is split.
+    pub fn split_on(&self, flag: &str) -> Result<(Vec<String>, Vec<(String, Vec<String>)>), ArgError> {
+        let (mut head, mut groups): (Vec<String>, Vec<(String, Vec<String>)>) = (vec![], vec![]);
+        let mut it = self.raw.iter();
+        while let Some(s) = it.next() {
+            if s == "--" {
+                let rest = std::iter::once(s.clone()).chain(it.by_ref().cloned());
+                match groups.last_mut() {
+                    Some((_, g)) => g.extend(rest),
+                    None => head.extend(rest),
+                }
+                break;
+            }
+            let value = match s.strip_prefix("--").and_then(|n| n.strip_prefix(flag)) {
+                Some("") => Some(it.next().cloned().ok_or_else(|| ArgError(format!("--{flag} needs a value")))?),
+                Some(v) if v.starts_with('=') => Some(v[1..].to_string()),
+                _ => None,
+            };
+            match (value, groups.last_mut()) {
+                (Some(v), _) => groups.push((v, vec![])),
+                (None, Some((_, g))) => g.push(s.clone()),
+                (None, None) => head.push(s.clone()),
+            }
+        }
+        Ok((head, groups))
+    }
+
     /// Unknown flags (anything not in `allowed`).
     pub fn check(&self, allowed: &[&str]) -> Result<(), ArgError> {
         for k in self.flags.keys() {
@@ -131,6 +162,18 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn splits_on() {
+        let a = Args::parse(["notify", "send", "t", "--action", "Go", "--on", "Go", "--run", "make", "--headless", "--on=clicked", "--attention", "hi"].map(String::from)).unwrap();
+        let (head, groups) = a.split_on("on").unwrap();
+        assert_eq!(head, ["notify", "send", "t", "--action", "Go"]);
+        assert_eq!(groups, [("Go".to_string(), vec!["--run".to_string(), "make".into(), "--headless".into()]), ("clicked".to_string(), vec!["--attention".to_string(), "hi".into()])]);
+        assert!(Args { raw: vec!["send".into(), "--on".into()], ..Args::default() }.split_on("on").is_err());
+        // --one isn't --on
+        let (head, groups) = Args::parse(["x", "--one", "1"].map(String::from)).unwrap().split_on("on").unwrap();
+        assert_eq!((head.len(), groups.len()), (3, 0));
+    }
+
     #[test]
     fn parses() {
         let a = Args::parse(["read", "abc", "--lines", "5", "--json", "--scope=always", "--", "x", "--y"].map(String::from)).unwrap();

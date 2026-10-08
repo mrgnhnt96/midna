@@ -342,6 +342,15 @@ pub struct NotifySendParams {
     /// `response` (with `wait_secs`), from `notify.response`, and as a `notify.responded` event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// What to do the moment the human responds, by response: a button's label, `clicked` or
+    /// `dismissed`. Each is a trigger action (`run_command`, `attention`, `send_to_session`,
+    /// `notify`, `start_agent`, `set_status`, `clear_status`) and runs once, like a local
+    /// trigger firing on `notify.responded`: its run is a delivery (`trigger.deliveries`), and
+    /// `notify.response` says what it did. A `project_id` may be a project's name, or empty for
+    /// the terminal's project. Kept on disk until midnad forgets the notification, so a
+    /// response after a restart still runs it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub on: std::collections::BTreeMap<String, TriggerAction>,
     /// Wait up to this many seconds (at most 600) for the human to pick an action, click or
     /// dismiss it. Omitted: return at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,6 +384,9 @@ pub struct NotifyResponseResult {
     /// What the human did; None: nothing yet (or not before `wait_secs` ran out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<crate::notify::Response>,
+    /// What the `on` action for that response did (None: it had none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<crate::notify::CallbackRun>,
 }
 
 /// The app reports what the human did with a notification (`notify.respond`, app only).
@@ -606,6 +618,9 @@ pub struct NotifySendResult {
     /// With `wait_secs`: what the human did (None: nothing before it ran out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<crate::notify::Response>,
+    /// With `wait_secs`: what the `on` action for that response did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<crate::notify::CallbackRun>,
 }
 
 // ------------------------------------------------------------------ daemon

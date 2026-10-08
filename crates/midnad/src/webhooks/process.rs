@@ -446,7 +446,7 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
             let body = if body.trim().is_empty() { [f.subject.clone(), f.url.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ") } else { body };
             // Clicking a webhook's notification opens what it's about, unless it says otherwise.
             let open = open.as_deref().map(|u| payload::render(u, f, payload, false)).or_else(|| f.url.clone());
-            let extras = crate::notify::Extras { id: id.as_deref().map(|i| payload::render(i, f, payload, false)), open, actions: vec![] };
+            let extras = crate::notify::Extras { id: id.as_deref().map(|i| payload::render(i, f, payload, false)), open, actions: vec![], ..Default::default() };
             (None, crate::local::notify(d, t, None, &title, &body, *sound, category.as_deref(), extras))
         }
         a => (None, format!("Skipped: {} needs a local trigger", crate::local::action_name(a))),

@@ -31,6 +31,16 @@ impl TestDaemon {
         TestDaemon { handle: Some(handle), home }
     }
 
+    /// Stop midnad and start a new one on the same home (state.json, the event log).
+    pub fn restart(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.shutdown();
+        }
+        let mut cfg = midnad::Config::for_home(self.home.clone());
+        cfg.app_path = Some(std::env::current_exe().unwrap().to_string_lossy().into_owned());
+        self.handle = Some(midnad::start(cfg).expect("restart daemon"));
+    }
+
     pub fn daemon(&self) -> std::sync::Arc<midnad::daemon::Daemon> {
         self.handle.as_ref().expect("running").daemon.clone()
     }

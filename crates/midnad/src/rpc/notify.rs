@@ -5,7 +5,8 @@ use crate::daemon::Daemon;
 use midna_proto::notify::{self, CATEGORIES, is_override_key, setting_key};
 use midna_proto::*;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// The terminal a call is about: `session`, else the caller's own; None with `global`.
 fn target(d: &Daemon, ctx: &Ctx, sid: Option<Id>, global: bool) -> Result<Option<Id>, RpcError> {
@@ -112,13 +113,50 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: NotifySendParams) -> R {
             return Err(RpcError::bad_params(format!("no kind `{k}` to send as; kinds you can send to: agent, {known}")));
         }
     };
-    let extras = extras(p.id, p.open, p.actions)?;
+    let mut extras = extras(p.id, p.open, p.actions)?;
     let sid = target(d, ctx, p.session, false)?;
+    extras.on = callbacks(d, sid.as_deref(), &p.title, &extras.actions, p.on)?;
+    extras.sent_by = Some(ctx.actor());
     let mut r = crate::notify::send_as(d, &category, sid, &p.title, &p.body, p.sound, !ctx.is_human(), extras);
     if let (true, Some(secs), Some(id)) = (r.posted, p.wait_secs, r.id.as_deref()) {
-        r.response = crate::notify::wait_response(d, id, secs);
+        (r.response, r.callback) = crate::notify::wait_response(d, id, secs);
     }
     ok(r)
+}
+
+/// Check `notify.send`'s `on` actions: each key is a button, `clicked` or `dismissed`; a
+/// `project_id` is a project's id or name (empty: the terminal's project) and comes back as
+/// its id; and each action passes the checks a local trigger's does.
+pub fn callbacks(d: &Daemon, sid: Option<&str>, title: &str, actions: &[String], on: BTreeMap<String, TriggerAction>) -> Result<BTreeMap<String, TriggerAction>, RpcError> {
+    let mut out = BTreeMap::new();
+    for (key, mut action) in on {
+        let key = key.trim().to_string();
+        let reserved = matches!(key.as_str(), "clicked" | "dismissed");
+        if !reserved && !actions.contains(&key) {
+            let mut known: Vec<&str> = actions.iter().map(String::as_str).collect();
+            known.extend(["clicked", "dismissed"]);
+            return Err(RpcError::bad_params(format!("on {key:?}: no button by that name; use one of {}", known.join(", "))));
+        }
+        if reserved && actions.contains(&key) {
+            return Err(RpcError::bad_params(format!("on {key:?}: a button is named {key:?} too, so it can't tell them apart; rename the button")));
+        }
+        if action.needs_session() && sid.is_none() {
+            return Err(RpcError::bad_params(format!("on {key:?}: {} acts on the notification's terminal; give it one (session)", crate::local::action_name(&action))));
+        }
+        let what = crate::local::action_name(&action);
+        if let TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } = &mut action {
+            *project_id = if project_id.trim().is_empty() {
+                let project = sid.and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));
+                project.ok_or_else(|| RpcError::bad_params(format!("on {key:?}: {what} needs a project (project_id), or a terminal to take it from")))?
+            } else {
+                super::project::resolve(d, project_id.trim())?.id
+            };
+        }
+        let t = crate::notify::callback_trigger("check", title, &key, action, None);
+        super::trigger::validate(d, &t).map_err(|e| RpcError::bad_params(format!("on {key:?}: {}", e.message)))?;
+        out.insert(key, t.action);
+    }
+    Ok(out)
 }
 
 /// Check `notify.send`'s id, URL and buttons.
@@ -141,7 +179,7 @@ pub fn extras(id: Option<String>, open: Option<String>, actions: Vec<String>) ->
     if let Some(a) = actions.iter().enumerate().find(|(i, a)| actions[..*i].contains(a)).map(|(_, a)| a) {
         return Err(RpcError::bad_params(format!("action {a:?} is listed twice")));
     }
-    Ok(crate::notify::Extras { id, open, actions })
+    Ok(crate::notify::Extras { id, open, actions, ..Default::default() })
 }
 
 /// Ask the app to take a `notify.send` notification away, wherever it shows.
@@ -160,16 +198,17 @@ pub fn withdraw(d: &Daemon, ctx: &Ctx, p: NotifyWithdrawParams) -> R {
 /// What the human did with a `notify.send` notification, waiting up to `wait_secs` for it.
 pub fn response(d: &Daemon, p: NotifyResponseParams) -> R {
     if crate::notify::sent(d, &p.id).is_none() {
-        return Err(RpcError::not_found(format!("no notification `{}` (unknown, or sent before midnad last restarted)", p.id)));
+        return Err(RpcError::not_found(format!("no notification `{}` (unknown, or midnad forgot it: it keeps the last {})", p.id, crate::notify::SENT_MAX)));
     }
-    let response = crate::notify::wait_response(d, &p.id, p.wait_secs.unwrap_or(0));
-    ok(NotifyResponseResult { id: p.id, response })
+    let (response, callback) = crate::notify::wait_response(d, &p.id, p.wait_secs.unwrap_or(0));
+    ok(NotifyResponseResult { id: p.id, response, callback })
 }
 
-/// The app reports a click, button or dismissal (human only: agents can't answer for the human).
-pub fn respond(d: &Daemon, p: NotifyRespondParams) -> R {
+/// The app reports a click, button or dismissal (human only: agents can't answer for the
+/// human), which runs the notification's `on` action for it.
+pub fn respond(d: &Arc<Daemon>, p: NotifyRespondParams) -> R {
     let s = crate::notify::respond(d, &p.id, p.response).map_err(RpcError::not_found)?;
-    ok(NotifyResponseResult { id: s.id, response: s.response })
+    ok(NotifyResponseResult { id: s.id, response: s.response, callback: s.callback })
 }
 
 /// At most this many kinds you added.
