@@ -1488,7 +1488,7 @@ impl Badge {
 
     /// Bring midna forward on the item's terminal (as a clicked notification does), or open a
     /// `notify.send` notification's URL. `terminal`: its terminal itself, not its needs-you card
-    /// over it (the card's "Terminal" button).
+    /// over it (the card's "Terminal" button, a row's arrow).
     fn open(&mut self, session: Option<String>, need: Option<String>, held: Option<String>, sent: Option<Sent>, terminal: bool, cx: &mut Context<Self>) {
         self.close_list();
         self.menu = false;
@@ -2294,7 +2294,7 @@ impl Badge {
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
-                        b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), false, cx);
+                        b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), true, cx);
                     })),
             );
         }
@@ -2567,7 +2567,7 @@ impl Badge {
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
-                        b.open(session.clone(), need.clone(), held.clone(), sent.clone(), false, cx);
+                        b.open(session.clone(), need.clone(), held.clone(), sent.clone(), true, cx);
                     })),
             );
         }
