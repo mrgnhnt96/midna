@@ -161,10 +161,10 @@ pub struct MainWindow {
     pub drag_out: Option<(Vec<String>, Point<Pixels>)>,
     /// Closing this window with terminals in it: close them or move them? (`ui::close_window`)
     pub close_ask: Option<crate::ui::close_window::CloseAsk>,
-    /// Sidebar multi-selection (⌘-click toggles a row, ⌘⇧-click selects a range): every
+    /// Sidebar multi-selection (⌘-click toggles a row, ⇧-click selects a range): every
     /// selected terminal id, `selected` included, or empty when just `selected` is.
     pub marked: Vec<String>,
-    /// Where a ⌘⇧-click range starts: the last row clicked without ⇧.
+    /// Where a ⇧-click range starts: the last row clicked without ⇧.
     pub mark_anchor: Option<String>,
     pub screen: Screen,
     pub overlay: Overlay,
@@ -1301,7 +1301,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// ⌘⇧-click: select every row from the anchor (the last row clicked without ⇧) to `id`,
+    /// ⇧-click (or ⌘⇧-click): select every row from the anchor (the last row clicked without ⇧) to `id`,
     /// in sidebar order, skipping popped-out terminals and rows hidden in folded projects.
     pub fn mark_range(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let rows: Vec<String> = self
@@ -1323,7 +1323,7 @@ impl MainWindow {
         self.select(id, window, cx);
     }
 
-    /// A plain click: just this terminal, which also becomes the anchor for ⌘⇧-click. It
+    /// A plain click: just this terminal, which also becomes the anchor for ⇧-click. It
     /// closes needs-you, even on the terminal already selected, to show the terminal.
     pub fn select_only(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_deref() != Some(&id) {

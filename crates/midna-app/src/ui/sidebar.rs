@@ -684,12 +684,12 @@ fn rail_row(m: &MainWindow, s: &Session, project: &str, (grow, fade): (f32, f32)
         .child(div().absolute().top(px(5. - 4. * grow)).right(px(5. - 4. * grow)).child(super::terminal_dot(m, t, s, 8. * (1. + grow))))
 }
 
-/// ⌘-click toggles `id` in the selection, ⌘⇧-click selects the range to it. False for a
-/// click without ⌘.
+/// ⌘-click toggles `id` in the selection, ⇧-click (or ⌘⇧-click) selects the range to it.
+/// False for a click without ⌘ or ⇧.
 fn click_marks(m: &mut MainWindow, id: &str, ev: &ClickEvent, w: &mut Window, cx: &mut Context<MainWindow>) -> bool {
     let md = ev.modifiers();
     match (md.platform, md.shift) {
-        (true, true) => m.mark_range(id.to_string(), w, cx),
+        (_, true) => m.mark_range(id.to_string(), w, cx),
         (true, false) => m.toggle_mark(id.to_string(), w, cx),
         _ => return false,
     }
@@ -721,7 +721,7 @@ fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Op
 
 /// Moves the dragged terminal to `target`'s place once the cursor passes `target`'s middle
 /// (from above or below), so rows of different heights don't swap back and forth. Dragging
-/// a selected row (⌘-click / ⌘⇧-click) moves its group's selected rows with it, as one block.
+/// a selected row (⌘-click / ⇧-click) moves its group's selected rows with it, as one block.
 fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds: Bounds<Pixels>, cx: &mut Context<MainWindow>) {
     let ids: Vec<String> = m.ordered_sessions().iter().map(|s| s.id.clone()).collect();
     let moving: Vec<String> = if m.marked.len() > 1 && m.is_marked(dragged) {
