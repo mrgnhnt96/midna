@@ -149,6 +149,14 @@ impl Engine {
         self.force_full = true;
     }
 
+    /// The app that set them is gone (an agent exited back to its shell): mouse reporting, focus
+    /// reports and kitty keyboard flags off, so clicks and keys reach the shell as usual. An app
+    /// that exits without turning them off leaves them on.
+    pub fn reset_app_modes(&mut self) {
+        self.term.vt_write(b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[=0;1u");
+        self.force_full = true;
+    }
+
     /// Next frame must contain every row (a new client attached).
     pub fn force_full(&mut self) {
         self.force_full = true;

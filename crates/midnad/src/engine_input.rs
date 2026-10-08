@@ -854,6 +854,16 @@ mod tests {
     }
 
     #[test]
+    fn modes_an_agent_left_on_are_reset() {
+        let mut e = eng(b"\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[>1u");
+        assert!(e.mouse_tracking());
+        e.reset_app_modes();
+        assert!(!e.mouse_tracking(), "clicks select and move the shell's cursor again");
+        assert!(e.focus(true).is_empty());
+        assert_eq!(e.kitty_flags(), 0);
+    }
+
+    #[test]
     fn mouse_reporting_sgr() {
         let mut e = eng(b"\x1b[?1000h\x1b[?1006h");
         let m = |action, button, x, y| MouseMsg { action, button, mods: 0, x, y };

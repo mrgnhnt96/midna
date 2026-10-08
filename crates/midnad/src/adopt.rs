@@ -296,6 +296,9 @@ fn release(d: &Daemon, sid: &str, why: &str) {
         core.agents.remove(sid);
     }
     d.mark_dirty();
+    if let Some(rt) = d.rt(sid) {
+        rt.with(|e| e.reset_app_modes());
+    }
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
     d.set_status(sid, StatusState::Idle, Some(why.into()), None, Actor::system());
 }
