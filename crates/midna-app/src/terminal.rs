@@ -436,13 +436,10 @@ impl TerminalView {
         let backend = self.backend.clone();
         let sink = self.sink.clone();
         let sid = self.session_id.clone();
-        // Estimate from the window until the first layout reports the real size.
-        let est = window.viewport_size();
-        let (mut cols, mut rows) = self.req_size.get();
-        if cols == 0 {
-            cols = ((f32::from(est.width) - 264. - 2. * PAD_X) / self.cell_w).floor().clamp(20., 400.) as u16;
-            rows = ((f32::from(est.height) - 120. - 2. * PAD_Y) / LINE_H).floor().clamp(5., 200.) as u16;
-        }
+        // Before the first layout this is 0x0, which leaves the session at its own size: a guessed
+        // size here, then the real one a moment later, resized an agent twice in a row on relaunch
+        // and its redraws left stray rows behind.
+        let (cols, rows) = self.req_size.get();
         let (cw, ch) = (self.cell_w.round() as u32, LINE_H as u32);
         let task = cx.spawn_in(window, async move |this, cx| {
             let (res, gone) = cx

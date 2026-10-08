@@ -699,7 +699,7 @@ impl Backend for FakeBackend {
             Some(t) if t.alive() => t.clone(),
             _ => {
                 let pre = st.scripts.get(req.session).cloned().unwrap_or_default();
-                let t = Arc::new(pty::FakeTerm::spawn(&sess, &pre, req.cols, req.rows));
+                let t = Arc::new(pty::FakeTerm::spawn(&sess, &pre, if req.cols == 0 { 100 } else { req.cols }, if req.rows == 0 { 30 } else { req.rows }));
                 st.terms.insert(req.session.to_string(), t.clone());
                 t
             }
@@ -872,7 +872,9 @@ mod pty {
         }
 
         pub fn attach(self: &Arc<Self>, sink: Arc<FrameSink>, req: AttachRequest<'_>) -> Arc<dyn TermStream> {
-            let _ = self.tx.send(Msg::Resize(req.cols.max(2), req.rows.max(2), req.cell_w, req.cell_h));
+            if req.cols > 0 && req.rows > 0 {
+                let _ = self.tx.send(Msg::Resize(req.cols.max(2), req.rows.max(2), req.cell_w, req.cell_h));
+            }
             let _ = self.tx.send(Msg::Attach(sink.clone()));
             Arc::new(FakeStream { term: self.clone(), sink, closed: AtomicBool::new(false) })
         }
