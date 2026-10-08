@@ -1546,6 +1546,7 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
         who,
         warn,
     };
+    let installed = format!("Installed: {}", midna_proto::VERSION);
     let update = match snap.as_ref().map(|s| &s.update) {
         Some(UpdateState::Ready { version, .. }) => row(
             "Update",
@@ -1564,14 +1565,14 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
         Some(UpdateState::Downloading { version }) => {
             row("Update", t.dim, format!("Downloading {version}…"), t.dim, None, "Verified before it's offered.".into(), "midna updates check", Who::Human, false)
         }
-        Some(UpdateState::Checking) => row("Update", t.dim, "Checking…".into(), t.dim, None, "Checks every 6 hours.".into(), "midna updates check", Who::Human, false),
+        Some(UpdateState::Checking) => row("Update", t.dim, "Checking…".into(), t.dim, None, installed.clone(), "midna updates check", Who::Human, false),
         Some(UpdateState::UpToDate { at }) => row(
             "Update",
             t.ok,
-            format!("Up to date · checked {}", ago(*at)),
+            format!("Up to date · checked at {}", clock_at(*at)),
             t.fg,
             Some(("Check now".into(), Act::Life(Cmd::CheckNow), false)),
-            "Checks every 6 hours.".into(),
+            installed.clone(),
             "midna updates check",
             Who::Human,
             false,
@@ -1579,7 +1580,7 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
         Some(UpdateState::Failed { error, at }) => row(
             "Update",
             t.need,
-            format!("Check failed {}", ago(*at)),
+            format!("Check failed at {}", clock_at(*at)),
             t.need,
             Some(("Retry".into(), Act::Life(Cmd::CheckNow), false)),
             error.clone(),
@@ -1594,7 +1595,7 @@ fn lifecycle_rows(t: &Theme) -> LifeRows {
             "Not checked yet".into(),
             t.dim,
             Some(("Check now".into(), Act::Life(Cmd::CheckNow), false)),
-            "Checks every 6 hours.".into(),
+            installed.clone(),
             "midna updates check",
             Who::Human,
             false,
@@ -2773,6 +2774,21 @@ fn ago(at: Instant) -> String {
         60..=3599 => format!("{}m ago", s / 60),
         _ => format!("{}h ago", s / 3600),
     }
+}
+
+/// "3:07 PM" (local) for a moment in the past.
+fn clock_at(at: Instant) -> String {
+    let when = std::time::SystemTime::now() - at.elapsed();
+    let t = when.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    let (h, ap) = match tm.tm_hour {
+        0 => (12, "AM"),
+        h @ 1..=11 => (h, "AM"),
+        12 => (12, "PM"),
+        h => (h - 12, "PM"),
+    };
+    format!("{h}:{:02} {ap}", tm.tm_min)
 }
 
 /// Dev: `MIDNA_SETTINGS_SNAPSHOT=out.png` renders this window offscreen once it has data.
