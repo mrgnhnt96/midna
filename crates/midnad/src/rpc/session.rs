@@ -876,6 +876,73 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
         item.screen_excerpt = d.rt(sid).and_then(|rt| rt.read(true)).map(|(l, _, _)| tail_nonempty(l, 8));
         d.raise_needs_you(item);
     }
+    // Hung up: the terminal (or midnad) is going away, so no shell to drop into.
+    let hung_up = signal == Some(libc::SIGHUP) || d.shutting_down.load(Ordering::Relaxed);
+    if kind == SessionKind::Agent && !close_on_exit && !hung_up && d.core().state.setting_bool("agents.shell_on_exit") {
+        if let Err(e) = swap_to_shell(d, sid, generation, &reason) {
+            eprintln!("midnad: session {sid}: no shell after the agent exited: {e}");
+        }
+    }
+}
+
+/// An agent midna started exited (`agents.shell_on_exit`): the terminal becomes a login shell
+/// in the same tab, on top of the agent's last screen and scrollback, the way a `claude` typed
+/// into a shell ends (`adopt::release`). The agent ran as the terminal's own process (`exec`),
+/// so the shell needs a new PTY.
+fn swap_to_shell(d: &Arc<Daemon>, sid: &str, generation: u64, reason: &str) -> Result<(), String> {
+    let old = {
+        let mut core = d.core();
+        if core.rt.get(sid).map(|r| r.generation) != Some(generation) {
+            return Ok(()); // closed or restarted meanwhile
+        }
+        core.rt.remove(sid)
+    };
+    let Some(old) = old else { return Ok(()) };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let snap = old.tx.send(EngineMsg::Snapshot(tx)).ok().and_then(|_| rx.recv_timeout(std::time::Duration::from_secs(5)).ok());
+    let _ = old.tx.send(EngineMsg::Stop);
+    let Some(s) = d.core().state.session(sid).cloned() else { return Ok(()) };
+    // Only the primary screen carries over: the shell starts out of any alt screen, with its
+    // own title and nothing half-parsed.
+    let snap = snap.map(|mut t| {
+        t.alt_active = false;
+        t.alt_vt = None;
+        t.alt_cursor = None;
+        t.title.clear();
+        t.pending.clear();
+        t
+    });
+    let (cols, rows) = snap.as_ref().map_or((100, 30), |t| (t.cols, t.rows));
+    let command = vec![login_shell(), "-l".into()];
+    let mut env = session_env(d, sid, &s.project_id);
+    let argv = crate::adopt::shell_env(d, &command, &mut env);
+    let launch = Launch { sid: sid.to_string(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows };
+    let rt = term::start_on(d, launch, snap).map_err(|e| e.to_string())?;
+    // Whatever the agent left on (mouse reporting, kitty keys) would reach the shell.
+    rt.with(|e| e.reset_app_modes());
+    let mut core = d.core();
+    if core.state.session(sid).is_none() {
+        drop(core);
+        rt.kill(true);
+        let _ = rt.tx.send(EngineMsg::Stop);
+        return Ok(());
+    }
+    if let Some(sess) = core.state.session_mut(sid) {
+        sess.kind = SessionKind::Shell;
+        sess.agent = None;
+        sess.agent_info = None;
+        sess.agent_args.clear();
+        sess.command = command;
+        sess.pid = Some(rt.pid);
+        sess.title.clear();
+    }
+    core.agents.remove(sid);
+    core.rt.insert(sid.to_string(), rt);
+    drop(core);
+    d.mark_dirty();
+    let agent = s.agent.map_or("agent", |a| a.as_str());
+    d.set_status(sid, StatusState::Idle, Some(format!("{agent} {reason}")), None, Actor::system());
+    Ok(())
 }
 
 pub fn tail_nonempty(mut lines: Vec<String>, n: usize) -> Vec<String> {

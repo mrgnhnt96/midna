@@ -185,7 +185,13 @@ fn apply_resize(eng: &mut Engine, fd: RawFd, (c, r, cw, ch): (u16, u16, u32, u32
     pty::resize(fd, c, r);
 }
 
-pub fn start(d: &Arc<Daemon>, mut l: Launch) -> std::io::Result<RtHandle> {
+pub fn start(d: &Arc<Daemon>, l: Launch) -> std::io::Result<RtHandle> {
+    start_on(d, l, None)
+}
+
+/// `start`, on top of `snap` when given: the new process picks up where the old screen and
+/// scrollback left off (an agent that exited, replaced by a shell).
+pub fn start_on(d: &Arc<Daemon>, mut l: Launch, snap: Option<crate::engine::TermSnap>) -> std::io::Result<RtHandle> {
     (l.cols, l.rows) = clamp_size(l.cols, l.rows);
     let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows)?;
     let pid = sp.child.id() as i32;
@@ -193,7 +199,12 @@ pub fn start(d: &Arc<Daemon>, mut l: Launch) -> std::io::Result<RtHandle> {
     // the same way. Dropping a Child neither waits nor kills.
     drop(sp.child);
     let (m, cols, rows) = (sp.master, l.cols, l.rows);
-    Ok(run(d, &l.sid, sp.master, pid, true, Box::new(move || Engine::new(cols, rows, Some(m))), String::new()))
+    let make: MakeEngine = match snap {
+        // The caller launches at the snapshot's size: its VT is laid out for it.
+        Some(s) => Box::new(move || Engine::restored(&s, Some(m))),
+        None => Box::new(move || Engine::new(cols, rows, Some(m))),
+    };
+    Ok(run(d, &l.sid, sp.master, pid, true, make, String::new()))
 }
 
 /// Re-adopt a session whose PTY master fd and child survived a daemon upgrade (same PID
