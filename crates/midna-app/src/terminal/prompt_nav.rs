@@ -39,6 +39,10 @@ pub(super) const BAR_H: f32 = PAD_Y + LINE_H;
 const LIVE_W: f32 = 70.;
 const LIVE_MS: f32 = 180.;
 
+/// How long a frame without Claude's scrolled-back hint is taken for one it is still painting
+/// (scrolling redraws the screen) rather than the view reaching the live end.
+const HINT_HOLD: Duration = Duration::from_millis(250);
+
 /// The prompt pill's width, eased to its new content's (another prompt's title) over `LIVE_MS`.
 /// `to` = 0 until first measured.
 #[derive(Default)]
@@ -87,6 +91,8 @@ pub struct PromptNav {
     pill: Rc<RefCell<PillWidth>>,
     /// The agent's view (or the scrollback) is scrolled back from the live end.
     scrolled: bool,
+    /// When the agent last drew its scrolled-back hint (`HINT_HOLD`).
+    hint_at: Option<Instant>,
     /// Rail tick under the pointer.
     hover: Option<usize>,
     /// Prompt rows the list didn't know, already refetched for.
@@ -108,6 +114,12 @@ impl PromptNav {
         let vis = self.on_screen();
         let texts: Vec<String> = vis.iter().map(|&i| self.prompts[i].text.clone()).collect();
         let sc = scr::scan(lines, cursor);
+        if alt && sc.scrolled {
+            self.hint_at = Some(Instant::now());
+        } else if alt && self.scrolled && self.holding() {
+            // Half-painted: keep the last frame's reading, or Live ↓ flickers while scrolling.
+            return false;
+        }
         let hint = self.here.and_then(|h| vis.iter().position(|&i| i == h));
         let a = scr::assign(&sc.rows, &texts, hint);
         self.scrolled = if alt { sc.scrolled } else { !at_bottom };
@@ -141,6 +153,11 @@ impl PromptNav {
             }
         }
         unknown
+    }
+
+    /// Scrolled back, the hint missing from the screen for less than `HINT_HOLD`.
+    fn holding(&self) -> bool {
+        self.hint_at.is_some_and(|at| at.elapsed() < HINT_HOLD)
     }
 
     /// The prompt ⌥⌘↑ goes to: from the live end, the last one not already on screen.
@@ -214,7 +231,9 @@ impl TerminalView {
             gpui_kit::base::apply_system_reduce_motion(cx);
             self.nav.live_at = (!cx.reduce_motion()).then(Instant::now);
         }
-        if self.nav.live_at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS) || self.nav.pill.borrow().moving() {
+        // While holding, look again: the agent may not paint another frame once it is live.
+        let anim = self.nav.live_at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS) || self.nav.pill.borrow().moving();
+        if anim || (self.nav.scrolled && self.ext.alt_screen && self.nav.holding()) {
             window.request_animation_frame();
         }
     }
@@ -448,7 +467,7 @@ fn hhmm(at: &str) -> String {
 mod tests {
     use super::PromptNav;
     use midna_proto::PromptMark;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     fn nav(texts: &[&str]) -> PromptNav {
         let prompts = texts.iter().enumerate().map(|(i, t)| PromptMark { n: i as u32 + 1, text: t.to_string(), on_screen: true, ..Default::default() }).collect();
@@ -497,8 +516,25 @@ mod tests {
         assert!(n.scrolled);
         assert_eq!(n.pinned.as_deref(), Some("[Image #3]"));
         let live: Vec<String> = ["❯ [Image #3]", "  Ran 1 shell command", RULE, "❯", RULE].map(String::from).to_vec();
+        n.hint_at = Some(Instant::now() - Duration::from_secs(1));
         n.scan(&live, Some(3), true, true);
         assert_eq!(n.pinned, None, "only while scrolled back");
+    }
+
+    #[test]
+    fn a_frame_missing_the_hint_while_scrolling_stays_scrolled() {
+        let mut n = nav(&["alpha one two", "bravo one two"]);
+        let back: Vec<String> = ["❯ bravo one two", "  12. Peach", "  13. Pear  Jump to bottom: fn+↓ to scroll", RULE, "❯", RULE].map(String::from).to_vec();
+        n.scan(&back, Some(4), true, true);
+        // mid-redraw: the hint's row not painted yet
+        let torn: Vec<String> = ["❯ bravo one two", "  12. Peach", "", RULE, "❯", RULE].map(String::from).to_vec();
+        n.scan(&torn, Some(4), true, true);
+        assert!(n.scrolled, "Live ↓ stays");
+        assert_eq!(n.pinned.as_deref(), Some("bravo one two"));
+        // still no hint once the hold is over: live
+        n.hint_at = Some(Instant::now() - Duration::from_secs(1));
+        n.scan(&torn, Some(4), true, true);
+        assert!(!n.scrolled);
     }
 
     #[test]
