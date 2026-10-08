@@ -212,7 +212,7 @@ fn agent_streams_are_view_only() {
     std::thread::sleep(Duration::from_millis(500));
     assert!(!read(&mut h, &id).contains("typed-by-agent-stream"), "agent stream input must be ignored");
     // The human's stream still types.
-    let mut st = midna_proto::Client::attach_stream(d.socket(), &id, 40, 10, 8, 16).unwrap();
+    let mut st = d.human().attach(&id, 40, 10, 8, 16).unwrap();
     st.input(b"echo typed-by-human-$((1+1))\r").unwrap();
     wait_for(5, "human stream input", || read(&mut h, &id).contains("typed-by-human-2").then_some(()));
 }

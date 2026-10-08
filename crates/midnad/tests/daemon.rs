@@ -283,7 +283,7 @@ fn stream_attach_frames_roundtrip() {
     let d = TestDaemon::start();
     let mut c = d.human();
     let id = open_sh(&mut c);
-    let mut st = Client::attach_stream(d.socket(), &id, 60, 20, 8, 16).unwrap();
+    let mut st = d.human().attach(&id, 60, 20, 8, 16).unwrap();
     st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     // Initial credit: the first frame is full and sized to the attach request.
     let f = st.next_frame().unwrap();
@@ -346,7 +346,7 @@ signal.signal(signal.SIGWINCH, draw)
 while True: time.sleep(1)"#;
     let s = call(&mut c, "session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["python3", "-c", app] }));
     let id = s["id"].as_str().unwrap().to_string();
-    let mut st = Client::attach_stream(d.socket(), &id, 60, 20, 8, 16).unwrap();
+    let mut st = d.human().attach(&id, 60, 20, 8, 16).unwrap();
     let screen = |c: &mut Client| -> Vec<String> {
         let r = call(c, "session.read", json!({ "id": id, "screen": true }));
         r["text"].as_str().unwrap().split('\n').map(str::to_string).collect()
@@ -652,7 +652,7 @@ fn stream_keys_scroll_and_selection() {
     let d = TestDaemon::start();
     let mut c = d.human();
     let id = open_sh(&mut c);
-    let mut st = Client::attach_stream(d.socket(), &id, 60, 10, 8, 16).unwrap();
+    let mut st = d.human().attach(&id, 60, 10, 8, 16).unwrap();
     st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut last = st.next_frame().unwrap();
     // A reader that pushes the kitty "disambiguate" flag, then dumps the next 7 bytes it gets.

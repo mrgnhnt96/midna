@@ -32,6 +32,8 @@ impl Bin {
             .arg(&home)
             .env_remove("MIDNA_SOCKET")
             .env_remove("MIDNA_SESSION")
+            // Inherited from a midna terminal, it would make SIGTERM stop instead of restart.
+            .env_remove("MIDNA_SIGTERM")
             .env("MIDNA_APP_PATH", std::env::current_exe().unwrap())
             .env("MIDNA_NO_GH", "1")
             .env("MIDNA_NOTIFY_SYSTEM", "0")

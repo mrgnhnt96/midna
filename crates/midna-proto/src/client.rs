@@ -165,7 +165,8 @@ impl Client {
         Ok(Subscription { client: self, seq_at_subscribe: r.seq })
     }
 
-    /// Open a dedicated frame-stream connection for a session.
+    /// Open a dedicated frame-stream connection for a session (caller hint from `MIDNA_SESSION`,
+    /// as with [`Client::connect`]).
     pub fn attach_stream(
         socket: impl AsRef<Path>,
         session: &str,
@@ -174,10 +175,15 @@ impl Client {
         cell_w: u32,
         cell_h: u32,
     ) -> Result<AttachStream, ClientError> {
-        let mut c = Client::connect(socket)?;
+        Client::connect(socket)?.attach(session, cols, rows, cell_w, cell_h)
+    }
+
+    /// Turn this connection into a frame stream for a session, keeping its caller hint (so a
+    /// client that cleared it with `set_caller(None)` attaches as itself, not as `MIDNA_SESSION`).
+    pub fn attach(mut self, session: &str, cols: u16, rows: u16, cell_w: u32, cell_h: u32) -> Result<AttachStream, ClientError> {
         let params = json!({ "session": session, "cols": cols, "rows": rows, "cell_w": cell_w, "cell_h": cell_h });
-        c.call_value("stream.attach", params)?;
-        Ok(AttachStream { reader: c.reader, writer: c.writer, buf: Vec::new() })
+        self.call_value("stream.attach", params)?;
+        Ok(AttachStream { reader: self.reader, writer: self.writer, buf: Vec::new() })
     }
 }
 
