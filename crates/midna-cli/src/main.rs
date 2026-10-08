@@ -1219,6 +1219,35 @@ fn notify(a: &Args, out: OutFn) -> Res {
                 println!("removed {}{}", s_(v, "removed"), if reset.is_empty() { String::new() } else { format!("; reset {}", reset.join(", ")) });
             });
         }
+        "history" | "hist" => {
+            a.check(&["session", "limit", "unread"])?;
+            let limit = a.get("limit").map(|l| l.parse::<u32>().map_err(|_| Fail::Usage(format!("--limit `{l}`: expected a number")))).transpose()?;
+            let unread_only = a.has("unread");
+            let v = call("notify.history", json!({ "session": session, "limit": limit }))?;
+            out(&v, &|v| {
+                let items: Vec<&Value> = v["items"].as_array().into_iter().flatten().filter(|i| !unread_only || i["unread"] == true).collect();
+                println!("{} unread · read up to {}", v["unread"].as_u64().unwrap_or(0), v["read_seq"].as_u64().unwrap_or(0));
+                if items.is_empty() {
+                    println!("  no {}notifications", if unread_only { "unread " } else { "" });
+                }
+                for i in items {
+                    let n = &i["notification"];
+                    let mark = if i["withdrawn"] == true { "-" } else if i["unread"] == true { "•" } else { " " };
+                    let body = match s_(n, "body").as_str() {
+                        "" => String::new(),
+                        b => format!(" — {b}"),
+                    };
+                    let at = guide::ago(&s_(i, "at"));
+                    println!("  {mark} {:>6}  {at:>8}  {:<11} {:<10} {}{body}", i["seq"], s_(n, "category"), s_(i, "session_id"), s_(n, "title"));
+                }
+            });
+        }
+        "read" => {
+            a.check(&[])?;
+            let seq = a.pos.get(2).map(|s| s.parse::<u64>().map_err(|_| Fail::Usage(format!("`{s}`: expected a seq (see midna notify history)")))).transpose()?;
+            let v = call("notify.read", json!({ "seq": seq }))?;
+            out(&v, &|v| println!("read up to {} · {} unread", v["read_seq"].as_u64().unwrap_or(0), v["unread"].as_u64().unwrap_or(0)));
+        }
         "clear" => {
             a.check(&["session"])?;
             let v = call("notify.clear", json!({ "session": session }))?;

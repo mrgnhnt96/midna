@@ -443,3 +443,44 @@ fn get_no_wait_and_needs_get() {
     let o = midna(&s, &["needs", "get", &nid], None, None);
     assert!(stdout(&o).contains("resolved: approve"), "{}", stdout(&o));
 }
+
+#[test]
+fn notify_history_lists_unread_and_read_marks_them() {
+    let d = D::start();
+    let s = d.sock();
+    let mut h = d.human();
+    h.call_value("settings.set", json!({ "key": "notify.bell.agent", "value": true })).unwrap();
+    let sess = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+    let sid = sess["id"].as_str().unwrap();
+    // The first look starts the read marker: only what comes after is unread.
+    assert_eq!(code(&midna(&s, &["notify", "history"], None, None)), 0);
+    for title in ["first", "second"] {
+        assert_eq!(code(&midna(&s, &["notify", "send", title], None, Some(sid))), 0);
+    }
+    let history = |args: &[&str]| -> Value {
+        let o = midna(&s, &[&["notify", "history", "--json"], args].concat(), None, None);
+        assert_eq!(code(&o), 0, "{o:?}");
+        serde_json::from_str(&stdout(&o)).unwrap()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while history(&[])["items"].as_array().map_or(0, Vec::len) < 2 {
+        assert!(std::time::Instant::now() < deadline, "notifications never posted");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let v = history(&[]);
+    assert_eq!(v["unread"], 2, "{v}");
+    let items = v["items"].as_array().unwrap();
+    let text = stdout(&midna(&s, &["notify", "history", "--unread"], None, None));
+    assert!(text.starts_with("2 unread") && text.contains("• ") && text.contains("second"), "{text}");
+
+    // Read up to the older one: the newer one stays unread.
+    let older = items[1]["seq"].as_u64().unwrap().to_string();
+    let o = midna(&s, &["notify", "read", &older], None, None);
+    assert!(stdout(&o).contains("1 unread"), "{o:?}");
+    assert_eq!(history(&["--unread"])["unread"], 1);
+    let o = midna(&s, &["notify", "read"], None, None);
+    assert!(stdout(&o).contains("0 unread"), "{o:?}");
+    let text = stdout(&midna(&s, &["notify", "history", "--unread"], None, None));
+    assert!(text.contains("no unread notifications"), "{text}");
+    assert_eq!(code(&midna(&s, &["notify", "read", "soon"], None, None)), 2);
+}

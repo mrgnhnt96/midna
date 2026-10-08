@@ -304,7 +304,7 @@ fn s(v: &Value, k: &str) -> String {
     }
 }
 
-fn ago(ts: &str) -> String {
+pub(crate) fn ago(ts: &str) -> String {
     match time::parse_rfc3339(ts) {
         Some(t) => {
             let d = (time::now_unix() - t).max(0);

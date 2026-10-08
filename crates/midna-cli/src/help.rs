@@ -255,7 +255,8 @@ pub static VERBS: &[Verb] = &[
                 notify kinds [list | add|update <key> [--label L] [--description D] [--color C] [--stay S] [--set field=value]… | rm <key>]\n       \
                 notify media | import <file> [--for <kind>|all] | remove <name> | test [<kind>]\n       \
                 notify play <kind>|<sound> [--volume 0-100] [--session <id>]\n       \
-                notify clear [--session <id>]",
+                notify clear [--session <id>]\n       \
+                notify history [--unread] [--limit <n>] [--session <id>] | read [<seq>]",
         summary: "which macOS notifications midna posts, per terminal or globally; send the human one",
         details: "Lists each kind (approval, attention, failed, turn_done, agent, requests, background, pr_checks,\n\
                   exited, triggers, restarted), whether it's on globally and for the terminal (default: yours).\n\
@@ -293,7 +294,11 @@ pub static VERBS: &[Verb] = &[
                   frontmost app. `play`\n\
                   plays a kind's sound or a sound by name now (at most 6 a minute), when the human asks for one.\n\
                   `clear` removes every midna notification from Notification Center (--session: only that\n\
-                  terminal's); opening a terminal already removes its own.",
+                  terminal's); opening a terminal already removes its own.\n\
+                  `history` lists what midna recorded, newest first, with its seq (• = unread, - = withdrawn;\n\
+                  --unread shows only those). Kinds that don't push a banner (failures, finished turns) show up\n\
+                  only here. `read` marks every notification so far read, or those up to <seq>; it never marks\n\
+                  any unread again. The app does it when the human opens Notifications; only do it when asked.",
         methods: &["notify.list", "notify.set", "notify.send", "notify.kinds.list", "notify.kinds.add", "notify.kinds.remove", "notify.media", "notify.import", "notify.remove", "notify.test", "notify.play", "notify.clear", "notify.withdraw", "notify.response", "notify.history", "notify.read"],
     },
     Verb {
