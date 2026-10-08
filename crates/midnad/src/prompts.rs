@@ -29,6 +29,19 @@ const JUMP_DEADLINE: Duration = Duration::from_secs(12);
 
 static JUMPS: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
+/// Whether a submitted "prompt" is one Claude Code sent itself: it delivers a finished background
+/// task (shell, subagent, workflow) as a `<task-notification>` user turn and runs the
+/// UserPromptSubmit hook for it. The transcript marks these `origin.kind` = task-notification;
+/// the hook has only the text.
+pub fn is_task_notification(prompt: &str) -> bool {
+    prompt.trim_start().starts_with("<task-notification>")
+}
+
+/// A logged `agent.prompt_submitted` the human sent (older logs hold task notifications too).
+pub fn is_human_prompt(e: &Event) -> bool {
+    !e.data.get("prompt").and_then(|p| p.as_str()).is_some_and(is_task_notification)
+}
+
 fn start_jump(sid: &str) -> u64 {
     let mut g = JUMPS.lock().unwrap_or_else(|e| e.into_inner());
     let n = g.get_or_insert_with(HashMap::new).entry(sid.to_string()).or_insert(0);
@@ -76,7 +89,7 @@ fn transcript_prompts(path: &str) -> Vec<(String, String)> {
 
 fn from_events(d: &Daemon, sid: &str, current: Option<&String>) -> Vec<PromptMark> {
     let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
-    let events = d.log.list(0, MAX_PROMPTS, &filter);
+    let events: Vec<Event> = d.log.list(0, MAX_PROMPTS, &filter).into_iter().filter(is_human_prompt).collect();
     let last_conv = events.iter().rev().find_map(|e| e.data.get("conversation").and_then(|c| c.as_str()).map(str::to_string));
     events
         .iter()
@@ -386,6 +399,14 @@ mod tests {
         assert_eq!(got, vec![("commit".to_string(), "t1".to_string()), ("[Image #5]\nLook".to_string(), "t2".to_string())]);
         assert!(transcript_prompts("/nonexistent/t.jsonl").is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn task_notifications_are_told_from_prompts() {
+        assert!(is_task_notification("<task-notification>\n<task-id>b1</task-id>\n</task-notification>"));
+        assert!(is_task_notification("\n <task-notification>x</task-notification>"));
+        assert!(!is_task_notification("what is a <task-notification>?"));
+        assert!(!is_task_notification(""));
     }
 
     #[test]

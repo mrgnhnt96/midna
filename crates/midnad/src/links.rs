@@ -122,7 +122,9 @@ pub fn prompt_times(d: &Daemon, sid: &str) -> Vec<i64> {
     if *seen < upto {
         let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
         for e in d.log.list(*seen, crate::prompts::MAX_PROMPTS, &filter) {
-            times.push(time::parse_rfc3339(&e.at).unwrap_or(0));
+            if crate::prompts::is_human_prompt(&e) {
+                times.push(time::parse_rfc3339(&e.at).unwrap_or(0));
+            }
             *seen = (*seen).max(e.seq);
         }
         *seen = (*seen).max(upto);

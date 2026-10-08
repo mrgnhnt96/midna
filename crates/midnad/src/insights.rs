@@ -110,7 +110,7 @@ fn compute(events: &[Event], from: i64, to: i64, by: Option<InsightsBy>) -> Acc 
         let key = key_for(by, sid, info, e.project_id.as_deref(), t);
         match e.kind.as_str() {
             kinds::AGENT_TURN_STARTED => acc.bump(key, |x| x.turns += 1),
-            kinds::AGENT_PROMPT_SUBMITTED => acc.bump(key, |x| x.messages += 1),
+            kinds::AGENT_PROMPT_SUBMITTED if crate::prompts::is_human_prompt(e) => acc.bump(key, |x| x.messages += 1),
             kinds::AGENT_COST => {
                 let d = e.data.get("delta_usd").and_then(Value::as_f64).unwrap_or(0.0);
                 acc.bump(key, |x| x.spend_usd += d);
@@ -231,7 +231,7 @@ fn walk<'a>(events: &'a [Event], from: i64, to: i64, mut f: impl FnMut(Hit<'_>))
         }
         let (metric, amount) = match e.kind.as_str() {
             kinds::AGENT_TURN_STARTED => (InsightsMetric::Turns, 1.0),
-            kinds::AGENT_PROMPT_SUBMITTED => (InsightsMetric::Messages, 1.0),
+            kinds::AGENT_PROMPT_SUBMITTED if crate::prompts::is_human_prompt(e) => (InsightsMetric::Messages, 1.0),
             kinds::AGENT_COST => (InsightsMetric::Spend, e.data.get("delta_usd").and_then(Value::as_f64).unwrap_or(0.0)),
             kinds::NEEDS_YOU_RESOLVED if e.data.pointer("/resolution/kind").and_then(Value::as_str) == Some("approve") => (InsightsMetric::Approvals, 1.0),
             kinds::TRIGGER_FIRED => (InsightsMetric::Triggers, 1.0),

@@ -35,8 +35,11 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
             // The conversation lets prompt fast travel tell prompts before a /clear apart.
             let conversation = payload.get("session_id").and_then(Value::as_str);
-            d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
-            crate::auto_name::on_prompt(d, &sid, prompt);
+            // A finished background task Claude reports to itself starts a turn, not a prompt.
+            if !crate::prompts::is_task_notification(prompt) {
+                d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
+                crate::auto_name::on_prompt(d, &sid, prompt);
+            }
             d.clear_agent_blocked(&sid);
             start_turn(d, &sid, &project, &actor);
         }

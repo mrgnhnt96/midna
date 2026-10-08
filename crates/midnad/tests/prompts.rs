@@ -40,6 +40,25 @@ fn prompts_list_marks_the_ones_before_a_clear() {
 }
 
 #[test]
+fn task_notifications_are_not_prompts() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    hook(&mut a, "SessionStart", json!({ "session_id": "c1", "source": "startup" }));
+    hook(&mut a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": "run the build in the background" }));
+    hook(&mut a, "Stop", json!({ "session_id": "c1" }));
+    let note = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+    hook(&mut a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": note }));
+    // Claude is working on the result all the same.
+    assert_eq!(call(&mut h, "session.get", json!({ "id": sid }))["status"]["state"], "working");
+    hook(&mut a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": "ship it" }));
+    let r = call(&mut h, "session.prompts", json!({ "id": sid }));
+    let got: Vec<(u64, &str)> = r["prompts"].as_array().unwrap().iter().map(|x| (x["n"].as_u64().unwrap(), x["text"].as_str().unwrap())).collect();
+    assert_eq!(got, [(1, "run the build in the background"), (2, "ship it")]);
+}
+
+#[test]
 fn links_know_the_prompt_they_came_up_in() {
     let d = TestDaemon::start();
     let mut h = d.human();

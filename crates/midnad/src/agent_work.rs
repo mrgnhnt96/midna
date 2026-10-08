@@ -101,7 +101,7 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
                 info.subagents.clear();
             }
         }
-        "UserPromptSubmit" if main_thread => {
+        "UserPromptSubmit" if main_thread && !p.get("prompt").and_then(Value::as_str).is_some_and(crate::prompts::is_task_notification) => {
             // "Finished this turn" starts over with each prompt the human sends.
             info.finished_subagents.clear();
         }
