@@ -15,9 +15,10 @@
 //! pointer on a capsule, an × grows in at its start (off the list) and an arrow at its end (to
 //! the terminal), and they linger a beat after it leaves. Clicking a capsule grows it into its
 //! card (Approve / Deny, or Dismiss, and Terminal), one at a time, and glides the list to put
-//! it in the middle; the card's top row collapses it. Clear takes everything off. The capsule
-//! beside the badge works like a row: hovering holds it and grows in its × and arrow (and
-//! Approve / Deny for an approval), and a click opens its card in the list. Right-click: Hide badge,
+//! it in the middle; the card's top row collapses it. Clear takes everything off; ⎋ (in any
+//! midna window) closes the list. The capsule beside the badge works like a row: hovering holds
+//! it and grows in its × and arrow (and Approve / Deny for an approval), and a click opens its
+//! card in the list. Right-click: Hide badge,
 //! Notification settings…, Open midna. Drag it anywhere; let go and it slings to the nearest
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
@@ -848,6 +849,29 @@ impl Badge {
             }
         });
         cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
+        // The badge's window never takes keys: ⎋ in any midna window closes its open list
+        // first (the same cascade as clicking the badge).
+        let me = cx.entity().downgrade();
+        cx.intercept_keystrokes(move |ev, _, cx| {
+            let ks = &ev.keystroke;
+            if ks.key != "escape" || ks.modifiers.modified() {
+                return;
+            }
+            let closed = me
+                .update(cx, |b, cx| {
+                    let open = b.list && b.list_closing.is_none();
+                    if open {
+                        b.list_closing = Some(Instant::now());
+                        cx.notify();
+                    }
+                    open
+                })
+                .unwrap_or(false);
+            if closed {
+                cx.stop_propagation();
+            }
+        })
+        .detach();
         // Dev (screenshots): `MIDNA_DEBUG_BADGE=list|card|menu` opens the list (with its first
         // card) or the menu.
         let debug = crate::dev::var("MIDNA_DEBUG_BADGE").ok();
