@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Color hover, peek card</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;700&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+.t-dark{--bg:#0F1117;--panel:#151821;--raised:#1D2130;--line:#282D3B;--idle-seg:#3A4152;--fg:#E4E7EE;--dim:#9AA2B3;--accent:#B79AE8;--need:#F2A93B;--need-soft:rgba(242,169,59,.14);--ok:#4CC38A;--err:#F2665C;--work:#6EA2FF;--sel:rgba(183,154,232,.14);--term:#0B0D12;--shadow:0 12px 32px rgba(0,0,0,.45)}
+.t-light{--bg:#E6E9EF;--panel:#F5F6F8;--raised:#FFFFFF;--line:#D3D8E0;--idle-seg:#BCC3CF;--fg:#151922;--dim:#535D6E;--accent:#6237A0;--need:#9A5300;--need-soft:rgba(154,83,0,.10);--ok:#1B7346;--err:#AE2219;--work:#2758B8;--sel:rgba(98,55,160,.10);--term:#FCFCFD;--shadow:0 12px 32px rgba(20,25,40,.16)}
+a{color:var(--accent)}a:hover{color:var(--fg)}
+button{font:inherit;color:inherit}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.peek-list{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+@keyframes peekIn{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+@keyframes demoSeg{0%{transform:none}4%{transform:scale(1.1,2.6);animation-timing-function:ease}6%{transform:scale(1.06,2.33)}22%{transform:scale(1.06,2.33);animation-timing-function:ease-in}25%{transform:none}100%{transform:none}}
+@keyframes demoRow{0%{opacity:0}4%{opacity:1}22%{opacity:1}25%{opacity:0}100%{opacity:0}}
+@keyframes demoPointer{0%,22%{transform:translateX(14px)}25%,47%{transform:translateX(52px)}50%,72%{transform:translateX(90px)}75%,97%{transform:translateX(128px)}100%{transform:translateX(14px)}}
+@keyframes aimPointer{0%,18%{transform:translate(14px,0)}48%,82%{transform:translate(196px,36px)}100%{transform:translate(14px,0)}}
+@keyframes aimCard{0%,44%{border-color:var(--line)}50%,82%{border-color:var(--need)}88%,100%{border-color:var(--line)}}
+@media (prefers-reduced-motion: reduce){.dc-anim{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+<div class="{{themeClass}}" data-board="b5" onMouseMove="{{onMove}}" style="position: relative; width: 960px; height: 700px; box-sizing: border-box; display: flex; padding: 24px; background: var(--bg); color: var(--fg); font-family: 'Atkinson Hyperlegible Next', 'Helvetica Neue', system-ui, sans-serif; font-size: 13px; line-height: 1.45">
+
+  <nav aria-label="Projects and terminals" style="position: relative; z-index: 2; flex: 0 0 264px; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px 0 0 10px">
+    <div style="display: flex; align-items: center; height: 40px; padding: 0 14px; gap: 8px">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+    </div>
+    <div style="flex: 1; min-height: 0; padding: 4px 0; overflow: hidden">
+      <sc-for list="{{groups}}" as="g" hint-placeholder-count="6">
+        <div style="margin-bottom: 6px">
+          <button type="button" onClick="{{g.toggle}}" aria-expanded="{{g.open}}" style="display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 8px 2px 10px; border: 0; background: transparent; cursor: pointer; text-align: left">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--dim)" stroke-width="1.6" aria-hidden="true" style="{{g.chevStyle}}"><path d="M2.5 3.5L5 6l2.5-2.5"></path></svg>
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); white-space: nowrap; flex: 1">{{g.name}}</span>
+            <span aria-label="Actions" style="width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--dim)"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"></circle><circle cx="8" cy="8" r="1.4"></circle><circle cx="13" cy="8" r="1.4"></circle></svg></span>
+          </button>
+          <sc-if value="{{g.folded}}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; gap: 2px; margin: 0 12px 0 26px">
+              <sc-for list="{{g.bar}}" as="b" hint-placeholder-count="3">
+                <span data-seg="{{b.key}}" onMouseEnter="{{b.enter}}" onMouseLeave="{{b.leave}}" aria-label="{{b.label}}" style="flex: {{b.n}} 1 0; display: flex; align-items: center; height: 14px; cursor: default">
+                  <span class="dc-anim" style="flex: 1; height: 3px; border-radius: 1.5px; background: {{b.fill}}; transition: transform 180ms cubic-bezier(.34, 1.56, .64, 1), filter 180ms ease-out; {{b.look}}"></span>
+                </span>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="3">
+            <div style="display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 9px; align-items: center; height: 34px; padding: 0 12px 0 14px; {{r.rowStyle}}">
+              <span style="width: 8px; height: 8px; border-radius: 50%; {{r.dotStyle}}"></span>
+              <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--dim)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+  </nav>
+
+  <sc-if value="{{pop.show}}" hint-placeholder-val="{{ false }}">
+    <div class="dc-anim" data-peek="1" role="dialog" aria-label="{{pop.label}}" onMouseEnter="{{pop.keep}}" onMouseLeave="{{pop.leave}}" style="position: absolute; left: 282px; z-index: 5; width: 300px; box-sizing: border-box; display: flex; flex-direction: column; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); animation: peekIn 140ms ease-out; {{pop.place}}">
+      <span aria-hidden="true" style="position: absolute; left: -6px; width: 10px; height: 10px; transform: rotate(45deg); background: var(--raised); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); {{pop.nub}}"></span>
+      <div style="flex: none; padding: 11px 14px 10px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid var(--line)">
+        <span style="font-size: 14px; font-weight: 700">{{pop.name}}</span>
+        <span style="font-size: 12px; color: var(--dim)">{{pop.total}}</span>
+        <span style="font-size: 12px; color: var(--dim)">·</span>
+        <span style="display: flex; align-items: center; gap: 5px; align-self: center; font-size: 12px; font-weight: 700; color: {{pop.color}}; white-space: nowrap"><span style="width: 7px; height: 7px; border-radius: 50%; {{pop.dot}}"></span>{{pop.text}}</span>
+      </div>
+      <div class="peek-list" style="min-height: 0; max-height: 264px; overflow-y: auto; padding: 6px; {{pop.fade}}">
+        <sc-for list="{{pop.rows}}" as="r" hint-placeholder-count="4">
+          <button type="button" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; text-align: left; cursor: pointer; {{r.bg}}">
+            <span style="display: flex; align-items: baseline; gap: 8px; min-width: 0"><span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span><span style="flex: none; font-size: 11.5px; color: {{r.color}}">{{r.since}}</span></span>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--dim)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="align-self: center"><path d="{{r.icon}}"></path></svg>
+            <sc-if value="{{r.hasReason}}" hint-placeholder-val="{{ false }}"><span style="grid-column: 1 / 3; font-size: 11.5px; color: {{r.color}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.reason}}</span></sc-if>
+          </button>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{aim.show}}" hint-placeholder-val="{{ false }}">
+    <svg aria-hidden="true" width="960" height="700" viewBox="0 0 960 700" style="position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none"><polygon points="{{aim.points}}" fill="var(--accent)" fill-opacity=".12" stroke="var(--accent)" stroke-opacity=".7" stroke-dasharray="3 3"></polygon></svg>
+  </sc-if>
+
+  <div aria-hidden="true" style="flex: 0 0 340px; box-sizing: border-box; padding: 16px 18px; background: var(--term); border: 1px solid var(--line); border-left: 0; border-radius: 0 10px 10px 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--dim); display: flex; flex-direction: column; gap: 4px; opacity: .7">
+    <span>~/Development/rust/midna main</span>
+    <span>❯ cargo test --workspace</span>
+    <span>   Compiling midna-app v0.1.0</span>
+    <span>    Finished test profile in 41.2s</span>
+  </div>
+
+  <section style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding-left: 28px">
+    <div>
+      <div style="font-size: 18px; font-weight: 700">B5 · B3 + B4</div>
+      <div style="color: var(--dim); margin-top: 4px">Point at a color to peek at its terminals. Long lists scroll; near the bottom the card opens upward. On the way to the card, bars of this project and the ones above and below stay quiet: the dashed triangle is the aim zone (turn it off in Tweaks).</div>
+    </div>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dim)">Resting on a color switches</div>
+    <div aria-hidden="true" style="box-sizing: border-box; padding: 12px 14px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px">
+      <div style="position: relative; display: flex; gap: 2px; width: 156px; height: 14px; align-items: center">
+        <span class="dc-anim" style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--need); animation: demoSeg 8s infinite 0s"></span>
+        <span class="dc-anim" style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--err); animation: demoSeg 8s infinite 2s"></span>
+        <span class="dc-anim" style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--work); animation: demoSeg 8s infinite 4s"></span>
+        <span class="dc-anim" style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--idle-seg); animation: demoSeg 8s infinite 6s"></span>
+        <svg class="dc-anim" width="12" height="16" viewBox="0 0 12 16" style="position: absolute; left: 0; top: 8px; animation: demoPointer 8s infinite cubic-bezier(.5, 0, .2, 1)"><path d="M1 1v12l3.2-3 2.2 5 2-1-2.2-4.8H10z" fill="var(--fg)" stroke="var(--bg)" stroke-width="1"></path></svg>
+      </div>
+      <div style="position: relative; height: 20px; margin-top: 12px; font-size: 11.5px">
+        <span class="dc-anim" style="position: absolute; inset: 0; opacity: 0; color: var(--need); animation: demoRow 8s infinite 0s">1 needs you</span>
+        <span class="dc-anim" style="position: absolute; inset: 0; opacity: 0; color: var(--err); animation: demoRow 8s infinite 2s">1 failed</span>
+        <span class="dc-anim" style="position: absolute; inset: 0; opacity: 0; color: var(--work); animation: demoRow 8s infinite 4s">6 working</span>
+        <span class="dc-anim" style="position: absolute; inset: 0; opacity: 0; color: var(--dim); animation: demoRow 8s infinite 6s">3 idle</span>
+      </div>
+    </div>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dim)">Crossing other projects doesn't</div>
+    <div aria-hidden="true" style="box-sizing: border-box; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px">
+      <div style="position: relative; height: 64px">
+        <span style="position: absolute; left: 0; top: -2px; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; color: var(--dim)">KASS</span>
+        <div style="position: absolute; left: 0; top: 10px; display: flex; gap: 2px; width: 140px; height: 14px; align-items: center">
+          <span style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--need); transform: scale(1.06, 2.33)"></span>
+          <span style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--err)"></span>
+          <span style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--work)"></span>
+        </div>
+        <span style="position: absolute; left: 0; top: 30px; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; color: var(--dim)">SITE</span>
+        <div style="position: absolute; left: 0; top: 42px; display: flex; gap: 2px; width: 140px; height: 14px; align-items: center">
+          <span style="flex: 1; height: 3px; border-radius: 1.5px; background: var(--need)"></span>
+          <span style="flex: 4; height: 3px; border-radius: 1.5px; background: var(--work)"></span>
+          <span style="flex: 2; height: 3px; border-radius: 1.5px; background: var(--idle-seg)"></span>
+        </div>
+        <div class="dc-anim" style="position: absolute; left: 170px; top: 4px; width: 46px; height: 60px; box-sizing: border-box; border: 1.5px solid var(--line); border-radius: 6px; background: var(--raised); animation: aimCard 4s infinite"></div>
+        <svg class="dc-anim" width="12" height="16" viewBox="0 0 12 16" style="position: absolute; left: 0; top: 14px; animation: aimPointer 4s infinite cubic-bezier(.4, 0, .2, 1)"><path d="M1 1v12l3.2-3 2.2 5 2-1-2.2-4.8H10z" fill="var(--fg)" stroke="var(--bg)" stroke-width="1"></path></svg>
+      </div>
+      <div style="margin-top: 6px; font-size: 11.5px; color: var(--need)">kass stays open · site never opens</div>
+    </div>
+
+    <dl style="margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 5px; font-size: 12px">
+      <dt style="color: var(--dim)">Aim</dt><dd style="margin: 0">from where the pointer left the bar to the card's near edge; moving inside it, no bar reacts and the card stays</dd>
+      <dt style="color: var(--dim)">Switch</dt><dd style="margin: 0">outside the zone, any bar (this project or another) takes over only after a 140 ms rest</dd>
+      <dt style="color: var(--dim)">Grace</dt><dd style="margin: 0">300 ms to get from the bar to the card</dd>
+      <dt style="color: var(--dim)">Place</dt><dd style="margin: 0">lower half of the window: the card grows up from the bar</dd>
+      <dt style="color: var(--dim)">Rows</dt><dd style="margin: 0">name with its time beside it; a second line only for a real reason (an approval, an exit code)</dd>
+      <dt style="color: var(--dim)">Scroll</dt><dd style="margin: 0">list caps at 264px and fades at the cut</dd>
+    </dl>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"showAim":{"editor":"boolean","default":true},"$preview":{"width":960,"height":700}}'>
+const ICON = {
+  claude: 'M8 2.5v11M2.5 8h11M4.1 4.1l7.8 7.8M11.9 4.1l-7.8 7.8',
+  codex: 'M8 1.8l5.4 3.1v6.2L8 14.2l-5.4-3.1V4.9z',
+  shell: 'M3 4.5l3.5 3.5L3 11.5M8.5 12h4.5'
+};
+const COLOR = { work: 'var(--work)', need: 'var(--need)', err: 'var(--err)', idle: 'var(--dim)', done: 'var(--ok)' };
+const FILL = { work: 'var(--work)', need: 'var(--need)', err: 'var(--err)', idle: 'var(--idle-seg)', done: 'var(--ok)' };
+const WORD = { work: 'working', need: 'needs you', err: 'failed', idle: 'idle', done: 'finished' };
+const ORDER = ['need', 'err', 'work', 'done', 'idle'];
+const dotOf = (s) => s === 'idle' ? 'box-shadow: inset 0 0 0 1.5px var(--dim)' : 'background: ' + COLOR[s];
+const H = 700;
+const ROW = 36, LIST_MAX = 264;
+const SWITCH_MS = 140, GRACE_MS = 300;
+const w = (name, a, s, line) => ({ name, a, s, line });
+const PROJECTS = [
+  { id: 'midna', name: 'midna', ts: [w('fold-summary', 'claude', 'work'), w('release-notes', 'codex', 'done'), w('zsh', 'shell', 'idle')], sel: 'fold-summary' },
+  { id: 'kass', name: 'kass', ts: [
+    w('dictation-fix', 'claude', 'need', 'Approve Bash: swift build · 2m'), w('tests', 'shell', 'err', 'exit 1 · 6m'),
+    w('docs', 'claude', 'work', 'working · 4m'), w('zsh', 'shell', 'idle')
+  ] },
+  { id: 'api', name: 'api', ts: [w('auth-refactor', 'claude', 'work'), w('migrations', 'codex', 'work'), w('server', 'shell', 'work'), w('zsh', 'shell', 'idle')] },
+  { id: 'taskboard', name: 'taskboard', ts: [w('sync', 'claude', 'done', 'finished · 12m'), w('zsh', 'shell', 'idle')] },
+  { id: 'site', name: 'site', ts: [
+    w('deploy', 'shell', 'work', 'working · 1m'), w('blog-post', 'claude', 'work', 'working · 9m'),
+    w('pricing-copy', 'claude', 'need', 'Question: keep the annual toggle? · 1m'), w('og-images', 'codex', 'done', 'finished · 3m'),
+    w('a11y-pass', 'claude', 'work', 'working · 2m'), w('sitemap', 'codex', 'work', 'working · 5m'),
+    w('changelog', 'claude', 'work', 'working · 7m'), w('img-compress', 'shell', 'work', 'working · 11m'),
+    w('e2e', 'shell', 'work', 'working · 14m'), w('zsh', 'shell', 'idle'), w('lint', 'shell', 'idle'),
+    w('search', 'claude', 'idle'), w('preview', 'shell', 'idle')
+  ] },
+  { id: 'infra', name: 'infra', ts: [
+    w('rotate-certs', 'claude', 'need', 'Approve Bash: terraform apply · 3m'), w('k8s-upgrade', 'claude', 'work', 'working · 2m'),
+    w('alerts', 'codex', 'work', 'working · 4m'), w('backup-check', 'shell', 'work', 'working · 6m'),
+    w('cost-report', 'claude', 'work', 'working · 8m'), w('dns', 'shell', 'work', 'working · 9m'),
+    w('logs', 'shell', 'work', 'working · 15m'), w('plan', 'shell', 'err', 'exit 2 · 10m'),
+    w('zsh', 'shell', 'idle'), w('ssh-bastion', 'shell', 'idle'), w('notes', 'claude', 'idle')
+  ] }
+];
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { folded: { kass: true, taskboard: true, site: true, infra: true }, hover: { p: 'infra', s: 'work', y: null }, aim: null };
+  }
+  componentDidMount() { this.raf = requestAnimationFrame(() => this.measureInitial()); }
+  componentWillUnmount() { cancelAnimationFrame(this.raf); clearTimeout(this.closeT); clearTimeout(this.switchT); }
+  // The bar's center in board px, whatever the canvas zoom.
+  anchorOf(el) {
+    const board = el.closest('[data-board]');
+    if (!board) return null;
+    const r = board.getBoundingClientRect(), k = r.height / H, s = el.getBoundingClientRect();
+    return (s.top + s.height / 2 - r.top) / k;
+  }
+  toBoard(x, y, el) {
+    const r = (el || document.querySelector('[data-board]')).closest('[data-board]').getBoundingClientRect(), k = r.height / H;
+    return { x: (x - r.left) / k, y: (y - r.top) / k };
+  }
+  measureInitial() {
+    const h = this.state.hover;
+    const el = h && document.querySelector('[data-seg="' + h.p + '-' + h.s + '"]');
+    if (!el) return;
+    this.setState({ hover: Object.assign({}, h, { y: this.anchorOf(el) }) }, () => {
+      // Pretend the pointer just left the bar's right end, so the aim zone shows at rest.
+      const s = el.getBoundingClientRect();
+      this.armAim(this.toBoard(s.right - 4, s.top + s.height / 2, el));
+    });
+  }
+  // The aim zone: a triangle from where the pointer left a bar to the card's near edge.
+  armAim(from) {
+    const card = document.querySelector('[data-peek]');
+    if (!card) return;
+    const r = card.getBoundingClientRect(), a = this.toBoard(r.left, r.top, card), b = this.toBoard(r.left, r.bottom, card);
+    this.setState({ aim: { from, top: a, bottom: b } });
+  }
+  inAim(p) {
+    const t = this.state.aim;
+    if (!t) return false;
+    const { from: A, top: B, bottom: C } = t;
+    const side = (P, Q, R) => (P.x - R.x) * (Q.y - R.y) - (Q.x - R.x) * (P.y - R.y);
+    const d1 = side(p, A, B), d2 = side(p, B, C), d3 = side(p, C, A);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  }
+  onMove(e) {
+    if (!this.state.hover || !this.state.aim) return;
+    if (this.inAim(this.toBoard(e.clientX, e.clientY, e.currentTarget))) {
+      this.aimUntil = Date.now() + 120;
+      clearTimeout(this.switchT);
+      this.closeSoon(GRACE_MS);
+    }
+  }
+  segEnter(p, s, e) {
+    const h = this.state.hover;
+    const open = h && h.y != null;
+    const same = open && h.p === p && h.s === s;
+    // Heading for the card: bars crossed on the way (this project's or another's) don't react.
+    if (open && !same && Date.now() < (this.aimUntil || 0)) return;
+    clearTimeout(this.closeT);
+    clearTimeout(this.switchT);
+    if (same) return;
+    const y = this.anchorOf(e.currentTarget);
+    // With a card open, any other color takes over only after the pointer rests on it.
+    if (open) this.switchT = setTimeout(() => this.setState({ hover: { p, s, y }, aim: null }), SWITCH_MS);
+    else this.setState({ hover: { p, s, y }, aim: null });
+  }
+  segLeave(e) {
+    clearTimeout(this.switchT);
+    if (!this.state.hover) return;
+    this.armAim(this.toBoard(e.clientX, e.clientY, e.currentTarget));
+    this.closeSoon(GRACE_MS);
+  }
+  closeSoon(ms) { clearTimeout(this.closeT); this.closeT = setTimeout(() => this.setState({ hover: null, aim: null }), ms); }
+  renderVals() {
+    const { folded, hover } = this.state;
+    const groups = PROJECTS.map((p) => {
+      const isF = !!folded[p.id];
+      const seg = isF && hover && hover.p === p.id ? hover.s : null;
+      const parts = ORDER.map((s) => ({ s, n: p.ts.filter((t) => t.s === s).length })).filter((x) => x.n > 0);
+      return {
+        name: p.name,
+        folded: isF,
+        open: isF ? 'false' : 'true',
+        chevStyle: isF ? 'transform: rotate(-90deg)' : '',
+        toggle: () => this.setState({ hover: null, aim: null, folded: Object.assign({}, folded, { [p.id]: !isF }) }),
+        bar: parts.map((x) => ({
+          key: p.id + '-' + x.s,
+          n: x.n,
+          label: x.n + ' ' + WORD[x.s],
+          fill: FILL[x.s],
+          look: x.s === seg ? 'transform: scale(1.06, 2.33); filter: brightness(1.15); position: relative; z-index: 1' : 'transform: none',
+          enter: (e) => this.segEnter(p.id, x.s, e),
+          leave: (e) => this.segLeave(e)
+        })),
+        rows: isF ? [] : p.ts.map((t) => ({
+          name: t.name,
+          icon: ICON[t.a],
+          dotStyle: dotOf(t.s),
+          rowStyle: p.sel === t.name ? 'background: var(--sel)' : ''
+        }))
+      };
+    });
+    const proj = hover && hover.y != null && folded[hover.p] ? PROJECTS.find((p) => p.id === hover.p) : null;
+    let pop = { show: false };
+    if (proj) {
+      const mine = proj.ts.filter((t) => t.s === hover.s);
+      const up = hover.y > H / 2;
+      // Down: the title sits level with the bar. Up: the card's bottom does, and it grows toward the top.
+      const place = up
+        ? 'bottom: ' + (H - hover.y - 21) + 'px; max-height: ' + (hover.y - 3) + 'px'
+        : 'top: ' + (hover.y - 21) + 'px; max-height: ' + (H - hover.y - 3) + 'px';
+      pop = {
+        show: true,
+        label: proj.name + ' · ' + WORD[hover.s],
+        name: proj.name,
+        total: String(proj.ts.length),
+        text: mine.length + ' ' + WORD[hover.s],
+        color: hover.s === 'idle' ? 'var(--dim)' : COLOR[hover.s],
+        dot: dotOf(hover.s),
+        place,
+        nub: up ? 'bottom: 16px' : 'top: 16px',
+        fade: mine.length * ROW > LIST_MAX ? 'mask-image: linear-gradient(to bottom, #000 82%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent)' : '',
+        rows: mine.map((t) => {
+          // "reason · 2m": the time goes beside the name; the reason stays only when it says more than the status.
+          const bits = (t.line || '').split(' · ');
+          const since = bits.length > 1 ? bits.pop() : '';
+          const reason = bits.join(' · ');
+          return {
+          name: t.name,
+          icon: ICON[t.a],
+          since,
+          hasReason: !!reason && reason !== WORD[t.s],
+          reason,
+          color: COLOR[t.s],
+          bg: t.s === 'need' ? 'background: var(--need-soft)' : 'background: transparent'
+          };
+        }),
+        keep: () => { clearTimeout(this.closeT); clearTimeout(this.switchT); },
+        leave: () => this.closeSoon(200)
+      };
+    }
+    const t = this.state.aim;
+    const aim = t && pop.show && (this.props.showAim ?? true)
+      ? { show: true, points: [t.from, t.top, t.bottom].map((q) => Math.round(q.x) + ',' + Math.round(q.y)).join(' ') }
+      : { show: false };
+    return {
+      themeClass: (this.props.theme ?? 'dark') === 'light' ? 't-light' : 't-dark',
+      groups,
+      pop,
+      aim,
+      onMove: (e) => this.onMove(e)
+    };
+  }
+}
+</script>
+</body>
+</html>

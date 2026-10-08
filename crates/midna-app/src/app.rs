@@ -143,6 +143,8 @@ pub struct MainWindow {
     pub order: Vec<String>,
     /// When each group heading was last clicked, to animate the fold (`ui::sidebar`).
     pub fold_anim: HashMap<String, Instant>,
+    /// A folded project's status bar: the color the pointer is on and its card (`ui::fold_peek`).
+    pub fold_peek: crate::ui::fold_peek::FoldPeek,
     /// Per folded group: the terminal it last showed, that row's height, and since when it has
     /// been sliding up into the heading because another terminal was selected (`ui::sidebar`).
     pub fold_shown: std::rc::Rc<std::cell::RefCell<HashMap<String, (String, f32, Option<Instant>)>>>,
@@ -230,7 +232,8 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let seen = crate::ui::statusbar::load_state(&backend, "seen");
-        let collapsed = crate::ui::statusbar::load_state(&backend, "collapsed");
+        let mut collapsed: std::collections::HashSet<String> = crate::ui::statusbar::load_state(&backend, "collapsed");
+        collapsed.extend(crate::ui::fold_peek::debug_folded());
         let order = crate::ui::statusbar::load_state(&backend, "order");
         let sidebar_collapsed = crate::ui::statusbar::load_state(&backend, "sidebar_collapsed");
         let sidebar_width = crate::ui::statusbar::load_state::<Option<f32>>(&backend, "sidebar_width").map_or(crate::ui::sidebar::WIDTH, crate::ui::sidebar::clamp_width);
@@ -333,6 +336,7 @@ impl MainWindow {
             background_hidden,
             order,
             fold_anim: HashMap::new(),
+            fold_peek: Default::default(),
             fold_shown: Default::default(),
             need_anim: Default::default(),
             close_anim: Default::default(),

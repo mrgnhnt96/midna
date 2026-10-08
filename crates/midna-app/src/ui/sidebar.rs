@@ -228,7 +228,16 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
     // Opening and folding: the room (button + its 6px below) grows or shrinks with it.
     let need_btn = wipe(0, 30., div().flex_none().h(px(40. * btn_look.open)).opacity(btn_look.open).overflow_hidden().child(need_btn).into_any_element());
 
-    let mut list = div().id("sessions").flex().flex_col().flex_1().min_h_0().py(px(4.)).overflow_y_scroll();
+    // Scrolling moves the bars out from under an open peek card: close it.
+    let mut list = div()
+        .id("sessions")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .py(px(4.))
+        .overflow_y_scroll()
+        .on_scroll_wheel(cx.listener(|m, _, _, cx| crate::ui::fold_peek::close(m, cx)));
     for (gi, g) in m.groups().into_iter().enumerate() {
         let pid = g.project.map(|p| p.id.clone());
         let n = m.needs_in_project(pid.as_deref());
@@ -323,9 +332,15 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                     }),
             );
         let header = wipe(line, 0., header.into_any_element());
+        // Folded: a bar under the heading shows how its terminals stand (`ui::fold_peek`); it
+        // opens with the fold.
+        let fold_bar = pid.as_deref().filter(|_| collapsed && fold > 0.).map(|p| {
+            let bar = crate::ui::fold_peek::bar(m, t, p, &g.sessions, window, cx);
+            wipe(line, 0., div().flex_none().h(px(crate::ui::fold_peek::BAR_H * fold)).opacity(fold).child(bar).into_any_element())
+        });
         line += usize::from(g.project.is_some());
         // Root terminals belong to no project: no heading, just rows.
-        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).when(g.project.is_none(), |d| d.pt(px(4.)));
+        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());
@@ -388,6 +403,8 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .bg(t.panel)
         .border_r_1()
         .border_color(t.line)
+        .on_mouse_move(cx.listener(|m, ev: &MouseMoveEvent, _, cx| crate::ui::fold_peek::moved(m, ev.position, cx)))
+        .children(crate::ui::fold_peek::card(m, t, window, cx))
         .child(top)
         .when(btn_look.shown, |d| d.child(need_btn))
         .child(list)
@@ -1116,6 +1133,9 @@ fn shown_row(m: &MainWindow, key: &str, folded: bool, el: AnyElement) -> AnyElem
 
 /// Fold or unfold a project's group (animated unless Reduce Motion is on).
 pub fn toggle_fold(m: &mut MainWindow, project: String, cx: &mut Context<MainWindow>) {
+    if m.fold_peek.open.as_ref().is_some_and(|o| o.project == project) {
+        crate::ui::fold_peek::close(m, cx);
+    }
     if !m.collapsed.remove(&project) {
         m.collapsed.insert(project.clone());
     }

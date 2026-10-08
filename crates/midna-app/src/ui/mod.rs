@@ -8,6 +8,7 @@ pub mod charts;
 pub mod close_anim;
 pub mod close_window;
 pub mod command_bar;
+pub mod fold_peek;
 pub mod footer;
 pub mod header;
 pub mod hooks;
