@@ -65,62 +65,67 @@ pub fn movement(key: &str, cmd: bool, alt: bool) -> Option<Send> {
 /// ⇧↑ / ⇧↓: a line up or down inside a multi-line input, else to this line's start or end.
 /// `agent`: the input is Claude Code's or Codex's box; a shell's ↑ ↓ are history.
 pub fn vertical(key: &str, agent: bool, grid: &[RowData], cursor: Pos) -> Option<Send> {
-    let row = |y: u16| grid.get(y as usize);
+    let rows = if agent { input_rows(grid, cursor) } else { None };
     match key {
-        "up" if agent && !row(cursor.1).is_some_and(is_prompt_row) && cursor.1 > 0 && row(cursor.1 - 1).is_some_and(|r| is_input_row(r)) => Some(Send::Arrow("up")),
+        "up" if rows.is_some_and(|(top, _)| cursor.1 > top) => Some(Send::Arrow("up")),
         "up" => Some(Send::Bytes(b"\x01")),
-        "down" if agent && row(cursor.1 + 1).is_some_and(is_continuation) => Some(Send::Arrow("down")),
+        "down" if rows.is_some_and(|(_, bottom)| cursor.1 < bottom) => Some(Send::Arrow("down")),
         "down" => Some(Send::Bytes(b"\x05")),
         _ => None,
     }
 }
 
 /// ⌘↑ / ⌘↓ in an agent's input: to the start or end of all its text. ↑ ↓ move a screen row at
-/// a time in Claude Code and Codex (wrapped lines included), so the rows up to the prompt row
-/// (or down to the last input row) are exact; ↑ on the first row would recall history. None
-/// when the cursor isn't in a recognisable input box.
+/// a time in Claude Code and Codex (wrapped lines and blank lines included), so the rows up to
+/// the prompt row (or down to the last input row) are exact; ↑ on the first row would recall
+/// history. None when the cursor isn't in a recognisable input box.
 pub fn text_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
-    let row = |y: u16| grid.get(y as usize);
-    match key {
-        "up" => {
-            let mut y = cursor.1;
-            while !row(y).is_some_and(is_prompt_row) {
-                if y == 0 || !row(y).is_some_and(is_continuation) {
-                    return None;
-                }
-                y -= 1;
-            }
-            let mut v = vec![Send::Arrow("up"); (cursor.1 - y) as usize];
-            v.push(Send::Bytes(b"\x01"));
-            Some(v)
-        }
-        "down" => {
-            if !row(cursor.1).is_some_and(is_input_row) {
-                return None;
-            }
-            let n = (cursor.1 + 1..).take_while(|&y| row(y).is_some_and(is_continuation)).count();
-            let mut v = vec![Send::Arrow("down"); n];
-            v.push(Send::Bytes(b"\x05"));
-            Some(v)
-        }
-        _ => None,
-    }
+    let (top, bottom) = input_rows(grid, cursor)?;
+    let (n, arrow, edge) = match key {
+        "up" => (cursor.1 - top, "up", b"\x01"),
+        "down" => (bottom - cursor.1, "down", b"\x05"),
+        _ => return None,
+    };
+    let mut v = vec![Send::Arrow(arrow); n as usize];
+    v.push(Send::Bytes(edge));
+    Some(v)
 }
 
 /// ⌘A in an agent's input: where its text starts (past the prompt glyph and its space on the
 /// prompt row), and the moves that put the cursor at its end. None when the cursor isn't in a
 /// recognisable input box.
 pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
+    let (top, _) = input_rows(grid, cursor)?;
+    let glyph = grid.get(top as usize)?.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))? as u16;
+    Some(((glyph + 2, top), text_edge("down", grid, cursor)?))
+}
+
+/// The prompt row and last row of an agent's input around the cursor. Inside Claude Code's
+/// box (closed by a rule below) blank rows are empty lines of the text; without a rule (as in
+/// Codex, whose status line sits under a blank row) a blank row ends the input.
+fn input_rows(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
     let row = |y: u16| grid.get(y as usize);
-    let mut y = cursor.1;
-    while !row(y).is_some_and(is_prompt_row) {
-        if y == 0 || !row(y).is_some_and(is_continuation) {
+    if let Some((top, bottom)) = claude_box(grid, cursor)
+        && row(bottom + 1).is_some_and(is_rule)
+    {
+        return Some((top, bottom));
+    }
+    let mut top = cursor.1;
+    while !row(top).is_some_and(is_prompt_row) {
+        if top == 0 || !row(top).is_some_and(is_continuation) {
             return None;
         }
-        y -= 1;
+        top -= 1;
     }
-    let glyph = row(y)?.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))? as u16;
-    Some(((glyph + 2, y), text_edge("down", grid, cursor)?))
+    if !row(cursor.1).is_some_and(is_input_row) {
+        return None;
+    }
+    let bottom = cursor.1 + (cursor.1 + 1..).take_while(|&y| row(y).is_some_and(is_continuation)).count() as u16;
+    Some((top, bottom))
+}
+
+fn is_rule(row: &RowData) -> bool {
+    text_of(row, 0, text_end(row)).trim_start().starts_with("──")
 }
 
 /// Claude Code's input box around the cursor: its prompt row and last row. Rows run from the
@@ -128,7 +133,6 @@ pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
 /// isn't in a box.
 fn claude_box(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
     let row = |y: u16| grid.get(y as usize);
-    let is_rule = |r: &RowData| text_of(r, 0, text_end(r)).trim_start().starts_with("──");
     let inside = |r: &RowData| !is_rule(r) && (is_continuation(r) || text_end(r) == 0);
     let mut top = cursor.1;
     while !row(top).is_some_and(is_prompt_row) {
@@ -538,6 +542,15 @@ mod tests {
         let codex = grid(&["", " › one", "", "  GPT-6 status"]);
         assert_eq!(select_all(&codex, (4, 1)).unwrap(), ((3, 1), vec![Send::Bytes(b"\x05")]));
         assert_eq!(select_all(&g, (4, 0)), None, "not in the input");
+        let pasted = grid(&["────────", "❯\u{a0}one", "", "  two", "", "    three", "────────"]);
+        let (start, moves) = select_all(&pasted, (7, 5)).unwrap();
+        assert_eq!(start, (2, 1), "blank lines don't end the input");
+        assert_eq!(moves, vec![Send::Bytes(b"\x05")]);
+        let (_, moves) = select_all(&pasted, (0, 2)).unwrap();
+        assert_eq!(moves, vec![Send::Arrow("down"); 3].into_iter().chain([Send::Bytes(b"\x05")]).collect::<Vec<_>>(), "from a blank line");
+        assert_eq!(text_edge("up", &pasted, (7, 5)).unwrap().len(), 5, "four rows up, then the line start");
+        assert_eq!(vertical("up", true, &pasted, (5, 3)), Some(Send::Arrow("up")), "onto a blank line");
+        assert_eq!(vertical("down", true, &pasted, (5, 3)), Some(Send::Arrow("down")));
     }
 
     #[test]
