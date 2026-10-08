@@ -594,7 +594,7 @@ pub fn go_newest(cx: &mut App) {
         let Some(l) = b.lines.front().filter(|l| l.leaving.is_none()) else { return };
         let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
         let (session, need, sent) = (l.session.clone(), l.need.clone(), l.sent.clone());
-        b.open(session, need, held, sent, cx);
+        b.open(session, need, held, sent, false, cx);
     });
 }
 
@@ -1487,8 +1487,9 @@ impl Badge {
     }
 
     /// Bring midna forward on the item's terminal (as a clicked notification does), or open a
-    /// `notify.send` notification's URL.
-    fn open(&mut self, session: Option<String>, need: Option<String>, held: Option<String>, sent: Option<Sent>, cx: &mut Context<Self>) {
+    /// `notify.send` notification's URL. `terminal`: its terminal itself, not its needs-you card
+    /// over it (the card's "Terminal" button).
+    fn open(&mut self, session: Option<String>, need: Option<String>, held: Option<String>, sent: Option<Sent>, terminal: bool, cx: &mut Context<Self>) {
         self.close_list();
         self.menu = false;
         // What you clicked is seen: its capsule doesn't come back when the badge does.
@@ -1505,6 +1506,7 @@ impl Badge {
         }
         self.bring_forward(cx);
         match session {
+            Some(s) if terminal => crate::windows::reveal_terminal(s, need, cx),
             Some(s) => crate::windows::reveal_need(s, need, cx),
             None => crate::windows::with_active(cx, |m, window, cx| {
                 window.activate_window();
@@ -2292,7 +2294,7 @@ impl Badge {
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
-                        b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), cx);
+                        b.open(session.clone(), need_id.clone(), held.clone(), sent.clone(), false, cx);
                     })),
             );
         }
@@ -2565,7 +2567,7 @@ impl Badge {
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
-                        b.open(session.clone(), need.clone(), held.clone(), sent.clone(), cx);
+                        b.open(session.clone(), need.clone(), held.clone(), sent.clone(), false, cx);
                     })),
             );
         }
@@ -2635,7 +2637,7 @@ impl Badge {
                 button(t, "card-open", if opens { "Open" } else { "Terminal" }, false)
                     .gap(px(6.))
                     .child(Icon::Arrow.el(12., t.fg))
-                    .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need.clone(), held.clone(), sent.clone(), cx))),
+                    .on_click(cx.listener(move |b, _, _, cx| b.open(session.clone(), need.clone(), held.clone(), sent.clone(), !opens, cx))),
             );
         }
         let content = div()
@@ -2710,7 +2712,7 @@ impl Badge {
                 .relative()
                 .text_size(px(13.))
                 .child(measure(self.zones.panel.clone()))
-                .child(item("menu-open", "Open midna").on_click(cx.listener(|b, _, _, cx| b.open(None, None, None, None, cx))))
+                .child(item("menu-open", "Open midna").on_click(cx.listener(|b, _, _, cx| b.open(None, None, None, None, false, cx))))
                 .child(item("menu-settings", "Notification settings…").on_click(cx.listener(|b, _, _, cx| {
                     b.menu = false;
                     b.bring_forward(cx);

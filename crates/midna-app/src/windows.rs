@@ -211,6 +211,17 @@ pub fn reveal(session: String, cx: &mut App) {
 /// `reveal`, for a clicked notification: about a needs-you item (`need`), open the stack on
 /// that card, or its terminal when the card can't show the whole question (`needs_you::too_long`).
 pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {
+    reveal_on(session, need, true, cx)
+}
+
+/// `reveal`, for a notification's "Terminal" button: its terminal, never the stack. Its
+/// needs-you card (`need`) shows only when the terminal is gone.
+pub fn reveal_terminal(session: String, need: Option<String>, cx: &mut App) {
+    reveal_on(session, need, false, cx)
+}
+
+/// `reveal_need`; `card`: show the needs-you card over a terminal that's still there.
+fn reveal_on(session: String, need: Option<String>, card: bool, cx: &mut App) {
     if crate::ui::popout::activate(&session, cx) {
         return;
     }
@@ -234,7 +245,7 @@ pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {
                 m.set_screen(Screen::Terminal, window, cx);
             }
             m.select(session, window, cx);
-            match need.and_then(|id| m.needs.iter().find(|n| n.id == id).cloned()) {
+            match need.filter(|_| card).and_then(|id| m.needs.iter().find(|n| n.id == id).cloned()) {
                 Some(n) if !crate::ui::needs_you::too_long(&n) => crate::ui::needs_you::show(m, n.id, window, cx),
                 // A stack left open would hide the terminal you asked for.
                 _ if m.overlay == Overlay::NeedsYou => m.set_overlay(Overlay::None, window, cx),
