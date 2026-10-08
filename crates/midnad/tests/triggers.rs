@@ -131,6 +131,8 @@ fn wait_deliveries(c: &mut Client, n: usize) -> Vec<Value> {
 fn signed_github_delivery_starts_agent_with_rendered_prompt() {
     let d = D::start();
     let mut h = d.human();
+    // The agent here is /bin/echo, which exits at once; keep it an agent instead of a shell.
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
     let pid = project(&mut h);
     let tid = active_review_trigger(&mut h, &pid);
     let (status, body) = github(d.port(), "pull_request", "7c1e04b2-9a1f", SECRET, &pr("opened", 231));

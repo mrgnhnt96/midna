@@ -213,6 +213,8 @@ fn cancel_and_exit_drop_a_queued_restart() {
     let bin = fake.bin();
     let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
     let mut h = d.human();
+    // The agent's exit below should end the terminal, not drop it to a shell.
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
     let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
     wait_for(5, "fake claude started", || (fake.launches().len() == 1).then_some(()));
     let mut a = d.agent(Some(&sid));
