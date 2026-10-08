@@ -739,6 +739,27 @@ fn no_project_opens_at_root() {
 }
 
 #[test]
+fn project_can_be_named_instead_of_an_id() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let base = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("midna-named-{}", std::process::id()));
+    let (a, b) = (base.join("kass"), base.join("other"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let kass = call(&mut c, "project.add", json!({ "path": a, "name": "kass" }));
+    let s = call(&mut c, "session.open", json!({ "kind": "shell", "project_id": "Kass", "command": ["/bin/sh"] }));
+    assert_eq!(s["project_id"], kass["id"]);
+    let listed = call(&mut c, "session.list", json!({ "project_id": "kass" }));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    // An unknown name is refused, not an empty list; a shared name asks for an id.
+    assert!(call_err(&mut c, "session.list", json!({ "project_id": "nope" })).message.contains("no project nope"));
+    call(&mut c, "project.add", json!({ "path": b, "name": "kass" }));
+    let e = call_err(&mut c, "session.open", json!({ "kind": "shell", "project_id": "kass", "command": ["/bin/sh"] }));
+    assert!(e.message.contains("use an id"), "{}", e.message);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
 fn slash_is_never_a_project() {
     let d = TestDaemon::start();
     let mut c = d.human();

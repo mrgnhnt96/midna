@@ -67,6 +67,24 @@ pub fn containing(d: &Daemon, path: &str) -> Option<Project> {
         .cloned()
 }
 
+/// The project a caller named: its id, or else its name (ignoring case). A name two projects
+/// share is refused with both ids, so the caller can pick one.
+pub fn resolve(d: &Daemon, id_or_name: &str) -> Result<Project, RpcError> {
+    let core = d.core();
+    if let Some(p) = core.state.project(id_or_name) {
+        return Ok(p.clone());
+    }
+    let named: Vec<&Project> = core.state.projects.iter().filter(|p| p.name.eq_ignore_ascii_case(id_or_name)).collect();
+    match named.as_slice() {
+        [p] => Ok((*p).clone()),
+        [] => Err(RpcError::not_found(format!("no project {id_or_name}"))),
+        many => {
+            let ids: Vec<&str> = many.iter().map(|p| p.id.as_str()).collect();
+            Err(RpcError::bad_params(format!("{} projects are named {id_or_name}; use an id: {}", many.len(), ids.join(", "))))
+        }
+    }
+}
+
 /// Most folders `project.discover` returns.
 const DISCOVER_MAX: usize = 500;
 

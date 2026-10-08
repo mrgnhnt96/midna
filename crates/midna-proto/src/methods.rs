@@ -669,13 +669,14 @@ pub struct ProjectUpdateParams {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SessionListParams {
+    /// Only this project's terminals, by id or name.
     #[serde(default)]
     pub project_id: Option<Id>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionOpenParams {
-    /// Project to open in. Defaults to the caller's project, else the project containing `cwd`
+    /// Project to open in, by id or name. Defaults to the caller's project, else the project containing `cwd`
     /// (a project is added for `cwd` if none contains it). With no project, no caller project
     /// and no `cwd`, it opens at root (`project_id` "root", starting in `$HOME`).
     #[serde(default)]

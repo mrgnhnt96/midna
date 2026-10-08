@@ -100,7 +100,8 @@ pub static VERBS: &[Verb] = &[
         aliases: &["ls"],
         usage: "list [--project P]",
         summary: "list terminals with status",
-        details: "Status: idle, working, needs_you, done (finished, not seen yet), failed, exited.\n\
+        details: "--project takes a project's id or name.\n\
+                  Status: idle, working, needs_you, done (finished, not seen yet), failed, exited.\n\
                   `midna explain <id>` says why a terminal has its status.",
         methods: &["session.list"],
     },
@@ -125,8 +126,8 @@ pub static VERBS: &[Verb] = &[
                   reopens a conversation, and words after `--` go to the agent itself\n\
                   (`-- --append-system-prompt \"…\" --settings board.json --model opus`). A `--settings`\n\
                   or `--append-system-prompt` is merged with midna's own (Claude reads only one); Codex\n\
-                  `-c developer_instructions=…` / `-c notify=…` likewise. Without\n\
-                  --project the terminal goes in the project containing --cwd (default: this directory).\n\
+                  `-c developer_instructions=…` / `-c notify=…` likewise. --project takes a project's id\n\
+                  or name. Without it the terminal goes in the project containing --cwd (default: this directory).\n\
                   --background puts it in the sidebar's folded Background group instead of under its\n\
                   project (a dev server, a watcher); it is still listed, readable and can raise needs-you.\n\
                   --close-on-exit closes the terminal when its agent or command exits normally (exit 0,\n\

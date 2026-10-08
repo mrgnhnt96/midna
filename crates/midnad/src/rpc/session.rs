@@ -26,7 +26,12 @@ fn live(d: &Daemon, s: &Session) -> Session {
 }
 
 pub fn list(d: &Daemon, p: SessionListParams) -> R {
-    let sessions: Vec<Session> = d.core().state.sessions.iter().filter(|s| p.project_id.is_none() || p.project_id.as_ref() == Some(&s.project_id)).cloned().collect();
+    let project = match p.project_id.as_deref() {
+        Some(id) if id == ROOT_PROJECT_ID => Some(ROOT_PROJECT_ID.to_string()),
+        Some(id) => Some(super::project::resolve(d, id)?.id),
+        None => None,
+    };
+    let sessions: Vec<Session> = d.core().state.sessions.iter().filter(|s| project.is_none() || project.as_ref() == Some(&s.project_id)).cloned().collect();
     ok(sessions.iter().map(|s| live(d, s)).collect::<Vec<_>>())
 }
 
@@ -182,7 +187,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     p.cwd = p.cwd.take().map(|c| absolute_cwd(d, ctx, &c)).transpose()?;
     let project = match (&p.project_id, &p.cwd) {
         (Some(id), _) if id == ROOT_PROJECT_ID => root(),
-        (Some(id), _) => d.core().state.project(id).cloned().ok_or_else(|| RpcError::not_found(format!("no project {id}")))?,
+        (Some(id), _) => super::project::resolve(d, id)?,
         (None, Some(cwd)) => match super::project::containing(d, cwd) {
             Some(pr) => pr,
             // `/` is never a project (it would cover every path): open there at root.
