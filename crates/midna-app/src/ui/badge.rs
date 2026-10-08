@@ -9,7 +9,9 @@
 //! and the list's rows and cards show it as a thumbnail.
 //!
 //! Clicking the badge opens the list: what's waiting as capsules, newest first, scrolling (the
-//! row at the middle is the clearest; the others fade with their distance from it). With the
+//! row at the middle is the clearest; the others fade with their distance from it). The capsule
+//! beside the badge flies into its row as the list opens, its tint sweeping off as it goes (a
+//! passing one is held from then on, counted until you dismiss it). With the
 //! pointer on a capsule, an × grows in at its start (off the list) and an arrow at its end (to
 //! the terminal), and they linger a beat after it leaves. Clicking a capsule grows it into its
 //! card (Approve / Deny, or Dismiss, and Terminal), one at a time, and glides the list to put
@@ -85,6 +87,12 @@ const ROW_FILL: f32 = 0.88;
 const ROW_WORDS: f32 = 0.4;
 const GAP: f32 = 8.;
 const CARD_W: f32 = 380.;
+/// Opening the list flies the capsule beside the badge into its row: across over `FLY_X`, down
+/// over `FLY_Y` a beat after (so it arcs), its tint sweeping off over `SWEEP`.
+const FLY_X: Duration = Duration::from_millis(440);
+const FLY_Y: Duration = Duration::from_millis(520);
+const FLY_LAG: Duration = Duration::from_millis(60);
+const SWEEP: Duration = Duration::from_millis(380);
 /// A capsule's × and arrow: they grow in, and stay this long after the pointer leaves (a quick
 /// move off and back doesn't make the capsule jump).
 const HOT_LINGER: Duration = Duration::from_millis(350);
@@ -347,6 +355,25 @@ struct Line {
     leaving: Option<Instant>,
 }
 
+/// The capsule beside the badge flying into its row as the list opens.
+struct Landing {
+    /// The row it lands as.
+    id: String,
+    /// Where it was (window coordinates), and how much of a passing one's tint had cleared.
+    from: Bounds<Pixels>,
+    fill: Option<f32>,
+    color: String,
+    at: Instant,
+    /// Its row, measured as it paints (where it lands).
+    to: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+impl Landing {
+    fn done(&self, now: Instant) -> bool {
+        now.duration_since(self.at) >= FLY_LAG + FLY_Y
+    }
+}
+
 /// The layout boxes that take clicks (window coordinates), measured as they paint.
 #[derive(Clone, Default)]
 struct Zones {
@@ -436,6 +463,8 @@ pub struct Badge {
     /// and the height each had: each finishes, however quickly you open the next).
     expanded: Option<(String, Instant)>,
     collapsing: Vec<(String, Instant, f32)>,
+    /// The capsule beside the badge flying into the list.
+    landing: Option<Landing>,
     /// How far the list is scrolled (px), and a glide in progress (from, to, since).
     scroll: f32,
     glide: Option<(f32, f32, Instant)>,
@@ -852,6 +881,7 @@ impl Badge {
             cleared: vec![],
             expanded: None,
             collapsing: vec![],
+            landing: None,
             scroll: 0.,
             glide: None,
             hot: None,
@@ -910,6 +940,7 @@ impl Badge {
 
     fn open_list(&mut self) {
         self.list = true;
+        self.landing = None;
         self.list_since = Instant::now();
         self.list_touched = self.list_since;
         self.list_closing = None;
@@ -919,8 +950,36 @@ impl Badge {
         self.collapsing.clear();
     }
 
+    /// Whether clicking the badge has a list to open: what's waiting, or a capsule beside it.
+    fn can_open(&self) -> bool {
+        (self.count > 0 || self.lines.front().is_some_and(|l| l.leaving.is_none())) && !self.quiet()
+    }
+
+    /// Open the list from the badge, handing it the capsule beside it: it flies into its row,
+    /// and a passing one is held from here (counted until you dismiss it). Its card open
+    /// beside the badge, it stays there.
+    fn open_from_badge(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let carded = self.lines.front().is_some_and(|l| self.expanded.as_ref().is_some_and(|(e, _)| *e == self.line_waiting(l).id));
+        let landing = self.lines.front().filter(|l| l.leaving.is_none() && !carded).map(|l| {
+            let fill = l.stay.map(|stay| 1. - (l.until.saturating_duration_since(now).as_secs_f32() / stay.as_secs_f32()).clamp(0., 1.));
+            let id = l.waiting.clone().unwrap_or_else(|| format!("h{}", l.serial));
+            (id, fill, l.color.clone(), l.waiting.is_none().then(|| Waiting { id: format!("h{}", l.serial), at: midna_proto::time::now_rfc3339(), ..self.line_waiting(l) }))
+        });
+        self.open_list();
+        if let Some((id, fill, color, held)) = landing {
+            self.held.extend(held);
+            self.lines.clear();
+            if let Some(from) = self.zones.line.get().filter(|_| !super::queue::reduce_motion()) {
+                self.landing = Some(Landing { id, from, fill, color, at: now, to: Rc::new(Cell::new(None)) });
+            }
+            self.recount(cx);
+        }
+    }
+
     fn close_list(&mut self) {
         self.list = false;
+        self.landing = None;
         self.hover_opened = None;
         self.list_closing = None;
         self.expanded = None;
@@ -1131,6 +1190,7 @@ impl Badge {
                 || self.list_closing.is_some()
                 || now.duration_since(self.list_since) < CASCADE_IN_STEP * CASCADE_ROWS as u32 + CASCADE_IN
                 || !self.collapsing.is_empty()
+                || self.landing.is_some()
                 || self.cool.is_some()
                 || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE)
                 || self.hot.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < GROW))
@@ -1690,8 +1750,8 @@ impl Badge {
             // Resting on the badge opens the list.
             if self.hover_since.is_some_and(|t| now.duration_since(t) >= HOVER_OPEN) && self.pressing.is_none() {
                 self.hover_since = None;
-                if !self.list && !self.menu && self.count > 0 && !self.quiet() {
-                    self.open_list();
+                if !self.list && !self.menu && self.can_open() {
+                    self.open_from_badge(cx);
                     self.hover_opened = Some(now);
                     changed = true;
                 }
@@ -1730,8 +1790,8 @@ impl Badge {
                     } else if self.list && self.list_closing.is_none() {
                         // Its rows lift away first (tick closes it after).
                         self.list_closing = Some(now);
-                    } else if self.count > 0 && !self.quiet() {
-                        self.open_list();
+                    } else if self.can_open() {
+                        self.open_from_badge(cx);
                     }
                 }
                 changed = true;
@@ -1768,6 +1828,10 @@ impl Badge {
         }
         if self.list_closing.is_some_and(|t| now.duration_since(t) >= CASCADE_OUT_STEP * CASCADE_ROWS as u32 + CASCADE_OUT) {
             self.close_list();
+            changed = true;
+        }
+        if self.landing.as_ref().is_some_and(|l| l.done(now)) {
+            self.landing = None;
             changed = true;
         }
         let before = self.collapsing.len();
@@ -2232,6 +2296,35 @@ impl Badge {
         }
     }
 
+    /// The capsule beside the badge on its way into its row: across first, then down a beat
+    /// later (so it arcs), a passing one's tint sweeping off as it goes. It lands where its row
+    /// was measured last (until its row has painted, it stays where it was).
+    fn fly(&self, t: &Theme, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let l = self.landing.as_ref().filter(|l| self.list && !l.done(now))?;
+        let rows = self.rows();
+        let w = rows.iter().find(|w| w.id == l.id)?;
+        let to = l.to.get().unwrap_or(l.from);
+        let spring = |x: f32| {
+            let (c1, c3) = (1.3, 2.3);
+            1. + c3 * (x - 1.).powi(3) + c1 * (x - 1.).powi(2)
+        };
+        let since = now.duration_since(l.at);
+        let fx = spring((since.as_secs_f32() / FLY_X.as_secs_f32()).min(1.));
+        let fy = spring((since.saturating_sub(FLY_LAG).as_secs_f32() / FLY_Y.as_secs_f32()).min(1.));
+        let lerp = |a: Pixels, b: Pixels, k: f32| f32::from(a) + (f32::from(b) - f32::from(a)) * k;
+        // Anchored on the badge's side, so a capsule that's a little wider or narrower as a row
+        // keeps its edge where it was.
+        let left = if self.side().right() { lerp(l.from.right(), to.right(), fx) - f32::from(to.size.width) } else { lerp(l.from.left(), to.left(), fx) };
+        let top = lerp(l.from.top(), to.top(), fy);
+        let mut el = div().absolute().left(px(left)).top(px(top)).child(self.capsule(t, w, now, 1., 1., cx));
+        if let Some(fill) = l.fill {
+            let k = 1. - (1. - (since.as_secs_f32() / SWEEP.as_secs_f32()).min(1.)).powi(3);
+            let cleared = fill + (1. - fill) * k;
+            el = el.child(div().absolute().top_0().bottom_0().right_0().left(relative(cleared)).rounded(px(18.)).bg(self.color(t, &l.color).opacity(0.16)));
+        }
+        Some(el.into_any_element())
+    }
+
     /// The list: what's waiting as capsules, newest first, scrolling; the row at the middle is
     /// the clearest, the others fade with their distance from it (and at the edges). Clear sits
     /// on the badge's side of it.
@@ -2268,8 +2361,13 @@ impl Badge {
         for (i, w) in rows.iter().enumerate() {
             let v = self.cascade(step(i), now);
             let drop = |el: AnyElement| div().relative().top(px((1. - v) * -CASCADE_DROP)).opacity((v * 1.4).clamp(0., 1.)).child(el).into_any_element();
+            let landing = self.landing.as_ref().filter(|l| l.id == w.id);
             let el = match self.card_k(&w.id, now) {
                 Some(k) => drop(self.card(t, w, k, CARD_W, now, cx)),
+                None if let Some(l) = landing => {
+                    let capsule = self.capsule(t, w, now, 1., 1., cx);
+                    div().relative().flex().child(div().flex().opacity(0.).child(capsule)).child(measure(l.to.clone())).into_any_element()
+                }
                 None => {
                     // When it scrolls, clearest at the middle line and softer away from it: the
                     // words fade, the capsule's fill only a little (what's behind the window
@@ -2629,6 +2727,9 @@ impl Render for Badge {
             let at = div().absolute().flex().map(|d| if top { d.top(px(MY + 4.)) } else { d.bottom(px(MY + 4.)) });
             let at = if right { at.right(px(side)).justify_end() } else { at.left(px(side)) };
             root = root.child(at.child(line));
+        }
+        if let Some(fly) = self.fly(&t, now, cx) {
+            root = root.child(fly);
         }
         let below = PAD + SIZE + 10.;
         if let Some(menu) = self.menu(&t, cx) {
