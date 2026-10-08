@@ -271,10 +271,9 @@ impl Render for MainWindow {
             .when(self.overlay == Overlay::CommandBar, |d| d.child(command_bar::render(self, &t, window, cx)))
             .when(self.overlay == Overlay::Annotate, |d| d.child(self.annot.clone()))
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
-            // The composer's field takes its arrows before anything else sees them.
             // Setup's theme step browses with ← and → wherever focus is.
             .capture_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
-                if crate::composer::forward_nav_key(m, ev) || setup_screen::on_key(m, ev, w, cx) {
+                if setup_screen::on_key(m, ev, w, cx) {
                     cx.stop_propagation();
                 }
             }))

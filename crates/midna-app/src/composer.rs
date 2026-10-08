@@ -29,14 +29,16 @@ use crate::kass::{self, KassEvent};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSBorderType, NSColor, NSEventModifierFlags, NSEventType, NSFont, NSResponder, NSScrollView, NSText, NSTextView, NSView};
-use objc2_foundation::{NSObject, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSBorderType, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSFont, NSResponder, NSScrollView, NSText, NSTextView, NSView};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::json;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -590,6 +592,7 @@ fn install(m: &mut MainWindow, window: &Window) {
     scroll.setHidden(true);
     container.addSubview(&scroll);
     let line_h = unsafe { tv.layoutManager() }.map(|lm| lm.defaultLineHeightForFont(&font)).unwrap_or(16.).ceil();
+    watch_nav_keys();
     m.composer.native = Some(Rc::new(Native { scroll, tv, gpui, line_h, font, styled_for: RefCell::new(None) }));
 }
 
@@ -688,28 +691,47 @@ fn place(n: Option<&Native>, b: Bounds<Pixels>, t: &Theme) {
     }
 }
 
-/// Arrows and the other navigation keys, while the field is first responder: hand the key to
-/// the field and report it taken. AppKit offers these as key *equivalents*, to the GPUI view
-/// first; with no GPUI binding, GPUI feeds them to its own input context, which swallows them
-/// some of the time, so they never reached the field. ⌃ (Spaces) and ⌘⌥ (switch terminal)
-/// stay GPUI's.
-pub fn forward_nav_key(m: &MainWindow, ev: &KeyDownEvent) -> bool {
-    let k = &ev.keystroke;
-    let nav = matches!(k.key.as_str(), "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" | "delete");
-    if !nav || k.modifiers.control || (k.modifiers.platform && k.modifiers.alt) {
-        return false;
+/// Arrows and the other navigation keys go straight to the field while it is first responder,
+/// from an AppKit local monitor that sees each key before the window does (installed once).
+/// AppKit offers these keys as key *equivalents*, to the GPUI view first, and GPUI runs them
+/// through its own input context before any GPUI handler sees them: that swallowed the key some
+/// of the time, and handing it on to the field from inside that context sometimes typed the
+/// arrow's invisible private-use character over the selection. ⌃ (Spaces) and ⌘⌥ (switch
+/// terminal) stay GPUI's.
+fn watch_nav_keys() {
+    thread_local! {
+        static WATCHING: Cell<bool> = const { Cell::new(false) };
     }
-    native(m, |n| {
-        let Some(w) = n.tv.window() else { return false };
-        let is_tv = w.firstResponder().is_some_and(|r| std::ptr::eq(&*r as *const NSResponder as *const AnyObject, &**n.tv as *const NSTextView as *const AnyObject));
-        let Some(e) = NSApplication::sharedApplication(n.tv.mtm()).currentEvent() else { return false };
-        if !is_tv || e.r#type() != NSEventType::KeyDown {
-            return false;
+    if WATCHING.replace(true) {
+        return;
+    }
+    let handler = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit hands the monitor a live event.
+        let e = unsafe { event.as_ref() };
+        match nav_target(e) {
+            Some(tv) => {
+                tv.keyDown(e);
+                std::ptr::null_mut()
+            }
+            None => event.as_ptr(),
         }
-        n.tv.keyDown(&e);
-        true
-    })
-    .unwrap_or(false)
+    });
+    // SAFETY: main thread (from `install`); the handler returns the event or nil.
+    let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler) };
+    std::mem::forget(monitor);
+}
+
+/// The composer field that should take this key down itself, if any.
+fn nav_target(e: &NSEvent) -> Option<Retained<NSResponder>> {
+    let c = e.charactersIgnoringModifiers()?.to_string().chars().next()? as u32;
+    // ↑ ↓ ← →, forward delete, home, end, page up, page down (NS*FunctionKey).
+    let nav = matches!(c, 0xF700..=0xF703 | 0xF728 | 0xF729 | 0xF72B | 0xF72C | 0xF72D);
+    let f = e.modifierFlags();
+    if !nav || f.contains(NSEventModifierFlags::Control) || f.contains(NSEventModifierFlags::Command | NSEventModifierFlags::Option) {
+        return None;
+    }
+    let r = e.window(MainThreadMarker::new()?)?.firstResponder()?;
+    r.isKindOfClass(ComposerTextView::class()).then_some(r)
 }
 
 fn send_to_text_view(m: &MainWindow, s: Sel) {
