@@ -1070,7 +1070,7 @@ impl SettingsWindow {
     }
 
     /// "Claude Code hooks" / "Codex hooks": midna's global install (`hooks.status`), with a
-    /// button that opens the main window's hooks sheet (shows the diff before writing).
+    /// button that installs straight away, or opens the main window's sheet to confirm a removal.
     fn hooks_row(&self, t: &Theme, agent: &str) -> RowSpec {
         let h = &self.hooks[agent];
         let (label, name) = if agent == "claude" { ("Claude Code hooks", "Claude Code") } else { ("Codex hooks", "Codex") };
@@ -1084,9 +1084,9 @@ impl SettingsWindow {
         let (dot, text, color, note, action): (Hsla, String, Hsla, String, Option<(&str, bool)>) = match h["state"].as_str() {
             Some("current") => (t.ok, "Global · current".into(), t.fg, format!("In {path}. Does nothing outside midna terminals."), Some(("Remove…", true))),
             Some("stale") => (t.need, "Global · out of date".into(), t.need, detail.unwrap_or_else(|| format!("midna's entries in {path} are out of date."))
-                + " Until reinstalled, midna adds its hooks to the agents it starts.", Some(("Reinstall…", false))),
-            Some("not_installed") => (t.fg, "Per terminal".into(), t.fg, per_terminal.into(), Some(("Install…", false))),
-            Some("error") => (t.err, format!("Can't read {}", path.rsplit('/').next().unwrap_or(path)), t.err, detail.unwrap_or_else(|| path.into()), Some(("Reinstall…", false))),
+                + " Until reinstalled, midna adds its hooks to the agents it starts.", Some(("Reinstall", false))),
+            Some("not_installed") => (t.fg, "Per terminal".into(), t.fg, per_terminal.into(), Some(("Install", false))),
+            Some("error") => (t.err, format!("Can't read {}", path.rsplit('/').next().unwrap_or(path)), t.err, detail.unwrap_or_else(|| path.into()), Some(("Reinstall", false))),
             Some("unavailable") => (t.dim, format!("{name} not set up"), t.dim, format!("No {name} config on this Mac."), None),
             _ => (t.dim, "Checking…".into(), t.dim, String::new(), None),
         };
@@ -2350,8 +2350,12 @@ impl SettingsWindow {
             }
             Act::Life(c) => crate::lifecycle::command(c.clone(), cx),
             &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
-                window.activate_window();
-                crate::ui::hooks::open(m, uninstall, window, cx);
+                if uninstall {
+                    window.activate_window();
+                    crate::ui::hooks::open(m, true, window, cx);
+                } else {
+                    crate::ui::hooks::install(m, cx);
+                }
             }),
             Act::RemoveKind(k) => self.kind_call("notify.kinds.remove", json!({ "key": k }), format!("midna notify kinds rm {k}"), cx),
             Act::TestKind(k) => self.test_notification(k.clone(), cx),

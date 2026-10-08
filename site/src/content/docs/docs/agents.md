@@ -19,7 +19,7 @@ When midna starts an agent, it passes everything on the command line. Your globa
 - **Codex** gets `-c notify=…` so midna hears when a turn ends, plus the MCP server and the same hint.
 - Every terminal gets `MIDNA_SESSION`, `MIDNA_PROJECT` and `MIDNA_SOCKET` in its environment and the `midna` CLI on its `PATH`.
 
-If you'd rather have the hooks in your global config, the **Hooks** item in the status bar can install them (shown as a diff first, `midna hooks preview`). They do nothing outside a midna terminal.
+If you'd rather have the hooks in your global config, the **Hooks** item in the status bar can install them in one click. They do nothing outside a midna terminal.
 
 ## Needs you
 

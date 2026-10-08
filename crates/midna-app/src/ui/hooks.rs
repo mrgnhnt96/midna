@@ -1,7 +1,7 @@
 //! Agent hooks: the status bar item and the sheet behind it. midna's hooks can live in Claude
 //! Code's and Codex's global config (`hooks.install`), so an agent typed into a midna terminal
 //! reports status too. Without them, midna adds its hooks to each agent it starts itself.
-//! The sheet shows the exact change (`hooks.preview`) before anything is written.
+//! Install and Reinstall write straight away; the sheet only asks before removing them.
 use crate::app::MainWindow;
 use crate::theme::Theme;
 use crate::ui::header::tip;
@@ -13,10 +13,8 @@ use serde_json::{Value, json};
 /// The open sheet (on `MainWindow.hooks_sheet`).
 #[derive(Clone, Default)]
 pub struct HooksSheet {
-    /// Previewing (and offering) removal instead of install.
+    /// Confirming removal instead of install.
     pub uninstall: bool,
-    /// `hooks.preview` result, once loaded.
-    pub preview: Option<Value>,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -54,20 +52,6 @@ pub fn summary(status: &Value) -> Summary {
 pub fn open(m: &mut MainWindow, uninstall: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
     m.hooks_sheet = Some(HooksSheet { uninstall, ..Default::default() });
     m.overlay_focus.focus(window, cx);
-    let backend = m.backend.clone();
-    cx.spawn(async move |this, cx| {
-        let r = cx.background_executor().spawn(async move { backend.call("hooks.preview", json!({ "uninstall": uninstall })) }).await;
-        let _ = this.update(cx, |m, cx| {
-            if let Some(s) = m.hooks_sheet.as_mut().filter(|s| s.uninstall == uninstall) {
-                match r {
-                    Ok(v) => s.preview = Some(v),
-                    Err(e) => s.error = Some(format!("{e:#}")),
-                }
-                cx.notify();
-            }
-        });
-    })
-    .detach();
     cx.notify();
 }
 
@@ -75,6 +59,11 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
     m.hooks_sheet = None;
     m.focus_terminal(window, cx);
     cx.notify();
+}
+
+/// Installs (or reinstalls) midna's hooks without asking: the status bar's and Settings' button.
+pub fn install(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    write(m, false, cx);
 }
 
 fn apply(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -85,6 +74,12 @@ fn apply(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     sheet.busy = true;
     sheet.error = None;
     let uninstall = sheet.uninstall;
+    write(m, uninstall, cx);
+}
+
+/// `hooks.install` / `hooks.uninstall`, then closes the sheet if one is open. Errors show in the
+/// sheet, or as a toast when there isn't one.
+fn write(m: &mut MainWindow, uninstall: bool, cx: &mut Context<MainWindow>) {
     let method = if uninstall { "hooks.uninstall" } else { "hooks.install" };
     let backend = m.backend.clone();
     cx.spawn(async move |this, cx| {
@@ -92,13 +87,17 @@ fn apply(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
         let _ = this.update_in(cx, |m, window, cx| match r {
             Ok(v) => {
                 m.hooks = v;
-                close(m, window, cx);
+                if m.hooks_sheet.is_some() {
+                    close(m, window, cx);
+                }
                 m.toast(if uninstall { "Hooks removed. midna adds them to the agents it starts." } else { "Hooks installed. New claude and codex sessions report to midna." }, cx);
             }
             Err(e) => {
                 if let Some(s) = m.hooks_sheet.as_mut() {
                     s.busy = false;
                     s.error = Some(format!("{e:#}"));
+                } else {
+                    m.toast(format!("Couldn't install hooks: {e:#}"), cx);
                 }
                 cx.notify();
             }
@@ -116,7 +115,9 @@ pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> O
     }
     let fg = t.fg;
     let dot = |c: Hsla| div().text_color(c).child("●");
-    let base = div().id("hooks").flex().gap(px(4.)).cursor_pointer().hover(move |s| s.text_color(fg)).on_click(cx.listener(move |m, _, w, cx| open(m, false, w, cx)));
+    let base = div().id("hooks").flex().gap(px(4.)).cursor_pointer().hover(move |s| s.text_color(fg)).on_click(cx.listener(move |m, _, w, cx| {
+        if summary(&m.hooks) == Summary::Current { open(m, false, w, cx) } else { install(m, cx) }
+    }));
     let item = match s {
         Summary::NotInstalled => base.text_color(t.accent).child("Install hooks").tooltip(tip(
             "Agents midna starts already report status. Install midna's hooks so a claude or codex you type into a terminal reports too.",
@@ -131,63 +132,25 @@ pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> O
     Some(item.into_any_element())
 }
 
-fn diff_block(t: &Theme, f: &Value) -> Div {
-    let path = f["path"].as_str().unwrap_or("").to_string();
-    let note = if let Some(e) = f["error"].as_str() {
-        Some((e.to_string(), t.err))
-    } else if f["unchanged"] == true {
-        Some(("No change".to_string(), t.dim))
-    } else if f["creates"] == true {
-        Some(("New file".to_string(), t.dim))
-    } else {
-        None
-    };
-    let lines = f["lines"].as_array().cloned().unwrap_or_default();
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(div().flex().gap(px(8.)).child(div().font_family(t.mono_font.clone()).text_color(t.accent).child(path)).children(note.map(|(n, c)| div().text_color(c).child(n))))
-        .when(!lines.is_empty(), |d| {
-            d.child(
-                div().flex().flex_col().p(px(8.)).rounded(px(6.)).bg(t.term).border_1().border_color(t.line).font_family(t.mono_font.clone()).text_size(px(11.)).children(lines.iter().map(|l| {
-                    let op = l["op"].as_str().unwrap_or(" ");
-                    let color = match op {
-                        "+" => t.ok,
-                        "-" => t.err,
-                        _ => t.dim,
-                    };
-                    let text = if op == "…" { "…".to_string() } else { format!("{op} {}", l["text"].as_str().unwrap_or("")) };
-                    div().text_color(color).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text)
-                })),
-            )
-        })
-}
-
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let sheet = m.hooks_sheet.as_ref()?;
     let s = summary(&m.hooks);
     let (title, body) = match (sheet.uninstall, s) {
-        (true, _) => ("Remove midna's hooks?", "midna takes its entries out of the files below and puts Codex's previous notify back. Agents midna starts keep reporting; ones you type by hand stop."),
+        (true, _) => ("Remove midna's hooks?", "midna takes its entries out of Claude Code's and Codex's config and puts Codex's previous notify back. Agents midna starts keep reporting; ones you type by hand stop."),
         (false, Summary::NeedsReinstall) => ("Reinstall midna's hooks", "The hooks in your agents' config are out of date, so a claude or codex you type into a midna terminal may not report status. Reinstalling replaces midna's entries and leaves yours alone."),
         (false, Summary::Current) => ("midna's hooks are installed", "A claude or codex you type into a midna terminal reports status. Outside midna terminals the hooks do nothing."),
         _ => ("Report status from every claude and codex", "Agents midna starts already report. Install midna's hooks in your agents' config so one you type into a midna terminal reports too. Outside midna terminals they do nothing, and Codex's current notify keeps running."),
     };
     let reasons: Vec<String> = present(&m.hooks).iter().filter_map(|(k, h)| h["detail"].as_str().map(|d| format!("{k}: {d}"))).collect();
-    let files = sheet.preview.as_ref().and_then(|p| p["files"].as_array().cloned()).unwrap_or_default();
-    let nothing = sheet.preview.is_some() && files.iter().all(|f| f["unchanged"] == true);
-    let blocked = files.iter().any(|f| f["error"].is_string()) && files.iter().all(|f| f["error"].is_string() || f["unchanged"] == true);
-    let primary = if sheet.uninstall || (s == Summary::Current && nothing) {
+    let primary = if sheet.uninstall || s == Summary::Current {
         None
     } else {
         Some(if s == Summary::NeedsReinstall { "Reinstall hooks  ↩" } else { "Install hooks  ↩" })
     };
     let busy = sheet.busy;
-    let loading = sheet.preview.is_none() && sheet.error.is_none();
     let card = div()
         .id("hooks-card")
-        .w(px(620.))
-        .max_h(px(560.))
+        .w(px(520.))
         .flex()
         .flex_col()
         .gap(px(14.))
@@ -201,18 +164,6 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(title))
         .child(div().text_color(t.dim).child(body))
         .when(!reasons.is_empty() && !sheet.uninstall, |d| d.child(div().flex().flex_col().text_color(t.need).children(reasons.into_iter().map(|r| div().child(r)))))
-        .child(
-            div()
-                .id("hooks-diff")
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .min_h_0()
-                .flex_shrink(1.)
-                .overflow_y_scroll()
-                .when(loading, |d| d.child(div().text_color(t.dim).child("Reading your config…")))
-                .children(files.iter().map(|f| diff_block(t, f))),
-        )
         .children(sheet.error.clone().map(|e| div().text_color(t.err).child(e)))
         .child(
             div()
@@ -227,7 +178,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
                 .when(sheet.uninstall, |d| {
                     d.child(btn_danger(t, "hooks-uninstall", if busy { "Removing…" } else { "Remove hooks" }, 28.).on_click(cx.listener(|m, _, _, cx| apply(m, cx))))
                 })
-                .when_some(primary.filter(|_| !loading && !blocked), |d, label| {
+                .when_some(primary, |d, label| {
                     d.child(btn_primary(t, "hooks-install", if busy { "Installing…" } else { label }).on_click(cx.listener(|m, _, _, cx| apply(m, cx))))
                 }),
         );
@@ -245,7 +196,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .on_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| match ev.keystroke.key.as_str() {
                 "escape" => close(m, w, cx),
                 "enter" => {
-                    let ready = m.hooks_sheet.as_ref().is_some_and(|s| s.preview.is_some() && !s.uninstall);
+                    let ready = m.hooks_sheet.as_ref().is_some_and(|s| !s.uninstall);
                     if ready && summary(&m.hooks) != Summary::Current {
                         apply(m, cx);
                     }
