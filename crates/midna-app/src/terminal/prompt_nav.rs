@@ -254,9 +254,9 @@ impl TerminalView {
         let nav = &self.nav;
         let row = self.bar_row(cx);
         let mut out = vec![];
-        // Scrolled back, the bar shows even with no prompts listed: it covers Claude's own pinned
-        // copy of the prompt on row 0.
-        if !self.is_agent() || (nav.prompts.is_empty() && !row && !nav.scrolled) {
+        // With no prompts listed, the bar shows only to cover Claude's own pinned copy of the
+        // prompt on row 0 (scrolled back); otherwise there's nothing for it to name.
+        if !self.is_agent() || (nav.prompts.is_empty() && (nav.pinned.is_none() || !(row || nav.scrolled))) {
             return out;
         }
         // The bar floats on the grid's top row. Claude's pinned copy of the prompt there (which the
