@@ -15,6 +15,10 @@
 //! was laid out (`rows`), or, with nothing to go by, fills the new row's room, solid, as it opens.
 //! The pane slides the new terminal in the same way.
 //!
+//! A terminal that turns up on its own (an agent, a trigger, the CLI, `arrive`) unfolds the
+//! same way where it lands, with no highlight: the selection and the pane stay put. The first
+//! one in a project brings the project's whole group in with it, heading and all.
+//!
 //! Moving to the terminal above or below (⌥⌘↑ / ⌥⌘↓, `switch`) slides too: the highlight glides
 //! to it, across project headings too, from where each row was last laid out (`rows`), and the
 //! pane slides the same way, once the terminal has drawn (`on_show`). With Reduce Motion on, nothing moves.
@@ -71,6 +75,15 @@ pub struct Opening {
     height: Rc<Cell<f32>>,
 }
 
+/// A row (a session id) or a whole group (its key) that turned up on its own, unfolding where
+/// it landed.
+pub struct Arrival {
+    key: String,
+    at: Instant,
+    /// Its measured height (0 until the first frame).
+    height: Rc<Cell<f32>>,
+}
+
 /// A highlight travelling to a row just opened from a row further away, as laid out before it
 /// opened.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,6 +130,7 @@ pub struct CloseAnim {
     pane_due: Option<(Vec<String>, Dir, Instant)>,
     pane: Option<(Entity<TerminalView>, Dir, Instant)>,
     opening: Option<Opening>,
+    arrivals: Vec<Arrival>,
     step: Option<Step>,
     /// Each sidebar row's top and height in the window, as last laid out (`sidebar::measured`).
     pub rows: Rc<std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>>,
@@ -264,6 +278,44 @@ pub fn open(m: &mut MainWindow, new: &str, old: Option<Entity<TerminalView>>, cx
     cx.notify();
 }
 
+/// The sidebar's groups, by key, each with its rows: what `arrive` compares against.
+pub fn sidebar_rows(m: &MainWindow) -> Vec<(String, Vec<String>)> {
+    plan_groups(m).into_iter().map(|g| (g.key, g.rows)).collect()
+}
+
+/// The sidebar was just refreshed from `before` (`sidebar_rows`): terminals that turned up
+/// without being opened here unfold where they land, or, in a group that wasn't there, the
+/// whole group does.
+pub fn arrive(m: &mut MainWindow, before: &[(String, Vec<String>)], cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        return;
+    }
+    let keys = arrivals(&plan_groups(m), before);
+    if keys.is_empty() {
+        return;
+    }
+    let now = Instant::now();
+    let a = &mut m.close_anim;
+    a.arrivals.retain(|x| !keys.contains(&x.key));
+    a.arrivals.extend(keys.into_iter().map(|key| Arrival { key, at: now, height: Rc::new(Cell::new(0.)) }));
+    cx.notify();
+}
+
+/// What unfolds, `before` → `groups`: a group that wasn't there (by key), else each row that
+/// wasn't (in an unfolded group; a folded one doesn't show it).
+fn arrivals(groups: &[PlanGroup], before: &[(String, Vec<String>)]) -> Vec<String> {
+    let mut keys = vec![];
+    for g in groups {
+        match before.iter().find(|(k, _)| k == &g.key) {
+            None => keys.push(g.key.clone()),
+            Some((_, rows)) if !g.folded => keys.extend(g.rows.iter().filter(|r| !rows.contains(r)).cloned()),
+            Some(_) => {}
+        }
+    }
+    keys
+}
+
 /// ⌥⌘↑ / ⌥⌘↓ moved from the selected terminal to `to`, not yet selected.
 pub fn switch(m: &mut MainWindow, to: &str, cx: &mut Context<MainWindow>) {
     gpui_kit::base::apply_system_reduce_motion(cx);
@@ -310,6 +362,7 @@ impl CloseAnim {
         if self.step.as_ref().is_some_and(|s| ms(s.at) >= SLIDE_MS) {
             self.step = None;
         }
+        self.arrivals.retain(|a| ms(a.at) < SLIDE_MS);
     }
 
     /// The sidebar is moving (it asks for the next frame).
@@ -318,6 +371,12 @@ impl CloseAnim {
             || self.glide.as_ref().is_some_and(|(_, _, at)| ms(*at) < SLIDE_MS)
             || self.opening.as_ref().is_some_and(|o| ms(o.at) < SLIDE_MS)
             || self.step.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
+            || self.arrivals.iter().any(|a| ms(a.at) < SLIDE_MS)
+    }
+
+    /// The row or group `key`, when it's unfolding after turning up on its own.
+    pub fn arrival(&self, key: &str) -> Option<&Arrival> {
+        self.arrivals.iter().find(|a| a.key == key && ms(a.at) < SLIDE_MS)
     }
 
     /// `id`, when it's the row unfolding.
@@ -388,11 +447,32 @@ impl Ghost {
     }
 }
 
+/// How far a row `at` opened has unfolded and its content dropped in, 0..1 each.
+fn unfolded(at: Instant) -> (f32, f32) {
+    let t = ms(at);
+    (ease_out(t / SLIDE_MS), 1. - (1. - t / LIFT_MS).clamp(0., 1.).powi(2))
+}
+
+impl Arrival {
+    /// How far it has unfolded and its content dropped in, 0..1 each.
+    pub fn progress(&self) -> (f32, f32) {
+        unfolded(self.at)
+    }
+
+    /// Its full height, once measured.
+    pub fn height(&self) -> Option<f32> {
+        Some(self.height.get()).filter(|h| *h > 0.)
+    }
+
+    pub fn measure(&self) -> Rc<Cell<f32>> {
+        self.height.clone()
+    }
+}
+
 impl Opening {
     /// How far it has unfolded and its content dropped in, 0..1 each.
     pub fn progress(&self) -> (f32, f32) {
-        let t = ms(self.at);
-        (ease_out(t / SLIDE_MS), 1. - (1. - t / LIFT_MS).clamp(0., 1.).powi(2))
+        unfolded(self.at)
     }
 
     /// The travelling highlight's top (from the drawing row's top) and height, eased `e`.
@@ -522,6 +602,15 @@ mod tests {
         let p = plan(&g, &order(), &s(&["b1"]), None);
         assert!(p.ghosts.is_empty());
         assert_eq!((p.glide, p.pane), (None, None));
+    }
+
+    #[test]
+    fn a_new_project_unfolds_whole_and_a_new_row_on_its_own() {
+        let g = |key: &str, folded: bool, rows: &[&str]| PlanGroup { key: key.into(), folded, rows: rows.iter().map(|r| r.to_string()).collect() };
+        let before = vec![("p_a".to_string(), vec!["s1".to_string()]), ("p_f".to_string(), vec!["s3".to_string()])];
+        let now = [g("p_a", false, &["s1", "s2"]), g("p_f", true, &["s3", "s4"]), g("p_new", false, &["s5"])];
+        assert_eq!(arrivals(&now, &before), ["s2", "p_new"]);
+        assert!(arrivals(&now[..1], &[("p_a".into(), vec!["s1".into(), "s2".into()])]).is_empty());
     }
 
     #[test]

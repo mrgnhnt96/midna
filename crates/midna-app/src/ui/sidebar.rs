@@ -337,9 +337,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         // A terminal just opened unfolds where it lands.
         let row_el = |s: &Session, cx: &mut Context<MainWindow>| -> AnyElement {
             let el = measured(m, &s.id, row(m, s, &key, t, compact, cx).into_any_element());
-            match m.close_anim.opening(&s.id) {
-                Some(o) => unfold(o, el, t),
-                None => el,
+            match (m.close_anim.opening(&s.id), m.close_anim.arrival(&s.id)) {
+                (Some(o), _) => unfold(o, el, t),
+                (None, Some(a)) => arrive(a, el),
+                _ => el,
             }
         };
         let leaving = leaving(m, &key, collapsed, &g.sessions, window, cx);
@@ -363,7 +364,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         }
         run.extend(ghosts(None, cx));
         group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
-        list = list.child(group);
+        // A project that just turned up (an agent opened its first terminal) unfolds whole.
+        list = list.child(match m.close_anim.arrival(&key) {
+            Some(a) => arrive(a, group.into_any_element()),
+            None => group.into_any_element(),
+        });
     }
     if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
         list = list
@@ -914,20 +919,8 @@ fn measured(m: &MainWindow, id: &str, el: AnyElement) -> AnyElement {
 /// below draw over it; further down, the row it leaves draws it; with nothing laid out to go
 /// by, the highlight fills the room, solid.
 fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyElement {
-    let (grow, drop) = o.progress();
     let full = o.height();
-    let measure = o.measure();
-    let content = div()
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .h(px(full.map_or(0., |h| h * grow)))
-        .on_children_prepainted(move |b, _, _| {
-            if let Some(b) = b.first() {
-                measure.set(f32::from(b.size.height));
-            }
-        })
-        .child(div().flex_none().relative().top(px(-crate::ui::close_anim::LIFT * (1. - drop))).opacity(drop).child(el));
+    let content = grow_in(o.progress(), full, o.measure(), el);
     div()
         .relative()
         .map(|d| match (o.glide, full) {
@@ -941,6 +934,29 @@ fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyE
         })
         .child(content)
         .into_any_element()
+}
+
+/// A row or project group that turned up on its own (`ui::close_anim::arrive`): it unfolds
+/// like a row just opened, with no highlight (the selection stays where it was).
+fn arrive(a: &crate::ui::close_anim::Arrival, el: AnyElement) -> AnyElement {
+    grow_in(a.progress(), a.height(), a.measure(), el).into_any_element()
+}
+
+/// `el`'s room opening to its `full` height (measured into `measure`) as `grow` goes 0..1,
+/// while it drops in and fades up as `drop` does.
+fn grow_in((grow, drop): (f32, f32), full: Option<f32>, measure: std::rc::Rc<std::cell::Cell<f32>>, el: AnyElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .h(px(full.map_or(0., |h| h * grow)))
+        .on_children_prepainted(move |b, _, _| {
+            if let Some(b) = b.first() {
+                measure.set(f32::from(b.size.height));
+            }
+        })
+        // A flex column, so a group's bottom margin counts in the height it opens to.
+        .child(div().flex_none().flex().flex_col().relative().top(px(-crate::ui::close_anim::LIFT * (1. - drop))).opacity(drop).child(el))
 }
 
 /// Script segments (`script.run`): gap between segments, a single space when `join`.

@@ -918,6 +918,8 @@ impl MainWindow {
     fn apply_refresh(&mut self, r: RefreshResult, window: &mut Window, cx: &mut Context<Self>) {
         // The floating badge counts needs-you items, names terminals and follows settings.
         let badge = r.needs.is_some() || r.settings.is_some() || r.sessions.is_some();
+        // The sidebar as it was, so terminals and projects that turn up here unfold.
+        let before = self.loaded.then(|| crate::ui::close_anim::sidebar_rows(self));
         if let Some(s) = r.settings {
             let new: HashMap<String, Value> = s.into_iter().map(|e| (e.key, e.value)).collect();
             if new != self.settings {
@@ -974,6 +976,9 @@ impl MainWindow {
                 self.marked.clear();
             }
             crate::ui::queue::sync(&self.sessions, cx);
+        }
+        if let Some(before) = before {
+            crate::ui::close_anim::arrive(self, &before, cx);
         }
         if let Some(n) = r.needs {
             self.needs = n;
