@@ -478,6 +478,11 @@ fn build() -> Vec<MethodSpec> {
              your activity, working time per project, spend per model, and records over the whole log."),
         m::<InsightsActivityParams, Vec<Event>>("insights.activity").d(
             "Recent meaningful activity (status changes, turns, approvals, rules, needs-you), newest first. Use events.list for the raw log."),
+        // clock
+        m::<ClockSleepsParams, ClockSleepsResult>("clock.sleeps").d(
+            "When the Mac slept, from the daemon's sleep log (the last 14 days; a sleep is a wall-clock jump the \
+             monotonic clock didn't make). midna's idle triggers, queued messages waiting for quiet, needs-you expiry \
+             and a queued restart's grace count awake time only: leave these out of an elapsed time to do the same."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

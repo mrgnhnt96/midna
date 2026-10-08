@@ -127,10 +127,11 @@ fn waiting(d: &Daemon, sid: &str, m: &QueuedMessage) -> Vec<String> {
     match &m.when {
         SendWhen::Idle => {}
         SendWhen::IdleFor { minutes } => {
-            let last = last_activity(d, sid).unwrap_or(now);
+            // Awake time: the Mac asleep isn't quiet the human chose to leave.
+            let quiet = last_activity(d, sid).map_or(0, |last| d.clock.awake_secs_since(last));
             let need = i64::from(*minutes) * 60;
-            if now - last < need {
-                w.push(format!("{minutes} min of quiet ({} min so far)", (now - last) / 60));
+            if quiet < need {
+                w.push(format!("{minutes} min of quiet ({} min so far)", quiet / 60));
             }
         }
         SendWhen::At { at } => {

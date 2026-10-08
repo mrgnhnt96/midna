@@ -2171,6 +2171,29 @@ pub struct ThemesReportParams {
     pub colors: TerminalColors,
 }
 
+// ------------------------------------------------------------------ clock
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ClockSleepsParams {
+    /// Only the sleeps that ended after this (default: every one kept, the last 14 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ClockSleepsResult {
+    /// When the Mac slept, oldest first.
+    pub sleeps: Vec<SleepPeriod>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SleepPeriod {
+    pub from: Timestamp,
+    pub to: Timestamp,
+    /// `to` - `from`, in seconds.
+    pub secs: i64,
+}
+
 // ------------------------------------------------------------------ usage
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

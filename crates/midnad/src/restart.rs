@@ -110,7 +110,8 @@ pub fn blockers(d: &Daemon, sid: &str) -> Vec<String> {
     }
     let Some(rt) = d.rt(sid) else { return w };
     let last = rt.activity.load(Ordering::Relaxed).max(time::parse_rfc3339(&s.status.since).unwrap_or(0));
-    if time::now_unix() - last < idle_secs {
+    // Awake time: right after a wake the human may be about to type.
+    if d.clock.awake_secs_since(last) < idle_secs {
         w.push(format!("less than {idle_secs}s since the terminal was last active"));
     }
     if s.agent == Some(AgentKind::Claude) {

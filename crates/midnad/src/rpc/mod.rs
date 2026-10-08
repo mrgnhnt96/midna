@@ -358,6 +358,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "insights.series" => insights::series(d, parse(p)?),
         "insights.detail" => insights::detail(d, parse(p)?),
         "usage.get" => ok(crate::usage::get(d)),
+        "clock.sleeps" => crate::clock::sleeps(d, parse(p)?),
         "window.list" => window::list(d),
         "window.command" => window::command(d, ctx, parse(p)?),
         "agent.hook" => agent::hook(d, ctx, parse(p)?),
