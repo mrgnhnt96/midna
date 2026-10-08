@@ -215,6 +215,8 @@ pub struct SettingsWindow {
     ask: LineInput,
     /// While searching: the one section the results are narrowed to (None = all).
     scope: Option<Sec>,
+    /// A group to scroll to once its section next draws (a search result's group crumb).
+    jump: Option<&'static str>,
     /// "Agent commands": show each row's CLI.
     cli: bool,
     /// Shortcuts: the key detector while it's on, and the keys it caught.
@@ -284,6 +286,7 @@ impl SettingsWindow {
             view,
             ask,
             scope: crate::dev::var("MIDNA_SETTINGS_SCOPE").ok().and_then(|v| SECS.into_iter().find(|s| s.id() == v)),
+            jump: None,
             cli: crate::dev::var("MIDNA_SETTINGS_CLI").is_ok(),
             recorder: None,
             recorded: vec![],
@@ -1718,6 +1721,10 @@ impl Render for SettingsWindow {
                     };
                     head = self.page_header(&t, sec.label().into(), sub, Some(sec), cx).into_any_element();
                     let groups = sections.into_iter().find(|(s, _)| *s == sec).map(|(_, g)| g).unwrap_or_default();
+                    if let Some(ix) = self.jump.take().and_then(|name| groups.iter().position(|g| g.name == name)) {
+                        // each group is one child of the scrolled list
+                        self.scroll.scroll_to_top_of_item(ix);
+                    }
                     let shown = groups.into_iter().map(|g| Shown { sec, name: g.name, note: g.note, rows: g.rows.into_iter().map(|row| Hit { row, via: None }).collect() }).collect();
                     body = self.cards(&t, shown, &[], None, window, cx).into_any_element();
                 }
@@ -2141,7 +2148,22 @@ impl SettingsWindow {
                         )
                         .when(!g.name.is_empty(), |d| d.child(div().text_color(t.line).child("›")))
                     })
-                    .child(g.name)
+                    .when(crumb && !g.name.is_empty(), |d| {
+                        let name = g.name;
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("crumb-group-{}-{id}", sec.id())))
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(t.accent))
+                                .tooltip(crate::ui::header::tip(format!("Open {} › {name}", sec.label())))
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.open_section(sec, cx);
+                                    s.jump = Some(name);
+                                }))
+                                .child(name),
+                        )
+                    })
+                    .when(!crumb, |d| d.child(g.name))
                     .when_some(g.note, |d, n| d.child(div().font_weight(FontWeight::NORMAL).text_size(px(11.5)).child(format!("· {n}"))))
             });
             let mut card = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).overflow_hidden();
