@@ -207,7 +207,7 @@ impl Render for MainWindow {
             return crate::composer::register(MainWindow::register_actions(root, cx), cx);
         }
         twilight::sync_lights(self, window);
-        crate::composer::sync(self);
+        crate::composer::sync(self, window, cx);
         self.close_anim.prune();
         let sidebar_anim = sidebar_anim::frame(self, window);
         let sidebar = sidebar::render(self, &t, sidebar_anim, window, cx);

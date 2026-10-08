@@ -16,6 +16,10 @@
 //! a newline; Esc cancels (clears and hides). The target is the terminal selected when the
 //! composer opened. Images attached to it (`annotate.rs`) go with the text.
 //!
+//! The composer belongs to its target: select another terminal and it's put away with its
+//! text (a draft), come back and it's open again where you left it. It never shows over (or
+//! sends to) a terminal it wasn't opened on.
+//!
 //! Focus has two layers. AppKit's first responder gets the keystrokes; GPUI has its own focus
 //! and sees every key *equivalent* first (performKeyEquivalent goes to the GPUI view before
 //! the text view). So while the text view is first responder, GPUI focus sits on
@@ -38,6 +42,7 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSS
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::json;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -85,6 +90,12 @@ pub enum Source {
     Kass,
 }
 
+/// An open composer put away when you selected another terminal.
+struct Draft {
+    text: String,
+    source: Source,
+}
+
 pub struct Composer {
     pub open: bool,
     pub source: Source,
@@ -92,6 +103,8 @@ pub struct Composer {
     pub target: Option<String>,
     pub lines: usize,
     pub focus: FocusHandle,
+    /// Composers put away by terminal, until you select that terminal again.
+    drafts: HashMap<String, Draft>,
     /// This window's text view, added on first open. Each main window has its own: AppKit
     /// can only give keys to a view inside the key window.
     native: Option<Rc<Native>>,
@@ -137,7 +150,7 @@ impl Composer {
             }));
         }
         let subs = vec![cx.on_blur(&focus, window, |m, _, _| release_native_focus(m))];
-        Composer { open: false, source: Source::Manual, target: None, lines: 1, focus, native: None, _tasks: tasks, _subs: subs }
+        Composer { open: false, source: Source::Manual, target: None, lines: 1, focus, drafts: HashMap::new(), native: None, _tasks: tasks, _subs: subs }
     }
 }
 
@@ -146,6 +159,63 @@ impl Composer {
 /// Can the composer be shown right now (a connected terminal pane, nothing over it)?
 fn can_show(m: &MainWindow) -> bool {
     m.conn == ConnState::Connected && m.screen == Screen::Terminal && m.overlay == Overlay::None && m.selected.is_some()
+}
+
+/// An open composer shows only over its own terminal.
+fn on_target(m: &MainWindow) -> bool {
+    m.composer.target.is_none() || m.composer.target == m.selected
+}
+
+/// What the selected terminal means for the composer: put the open one away (it belongs to
+/// another terminal), and/or bring back the selected terminal's draft.
+fn follow(open_on: Option<&str>, selected: Option<&str>, has_draft: impl Fn(&str) -> bool) -> (bool, bool) {
+    let park = open_on.is_some() && open_on != selected;
+    let restore = (open_on.is_none() || park) && selected.is_some_and(has_draft);
+    (park, restore)
+}
+
+/// Keep the composer with its terminal (called every render): put it away when another
+/// terminal is selected, and reopen a terminal's draft when it's selected again.
+fn follow_selection(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if m.conn == ConnState::Connected {
+        let sessions = &m.sessions;
+        m.composer.drafts.retain(|id, _| sessions.iter().any(|s| &s.id == id));
+    }
+    let open_on = m.composer.target.as_deref().filter(|_| m.composer.open);
+    let drafts = &m.composer.drafts;
+    let (park, restore) = follow(open_on, m.selected.as_deref(), |id| drafts.contains_key(id));
+    if park {
+        let had_focus = m.composer.focus.contains_focused(window, cx);
+        if let Some(id) = m.composer.target.take() {
+            let text = text(m);
+            if !text.trim().is_empty() {
+                m.composer.drafts.insert(id, Draft { text, source: m.composer.source });
+            }
+        }
+        m.composer.open = false;
+        release_native_focus(m);
+        native(m, |n| {
+            n.tv.setString(&NSString::from_str(""));
+            n.scroll.setHidden(true);
+        });
+        if had_focus {
+            cx.defer_in(window, |m, window, cx| m.focus_terminal(window, cx));
+        }
+    }
+    if restore && let Some(id) = m.selected.clone() && let Some(d) = m.composer.drafts.remove(&id) {
+        m.composer.open = true;
+        m.composer.source = d.source;
+        m.composer.target = Some(id);
+        native(m, |n| n.tv.setString(&NSString::from_str(&d.text)));
+        cx.defer_in(window, |m, window, cx| {
+            if m.composer.open && on_target(m) && can_show(m) {
+                let t = cx.global::<Theme>().clone();
+                show_native(m, window, &t);
+                m.composer.focus.focus(window, cx);
+                on_event(m, ComposerEvent::Changed, window, cx);
+            }
+        });
+    }
 }
 
 fn open(m: &mut MainWindow, source: Source, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
@@ -197,11 +267,11 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Cont
             let t0 = Instant::now();
             crate::ui::ax_prompt::on_kass_begin(m, cx);
             let active = window.is_window_active() || crate::dev::var("MIDNA_KASS_ANY_WINDOW").is_ok();
-            if !active || !can_show(m) {
+            if !active || !can_show(m) || !on_target(m) {
                 // Kass only asks the frontmost app; if the main window isn't the key window
                 // or there's no terminal pane, stay out of the way: no reply, Kass carries on.
                 if debug {
-                    eprintln!("midna-app: kass willBegin ({mode}) ignored: active={} can_show={}", window.is_window_active(), can_show(m));
+                    eprintln!("midna-app: kass willBegin ({mode}) ignored: active={} can_show={} on_target={}", window.is_window_active(), can_show(m), on_target(m));
                 }
                 return;
             }
@@ -257,6 +327,9 @@ fn on_event(m: &mut MainWindow, ev: ComposerEvent, window: &mut Window, cx: &mut
 }
 
 fn submit(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if !m.composer.open || !on_target(m) {
+        return;
+    }
     let Some(id) = m.composer.target.clone().or_else(|| m.selected.clone()) else {
         close(m, window, cx);
         return;
@@ -310,9 +383,11 @@ pub fn text(m: &MainWindow) -> String {
 
 // ------------------------------------------------------------------ rendering
 
-/// Keep the native view's visibility in step with the layout (called every render).
-pub fn sync(m: &MainWindow) {
-    let visible = m.composer.open && can_show(m);
+/// Keep the composer with its terminal and the native view's visibility in step with the
+/// layout (called every render).
+pub fn sync(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    follow_selection(m, window, cx);
+    let visible = m.composer.open && on_target(m) && can_show(m);
     native(m, |n| {
         // Every render, not just on hide: whatever stranded AppKit's first responder (an AX
         // client poking the hidden field, a hide racing a focus), keys must reach GPUI.
@@ -326,7 +401,7 @@ pub fn sync(m: &MainWindow) {
 }
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    if !m.composer.open || !can_show(m) {
+    if !m.composer.open || !on_target(m) || !can_show(m) {
         return None;
     }
     let line_h = native(m, |n| n.line_h).unwrap_or(16.) as f32;
@@ -750,7 +825,7 @@ fn undo(m: &MainWindow, redo: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, with_notes};
+    use super::{encode, follow, with_notes};
     use ::core::prelude::v1::test;
 
     #[test]
@@ -758,6 +833,22 @@ mod tests {
         assert_eq!(with_notes("look at this\n", ""), "look at this\n");
         assert_eq!(with_notes("look at this\n", "Annotations"), "look at this\nAnnotations");
         assert_eq!(encode(&with_notes("look", "1. fix"), true), "\x1b[200~look\r1. fix\x1b[201~");
+    }
+
+    #[test]
+    fn the_composer_stays_with_its_terminal() {
+        let none = |_: &str| false;
+        let b_has = |id: &str| id == "b";
+        // Open on the selected terminal, or nothing open and no draft: leave it.
+        assert_eq!(follow(Some("a"), Some("a"), none), (false, false));
+        assert_eq!(follow(None, Some("a"), none), (false, false));
+        // Another terminal selected: put it away; if that one has a draft, bring it back.
+        assert_eq!(follow(Some("a"), Some("b"), none), (true, false));
+        assert_eq!(follow(Some("a"), Some("b"), b_has), (true, true));
+        assert_eq!(follow(Some("a"), None, none), (true, false));
+        // Nothing open: the selected terminal's draft comes back.
+        assert_eq!(follow(None, Some("b"), b_has), (false, true));
+        assert_eq!(follow(Some("b"), Some("b"), b_has), (false, false));
     }
 
     #[test]
