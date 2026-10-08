@@ -2,7 +2,7 @@
 //! must be created and used on one thread (see `term.rs`).
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::{CellWide, Screen};
+use libghostty_vt::screen::{CellSemanticContent, CellWide, RowSemanticPrompt, Screen};
 use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Terminal};
 use midna_proto::frame::*;
@@ -267,7 +267,10 @@ impl Engine {
                 selection.push((y, s.start_x, s.end_x));
             }
             if full || row.dirty().unwrap_or(true) {
-                let mut rd = RowData { cells: Vec::with_capacity(cols as usize), extras: vec![] };
+                let raw = row.raw_row().ok();
+                let wrapped = raw.and_then(|r| r.is_wrapped().ok()).unwrap_or(false);
+                let prompt = raw.and_then(|r| r.semantic_prompt().ok()).is_some_and(|p| p == RowSemanticPrompt::Prompt);
+                let mut rd = RowData { cells: Vec::with_capacity(cols as usize), extras: vec![], wrapped, prompt };
                 let mut ci = cells_it.update(row).ok()?;
                 let mut x: u16 = 0;
                 while let Some(c) = ci.next() {
@@ -284,6 +287,9 @@ impl Engine {
                         rd.extras.push((x, gbuf.iter().collect()));
                     }
                     if let Ok(raw) = c.raw_cell() {
+                        if matches!(raw.semantic_content(), Ok(CellSemanticContent::Input)) {
+                            cell.flags |= F_INPUT;
+                        }
                         match raw.wide() {
                             Ok(CellWide::Wide) => cell.flags |= F_WIDE,
                             Ok(CellWide::SpacerTail) | Ok(CellWide::SpacerHead) => cell.flags |= F_SPACER,

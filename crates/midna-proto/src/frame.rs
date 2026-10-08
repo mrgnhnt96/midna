@@ -8,6 +8,8 @@ pub const F_STRIKE: u8 = 8;
 pub const F_WIDE: u8 = 16;
 pub const F_SPACER: u8 = 32;
 pub const F_FAINT: u8 = 64;
+/// Typed at a shell prompt (between OSC 133 B and C).
+pub const F_INPUT: u8 = 128;
 
 /// Client -> daemon stream tags.
 pub const TAG_WANT: u8 = 0x01;
@@ -48,6 +50,10 @@ pub struct RowData {
     pub cells: Vec<Cell>,
     /// Multi-codepoint graphemes (combining marks, ZWJ emoji): (col, text).
     pub extras: Vec<(u16, String)>,
+    /// The line goes on in the next row (soft-wrapped at the right edge).
+    pub wrapped: bool,
+    /// A shell prompt starts on the row (OSC 133 A).
+    pub prompt: bool,
 }
 
 impl RowData {
@@ -188,6 +194,14 @@ impl Frame {
                 out.extend_from_slice(&v.to_le_bytes());
             }
         }
+        // The soft-wrapped and prompt rows among `changed`, as (row, 1 = wrapped | 2 = prompt),
+        // after the ext block, where older apps stop reading.
+        let marked: Vec<(u16, u8)> = self.changed.iter().map(|(y, r)| (*y, r.wrapped as u8 | (r.prompt as u8) << 1)).filter(|&(_, b)| b != 0).collect();
+        out.extend_from_slice(&(marked.len() as u16).to_le_bytes());
+        for (y, bits) in marked {
+            out.extend_from_slice(&y.to_le_bytes());
+            out.push(bits);
+        }
     }
 
     pub fn decode(b: &[u8]) -> Result<Frame, DecodeError> {
@@ -226,7 +240,7 @@ impl Frame {
                 let l = r.u16()? as usize;
                 extras.push((x, String::from_utf8_lossy(r.take(l)?).into_owned()));
             }
-            changed.push((y, RowData { cells, extras }));
+            changed.push((y, RowData { cells, extras, ..Default::default() }));
         }
         let mut ext = FrameExt::default();
         if r.i < b.len() && b[r.i] == EXT_MAGIC {
@@ -241,6 +255,16 @@ impl Frame {
             let n = r.u16()?;
             for _ in 0..n {
                 ext.selection.push((r.u16()?, r.u16()?, r.u16()?));
+            }
+            // An older daemon's frame has no row marks.
+            if r.i < b.len() {
+                for _ in 0..r.u16()? {
+                    let (y, bits) = (r.u16()?, r.take(1)?[0]);
+                    if let Some((_, row)) = changed.iter_mut().find(|(ry, _)| *ry == y) {
+                        row.wrapped = bits & 1 != 0;
+                        row.prompt = bits & 2 != 0;
+                    }
+                }
             }
         }
         Ok(Frame {
@@ -515,6 +539,8 @@ mod tests {
         let row = RowData {
             cells: vec![Cell { ch: 'a', fg: [1, 2, 3], bg: [4, 5, 6], flags: F_BOLD }, Cell { ch: 'é', ..Default::default() }],
             extras: vec![(1, "e\u{301}".into())],
+            wrapped: true,
+            prompt: true,
         };
         let ext = FrameExt { mouse_tracking: true, kitty_flags: 5, scroll_total: 900, scroll_offset: 10, scroll_len: 30, selection: vec![(3, 1, 7)], ..Default::default() };
         let f = Frame { cols: 2, rows: 1, full: true, changed: vec![(0, row)], cursor: Some((1, 0)), decckm: true, ext, ..Default::default() };
@@ -526,11 +552,11 @@ mod tests {
 
     #[test]
     fn frames_without_trailer_still_decode() {
-        let f = Frame { cols: 1, rows: 1, full: true, changed: vec![(0, RowData { cells: vec![Cell::default()], extras: vec![] })], ..Default::default() };
+        let f = Frame { cols: 1, rows: 1, full: true, changed: vec![(0, RowData { cells: vec![Cell::default()], extras: vec![], ..Default::default() })], ..Default::default() };
         let mut b = vec![];
         f.encode(&mut b);
         // An older daemon's frame ends right after the rows.
-        let plain_len = b.len() - (1 + 2 + 24 + 2);
+        let plain_len = b.len() - (1 + 2 + 24 + 2 + 2);
         let old = Frame::decode(&b[..plain_len]).unwrap();
         assert_eq!(old.ext, FrameExt::default());
         assert_eq!(old.changed, f.changed);

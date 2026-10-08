@@ -106,7 +106,7 @@ impl Engine {
         let mut gbuf: Vec<char> = Vec::new();
         while let Some(row) = it.next() {
             if full || row.dirty().unwrap_or(true) {
-                let mut rd = RowData { cells: Vec::with_capacity(cols as usize), extras: vec![] };
+                let mut rd = RowData { cells: Vec::with_capacity(cols as usize), extras: vec![], ..Default::default() };
                 let mut ci = cells_it.update(row).ok()?;
                 let mut x: u16 = 0;
                 while let Some(c) = ci.next() {

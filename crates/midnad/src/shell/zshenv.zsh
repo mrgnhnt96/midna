@@ -43,3 +43,19 @@ if [[ -o interactive && -n "${MIDNA_SHIMS-}" ]]; then
   }
   autoload -Uz add-zsh-hook && add-zsh-hook precmd _midna_precmd
 fi
+if [[ -o interactive ]]; then
+  # Prompt marks (OSC 133), so midna can tell the input from the prompt and the output (a click
+  # moves the cursor anywhere in the input): A before the prompt, B where the input starts, C
+  # when the command runs. B is sent when zle starts on a line, hooked at the first prompt so
+  # it's added after the user's own zle-line-init (oh-my-zsh defines one in .zshrc).
+  _midna_mark_prompt() {
+    print -n '\e]133;A\a'
+    if [[ -z "${_midna_marking-}" ]]; then
+      typeset -g _midna_marking=1
+      autoload -Uz add-zle-hook-widget && add-zle-hook-widget line-init _midna_mark_input
+    fi
+  }
+  _midna_mark_input() { print -n '\e]133;B\a' }
+  _midna_mark_output() { print -n '\e]133;C\a' }
+  autoload -Uz add-zsh-hook && add-zsh-hook precmd _midna_mark_prompt && add-zsh-hook preexec _midna_mark_output
+fi

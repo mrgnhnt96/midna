@@ -854,6 +854,27 @@ mod tests {
     }
 
     #[test]
+    fn frames_mark_the_prompt_and_the_input() {
+        // OSC 133: A starts the prompt, B the input; C (the command runs) its output.
+        let mut e = eng(b"out\r\n\x1b]133;A\x07$ \x1b]133;B\x07hello\r\nworld");
+        let f = e.frame().unwrap();
+        let row = |y: u16| f.changed.iter().find(|(r, _)| *r == y).map(|(_, r)| r.clone()).unwrap();
+        let input = |y: u16| row(y).cells.iter().map(|c| if c.flags & midna_proto::frame::F_INPUT != 0 { 'i' } else { '.' }).take(8).collect::<String>();
+        assert!(!row(0).prompt && row(1).prompt && !row(2).prompt);
+        assert_eq!(input(0), "........");
+        assert_eq!(input(1), "..iiiii.");
+        assert_eq!(input(2), "iiiii...");
+        e.feed(b"x\x1b]133;C\x07\r\nran", 1);
+        let f = e.frame().unwrap();
+        let out = f.changed.iter().find(|(r, _)| *r == 3).map(|(_, r)| r.cells[0].flags & midna_proto::frame::F_INPUT).unwrap();
+        assert_eq!(out, 0, "output isn't input");
+        let mut w = Engine::new(10, 4, None);
+        w.feed(b"0123456789abc", 1);
+        let f = w.frame().unwrap();
+        assert!(f.changed[0].1.wrapped && !f.changed[1].1.wrapped);
+    }
+
+    #[test]
     fn modes_an_agent_left_on_are_reset() {
         let mut e = eng(b"\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[>1u");
         assert!(e.mouse_tracking());

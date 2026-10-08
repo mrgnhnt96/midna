@@ -1408,7 +1408,8 @@ impl TerminalView {
             None => {
                 self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y }));
                 if clicked && button == 1 && mods == 0 {
-                    self.click_to_move(cell);
+                    // Between the two characters nearest the pointer, as in a text field.
+                    self.click_to_move(((x + 0.5).floor() as i32, cell.1));
                 }
             }
         }
@@ -2325,7 +2326,7 @@ mod tests {
     #[test]
     fn update_notice_clicks() {
         use midna_proto::frame::{Cell, RowData};
-        let row = |s: &str| RowData { cells: s.chars().map(|ch| Cell { ch, fg: [0; 3], bg: [0; 3], flags: 0 }).collect(), extras: vec![] };
+        let row = |s: &str| RowData { cells: s.chars().map(|ch| Cell { ch, fg: [0; 3], bg: [0; 3], flags: 0 }).collect(), extras: vec![], ..Default::default() };
         let rule = "─".repeat(40);
         let notice = "          ✔ Update installed · Restart to update";
         let grid = vec![row(notice), row(&rule), row("❯ hi"), row(&rule)];

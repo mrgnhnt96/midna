@@ -23,7 +23,7 @@
 //!   cursor to its nearer edge the same way, checking the cursor's position on screen.
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
-use crate::frame::{Cell, F_SPACER, RowData};
+use crate::frame::{Cell, F_INPUT, F_SPACER, RowData};
 
 /// (column, row) on the screen.
 pub type Pos = (u16, u16);
@@ -331,22 +331,28 @@ pub fn replace_range(kbd: Option<KbdSel>, mouse: &[(u16, u16, u16)], cursor: Pos
 }
 
 /// Whether rows `top..=bottom` are all one input: an agent's box (from its prompt row or a
-/// continuation row on), or a shell line soft-wrapped onto the rows below its first.
+/// continuation row on), or a shell line soft-wrapped onto the rows below its first (the
+/// terminal says so, or the row is full to its edge).
 pub fn one_input(grid: &[RowData], top: u16, bottom: u16, agent: bool) -> bool {
     (top..=bottom).all(|y| {
         let Some(row) = grid.get(y as usize) else { return false };
         if agent {
             is_continuation(row) || (y == top && is_prompt_row(row))
         } else {
-            y == bottom || text_end(row) as usize >= row.cells.len()
+            y == bottom || row.wrapped || text_end(row) as usize >= row.cells.len()
         }
     })
 }
 
-/// A plain click in a shell's input line: the arrow and how many presses move the cursor to the
-/// clicked cell. The click must be on the cursor's line (its row, or a row the line soft-wraps
-/// across); past the line's text it goes to the end. None when there's nothing to move.
+/// A plain click in a shell's input: the arrow and how many presses move the cursor to the
+/// clicked cell. With prompt marks (OSC 133) the click can be anywhere in the input, line breaks
+/// included; without, only on the cursor's line (its row, or a row the line soft-wraps across).
+/// Past a line's text it goes to the line's end. None when there's nothing to move.
 pub fn click_move(grid: &[RowData], cursor: Pos, click: Pos) -> Option<(&'static str, usize)> {
+    if let Some(input) = MarkedInput::around(grid, cursor) {
+        let (from, to) = (input.offset(grid, cursor)?, input.offset(grid, click)?);
+        return (from != to).then(|| if to < from { ("left", from - to) } else { ("right", to - from) });
+    }
     let (a, b) = ordered(cursor, click);
     if !one_input(grid, a.1, b.1, false) {
         return None;
@@ -365,6 +371,77 @@ pub fn click_move(grid: &[RowData], cursor: Pos, click: Pos) -> Option<(&'static
         .sum();
     let key = if (click.1, click.0) < (cursor.1, cursor.0) { "left" } else { "right" };
     (n > 0).then_some((key, n))
+}
+
+/// The rows of a shell's input the shell marked (OSC 133): from the prompt row above the cursor to
+/// the last row of input below it.
+struct MarkedInput {
+    top: u16,
+    bottom: u16,
+}
+
+impl MarkedInput {
+    fn around(grid: &[RowData], cursor: Pos) -> Option<MarkedInput> {
+        // Up to the prompt's row: marked (OSC 133 A), or where input follows other text (a
+        // prompt redrawn without its mark, after ctrl-l). A row of other text ends it too.
+        let mut top = 0;
+        for y in (0..=cursor.1).rev() {
+            let row = grid.get(y as usize)?;
+            let input = row.cells.iter().any(is_input);
+            let first = row.cells.iter().find(|c| c.flags & F_SPACER != 0 || !matches!(c.ch, ' ' | '\0' | '\u{a0}'));
+            if row.prompt || (input && !first.is_some_and(is_input)) || (first.is_some() && !input && y == cursor.1) {
+                top = y;
+                break;
+            }
+            if first.is_some() && !input {
+                top = y + 1;
+                break;
+            }
+        }
+        let marked = |y: u16| grid.get(y as usize).is_some_and(|r| r.prompt || r.cells.iter().any(is_input));
+        if !(top..=cursor.1).any(marked) {
+            return None;
+        }
+        // Down to the last row of input below the cursor, over blank lines between.
+        let mut bottom = cursor.1;
+        for y in cursor.1 + 1..grid.len() as u16 {
+            let row = &grid[y as usize];
+            if row.prompt || (text_end(row) > 0 && !row.cells.iter().any(is_input)) {
+                break;
+            }
+            if row.cells.iter().any(is_input) {
+                bottom = y;
+            }
+        }
+        Some(MarkedInput { top, bottom })
+    }
+
+    /// Characters of input before `pos` (a line break is one; the prompt and anything past a
+    /// line's text are none). None outside the input's rows.
+    fn offset(&self, grid: &[RowData], pos: Pos) -> Option<usize> {
+        if !(self.top..=self.bottom).contains(&pos.1) {
+            return None;
+        }
+        let mut off = 0;
+        let mut started = false;
+        for y in self.top..=pos.1 {
+            let row = grid.get(y as usize)?;
+            let input = |c: &&Cell| is_input(c) && c.flags & F_SPACER == 0;
+            if y == pos.1 {
+                return Some(off + row.cells.iter().take(pos.0 as usize).filter(input).count());
+            }
+            // Rows of the prompt before the input starts (a two-line prompt) hold none of it.
+            started |= row.cells.iter().any(is_input);
+            if started {
+                off += row.cells.iter().filter(input).count() + !row.wrapped as usize;
+            }
+        }
+        None
+    }
+}
+
+fn is_input(c: &Cell) -> bool {
+    c.flags & F_INPUT != 0
 }
 
 /// A mouse selection's ends pulled onto the input's text, where the cursor can go: past an
@@ -513,12 +590,49 @@ mod tests {
                 cells.push(Cell { ch, fg: [0; 3], bg: [0; 3], flags: 0 });
             }
         }
-        RowData { cells, extras: vec![] }
+        RowData { cells, extras: vec![], ..Default::default() }
     }
 
     /// Rows padded to 30 columns, as frames are.
     fn grid(rows: &[&str]) -> Vec<RowData> {
         rows.iter().map(|r| row(&format!("{r:<30}"))).collect()
+    }
+
+    /// Rows of a marked shell input: `>` ends the prompt, the rest of the row is input.
+    fn marked(rows: &[&str]) -> Vec<RowData> {
+        let mut g = grid(rows);
+        for (y, r) in rows.iter().enumerate() {
+            let from = r.find('>').map_or(0, |i| i + 1);
+            g[y].prompt = r.contains('>');
+            for c in g[y].cells.iter_mut().take(r.chars().count()).skip(from) {
+                c.flags |= F_INPUT;
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn a_click_reaches_other_lines_of_a_marked_input() {
+        let mut g = grid(&["$ ls", "a b"]);
+        g.extend(marked(&["> hello hows it going?", "I dunnot", "", "end"]));
+        // The cursor at the end of "I dunnot" (row 3).
+        assert_eq!(click_move(&g, (8, 3), (4, 2)), Some(("left", 27)), "up a line: the rest of the line, its break, and this one");
+        assert_eq!(click_move(&g, (8, 3), (0, 2)), Some(("left", 30)), "on the prompt: the input's start");
+        assert_eq!(click_move(&g, (8, 3), (12, 4)), Some(("right", 1)), "a blank line is its line break");
+        assert_eq!(click_move(&g, (8, 3), (20, 5)), Some(("right", 5)), "past the text: the end");
+        assert_eq!(click_move(&g, (8, 3), (1, 1)), None, "output above the prompt");
+        assert_eq!(click_move(&g, (2, 3), (9, 3)), Some(("right", 6)));
+        let mut two = grid(&["~/src main"]);
+        two[0].prompt = true;
+        two.extend(marked(&["> one", "two"]));
+        two[1].prompt = false;
+        assert_eq!(click_move(&two, (3, 2), (2, 1)), Some(("left", 7)), "a two-line prompt's first row holds no input");
+        let mut unmarked = grid(&["$ ls", "a b"]);
+        unmarked.extend(marked(&["> one", "two"]));
+        unmarked[2].prompt = false;
+        assert_eq!(click_move(&unmarked, (3, 3), (3, 2)), Some(("left", 6)), "a prompt redrawn without its mark");
+        assert_eq!(click_move(&unmarked, (3, 3), (1, 1)), None, "still not the output above");
+        assert_eq!(click_move(&grid(&["$ ls", "a b"]), (3, 1), (0, 0)), None, "no marks: only the cursor's line");
     }
 
     #[test]
@@ -536,6 +650,10 @@ mod tests {
         assert_eq!(click_move(&wrapped, (2, 1), (10, 0)), Some(("left", 22)), "onto the row the line wraps from");
         assert_eq!(click_move(&wrapped, (10, 0), (1, 1)), Some(("right", 21)));
         assert_eq!(click_move(&grid(&["$ ls", "a b"]), (4, 0), (1, 1)), None, "output below isn't the line");
+        let mut at_space = grid(&["$ wraps at a space", "here"]);
+        assert_eq!(click_move(&at_space, (2, 1), (4, 0)), None, "a short row ends the line");
+        at_space[0].wrapped = true;
+        assert_eq!(click_move(&at_space, (2, 1), (4, 0)), Some(("left", 28)), "unless the terminal says it wraps");
     }
 
     #[test]
