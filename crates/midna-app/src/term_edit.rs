@@ -343,6 +343,30 @@ pub fn one_input(grid: &[RowData], top: u16, bottom: u16, agent: bool) -> bool {
     })
 }
 
+/// A plain click in a shell's input line: the arrow and how many presses move the cursor to the
+/// clicked cell. The click must be on the cursor's line (its row, or a row the line soft-wraps
+/// across); past the line's text it goes to the end. None when there's nothing to move.
+pub fn click_move(grid: &[RowData], cursor: Pos, click: Pos) -> Option<(&'static str, usize)> {
+    let (a, b) = ordered(cursor, click);
+    if !one_input(grid, a.1, b.1, false) {
+        return None;
+    }
+    let row = grid.get(click.1 as usize)?;
+    let end = if click.1 == cursor.1 { text_end(row).max(cursor.0) } else { text_end(row) };
+    let click = (click.0.min(end), click.1);
+    let (a, b) = ordered(cursor, click);
+    let n: usize = (a.1..=b.1)
+        .filter_map(|y| {
+            let row = grid.get(y as usize)?;
+            let x0 = if y == a.1 { a.0 } else { 0 };
+            let x1 = if y == b.1 { b.0 } else { row.cells.len() as u16 };
+            Some(chars_between(row, x0, x1))
+        })
+        .sum();
+    let key = if (click.1, click.0) < (cursor.1, cursor.0) { "left" } else { "right" };
+    (n > 0).then_some((key, n))
+}
+
 /// A mouse selection's ends pulled onto the input's text, where the cursor can go: past an
 /// agent's prompt glyph and its space, past a continuation row's indent, and not beyond a
 /// row's text.
@@ -495,6 +519,23 @@ mod tests {
     /// Rows padded to 30 columns, as frames are.
     fn grid(rows: &[&str]) -> Vec<RowData> {
         rows.iter().map(|r| row(&format!("{r:<30}"))).collect()
+    }
+
+    #[test]
+    fn a_click_moves_the_shell_cursor() {
+        let g = grid(&["$ echo hello world", "done"]);
+        assert_eq!(click_move(&g, (18, 0), (7, 0)), Some(("left", 11)));
+        assert_eq!(click_move(&g, (7, 0), (12, 0)), Some(("right", 5)));
+        assert_eq!(click_move(&g, (7, 0), (25, 0)), Some(("right", 11)), "past the text: to its end");
+        assert_eq!(click_move(&g, (7, 0), (7, 0)), None);
+        assert_eq!(click_move(&g, (7, 0), (2, 1)), None, "another line");
+        let wide = grid(&["$ 世界 ok"]);
+        assert_eq!(click_move(&wide, (8, 0), (2, 0)), Some(("left", 5)), "characters, not cells");
+        let full = format!("$ {}", "x".repeat(28));
+        let wrapped = grid(&[&full, "yz"]);
+        assert_eq!(click_move(&wrapped, (2, 1), (10, 0)), Some(("left", 22)), "onto the row the line wraps from");
+        assert_eq!(click_move(&wrapped, (10, 0), (1, 1)), Some(("right", 21)));
+        assert_eq!(click_move(&grid(&["$ ls", "a b"]), (4, 0), (1, 1)), None, "output below isn't the line");
     }
 
     #[test]

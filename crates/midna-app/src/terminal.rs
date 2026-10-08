@@ -1389,8 +1389,9 @@ impl TerminalView {
         self.drag_out = None;
         let (x, y) = self.cell_pos(ev.position).unwrap_or((0., 0.));
         let cell = (x.floor() as i32, y.floor() as i32);
+        let clicked = self.press_at.take() == Some(cell) && ev.click_count == 1;
         // A plain click on Claude's "Restart to update" brings back the update prompt.
-        if self.press_at.take() == Some(cell) && ev.click_count == 1 && self.is_agent() && on_update_notice(&self.grid, cell) {
+        if clicked && self.is_agent() && on_update_notice(&self.grid, cell) {
             crate::ui::update_banner::ask(&self.session_id, cx);
         }
         let mods = mods_of(&ev.modifiers);
@@ -1404,8 +1405,27 @@ impl TerminalView {
                     self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y }));
                 }
             }
-            None => self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y })),
+            None => {
+                self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods, x, y }));
+                if clicked && button == 1 && mods == 0 {
+                    self.click_to_move(cell);
+                }
+            }
         }
+    }
+
+    /// A plain click in a shell's input line moves its cursor there with arrows, as a text
+    /// field would (Claude Code and Codex move theirs from the click themselves).
+    fn click_to_move(&mut self, cell: (i32, i32)) {
+        if self.ext.mouse_tracking || self.ext.alt_screen || self.is_agent() || self.erasing.is_some() || cell.0 < 0 || cell.1 < 0 {
+            return;
+        }
+        let Some(c) = self.live_cursor() else { return };
+        let Some((key, n)) = term_edit::click_move(&self.grid, c, (cell.0 as u16, cell.1 as u16)) else { return };
+        for _ in 0..n {
+            self.arrow(key);
+        }
+        self.typed();
     }
 
     /// In an agent's terminal the left button makes midna's selection (as ⇧-drag does in any
