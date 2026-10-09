@@ -12,6 +12,7 @@ use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::gesture::{AutoscrollTickEvent, DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent};
 use libghostty_vt::selection::{FormatOptions, Selection};
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport, Terminal};
+use midna_proto::link_patterns::LinkPattern;
 use midna_proto::frame::{KeyAction, KeyMsg, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_SUPER, MouseAction, MouseMsg, ScrollKind, ScrollMsg};
 use std::time::{Duration, Instant};
 
@@ -566,8 +567,8 @@ impl Engine {
     /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL, a reference to
     /// another terminal (`tabs`, see `tab_ref`), an app link (`schemes.rs`) or an existing file
     /// path (`path:line[:col]`, relative paths resolved against `cwd`, then the shell's OSC 7
-    /// directory).
-    pub fn link_at(&self, x: u16, y: u16, cwd: &str, tabs: &[(String, String)]) -> Option<Link> {
+    /// directory), or text one of `patterns` (`terminal.link_patterns`) turns into a link.
+    pub fn link_at(&self, x: u16, y: u16, cwd: &str, tabs: &[(String, String)], patterns: &[LinkPattern]) -> Option<Link> {
         if let Ok(r) = self.term.grid_ref(Point::Viewport(PointCoordinate { x, y: y as u32 })) {
             let mut buf = vec![0u8; 2048];
             if let Ok(n) = r.hyperlink_uri(&mut buf)
@@ -586,7 +587,7 @@ impl Engine {
         }
         let (chars, i) = self.logical_line(x, y)?;
         let pwd = osc7_path(self.term.pwd().unwrap_or(""));
-        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for, tabs)
+        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for, tabs, patterns)
     }
 
     /// Find `query` (case-insensitive unless it has capitals) in scrollback + screen, moving
@@ -689,8 +690,9 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Link detection on a logical line: `i` is the clicked char. `app_for` names the app a URL
-/// scheme opens (`schemes::app_for`); `tabs` are the terminals a word can name (`tab_ref`).
-pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&str) -> Option<String>, tabs: &[(String, String)]) -> Option<Link> {
+/// scheme opens (`schemes::app_for`); `tabs` are the terminals a word can name (`tab_ref`);
+/// `patterns` are the `terminal.link_patterns` rules that apply in this terminal.
+pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&str) -> Option<String>, tabs: &[(String, String)], patterns: &[LinkPattern]) -> Option<Link> {
     if i >= chars.len() || chars[i].is_whitespace() {
         return None;
     }
@@ -725,6 +727,21 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&st
     for (start, url, app) in crate::schemes::app_links(&word, trim_url, app_for) {
         if click >= start && click < start + url.len() {
             return Some(Link::App { url: url.to_string(), app });
+        }
+    }
+    // Link patterns: the first rule whose match is under the pointer and whose URL opens.
+    if !patterns.is_empty() {
+        let line: String = chars.iter().collect();
+        let at = chars[..i].iter().map(|c| c.len_utf8()).sum::<usize>();
+        for p in patterns {
+            let Some((_, url)) = p.link_at(&line, at) else { continue };
+            let scheme = url.split_once("://").map_or("", |(s, _)| s).to_ascii_lowercase();
+            if matches!(scheme.as_str(), "http" | "https") {
+                return Some(Link::Url(url));
+            }
+            if let Some(app) = app_for(&scheme) {
+                return Some(Link::App { url, app });
+            }
         }
     }
     // File paths, optionally with :line[:col].
@@ -1029,17 +1046,17 @@ mod tests {
     fn links() {
         let mut e = Engine::new(60, 4, None);
         e.feed(b"see \x1b]8;;https://example.com/x\x1b\\here\x1b]8;;\x1b\\ or https://midna.dev/a_(b). ok", 1);
-        assert_eq!(e.link_at(5, 0, "/", &[]), Some(Link::Url("https://example.com/x".into())));
-        assert_eq!(e.link_at(20, 0, "/", &[]), Some(Link::Url("https://midna.dev/a_(b)".into())));
-        assert_eq!(e.link_at(1, 0, "/", &[]), None);
+        assert_eq!(e.link_at(5, 0, "/", &[], &[]), Some(Link::Url("https://example.com/x".into())));
+        assert_eq!(e.link_at(20, 0, "/", &[], &[]), Some(Link::Url("https://midna.dev/a_(b)".into())));
+        assert_eq!(e.link_at(1, 0, "/", &[], &[]), None);
         let dir = std::env::temp_dir().join(format!("midna-link-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
         let mut e = Engine::new(40, 4, None);
         e.feed(b"error at src/main.rs:12:5: oops", 1);
-        let got = e.link_at(12, 0, dir.to_str().unwrap(), &[]);
+        let got = e.link_at(12, 0, dir.to_str().unwrap(), &[], &[]);
         assert_eq!(got, Some(Link::File { path: dir.join("src/main.rs").to_string_lossy().into(), line: Some(12), column: Some(5) }));
-        assert_eq!(e.link_at(2, 0, dir.to_str().unwrap(), &[]), None);
+        assert_eq!(e.link_at(2, 0, dir.to_str().unwrap(), &[], &[]), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1053,7 +1070,7 @@ mod tests {
 
     #[test]
     fn detect_app_links() {
-        let at = |s: &str, i: usize| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], &taskboard, &[]);
+        let at = |s: &str, i: usize| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], &taskboard, &[], &[]);
         let app = |u: &str| Some(Link::App { url: u.into(), app: "Taskboard".into() });
         assert_eq!(at("open taskboard://#/?task=T6 now", 8), app("taskboard://#/?task=T6"));
         // Trailing punctuation and brackets the URL didn't open stay out.
@@ -1063,15 +1080,32 @@ mod tests {
         assert_eq!(at("seetaskboard://#/?task=T6", 5), None);
         // Unregistered schemes stay plain text.
         assert_eq!(at("got foo://bar/baz", 6), None);
-        assert_eq!(detect_link(&"taskboard://#/?task=T6".chars().collect::<Vec<_>>(), 3, &[], &no_apps, &[]), None);
+        assert_eq!(detect_link(&"taskboard://#/?task=T6".chars().collect::<Vec<_>>(), 3, &[], &no_apps, &[], &[]), None);
         // Nothing after the `://`.
         assert_eq!(at("taskboard://", 3), None);
     }
 
     #[test]
+    fn detect_pattern_links() {
+        let rules: Vec<String> = midna_proto::settings::DEFAULT_LINK_PATTERNS.iter().map(|s| s.to_string()).chain([r"#(\d+) = https://github.com/o/r/issues/$1".to_string()]).collect();
+        let pats = midna_proto::link_patterns::parse_all(&rules);
+        let at = |s: &str, i: usize, apps: &dyn Fn(&str) -> Option<String>| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], apps, &[], &pats);
+        let app = |u: &str| Some(Link::App { url: u.into(), app: "Taskboard".into() });
+        assert_eq!(at("Took T42.", 6, &taskboard), app("taskboard://task/T42"));
+        assert_eq!(at("(G3)", 1, &taskboard), app("taskboard://goal/G3"));
+        assert_eq!(at("fixes #7", 7, &taskboard), Some(Link::Url("https://github.com/o/r/issues/7".into())));
+        // A real URL wins over a ref inside it, and refs in paths stay text.
+        assert_eq!(at("taskboard://task/T42", 18, &taskboard), app("taskboard://task/T42"));
+        assert_eq!(at("https://x.dev/T42", 15, &taskboard), Some(Link::Url("https://x.dev/T42".into())));
+        assert_eq!(at("src/T42.rs", 5, &taskboard), None);
+        // No app opens the scheme: plain text.
+        assert_eq!(at("Took T42.", 6, &no_apps), None);
+    }
+
+    #[test]
     fn detect_url_in_wrapped_text() {
         let chars: Vec<char> = "(https://a.b/c?d=1).".chars().collect();
-        assert_eq!(detect_link(&chars, 5, &[], &no_apps, &[]), Some(Link::Url("https://a.b/c?d=1".into())));
+        assert_eq!(detect_link(&chars, 5, &[], &no_apps, &[], &[]), Some(Link::Url("https://a.b/c?d=1".into())));
     }
 
     #[test]
@@ -1096,9 +1130,9 @@ mod tests {
 
         let mut e = Engine::new(80, 4, None);
         e.feed(b"Your \"Taskboard\" tab (019da528) is busy; see \x1b]8;;midna://session/e0af734f\x1b\\this tab\x1b]8;;\x1b\\ ok", 1);
-        assert_eq!(e.link_at(25, 0, "/", &tabs), Some(Link::Session("019da528".into())));
-        assert_eq!(e.link_at(47, 0, "/", &tabs), Some(Link::Session("e0af734f".into())));
-        assert_eq!(e.link_at(25, 0, "/", &[]), None);
+        assert_eq!(e.link_at(25, 0, "/", &tabs, &[]), Some(Link::Session("019da528".into())));
+        assert_eq!(e.link_at(47, 0, "/", &tabs, &[]), Some(Link::Session("e0af734f".into())));
+        assert_eq!(e.link_at(25, 0, "/", &[], &[]), None);
     }
 
     #[test]

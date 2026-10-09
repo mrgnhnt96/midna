@@ -43,6 +43,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "terminal.auto_name" => "Name terminals from what they're doing; a name you set stays.",
         "terminal.auto_name_updates" => "Keep renaming as the work changes, or name each one once.",
         "terminal.link_preview" => "A card that previews the path or link under the pointer.",
+        "terminal.link_patterns" => "Text that becomes a link, like T42 or G3: `regex = url` with $1.",
         "terminal.preview_path_click" => "Clicking the path at the top of a preview.",
         "terminal.image_paste" => "Add notes in the image sheet first, or paste the image's path.",
         "terminal.option_as_meta" => "Option-b moves back a word; off, Option types characters like é.",
