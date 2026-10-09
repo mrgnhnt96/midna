@@ -70,13 +70,14 @@ pub fn start(d: &Arc<Daemon>) {
     let w = Arc::downgrade(d);
     let _ = std::thread::Builder::new().name("keep-awake".into()).spawn(move || {
         loop {
-            std::thread::sleep(TICK);
             let Some(d) = w.upgrade() else { return };
             if d.shutting_down.load(Ordering::Relaxed) {
                 release(&d);
                 return;
             }
             tick(&d);
+            drop(d);
+            std::thread::sleep(TICK);
         }
     });
 }
