@@ -121,6 +121,8 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("ui.header.buttons", json!(midna_proto::settings::DEFAULT_HEADER_BUTTONS), "header toolbar buttons", false),
         e("ui.status.items", json!(midna_proto::settings::setting("ui.status.items").map(|s| s.default.to_json()).unwrap_or_default()), "status bar items", false),
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
+        e("webhooks.relay_url", json!(""), "your relay's URL (self_relay)", true),
+        e("agents.resume_after_sleep_prompt", json!("continue"), "what midna types into an agent to resume it", false),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
         e("projects.roots", json!(["~/Development", "~/work"]), "folders your projects live in", false),
