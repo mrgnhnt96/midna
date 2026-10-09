@@ -91,7 +91,7 @@ pub fn parse_days(v: &Value) -> Result<Vec<String>, String> {
         _ => return Err("days are names like mon, weekdays or mon-fri".into()),
     };
     let mut on = [false; 7];
-    for w in words.iter().map(|w| w.trim()).filter(|w| !w.is_empty() && *w != "and") {
+    for w in words.iter().map(|w| w.trim()).filter(|w| !w.is_empty() && !matches!(*w, "and" | "day" | "days")) {
         match w {
             "all" | "every" | "everyday" | "daily" | "week" => on = [true; 7],
             "weekdays" | "weekday" | "workdays" => on[..5].iter_mut().for_each(|d| *d = true),
@@ -253,21 +253,45 @@ impl Plan {
     /// `9 AM–6 PM weekdays; Fri 9 AM–3 PM; Sat off`.
     pub fn describe(&self) -> String {
         let hours = DayRule::Hours { start: self.start, end: self.end }.words();
-        let on: Vec<usize> = (0..7).filter(|i| self.days[*i]).collect();
-        let days = match on.as_slice() {
-            [0, 1, 2, 3, 4, 5, 6] => "every day".to_string(),
-            [0, 1, 2, 3, 4] => "weekdays".into(),
-            [5, 6] => "weekends".into(),
-            [] => "no days".into(),
-            l => l.iter().map(|i| cap(DAYS[*i])).collect::<Vec<_>>().join(", "),
-        };
-        let mut out = format!("{hours} {days}");
+        let mut out = format!("{hours} {}", days_words(&self.days));
         for (i, r) in self.per_day.iter().enumerate() {
             if let Some(r) = r {
                 out.push_str(&format!("; {} {}", cap(DAYS[i]), r.words()));
             }
         }
         out
+    }
+}
+
+/// `every day`, `weekdays`, `weekends`, `Mon, Wed, Fri` (mon … sun flags); reads back with [`parse_days`].
+pub fn days_words(on: &[bool; 7]) -> String {
+    let on: Vec<usize> = (0..7).filter(|i| on[*i]).collect();
+    match on.as_slice() {
+        [0, 1, 2, 3, 4, 5, 6] => "every day".into(),
+        [0, 1, 2, 3, 4] => "weekdays".into(),
+        [5, 6] => "weekends".into(),
+        [] => "no days".into(),
+        l => l.iter().map(|i| cap(DAYS[*i])).collect::<Vec<_>>().join(", "),
+    }
+}
+
+/// A stored `keep_awake.*` value as people read (and can type back): `9 AM` for start/end,
+/// `weekdays` for days, `fri = 9 AM–3 PM, sat = off` for hours. None for other keys.
+pub fn display(key: &str, v: &Value) -> Option<String> {
+    match key {
+        "keep_awake.start" | "keep_awake.end" => Some(clock(parse_time(v.as_str()?).ok()?)),
+        "keep_awake.days" => {
+            let mut on = [false; 7];
+            for d in v.as_array()?.iter().filter_map(Value::as_str) {
+                on[day_index(d)?] = true;
+            }
+            Some(days_words(&on))
+        }
+        "keep_awake.hours" => {
+            let rules = v.as_array()?.iter().filter_map(Value::as_str);
+            Some(rules.filter_map(|r| r.split_once(" = ").and_then(|(d, h)| Some(format!("{d} = {}", DayRule::parse(h).ok()?.words())))).collect::<Vec<_>>().join(", "))
+        }
+        _ => None,
     }
 }
 
@@ -488,6 +512,17 @@ mod tests {
         assert_eq!(parse_days(&json!("Tuesday, thursday")).unwrap(), ["tue", "thu"]);
         assert_eq!(parse_days(&json!(["sun", "mon"])).unwrap(), ["mon", "sun"]);
         assert_eq!(parse_days(&json!("weekdays sat")).unwrap().len(), 6);
+        assert_eq!(parse_days(&json!("every day")).unwrap().len(), 7);
+        // What the app shows reads back.
+        for days in ["weekdays", "every day", "Mon, Wed, Fri", "weekends"] {
+            let stored = json!(parse_days(&json!(days)).unwrap());
+            assert_eq!(display("keep_awake.days", &stored).as_deref(), Some(days));
+        }
+        let hours = coerce_hours(&json!("fri = 9am-3pm, sat = off, sun = all day")).unwrap();
+        let shown = display("keep_awake.hours", &hours).unwrap();
+        assert_eq!(shown, "fri = 9 AM–3 PM, sat = off, sun = all day");
+        assert_eq!(coerce_hours(&json!(shown)).unwrap(), hours);
+        assert_eq!(display("keep_awake.start", &json!("20:30")).as_deref(), Some("8:30 PM"));
         assert!(parse_days(&json!("funday")).is_err());
         assert!(parse_days(&json!("")).is_err());
     }

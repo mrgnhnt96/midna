@@ -466,7 +466,7 @@ pub fn status_look(rules: &[String], who: &str, state: &str) -> StatusLook {
 
 /// What the status bar can show, for `ui.status.items`. `script` is `ui.status.script`'s
 /// segments for the selected terminal; `spacer` pushes what follows to the right.
-pub const STATUS_ITEMS: &[&str] = &["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "script", "spacer", "update", "keys"];
+pub const STATUS_ITEMS: &[&str] = &["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "awake", "script", "spacer", "update", "keys"];
 
 /// `theme`'s listed choices (any custom theme id is accepted too).
 pub const THEME_CHOICES: &[&str] = &["system", "twilight", "nord", "dracula", "gruvbox", "tokyo-night", "daylight", "solarized-light", "latte"];
@@ -495,8 +495,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Restyle built-in statuses, one rule per status, only what you list: `<status> = <color> icon:<name> label:<text>` (each part optional). status: idle, working, needs_you, done, failed, exited, optionally for one kind of terminal (`claude.working`, `codex.done`, `shell.failed`; its fields override the plain rule's). color = the dot (red, orange, amber, yellow, green, teal, blue, purple, pink, gray or #rrggbb); icon replaces the agent icon (check, cross, bell, lock, bolt, play, …); label shows in the header and the row's second line. A trigger's custom status still wins. E.g. `needs_you = pink icon:bell label:Your turn`."),
     s!("ui.status.script", en_path(&["worktree+branch", "branch", "github", "none"]), S("worktree+branch"), "appearance", false,
         "Script behind the status bar's `script` item, run for the selected terminal: built-in parts joined with + or an executable path (`midna explain scripts`)."),
-    s!("ui.status.items", SettingKind::ItemList { options: STATUS_ITEMS, allow_paths: true }, L(&["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "spacer", "script", "update", "keys"]), "appearance", false,
-        "What the status bar shows, left to right: daemon, policy, webhooks, triggers, hooks, accessibility, script (ui.status.script), spacer (the rest goes right), update, keys, or an absolute path to your own script (one item each; see `midna explain scripts`). Leave one out to hide it. Adding a script path is human only."),
+    s!("ui.status.items", SettingKind::ItemList { options: STATUS_ITEMS, allow_paths: true }, L(&["daemon", "policy", "webhooks", "triggers", "hooks", "accessibility", "awake", "spacer", "script", "update", "keys"]), "appearance", false,
+        "What the status bar shows, left to right: daemon, policy, webhooks, triggers, hooks, accessibility, awake (while keep-awake holds the Mac awake), script (ui.status.script), spacer (the rest goes right), update, keys, or an absolute path to your own script (one item each; see `midna explain scripts`). Leave one out to hide it. Adding a script path is human only."),
     s!("ui.haptics", SettingKind::Bool, B(true), "appearance", false,
         "A light tap on a Force Touch trackpad when you click a button, row or link anywhere in the app. A mouse or an older trackpad ignores it."),
     s!("sidebar.footer.stats", SettingKind::ItemList { options: FOOTER_STATS, allow_paths: false }, L(DEFAULT_FOOTER_STATS), "appearance", false,
