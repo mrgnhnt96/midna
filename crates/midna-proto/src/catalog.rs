@@ -440,7 +440,8 @@ fn build() -> Vec<MethodSpec> {
              filter it fires once about no terminal, with one it acts on every running terminal that matches). \
              filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
              (case-insensitive, every entry must match). Extra actions, acting on the terminal that fired: \
-             {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready), \
+             {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready; \
+             on agent.prompt_blocked the refused prompt Claude put back in its input box is cleared first), \
              {kind:set_status, label, color (red|orange|amber|yellow|green|teal|blue|purple|pink|gray|#rrggbb), icon?, \
              base (idle|working|needs_you|done|failed: still drives sorting, notifications, Needs You), clear_on (prompt|turn|status|never)}, \
              {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true, category?, open?, id?} (a macOS notification, \

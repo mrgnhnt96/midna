@@ -161,7 +161,9 @@ events below and for any local-only flag; passing it is always fine.
   case-insensitive, every entry must match).
 - **Actions** (pick one):
   - `--send TEXT` (repeat for more steps; `--send-no-enter TEXT` types without Enter). Steps run
-    in order, each waiting until the agent is ready again.
+    in order, each waiting until the agent is ready again. Steps never type over text in
+    Claude's input box, except on `agent.prompt_blocked`: Claude puts the refused prompt back
+    in the box, and midna clears it (ctrl-c) when the box holds exactly that prompt.
   - `--set-status LABEL --color C --base B [--clear-on prompt|turn|status|never] [--icon I]`.
     Colors: red, orange, amber, yellow, green, teal, blue, purple, pink, gray or `#rrggbb`. `base`
     (idle|working|needs_you|done|failed) is the built-in state underneath; it still drives

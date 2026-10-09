@@ -92,6 +92,70 @@ fn refused_prompt_gets_the_builtin_status_and_auto_compact_resends_it() {
     assert_eq!(changes.last().unwrap()["data"]["cleared"], "prompt");
 }
 
+/// Claude refuses `prompt` the way a `UserPromptSubmit` hook does (transcript warning, then
+/// the hook), so midna emits `agent.prompt_blocked`.
+fn refuse(a: &mut Client, transcript: &std::path::Path, prompt: &str) {
+    let line = json!({ "type": "system", "subtype": "informational", "level": "warning", "content": BLOCKED, "timestamp": midna_proto::time::now_rfc3339() });
+    std::fs::OpenOptions::new().append(true).open(transcript).unwrap().write_all(format!("{line}\n").as_bytes()).unwrap();
+    hook(a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": prompt }));
+}
+
+fn screen(h: &mut Client, sid: &str) -> String {
+    call(h, "session.read", json!({ "id": sid, "screen": true }))["text"].as_str().unwrap().to_string()
+}
+
+fn sent(screen: &str) -> Vec<String> {
+    screen.lines().filter_map(|l| l.trim_end().strip_prefix("sent: ")).map(str::to_string).collect()
+}
+
+/// GitHub #10: Claude puts a refused prompt back in its input box, and the steps a trigger
+/// queued for that refusal used to wait forever for the box to empty.
+#[test]
+fn steps_for_a_refused_prompt_clear_it_from_the_input_box() {
+    let d = TestDaemon::start_with(|c| c.agent_bin = Some(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_input_box.py").into()));
+    let mut h = d.human();
+    let s = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }));
+    let sid = s["id"].as_str().unwrap().to_string();
+    call(&mut h, "session.resize", json!({ "id": sid, "cols": 80, "rows": 24 }));
+    wait_for(10, "the box", || screen(&mut h, &sid).contains("fake input box").then_some(()));
+    let mut a = d.agent(Some(&sid));
+    call(
+        &mut a,
+        "trigger.add",
+        json!({
+            "name": "Auto-compact", "source": "local", "event": "agent.prompt_blocked",
+            "filter": { "match": { "message": "*compact first*" } },
+            "action": { "kind": "send_to_session", "steps": [{ "text": "/compact" }, { "text": "{{prompt}}" }] },
+            "enabled": true, "cooldown_secs": 0
+        }),
+    );
+    let transcript = d.home.join("transcript.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    hook(&mut a, "SessionStart", json!({ "session_id": "c1", "transcript_path": transcript }));
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+
+    // The box holds exactly the refused prompt: it is cleared, then both steps go in.
+    let prompt = "[task-board:T35] pick up the next task";
+    call(&mut h, "session.input", json!({ "id": sid, "text": prompt, "enter": false }));
+    wait_for(5, "the prompt back in the box", || screen(&mut h, &sid).contains(&format!("❯ {prompt}")).then_some(()));
+    refuse(&mut a, &transcript, prompt);
+    let shown = wait_for(30, "both steps sent", || Some(screen(&mut h, &sid)).filter(|t| sent(t).len() == 2));
+    assert_eq!(sent(&shown), vec!["/compact".to_string(), prompt.to_string()], "{shown}");
+    wait_for(5, "queue empty", || call(&mut h, "queue.list", json!({ "session": sid }))["items"].as_array().is_some_and(|i| i.is_empty()).then_some(()));
+
+    // Anything else in the box still holds the steps.
+    call(&mut h, "session.input", json!({ "id": sid, "text": "my own draft", "enter": false }));
+    wait_for(5, "the draft in the box", || screen(&mut h, &sid).contains("❯ my own draft").then_some(()));
+    refuse(&mut a, &transcript, "another refused prompt");
+    let first = wait_for(10, "waiting on the box", || {
+        Some(call(&mut h, "queue.list", json!({ "session": sid }))["items"][0].clone()).filter(|i| i["waiting_for"].to_string().contains("input box"))
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let shown = screen(&mut h, &sid);
+    assert_eq!(sent(&shown).len(), 2, "nothing typed over the draft: {first}\n{shown}");
+    assert!(shown.contains("❯ my own draft"), "{shown}");
+}
+
 #[test]
 fn hook_triggers_statuses_clear_rules_and_validation() {
     let d = TestDaemon::start();
