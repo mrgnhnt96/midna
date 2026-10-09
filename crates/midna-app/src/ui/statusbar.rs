@@ -260,12 +260,19 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
             p if p.starts_with('/') => script_item(m, p, t, cx),
             "spacer" => Some(div().flex_1().into_any_element()),
             "update" => update_item(t, cx),
-            "keys" => Some(div().child(format!("{} commands · {} next", m.key_label("keys.command_bar"), m.key_label("keys.next_needs_you"))).into_any_element()),
+            "keys" => Some(div().child(keys_hint(m)).into_any_element()),
             _ => None,
         };
         bar = bar.children(el);
     }
     bar.when(m.menu == Menu::StatusBar, |d| d.child(menu(m, t, cx)))
+}
+
+/// The shortcut hints. ⌘J's "needs you" only shows while something needs you; with nothing waiting
+/// it has nowhere to go.
+fn keys_hint(m: &MainWindow) -> String {
+    let commands = format!("{} commands", m.key_label("keys.command_bar"));
+    if m.needs.is_empty() { commands } else { format!("{commands} · {} needs you", m.key_label("keys.next_needs_you")) }
 }
 
 fn dot(c: Hsla) -> Div {
