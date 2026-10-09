@@ -460,6 +460,9 @@ fn texts(c: &Card, need: Option<&NeedsYou>) -> (String, Option<String>, Option<S
         let head = if q.header.trim().is_empty() { "Asked a question".to_string() } else { q.header.trim().to_string() };
         return (head, Some(q.text.trim().to_string()), None);
     }
+    if let (Some(n), Some(title)) = (need, need.and_then(super::setting_change::title)) {
+        return (title, super::setting_change::summary(n), None);
+    }
     if let Some(n) = need {
         let command = n.approval.as_ref().map(|a| a.action.value.clone()).filter(|v| !v.is_empty());
         let detail = Some(n.detail.clone()).filter(|d| !d.trim().is_empty() && Some(d) != command.as_ref());

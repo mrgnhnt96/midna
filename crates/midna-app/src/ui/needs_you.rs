@@ -59,6 +59,10 @@ pub struct Stack {
     /// Resolved here but maybe still in a `needs_you.list` fetched before the resolve
     /// landed; hidden for a few seconds (the daemon's list catches up well within that).
     gone: HashMap<String, std::time::Instant>,
+    /// Setting changes you edited before saving, by item (setting_change.rs).
+    pub(super) edits: HashMap<String, serde_json::Value>,
+    /// The setting change showing its current value instead of the ask.
+    pub(super) current: Option<String>,
 }
 
 impl Stack {
@@ -74,6 +78,8 @@ impl Stack {
             log: vec![],
             excerpts: HashMap::new(),
             gone: HashMap::new(),
+            edits: HashMap::new(),
+            current: None,
         }
     }
 }
@@ -145,6 +151,7 @@ fn meta(t: &Theme, n: &NeedsYou) -> Meta {
         NeedsYouKind::SecretNeeded => ("Secret needed", t.accent),
         NeedsYouKind::Other => ("Needs you", t.need),
     };
+    let label = if n.setting.is_some() { "Setting change" } else { label };
     Meta { label, color, approve: approves(n) }
 }
 
@@ -224,7 +231,9 @@ fn resolve_cur(m: &mut MainWindow, res: Resolution, cx: &mut Context<MainWindow>
     m.stack.menu = false;
     m.stack.log.push((n.title.clone(), outcome));
     m.stack.gone.insert(n.id.clone(), std::time::Instant::now());
-    m.resolve(n.id, res, cx);
+    let value = matches!(res, Resolution::Approve { .. }).then(|| super::setting_change::edited(m, &n)).flatten();
+    m.stack.edits.remove(&n.id);
+    m.resolve_with(n.id, res, value, cx);
 }
 
 fn primary(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
@@ -315,6 +324,9 @@ pub fn show(m: &mut MainWindow, id: String, window: &mut Window, cx: &mut Contex
 /// More than a card shows: its request is longer than one line, or its question takes more
 /// screen than the card's last `TAIL` lines. A notification click opens the terminal instead.
 pub fn too_long(n: &NeedsYou) -> bool {
+    if n.setting.is_some() {
+        return false;
+    }
     let request = n.approval.as_ref().map(|a| a.action.value.as_str()).unwrap_or("");
     let excerpt = n.screen_excerpt.as_ref().map(|e| e.iter().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     request.contains('\n') || request.chars().count() > 160 || n.detail.chars().count() > 280 || n.detail.lines().count() > 4 || excerpt > TAIL
@@ -540,7 +552,7 @@ fn list(m: &MainWindow, t: &Theme, order: &[&NeedsYou], cur: usize, approve_key:
                                 .flex()
                                 .items_center()
                                 .gap(px(8.))
-                                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(n.title.clone()))
+                                .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(super::setting_change::title(n).unwrap_or_else(|| n.title.clone())))
                                 .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.dim).child(since_short(&n.created_at))),
                         )
                         .child(div().truncate().text_size(px(12.)).text_color(t.dim).child(format!("{} · {}", mt.label, where_of(m, n)))),
@@ -631,7 +643,8 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
     let mt = meta(t, n);
     let sess = session_of(m, n);
     let who = commands::who(n, sess);
-    let where_ = terminal_of(m, n);
+    // a setting change names its project too: it's about the whole app, not this terminal
+    let where_ = if n.setting.is_some() { where_of(m, n) } else { terminal_of(m, n) };
     let request = n
         .approval
         .as_ref()
@@ -810,11 +823,17 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
                 .child(div().flex_1())
                 .children(open),
         )
-        .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
-        .child(grid)
-        .children(long)
-        .children(peek)
-        .children(bulk)
+        .map(|d| match n.setting.is_some() {
+            true => d
+                .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("{who} wants to change a setting")))
+                .child(super::setting_change::panel(m, t, n, cx)),
+            false => d
+                .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
+                .child(grid)
+                .children(long)
+                .children(peek)
+                .children(bulk),
+        })
 }
 
 /// The selected item's buttons, along the bottom of the detail column.
@@ -828,6 +847,8 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
         let scope_hint = if start { "this trigger" } else { "this command" };
         // A folder-trust dialog (midnad's trust.rs) has no scopes: trusting saves the folder.
         let trust = n.kind == NeedsYouKind::PermissionPrompt && n.title.starts_with("Trust this folder?");
+        // Nor does a setting change: saving sets it, once.
+        let save = n.setting.is_some();
         let options: Vec<(&str, String, ApprovalScope)> = vec![
             ("Approve once", approve_key.to_string(), ApprovalScope::Once),
             ("Approve for 15 minutes", scope_hint.into(), ApprovalScope::Minutes { minutes: 15 }),
@@ -861,7 +882,7 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
                             .h(px(38.))
                             .px(px(16.))
                             .rounded_l(px(7.))
-                            .when(start || trust, |d| d.rounded_r(px(7.)))
+                            .when(start || trust || save, |d| d.rounded_r(px(7.)))
                             .bg(t.accent)
                             .text_color(t.accent_fg)
                             .font_weight(FontWeight::BOLD)
@@ -869,9 +890,9 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
                             .cursor_pointer()
                             .hover(|s| s.opacity(0.92))
                             .on_click(cx.listener(|m, _, _, cx| resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx)))
-                            .child(format!("{} {approve_key}", if start { "Start" } else if trust { "Trust" } else { "Approve" })),
+                            .child(format!("{} {approve_key}", if start { "Start" } else if trust { "Trust" } else if save { "Save" } else { "Approve" })),
                     )
-                    .when(!start && !trust, |d| {
+                    .when(!start && !trust && !save, |d| {
                         d.child(
                             div()
                                 .id("ny-approve-more")

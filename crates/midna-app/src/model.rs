@@ -250,6 +250,8 @@ pub struct NeedsYou {
     pub approval: Option<ApprovalRequest>,
     /// The full question and its options when the agent's prompt is a question dialog.
     pub question: Option<NeedsYouQuestion>,
+    /// An agent's ask to change a human-only setting: its value now and the one asked for.
+    pub setting: Option<SettingChange>,
 }
 
 impl NeedsYou {
@@ -260,7 +262,7 @@ impl NeedsYou {
 }
 
 /// Resolutions and approval scopes use the daemon's exact wire form (`{"kind":"approve",...}`).
-pub use midna_proto::{ApprovalScope, NeedsYouQuestion, Resolution};
+pub use midna_proto::{ApprovalScope, NeedsYouQuestion, Resolution, SettingChange};
 
 /// One entry of `settings.list`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
