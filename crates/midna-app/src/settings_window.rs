@@ -132,7 +132,7 @@ impl Sec {
 /// `@name` is a row that isn't one setting (a status, a button, or one row per notification
 /// kind); see `special_rows`. A test checks every catalog setting has a place.
 const LAYOUT: &[(Sec, &str, &[&str])] = &[
-    (Sec::General, "Updates", &["@update", "updates.channel", "updates.feed_url"]),
+    (Sec::General, "Updates", &["@update", "updates.channel"]),
     (Sec::General, "⌘K Ask an agent", &["ui.ask.agent", "ui.ask.scope"]),
     (Sec::General, "Projects and windows", &["projects.roots", "ide.app", "ide.rules", "windows.close_with_terminals", "finder.quick_action"]),
     (Sec::Appearance, "Theme", &["theme", "theme.dark", "theme.light", "theme.colors", "density", "ui.haptics"]),
@@ -832,7 +832,6 @@ fn label_for(key: &str) -> String {
         "updates.channel" => "Channel",
         "ui.ask.agent" => "⌘K “Ask an agent” uses",
         "ui.ask.scope" => "⌘K “Ask an agent” starts in",
-        "updates.feed_url" => "Feed",
         "webhooks.path" => "Delivery path",
         "webhooks.port" => "Local port",
         "webhooks.relay_url" => "Relay URL",
@@ -3043,8 +3042,10 @@ mod tests {
                 || EFFECTS.iter().any(|e| sound_key(e.key) == k || volume_key(e.key) == k)
                 || ["notify.volume", "notify.image"].contains(&k)
         };
+        // kept out of the window on purpose; still in the catalog (`midna settings`)
+        let unlisted = ["updates.feed_url"];
         for s in SETTINGS {
-            assert!(listed.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
+            assert!(listed.contains(&s.key) || unlisted.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
         }
     }
 
