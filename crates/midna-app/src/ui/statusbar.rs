@@ -162,6 +162,7 @@ fn item_label(item: &str) -> &str {
         "triggers" => "Triggers today",
         "hooks" => "Agent hooks (when they need you)",
         "accessibility" => "Accessibility (when Kass needs it)",
+        "awake" => "Keeping the Mac awake (while it is)",
         "script" => "Git: worktree and branch",
         "spacer" => "Spacer (push the rest right)",
         "update" => "Update ready",
@@ -224,6 +225,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
             "triggers" if connected => Some(triggers_item(m, t, cx)),
             "hooks" if connected => crate::ui::hooks::status_item(m, t, cx),
             "accessibility" if connected => crate::ui::ax_prompt::status_item(m, t, cx),
+            "awake" if connected => awake_item(m, t, cx),
             "script" => script_item(m, &item, t, cx),
             p if p.starts_with('/') => script_item(m, p, t, cx),
             "spacer" => Some(div().flex_1().into_any_element()),
@@ -248,6 +250,31 @@ fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
         ConnState::NotRunning { .. } => div().flex().gap(px(4.)).child(dot(t.err)).child("midnad not running"),
     };
     div().id("daemon").child(daemon).tooltip(tip("midnad: the background daemon that runs your terminals. They keep running when this window closes.")).into_any_element()
+}
+
+/// "Keeping awake" while midnad holds its keep-awake assertion (nothing otherwise). Click: Settings.
+fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let k = &m.keep_awake;
+    if k["held"] != true {
+        return None;
+    }
+    let line = k["line"].as_str().unwrap_or("Keeping the Mac awake").to_string();
+    let backend = m.backend.clone();
+    let fg = t.fg;
+    Some(
+        div()
+            .id("keep-awake")
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .cursor_pointer()
+            .hover(move |s| s.text_color(fg))
+            .child(Icon::Sun.el(11., t.work))
+            .child("Keeping awake")
+            .tooltip(tip(format!("{line}. The display may still sleep; closing the lid still sleeps the Mac. Settings › Agents › Keep the Mac awake.")))
+            .on_click(move |_, _, cx| crate::settings_window::open(backend.clone(), cx))
+            .into_any_element(),
+    )
 }
 
 fn policy_item(m: &MainWindow, t: &Theme) -> AnyElement {

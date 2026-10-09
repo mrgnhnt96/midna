@@ -77,7 +77,8 @@ pub mod refresh {
     pub const HEADER: u32 = 128;
     pub const ROWS: u32 = 256;
     pub const HOOKS: u32 = 512;
-    pub const ALL: u32 = 0x3ff;
+    pub const KEEP_AWAKE: u32 = 1024;
+    pub const ALL: u32 = 0x7ff;
 }
 
 pub struct MainWindow {
@@ -94,6 +95,8 @@ pub struct MainWindow {
     pub webhooks: Value,
     /// `hooks.status`: midna's hooks in the agents' global config (`ui/hooks.rs`).
     pub hooks: Value,
+    /// `keep_awake.status`: whether midnad keeps the Mac awake now (the status bar's `awake`).
+    pub keep_awake: Value,
     pub hooks_sheet: Option<crate::ui::hooks::HooksSheet>,
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
@@ -343,6 +346,7 @@ impl MainWindow {
             fold_heights: Default::default(),
             webhooks: Value::Null,
             hooks: Value::Null,
+            keep_awake: Value::Null,
             hooks_sheet: None,
             ax_prompt: false,
             onboarding,
@@ -585,6 +589,9 @@ impl MainWindow {
                 }
                 if k == midna_proto::kinds::HOOKS_CHANGED {
                     self.hooks = e.data.clone();
+                }
+                if k == midna_proto::kinds::KEEP_AWAKE_CHANGED {
+                    self.keep_awake = e.data.clone();
                 }
                 if k == "window.command" {
                     self.on_window_command(e.data.clone(), window, cx);
@@ -870,6 +877,9 @@ impl MainWindow {
                     if what & refresh::HOOKS != 0 {
                         r.hooks = call("hooks.status", json!({}));
                     }
+                    if what & refresh::KEEP_AWAKE != 0 {
+                        r.keep_awake = call("keep_awake.status", json!({}));
+                    }
                     if what & refresh::HEADER != 0
                         && let Some(sid) = &header_for
                     {
@@ -1006,6 +1016,9 @@ impl MainWindow {
         }
         if let Some(h) = r.hooks {
             self.hooks = h;
+        }
+        if let Some(k) = r.keep_awake {
+            self.keep_awake = k;
         }
         if let Some((sid, segs)) = r.header {
             if !self.links.by_session.contains_key(&sid) {
@@ -1959,6 +1972,7 @@ struct RefreshResult {
     rules: Option<usize>,
     webhooks: Option<Value>,
     hooks: Option<Value>,
+    keep_awake: Option<Value>,
     triggers: Option<usize>,
     header: Option<(String, Vec<Segment>)>,
     status: Option<(String, HashMap<String, Vec<Segment>>)>,

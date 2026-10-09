@@ -148,6 +148,11 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Shortcuts, "Built in", &["@built_in"]),
     (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.system_hint"]),
     (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.shell_on_exit", "agents.resume_after_sleep", "agents.resume_after_network", "agents.resume_after_sleep_prompt"]),
+    (
+        Sec::Agents,
+        "Keep the Mac awake",
+        &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.end", "keep_awake.days", "keep_awake.hours", "keep_awake.min_battery", "keep_awake.linger_mins"],
+    ),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
         Sec::Limits,
@@ -198,6 +203,8 @@ pub struct SettingsWindow {
     webhooks: Value,
     /// `hooks.status`: midna's hooks in Claude Code's and Codex's global config (ui/hooks.rs).
     hooks: Value,
+    /// `keep_awake.status`: the "Keep the Mac awake" status row.
+    keep_awake: Value,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
@@ -277,6 +284,7 @@ impl SettingsWindow {
             info: Value::Null,
             webhooks: Value::Null,
             hooks: Value::Null,
+            keep_awake: Value::Null,
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
@@ -345,6 +353,10 @@ impl SettingsWindow {
                 self.hooks = e.data.clone();
                 cx.notify();
             }
+            BackendEvent::Event(e) if e.kind == midna_proto::kinds::KEEP_AWAKE_CHANGED => {
+                self.keep_awake = e.data.clone();
+                cx.notify();
+            }
             BackendEvent::Conn(crate::backend::ConnState::Connected) => self.load(cx),
             _ => {}
         }
@@ -388,7 +400,8 @@ impl SettingsWindow {
                     let media = backend.call("notify.media", json!({})).unwrap_or(Value::Null);
                     let hooks = backend.call("hooks.status", json!({})).unwrap_or(Value::Null);
                     let kinds = backend.call("notify.kinds.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::NotifyKindsList>(v).ok());
-                    (list, info, webhooks, media, hooks, kinds)
+                    let keep_awake = backend.call("keep_awake.status", json!({})).unwrap_or(Value::Null);
+                    (list, info, webhooks, media, hooks, kinds, keep_awake)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -404,6 +417,7 @@ impl SettingsWindow {
                 s.webhooks = r.2;
                 s.media = r.3;
                 s.hooks = r.4;
+                s.keep_awake = r.6;
                 s.sync_edits(cx);
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
@@ -454,6 +468,10 @@ impl SettingsWindow {
         for k in &self.custom {
             want.push((format!("label:{}", k.key), k.label.clone(), "Name"));
         }
+        for (key, placeholder) in KEEP_AWAKE_EDITS {
+            let shown = midna_proto::keep_awake::display(key, &self.value(key)).unwrap_or_default();
+            want.push((key.to_string(), shown, placeholder));
+        }
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         for (key, value, placeholder) in want {
             match self.edits.get_mut(&key) {
@@ -479,6 +497,18 @@ impl SettingsWindow {
         match key.strip_prefix("label:") {
             Some(kind) if !text.is_empty() => self.kind_call("notify.kinds.add", json!({ "key": kind, "label": text, "replace": true }), format!("midna notify kinds update {kind} --label \"{text}\""), cx),
             Some(_) => {}
+            None if KEEP_AWAKE_EDITS.iter().any(|(k, _)| *k == key) => {
+                // Show what was understood (`8am` -> `8 AM`); a typo stays for the footer's error.
+                let spec = midna_proto::settings::setting(key);
+                if let Some(v) = spec.and_then(|s| s.coerce(&json!(text)).ok()) {
+                    let shown = midna_proto::keep_awake::display(key, &v).unwrap_or_default();
+                    if let Some((input, saved)) = self.edits.get_mut(key) {
+                        input.set_text(&shown, cx);
+                        *saved = shown;
+                    }
+                }
+                self.set(key, json!(text), cx);
+            }
             None => self.set(key, json!(text), cx),
         }
     }
@@ -696,6 +726,8 @@ enum Act {
     RemoveKind(String),
     /// Show a test notification of a kind.
     TestKind(String),
+    /// `keep_awake.set {today}`: off for the rest of today, or back to the schedule.
+    KeepAwakeToday(&'static str),
 }
 
 struct RowSpec {
@@ -812,6 +844,14 @@ fn label_for(key: &str) -> String {
         "agents.trust_folders" => "Trusted folders",
         "agents.claude.statusline" => "Claude status line (cost)",
         "agents.mcp" => "Give agents the midna MCP tools",
+        "keep_awake.enabled" => "Keep the Mac awake for agents",
+        "keep_awake.mode" => "When",
+        "keep_awake.start" => "From",
+        "keep_awake.end" => "Until",
+        "keep_awake.days" => "On",
+        "keep_awake.hours" => "Days with their own hours",
+        "keep_awake.min_battery" => "Stop on battery below",
+        "keep_awake.linger_mins" => "Keep holding after the work",
         "agents.system_hint" => "Tell agents they're in midna",
         "policy.default" => "When no rule matches",
         "policy.request_timeout_secs" => "Approval timeout (seconds)",
@@ -916,6 +956,8 @@ fn option_label(key: &str, v: &str) -> String {
         ("terminal.preview_path_click", "copy") => "Copy path".into(),
         ("terminal.image_paste", "sheet") => "Open the image sheet".into(),
         ("terminal.image_paste", "inline") => "Paste it inline".into(),
+        ("keep_awake.mode", "with_work") => "Only while there's work".into(),
+        ("keep_awake.mode", "always") => "The whole time".into(),
         ("notify.badge", "background") => "Unless another midna is in front".into(),
         ("notify.badge", "always") => "Always".into(),
         ("notify.badge", "off") => "Off".into(),
@@ -965,6 +1007,15 @@ pub(crate) fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }
 }
 
+/// The keep-awake rows typed as text (forgiving: `8am`, `weekdays`, `fri = 9am-3pm`), shown the
+/// way people read them (`9 AM`), with their placeholders.
+const KEEP_AWAKE_EDITS: [(&str, &str); 4] = [
+    ("keep_awake.start", "9 AM"),
+    ("keep_awake.end", "6 PM"),
+    ("keep_awake.days", "weekdays, mon-fri or sat, sun"),
+    ("keep_awake.hours", "e.g. fri = 9am-3pm, sat = off"),
+];
+
 const PANE_AX: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const PANE_NOTIF: &str = midna_proto::paths::NOTIFICATIONS_PANE;
 
@@ -1007,7 +1058,9 @@ impl SettingsWindow {
         // the who column already says it
         let mut note = spec.description.trim_end_matches(" Human only.").to_string();
         if changed {
-            note.push_str(&format!(" (default: {})", value_text(&spec.default.to_json())));
+            let default = spec.default.to_json();
+            let shown = midna_proto::keep_awake::display(key, &default).unwrap_or_else(|| value_text(&default));
+            note.push_str(&format!(" (default: {})", if shown.is_empty() { "none" } else { &shown }));
         }
         Some(RowSpec { label: label_for(key), note: Some((note, Hsla::default())), control, cli: format!("midna settings set {key} {cli_value}"), who, warn: false })
     }
@@ -1117,11 +1170,28 @@ impl SettingsWindow {
         }
         let mut r = self.spec_row(key)?;
         let off = |what: &str| Some((format!("No effect while {what}"), t.dim));
+        if key.starts_with("keep_awake.") && key != "keep_awake.enabled" && self.value("keep_awake.enabled") != json!(true) {
+            r.note = off("keep-awake is off");
+        }
         match key {
             "notify.turn_done_min_secs" | "notify.when_app_closed" if self.notify_off() => r.note = off("notifications are off"),
             "terminal.preview_path_click" if self.value("terminal.link_preview") == json!("off") => r.note = off("link previews are off"),
             "terminal.auto_name_updates" if self.value("terminal.auto_name") == json!("off") => r.note = off("automatic names are off"),
             "agents.may_move_windows" if !accessibility_trusted() => r.note = Some(("No effect until Accessibility is granted".into(), t.need)),
+            "keep_awake.start" | "keep_awake.end" | "keep_awake.days" | "keep_awake.hours" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            "keep_awake.min_battery" | "keep_awake.linger_mins" => {
+                let choices: &[(i64, &str)] = if key == "keep_awake.min_battery" {
+                    &[(0, "No limit"), (10, "10%"), (20, "20%"), (30, "30%"), (50, "50%")]
+                } else {
+                    &[(0, "None"), (5, "5 min"), (10, "10 min"), (15, "15 min"), (30, "30 min")]
+                };
+                let current = self.value(key).as_i64().unwrap_or(0);
+                let mut options: Vec<(String, String)> = choices.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+                if !choices.iter().any(|(v, _)| *v == current) {
+                    options.push((current.to_string(), current.to_string()));
+                }
+                r.control = Control::Seg { key: key.into(), options, current: current.to_string() };
+            }
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
                 if let Some(n) = url.or_else(|| self.webhooks.get("message").and_then(Value::as_str).map(str::to_string)) {
@@ -1131,6 +1201,41 @@ impl SettingsWindow {
             _ => {}
         }
         Some(r)
+    }
+
+    /// "Keep the Mac awake": held or not and why, with today's override as a button.
+    fn keep_awake_row(&self, t: &Theme) -> RowSpec {
+        let k = &self.keep_awake;
+        let held = k["held"] == true;
+        let enabled = k["settings"]["enabled"] == true;
+        let line = k["line"].as_str().unwrap_or("Checking…").to_string();
+        let (dot, color) = match k["reason"].as_str() {
+            _ if held => (t.ok, t.fg),
+            Some("battery_low" | "failed") => (t.need, t.need),
+            Some("no_work") => (t.dim, t.fg),
+            _ => (t.dim, t.dim),
+        };
+        let action = match (enabled, k["today"].is_object()) {
+            (false, _) => None,
+            (true, true) => Some(("Back to schedule".to_string(), Act::KeepAwakeToday("clear"), false)),
+            (true, false) => Some(("Off for today".to_string(), Act::KeepAwakeToday("off"), false)),
+        };
+        let mut note = "Stops idle sleep only: the display still sleeps, the screen locks, closing the lid sleeps the Mac.".to_string();
+        if let Some(w) = k["work"].as_array().filter(|w| held && !w.is_empty()) {
+            note = format!("For {}. {note}", w.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+        }
+        if let Some(t) = k["today"]["line"].as_str() {
+            note = format!("Today: {t}. {note}");
+        }
+        RowSpec {
+            label: "Now".into(),
+            note: Some((note, Hsla::default())),
+            // Held: the short form (what keeps it is in the note).
+            control: Control::Text { dot: Some(dot), text: if held { line.split(": ").next().and_then(|l| l.split(" (").next()).unwrap_or(&line).trim().to_string() } else { line.clone() }, color, action },
+            cli: "midna keep-awake".into(),
+            who: Who::ReadOnly,
+            warn: false,
+        }
     }
 
     fn notify_off(&self) -> bool {
@@ -1172,6 +1277,7 @@ impl SettingsWindow {
         match name {
             "@update" => vec![lifecycle_rows(t).update, changelog_row(t)],
             "@cli" => vec![lifecycle_rows(t).cli],
+            "@keep_awake" => vec![self.keep_awake_row(t)],
             "@login" => vec![lifecycle_rows(t).login],
             "@hooks.claude" => vec![self.hooks_row(t, "claude")],
             "@hooks.codex" => vec![self.hooks_row(t, "codex")],
@@ -2383,6 +2489,7 @@ impl SettingsWindow {
             }),
             Act::RemoveKind(k) => self.kind_call("notify.kinds.remove", json!({ "key": k }), format!("midna notify kinds rm {k}"), cx),
             Act::TestKind(k) => self.test_notification(k.clone(), cx),
+            Act::KeepAwakeToday(v) => self.kind_call("keep_awake.set", json!({ "today": v }), format!("midna keep-awake today {v}"), cx),
         }
     }
 
@@ -2944,7 +3051,7 @@ mod tests {
     #[test]
     fn every_special_row_is_built() {
         let known = [
-            "@update", "@cli", "@login", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
+            "@update", "@cli", "@login", "@keep_awake", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
             "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
             "@custom_kinds", "@bell",
         ];
