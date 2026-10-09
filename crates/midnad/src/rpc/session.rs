@@ -180,6 +180,10 @@ pub(crate) fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, 
 }
 
 pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
+    ok(open_session(d, ctx, p)?)
+}
+
+fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Session, RpcError> {
     // Resolve the project: explicit, the caller's, the one containing cwd, or a new one for cwd.
     // With none of those the terminal opens at root: no project, starting in $HOME.
     let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false };
@@ -268,7 +272,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     crate::git::refresh_session_async(d, &sid);
     // Outside git, nothing refreshes: name it from its folder now (`terminal.auto_name` = context).
     crate::auto_name::on_context(d, &sid);
-    ok(session)
+    Ok(session)
 }
 
 pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
@@ -292,6 +296,61 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
     }
     close_inner(d, ctx, &p.id, p.force);
     ok(OkResult { ok: true })
+}
+
+/// `session.replace`: ⌘T then ⌘W in one step. A fresh terminal of the same kind opens in the
+/// same project and directory, takes the old one's place in the sidebar, and the old one closes.
+/// Unlike a restart it's a new terminal: new id, name, links and prompts, and an agent starts a
+/// new conversation without the first prompt it was launched with.
+pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
+    let s = d.core().state.session(&p.id).cloned().ok_or_else(|| not_found(&p.id))?;
+    if !ctx.is_human() {
+        let busy = matches!(s.status.state, StatusState::Working | StatusState::NeedsYou);
+        if busy && !p.force {
+            return Err(RpcError::conflict(format!("session {} is {}; pass force to replace it anyway", s.id, s.status.state.as_str())));
+        }
+        super::policy::gate(d, ctx, ActionKind::Cli, &format!("replace {}", s.id), Some(&s), false)?;
+    }
+    // An agent typed into a shell (adopted) comes back as the agent, launched by midna.
+    let (kind, agent, args) = match &s.adopted {
+        Some(a) => (SessionKind::Agent, Some(a.agent), a.args.clone()),
+        None => (s.kind, s.agent, s.agent_args.clone()),
+    };
+    let agent_args = agent.map(|a| midna_proto::agent_cli::resume_args(a, &midna_proto::agent_cli::Spec::builtin(a), &args)).unwrap_or_default();
+    let (cols, rows) = d.rt(&s.id).and_then(|rt| rt.read(true)).map(|(_, c, r)| (c, r)).unwrap_or((100, 30));
+    let fresh = open_session(
+        d,
+        ctx,
+        SessionOpenParams {
+            project_id: Some(s.project_id.clone()),
+            kind,
+            agent,
+            name: None,
+            cwd: Some(s.cwd.clone()),
+            command: (kind != SessionKind::Agent).then(|| s.command.clone()),
+            prompt: None,
+            agent_args,
+            resume: None,
+            cols: Some(cols),
+            rows: Some(rows),
+            background: s.background,
+            close_on_exit: s.close_on_exit,
+        },
+    )?;
+    {
+        let mut core = d.core();
+        let sessions = &mut core.state.sessions;
+        if let Some(new) = sessions.iter().position(|x| x.id == fresh.id) {
+            let mut x = sessions.remove(new);
+            x.keep_on_top = s.keep_on_top;
+            x.notify = s.notify.clone();
+            let at = sessions.iter().position(|o| o.id == s.id).unwrap_or(sessions.len());
+            sessions.insert(at, x);
+        }
+    }
+    close_inner(d, ctx, &s.id, true);
+    let fresh = d.core().state.session(&fresh.id).cloned().ok_or_else(|| not_found(&fresh.id))?;
+    ok(live(d, &fresh))
 }
 
 /// Kill, stop the engine, drop the session and its open needs-you items.

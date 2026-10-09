@@ -354,6 +354,13 @@ fn run(a: &Args) -> Res {
             out(&v, &|_| println!("closed {id}"));
             Ok(())
         }
+        "replace" => {
+            a.check(&["force"])?;
+            let id = a.need(1, "terminal id")?;
+            let v = call("session.replace", json!({ "id": id, "force": a.has("force") }))?;
+            out(&v, &|v| println!("replaced {id} with {} (pid {})", print::plain(&v["id"]), print::plain(&v["pid"])));
+            Ok(())
+        }
         "rename" => {
             let id = a.need(1, "terminal id")?;
             let name = a.pos[2..].join(" ");

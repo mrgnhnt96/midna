@@ -188,6 +188,11 @@ fn build() -> Vec<MethodSpec> {
              agent is idle with no background shells, subagents or scheduled wakeups in flight and an empty input box; \
              `when: now` refuses while background work is in flight unless `force`. Policy-checked as `restart <id>`; the \
              default policy asks the human."),
+        m::<SessionReplaceParams, Session>("session.replace").mutating().d(
+            "Replace a terminal with a fresh one: a new terminal of the same kind opens in the same project, directory and \
+             sidebar place, then the old one closes (like opening a new tab and closing the old). New id, name, links and \
+             prompts; an agent starts a new conversation without its first prompt. Returns the new terminal. Refused while \
+             it's working or needs you unless `force`. Policy-checked as `replace <id>`; the default policy asks the human."),
         m::<IdParams, Session>("session.restart_cancel").mutating().d("Cancel a terminal's queued restart (`session.restart` with `when: idle`)."),
         m::<IdParams, Session>("session.update_decline").mutating().d(
             "Answer \"Not now\" to an agent terminal's update prompt (`agent_info.update_available`): it stays hidden for \

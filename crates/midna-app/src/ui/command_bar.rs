@@ -406,6 +406,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             cx.global::<crate::ui::queue::QueueStore>().target.replace(Some(session));
             crate::ui::queue::toggle(m, window, cx);
         }
+        Run::Replace { session } => m.replace_session(session, cx),
         Run::OpenProject { path: Some(path) } => m.add_project(path, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
         Run::OpenIde { ide, dir } => {

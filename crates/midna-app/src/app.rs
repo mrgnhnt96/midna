@@ -1657,6 +1657,62 @@ impl MainWindow {
         });
     }
 
+    /// ⌘R: swap the selected terminal for a fresh one in its place (`session.replace`), like ⌘T
+    /// then ⌘W without the shuffle. A busy one (working, needs you) asks for a second press first.
+    pub fn replace_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(s) = self.selected_session() else {
+            return;
+        };
+        let (id, name) = (s.id.clone(), s.name.clone());
+        let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
+        let armed = format!("replace:{id}");
+        let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| *a == armed && t.elapsed() < Duration::from_secs(2));
+        if busy && !confirmed {
+            self.close_armed = Some((armed, Instant::now()));
+            let key = crate::actions::label(cx, "keys.replace");
+            let again = if key.is_empty() { "Replace it again".to_string() } else { format!("Press {key} again") };
+            self.toast(format!("{name} is still running. {again} to replace it with a new session."), cx);
+            return;
+        }
+        self.close_armed = None;
+        self.replace_session(id, cx);
+    }
+
+    /// `session.replace` `id`; the new terminal takes its place in the sidebar, and on screen
+    /// when `id` was the one showing.
+    pub fn replace_session(&mut self, id: String, cx: &mut Context<Self>) {
+        self.menu = Menu::None;
+        self.sessions_floor = self.refresh_seq + 1;
+        let shown = self.selected.as_deref() == Some(&id);
+        self.rpc("session.replace", json!({ "id": id, "force": true }), cx, move |m, v, window, cx| {
+            let Ok(s) = serde_json::from_value::<Session>(v) else {
+                m.sessions_changed(cx);
+                return;
+            };
+            let new = s.id.clone();
+            // It takes the old one's place: in the dragged order, and in our list until the refetch.
+            if let Some(i) = m.order.iter().position(|x| *x == id) {
+                m.order[i] = new.clone();
+                crate::ui::statusbar::save_state(m);
+            }
+            match m.sessions.iter().position(|x| x.id == id || x.id == new) {
+                Some(i) => m.sessions[i] = s,
+                None => m.sessions.push(s),
+            }
+            m.sessions.retain(|x| x.id != id);
+            m.windows.borrow_mut().claim(&new, m.id);
+            crate::windows::save_soon(cx);
+            if shown {
+                m.selected = Some(new);
+                m.terminal = None;
+                m.pending_terminal = None;
+                m.ensure_terminal(window, cx);
+            }
+            m.sessions_changed(cx);
+        });
+        cx.notify();
+    }
+
     /// ⌘W in the main window: close the selected terminal and select its neighbour in the
     /// sidebar. A busy one (working, needs you) asks for a second ⌘W first. With no terminal
     /// selected, close the window.
@@ -1917,6 +1973,7 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &RestartSession, _w, cx| m.restart_selected(cx)))
+            .on_action(cx.listener(|m, _: &ReplaceSession, _w, cx| m.replace_selected(cx)))
             .on_action(cx.listener(|m, _: &ApproveOptions, _w, cx| {
                 if m.overlay == Overlay::NeedsYou {
                     m.stack.menu = !m.stack.menu;

@@ -148,6 +148,17 @@ pub static VERBS: &[Verb] = &[
         methods: &["session.close"],
     },
     Verb {
+        name: "replace",
+        aliases: &[],
+        usage: "replace <id> [--force]",
+        summary: "replace a terminal with a fresh one in its place (new tab, old one closed)",
+        details: "Opens a new terminal of the same kind in the same project, directory and sidebar place, then\n\
+                  closes the old one. Unlike `restart` it's a new terminal: new id, name, links and prompts, and an\n\
+                  agent starts a new conversation without its first prompt. Prints the new id. A working terminal\n\
+                  needs --force. Policy-checked as `replace <id>`; the default policy asks the human.",
+        methods: &["session.replace"],
+    },
+    Verb {
         name: "rename",
         aliases: &[],
         usage: "rename <id> <name...>",

@@ -65,6 +65,8 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   shells, subagents, scheduled wakeups). `midna restart <id>` reopens an agent in the same
   conversation; it refuses while background work would be lost, so use `--idle` to queue it until
   the agent is idle with nothing in flight (`--cancel` drops it, `--fresh` starts over).
+  `midna replace <id>` swaps a terminal for a brand-new one in the same place (new id, name and
+  conversation; the old one closes) and prints the new id.
 - `midna subagent <terminal-id> <agent-id>` reads one of a terminal's subagents (its prompt, tool
   calls and replies) from its transcript; the ids are in `midna procs`.
 - `midna links` lists the links, PRs, artifacts and files that came up in your conversation;

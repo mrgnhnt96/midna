@@ -46,7 +46,7 @@
 - **`policy.request` for unmatched `tool` actions has no opinion.** It returns `source:"default"`, and `midna hook claude` prints nothing, so Claude's own permission flow decides. A rule that matches with `ask` raises a midna approval and blocks.
   - On timeout it returns `ask`/`timeout`, withdraws the item, and `needs_you.resolved` carries `{"kind":"timeout"}`.
   - The Claude PreToolUse hook entry gets `timeout: 600`.
-- **Policy defaults table** (`policy.default` = `auto`): `cli` values matching `close --force*`, `restart*`, `project remove*`, `rules remove*` or `settings reset*` ask; everything else is allowed.
+- **Policy defaults table** (`policy.default` = `auto`): `cli` values matching `close --force*`, `restart*`, `replace*`, `project remove*`, `rules remove*` or `settings reset*` ask; everything else is allowed.
 - **Agent verbs are policy-checked as `cli`/`window` actions:**
   - `close <id>` and `close --force <id>`
   - `restart <id>`

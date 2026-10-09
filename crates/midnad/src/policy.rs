@@ -83,7 +83,7 @@ fn scope_label(s: &RuleScope) -> String {
 }
 
 /// CLI verbs that ask by default (when `policy.default` is `auto`).
-const DESTRUCTIVE_CLI: &[&str] = &["close --force*", "restart*", "project remove*", "rules remove*", "settings reset*"];
+const DESTRUCTIVE_CLI: &[&str] = &["close --force*", "restart*", "replace*", "project remove*", "rules remove*", "settings reset*"];
 
 /// Decision when no rule matches. `setting` is the `policy.default` value.
 pub fn default_decision(a: &PolicyAction, setting: &str) -> Effect {

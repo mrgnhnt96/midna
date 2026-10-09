@@ -50,6 +50,8 @@ pub enum Run {
     JumpPrompt { session: String, n: Option<u32> },
     /// Open a terminal's queued messages (the pill's panel).
     Queue { session: String },
+    /// Swap a terminal for a fresh one in its place (`session.replace`).
+    Replace { session: String },
     /// Open a folder in an installed IDE (`ide.rs`), remembered for its project.
     OpenIde { ide: String, dir: String },
     /// Open a new GitHub issue with this Mac's details filled in (`report.rs`).
@@ -666,6 +668,18 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
                 .cli(cli),
         );
         out.extend(restart_commands(x, &pname));
+        let busy = matches!(x.status.state, StatusState::Working | StatusState::NeedsYou);
+        let mut r = Command::new(format!("replace:{}", x.id), CmdIcon::Restart, format!("Replace {} with a new session", x.name), Run::Replace { session: x.id.clone() })
+            .sub(format!("{pname} · {} · a fresh tab in its place, the old one closes", agent_label(x)))
+            .kw("new session fresh clear tab replace reset start over")
+            .cli(format!("midna replace {} --force", x.id));
+        if busy {
+            r = r.danger(format!("{} is still running; this ends it and opens a fresh one.", x.name));
+        }
+        if is_sel {
+            r = r.keys(key("keys.replace"));
+        }
+        out.push(r);
         let queued = x.queue.len();
         let mut q = Command::new(format!("queue:{}", x.id), CmdIcon::Run, format!("Queue a message for {}", x.name), Run::Queue { session: x.id.clone() })
             .sub(if queued > 0 { format!("{pname} · {queued} queued, sent in order once it's ready") } else { format!("{pname} · sent once it's ready") })

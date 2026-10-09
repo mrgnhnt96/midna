@@ -274,6 +274,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.prompts" => session::prompts(d, parse(p)?),
         "session.jump_prompt" => session::jump_prompt(d, ctx, parse(p)?),
         "session.restart" => session::restart(d, ctx, parse(p)?),
+        "session.replace" => session::replace(d, ctx, parse(p)?),
         "session.restart_cancel" => session::restart_cancel(d, ctx, parse(p)?),
         "session.update_decline" => session::update_decline(d, parse(p)?),
         "session.adopt" => ok(crate::adopt::adopt(d, ctx, parse(p)?)?),

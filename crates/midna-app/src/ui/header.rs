@@ -348,6 +348,7 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                     cx.listener(|m, _, _, cx| m.toggle_mute(cx)),
                 )
                 .children(keys("keys.mute")))
+                .child(menu_item(t, "more-replace", "Replace with new session", "", cx.listener(|m, _, _, cx| m.replace_selected(cx))).children(keys("keys.replace")))
                 .child(menu_item(t, "more-close", "Close terminal", "", cx.listener(|m, _, _, cx| m.close_selected(cx))).children(keys("keys.close"))),
         ),
     )

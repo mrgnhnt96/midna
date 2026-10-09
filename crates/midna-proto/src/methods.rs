@@ -1810,6 +1810,14 @@ pub struct SessionRestartParams {
     pub reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionReplaceParams {
+    pub id: Id,
+    /// Replace it even if it's working or waiting on the human (agents only; the human isn't asked).
+    #[serde(default)]
+    pub force: bool,
+}
+
 // ------------------------------------------------------------------ adopted agents
 
 /// `midna shim`: an agent was typed into a shell terminal. The reply says whether midna runs it

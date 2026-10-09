@@ -615,6 +615,27 @@ impl Backend for FakeBackend {
                 st.set_status(&id, StatusState::Idle, None);
                 json!({"ok": true})
             }
+            "session.replace" => {
+                let id = p("id").unwrap_or_default();
+                let Some(at) = st.sessions.iter().position(|s| s.id == id) else { bail!("rpc error 3: not found") };
+                st.next_id += 1;
+                let new = format!("b2e{:05x}", st.next_id);
+                let old = st.sessions[at].clone();
+                #[cfg(feature = "fake-engine")]
+                if let Some(t) = st.terms.remove(&id) {
+                    t.kill();
+                }
+                let name = match old.agent {
+                    Some(AgentKind::Claude) => "claude".into(),
+                    Some(AgentKind::Codex) => "codex".into(),
+                    _ => "zsh".into(),
+                };
+                let s = Session { id: new.clone(), name, status: Status { state: StatusState::Idle, since: Some(now_rfc3339()), ..Default::default() }, created_at: now_rfc3339(), ..old };
+                st.sessions[at] = s.clone();
+                st.emit("session.opened", Some(&new), json!({}));
+                st.emit("session.closed", Some(&id), json!({}));
+                serde_json::to_value(&s)?
+            }
             "session.close" => {
                 let id = p("id").unwrap_or_default();
                 st.sessions.retain(|s| s.id != id);

@@ -33,6 +33,8 @@ actions!(
         SplitRight,
         PopOut,
         RestartSession,
+        /// Swap the selected terminal for a fresh one in its place (`session.replace`).
+        ReplaceSession,
         /// ⌘W: in the main window, close the selected terminal (the window when none is
         /// selected); in Settings or a pop-out, close that window.
         CloseWindow,
@@ -144,6 +146,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.sidebar", ToggleSidebar, MAIN),
     shortcut!("keys.rename", RenameSession, MAIN),
     shortcut!("keys.restart", RestartSession, MAIN),
+    shortcut!("keys.replace", ReplaceSession, MAIN),
     shortcut!("keys.terminal_menu", ToggleTerminalMenu, MAIN),
     shortcut!("keys.copy_session_id", CopySessionId, MAIN),
     shortcut!("keys.mute", ToggleMute, MAIN),
