@@ -546,6 +546,8 @@ impl SettingsWindow {
         for k in numbers {
             want.push((k.clone(), self.value(&k).as_i64().map(|n| n.to_string()).unwrap_or_default(), ""));
         }
+        want.push(("agents.resume_after_sleep_prompt".into(), self.value("agents.resume_after_sleep_prompt").as_str().unwrap_or("").to_string(), "continue"));
+        want.push(("webhooks.relay_url".into(), self.value("webhooks.relay_url").as_str().unwrap_or("").to_string(), "https://relay.example.com"));
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_subs.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_saves.retain(|key, _| want.iter().any(|(k, ..)| k == key));
@@ -581,6 +583,16 @@ impl SettingsWindow {
         let Some((input, last)) = self.edits.get(key) else { return };
         let text = input.text(cx).trim().to_string();
         if text == *last {
+            self.edit_saves.remove(key);
+            return;
+        }
+        // half-typed: an empty resume message or an unfinished relay URL waits for ↩
+        let unfinished = match key {
+            "agents.resume_after_sleep_prompt" => text.is_empty(),
+            "webhooks.relay_url" => relay_url_problem(&text).is_some(),
+            _ => false,
+        };
+        if unfinished {
             self.edit_saves.remove(key);
             return;
         }
@@ -626,7 +638,20 @@ impl SettingsWindow {
         match key.strip_prefix("label:") {
             Some(kind) if !text.is_empty() => self.kind_call("notify.kinds.add", json!({ "key": kind, "label": text, "replace": true }), format!("midna notify kinds update {kind} --label \"{text}\""), cx),
             Some(_) => {}
-            None => self.set(key, json!(text), cx),
+            // typing nothing to resume an agent would resume nothing: put back what's saved
+            None if key == "agents.resume_after_sleep_prompt" && text.is_empty() => {
+                let Some((input, saved)) = self.edits.get(key) else { return };
+                input.set_text(&saved.clone(), cx);
+            }
+            None => match relay_url_problem(&text).filter(|_| key == "webhooks.relay_url") {
+                // checked here: the daemon takes any string
+                Some(why) => {
+                    let cmd = format!("midna settings set {key} {text}");
+                    self.last = Some(Last { cmd, ok: false, result: format!("✗ {why}"), who: "you, from this window".into(), at: Instant::now() });
+                    cx.notify();
+                }
+                None => self.set(key, json!(text), cx),
+            },
         }
     }
 
@@ -1413,6 +1438,9 @@ impl SettingsWindow {
                     r.cli = "midna keep-awake wake setup".into();
                 }
             }
+            // only the self-hosted path uses it
+            "webhooks.relay_url" if self.value("webhooks.path") != json!("self_relay") => return None,
+            "agents.resume_after_sleep_prompt" | "webhooks.relay_url" => r.control = Control::Edit { key: key.into(), actions: vec![] },
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
                 if let Some(n) = url.or_else(|| self.webhooks.get("message").and_then(Value::as_str).map(str::to_string)) {
@@ -3289,10 +3317,25 @@ fn snapshot(handle: WindowHandle<SettingsWindow>, cx: &mut App) {
     .detach();
 }
 
+/// Why `webhooks.relay_url` can't be this text, or None if it can (empty clears it).
+fn relay_url_problem(text: &str) -> Option<&'static str> {
+    if text.is_empty() {
+        return None;
+    }
+    let Some(rest) = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://")) else {
+        return Some("the relay URL starts with https:// (or http://)");
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() || host.starts_with(':') || text.chars().any(char::is_whitespace) {
+        return Some("that isn't a URL: https://relay.example.com");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
-    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, presets, search};
+    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, presets, relay_url_problem, search};
     use midna_proto::notify::{CATEGORIES, EFFECTS};
     use midna_proto::settings::{SETTINGS, setting};
 
@@ -3399,6 +3442,16 @@ mod tests {
         let unlisted = ["updates.feed_url", "keep_awake.end", "keep_awake.hours"];
         for s in SETTINGS {
             assert!(listed.contains(&s.key) || unlisted.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
+        }
+    }
+
+    #[test]
+    fn relay_url_is_checked_before_saving() {
+        for ok in ["", "https://relay.example.com", "http://10.0.0.2:8080/hooks", "https://r.example.com?x=1"] {
+            assert_eq!(relay_url_problem(ok), None, "{ok}");
+        }
+        for bad in ["relay.example.com", "ftp://relay.example.com", "https://", "https:///hooks", "https://:80", "https://relay example.com"] {
+            assert!(relay_url_problem(bad).is_some(), "{bad}");
         }
     }
 
