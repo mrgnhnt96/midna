@@ -36,6 +36,8 @@ mod blurbs;
 mod looks;
 #[path = "settings_folders.rs"]
 mod folders;
+#[path = "settings_chips.rs"]
+mod chips;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
@@ -235,6 +237,8 @@ pub struct SettingsWindow {
     cleanup: cleanup::State,
     /// `ui.status.looks`: the label fields and the custom color field (settings_looks.rs).
     looks: looks::State,
+    /// List settings shown as toggle chips: the drag in progress (settings_chips.rs).
+    chips: chips::State,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
@@ -318,6 +322,7 @@ impl SettingsWindow {
             hours_live: None,
             cleanup: cleanup::State::new(cx),
             looks: looks::State::new(cx),
+            chips: chips::State::default(),
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
@@ -754,6 +759,9 @@ enum Control {
     Looks,
     /// A path-list setting: a row per folder with a remove button, and Add (settings_folders.rs).
     Folders { key: String, list: Vec<String> },
+    /// A list (or a script's `+` parts) as chips to toggle and drag (settings_chips.rs):
+    /// `(item, label, on)`, on ones first in order.
+    Chips { key: String, chips: Vec<(String, String, bool)> },
 }
 
 #[derive(Clone)]
@@ -813,6 +821,7 @@ impl RowSpec {
             Control::Theme { current, .. } => out.push(("Value", current.clone())),
             Control::Keys { keys, .. } => out.push(("Keys", keys.clone())),
             Control::Folders { list, .. } => out.extend(list.iter().map(|f| ("Folder", f.clone()))),
+            Control::Chips { chips, .. } => out.extend(chips.iter().map(|(_, l, _)| ("Option", l.clone()))),
             Control::Hours => out.push(("Key", "keep_awake.start keep_awake.end".into())),
             _ => {}
         }
@@ -1318,6 +1327,7 @@ impl SettingsWindow {
                 r.cli = "midna cleanup keep \"release/*\"".into();
             }
             "cleanup.model" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            k if chips::KEYS.contains(&k) => r.control = Control::Chips { key: key.into(), chips: self.chips(key) },
             "keep_awake.wake" => {
                 let w = &self.keep_awake["wake"];
                 if let Some(line) = w["line"].as_str().filter(|_| r.note.is_none()) {
@@ -2548,10 +2558,10 @@ impl SettingsWindow {
             _ => None,
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
-        // theme chips, the cleanup lists, the status looks, folder lists, and a row of choices too long
-        // to sit beside the name without squeezing its description into a narrow column, go under it
+        // theme chips, list chips, the cleanup lists, the status looks, folder lists, and a row of choices
+        // too long to sit beside the name without squeezing its description into a narrow column, go under it
         let wide = match &r.control {
-            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks | Control::Folders { .. } => true,
+            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks | Control::Folders { .. } | Control::Chips { .. } => true,
             Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
             _ => false,
         };
@@ -2954,6 +2964,7 @@ impl SettingsWindow {
             Control::CleanupRuns => self.cleanup_runs_control(t),
             Control::Looks => self.looks_control(t, window, cx),
             Control::Folders { key, list } => self.folders_control(t, key, list, cx),
+            Control::Chips { key, chips } => self.chips_control(t, key, chips, words, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
