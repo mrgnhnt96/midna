@@ -457,7 +457,7 @@ fn explain_session(call: Caller, id: &str, surface: Surface) -> Result<String, R
             out.push_str("  (the GUI shows this terminal as needs-you because of these items)\n");
         }
     }
-    let evs = recent_events(call, json!({ "session_id": id, "kinds": ["session.status", "session.exited", "needs_you.", "agent.turn", "agent.prompt"] }), 500, |_| true);
+    let evs = recent_events(call, json!({ "session_id": id, "kinds": ["session.status", "session.exited", "needs_you.", "agent.turn", "agent.prompt", "agent.session_ended"] }), 500, |_| true);
     if !evs.is_empty() {
         out.push_str("recent:\n");
         for e in &evs {

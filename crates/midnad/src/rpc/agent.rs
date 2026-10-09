@@ -9,14 +9,22 @@ use std::sync::Arc;
 
 pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     let sid = p.session.clone().or(ctx.session.clone()).ok_or_else(|| RpcError::bad_params("no session: run inside a midna terminal or pass session"))?;
-    let (cur, project) = {
-        let core = d.core();
-        let s = core.state.session(&sid).ok_or_else(|| RpcError::not_found(format!("no session {sid}")))?;
-        (s.status.state, s.project_id.clone())
-    };
+    let live = d.core().state.session(&sid).map(|s| (s.status.state, s.project_id.clone()));
     let actor = Actor { kind: ActorKind::Agent, session: Some(sid.clone()), name: Some(p.agent.as_str().into()) };
     let ev = p.event.as_str();
     let payload = &p.payload;
+    let Some((cur, project)) = live else {
+        // The terminal was just closed: the dying agent's last hooks (SessionEnd, Stop) are
+        // expected, not an error. Only SessionEnd says anything.
+        let end = d.ends.closed(&sid).ok_or_else(|| RpcError::not_found(format!("no session {sid}")))?;
+        if ev == "SessionEnd" {
+            session_ended(d, &sid, &end.project.clone(), &actor, p.agent, payload, Some(end));
+        }
+        return ok(AgentHookResult { ok: true, status: None });
+    };
+    if ev == "SessionEnd" {
+        session_ended(d, &sid, &project, &actor, p.agent, payload, d.ends.take(&sid));
+    }
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
         crate::links::after_hook(d, &sid, p.agent, ev, payload);
@@ -90,6 +98,25 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         retitle_prompt(d, &sid, &crate::agent_state::prompt_label(payload), crate::agent_state::question(payload));
     }
     ok(AgentHookResult { ok: true, status: Some(status) })
+}
+
+/// `agent.session_ended`: why the agent's session ended. `end` is what midna did to the
+/// terminal (closed, replaced, restarted); without one the agent ended on its own (`/exit`,
+/// `/clear`, ctrl-d), and its `reason` says which.
+fn session_ended(d: &Daemon, sid: &str, project: &str, actor: &Actor, agent: AgentKind, payload: &Value, end: Option<crate::ended::End>) {
+    let (how, by, closed) = match end {
+        Some(e) => (e.how, e.by, e.closed),
+        None => ("agent_exit", actor.clone(), false),
+    };
+    let data = json!({
+        "agent": agent,
+        "reason": payload.get("reason").and_then(Value::as_str),
+        "conversation": payload.get("session_id").and_then(Value::as_str),
+        "how": how,
+        "by": by,
+        "terminal_closed": closed,
+    });
+    d.emit(kinds::AGENT_SESSION_ENDED, actor.clone(), Some(project.into()), Some(sid.into()), data);
 }
 
 /// Fold the hook into the session's `AgentInfo` (conversation, version, background work,

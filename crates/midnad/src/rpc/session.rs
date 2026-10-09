@@ -295,7 +295,7 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
         super::policy::gate_with(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), default)?;
     }
     let closing = crate::cleanup::capture(d, &p.id, p.cleanup);
-    close_inner(d, ctx, &p.id, p.force);
+    close_inner(d, ctx, &p.id, p.force, if p.force { "force_close" } else { "close" });
     if let Some(c) = closing {
         crate::cleanup::after_close(d, c);
     }
@@ -352,13 +352,14 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
             sessions.insert(at, x);
         }
     }
-    close_inner(d, ctx, &s.id, true);
+    close_inner(d, ctx, &s.id, true, "replace");
     let fresh = d.core().state.session(&fresh.id).cloned().ok_or_else(|| not_found(&fresh.id))?;
     ok(live(d, &fresh))
 }
 
-/// Kill, stop the engine, drop the session and its open needs-you items.
-pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool) {
+/// Kill, stop the engine, drop the session and its open needs-you items. `how` says why
+/// (`session.closed`, and `agent.session_ended` once the dying agent's hook arrives).
+pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool, how: &'static str) {
     let (rt, project) = {
         let mut core = d.core();
         let rt = core.rt.remove(sid);
@@ -367,6 +368,10 @@ pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool) {
         core.state.sessions.retain(|s| s.id != sid);
         (rt, project)
     };
+    // Before the kill: the agent's SessionEnd can arrive as soon as it gets the SIGHUP.
+    if let Some(p) = &project {
+        d.ends.record(sid, how, ctx.actor(), p.clone(), true);
+    }
     if let Some(rt) = rt {
         rt.kill(force);
         let _ = rt.tx.send(EngineMsg::Stop);
@@ -392,7 +397,7 @@ pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool) {
     }
     d.links.forget(&d.cfg.home, sid);
     d.mark_dirty();
-    d.emit(kinds::SESSION_CLOSED, ctx.actor(), project, Some(sid.to_string()), json!({ "force": force }));
+    d.emit(kinds::SESSION_CLOSED, ctx.actor(), project, Some(sid.to_string()), json!({ "force": force, "how": how }));
 }
 
 pub fn rename(d: &Daemon, ctx: &Ctx, p: SessionRenameParams) -> R {
@@ -758,6 +763,8 @@ fn was_supervised(command: &[String]) -> bool {
 /// rebuilt without its initial prompt, so current midna settings (hooks, MCP) apply.
 pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor: Actor) -> Result<Session, RpcError> {
     let s = d.core().state.session(sid).cloned().ok_or_else(|| not_found(sid))?;
+    // The old agent's SessionEnd arrives after the restart: it was this, not the agent.
+    d.ends.record(sid, "restart", actor.clone(), s.project_id.clone(), false);
     // A conversation nothing was said in yet isn't saved: start fresh instead.
     let resume = resume && s.agent_info.as_ref().is_none_or(crate::agent_work::has_transcript);
     // A `claude` typed into this shell: relaunch it inside the shell, which keeps running.
@@ -925,13 +932,13 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
         (None, Some(sig)) => (StatusState::Failed, format!("killed by signal {sig}")),
         _ => (StatusState::Exited, "exited".to_string()),
     };
-    d.emit(kinds::SESSION_EXITED, Actor::system(), Some(project), Some(sid.to_string()), json!({ "exit_code": code, "signal": signal }));
+    d.emit(kinds::SESSION_EXITED, Actor::system(), Some(project), Some(sid.to_string()), json!({ "exit_code": code, "signal": signal, "state": state, "reason": reason }));
     crate::rpc::agent::end_turn_if_open(d, sid, "process exited");
     d.set_status(sid, state, Some(reason.clone()), code, Actor::system());
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
     if close_on_exit && state == StatusState::Exited {
         let closing = crate::cleanup::capture(d, sid, None);
-        close_inner(d, &Ctx::internal_system(), sid, false);
+        close_inner(d, &Ctx::internal_system(), sid, false, "exited");
         if let Some(c) = closing {
             crate::cleanup::after_close(d, c);
         }

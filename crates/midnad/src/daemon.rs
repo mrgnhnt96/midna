@@ -160,6 +160,8 @@ pub struct Daemon {
     pub waiters: Mutex<HashMap<Id, Sender<Answer>>>,
     /// How recently closed needs-you items ended (`needs_you.get`). Not persisted.
     pub answered: Mutex<crate::rpc::needs_you::Answered>,
+    /// Terminals just closed or restarted, for the agent's late hooks (`ended.rs`). Not persisted.
+    pub ends: crate::ended::Ends,
     /// Folder-trust dialogs being answered (`trust.rs`). Not persisted.
     pub trust: Mutex<crate::trust::Memory>,
     next_conn: AtomicU64,
@@ -236,6 +238,7 @@ impl Daemon {
             gui: Mutex::new(vec![]),
             waiters: Mutex::new(HashMap::new()),
             answered: Default::default(),
+            ends: Default::default(),
             trust: Default::default(),
             next_conn: AtomicU64::new(1),
             next_gen: AtomicU64::new(1),
