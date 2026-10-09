@@ -21,6 +21,7 @@ pub mod need_anim;
 pub mod needs_you;
 pub mod notifications;
 pub mod toast;
+pub mod tooltip;
 pub mod popout;
 pub mod quit_hold;
 pub mod rename;

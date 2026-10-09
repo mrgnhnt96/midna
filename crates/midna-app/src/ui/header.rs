@@ -364,12 +364,22 @@ pub struct Tip {
     pub text: SharedString,
     /// Pretty keys ("⇧⌘T"), or empty.
     pub keys: SharedString,
+    /// A setting's values ("ask", "off"): its "value: …" clauses become a list.
+    pub values: Vec<SharedString>,
+    /// A setting's key, shown under the text (with a card).
+    pub footer: SharedString,
+}
+
+impl Tip {
+    fn new(text: SharedString, keys: SharedString) -> Self {
+        Tip { text, keys, values: vec![], footer: SharedString::default() }
+    }
 }
 
 /// Tooltip with no shortcut.
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text = text.into();
-    move |_, cx| cx.new(|_| Tip { text: text.clone(), keys: SharedString::default() }).into()
+    move |_, cx| cx.new(|_| Tip::new(text.clone(), SharedString::default())).into()
 }
 
 /// Tooltip with the keys bound to a `keys.*` setting, looked up when shown (so a rebind shows).
@@ -377,19 +387,30 @@ pub fn tip_keys(text: impl Into<SharedString>, setting: &'static str) -> impl Fn
     let text = text.into();
     move |_, cx| {
         let keys = crate::actions::label(cx, setting).into();
-        cx.new(|_| Tip { text: text.clone(), keys }).into()
+        cx.new(|_| Tip::new(text.clone(), keys)).into()
     }
 }
 
 /// Tooltip with fixed keys (a screen's own keys, e.g. "⇧↩").
 pub fn tip_fixed(text: impl Into<SharedString>, keys: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text = text.into();
-    move |_, cx| cx.new(|_| Tip { text: text.clone(), keys: keys.into() }).into()
+    move |_, cx| cx.new(|_| Tip::new(text.clone(), keys.into())).into()
+}
+
+/// Tooltip for a setting's description: a wrapped card with its `values` listed and its
+/// `key` underneath (ui/tooltip.rs).
+pub fn tip_setting(text: impl Into<SharedString>, values: Vec<SharedString>, key: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let (text, key) = (text.into(), key.into());
+    move |_, cx| cx.new(|_| Tip { values: values.clone(), footer: key.clone(), ..Tip::new(text.clone(), SharedString::default()) }).into()
 }
 
 impl Render for Tip {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>();
+        // long text wraps in a card; a short tip, or one with keys, stays one line
+        if self.keys.is_empty() && (!self.footer.is_empty() || self.text.chars().count() > super::tooltip::LONG) {
+            return super::tooltip::card(t, &self.text, &self.values, &self.footer);
+        }
         div()
             .flex()
             .items_center()

@@ -14,6 +14,7 @@ use crate::icons::Icon;
 use crate::model::{Event, SettingEntry, parse_list};
 use crate::theme::Theme;
 use crate::ui::screen_kit::{KeyOutcome, LineInput};
+use crate::ui::tooltip::sentences;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::settings::{SETTINGS, SettingKind};
@@ -1683,22 +1684,6 @@ fn search(sections: Vec<(Sec, Vec<Group>)>, query: &str) -> Vec<(Sec, Vec<Shown>
     out
 }
 
-/// A description split into sentences ("e.g. ~/Development" doesn't end one).
-fn sentences(text: &str) -> Vec<&str> {
-    let mut out = vec![];
-    let (mut start, mut from) = (0, 0);
-    while let Some(i) = text[from..].find(". ") {
-        let end = from + i + 1;
-        if !["e.g.", "i.e.", "etc."].iter().any(|a| text[..end].ends_with(a)) {
-            out.push(&text[start..end]);
-            start = end + 1;
-        }
-        from = end;
-    }
-    out.push(&text[start..]);
-    out
-}
-
 /// The sentence of a description a search matched, when it isn't the first.
 fn excerpt(note: &str, words: &[String]) -> String {
     let all = sentences(note);
@@ -2476,6 +2461,12 @@ impl SettingsWindow {
 
     fn row(&self, t: &Theme, hit: Hit, words: &[String], first: bool, id: usize, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Hit { row: r, via } = hit;
+        // the description's tooltip lists a picker's values and names the setting
+        let tip_values: Vec<SharedString> = match &r.control {
+            Control::Seg { options, .. } => options.iter().map(|(v, _)| v.clone().into()).collect(),
+            _ => vec![],
+        };
+        let tip_key: SharedString = r.key().unwrap_or_default().to_string().into();
         let note = r.note.map(|(n, c)| (n, if c == Hsla::default() { t.dim } else { c }));
         let lock = r.who == Who::Human && r.cli.starts_with("midna settings set ");
         let label_hit = words.iter().any(|w| r.label.to_lowercase().contains(w.as_str()));
@@ -2563,15 +2554,19 @@ impl SettingsWindow {
                                 let seen = |s: &str| words.iter().any(|w| s.to_lowercase().contains(w.as_str()));
                                 let short = if words.is_empty() || seen(&first) || label_hit { first } else { excerpt(&n, words) };
                                 let cut = short.len() < n.len();
+                                // dev: `MIDNA_SETTINGS_TIP=<setting key>` draws that row's tooltip under it, for screenshots
+                                let shown = (cut && crate::dev::var("MIDNA_SETTINGS_TIP").is_ok_and(|k| k == tip_key.as_ref()))
+                                    .then(|| crate::ui::tooltip::card(t, &n, &tip_values, &tip_key).mt(px(6.)));
                                 d.child(
                                     div()
                                         .id(SharedString::from(format!("note-{id}")))
                                         .text_size(px(11.5))
                                         .line_height(px(15.))
                                         .text_color(c)
-                                        .when(cut, |d| d.tooltip(crate::ui::header::tip(n)))
+                                        .when(cut, |d| d.tooltip(crate::ui::header::tip_setting(n, tip_values, tip_key)))
                                         .child(marked(t, short, words)),
                                 )
+                                .children(shown)
                             })
                             .when_some(via, |d, (what, text)| {
                                 d.child(
