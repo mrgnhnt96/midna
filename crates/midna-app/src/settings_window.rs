@@ -32,9 +32,10 @@ mod awake;
 mod cleanup;
 #[path = "settings_blurbs.rs"]
 mod blurbs;
-
 #[path = "settings_looks.rs"]
 mod looks;
+#[path = "settings_folders.rs"]
+mod folders;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
@@ -751,6 +752,8 @@ enum Control {
     CleanupRuns,
     /// `ui.status.looks`: a row per status (settings_looks.rs).
     Looks,
+    /// A path-list setting: a row per folder with a remove button, and Add (settings_folders.rs).
+    Folders { key: String, list: Vec<String> },
 }
 
 #[derive(Clone)]
@@ -809,6 +812,7 @@ impl RowSpec {
             }
             Control::Theme { current, .. } => out.push(("Value", current.clone())),
             Control::Keys { keys, .. } => out.push(("Keys", keys.clone())),
+            Control::Folders { list, .. } => out.extend(list.iter().map(|f| ("Folder", f.clone()))),
             Control::Hours => out.push(("Key", "keep_awake.start keep_awake.end".into())),
             _ => {}
         }
@@ -1135,6 +1139,7 @@ impl SettingsWindow {
                     off_text: if allow { "ask first" } else { "off" },
                 }
             }
+            SettingKind::PathList => Control::Folders { key: key.into(), list: value.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default() },
             _ => Control::Text { dot: None, text: if text.is_empty() { "not set".into() } else { text.clone() }, color: cx_dim_placeholder(), action: None },
         };
         let cli_value = if text.is_empty() {
@@ -2543,10 +2548,10 @@ impl SettingsWindow {
             _ => None,
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
-        // theme chips, the cleanup lists, the status looks, and a row of choices too long to sit beside the name
-        // without squeezing its description into a narrow column, go under it
+        // theme chips, the cleanup lists, the status looks, folder lists, and a row of choices too long
+        // to sit beside the name without squeezing its description into a narrow column, go under it
         let wide = match &r.control {
-            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks => true,
+            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks | Control::Folders { .. } => true,
             Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
             _ => false,
         };
@@ -2948,6 +2953,7 @@ impl SettingsWindow {
             Control::CleanupKeep => self.cleanup_keep_control(t, window, cx),
             Control::CleanupRuns => self.cleanup_runs_control(t),
             Control::Looks => self.looks_control(t, window, cx),
+            Control::Folders { key, list } => self.folders_control(t, key, list, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()

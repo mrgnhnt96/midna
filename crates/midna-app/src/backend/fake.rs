@@ -123,6 +123,8 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
+        e("projects.roots", json!(["~/Development", "~/work"]), "folders your projects live in", false),
+        e("agents.trust_folders", json!(["~/Development", "~/work/client-*", "~/src/**/sandbox"]), "folders whose trust dialog midna answers", true),
         e("keep_awake.enabled", json!(true), "keep the Mac from idle-sleeping during keep_awake hours", false),
         e("keep_awake.mode", json!("with_work"), "with_work | always", false),
         e("keep_awake.start", json!("09:00"), "start of the hours", false),
