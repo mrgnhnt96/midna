@@ -140,11 +140,10 @@ fn worktree_list(cwd: &str) -> Option<(String, Vec<crate::worktrees::Entry>)> {
 
 // ------------------------------------------------------------------ while it lives
 
-/// Note the repo, branch and worktree `sid`'s folder is in. Cheap after the first look at a repo.
-pub fn observe(d: &Daemon, sid: &str, info: Option<&GitInfo>) {
+/// Note the repo, branch and worktree `sid` works in (`cwd`). Cheap after the first look at a repo.
+pub fn observe(d: &Daemon, sid: &str, cwd: &str, info: Option<&GitInfo>) {
     let Some(info) = info else { return };
-    let Some(cwd) = d.core().state.session(sid).map(|s| s.cwd.clone()) else { return };
-    let Some(top) = git(&cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]) else { return };
+    let Some(top) = git(cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]) else { return };
     let known = {
         let book = d.cleanup.book(&d.cfg.home);
         book.trails.get(sid).and_then(|t| t.repos.iter().find(|(main, r)| **main == top || r.worktrees.contains(&top)).map(|(m, _)| m.clone()))
@@ -152,7 +151,7 @@ pub fn observe(d: &Daemon, sid: &str, info: Option<&GitInfo>) {
     let (main, base) = match known {
         Some(main) => (main, None),
         None => {
-            let Some((main, linked)) = worktree_list(&cwd) else { return };
+            let Some((main, linked)) = worktree_list(cwd) else { return };
             let branches = lines(git(&main, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]));
             (main, Some((branches, linked.into_iter().map(|e| e.path).collect::<BTreeSet<_>>())))
         }

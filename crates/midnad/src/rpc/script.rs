@@ -53,7 +53,7 @@ fn listed(state: &crate::state::State, key: &str, path: &str) -> Result<String, 
 /// Built-in parts in the order given; git is read once, and only when a part needs it.
 fn built_in(script: &str, s: &Session) -> Vec<Segment> {
     let parts: Vec<&str> = script.split('+').map(str::trim).filter(|p| !p.is_empty() && *p != "none").collect();
-    let g = parts.iter().any(|p| *p != "agent").then(|| git::git_info(&s.cwd)).flatten();
+    let g = parts.iter().any(|p| *p != "agent").then(|| git::git_info(&git::work_cwd(s, None))).flatten();
     let mut v = vec![];
     for part in parts {
         match (part, &g) {

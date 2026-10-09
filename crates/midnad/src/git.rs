@@ -148,9 +148,21 @@ pub fn pr_info(cwd: &str, branch: &str) -> Option<PrInfo> {
 
 // ------------------------------------------------------------------ refresh
 
+/// The folder a terminal works in now: where its agent's hooks say it is (a worktree it moved
+/// into), else where its shell (`pid`) is, else where it was opened.
+pub fn work_cwd(s: &Session, pid: Option<i32>) -> String {
+    let is_dir = |c: &String| std::path::Path::new(c).is_dir();
+    s.agent_info.as_ref().and_then(|i| i.cwd.clone()).filter(is_dir)
+        .or_else(|| pid.and_then(crate::procs::cwd).filter(is_dir))
+        .unwrap_or_else(|| s.cwd.clone())
+}
+
 /// Recompute one session's GitInfo; store it and emit `session.git` when it changed.
 pub fn refresh_session(d: &Daemon, sid: &str) {
-    let Some(cwd) = d.core().state.session(sid).map(|s| s.cwd.clone()) else { return };
+    let Some(cwd) = ({
+        let core = d.core();
+        core.state.session(sid).map(|s| work_cwd(s, core.rt.get(sid).map(|r| r.pid)))
+    }) else { return };
     let info = git_info(&cwd);
     let project = {
         let mut core = d.core();
@@ -161,7 +173,7 @@ pub fn refresh_session(d: &Daemon, sid: &str) {
         s.git = info.clone();
         s.project_id.clone()
     };
-    crate::cleanup::observe(d, sid, info.as_ref());
+    crate::cleanup::observe(d, sid, &cwd, info.as_ref());
     d.mark_dirty();
     d.emit(kinds::SESSION_GIT, Actor::system(), Some(project), Some(sid.into()), json!({ "git": info }));
     crate::auto_name::on_context(d, sid);
@@ -209,6 +221,23 @@ mod tests {
         assert_eq!(parse_rev_parse("/r/.git\n/r/.git\n/r\nmain\n"), Some(("main".into(), None)));
         assert_eq!(parse_rev_parse("/r/.git/worktrees/fix\n/r/.git\n/w/fix-login\nfix/login\n"), Some(("fix/login".into(), Some("fix-login".into()))));
         assert_eq!(parse_rev_parse("/r/.git\n"), None);
+    }
+
+    #[test]
+    fn works_where_the_agent_is_not_where_the_tab_opened() {
+        let tmp = std::env::temp_dir().canonicalize().unwrap().to_string_lossy().into_owned();
+        let mut s: Session = serde_json::from_value(json!({
+            "id": "s1", "project_id": "p", "name": "t", "kind": "agent", "agent": "claude", "cwd": "/repo", "command": ["claude"],
+            "status": { "state": "idle", "since": "2026-01-01T00:00:00Z" }, "created_at": "2026-01-01T00:00:00Z", "last_activity_at": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(work_cwd(&s, None), "/repo");
+        s.agent_info = Some(AgentInfo { cwd: Some(tmp.clone()), ..Default::default() });
+        assert_eq!(work_cwd(&s, None), tmp, "the agent's worktree");
+        s.agent_info = Some(AgentInfo { cwd: Some("/gone/worktree".into()), ..Default::default() });
+        assert_eq!(work_cwd(&s, None), "/repo", "a removed worktree falls back");
+        let here = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        assert_eq!(work_cwd(&s, Some(std::process::id() as i32)), here, "else the shell's folder");
     }
 
     #[test]
