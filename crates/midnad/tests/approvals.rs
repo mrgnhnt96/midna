@@ -342,3 +342,39 @@ fn a_new_prompt_closes_the_agents_own_blocked_item() {
     let got = call(&mut h, "needs_you.get", json!({ "id": blocked }));
     assert_eq!(got["resolution"], json!({ "kind": "done", "auto": true, "reason": "prompt" }), "{got}");
 }
+
+#[test]
+fn a_setting_change_shows_both_values_and_saves_the_humans_edit() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let me = open_sh(&mut h);
+    let mut a = d.agent(Some(&me));
+    let asked = json!(["daemon", "/Users/me/bin/ci.sh", "keys"]);
+    assert_eq!(call_err(&mut a, "settings.set", json!({ "key": "ui.status.items", "value": asked })).code, HUMAN_ONLY);
+    let n = wait_approval(&mut h);
+    let was = call(&mut h, "settings.get", json!({ "key": "ui.status.items" }))["value"].clone();
+    assert_eq!(n["setting"], json!({ "key": "ui.status.items", "from": was, "to": asked }), "{n}");
+    assert!(n["detail"].as_str().unwrap().contains("ci.sh"), "the value is shown, not hidden: {n}");
+
+    // The human keeps the script but drops keys.
+    let mine = json!(["/Users/me/bin/ci.sh", "daemon"]);
+    let ok = json!({ "id": n["id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } }, "value": mine });
+    call(&mut h, "needs_you.resolve", ok);
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "ui.status.items" }))["value"], mine);
+    let g = call(&mut a, "needs_you.get", json!({ "id": n["id"] }));
+    assert!(g.to_string().contains("ci.sh"), "the agent can see what was saved: {g}");
+
+    // A value on any other approval is refused.
+    let other = open_sh(&mut h);
+    let e = call_err(&mut d.agent(Some(&me)).no_wait(), "session.close", json!({ "id": other, "force": true }));
+    let close = e.data.unwrap()["needs_you_id"].clone();
+    let bad = json!({ "id": close, "resolution": { "kind": "approve", "scope": { "kind": "once" } }, "value": 1 });
+    assert!(call_err(&mut h, "needs_you.resolve", bad).message.contains("setting change"));
+    call(&mut h, "needs_you.resolve", json!({ "id": close, "resolution": { "kind": "deny" } }));
+
+    // A reset proposes the default.
+    call(&mut h, "settings.set", json!({ "key": "agents.may_force_close", "value": true }));
+    call_err(&mut a, "settings.reset", json!({ "key": "agents.may_force_close" }));
+    let n = wait_approval(&mut h);
+    assert_eq!(n["setting"], json!({ "key": "agents.may_force_close", "from": true, "to": false }), "{n}");
+}

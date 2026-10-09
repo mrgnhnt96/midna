@@ -211,6 +211,9 @@ fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result
 pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     let item = d.core().state.needs_you.iter().find(|n| n.id == p.id).cloned().ok_or_else(|| RpcError::not_found(format!("no needs-you item {}", p.id)))?;
     authorize(d, ctx, &item, &p.resolution)?;
+    if p.value.is_some() && !(matches!(p.resolution, Resolution::Approve { .. }) && item.setting.is_some()) {
+        return Err(RpcError::bad_params("value only applies to approving a setting change"));
+    }
     if matches!(p.resolution, Resolution::Approve { .. }) && !matches!(item.kind, NeedsYouKind::Approval | NeedsYouKind::RuleRemoval | NeedsYouKind::PermissionPrompt) {
         return Err(RpcError::bad_params(format!("{:?} items can't be approved", item.kind).to_lowercase()));
     }
@@ -219,8 +222,12 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     match (&p.resolution, item.kind) {
         (Resolution::Approve { scope }, NeedsYouKind::Approval) => {
             if let Some(def) = &deferred {
-                // Run the human-only call the agent asked for, now as the human.
-                super::run_deferred(d, def)?;
+                // Run the human-only call the agent asked for, now as the human (a setting
+                // with the value the human settled on, if they changed it).
+                match p.value.clone() {
+                    Some(v) => drop(super::run_deferred(d, &super::edited_setting(d, &item, def, v)?)?),
+                    None => drop(super::run_deferred(d, def)?),
+                }
             } else {
                 rule = super::policy::rule_from_approval(d, &item, scope);
             }
@@ -255,7 +262,12 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
         }
         _ => {}
     }
-    d.close_needs_you(&item.id, serde_json::to_value(&p.resolution).unwrap_or_default(), ctx.actor());
+    let mut recorded = serde_json::to_value(&p.resolution).unwrap_or_default();
+    // the agent reads this back (needs_you.get): say what was saved when it isn't what it asked
+    if let (Some(v), Some(o)) = (p.value.as_ref().filter(|_| matches!(p.resolution, Resolution::Approve { .. })), recorded.as_object_mut()) {
+        o.insert("value".into(), v.clone());
+    }
+    d.close_needs_you(&item.id, recorded, ctx.actor());
     if let Some(tx) = d.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&item.id) {
         let _ = tx.send(crate::daemon::Answer::Resolved(p.resolution.clone()));
     }
@@ -295,6 +307,7 @@ mod expire_tests {
             approval: None,
             trigger_id: None,
             question: None,
+            setting: None,
         }
     }
 

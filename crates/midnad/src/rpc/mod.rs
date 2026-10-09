@@ -453,7 +453,8 @@ pub fn defer_to_human(d: &Daemon, ctx: &Ctx, title: &str, cli: &str, method: &st
     let mut item = d.new_needs_you(NeedsYouKind::Approval, title.to_string(), ctx.actor(), ctx.session.clone());
     let (guard, context) = deferred_guard(d, method, params);
     let mut shown = params.clone();
-    if let Some(o) = shown.as_object_mut() {
+    // a secret's value stays out of the item; a setting's is what you're approving
+    if let Some(o) = shown.as_object_mut().filter(|_| !method.starts_with("settings.")) {
         for k in ["secret", "value"] {
             if o.contains_key(k) {
                 o.insert(k.into(), json!("…"));
@@ -470,10 +471,36 @@ pub fn defer_to_human(d: &Daemon, ctx: &Ctx, title: &str, cli: &str, method: &st
         matched_rule: None,
         target_session: None,
     });
+    item.setting = setting_change(d, method, params);
     d.core().state.deferred.insert(item.id.clone(), crate::state::Deferred { method: method.into(), params: params.clone(), guard });
     let item = d.raise_needs_you(item);
     RpcError::human_only(format!("{method} is human only; asked the human to confirm (needs-you {})", item.id))
         .with_data(json!({ "needs_you_id": item.id }))
+}
+
+/// A deferred `settings.set` / `settings.reset` as the setting's value now and the one asked for,
+/// so the item can show the setting itself instead of the call.
+fn setting_change(d: &Daemon, method: &str, params: &Value) -> Option<SettingChange> {
+    let key = params.get("key").and_then(Value::as_str)?;
+    let core = d.core();
+    let spec = core.state.setting_spec(key)?;
+    let to = match method {
+        "settings.set" => params.get("value")?.clone(),
+        "settings.reset" => spec.default.to_json(),
+        _ => return None,
+    };
+    Some(SettingChange { key: key.into(), from: core.state.setting(key), to })
+}
+
+/// A setting change approved with the human's own `value`: the `settings.set` to run instead.
+pub fn edited_setting(d: &Daemon, item: &NeedsYou, def: &crate::state::Deferred, value: Value) -> Result<crate::state::Deferred, RpcError> {
+    let change = item.setting.as_ref().filter(|_| matches!(def.method.as_str(), "settings.set" | "settings.reset"));
+    let Some(change) = change else {
+        return Err(RpcError::bad_params("value only applies to approving a setting change"));
+    };
+    let spec = d.core().state.setting_spec(&change.key).ok_or_else(|| RpcError::bad_params(format!("unknown setting {}", change.key)))?;
+    let value = spec.coerce(&value).map_err(RpcError::bad_params)?;
+    Ok(crate::state::Deferred { method: "settings.set".into(), params: json!({ "key": change.key, "value": value }), guard: None })
 }
 
 /// (fingerprint, human-readable context) of what a deferred call acts on.
