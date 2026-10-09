@@ -19,6 +19,7 @@ struct Main {
     id: EntityId,
     entity: WeakEntity<MainWindow>,
     handle: AnyWindowHandle,
+    ns: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>>,
 }
 
 #[derive(Default)]
@@ -83,11 +84,17 @@ fn shared(cx: &mut App) -> Shared {
 }
 
 /// A new main window: it becomes the home window.
-pub fn register(entity: WeakEntity<MainWindow>, id: EntityId, handle: AnyWindowHandle, cx: &mut App) -> Shared {
+pub fn register(entity: WeakEntity<MainWindow>, id: EntityId, window: &Window, cx: &mut App) -> Shared {
     let reg = shared(cx);
-    reg.borrow_mut().mains.insert(0, Main { id, entity, handle });
+    let (handle, ns) = (window.window_handle(), crate::ui::twilight::ns_window(window));
+    reg.borrow_mut().mains.insert(0, Main { id, entity, handle, ns });
     save_soon(cx);
     reg
+}
+
+/// The main windows' AppKit windows, most recently focused first (the badge docks only in these).
+pub fn ns_windows(cx: &mut App) -> Vec<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    shared(cx).borrow().mains.iter().filter_map(|m| m.ns.clone()).collect()
 }
 
 /// `id` was focused: it's the home window now.

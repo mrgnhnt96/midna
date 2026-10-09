@@ -253,7 +253,7 @@ impl MainWindow {
             crate::ui::twilight::native_bg(window, cx.global::<Theme>().bg);
         }
         let id = cx.entity_id();
-        let windows = crate::windows::register(cx.weak_entity(), id, window.window_handle(), cx);
+        let windows = crate::windows::register(cx.weak_entity(), id, window, cx);
         cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| weak.update(cx, |m, cx| crate::ui::close_window::should_close(m, window, cx)).unwrap_or(true));

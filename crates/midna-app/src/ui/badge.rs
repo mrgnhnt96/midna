@@ -251,26 +251,25 @@ fn midna_in_front(badge: &objc2_app_kit::NSWindow) -> bool {
     app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("com.mrgnhnt.midna"))
 }
 
-/// This midna's own window is in front (`Some(true)`), or another app is (`Some(false)`);
-/// `None` when the badge itself is midna's key window (a click on it), which says neither.
-fn here(badge: &objc2_app_kit::NSWindow) -> Option<bool> {
+/// One of this midna's main windows is in front (`Some(true)`), or another app or another of
+/// its windows (Settings, a dialog) is (`Some(false)`); `None` when the badge itself is midna's
+/// key window (a click on it), which says neither.
+fn here(badge: &objc2_app_kit::NSWindow, mains: &[objc2::rc::Retained<objc2_app_kit::NSWindow>]) -> Option<bool> {
     if !crate::sounds::app_active() {
         return Some(false);
     }
     let mtm = objc2::MainThreadMarker::new()?;
     match objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() {
         Some(k) if std::ptr::eq(&*k, badge) => None,
-        Some(_) => Some(true),
+        Some(k) => Some(mains.iter().any(|m| std::ptr::eq(&**m, &*k))),
         None => Some(false),
     }
 }
 
-/// Where the window goes for the badge docked in midna's front window (`DOCK` from its top
-/// right): its Cocoa origin.
-fn dock_origin(badge: &objc2_app_kit::NSWindow) -> Option<(f64, f64)> {
-    let mtm = objc2::MainThreadMarker::new()?;
-    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-    let w = app.keyWindow().filter(|k| !std::ptr::eq(&**k, badge)).or_else(|| app.mainWindow().filter(|k| !std::ptr::eq(&**k, badge)))?;
+/// Where the window goes for the badge docked in midna's front main window (`DOCK` from its
+/// top right): its Cocoa origin.
+fn dock_origin(mains: &[objc2::rc::Retained<objc2_app_kit::NSWindow>]) -> Option<(f64, f64)> {
+    let w = mains.iter().find(|m| m.isVisible())?;
     let f = w.frame();
     let size = SIZE as f64;
     let (bx, by) = (f.origin.x + f.size.width - DOCK.0 - size, f.origin.y + f.size.height - DOCK.1 - size);
@@ -1664,7 +1663,8 @@ impl Badge {
 
         // Midna came to the front or went: spring onto its window's top right, or back to the
         // corner (straight there while it's hidden). A press on the badge says neither.
-        if let Some(within) = here(&ns)
+        let mains = crate::windows::ns_windows(cx);
+        if let Some(within) = here(&ns, &mains)
             && within != self.within
             && self.pressing.is_none()
         {
@@ -1673,7 +1673,7 @@ impl Badge {
             if !within && self.list && self.list_closing.is_none() {
                 self.list_closing = Some(now);
             }
-            let to = if within { dock_origin(&ns) } else { origin_at(&ns, self.corner, self.inset) };
+            let to = if within { dock_origin(&mains) } else { origin_at(&ns, self.corner, self.inset) };
             if let Some(to) = to {
                 if self.shown && !super::queue::reduce_motion() {
                     let f = ns.frame();
@@ -1688,7 +1688,7 @@ impl Badge {
         // Docked: it follows its window (and the window it's springing to).
         if self.within
             && self.pressing.is_none()
-            && let Some(to) = dock_origin(&ns)
+            && let Some(to) = dock_origin(&mains)
         {
             match self.slide.as_mut() {
                 Some(sl) => sl.to = to,
