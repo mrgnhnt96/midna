@@ -1152,7 +1152,6 @@ Why: the Insights screen was one fixed report and the sidebar's Today card alway
 - **With no terminals** (canvas https://claude.ai/artifact/4yL15PzeJR13pLXMzdE8j6, option C, "ghost row"): a pinned project keeps its heading, with a dashed "+ New terminal" row under it. Clicking the heading or the row opens a shell there, as "New terminal here" does, and so does its ⌘1–9. Folding doesn't apply while it's empty. The row has no key hint, because `keys.new_terminal` opens in the *current* project, which may not be this one.
 - **Dev.** The fake backend has `dotfiles` pinned with no terminals. Fold the others to see it: `app-state.json` `{"onboarding":{"finished":true},"collapsed":["p_zonai1","p_drops1"]}`.
 
-<<<<<<< HEAD
 ## Runaway work: a busy Mac postpones upgrades, overload offers pause/stop, stale loops and worktrees go (midnad `guard.rs`, `worktrees.rs`, proto `system.rs`; 2026-10-09)
 
 - **The incident.** A taskboard session ran 72 `isolation: worktree` subagents overnight. Each worktree had its own `target/`, so every agent cold-built the workspace (gpui included): ~20 rustc at once, load 79 on 12 cores, 36 worktrees holding ~290 GB. About 28 agent wait loops (`until ! pgrep -f "cargo test --workspace"; do sleep 5; done`) never ended: macOS pgrep skips its own ancestors, but each loop's command line has the pattern, so two of them keep each other alive forever (~1% CPU each for hours). Under that load the beta.14 auto-upgrade's new image didn't write `resumed` within the 10 s watchdog, was killed, and the fallback lost every terminal (launchd restarted the job and set the handoff aside).
@@ -1184,7 +1183,7 @@ The human asked for this: when a terminal closes, a cheap headless model cleans 
 - **The menu opens inside the card**, under the row, and the card grows to fit (measured as it paints): the badge is its own small panel and a popover past its edge would be clipped. It closes with the card.
 - **Limits**: up to 6 buttons (was 4), 24 characters each (was 40), so a face, its caret, More and Open fit a card's row.
 - **Not changed**: the in-app toast already wraps its buttons and keeps one per label. The macOS banner is drawn by macOS, which puts buttons under Options.
-=======
+
 ## Why a terminal's agent ended (midnad `ended.rs`, `rpc/agent.rs`; event `agent.session_ended`; 2026-10-09)
 
 Asked for by the task board, which needs to tell a terminal that ended on purpose from one that crashed.
@@ -1193,4 +1192,3 @@ Asked for by the task board, which needs to tell a terminal that ended on purpos
 - **`session.closed` says how:** `{force, how}`, `how` = close | force_close | replace | exited (`close_on_exit`) | reset | project_removed; the event's actor says who.
 - **`agent.session_ended`** on every `SessionEnd`: `{agent, reason, conversation, how, by, terminal_closed}`. `reason` is the agent's own (Claude: prompt_input_exit, clear, logout, other). `how`/`by` come from the recorded end, so a close, replace or restart (`restart_now` records `how: restart`, not closed) is credited to whoever did it; with nothing recorded it's `agent_exit` by the agent. A restart's record is taken by the old agent's `SessionEnd`, so the new agent's end is its own. A separate event rather than a field on `session.closed`, because `SessionEnd` also fires without a close (`/exit`, `/clear`, a restart) and always after `session.closed`.
 - **`session.exited` carries `{state, reason}`** besides exit code and signal, so a crash (`failed`, "killed by signal 9") reads the same way as the status. A terminal midna closed never gets `session.exited` (its runtime is gone before the exit).
->>>>>>> 6264f2e (fix(midnad): record why a terminal's agent ended)
