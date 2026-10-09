@@ -21,7 +21,8 @@
 //! the terminal), and they linger a beat after it leaves. Clicking a capsule grows it into its
 //! card (Approve / Deny, or Dismiss, and Terminal), one at a time, and glides the list to put
 //! it in the middle; the card's top row collapses it. Clear takes everything off; ⎋ (in any
-//! midna window) closes the list. The capsule beside the badge works like a row: hovering holds
+//! midna window) closes the list, as does leaving it alone for a few seconds: only the pointer on
+//! a row (or just off one), the badge or Clear holds it open. The capsule beside the badge works like a row: hovering holds
 //! it and grows in its × and arrow (and Approve / Deny for an approval), and a click opens its
 //! card in the list. Right-click: Hide badge,
 //! Notification settings…, Open midna. Drag it anywhere; let go and it slings to the nearest
@@ -55,7 +56,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::notify::Posted;
 use serde_json::{Value, json};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -80,9 +81,10 @@ const WIN_H: f32 = MY * 2. + SIZE;
 const LIST_W: f32 = 400.;
 /// Room past the rows on the list's open side, so a card's shadow isn't cut off.
 const LIST_BLEED: f32 = 40.;
-/// The list closes itself after this long with nothing happening (the pointer resting on it
-/// counts).
+/// The list closes itself after this long with nothing happening (the pointer resting on a row
+/// or within `KEEP` of one, on the badge or on Clear counts; anywhere else in the list doesn't).
 const LIST_IDLE: Duration = Duration::from_secs(5);
+const KEEP: f32 = 8.;
 /// Resting the pointer on the badge this long opens the list; a click up to `HOVER_GRACE` after
 /// it opened that way leaves it open (it was meant to open it), the next one closes it.
 const HOVER_OPEN: Duration = Duration::from_millis(600);
@@ -407,6 +409,10 @@ struct Zones {
     badge: Rc<Cell<Option<Bounds<Pixels>>>>,
     line: Rc<Cell<Option<Bounds<Pixels>>>>,
     panel: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// In the list: its rows on screen, the part they scroll in, and Clear.
+    rows: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
+    clear: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl Zones {
@@ -414,10 +420,20 @@ impl Zones {
         self.badge.set(None);
         self.line.set(None);
         self.panel.set(None);
+        self.rows.borrow_mut().clear();
+        self.viewport.set(None);
+        self.clear.set(None);
     }
 
     fn hit(&self, p: Point<Pixels>) -> Option<&'static str> {
         [("badge", &self.badge), ("line", &self.line), ("panel", &self.panel)].into_iter().find(|(_, z)| z.get().is_some_and(|b| b.contains(&p))).map(|(n, _)| n)
+    }
+
+    /// The pointer keeps the open list up: on a row (or within `KEEP` of one) where it shows, or
+    /// on Clear. Elsewhere in the list doesn't.
+    fn keeps(&self, p: Point<Pixels>) -> bool {
+        let shown = self.viewport.get().is_some_and(|v| v.contains(&p));
+        (shown && self.rows.borrow().iter().any(|b| b.dilate(px(KEEP)).contains(&p))) || self.clear.get().is_some_and(|b| b.contains(&p))
     }
 }
 
@@ -2007,12 +2023,15 @@ impl Badge {
             changed = true;
         }
 
+        // The pointer's on something that keeps the open list up.
+        let mut keep = false;
         if self.shown {
             // Where the pointer is, in the window's coordinates.
             let mouse = objc2_app_kit::NSEvent::mouseLocation();
             let f = ns.frame();
             let p = point(px((mouse.x - f.origin.x) as f32), px((f.origin.y + f.size.height - mouse.y) as f32));
             let hover = self.zones.hit(p);
+            keep = matches!(hover, Some("badge" | "line")) || (hover == Some("panel") && self.zones.keeps(p));
             if hover != self.hover {
                 if hover == Some("badge") {
                     self.hover_since = Some(now);
@@ -2094,7 +2113,7 @@ impl Badge {
             changed = true;
         }
         // Left alone, the list closes itself (the same cascade as clicking the badge).
-        if self.list && self.hover.is_some() {
+        if self.list && keep {
             self.list_touched = now;
         }
         if self.list && self.list_closing.is_none() && now.duration_since(self.list_touched) >= LIST_IDLE {
@@ -2134,6 +2153,11 @@ fn line_serial(id: &str) -> Option<u64> {
 /// Record an element's painted bounds in `cell` (its zone).
 fn measure(cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
     canvas(move |b, _, _| cell.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+}
+
+/// `measure`, adding to a list (one of many).
+fn measure_into(list: Rc<RefCell<Vec<Bounds<Pixels>>>>) -> impl IntoElement {
+    canvas(move |b, _, _| list.borrow_mut().push(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
 }
 
 /// A question's options, numbered as in the terminal (where you pick one).
@@ -2635,7 +2659,7 @@ impl Badge {
         let step = |i: usize| if self.list_closing.is_some() { CASCADE_ROWS - 1 - (last - on_screen(i).min(last)).min(CASCADE_ROWS - 1) } else { on_screen(i) };
         for (i, w) in rows.iter().enumerate() {
             let v = self.cascade(step(i), now);
-            let drop = |el: AnyElement| div().relative().top(px((1. - v) * -CASCADE_DROP)).opacity((v * 1.4).clamp(0., 1.)).child(el).into_any_element();
+            let drop = |el: AnyElement| div().relative().top(px((1. - v) * -CASCADE_DROP)).opacity((v * 1.4).clamp(0., 1.)).child(el).child(measure_into(self.zones.rows.clone())).into_any_element();
             let landing = self.landing.as_ref().filter(|l| l.id == w.id);
             let el = match self.card_k(&w.id, now) {
                 Some(k) => drop(self.card(t, w, k, CARD_W, now, cx)),
@@ -2647,7 +2671,7 @@ impl Badge {
                 }
                 None if let Some(l) = landing => {
                     let capsule = self.capsule(t, w, now, 1., 1., cx);
-                    div().relative().flex().child(div().flex().opacity(0.).child(capsule)).child(measure(l.to.clone())).into_any_element()
+                    div().relative().flex().child(div().flex().opacity(0.).child(capsule)).child(measure(l.to.clone())).child(measure_into(self.zones.rows.clone())).into_any_element()
                 }
                 None => {
                     // When it scrolls, clearest at the middle line and softer away from it: the
@@ -2727,11 +2751,13 @@ impl Badge {
             .h(px(LIST_H))
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|b, e: &ScrollWheelEvent, _, cx| b.wheel(f32::from(e.delta.pixel_delta(px(18.)).y), cx)))
+            .child(measure(self.zones.viewport.clone()))
             .child(col)
             .children(thumb)
             .children(chip);
         let clear = div()
             .id("list-clear")
+            .relative()
             .px(px(10.))
             .py(px(3.))
             .rounded(px(11.))
@@ -2748,6 +2774,7 @@ impl Badge {
             .cursor_pointer()
             .hover(|s| s.bg(t.line).text_color(t.fg))
             .on_click(cx.listener(|b, _, _, cx| b.clear_all(cx)))
+            .child(measure(self.zones.clear.clone()))
             .child("Clear");
         let header = div().relative().opacity(self.cascade(if self.list_closing.is_some() { CASCADE_ROWS - 1 } else { 0 }, now).clamp(0., 1.)).w(px(LIST_W)).h(px(26.)).px(px(6.)).flex().items_center().map(|d| if right { d.justify_end() } else { d.justify_start() }).child(clear);
         let top = self.side().top();
