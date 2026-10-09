@@ -26,6 +26,7 @@ Always source `env.sh` first.
 . ./env.sh
 cargo build                      # midnad, midna (CLI), midna-app
 cargo test --workspace           # everything uses temp MIDNA_HOMEs
+cargo test -p midna-app          # or just the crates you touched (see AGENTS.md)
 scripts/smoke.sh                 # end-to-end day in the life against a real temp daemon
 ```
 
