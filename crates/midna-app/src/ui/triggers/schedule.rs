@@ -9,6 +9,9 @@ use super::*;
 use midna_proto::cron::{self, Schedule};
 use midna_proto::{AgentCron, TimeWindow, TriggerFilter, time};
 
+mod pick;
+use pick::{Open, Pick};
+
 // ------------------------------------------------------------------ crons
 
 /// One of Claude's session crons and the terminal it lives in.
@@ -111,21 +114,27 @@ pub struct ScheduleEditor {
     note: Option<String>,
     name: LineInput,
     once: bool,
-    at: LineInput,
+    /// Runs once at (unix seconds).
+    at: i64,
     unit: Unit,
     every: LineInput,
-    daily_at: LineInput,
+    /// Every day at (minutes past midnight).
+    daily_at: u32,
     /// A cron the form can't show (kept as typed).
     custom: bool,
     cron: LineInput,
     window: bool,
-    from: LineInput,
-    until: LineInput,
+    /// The window, in minutes past midnight.
+    from: u32,
+    until: u32,
     days: [bool; 7],
-    starts: LineInput,
+    /// None starts now.
+    starts: Option<i64>,
     ends: Ends,
-    ends_at: LineInput,
+    ends_at: i64,
     runs: LineInput,
+    /// The date or time picker that's open.
+    open: Option<Open>,
     /// New triggers: the terminal the prompt goes to.
     session: Option<String>,
     prompt: LineInput,
@@ -143,6 +152,8 @@ struct Built {
 impl ScheduleEditor {
     fn new(cx: &mut Context<TriggersView>) -> ScheduleEditor {
         let field = |cx: &mut Context<TriggersView>, ph: &str| LineInput::new(cx, false, ph.to_string());
+        let now = time::now_unix();
+        let (.., h, _, _) = time::local_parts(now);
         let mut e = ScheduleEditor {
             trigger_id: None,
             base: TriggerFilter::default(),
@@ -150,36 +161,46 @@ impl ScheduleEditor {
             note: None,
             name: field(cx, "Name"),
             once: false,
-            at: field(cx, "2026-10-06 14:30"),
+            // the next hour, and a week from today
+            at: pick::with_time(now, h, 0) + 3600,
             unit: Unit::Minutes,
-            every: field(cx, "5"),
-            daily_at: field(cx, "09:00"),
+            every: LineInput::digits(cx, "5"),
+            daily_at: 9 * 60,
             custom: false,
             cron: field(cx, "*/5 * * * *"),
             window: false,
-            from: field(cx, "13:00"),
-            until: field(cx, "17:00"),
+            from: 13 * 60,
+            until: 17 * 60,
             days: [true; 7],
-            starts: field(cx, "Now"),
+            starts: None,
             ends: Ends::Never,
-            ends_at: field(cx, "2026-10-31"),
-            runs: field(cx, "10"),
+            ends_at: time::local_day_start(time::local_day_start(now) + 7 * 86_400 + 43_200),
+            runs: LineInput::digits(cx, "10"),
+            open: None,
             session: None,
             prompt: field(cx, "The prompt to send"),
             _subs: vec![],
         };
         e.every.set_text("5", cx);
-        e.daily_at.set_text("09:00", cx);
-        e.from.set_text("13:00", cx);
-        e.until.set_text("17:00", cx);
-        // Retyping any field refreshes the summary.
+        e.runs.set_text("10", cx);
+        // Retyping any field refreshes the summary; a number past its range is held to it.
         let fields: Vec<Entity<crate::ui::text_input::TextField>> = e.inputs().iter().map(|i| i.field.clone()).collect();
-        e._subs = fields.iter().map(|f| cx.observe(f, |_, _, cx| cx.notify())).collect();
+        e._subs = fields
+            .iter()
+            .map(|f| {
+                cx.observe(f, |v: &mut TriggersView, _, cx| {
+                    if let Some(e) = v.editor.as_ref() {
+                        e.clamp_numbers(cx);
+                    }
+                    cx.notify()
+                })
+            })
+            .collect();
         e
     }
 
-    fn inputs(&self) -> [&LineInput; 11] {
-        [&self.name, &self.at, &self.every, &self.daily_at, &self.cron, &self.from, &self.until, &self.starts, &self.ends_at, &self.runs, &self.prompt]
+    fn inputs(&self) -> [&LineInput; 5] {
+        [&self.name, &self.every, &self.cron, &self.runs, &self.prompt]
     }
 
     /// A copy of one of Claude's crons, sent to the same terminal.
@@ -210,10 +231,10 @@ impl ScheduleEditor {
         let f = &tr.filter;
         if let Some(w) = &f.window {
             e.window = true;
-            e.from.set_text(&w.from, cx);
-            e.until.set_text(&w.until, cx);
+            e.from = cron::parse_hm(&w.from).unwrap_or(e.from);
+            e.until = cron::parse_hm(&w.until).unwrap_or(e.until);
         }
-        let local = |at: &Option<String>| at.as_deref().and_then(time::parse_rfc3339).map(time::format_local);
+        let local = |at: &Option<String>| at.as_deref().and_then(time::parse_rfc3339);
         match f.max_runs {
             Some(1) if e.once => {}
             Some(n) => {
@@ -224,12 +245,10 @@ impl ScheduleEditor {
             None => e.once = false,
         }
         if !e.once {
-            if let Some(s) = local(&f.starts_at) {
-                e.starts.set_text(&s, cx);
-            }
+            e.starts = local(&f.starts_at);
             if let Some(s) = local(&f.ends_at) {
                 e.ends = Ends::OnDate;
-                e.ends_at.set_text(&s, cx);
+                e.ends_at = s;
             }
         }
         e
@@ -247,7 +266,7 @@ impl ScheduleEditor {
         match r.shape {
             Shape::Once(at) => {
                 self.once = true;
-                self.at.set_text(&time::format_local(at), cx);
+                self.at = at;
             }
             Shape::Every(unit, n) => {
                 self.unit = unit;
@@ -255,36 +274,36 @@ impl ScheduleEditor {
             }
             Shape::Daily(h, m) => {
                 self.unit = Unit::Daily;
-                self.daily_at.set_text(&format!("{h:02}:{m:02}"), cx);
+                self.daily_at = h * 60 + m;
             }
         }
         if let Some((a, b)) = r.window {
             self.window = true;
-            self.from.set_text(&a, cx);
-            self.until.set_text(&b, cx);
+            self.from = cron::parse_hm(&a).unwrap_or(self.from);
+            self.until = cron::parse_hm(&b).unwrap_or(self.until);
         }
     }
 
-    /// The form's values as typed.
+    /// The form's values, as text.
     fn form(&self, cx: &App) -> Form {
         let text = |i: &LineInput| i.text(cx).trim().to_string();
         Form {
             new: self.trigger_id.is_none(),
             name: text(&self.name),
             once: self.once,
-            at: text(&self.at),
+            at: time::format_local(self.at),
             unit: self.unit,
             every: text(&self.every),
-            daily_at: text(&self.daily_at),
+            daily_at: pick::hm(self.daily_at),
             custom: self.custom,
             cron: text(&self.cron),
             window: self.window,
-            from: text(&self.from),
-            until: text(&self.until),
+            from: pick::hm(self.from),
+            until: pick::hm(self.until),
             days: self.days,
-            starts: text(&self.starts),
+            starts: self.starts.map(time::format_local).unwrap_or_default(),
             ends: self.ends,
-            ends_at: text(&self.ends_at),
+            ends_at: time::format_local(self.ends_at),
             runs: text(&self.runs),
             session: self.session.clone(),
             prompt: text(&self.prompt),
@@ -745,6 +764,8 @@ impl TriggersView {
                 .on_click(cx.listener(move |v, _, _, cx| {
                     if let Some(e) = v.editor.as_mut() {
                         f(e);
+                        // Hours hold Every to 168.
+                        e.clamp_numbers(cx);
                     }
                     cx.notify();
                 }))
@@ -760,7 +781,7 @@ impl TriggersView {
             .child(seg("sched-repeat", "Repeats", !e.once, cx, |e| e.once = false));
         let mut form = div().mt(px(16.)).flex().flex_col().gap(px(12.)).child(line("Runs").child(runs));
         if e.once {
-            form = form.child(line("At").child(self.sched_input(t, &e.at, "sched-at", Some(170.), window, cx)).child(dim("local time")));
+            form = form.child(line("At").child(self.pick_button(t, e, Pick::At, cx))).children(self.pick_panel(t, e, &[Pick::At], cx));
         } else if e.custom {
             form = form.child(
                 line("Cron").child(self.sched_input(t, &e.cron, "sched-cron", Some(200.), window, cx)).child(dim("minute hour day month weekday")).child(
@@ -778,9 +799,11 @@ impl TriggersView {
                 .child(seg("sched-hours", "Hours", e.unit == Unit::Hours, cx, |e| e.unit = Unit::Hours))
                 .child(seg("sched-daily", "Daily", e.unit == Unit::Daily, cx, |e| e.unit = Unit::Daily));
             form = form.child(match e.unit {
-                Unit::Daily => line("Every").child(units).child(dim("at")).child(self.sched_input(t, &e.daily_at, "sched-daily-at", Some(80.), window, cx)),
-                _ => line("Every").child(self.sched_input(t, &e.every, "sched-every", Some(56.), window, cx)).child(units),
+                Unit::Daily => line("Every").child(units).child(dim("at")).child(self.pick_button(t, e, Pick::DailyAt, cx)),
+                Unit::Hours => line("Every").child(self.stepper(t, &e.every, "sched-every", 168, window, cx)).child(units),
+                Unit::Minutes => line("Every").child(self.stepper(t, &e.every, "sched-every", 1440, window, cx)).child(units),
             });
+            form = form.children(self.pick_panel(t, e, &[Pick::DailyAt], cx));
             if e.unit != Unit::Daily {
                 let on = e.window;
                 let mut between = line("Between").child(kit::switch(t, "sched-window", on).on_click(cx.listener(move |v, _, _, cx| {
@@ -790,11 +813,11 @@ impl TriggersView {
                     cx.notify();
                 })));
                 between = if on {
-                    between.child(self.sched_input(t, &e.from, "sched-from", Some(80.), window, cx)).child(dim("and")).child(self.sched_input(t, &e.until, "sched-until", Some(80.), window, cx))
+                    between.child(self.pick_button(t, e, Pick::From, cx)).child(dim("and")).child(self.pick_button(t, e, Pick::Until, cx))
                 } else {
                     between.child(dim("Any time of day"))
                 };
-                form = form.child(between);
+                form = form.child(between).children(self.pick_panel(t, e, &[Pick::From, Pick::Until], cx).filter(|_| on));
             }
             let mut days = div().flex().gap(px(4.));
             for (i, letter) in DAY_LETTERS.iter().enumerate() {
@@ -823,16 +846,37 @@ impl TriggersView {
                 );
             }
             form = form.child(line("On").child(days));
-            form = form.child(line("Starts").child(self.sched_input(t, &e.starts, "sched-starts", Some(170.), window, cx)).child(dim("empty = now")));
+            let start_now = e.starts.is_none();
+            let starts = group()
+                .child(seg("sched-start-now", "Now", start_now, cx, |e| {
+                    e.starts = None;
+                    e.open = e.open.filter(|o| o.pick != Pick::Starts);
+                }))
+                .child(seg("sched-start-at", "At a time", !start_now, cx, |e| {
+                    if e.starts.is_none() {
+                        let now = time::now_unix();
+                        let (.., h, _, _) = time::local_parts(now);
+                        e.starts = Some(pick::with_time(now, h, 0) + 3600);
+                    }
+                }));
+            form = form
+                .child(line("Starts").child(starts).when(!start_now, |d| d.child(self.pick_button(t, e, Pick::Starts, cx))))
+                .children(self.pick_panel(t, e, &[Pick::Starts], cx));
             let ends = group()
                 .child(seg("sched-never", "Never", e.ends == Ends::Never, cx, |e| e.ends = Ends::Never))
                 .child(seg("sched-on-date", "On a date", e.ends == Ends::OnDate, cx, |e| e.ends = Ends::OnDate))
                 .child(seg("sched-after", "After runs", e.ends == Ends::AfterRuns, cx, |e| e.ends = Ends::AfterRuns));
             form = form.child(match e.ends {
                 Ends::Never => line("Ends").child(ends),
-                Ends::OnDate => line("Ends").child(ends).child(self.sched_input(t, &e.ends_at, "sched-ends-at", Some(170.), window, cx)),
-                Ends::AfterRuns => line("Ends").child(ends).child(self.sched_input(t, &e.runs, "sched-runs", Some(56.), window, cx)).child(dim("runs")),
+                Ends::OnDate => {
+                    let (.., h, mi, _) = time::local_parts(e.ends_at);
+                    line("Ends").child(ends).child(self.pick_button(t, e, Pick::EndsAt, cx)).child(dim(&format!("at {}", cron::clock(h, mi))))
+                }
+                Ends::AfterRuns => line("Ends").child(ends).child(self.stepper(t, &e.runs, "sched-runs", pick::MAX_RUNS, window, cx)).child(dim("runs")),
             });
+            if e.ends == Ends::OnDate {
+                form = form.children(self.pick_panel(t, e, &[Pick::EndsAt], cx));
+            }
         }
         if e.trigger_id.is_none() {
             let terms = self.agent_terminals(cx);

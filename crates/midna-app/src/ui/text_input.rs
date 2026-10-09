@@ -46,6 +46,8 @@ pub struct TextField {
     /// Wrap at the field's width (growing taller) instead of scrolling sideways, and keep
     /// newlines (⇧↩, pastes).
     pub wrap: bool,
+    /// Take only the digits 0–9 from typing, pastes and IME commits.
+    pub digits: bool,
     last_layout: Option<Shaped>,
     last_line_h: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
@@ -67,6 +69,7 @@ impl TextField {
             placeholder: placeholder.into(),
             secret,
             wrap: false,
+            digits: false,
             last_layout: None,
             last_line_h: px(0.),
             last_bounds: None,
@@ -180,7 +183,13 @@ impl TextField {
     }
 
     fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-        let text = if self.wrap { text.replace("\r\n", "\n").replace('\r', "\n") } else { text.replace(['\r', '\n'], " ") };
+        let text = if self.digits {
+            text.chars().filter(char::is_ascii_digit).collect()
+        } else if self.wrap {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.replace(['\r', '\n'], " ")
+        };
         // An IME commit replaces its marked text; the history was saved when composing began.
         if !self.secret && self.marked.is_none() {
             self.history.record(&self.content, &self.selected, &range, &text);
@@ -580,6 +589,11 @@ impl EntityInputHandler for TextField {
 
     fn replace_and_mark_text_in_range(&mut self, r: Option<Range<usize>>, text: &str, sel: Option<Range<usize>>, _w: &mut Window, cx: &mut Context<Self>) {
         let range = r.as_ref().map(|r| self.range_from_utf16(r)).or(self.marked.clone()).unwrap_or(self.selected.clone());
+        if self.digits {
+            // No composing in a number field: whatever digits come in go straight in.
+            self.marked = None;
+            return self.replace(range, text, cx);
+        }
         if !self.secret && self.marked.is_none() {
             self.history.record(&self.content, &self.selected, &range, "");
         }

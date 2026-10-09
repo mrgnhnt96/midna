@@ -260,9 +260,12 @@ pub struct SettingsWindow {
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
     custom: Vec<midna_proto::NotifyKindInfo>,
-    /// The text fields of editable rows (a kind's title and text, a kind's name), by row key,
-    /// with the value each was last filled from (so a reload doesn't clobber typing).
+    /// The text fields of editable rows (a kind's title and text, a kind's name, a number), by
+    /// row key, with the value each was last filled from (so a reload doesn't clobber typing).
     edits: std::collections::HashMap<String, (LineInput, String)>,
+    /// Each field's typing watch, and the save waiting for the typing to stop.
+    edit_subs: std::collections::HashMap<String, Subscription>,
+    edit_saves: std::collections::HashMap<String, Task<()>>,
     /// "Add a kind": its name.
     new_kind: LineInput,
     /// The sound/image picker that's open (its setting key).
@@ -343,6 +346,8 @@ impl SettingsWindow {
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
+            edit_subs: Default::default(),
+            edit_saves: Default::default(),
             new_kind: LineInput::new(cx, false, "Name, e.g. Deploys"),
             picker: None,
             error: None,
@@ -537,7 +542,13 @@ impl SettingsWindow {
             want.push((format!("label:{}", k.key), k.label.clone(), "Name"));
         }
         want.push(("cleanup.model".into(), self.value("cleanup.model").as_str().unwrap_or("").to_string(), "haiku"));
+        let numbers: Vec<String> = self.entries.iter().filter(|e| self.spec_of(&e.key).is_some_and(|s| matches!(s.ty, SettingKind::Int))).map(|e| e.key.clone()).collect();
+        for k in numbers {
+            want.push((k.clone(), self.value(&k).as_i64().map(|n| n.to_string()).unwrap_or_default(), ""));
+        }
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
+        self.edit_subs.retain(|key, _| want.iter().any(|(k, ..)| k == key));
+        self.edit_saves.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         for (key, value, placeholder) in want {
             match self.edits.get_mut(&key) {
                 Some((input, last)) => {
@@ -547,8 +558,11 @@ impl SettingsWindow {
                     *last = value;
                 }
                 None => {
-                    let input = LineInput::new(cx, false, placeholder);
+                    let number = self.spec_of(&key).is_some_and(|s| matches!(s.ty, SettingKind::Int));
+                    let input = if number { LineInput::digits(cx, placeholder) } else { LineInput::new(cx, false, placeholder) };
                     input.set_text(&value, cx);
+                    let k = key.clone();
+                    self.edit_subs.insert(key.clone(), cx.subscribe(&input.field, move |s, _, _: &crate::ui::text_input::FieldChanged, cx| s.edit_typed(&k, cx)));
                     self.edits.insert(key, (input, value));
                 }
             }
@@ -556,10 +570,59 @@ impl SettingsWindow {
         self.sync_looks(cx);
     }
 
-    /// An editable row's ↩: save its text (a setting, or a kind's name).
-    fn commit_edit(&mut self, key: &str, cx: &mut Context<Self>) {
-        let Some((input, _)) = self.edits.get(key) else { return };
+    /// A number setting's limits.
+    fn range_of(&self, key: &str) -> Option<(i64, i64)> {
+        self.spec_of(key)?.range
+    }
+
+    /// An editable row was typed in: save it once the typing stops. A number below its
+    /// setting's least waits (it may be the start of a bigger one); ↩ holds it to the range.
+    fn edit_typed(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some((input, last)) = self.edits.get(key) else { return };
         let text = input.text(cx).trim().to_string();
+        if text == *last {
+            self.edit_saves.remove(key);
+            return;
+        }
+        if self.spec_of(key).is_some_and(|s| matches!(s.ty, SettingKind::Int)) {
+            let low = self.range_of(key).map_or(0, |r| r.0);
+            if text.parse::<i64>().map_or(true, |n| n < low) {
+                self.edit_saves.remove(key);
+                return;
+            }
+        }
+        let k = key.to_string();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(600)).await;
+            let _ = this.update(cx, |s, cx| {
+                s.edit_saves.remove(&k);
+                s.commit_edit(&k, cx);
+            });
+        });
+        self.edit_saves.insert(key.to_string(), task);
+    }
+
+    /// Save an editable row's text (a setting, or a kind's name): as you type, or at once on ↩.
+    fn commit_edit(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.edit_saves.remove(key);
+        let Some((input, last)) = self.edits.get(key) else { return };
+        let text = input.text(cx).trim().to_string();
+        if self.spec_of(key).is_some_and(|s| matches!(s.ty, SettingKind::Int)) {
+            // held to the setting's range; an empty field goes back to what's saved
+            let Ok(n) = text.parse::<i64>() else {
+                let last = last.clone();
+                input.set_text(&last, cx);
+                return;
+            };
+            let n = self.range_of(key).map_or(n, |(lo, hi)| n.clamp(lo, hi));
+            if n.to_string() != text {
+                input.set_text(&n.to_string(), cx);
+            }
+            if self.value(key).as_i64() != Some(n) {
+                self.set(key, json!(n), cx);
+            }
+            return;
+        }
         match key.strip_prefix("label:") {
             Some(kind) if !text.is_empty() => self.kind_call("notify.kinds.add", json!({ "key": kind, "label": text, "replace": true }), format!("midna notify kinds update {kind} --label \"{text}\""), cx),
             Some(_) => {}
@@ -755,9 +818,12 @@ enum Control {
     Image { key: String, cat: Option<String> },
     /// A kind's `notify.color.<kind>`: theme colors, a few more, and a custom one if set.
     Color { key: String, current: String },
-    /// A text field (`edits`), saved on ↩: a setting, or `label:<kind>` (a kind's name), with
-    /// buttons after it.
+    /// A text field (`edits`), saved as you type: a setting, or `label:<kind>` (a kind's name),
+    /// with buttons after it.
     Edit { key: String, actions: Vec<(String, Act)> },
+    /// A number setting: its presets, if it has any, then a digits-only field (`edits`) held to
+    /// the setting's range and saved as you type.
+    Number { key: String, presets: Vec<(String, String)>, current: String },
     /// "Add a kind": a name field and Add.
     AddKind,
     /// `theme` / `theme.dark` / `theme.light`: swatch chips for every theme (customs too).
@@ -829,6 +895,10 @@ impl RowSpec {
         let mut out = vec![];
         match &self.control {
             Control::Seg { options, .. } => out.extend(options.iter().map(|(_, l)| ("Option", l.clone()))),
+            Control::Number { presets, current, .. } => {
+                out.extend(presets.iter().map(|(_, l)| ("Option", l.clone())));
+                out.push(("Value", current.clone()));
+            }
             Control::Text { text, action, .. } => {
                 out.push(("Value", text.clone()));
                 if let Some((label, ..)) = action {
@@ -916,20 +986,6 @@ fn presets(key: &str) -> Option<&'static [(i64, &'static str)]> {
         "needs_you.expire_hours" => &[(0, "Never"), (4, "4 h"), (12, "12 h"), (24, "24 h"), (72, "3 days")],
         _ => return None,
     })
-}
-
-/// A number setting's value that isn't one of its presets, in the presets' unit.
-fn preset_label(key: &str, v: i64) -> String {
-    let unit = key.rsplit('_').next().unwrap_or("");
-    match unit {
-        "battery" => format!("{v}%"),
-        "mins" => format!("{v} min"),
-        "hours" if v > 0 && v % 24 == 0 => format!("{} days", v / 24),
-        "hours" => format!("{v} h"),
-        "secs" if v > 0 && v % 3600 == 0 => format!("{} h", v / 3600),
-        "secs" if v > 0 && v % 60 == 0 => format!("{} min", v / 60),
-        _ => format!("{v} s"),
-    }
 }
 
 pub(crate) fn label_for(key: &str) -> String {
@@ -1165,6 +1221,7 @@ impl SettingsWindow {
                     off_text: if allow { "ask first" } else { "off" },
                 }
             }
+            SettingKind::Int => Control::Number { key: key.into(), presets: vec![], current: text.clone() },
             SettingKind::PathList => Control::Folders { key: key.into(), list: value.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default() },
             _ => Control::Text { dot: None, text: if text.is_empty() { "not set".into() } else { text.clone() }, color: cx_dim_placeholder(), action: None },
         };
@@ -1308,12 +1365,9 @@ impl SettingsWindow {
         }
         if let Some(choices) = presets(key) {
             let current = self.value(key).as_i64().unwrap_or(0);
-            let mut options: Vec<(String, String)> = choices.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
-            // a value set some other way (the CLI, an agent) shows as one more choice
-            if !choices.iter().any(|(v, _)| *v == current) {
-                options.push((current.to_string(), preset_label(key, current)));
-            }
-            r.control = Control::Seg { key: key.into(), options, current: current.to_string() };
+            // any other value goes in the field after them
+            let presets = choices.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+            r.control = Control::Number { key: key.into(), presets, current: current.to_string() };
         }
         match key {
             "notify.turn_done_min_secs" | "notify.when_app_closed" if self.notify_off() => r.note = off("notifications are off"),
@@ -2580,6 +2634,7 @@ impl SettingsWindow {
         let wide = match &r.control {
             Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks | Control::Folders { .. } | Control::Chips { .. } => true,
             Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
+            Control::Number { presets, .. } => presets.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() + 14 > 60,
             _ => false,
         };
         // the hours track takes the control column's whole width
@@ -2749,54 +2804,11 @@ impl SettingsWindow {
         }
     }
 
-    /// A text field row (`Control::Edit`): ↩ saves, esc puts back what's saved.
+    /// A text field row (`Control::Edit`): saved as you type (↩ saves at once), esc puts back
+    /// what's saved.
     fn edit_control(&self, t: &Theme, key: String, actions: Vec<(String, Act)>, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some((input, saved)) = self.edits.get(&key) else { return div().into_any_element() };
-        let changed = input.text(cx) != *saved;
-        let k = key.clone();
-        let mut row = div().flex().items_center().gap(px(6.)).w(px(320.)).child(
-            input
-                .render(t, SharedString::from(format!("edit-{key}")), window)
-                .h(px(28.))
-                .flex_1()
-                .min_w_0()
-                .on_key_down(cx.listener(move |s, ev: &KeyDownEvent, _, cx| {
-                    let Some((input, saved)) = s.edits.get_mut(&k) else { return };
-                    match input.on_key(ev, cx) {
-                        KeyOutcome::Submit => {
-                            cx.stop_propagation();
-                            s.commit_edit(&k, cx);
-                        }
-                        KeyOutcome::Cancel => {
-                            cx.stop_propagation();
-                            let saved = saved.clone();
-                            input.set_text(&saved, cx);
-                        }
-                        _ => {}
-                    }
-                    cx.notify();
-                })),
-        );
-        if changed {
-            let k = key.clone();
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!("edit-save-{key}")))
-                    .flex_none()
-                    .h(px(26.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(7.))
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
-                    .bg(t.accent)
-                    .text_color(t.accent_fg)
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |s, _, _, cx| s.commit_edit(&k, cx)))
-                    .child("Save"),
-            );
-        }
+        let Some(field) = self.edit_field(t, &key, window, cx) else { return div().into_any_element() };
+        let mut row = div().flex().items_center().gap(px(6.)).w(px(320.)).child(field.h(px(28.)).flex_1().min_w_0());
         for (i, (label, act)) in actions.into_iter().enumerate() {
             row = row.child(
                 div()
@@ -2817,6 +2829,64 @@ impl SettingsWindow {
                     .on_click(cx.listener(move |s, _, _, cx| s.run(&act, cx)))
                     .child(label),
             );
+        }
+        row.into_any_element()
+    }
+
+    /// An editable row's field: ↩ saves now, esc puts back what's saved.
+    fn edit_field(&self, t: &Theme, key: &str, window: &Window, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let (input, _) = self.edits.get(key)?;
+        let k = key.to_string();
+        Some(input.render(t, SharedString::from(format!("edit-{key}")), window).on_key_down(cx.listener(move |s, ev: &KeyDownEvent, _, cx| {
+            let Some((input, saved)) = s.edits.get_mut(&k) else { return };
+            match input.on_key(ev, cx) {
+                KeyOutcome::Submit => {
+                    cx.stop_propagation();
+                    s.commit_edit(&k, cx);
+                }
+                KeyOutcome::Cancel => {
+                    cx.stop_propagation();
+                    let saved = saved.clone();
+                    input.set_text(&saved, cx);
+                    s.edit_saves.remove(&k);
+                }
+                _ => {}
+            }
+            cx.notify();
+        })))
+    }
+
+    /// A number setting (`Control::Number`): its presets, then a digits-only field in the
+    /// setting's unit. A number outside the range shows the range; ↩ holds it to it.
+    #[allow(clippy::too_many_arguments)]
+    fn number_control(&self, t: &Theme, key: String, presets: Vec<(String, String)>, current: String, words: &[String], id: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let typed = self.edits.get(&key).map(|(input, _)| input.text(cx).trim().to_string()).unwrap_or_default();
+        let range = self.range_of(&key);
+        let outside = range.filter(|(lo, hi)| typed.parse::<i64>().map_or(true, |n| n < *lo || n > *hi));
+        let unit = match key.rsplit('_').next().unwrap_or("") {
+            "battery" => "%",
+            "mins" => "min",
+            "hours" => "h",
+            "secs" => "s",
+            _ => "",
+        };
+        let mut row = div().flex().flex_wrap().items_center().justify_end().gap(px(6.));
+        if !presets.is_empty() {
+            row = row.child(self.control(t, Control::Seg { key: key.clone(), options: presets, current }, words, id, window, cx));
+        }
+        if let Some(field) = self.edit_field(t, &key, window, cx) {
+            let field = field.h(px(28.)).w(px(72.)).when(outside.is_some(), |d| d.border_color(t.need));
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(field)
+                    .when(!unit.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.dim).child(unit))),
+            );
+        }
+        if let Some((lo, hi)) = outside {
+            row = row.child(div().text_size(px(11.)).text_color(t.need).child(format!("{lo}–{hi}")));
         }
         row.into_any_element()
     }
@@ -2905,6 +2975,7 @@ impl SettingsWindow {
         match control {
             Control::Color { key, current } => self.color_control(t, key, current, cx),
             Control::Edit { key, actions } => self.edit_control(t, key, actions, window, cx),
+            Control::Number { key, presets, current } => self.number_control(t, key, presets, current, words, id, window, cx),
             Control::AddKind => self.add_kind_control(t, window, cx),
             // many choices: a menu instead of a row of buttons
             Control::Seg { key, options, current } if options.len() > 5 => self.choice_menu(t, key, options, current, cx),
@@ -3221,7 +3292,7 @@ fn snapshot(handle: WindowHandle<SettingsWindow>, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
-    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, preset_label, presets, search};
+    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, presets, search};
     use midna_proto::notify::{CATEGORIES, EFFECTS};
     use midna_proto::settings::{SETTINGS, setting};
 
@@ -3307,14 +3378,6 @@ mod tests {
             // the default is one of them, so a fresh install shows no extra choice
             assert!(choices.iter().any(|(v, _)| Some(*v) == spec.default.to_json().as_i64()), "{key}: default isn't a preset");
         }
-        // a value set from the CLI shows in the presets' unit
-        assert_eq!(preset_label("agents.restart_idle_secs", 45), "45 s");
-        assert_eq!(preset_label("policy.request_timeout_secs", 120), "2 min");
-        assert_eq!(preset_label("policy.request_timeout_secs", 7200), "2 h");
-        assert_eq!(preset_label("needs_you.expire_hours", 48), "2 days");
-        assert_eq!(preset_label("needs_you.expire_hours", 6), "6 h");
-        assert_eq!(preset_label("keep_awake.linger_mins", 20), "20 min");
-        assert_eq!(preset_label("keep_awake.min_battery", 40), "40%");
     }
 
     #[test]
