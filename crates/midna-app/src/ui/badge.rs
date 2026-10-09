@@ -23,7 +23,8 @@
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
 //! `notify.badge`: `background` (hidden only while another midna build is the app in front),
-//! `always`, or `off` (in-app cards show instead, `ui/toast.rs`).
+//! `always`, or `off` (in-app cards show instead, `ui/toast.rs`). `notify.badge.idle`: it stays
+//! out with nothing waiting (counting 0) instead of going away.
 //!
 //! Within midna (this build in front), the badge springs from its screen corner onto the front
 //! window's top right and follows it there (laid out as top right, whatever its corner; it can't
@@ -426,6 +427,8 @@ pub struct Badge {
     /// `notify.badge.inset_x` / `inset_y`: the badge's distance from its corner's edges.
     inset: (f64, f64),
     sharing: Sharing,
+    /// `notify.badge.idle`: shown with nothing waiting too.
+    idle: bool,
     /// The screen is being shared (`screen_watched`), as of `watched_at`.
     shared: bool,
     watched_at: Option<Instant>,
@@ -633,6 +636,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         Some("show") => Sharing::Show,
         _ => Sharing::Hide,
     };
+    let idle = m.settings.get("notify.badge.idle").and_then(Value::as_bool).unwrap_or(false);
     let flag = |k: &str| m.settings.get(k).and_then(Value::as_bool).unwrap_or(true);
     let replace = flag("needs_you.replace");
     // `needs_you.clear_failed_on_run`: a terminal working again since a failure clears it.
@@ -687,6 +691,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         b.held.retain(|w| !(w.category == "failed" && w.session.as_ref().and_then(|s| working.get(s)).is_some_and(|since| *since > w.at)));
         b.mode = mode;
         b.sharing = sharing;
+        b.idle = idle;
         b.colors = colors;
         // A list fetched just before an item came in doesn't drop it (it'd count down, then up).
         let fresh: Vec<Waiting> = b.needs.iter().filter(|w| b.pending.iter().any(|(id, at)| *id == w.id && at.elapsed() < PENDING) && !needs.iter().any(|n| n.id == w.id)).cloned().collect();
@@ -886,6 +891,7 @@ impl Badge {
             free: false,
             inset: (PAD as f64, PAD as f64),
             sharing: Sharing::Hide,
+            idle: false,
             shared: false,
             watched_at: None,
             colors: HashMap::new(),
@@ -1772,7 +1778,7 @@ impl Badge {
             self.menu = false;
             changed = true;
         }
-        let want = enabled && (self.count > 0 || !self.lines.is_empty() || self.list || self.menu);
+        let want = enabled && (self.idle || self.count > 0 || !self.lines.is_empty() || self.list || self.menu);
         if want != self.shown {
             self.shown = want;
             crate::lifecycle::log(&format!(

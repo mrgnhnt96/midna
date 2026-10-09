@@ -691,6 +691,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "How far the badge sits from the top or bottom of the screen (below the menu bar, above the Dock), in points.") },
     s!("notify.badge.sharing", en(&["hide", "count", "show"]), S("hide"), "notifications", false,
         "While your screen is being shared or recorded: hide = no badge until it stops (what came in is counted; the lines aren't replayed), count = the badge and its number only, no lines and no text, show = as usual. midna asks macOS whether something is watching the screen, so it covers Zoom, Meet, Teams, screen recording and Screen Sharing."),
+    s!("notify.badge.idle", SettingKind::Bool, B(false), "notifications", false,
+        "Keep the floating badge out when nothing is waiting (it shows 0) instead of hiding it until something comes in. notify.badge off and screen sharing still hide it."),
     s!("notify.when_app_closed", SettingKind::Bool, B(true), "notifications", false,
         "When the midna app isn't running, midnad posts the notification itself (shown as a system notification; clicking it doesn't open midna)."),
     s!("keys.command_bar", KB, S("cmd-k"), "keys", false, "Open the command bar."),
