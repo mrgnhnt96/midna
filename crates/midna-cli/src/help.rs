@@ -544,7 +544,8 @@ pub static VERBS: &[Verb] = &[
                 keep-awake hours <start> <end> [days]   (8am 6pm weekdays)\n       \
                 keep-awake days <days> | day <days> <9am-3pm|off|all day|default>\n       \
                 keep-awake today off|on|until <time>|clear\n       \
-                keep-awake mode with_work|always | battery <percent> | linger <minutes>",
+                keep-awake mode with_work|always | battery <percent> | linger <minutes>\n       \
+                keep-awake wake [on|off|setup|remove]   (wake the Mac for work scheduled inside the hours)",
         summary: "keep the Mac from idle-sleeping during work hours while agents have work",
         details: "Whether midnad holds its power assertion now, why or why not, and when the hours next open or\n\
                   close. Inside the hours (keep_awake.start/end/days, per-day keep_awake.hours) it holds one while\n\
@@ -552,8 +553,12 @@ pub static VERBS: &[Verb] = &[
                   wakeup due (mode always: the whole time). Only idle sleep: the display sleeps and the lid still\n\
                   sleeps the Mac. On battery it lets go below keep_awake.min_battery (again 5 points above, or on\n\
                   power). `today` replaces the rest of today (off, or on until a time) and ends at midnight.\n\
-                  Times: 8am, 5:30pm, 17:30. Days: weekdays, weekends, daily, mon-fri, mon,wed,fri.",
-        methods: &["keep_awake.status", "keep_awake.set"],
+                  Times: 8am, 5:30pm, 17:30. Days: weekdays, weekends, daily, mon-fri, mon,wed,fri.\n\
+                  `wake` (keep_awake.wake) also wakes a sleeping Mac 2 minutes before the next work due inside the\n\
+                  hours (a schedule trigger, a message queued --at a time, an agent's wakeup) and holds it until the\n\
+                  work runs. `wake setup` asks for an admin password once to install a helper that can only schedule\n\
+                  midna's own wakes; `wake remove` takes it out. A closed lid keeps a laptop asleep.",
+        methods: &["keep_awake.status", "keep_awake.set", "keep_awake.wake_setup"],
     },
     Verb {
         name: "usage",

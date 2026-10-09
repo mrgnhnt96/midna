@@ -153,7 +153,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Agents,
         "Keep the Mac awake",
-        &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.days", "keep_awake.min_battery", "keep_awake.linger_mins"],
+        &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.days", "keep_awake.min_battery", "keep_awake.linger_mins", "keep_awake.wake"],
     ),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
@@ -721,6 +721,8 @@ enum Act {
     TestKind(String),
     /// `keep_awake.set {today}`: off for the rest of today, or back to the schedule.
     KeepAwakeToday(&'static str),
+    /// `keep_awake.wake_setup`: install the admin grant (macOS asks for a password).
+    WakeSetup,
 }
 
 struct RowSpec {
@@ -845,6 +847,7 @@ fn label_for(key: &str) -> String {
         "keep_awake.hours" => "Days with their own hours",
         "keep_awake.min_battery" => "Stop on battery below",
         "keep_awake.linger_mins" => "Keep holding after the work",
+        "keep_awake.wake" => "Wake the Mac for scheduled work",
         "agents.system_hint" => "Tell agents they're in midna",
         "policy.default" => "When no rule matches",
         "policy.request_timeout_secs" => "Approval timeout (seconds)",
@@ -1179,6 +1182,20 @@ impl SettingsWindow {
                 r.cli = "midna keep-awake hours <start> <end>".into();
             }
             "keep_awake.days" => r.control = Control::Days,
+            "keep_awake.wake" => {
+                let w = &self.keep_awake["wake"];
+                if let Some(line) = w["line"].as_str().filter(|_| r.note.is_none()) {
+                    let color = if w["error"].is_string() { t.need } else { Hsla::default() };
+                    r.note = Some((w["error"].as_str().map_or(line.to_string(), |e| format!("{line}. {e}")), color));
+                }
+                if w["asking"] == true {
+                    r.control = Control::Text { dot: Some(t.need), text: "Waiting for your password…".into(), color: t.need, action: None };
+                } else if w["ready"] != true {
+                    // Off until the grant is in: the button installs it and turns this on.
+                    r.control = Control::Text { dot: None, text: "Needs your password once".into(), color: t.dim, action: Some(("Set up…".into(), Act::WakeSetup, true)) };
+                    r.cli = "midna keep-awake wake setup".into();
+                }
+            }
             "keep_awake.min_battery" | "keep_awake.linger_mins" => {
                 let choices: &[(i64, &str)] = if key == "keep_awake.min_battery" {
                     &[(0, "No limit"), (10, "10%"), (20, "20%"), (30, "30%"), (50, "50%")]
@@ -2536,6 +2553,7 @@ impl SettingsWindow {
             Act::RemoveKind(k) => self.kind_call("notify.kinds.remove", json!({ "key": k }), format!("midna notify kinds rm {k}"), cx),
             Act::TestKind(k) => self.test_notification(k.clone(), cx),
             Act::KeepAwakeToday(v) => self.kind_call("keep_awake.set", json!({ "today": v }), format!("midna keep-awake today {v}"), cx),
+            Act::WakeSetup => self.kind_call("keep_awake.wake_setup", json!({}), "midna keep-awake wake setup".into(), cx),
         }
     }
 

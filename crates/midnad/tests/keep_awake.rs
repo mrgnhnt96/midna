@@ -128,3 +128,90 @@ fn today_overrides_and_per_day_hours() {
     let e = call(&mut h, "settings.set", json!({ "key": "keep_awake.start", "value": "8:30 PM" }));
     assert_eq!(e["value"], "20:30");
 }
+
+/// keep_awake.wake: once the (fake) grant is in, midnad keeps one wake scheduled 2 minutes
+/// before the next work due inside the hours, skipping runs outside them, and moves or cancels
+/// it as the work changes.
+#[test]
+fn wakes_the_mac_before_work_due_inside_the_hours() {
+    let d = TestDaemon::start();
+    let dm = d.daemon();
+    midnad::wake::set_fake(&dm);
+    let mut h = d.human();
+    // Hours open 3 to 5 hours from now (local, whole hours), every day.
+    let now = time::now_unix();
+    let (y, mo, day, hr, ..) = time::local_parts(now);
+    let opens = time::local_unix(y, mo, day, hr, 0) + 3 * 3600;
+    let hm = |t: i64| {
+        let (.., h, m, _) = time::local_parts(t);
+        format!("{h:02}:{m:02}")
+    };
+    call(&mut h, "keep_awake.set", json!({ "on": true, "start": hm(opens), "end": hm(opens + 2 * 3600), "days": "daily", "wake": true }));
+    let s = status(&mut h);
+    assert_eq!((s["wake"]["ready"].as_bool(), s["settings"]["wake"].as_bool()), (Some(false), Some(true)), "{s}");
+    assert!(s["wake"]["line"].as_str().unwrap().contains("wake setup"), "{s}");
+
+    // The grant is the human's to give.
+    let mut a = d.agent(None);
+    let e = call_err(&mut a, "keep_awake.wake_setup", json!({}));
+    assert_eq!(e.code, midna_proto::error::HUMAN_ONLY, "{e:?}");
+    let s = call(&mut h, "keep_awake.wake_setup", json!({}));
+    assert_eq!(s["wake"]["ready"], true, "{s}");
+    assert!(s["wake"]["next"].is_null() && s["wake"]["line"] == "Nothing scheduled inside the hours to wake for", "{s}");
+
+    // An hourly trigger: its first run inside the hours is when they open.
+    let t = call(&mut h, "trigger.add", json!({ "name": "Morning kickoff", "source": "local", "event": "schedule", "filter": { "cron": "@hourly" }, "action": { "kind": "attention", "message": "go" }, "enabled": true }));
+    let s = status(&mut h);
+    assert_eq!(s["wake"]["next"].as_str().and_then(time::parse_rfc3339), Some(opens - 120), "{s}");
+    assert!(s["wake"]["reason"].as_str().unwrap().starts_with("Morning kickoff at "), "{s}");
+    assert!(s["wake"]["line"].as_str().unwrap().starts_with("Waking the Mac "), "{s}");
+    let date = |t: i64| {
+        let (y, mo, d, h, mi, _) = time::local_parts(t);
+        format!("{mo:02}/{d:02}/{:02} {h:02}:{mi:02}:00", y % 100)
+    };
+    assert_eq!(midnad::wake::fake_calls(&dm), vec!["setup".to_string(), format!("wake {}", date(opens - 120))]);
+    status(&mut h);
+    assert_eq!(midnad::wake::fake_calls(&dm).len(), 2, "scheduled once");
+
+    // A message queued for half an hour after they open doesn't move it; disabling the trigger does.
+    let sid = open_sh(&mut h);
+    call(&mut h, "queue.add", json!({ "session": sid, "text": "echo later", "when": { "kind": "at", "at": time::format_unix(opens + 1800) } }));
+    call(&mut h, "trigger.set_enabled", json!({ "id": t["id"], "enabled": false }));
+    let s = status(&mut h);
+    assert_eq!(s["wake"]["next"].as_str().and_then(time::parse_rfc3339), Some(opens + 1800 - 120), "{s}");
+    let calls = midnad::wake::fake_calls(&dm);
+    assert_eq!(calls[2..], [format!("cancel {}", date(opens - 120)), format!("wake {}", date(opens + 1800 - 120))]);
+
+    // Turning it off cancels; removing the grant turns it off.
+    call(&mut h, "keep_awake.set", json!({ "wake": false }));
+    assert!(status(&mut h)["wake"]["next"].is_null());
+    assert_eq!(midnad::wake::fake_calls(&dm).last().unwrap(), &format!("cancel {}", date(opens + 1800 - 120)));
+    let s = call(&mut h, "keep_awake.wake_setup", json!({ "remove": true }));
+    assert_eq!((s["wake"]["ready"].as_bool(), s["settings"]["wake"].as_bool()), (Some(false), Some(false)), "{s}");
+}
+
+/// Woken for work due as the hours open, keep-awake holds before they do, so the work runs.
+#[test]
+fn holds_from_the_wake_until_work_due_as_the_hours_open() {
+    let d = TestDaemon::start();
+    midnad::wake::set_fake(&d.daemon());
+    let mut h = d.human();
+    call(&mut h, "keep_awake.wake_setup", json!({}));
+    // Due 1-2 minutes from now (inside the wake's lead: the Mac is awake for it), which is also
+    // when the hours open.
+    let due = (time::now_unix() / 60 + 2) * 60;
+    let (.., hr, mi, _) = time::local_parts(due);
+    let (.., end_h, end_m, _) = time::local_parts(due + 3600);
+    call(&mut h, "keep_awake.set", json!({ "on": true, "start": format!("{hr:02}:{mi:02}"), "end": format!("{end_h:02}:{end_m:02}"), "days": "daily", "linger_mins": 0 }));
+    let s = status(&mut h);
+    assert_eq!((s["held"].as_bool(), s["reason"].as_str()), (Some(false), Some("outside_hours")), "{s}");
+    call(&mut h, "trigger.add", json!({ "name": "Kickoff", "source": "local", "event": "schedule", "filter": { "cron": format!("{mi} {hr} * * *") }, "action": { "kind": "attention", "message": "go" }, "enabled": true }));
+    let s = status(&mut h);
+    assert_eq!((s["held"].as_bool(), s["reason"].as_str()), (Some(true), Some("work")), "{s}");
+    assert_eq!(s["window_open"], false);
+    assert!(s["wake"]["line"].as_str().unwrap().starts_with("Awake for Kickoff at "), "{s}");
+
+    // Without keep_awake.wake it waits for the hours as before.
+    call(&mut h, "keep_awake.set", json!({ "wake": false }));
+    assert_eq!(status(&mut h)["reason"], "outside_hours");
+}

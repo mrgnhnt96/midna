@@ -285,7 +285,12 @@ const TOPICS: &[(&str, &str)] = &[
         after; mode always holds the whole time. On battery below keep_awake.min_battery it lets go, and takes it again 5 \
         points above or on power. `today` (off | on | until 5pm | clear) replaces the rest of today and ends at midnight. \
         Status says held, reason (work, always, disabled, outside_hours, day_off, today_off, battery_low, no_work, failed), \
-        next_on / next_off and what work keeps it; event keep_awake.changed fires when that changes."),
+        next_on / next_off and what work keeps it; event keep_awake.changed fires when that changes. keep_awake.wake \
+        (`midna keep-awake wake on`) also wakes a sleeping Mac 2 minutes before the next work due inside the hours (a schedule \
+        trigger, a message queued for a time, an agent's wakeup) and holds it until that work runs; status.wake says what it \
+        wakes for and when. It needs a one-time admin grant (keep_awake.wake_setup, `midna keep-awake wake setup`, human \
+        only): a root-owned helper that can only schedule or cancel this midna's own wakes, run through sudo without a \
+        password. A closed lid still keeps a laptop asleep."),
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),

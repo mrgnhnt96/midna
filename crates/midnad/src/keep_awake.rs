@@ -41,8 +41,9 @@ struct Inner {
     last_work: Option<Instant>,
     /// macOS refused the assertion: its error, until it is taken.
     error: Option<i32>,
-    /// What the last decision was, so `keep_awake.changed` fires on a change only.
-    last: Option<(bool, KeepAwakeReason)>,
+    /// What the last decision was (and the scheduled wake), so `keep_awake.changed` fires on a
+    /// change only.
+    last: Option<(bool, KeepAwakeReason, Option<Timestamp>)>,
     /// Tests: the battery to report instead of IOKit's.
     fake_battery: Option<Option<Battery>>,
 }
@@ -109,6 +110,7 @@ fn settings(st: &crate::state::State) -> KeepAwakeSettings {
         hours,
         min_battery: st.setting_i64("keep_awake.min_battery"),
         linger_mins: st.setting_i64("keep_awake.linger_mins"),
+        wake: st.setting_bool("keep_awake.wake"),
     }
 }
 
@@ -193,7 +195,7 @@ fn decide(i: Inputs) -> (bool, KeepAwakeReason) {
 }
 
 /// `9 AM`, `tomorrow 9 AM`, `Mon 9 AM`.
-fn when(t: i64, now: i64) -> String {
+pub(crate) fn when(t: i64, now: i64) -> String {
     let (.., h, mi, wd) = time::local_parts(t);
     let at = cron::clock(h, mi);
     let day = (time::local_day_start(t) - time::local_day_start(now)) / 86_400;
@@ -225,7 +227,15 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
     let p = plan(&s);
     let window = ka::open_at(&p, today.as_ref(), now);
     let change = ka::next_change(&p, today.as_ref(), now);
-    let work = if s.enabled && window.is_ok() { work(d, now, change.unwrap_or(now + FAR_SECS)) } else { vec![] };
+    // keep_awake.wake: the next work due inside the hours. Close to it (the Mac woke for it)
+    // keep-awake holds even before the hours open, so it can run.
+    let due = if s.enabled && s.wake { crate::wake::next_due(d, &p, today.as_ref(), now) } else { None };
+    let woke = due.as_ref().map(|(t, _)| *t).filter(|t| t - now <= crate::wake::LEAD + 60);
+    let (hold, horizon) = match (window, woke) {
+        (Err(_), Some(t)) => (Ok(()), t + 60),
+        _ => (window, change.unwrap_or(now + FAR_SECS)),
+    };
+    let work = if s.enabled && hold.is_ok() { work(d, now, horizon) } else { vec![] };
 
     let mut i = d.keep_awake.inner();
     if i.battery_at.is_none_or(|at| at.elapsed() >= BATTERY_EVERY) {
@@ -243,7 +253,7 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
     }
     let linger = Duration::from_secs(s.linger_mins.max(0) as u64 * 60);
     let lingering = i.last_work.is_some_and(|at| at.elapsed() < linger);
-    let inputs = Inputs { enabled: s.enabled, always: s.mode == "always", window, battery_ok, working: !work.is_empty(), lingering };
+    let inputs = Inputs { enabled: s.enabled, always: s.mode == "always", window: hold, battery_ok, working: !work.is_empty(), lingering };
     let (want, mut reason) = decide(inputs);
     // A handoff is about to exec: don't take it again in between (the new image will).
     let handing_off = d.upgrading.load(Ordering::Relaxed);
@@ -269,11 +279,14 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
         reason = KeepAwakeReason::Failed;
     }
     let lingered = i.last_work.map(|at| at.elapsed());
-    let changed = i.last != Some((held, reason));
-    i.last = Some((held, reason));
     let error = i.error;
     let held_since = i.held_since;
     let low = i.gate.low;
+    drop(i);
+    let wake = crate::wake::sync(d, s.enabled && s.wake && battery_ok, due.as_ref(), now);
+    let mut i = d.keep_awake.inner();
+    let changed = i.last != Some((held, reason, wake.next.clone()));
+    i.last = Some((held, reason, wake.next.clone()));
     drop(i);
 
     let schedule = p.describe();
@@ -313,6 +326,7 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
         schedule,
         settings: s,
         today: today.map(|t| KeepAwakeToday { line: t.words(), date: t.date, on: t.on, until: t.until }),
+        wake,
     };
     if changed || force {
         d.emit(kinds::KEEP_AWAKE_CHANGED, Actor::system(), None, None, serde_json::to_value(&status).unwrap_or_default());
@@ -363,6 +377,7 @@ pub fn set(d: &Daemon, ctx: &crate::rpc::Ctx, p: KeepAwakeSetParams) -> crate::r
     put("keep_awake.hours", hours)?;
     put("keep_awake.min_battery", p.min_battery)?;
     put("keep_awake.linger_mins", p.linger_mins)?;
+    put("keep_awake.wake", p.wake.map(Value::Bool))?;
     let today = match p.today {
         Some(v) => Some(ka::parse_today(&v, time::now_unix()).map_err(|e| bad(format!("today: {e}")))?),
         None => None,

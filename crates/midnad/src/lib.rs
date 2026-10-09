@@ -39,6 +39,7 @@ pub mod term;
 pub mod trust;
 pub mod upgrade;
 pub mod usage;
+pub mod wake;
 pub mod webhooks;
 
 pub use daemon::Config;

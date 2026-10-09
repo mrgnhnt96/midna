@@ -347,6 +347,9 @@ pub fn keep_awake(v: &Value) {
     if let Some(since) = v["held_since"].as_str().and_then(midna_proto::time::parse_rfc3339) {
         println!("  {:<8} holding since {}", "held", at12(since));
     }
+    if let Some(line) = v["wake"]["line"].as_str() {
+        println!("  {:<8} {line}", "wake");
+    }
 }
 
 pub fn usage(v: &Value) {

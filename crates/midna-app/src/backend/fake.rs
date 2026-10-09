@@ -131,6 +131,7 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("keep_awake.hours", json!([]), "days with their own hours", false),
         e("keep_awake.min_battery", json!(20), "stop on battery below", false),
         e("keep_awake.linger_mins", json!(5), "keep holding after the work", false),
+        e("keep_awake.wake", json!(false), "wake the Mac for scheduled work", false),
     ];
     // every shortcut, so the Shortcuts tab and tooltips match the daemon
     let keys = midna_proto::settings::SETTINGS.iter().filter(|s| matches!(s.ty, midna_proto::settings::SettingKind::Keybinding));

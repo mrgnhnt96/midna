@@ -909,6 +909,29 @@ fn keep_awake(a: &Args, out: OutFn) -> Res {
         "mode" => Some(json!({ "mode": a.need(2, "mode (with_work or always)")? })),
         "battery" => Some(json!({ "min_battery": a.need(2, "percent")? })),
         "linger" => Some(json!({ "linger_mins": a.need(2, "minutes")? })),
+        "wake" => match a.pos.get(2).map(String::as_str).unwrap_or("status") {
+            "status" => None,
+            "on" => Some(json!({ "wake": true })),
+            "off" => Some(json!({ "wake": false })),
+            "setup" | "remove" => {
+                // macOS asks for an administrator's password; wait (up to 5 minutes) for an answer.
+                let mut v = call("keep_awake.wake_setup", json!({ "remove": a.pos[2] == "remove" }))?;
+                if v["wake"]["asking"] == true {
+                    eprintln!("midna: answer macOS's password dialog…");
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                while v["wake"]["asking"] == true && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    v = call("keep_awake.status", json!({}))?;
+                }
+                out(&v, &print::keep_awake);
+                if let Some(e) = v["wake"]["error"].as_str() {
+                    return Err(Fail::Other(e.to_string()));
+                }
+                return Ok(());
+            }
+            other => return Err(Fail::Usage(format!("unknown keep-awake wake subcommand `{other}` (on, off, setup or remove)"))),
+        },
         other => return Err(Fail::Usage(format!("unknown keep-awake subcommand `{other}`"))),
     };
     let v = match params {

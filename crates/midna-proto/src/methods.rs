@@ -2294,6 +2294,9 @@ pub struct KeepAwakeSettings {
     pub min_battery: i64,
     /// `keep_awake.linger_mins`.
     pub linger_mins: i64,
+    /// `keep_awake.wake`: wake the Mac for work scheduled inside the hours.
+    #[serde(default)]
+    pub wake: bool,
 }
 
 /// The one-off override for today (ends by itself at local midnight).
@@ -2347,6 +2350,39 @@ pub struct KeepAwakeStatus {
     pub settings: KeepAwakeSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub today: Option<KeepAwakeToday>,
+    /// Waking the Mac for scheduled work (`keep_awake.wake`).
+    #[serde(default)]
+    pub wake: KeepAwakeWake,
+}
+
+/// The scheduled wake: midnad asks macOS to wake the Mac a little before the next work due
+/// inside the hours (a schedule trigger, a message queued for a time, an agent's wakeup).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeWake {
+    /// The one-time admin grant is installed (`keep_awake.wake_setup`), so midnad may schedule wakes.
+    pub ready: bool,
+    /// `keep_awake.wake_setup` is waiting for the human to answer macOS's password dialog.
+    #[serde(default)]
+    pub asking: bool,
+    /// The wake macOS has scheduled for midna (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<Timestamp>,
+    /// The work it wakes for, in words: `Morning kickoff at 7 AM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// In words: `Waking the Mac tomorrow 6:58 AM for Morning kickoff at 7 AM`.
+    pub line: String,
+    /// The last scheduling error, until a wake is scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `keep_awake.wake_setup`: install (or, with `remove`, remove) the admin grant that lets midnad
+/// schedule wakes. macOS asks for an administrator's password.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeWakeSetupParams {
+    #[serde(default)]
+    pub remove: bool,
 }
 
 /// Every field is optional; only the ones given change (each is the `keep_awake.*` setting of
@@ -2378,6 +2414,9 @@ pub struct KeepAwakeSetParams {
     /// Minutes, 0-240.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linger_mins: Option<Value>,
+    /// Wake the Mac for work scheduled inside the hours (needs `keep_awake.wake_setup` once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<bool>,
     /// Today only: `off` (rest of today), `on` (until midnight), `until 5pm` / `5pm`,
     /// `{"on": true, "until": "17:00"}`, or `clear` (back to the schedule). Ends at midnight.
     #[serde(default, skip_serializing_if = "Option::is_none")]

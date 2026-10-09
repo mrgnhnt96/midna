@@ -576,6 +576,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "On battery, stop keeping awake below this percent, and start again only 5 points above it or once plugged in. 0 = no limit.") },
     SettingSpec { range: Some((0, 240)), ..s!("keep_awake.linger_mins", SettingKind::Int, I(5), "agents", false,
         "In with_work mode, keep holding this many minutes after the last work, so the next queued message, hook or reply still finds the Mac awake.") },
+    s!("keep_awake.wake", SettingKind::Bool, B(false), "agents", false,
+        "Wake the Mac from sleep for work scheduled inside the keep-awake hours (a schedule trigger, a message queued for a time, an agent's wakeup): midnad asks macOS for a wake 2 minutes before it, then keeps the Mac awake until the work has run. Needs a one-time admin grant (`midna keep-awake wake setup`). Closing the lid still keeps a laptop asleep."),
     s!("policy.default", en(&["auto", "allow", "ask", "deny"]), S("auto"), "policy", true,
         "Decision when no rule matches. auto = built-in defaults table (ask for destructive CLI verbs, allow otherwise). Human only."),
     s!("policy.request_timeout_secs", SettingKind::Int, I(300), "policy", false,

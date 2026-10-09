@@ -503,9 +503,15 @@ fn build() -> Vec<MethodSpec> {
         m::<KeepAwakeSetParams, KeepAwakeStatus>("keep_awake.set").mutating().d(
             "Change keep-awake: any of enabled (alias on), mode (with_work|always), start/end (8am, 17:30), days (weekdays, \
              mon-fri, [\"sat\",\"sun\"]), hours (per day: {\"fri\": \"9am-3pm\", \"sat\": \"off\", \"mon\": null}), min_battery, \
-             linger_mins, and today (off | on | until 5pm | {on, until} | clear; replaces the rest of today, ends at midnight). \
+             linger_mins, wake (wake the Mac for work scheduled inside the hours), and today (off | on | until 5pm | \
+             {on, until} | clear; replaces the rest of today, ends at midnight). \
              Only the fields given change, all checked before any is saved; the rest are the keep_awake.* settings. Returns \
              keep_awake.status. Event keep_awake.changed fires when the assertion is taken or released."),
+        m::<KeepAwakeWakeSetupParams, KeepAwakeStatus>("keep_awake.wake_setup").mutating().human().d(
+            "Install the one-time admin grant that lets midnad schedule wakes for keep_awake.wake (macOS asks for an \
+             administrator's password): a root-owned helper in /Library/PrivilegedHelperTools that can only schedule or \
+             cancel this midna's own wakes, and a sudoers.d entry letting you run just that helper. Turns keep_awake.wake on. \
+             With remove: cancel midna's wakes, remove both files and turn keep_awake.wake off. Human only."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

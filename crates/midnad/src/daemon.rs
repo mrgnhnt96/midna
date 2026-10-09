@@ -190,6 +190,8 @@ pub struct Daemon {
     pub clock: crate::clock::Clock,
     /// The keep-awake power assertion (`keep_awake.rs`). Lock after `core`, never before it.
     pub keep_awake: crate::keep_awake::Runtime,
+    /// The wakes midnad has asked macOS for (`wake.rs`). Lock after `core` and `keep_awake`.
+    pub wake: crate::wake::Runtime,
 }
 
 impl Daemon {
@@ -244,6 +246,7 @@ impl Daemon {
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),
             keep_awake: Default::default(),
+            wake: Default::default(),
             cfg,
         }))
     }
