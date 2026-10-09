@@ -1715,6 +1715,7 @@ impl MainWindow {
     /// when `id` was the one showing.
     pub fn replace_session(&mut self, id: String, cx: &mut Context<Self>) {
         self.menu = Menu::None;
+        crate::sounds::play("closed");
         self.sessions_floor = self.refresh_seq + 1;
         let shown = self.selected.as_deref() == Some(&id);
         self.rpc("session.replace", json!({ "id": id, "force": true }), cx, move |m, v, window, cx| {
