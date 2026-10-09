@@ -864,7 +864,11 @@ pub fn new_for_main(window: &Window, cx: &mut Context<MainWindow>) -> Entity<Ann
     let view = cx.new(AnnotateView::new);
     cx.subscribe_in(&view, window, |m: &mut MainWindow, _, ev: &AnnotateEvent, window, cx| match ev {
         AnnotateEvent::Closed if m.overlay == Overlay::Annotate => m.set_overlay(Overlay::None, window, cx),
-        AnnotateEvent::Closed => m.focus_terminal(window, cx),
+        AnnotateEvent::Closed => {
+            if !crate::composer::refocus(m, window, cx) {
+                m.focus_terminal(window, cx)
+            }
+        }
         AnnotateEvent::Toast(msg) => m.toast(msg.clone(), cx),
     })
     .detach();
