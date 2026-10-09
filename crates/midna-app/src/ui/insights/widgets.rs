@@ -289,7 +289,7 @@ impl InsightsView {
             .collect();
         let series = vec![Series { key: "working".into(), label: "Working".into(), color: p.agents }, Series { key: "waiting".into(), label: "Waiting on you".into(), color: p.waiting }];
         head(t, "Working vs waiting on you", "per agent terminal", None).child(legend(t, &[(p.agents, "Working".into()), (p.waiting, "Waiting on you".into())])).child(
-            if hrows.is_empty() { empty(t, "No working or waiting time in this range") } else { charts::hbars("ww", &hrows, &series, Unit::Secs, t, self.term_hover, super::term_hover, None, cx) },
+            if hrows.is_empty() { empty(t, "No working or waiting time in this range") } else { div().flex_1().min_h_0().flex().flex_col().child(div().id("ww-rows").flex_1().min_h_0().overflow_y_scroll().child(charts::hbars("ww", &hrows, &series, Unit::Secs, t, self.term_hover, super::term_hover, None, cx))) },
         )
     }
 
