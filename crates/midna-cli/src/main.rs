@@ -463,6 +463,7 @@ fn run(a: &Args) -> Res {
         "hooks" => hooks(a, &out),
         "events" => events(a),
         "insights" => insights(a, &out),
+        "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
         "usage" => {
             a.check(&[])?;
             out(&call("usage.get", json!({}))?, &print::usage);
@@ -867,6 +868,47 @@ fn settings(a: &Args, out: OutFn) -> Res {
         }
         other => return Err(Fail::Usage(format!("unknown settings subcommand `{other}`"))),
     }
+    Ok(())
+}
+
+/// `midna keep-awake …`: every form prints the status after it.
+fn keep_awake(a: &Args, out: OutFn) -> Res {
+    a.check(&[])?;
+    let rest = |from: usize| a.pos.get(from..).map(|p| p.join(" ")).unwrap_or_default();
+    let need = |from: usize, what: &str| -> Result<String, Fail> {
+        let r = rest(from);
+        if r.trim().is_empty() { Err(Fail::Usage(format!("missing {what}"))) } else { Ok(r) }
+    };
+    let params = match a.pos.get(1).map(String::as_str).unwrap_or("status") {
+        "status" => None,
+        "on" | "enable" => Some(json!({ "enabled": true })),
+        "off" | "disable" => Some(json!({ "enabled": false })),
+        "hours" => {
+            let (start, end) = (a.need(2, "start time")?, a.need(3, "end time")?);
+            let mut p = json!({ "start": start, "end": end });
+            if a.pos.len() > 4 {
+                p["days"] = json!(rest(4));
+            }
+            Some(p)
+        }
+        "days" => Some(json!({ "days": need(2, "days (weekdays, mon-fri, sat,sun …)")? })),
+        "day" => {
+            // An object changes only the days it names.
+            let days = midna_proto::keep_awake::parse_days(&json!(a.need(2, "day (fri, sat-sun …)")?)).map_err(Fail::Usage)?;
+            let hours = need(3, "hours (9am-3pm, off, all day or default)")?;
+            Some(json!({ "hours": days.iter().map(|d| (d.clone(), json!(hours))).collect::<serde_json::Map<_, _>>() }))
+        }
+        "today" => Some(json!({ "today": need(2, "off, on, until <time> or clear")? })),
+        "mode" => Some(json!({ "mode": a.need(2, "mode (with_work or always)")? })),
+        "battery" => Some(json!({ "min_battery": a.need(2, "percent")? })),
+        "linger" => Some(json!({ "linger_mins": a.need(2, "minutes")? })),
+        other => return Err(Fail::Usage(format!("unknown keep-awake subcommand `{other}`"))),
+    };
+    let v = match params {
+        Some(p) => call("keep_awake.set", p)?,
+        None => call("keep_awake.status", json!({}))?,
+    };
+    out(&v, &print::keep_awake);
     Ok(())
 }
 

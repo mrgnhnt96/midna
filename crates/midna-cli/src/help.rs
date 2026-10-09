@@ -45,7 +45,8 @@ pub static VERBS: &[Verb] = &[
                   t_… trigger = what it does, what it is waiting for, recent deliveries;\n\
                   n_… needs-you item = what it asks and who can answer it; p_… project; d_… delivery.\n\
                   Also a method (`session.open` or `session_open`), a setting key (`theme`), or a topic:\n\
-                  status, rules, approvals, triggers, needs-you, settings, scripts, themes, windows, human-only, mcp.\n\
+                  status, rules, approvals, triggers, needs-you, settings, scripts, themes, keep-awake, windows,\n\
+                  human-only, mcp.\n\
                   With a kind and a value it explains which rule decides that action and why\n\
                   (e.g. `midna explain command -- git push --force`).",
         methods: &["session.get", "rule.list", "trigger.list", "needs_you.list", "events.list", "policy.check", "settings.get"],
@@ -523,6 +524,24 @@ pub static VERBS: &[Verb] = &[
         details: "Turns, human messages, spend, working and waiting time, approvals and triggers fired. `detail`: agents\n\
                   working at once, turn lengths, waits on you, idle time, approvals, corrections, heatmap and records.",
         methods: &["insights.summary", "insights.series", "insights.detail", "insights.activity"],
+    },
+    Verb {
+        name: "keep-awake",
+        aliases: &["awake"],
+        usage: "keep-awake [status] | on | off\n       \
+                keep-awake hours <start> <end> [days]   (8am 6pm weekdays)\n       \
+                keep-awake days <days> | day <days> <9am-3pm|off|all day|default>\n       \
+                keep-awake today off|on|until <time>|clear\n       \
+                keep-awake mode with_work|always | battery <percent> | linger <minutes>",
+        summary: "keep the Mac from idle-sleeping during work hours while agents have work",
+        details: "Whether midnad holds its power assertion now, why or why not, and when the hours next open or\n\
+                  close. Inside the hours (keep_awake.start/end/days, per-day keep_awake.hours) it holds one while\n\
+                  there is work: an agent working, queued input, an agent waiting to resume, a schedule trigger or\n\
+                  wakeup due (mode always: the whole time). Only idle sleep: the display sleeps and the lid still\n\
+                  sleeps the Mac. On battery it lets go below keep_awake.min_battery (again 5 points above, or on\n\
+                  power). `today` replaces the rest of today (off, or on until a time) and ends at midnight.\n\
+                  Times: 8am, 5:30pm, 17:30. Days: weekdays, weekends, daily, mon-fri, mon,wed,fri.",
+        methods: &["keep_awake.status", "keep_awake.set"],
     },
     Verb {
         name: "usage",

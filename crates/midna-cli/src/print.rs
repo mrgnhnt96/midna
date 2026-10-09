@@ -310,6 +310,45 @@ fn relative(ts: &str) -> String {
 }
 
 /// `midna usage`.
+pub fn keep_awake(v: &Value) {
+    println!("{}", s(v, "line"));
+    let st = &v["settings"];
+    let mode = match st["mode"].as_str() {
+        Some("always") => "always during hours".to_string(),
+        _ => format!("only with work (lingers {} min)", st["linger_mins"]),
+    };
+    println!("  {:<8} {}{}", "enabled", st["enabled"], if st["enabled"] == true { "" } else { "  (midna keep-awake on)" });
+    println!("  {:<8} {}", "hours", s(v, "schedule"));
+    println!("  {:<8} {mode}", "mode");
+    if let Some(t) = v["today"].as_object() {
+        println!("  {:<8} {}", "today", t.get("line").and_then(Value::as_str).unwrap_or_default());
+    }
+    // 12-hour, like the app: `Fri Oct 9 9 AM`.
+    let at12 = |t: i64| {
+        let (_, _, _, h, mi, _) = midna_proto::time::local_parts(t);
+        let day = midna_proto::cron::local_label(t);
+        format!("{} {}", day.rsplit_once(' ').map_or(day.as_str(), |(d, _)| d), midna_proto::cron::clock(h, mi))
+    };
+    let next = |k: &str| v[k].as_str().and_then(midna_proto::time::parse_rfc3339).map(at12);
+    if let Some(at) = next("next_off") {
+        println!("  {:<8} hours end {at}", "next");
+    } else if let Some(at) = next("next_on") {
+        println!("  {:<8} hours start {at}", "next");
+    }
+    let min = st["min_battery"].as_i64().unwrap_or_default();
+    let limit = if min > 0 { format!(" (stops below {min}% on battery)") } else { String::new() };
+    match v["battery"].as_object() {
+        Some(b) => {
+            let power = if b.get("on_ac") == Some(&Value::Bool(true)) { "on power" } else { "on battery" };
+            println!("  {:<8} {}% {power}{limit}", "battery", b.get("percent").and_then(Value::as_i64).unwrap_or_default());
+        }
+        None => println!("  {:<8} none{limit}", "battery"),
+    }
+    if let Some(since) = v["held_since"].as_str().and_then(midna_proto::time::parse_rfc3339) {
+        println!("  {:<8} holding since {}", "held", at12(since));
+    }
+}
+
 pub fn usage(v: &Value) {
     let Some(c) = v.get("claude").filter(|c| c.is_object()) else {
         println!("no usage limits reported yet (Claude's status line reports them on Pro/Max plans; setting agents.claude.statusline)");

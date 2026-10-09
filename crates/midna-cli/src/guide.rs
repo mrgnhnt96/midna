@@ -24,7 +24,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 `midna call <method> <json>`. Everything you do is logged (`midna events`).
 
 WHAT YOU CAN DO
-  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage
+  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage | keep-awake
   terminals  midna open [--agent claude|codex --prompt T --resume ID -- agent-args | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
@@ -275,6 +275,17 @@ const TOPICS: &[(&str, &str)] = &[
         marked expired. Each terminal's own last report is in session.get agent_info.rate_limits. Event \
         usage.limit_reached {agent, window, used_percentage, resets_at} fires once per window when it hits 100%: \
         subscribe to it (or a local trigger on it) instead of polling."),
+    ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
+        schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
+        settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \
+        (\"midna: keeping awake for agents\", see `pmset -g assertions`); the display still sleeps and closing the lid still \
+        sleeps the Mac. Inside keep_awake.start-end on keep_awake.days (per-day keep_awake.hours: `fri = 9am-3pm`, `sat = off`) \
+        it holds in mode with_work while there is work (an agent working or with background work, subagents or a wakeup due, \
+        queued input, an agent waiting to resume, a schedule trigger due before the hours end) and keep_awake.linger_mins \
+        after; mode always holds the whole time. On battery below keep_awake.min_battery it lets go, and takes it again 5 \
+        points above or on power. `today` (off | on | until 5pm | clear) replaces the rest of today and ends at midnight. \
+        Status says held, reason (work, always, disabled, outside_hours, day_off, today_off, battery_low, no_work, failed), \
+        next_on / next_off and what work keeps it; event keep_awake.changed fires when that changes."),
     ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
         keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
         `window` actions."),
@@ -697,7 +708,7 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
     let Some(target) = args.first().map(String::as_str) else {
         return Err(RpcError::bad_params(
             "explain what? pass an id (terminal, r_…, t_…, n_…, p_…, d_…), a method, a setting key, a topic \
-             (status, rules, approvals, triggers, needs-you, settings, scripts, themes, windows, human-only, mcp), or <kind> <value>",
+             (status, rules, approvals, triggers, needs-you, settings, scripts, themes, keep-awake, windows, human-only, mcp), or <kind> <value>",
         ));
     };
     if matches!(target, "command" | "tool" | "path" | "cli" | "window") && args.len() > 1 {
