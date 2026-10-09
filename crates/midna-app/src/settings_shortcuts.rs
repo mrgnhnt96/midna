@@ -70,11 +70,10 @@ impl SettingsWindow {
                 if !rec.is_empty() && !keys_match(&v, rec) {
                     return None;
                 }
-                let desc = midna_proto::settings::setting(s.setting).map(|x| x.description).unwrap_or("");
                 // while rebinding: what the new keys would take from another shortcut
                 let note = self.editing.as_ref().filter(|e| e.setting == s.setting).and_then(|e| e.keys.as_ref().map(|k| self.conflict_note(e.setting, k))).filter(|n| !n.is_empty());
                 Some(RowSpec {
-                    label: desc.trim_end_matches('.').to_string(),
+                    label: blurbs::shortcut_title(s.setting),
                     note: note.map(|n| (n, t.need)),
                     control: Control::Keys { setting: Some(s.setting), keys: pretty(&v) },
                     cli: format!("midna settings set {} {}", s.setting, if v.is_empty() { "\"\"".into() } else { v }),
@@ -189,7 +188,7 @@ impl SettingsWindow {
 
     /// What saving `keys` would collide with, in words ("" when nothing).
     fn conflict_note(&self, setting: &str, keys: &str) -> String {
-        let title = |k: &str| midna_proto::settings::setting(k).map(|s| s.description.trim_end_matches('.')).unwrap_or(k).to_string();
+        let title = blurbs::shortcut_title;
         let mut notes: Vec<String> = self.taken_by(setting, keys).iter().map(|k| format!("Used by “{}”: saving unbinds it.", title(k))).collect();
         notes.extend(FIXED.iter().filter(|f| f.keys.iter().any(|k| keys_match(k, &[keys.to_string()]))).map(|f| format!("Also used in {}: {}.", f.place, f.title.to_lowercase())));
         notes.join(" ")
