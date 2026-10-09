@@ -38,6 +38,8 @@ pub enum Cmd {
     OpenLoginItems,
     /// Settings: link the CLI even if the dir isn't on PATH yet.
     InstallCli,
+    /// Settings: move the running daemon onto the installed build (shells survive).
+    UpgradeDaemon,
 }
 
 enum Msg {
@@ -45,6 +47,8 @@ enum Msg {
     Cli(CliLink),
     Install(Option<String>),
     Update(UpdateState),
+    /// The last daemon upgrade's error (None once it worked).
+    DaemonUpgrade(Option<String>),
     Quit,
 }
 
@@ -57,6 +61,8 @@ pub struct Snapshot {
     pub cli: CliLink,
     pub install_error: Option<String>,
     pub update: UpdateState,
+    /// Why moving the daemon onto the installed build failed, if it did.
+    pub daemon_upgrade_error: Option<String>,
 }
 
 static SNAP: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
@@ -100,6 +106,7 @@ pub fn start(backend: Arc<dyn Backend>, cx: &mut App) {
         cli: CliLink::Dev,
         install_error: None,
         update: if installed { UpdateState::Idle } else { UpdateState::Off("development build".into()) },
+        daemon_upgrade_error: None,
     });
     cx.set_global(Lifecycle { tx: Some(cmd_tx) });
     let reporter = backend.clone();
@@ -118,6 +125,7 @@ pub fn start(backend: Arc<dyn Backend>, cx: &mut App) {
                     Msg::Cli(s) => l.cli = s,
                     Msg::Install(e) => l.install_error = e,
                     Msg::Update(s) => l.update = s,
+                    Msg::DaemonUpgrade(e) => l.daemon_upgrade_error = e,
                     Msg::Quit => {}
                 });
                 if is_update && !fake {
@@ -256,8 +264,10 @@ impl Worker {
         }
         // Commands still work in dev (Settings buttons), minus install/update.
         while let Ok(cmd) = self.rx.recv() {
-            if let Cmd::OpenLoginItems = cmd {
-                install::open_login_items();
+            match cmd {
+                Cmd::OpenLoginItems => install::open_login_items(),
+                Cmd::UpgradeDaemon => self.send(Msg::DaemonUpgrade(Some("a development build doesn't upgrade midnad; restart it yourself".into()))),
+                _ => {}
             }
         }
     }
@@ -338,6 +348,7 @@ impl Worker {
                     let cli = self.link_cli(&home, true);
                     self.send(Msg::Cli(cli));
                 }
+                Ok(Cmd::UpgradeDaemon) => self.ensure_daemon_current(&home),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -365,24 +376,32 @@ impl Worker {
     /// upgrade it in place. Terminals survive (same-PID execv with the PTYs handed over).
     fn ensure_daemon_current(&self, home: &Path) {
         let want = install::current_daemon(home);
+        let fail = |e: String| {
+            log(&e);
+            self.send(Msg::DaemonUpgrade(Some(e)));
+        };
         let Ok(want_canon) = std::fs::canonicalize(&want) else {
-            return;
+            return fail(format!("no installed daemon at {}", want.display()));
         };
         let info = match self.backend.call("daemon.info", json!({})) {
             Ok(v) => v,
-            Err(e) => return log(&format!("daemon.info: {e}")),
+            Err(e) => return fail(format!("daemon.info: {e}")),
         };
         let running = info.get("binary").and_then(Value::as_str).and_then(|b| std::fs::canonicalize(b).ok());
         let version = info.get("version").and_then(Value::as_str).unwrap_or("?");
         // Same binary and our version: nothing to do. (Daemons before 0.1.1 reported the
         // unresolved bin/current path, so the version check catches those.)
         if running.as_ref() == Some(&want_canon) && version == midna_proto::VERSION {
+            self.send(Msg::DaemonUpgrade(None));
             return log(&format!("daemon {version} is current ({})", want_canon.display()));
         }
         log(&format!("daemon {version} runs {:?}; upgrading in place to {}", running, want_canon.display()));
         match self.backend.call("daemon.upgrade", json!({ "binary_path": want })) {
-            Ok(v) => log(&format!("daemon.upgrade: {v}")),
-            Err(e) => log(&format!("daemon.upgrade failed: {e}")),
+            Ok(v) => {
+                log(&format!("daemon.upgrade: {v}"));
+                self.send(Msg::DaemonUpgrade(None));
+            }
+            Err(e) => fail(format!("daemon.upgrade failed: {e}")),
         }
     }
 

@@ -123,6 +123,14 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("webhooks.path", json!("tailscale_funnel"), "tailscale_funnel | self_relay | midna_relay | off", true),
         e("policy.default", json!("ask"), "default decision when no rule matches", true),
         e("kass.auto_send", json!(false), "send dictated text when Kass finishes", false),
+        e("keep_awake.enabled", json!(true), "keep the Mac from idle-sleeping during keep_awake hours", false),
+        e("keep_awake.mode", json!("with_work"), "with_work | always", false),
+        e("keep_awake.start", json!("09:00"), "start of the hours", false),
+        e("keep_awake.end", json!("18:00"), "end of the hours", false),
+        e("keep_awake.days", json!(["mon", "tue", "wed", "thu", "fri"]), "days", false),
+        e("keep_awake.hours", json!([]), "days with their own hours", false),
+        e("keep_awake.min_battery", json!(20), "stop on battery below", false),
+        e("keep_awake.linger_mins", json!(5), "keep holding after the work", false),
     ];
     // every shortcut, so the Shortcuts tab and tooltips match the daemon
     let keys = midna_proto::settings::SETTINGS.iter().filter(|s| matches!(s.ty, midna_proto::settings::SettingKind::Keybinding));

@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 mod notify_rows;
 #[path = "settings_shortcuts.rs"]
 mod shortcuts;
+#[path = "settings_awake.rs"]
+mod awake;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
@@ -151,7 +153,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Agents,
         "Keep the Mac awake",
-        &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.end", "keep_awake.days", "keep_awake.hours", "keep_awake.min_battery", "keep_awake.linger_mins"],
+        &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.days", "keep_awake.min_battery", "keep_awake.linger_mins"],
     ),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
@@ -205,6 +207,8 @@ pub struct SettingsWindow {
     hooks: Value,
     /// `keep_awake.status`: the "Keep the Mac awake" status row.
     keep_awake: Value,
+    /// The keep-awake hours while their track is being dragged (settings_awake.rs).
+    hours_live: Option<awake::HoursLive>,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
@@ -285,6 +289,7 @@ impl SettingsWindow {
             webhooks: Value::Null,
             hooks: Value::Null,
             keep_awake: Value::Null,
+            hours_live: None,
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
@@ -468,10 +473,6 @@ impl SettingsWindow {
         for k in &self.custom {
             want.push((format!("label:{}", k.key), k.label.clone(), "Name"));
         }
-        for (key, placeholder) in KEEP_AWAKE_EDITS {
-            let shown = midna_proto::keep_awake::display(key, &self.value(key)).unwrap_or_default();
-            want.push((key.to_string(), shown, placeholder));
-        }
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         for (key, value, placeholder) in want {
             match self.edits.get_mut(&key) {
@@ -497,18 +498,6 @@ impl SettingsWindow {
         match key.strip_prefix("label:") {
             Some(kind) if !text.is_empty() => self.kind_call("notify.kinds.add", json!({ "key": kind, "label": text, "replace": true }), format!("midna notify kinds update {kind} --label \"{text}\""), cx),
             Some(_) => {}
-            None if KEEP_AWAKE_EDITS.iter().any(|(k, _)| *k == key) => {
-                // Show what was understood (`8am` -> `8 AM`); a typo stays for the footer's error.
-                let spec = midna_proto::settings::setting(key);
-                if let Some(v) = spec.and_then(|s| s.coerce(&json!(text)).ok()) {
-                    let shown = midna_proto::keep_awake::display(key, &v).unwrap_or_default();
-                    if let Some((input, saved)) = self.edits.get_mut(key) {
-                        input.set_text(&shown, cx);
-                        *saved = shown;
-                    }
-                }
-                self.set(key, json!(text), cx);
-            }
             None => self.set(key, json!(text), cx),
         }
     }
@@ -524,7 +513,7 @@ impl SettingsWindow {
                     ok: r.is_ok(),
                     result: match &r {
                         Ok(_) => "✓ applied".into(),
-                        Err(e) => format!("✗ {e:#}"),
+                        Err(e) => s.call_error(e),
                     },
                     who: "you, from this window".into(),
                     at: Instant::now(),
@@ -564,7 +553,7 @@ impl SettingsWindow {
             let r = cx.background_executor().spawn(async move { backend.call("settings.set", json!({"key": k, "value": value})) }).await;
             let _ = this.update(cx, |s, cx| {
                 if let Err(e) = r {
-                    s.last = Some(Last { cmd, ok: false, result: format!("✗ {e:#}"), who: "you, from this window".into(), at: Instant::now() });
+                    s.last = Some(Last { cmd, ok: false, result: s.call_error(&e), who: "you, from this window".into(), at: Instant::now() });
                     s.load(cx);
                 }
                 cx.notify();
@@ -710,6 +699,10 @@ enum Control {
     Theme { key: String, current: String },
     /// A shortcut's keys: click to rebind (settings_shortcuts.rs). No setting = built in.
     Keys { setting: Option<&'static str>, keys: String },
+    /// `keep_awake.start`–`end` on a 24-hour track (settings_awake.rs).
+    Hours,
+    /// `keep_awake.days` as seven buttons.
+    Days,
 }
 
 #[derive(Clone)]
@@ -759,6 +752,7 @@ impl RowSpec {
             }
             Control::Theme { current, .. } => out.push(("Value", current.clone())),
             Control::Keys { keys, .. } => out.push(("Keys", keys.clone())),
+            Control::Hours => out.push(("Key", "keep_awake.start keep_awake.end".into())),
             _ => {}
         }
         if let Some(k) = self.key() {
@@ -1006,15 +1000,6 @@ pub(crate) fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }
 }
 
-/// The keep-awake rows typed as text (forgiving: `8am`, `weekdays`, `fri = 9am-3pm`), shown the
-/// way people read them (`9 AM`), with their placeholders.
-const KEEP_AWAKE_EDITS: [(&str, &str); 4] = [
-    ("keep_awake.start", "9 AM"),
-    ("keep_awake.end", "6 PM"),
-    ("keep_awake.days", "weekdays, mon-fri or sat, sun"),
-    ("keep_awake.hours", "e.g. fri = 9am-3pm, sat = off"),
-];
-
 const PANE_AX: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const PANE_NOTIF: &str = midna_proto::paths::NOTIFICATIONS_PANE;
 
@@ -1168,6 +1153,12 @@ impl SettingsWindow {
             return None;
         }
         let mut r = self.spec_row(key)?;
+        if self.daemon_lacks(key) {
+            // the reason and the button are on Settings › System › Daemon version (and keep-awake's Now row)
+            r.note = Some(("Needs a newer midnad".into(), t.need));
+            r.control = Control::Text { dot: None, text: "Not available".into(), color: t.dim, action: None };
+            return Some(r);
+        }
         let off = |what: &str| Some((format!("No effect while {what}"), t.dim));
         if key.starts_with("keep_awake.") && key != "keep_awake.enabled" && self.value("keep_awake.enabled") != json!(true) {
             r.note = off("keep-awake is off");
@@ -1177,7 +1168,17 @@ impl SettingsWindow {
             "terminal.preview_path_click" if self.value("terminal.link_preview") == json!("off") => r.note = off("link previews are off"),
             "terminal.auto_name_updates" if self.value("terminal.auto_name") == json!("off") => r.note = off("automatic names are off"),
             "agents.may_move_windows" if !accessibility_trusted() => r.note = Some(("No effect until Accessibility is granted".into(), t.need)),
-            "keep_awake.start" | "keep_awake.end" | "keep_awake.days" | "keep_awake.hours" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            "keep_awake.start" => {
+                let (start, end) = self.hours();
+                r.label = "Hours".into();
+                if self.value("keep_awake.enabled") == json!(true) {
+                    let c = midna_proto::keep_awake::clock;
+                    r.note = Some((format!("{} – {} · {}", c(start), c(end), awake::span_words(start, end)), Hsla::default()));
+                }
+                r.control = Control::Hours;
+                r.cli = "midna keep-awake hours <start> <end>".into();
+            }
+            "keep_awake.days" => r.control = Control::Days,
             "keep_awake.min_battery" | "keep_awake.linger_mins" => {
                 let choices: &[(i64, &str)] = if key == "keep_awake.min_battery" {
                     &[(0, "No limit"), (10, "10%"), (20, "20%"), (30, "30%"), (50, "50%")]
@@ -1204,6 +1205,16 @@ impl SettingsWindow {
 
     /// "Keep the Mac awake": held or not and why, with today's override as a button.
     fn keep_awake_row(&self, t: &Theme) -> RowSpec {
+        if self.daemon_lacks("keep_awake.enabled") {
+            return RowSpec {
+                label: "Now".into(),
+                note: Some((self.needs_newer_daemon(), t.need)),
+                control: Control::Text { dot: Some(t.need), text: "Not available".into(), color: t.need, action: Some(("Update daemon".into(), Act::Life(crate::lifecycle::Cmd::UpgradeDaemon), true)) },
+                cli: "midna keep-awake".into(),
+                who: Who::ReadOnly,
+                warn: true,
+            };
+        }
         let k = &self.keep_awake;
         let held = k["held"] == true;
         let enabled = k["settings"]["enabled"] == true;
@@ -1235,6 +1246,32 @@ impl SettingsWindow {
             who: Who::ReadOnly,
             warn: false,
         }
+    }
+
+    /// The connected midnad is a different version from the app (an update it hasn't picked up).
+    fn daemon_behind(&self) -> bool {
+        self.info.get("version").and_then(Value::as_str).is_some_and(|v| v != midna_proto::VERSION)
+    }
+
+    /// A setting the app knows but the connected midnad doesn't list: it's older than the app,
+    /// so changing it would fail (and the row would snap back to the default).
+    fn daemon_lacks(&self, key: &str) -> bool {
+        self.error.is_none() && !self.entries.is_empty() && midna_proto::settings::setting(key).is_some() && !self.entries.iter().any(|e| e.key == key)
+    }
+
+    fn needs_newer_daemon(&self) -> String {
+        let v = self.info.get("version").and_then(Value::as_str).unwrap_or("?");
+        format!("midnad {v} is older than the app ({}) and doesn't have this yet. Update it: your terminals keep running.", midna_proto::VERSION)
+    }
+
+    /// A failed call's footer text, saying so when an older midnad is why.
+    fn call_error(&self, e: &anyhow::Error) -> String {
+        let text = format!("{e:#}");
+        if self.daemon_behind() && (text.contains("unknown setting") || text.contains("unknown method")) {
+            let v = self.info.get("version").and_then(Value::as_str).unwrap_or("?");
+            return format!("✗ midnad {v} is older than the app and doesn't know this. Settings › System › Update daemon.");
+        }
+        format!("✗ {text}")
     }
 
     fn notify_off(&self) -> bool {
@@ -1314,15 +1351,23 @@ impl SettingsWindow {
             }
             "@version" => {
                 let daemon = self.info.get("version").and_then(Value::as_str);
+                let failed = crate::lifecycle::snapshot().and_then(|l| l.daemon_upgrade_error);
                 let (dot, note) = match daemon {
                     None => (t.dim, None),
                     Some(v) if v == midna_proto::VERSION => (t.ok, None),
-                    Some(_) => (t.err, Some("Doesn't match the app. The daemon picks up the new version when it restarts.".into())),
+                    Some(_) => match &failed {
+                        Some(e) => (t.err, Some(format!("Doesn't match the app, and updating it failed: {e}"))),
+                        None => (t.err, Some("Doesn't match the app. Update it in place: your terminals keep running.".into())),
+                    },
                 };
-                vec![
-                    status("App version", t.ok, midna_proto::VERSION.into(), t.fg, None, "midna info"),
-                    status("Daemon version", dot, daemon.unwrap_or("not connected").into(), if daemon.is_some() { t.fg } else { t.dim }, note, "midna info"),
-                ]
+                let mut daemon_row = status("Daemon version", dot, daemon.unwrap_or("not connected").into(), if daemon.is_some() { t.fg } else { t.dim }, note, "midna info");
+                if self.daemon_behind()
+                    && let Control::Text { action, .. } = &mut daemon_row.control
+                {
+                    *action = Some(("Update daemon".into(), Act::Life(crate::lifecycle::Cmd::UpgradeDaemon), true));
+                    daemon_row.warn = true;
+                }
+                vec![status("App version", t.ok, midna_proto::VERSION.into(), t.fg, None, "midna info"), daemon_row]
             }
             "@daemon" => {
                 let uptime = self.info.get("uptime_secs").and_then(Value::as_u64).map(|s| crate::ui::charts::duration(s as f64)).unwrap_or_default();
@@ -2349,6 +2394,8 @@ impl SettingsWindow {
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
         let wide = matches!(r.control, Control::Theme { .. });
+        // the hours track takes the control column's whole width
+        let grow = matches!(r.control, Control::Hours);
         let control = self.control(t, r.control, words, id, window, cx);
         let (inline, below) = if wide { (None, Some(control)) } else { (Some(control), None) };
         let cli = r.cli;
@@ -2449,7 +2496,7 @@ impl SettingsWindow {
                                 )
                             }),
                     )
-                    .children(inline.map(|c| div().flex().justify_end().min_w_0().max_w(relative(0.62)).child(c))),
+                    .children(inline.map(|c| div().flex().justify_end().min_w_0().max_w(relative(0.62)).when(grow, |d| d.flex_none().w(relative(0.62))).child(c))),
             )
             .children(below.map(|c| div().pt(px(8.)).child(c)))
             .children(cli_line)
@@ -2717,6 +2764,8 @@ impl SettingsWindow {
             Control::Volume { key } => self.volume_stepper(t, &key, None, cx).into_any_element(),
             Control::Image { key, cat } => self.image_control(t, &key, cat, cx),
             Control::Keys { setting, keys } => self.keys_control(t, setting, keys, id, cx),
+            Control::Hours => self.hours_control(t, cx),
+            Control::Days => self.days_control(t, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
@@ -3043,7 +3092,8 @@ mod tests {
                 || ["notify.volume", "notify.image"].contains(&k)
         };
         // kept out of the window on purpose; still in the catalog (`midna settings`)
-        let unlisted = ["updates.feed_url"];
+        // (keep_awake.end shares the Hours row with keep_awake.start; per-day hours are CLI-only)
+        let unlisted = ["updates.feed_url", "keep_awake.end", "keep_awake.hours"];
         for s in SETTINGS {
             assert!(listed.contains(&s.key) || unlisted.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
         }
