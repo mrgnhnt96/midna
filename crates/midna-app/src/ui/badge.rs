@@ -11,7 +11,12 @@
 //! Clicking the badge opens the list: what's waiting as capsules, newest first, scrolling (the
 //! row at the middle is the clearest; the others fade with their distance from it). The capsule
 //! beside the badge flies into its row as the list opens, its tint sweeping off as it goes (a
-//! passing one is held from then on, counted until you dismiss it). With the
+//! passing one is held from then on, counted until you dismiss it). A passing capsule cut short
+//! by the next notification goes into the list for `BUMPED` times its time, its tint draining in
+//! its row until it slides away; one that comes in while the list is open goes straight in,
+//! above what you're looking at, which doesn't move: the scroll grows with it and an "↑ N new"
+//! chip at the top edge glides up to it, a band of each one's color sweeping across it (canvas
+//! "Notifications into the list", 3A, https://claude.ai/artifact/7qwwu8WCXxwUiTtFLu9Jh8). With the
 //! pointer on a capsule, an × grows in at its start (off the list) and an arrow at its end (to
 //! the terminal), and they linger a beat after it leaves. Clicking a capsule grows it into its
 //! card (Approve / Deny, or Dismiss, and Terminal), one at a time, and glides the list to put
@@ -143,6 +148,16 @@ const LINE_SHOW: Duration = Duration::from_secs(6);
 const LINE_LINGER: Duration = Duration::from_secs(2);
 const LINE_IN: Duration = Duration::from_millis(420);
 const LINE_OUT: Duration = Duration::from_millis(220);
+/// A passing notification cut short by the next one goes into the list for `BUMPED` times its
+/// time (as does one that comes in while the list is open), its tint draining in its row; when
+/// it runs out the row slides away as one you take off does.
+const BUMPED: u32 = 5;
+/// Rows that came in while the list was open, once the "↑ N new" chip has glided up to them: a
+/// band of each one's color sweeps across it over `ROW_SWEEP`, after `ROW_SWEEP_AFTER`. The
+/// chip springs in over `CHIP_IN`.
+const CHIP_IN: Duration = Duration::from_millis(320);
+const ROW_SWEEP_AFTER: Duration = Duration::from_millis(300);
+const ROW_SWEEP: Duration = Duration::from_millis(900);
 const PULSE: Duration = Duration::from_millis(650);
 const ROLL: Duration = Duration::from_millis(420);
 /// How long a needs-you item counted from its notification outlives a list without it.
@@ -330,13 +345,23 @@ struct Waiting {
     image: Option<PathBuf>,
     /// When it came in (RFC 3339): the list shows the newest first.
     at: String,
+    /// A passing notification held in the list for a while (`BUMPED`): when it goes, and the
+    /// whole time its tint drains over.
+    timer: Option<(Instant, Duration)>,
 }
 
 /// A capsule beside the badge.
 struct Line {
     serial: u64,
-    /// Lines it replaced while they still showed (its "+N").
-    burst: usize,
+    born: Instant,
+    /// Names the badge wearing its image: a capsule that replaces one still wearing one keeps
+    /// its name and the badge wears it at full size at once, instead of shrinking and growing
+    /// again for each (the pulse around the badge restarts with every notification, and with it
+    /// any animation inside it).
+    wear: u64,
+    /// It replaced a capsule still showing: it takes the place as it stands, with no fade or
+    /// slide, so there's no frame with neither showing and nothing twitches.
+    replaced: bool,
     /// The `Waiting` it shows, when it's one (it stays counted after the capsule goes).
     waiting: Option<String>,
     session: Option<String>,
@@ -467,6 +492,17 @@ pub struct Badge {
     /// and the height each had: each finishes, however quickly you open the next).
     expanded: Option<(String, Instant)>,
     collapsing: Vec<(String, Instant, f32)>,
+    /// The list's rows as last seen while it's open: a row coming in or going above what
+    /// you're looking at moves the scroll with it.
+    list_ids: Option<Vec<String>>,
+    /// Rows the chip glided up to, and when (they sweep).
+    arrived: HashMap<String, Instant>,
+    /// Rows that came in above while the list was open (its "↑ N new" chip), the newest one's
+    /// color, and a count naming each time the chip comes out (it springs in then, not as its
+    /// number changes).
+    fresh: Vec<String>,
+    fresh_color: String,
+    fresh_round: u64,
     /// Rows you took off the list (their ×), sliding away toward the badge and closing their
     /// room as the capsule beside it does (`LINE_OUT`), and since when.
     going: Vec<(Waiting, Instant)>,
@@ -683,6 +719,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 multi: n.question.as_ref().is_some_and(|q| q.multi_select),
                 image,
                 at: n.created_at.clone(),
+                timer: None,
             }
         })
         .collect();
@@ -919,6 +956,11 @@ impl Badge {
             cleared: vec![],
             expanded: None,
             collapsing: vec![],
+            list_ids: None,
+            arrived: HashMap::new(),
+            fresh: vec![],
+            fresh_color: String::new(),
+            fresh_round: 0,
             going: vec![],
             landing: None,
             scroll: 0.,
@@ -974,9 +1016,10 @@ impl Badge {
     /// What the list shows (and the badge counts): what's waiting, less what you cleared from
     /// it, newest first.
     fn rows(&self) -> Vec<&Waiting> {
-        let mut rows: Vec<&Waiting> = self.waiting().into_iter().filter(|w| !self.cleared.contains(&w.id)).collect();
-        rows.sort_by(|a, b| b.at.cmp(&a.at));
-        rows
+        let mut rows: Vec<(usize, &Waiting)> = self.waiting().into_iter().filter(|w| !self.cleared.contains(&w.id)).enumerate().collect();
+        // Times are to the second: in the same second, the one added last is the newest.
+        rows.sort_by(|(i, a), (j, b)| b.at.cmp(&a.at).then(j.cmp(i)));
+        rows.into_iter().map(|(_, w)| w).collect()
     }
 
     fn open_list(&mut self) {
@@ -989,6 +1032,69 @@ impl Badge {
         self.glide = None;
         self.expanded = None;
         self.collapsing.clear();
+        self.arrived.clear();
+        self.fresh.clear();
+        self.snapshot();
+    }
+
+    /// Note the list's rows as they are (what comes in or goes after is measured from them).
+    fn snapshot(&mut self) {
+        self.list_ids = Some(self.rows().iter().map(|w| w.id.clone()).collect());
+    }
+
+    /// The open list's rows changed. Nothing you're looking at moves: one that came in above
+    /// it (at the top, even with the list scrolled all the way up) grows the scroll by its room
+    /// and the "↑ N new" chip counts it, and one that went from above takes its room with it.
+    /// Pushing rows down as they came in was too fast to read with several arriving.
+    fn reflow(&mut self) {
+        if !self.list || self.list_closing.is_some() {
+            self.list_ids = None;
+            return;
+        }
+        let rows: Vec<(String, String)> = self.rows().iter().map(|w| (w.id.clone(), w.color.clone())).collect();
+        let Some(prev) = self.list_ids.replace(rows.iter().map(|(id, _)| id.clone()).collect()) else { return };
+        let now = Instant::now();
+        let s = self.scroll_now(now);
+        let slot = ROW + GAP;
+        let mut delta = 0.;
+        for (j, id) in prev.iter().enumerate() {
+            if !rows.iter().any(|(r, _)| r == id) && (j + 1) as f32 * slot <= s + 0.5 {
+                delta -= slot;
+            }
+        }
+        for (i, (id, color)) in rows.iter().enumerate() {
+            if prev.contains(id) {
+                continue;
+            }
+            if (i as f32) * slot <= s + delta {
+                delta += slot;
+                if self.fresh.is_empty() {
+                    self.fresh_round += 1;
+                }
+                self.fresh.push(id.clone());
+                self.fresh_color = color.clone();
+            }
+        }
+        if delta != 0. {
+            self.glide = None;
+            self.scroll = (s + delta).max(0.);
+        }
+    }
+
+    /// The "↑ N new" chip: glide up to what came in (each sweeps as it gets there).
+    fn to_fresh(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let from = self.scroll_now(now);
+        if !super::queue::reduce_motion() {
+            for id in self.fresh.drain(..) {
+                self.arrived.insert(id, now);
+            }
+        }
+        self.fresh.clear();
+        self.list_touched = now;
+        self.scroll = 0.;
+        self.glide = (!super::queue::reduce_motion()).then_some((from, 0., now));
+        cx.notify();
     }
 
     /// Whether clicking the badge has a list to open: what's waiting, or a capsule beside it.
@@ -1010,6 +1116,7 @@ impl Badge {
         self.open_list();
         if let Some((id, fill, color, held)) = landing {
             self.held.extend(held);
+            self.snapshot();
             self.lines.clear();
             if let Some(from) = self.zones.line.get().filter(|_| !super::queue::reduce_motion()) {
                 self.landing = Some(Landing { id, from, fill, color, at: now, to: Rc::new(Cell::new(None)) });
@@ -1238,6 +1345,9 @@ impl Badge {
             return;
         }
         self.scroll = (s - dy).clamp(lo.min(s), hi.max(s));
+        if self.scroll <= 0.5 {
+            self.fresh.clear();
+        }
         cx.notify();
     }
 
@@ -1262,6 +1372,9 @@ impl Badge {
                 || !self.collapsing.is_empty()
                 || !self.going.is_empty()
                 || self.landing.is_some()
+                || !self.arrived.is_empty()
+                // Held rows' tints drain (and closing rows close up).
+                || self.held.iter().any(|w| w.timer.is_some())
                 || self.cool.is_some()
                 || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE)
                 || self.hot.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < GROW))
@@ -1277,6 +1390,7 @@ impl Badge {
             }
         }
         self.cleared.retain(|id| self.needs.iter().any(|w| w.id == *id));
+        self.reflow();
         let n = self.rows().len();
         if n > 0 && let Some(d) = self.debug.take() {
             self.list = d == "list" || d == "card";
@@ -1284,6 +1398,14 @@ impl Badge {
                 self.expanded = self.rows().first().map(|w| (w.id.clone(), Instant::now()));
             }
             self.menu = d == "menu";
+            // `MIDNA_DEBUG_BADGE_SCROLL=<px>`: the list opens scrolled that far (what comes in
+            // above it then shows the "↑ N new" chip).
+            if self.list {
+                self.list_since = Instant::now();
+                self.list_touched = Instant::now() + Duration::from_secs(3600);
+                self.scroll = crate::dev::var("MIDNA_DEBUG_BADGE_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.);
+                self.snapshot();
+            }
         }
         if n != self.count {
             self.from = self.count;
@@ -1311,6 +1433,10 @@ impl Badge {
         let stay = crate::ui::toast::stay_of(&p);
         let color = p.color.clone().unwrap_or_else(|| default_color(&p.category).into());
         let mut waiting = None;
+        // A `notify.send` id replaces its own, wherever it is.
+        if let Some(sent) = p.id.as_deref() {
+            self.held.retain(|w| w.sent.as_ref().is_none_or(|s| s.id != sent));
+        }
         if let Some(id) = p.needs_you_id.clone() {
             if !self.needs.iter().any(|w| w.id == id) {
                 // It replaces the terminal's older ones (`needs_you.replace`): they go now too, so
@@ -1339,6 +1465,7 @@ impl Badge {
                     multi: need.as_ref().and_then(|n| n.question.as_ref()).is_some_and(|q| q.multi_select),
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
+                    timer: None,
                 });
             }
             waiting = Some(id);
@@ -1368,6 +1495,7 @@ impl Badge {
                 multi: false,
                 image: p.image.clone().map(PathBuf::from),
                 at: midna_proto::time::now_rfc3339(),
+                timer: None,
             });
             waiting = Some(id);
         }
@@ -1386,14 +1514,51 @@ impl Badge {
         let text = body.next().unwrap_or(&p.title).to_string();
         let detail = Some(body.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty());
         let label = p.label.clone().or_else(|| midna_proto::notify::category(&p.category).map(|c| c.label.to_string())).unwrap_or_default();
-        // The newest shows at once; the ones it cut short are its "+N" (what they're about is
-        // still counted, or in the stack).
-        let burst = self.lines.front().filter(|l| l.leaving.is_none()).map_or(0, |l| l.burst + 1);
-        self.lines.clear();
         let now = Instant::now();
+        // The list is open: it goes straight in (a passing one for `BUMPED` times its time).
+        if self.list && self.list_closing.is_none() {
+            if let Some(stay) = stay.filter(|_| waiting.is_none()) {
+                let mut lines = p.body.lines().map(str::trim).filter(|l| !l.is_empty());
+                self.held.push(Waiting {
+                    id: format!("h{}", self.serial),
+                    sent: Sent::of(&p),
+                    need: None,
+                    session,
+                    category: p.category.clone(),
+                    name,
+                    label,
+                    color,
+                    title: lines.next().unwrap_or(&p.title).to_string(),
+                    detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
+                    command: None,
+                    approval: false,
+                    options: vec![],
+                    multi: false,
+                    image: p.image.clone().map(PathBuf::from),
+                    at: midna_proto::time::now_rfc3339(),
+                    timer: Some((now + stay * BUMPED, stay * BUMPED)),
+                });
+            }
+            self.recount(cx);
+            return;
+        }
+        // The newest shows at once. A passing one it cuts short goes into the list for
+        // `BUMPED` times its time (what the others are about is already there).
+        if let Some(l) = self.lines.front().filter(|l| l.leaving.is_none() && l.waiting.is_none() && !l.sent.as_ref().is_some_and(|s| p.id.as_ref() == Some(&s.id)))
+            && let Some(stay) = l.stay
+        {
+            let span = stay * BUMPED;
+            let w = Waiting { id: format!("h{}", l.serial), at: midna_proto::time::now_rfc3339(), timer: Some((l.born + span, span)), ..self.line_waiting(l) };
+            self.held.push(w);
+        }
+        let wear = self.lines.front().filter(|l| l.leaving.is_none() && l.image.is_some() && p.image.is_some()).map_or(self.serial, |l| l.wear);
+        let replaced = self.lines.front().is_some_and(|l| l.leaving.is_none());
+        self.lines.clear();
         self.lines.push_back(Line {
-            burst,
             serial: self.serial,
+            born: now,
+            wear,
+            replaced,
             waiting,
             session,
             need: p.needs_you_id.clone(),
@@ -1457,6 +1622,7 @@ impl Badge {
             multi: false,
             image: l.image.clone(),
             at: String::new(),
+            timer: None,
         }
     }
 
@@ -1758,6 +1924,38 @@ impl Badge {
         self.going.retain(|(_, t)| now.duration_since(*t) < LINE_OUT);
         changed |= self.going.len() != before;
 
+        // Rows held for a while: the pointer on one (or its card open) holds it. Run out, it
+        // slides away where you can see it; above what you're looking at, or with the list
+        // shut, it just goes (the rows on screen stay put).
+        let holding: Option<String> = self.hot.as_ref().filter(|_| self.hot_left.is_none()).map(|(h, _)| h.clone()).or_else(|| self.expanded.as_ref().map(|(e, _)| e.clone()));
+        for w in self.held.iter_mut() {
+            if let Some((until, span)) = w.timer
+                && holding.as_deref() == Some(w.id.as_str())
+            {
+                w.timer = Some((until.max(now + LINE_LINGER), span));
+            }
+        }
+        if self.held.iter().any(|w| w.timer.is_some_and(|(until, _)| now >= until)) {
+            let s = self.scroll_now(now);
+            let order: Vec<String> = self.rows().iter().map(|w| w.id.clone()).collect();
+            let showing = self.list && self.list_closing.is_none() && !super::queue::reduce_motion();
+            let (out, keep): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.held).into_iter().partition(|w| w.timer.is_some_and(|(until, _)| now >= until));
+            self.held = keep;
+            for w in out {
+                let i = order.iter().position(|id| *id == w.id).unwrap_or(0);
+                if showing && (i + 1) as f32 * (ROW + GAP) > s + 0.5 {
+                    self.going.push((w, now));
+                }
+            }
+            self.recount(cx);
+            changed = true;
+        }
+        self.arrived.retain(|_, at| now.duration_since(*at) < ROW_SWEEP_AFTER + ROW_SWEEP);
+        // Their tints drain: redraw on the tick too, not only on animation frames.
+        if self.list && self.held.iter().any(|w| w.timer.is_some()) {
+            changed = true;
+        }
+
         if self.watched_at.is_none_or(|t| now.duration_since(t) >= WATCH_EVERY) {
             self.watched_at = Some(now);
             let shared = self.sharing != Sharing::Show && screen_watched();
@@ -2052,7 +2250,7 @@ impl Badge {
             .child(diamond(9., lead));
         let kinds = div().flex().items_center().gap(px(4.)).children(tally.iter().take(3).map(|(c, _)| diamond(6., self.color(t, c))));
         // While a capsule with an image shows, the badge wears it in the diamond's place.
-        let worn = self.lines.front().filter(|_| !self.quiet()).and_then(|l| Some(self.worn(l.serial, l.leaving.is_some(), l.image.clone()?, self.color(t, &l.color), reduce)));
+        let worn = self.lines.front().filter(|_| !self.quiet()).and_then(|l| Some(self.worn(l.wear, l.wear != l.serial, l.leaving.is_some(), l.image.clone()?, self.color(t, &l.color), reduce)));
         // The shine: the theme's cyan (Twilight's teal), fading out toward both ends.
         let glow = t.ansi[6];
         let shine = div()
@@ -2142,7 +2340,7 @@ impl Badge {
 
     /// The image the badge wears while its capsule shows, ringed in the kind's color: it grows
     /// out of the diamond's place when the capsule springs out, and shrinks back as it leaves.
-    fn worn(&self, serial: u64, leaving: bool, path: PathBuf, color: Hsla, reduce: bool) -> AnyElement {
+    fn worn(&self, wear: u64, worn: bool, leaving: bool, path: PathBuf, color: Hsla, reduce: bool) -> AnyElement {
         let full = SIZE - 10.;
         // The badge's start padding, taken back as it grows, so it sits evenly in the round end.
         let at = move |k: f32| (WEAR_FROM + (full - WEAR_FROM) * k, -8. * k.max(0.));
@@ -2158,20 +2356,20 @@ impl Badge {
                 .overflow_hidden()
                 .child(img(path.clone()).size_full().rounded_full().object_fit(ObjectFit::Cover))
         };
-        if reduce {
+        if reduce || (worn && !leaving) {
             return el(1.).into_any_element();
         }
         if leaving {
             let base = el(1.);
             return base
-                .with_animation(SharedString::from(format!("unwear-{serial}")), Animation::new(LINE_OUT).with_easing(ease_in), move |d, p| {
+                .with_animation(SharedString::from(format!("unwear-{wear}")), Animation::new(LINE_OUT).with_easing(ease_in), move |d, p| {
                     let (size, ml) = at(1. - p);
                     d.size(px(size)).ml(px(ml)).opacity(1. - p)
                 })
                 .into_any_element();
         }
         el(0.)
-            .with_animation(SharedString::from(format!("wear-{serial}")), Animation::new(WEAR).with_easing(back_out), move |d, p| {
+            .with_animation(SharedString::from(format!("wear-{wear}")), Animation::new(WEAR).with_easing(back_out), move |d, p| {
                 let (size, ml) = at(p);
                 d.size(px(size)).ml(px(ml))
             })
@@ -2215,7 +2413,6 @@ impl Badge {
         let reduce = super::queue::reduce_motion();
         let color = self.color(t, &l.color);
         let right = self.side().right();
-        let extra = l.burst;
         let hover = self.hover == Some("line");
         let key = format!("line:{}", l.serial);
         let k = self.grow(&key, Instant::now()).max(0.);
@@ -2302,10 +2499,7 @@ impl Badge {
                 .pr(px(if out || need.as_ref().is_some_and(|_| hover) { 6. } else { 14. }))
                 .child(icon_of(&l.category).el(14., color))
                 .child(div().flex_none().max_w(px(180.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(l.name.clone()))
-                .child(div().min_w_0().truncate().text_color(t.dim).child(l.text.clone()))
-                .when(extra > 0, |d| {
-                    d.child(div().flex_none().px(px(7.)).rounded(px(9.)).bg(t.raised).text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(t.fg).child(format!("+{extra}")))
-                }),
+                .child(div().min_w_0().truncate().text_color(t.dim).child(l.text.clone())),
         );
         if let (Some(id), true) = (need, hover) {
             let (a, d) = (id.clone(), id);
@@ -2359,12 +2553,16 @@ impl Badge {
             return row.into_any_element();
         }
         let dir = if right { 1. } else { -1. };
+        let replaced = l.replaced;
         match l.leaving {
             Some(_) => row
                 .with_animation(SharedString::from(format!("line-out-{}", l.serial)), Animation::new(LINE_OUT).with_easing(ease_in), move |el, d| {
                     el.opacity(1. - d).left(px(dir * 20. * d))
                 })
                 .into_any_element(),
+            // A replacement takes the place as it stands: no fade (a frame without it) and no
+            // slide (it would twitch toward the badge as the badge's ring goes out).
+            None if replaced => row.into_any_element(),
             None => row
                 .with_animation(SharedString::from(format!("line-in-{}", l.serial)), Animation::new(LINE_IN).with_easing(back_out), move |el, d| {
                     el.opacity((d * 2.).min(1.)).left(px(dir * 28. * (1. - d)))
@@ -2486,6 +2684,42 @@ impl Badge {
                 .map(|d| if right { d.right_0() } else { d.left_0() })
                 .child(div().absolute().left_0().right_0().top(px(at)).h(px(size)).rounded(px(2.)).bg(t.dim.opacity(0.6)))
         });
+        // Rows came in above: "↑ N new" at the top edge, clicking it glides up.
+        let chip = (!self.fresh.is_empty() && s > 0.5).then(|| {
+            let n = self.fresh.len();
+            let pill = div()
+                .id("list-fresh")
+                .h(px(26.))
+                .px(px(11.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(13.))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.dim.opacity(0.3))
+                .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.5), offset: point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.), inset: false }])
+                .text_size(px(12.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(t.fg)
+                .cursor_pointer()
+                .hover(|s| s.bg(t.line))
+                // The row under it doesn't take the click (or the pointer) too.
+                .occlude()
+                .on_click(cx.listener(|b, _, _, cx| {
+                    cx.stop_propagation();
+                    b.to_fresh(cx);
+                }))
+                .child(Icon::Arrow.el(10., t.fg).with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2))))
+                .child(format!("{n} new"))
+                .child(div().size(px(6.)).rounded_full().bg(self.color(t, &self.fresh_color)));
+            let pill = if super::queue::reduce_motion() {
+                pill.into_any_element()
+            } else {
+                pill.with_animation(SharedString::from(format!("fresh-{}", self.fresh_round)), Animation::new(CHIP_IN).with_easing(back_out), |el, d| el.mt(px(-8. * (1. - d))).opacity(d.min(1.))).into_any_element()
+            };
+            div().absolute().top(px(6.)).w(px(LIST_W)).flex().justify_center().map(|d| if right { d.right_0() } else { d.left_0() }).child(pill)
+        });
         let viewport = div()
             .id("badge-list")
             .relative()
@@ -2494,7 +2728,8 @@ impl Badge {
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|b, e: &ScrollWheelEvent, _, cx| b.wheel(f32::from(e.delta.pixel_delta(px(18.)).y), cx)))
             .child(col)
-            .children(thumb);
+            .children(thumb)
+            .children(chip);
         let clear = div()
             .id("list-clear")
             .px(px(10.))
@@ -2542,6 +2777,7 @@ impl Badge {
         let id = w.id.clone();
         let mut row = div()
             .id(SharedString::from(format!("row-{}", w.id)))
+            .relative()
             .h(px(ROW))
             .max_w(px(LIST_W - 10.))
             .flex()
@@ -2566,6 +2802,31 @@ impl Badge {
                     cx.notify();
                 }
             }));
+        // Held for a while: its tint clears from left to right as its time runs, as it did
+        // beside the badge (rounded like the row: GPUI doesn't clip a child to its corners).
+        if let Some((until, span)) = w.timer {
+            let left = 1. - (until.saturating_duration_since(now).as_secs_f32() / span.as_secs_f32()).clamp(0., 1.);
+            row = row.child(div().absolute().top_0().bottom_0().right_0().left(relative(left)).rounded(px(18.)).bg(color.opacity(0.16 * fill)));
+        }
+        // Just came in: a band of its color sweeps across it.
+        if let Some(at) = self.arrived.get(&w.id) {
+            let d = now.duration_since(*at).saturating_sub(ROW_SWEEP_AFTER).as_secs_f32() / ROW_SWEEP.as_secs_f32();
+            if d > 0. && d < 1. {
+                let a = 0.35 * (d * 4.).min(1.) * ((1. - d) * 4.).min(1.);
+                let half = |from: f32, to: f32| linear_gradient(90., linear_color_stop(color.opacity(from), 0.), linear_color_stop(color.opacity(to), 1.));
+                row = row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(relative(0.45))
+                        .left(relative(-0.45 + 1.45 * d))
+                        .flex()
+                        .child(div().flex_1().h_full().bg(half(0., a)))
+                        .child(div().flex_1().h_full().bg(half(a, 0.))),
+                );
+            }
+        }
         if out {
             let id = id.clone();
             row = row.child(
