@@ -211,7 +211,8 @@ const TOPICS: &[(&str, &str)] = &[
         (1 = once; a new value restarts the count) narrow it); globs ok. \
         Filters: session, project, agent (claude|codex), idle_minutes, cron, match {dotted.path: glob} (case-insensitive, all must match the \
         hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
-        order, each waits until the agent is ready), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \
+        order, each waits until the agent is ready; on agent.prompt_blocked midna first clears the refused prompt Claude put \
+        back in its input box), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \
         clear_on: prompt|turn|status|never} (shown instead of the built-in status, which still drives sorting and \
         Needs You), clear_status, notify {title, body?, sound, category?} (a macOS notification, category from_trigger or a kind the human added); also attention, run_command, start_agent. Templates: {{last_prompt}} (the terminal's \
         latest full prompt), {{event}}, {{session.id|name|project_id|agent|status}}, {{data.<path>}} or bare {{<path>}} \

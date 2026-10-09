@@ -9,7 +9,9 @@
 //! first as `failed` and holds the queue until it is retried, sent now or removed.
 //!
 //! Local triggers' `send_to_session` adds its steps here, so triggers, agents and the human
-//! share one ordered queue per terminal.
+//! share one ordered queue per terminal. Steps fired by `agent.prompt_blocked` remember the
+//! refused prompt, which Claude puts back in its input box: a box holding exactly that doesn't
+//! hold them, and it is cleared (ctrl-c) before they are typed.
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, Role};
 use crate::state::hex_id;
@@ -27,6 +29,8 @@ const BUSY_GRACE: Duration = Duration::from_secs(5);
 const READY_FOR: Duration = Duration::from_millis(1500);
 const PASTE_GAP: Duration = Duration::from_millis(250);
 const ENTER_DELAY: Duration = Duration::from_millis(300);
+/// How long Claude gets to empty its input box after ctrl-c.
+const CLEAR_WAIT: Duration = Duration::from_secs(2);
 pub const MAX_ITEMS: usize = 50;
 
 /// What the worker remembers about a terminal between ticks.
@@ -45,6 +49,8 @@ struct Book {
     watch: HashMap<Id, Watch>,
     /// Terminals a message is being typed into.
     sending: HashSet<Id>,
+    /// Queued message → the refused prompt its trigger (`agent.prompt_blocked`) answers.
+    blocked: HashMap<Id, String>,
 }
 
 #[derive(Default)]
@@ -84,8 +90,13 @@ fn tick(d: &Arc<Daemon>) {
         let core = d.core();
         core.state.sessions.iter().filter(|s| !s.queue_paused).filter_map(|s| Some((s.id.clone(), s.queue.first()?.clone()))).collect()
     };
+    let queued: HashSet<Id> = d.core().state.sessions.iter().flat_map(|s| s.queue.iter().map(|m| m.id.clone())).collect();
     let live: HashSet<&Id> = heads.iter().map(|(s, _)| s).collect();
-    d.queue.book().watch.retain(|s, _| live.contains(s));
+    {
+        let mut book = d.queue.book();
+        book.watch.retain(|s, _| live.contains(s));
+        book.blocked.retain(|m, _| queued.contains(m));
+    }
     for (sid, head) in heads {
         if head.state != QueueState::Waiting || d.queue.book().sending.contains(&sid) {
             continue;
@@ -145,8 +156,11 @@ fn waiting(d: &Daemon, sid: &str, m: &QueuedMessage) -> Vec<String> {
             }
         }
     }
-    let unsubmitted = d.queue.book().watch.get(sid).is_some_and(|x| x.unsubmitted);
-    let ready = readiness(d, sid, !unsubmitted);
+    let (unsubmitted, restored) = {
+        let book = d.queue.book();
+        (book.watch.get(sid).is_some_and(|x| x.unsubmitted), book.blocked.get(&m.id).cloned())
+    };
+    let ready = readiness(d, sid, !unsubmitted, restored.as_deref());
     let mut book = d.queue.book();
     let watch = book.watch.entry(sid.to_string()).or_default();
     match ready {
@@ -176,8 +190,9 @@ fn ready_is_busy(why: &str) -> bool {
 }
 
 /// Can `sid` take input now? `Ok(None)` = yes, `Ok(Some(why))` = not yet, `Err` = it never
-/// will as things are (the terminal closed or its process ended).
-pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool) -> Result<Option<String>, String> {
+/// will as things are (the terminal closed or its process ended). An input box holding exactly
+/// `restored` (a refused prompt Claude put back) counts as empty.
+pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool, restored: Option<&str>) -> Result<Option<String>, String> {
     let (rt, agent, title, state, labelled, in_turn, alive) = {
         let core = d.core();
         let s = core.state.session(sid).ok_or("the terminal closed")?;
@@ -207,12 +222,44 @@ pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool) -> Result<Option<
     // Never type on top of a draft. (No input box found = can't tell, e.g. a shell: go.)
     if check_input_box
         && agent == Some(AgentKind::Claude)
-        && let Some(Some(t)) = rt.with(|e| e.screen_undimmed()).map(|rows| crate::agent_work::claude_input_text(&rows))
+        && let Some(t) = input_box(&rt)
         && !t.trim().is_empty()
+        && !restored.is_some_and(|r| same_text(&t, r))
     {
         return Ok(Some("the text typed in the input box to be sent or cleared".into()));
     }
     Ok(None)
+}
+
+/// The text in Claude's input box (None = no box found).
+fn input_box(rt: &crate::term::RtHandle) -> Option<String> {
+    rt.with(|e| e.screen_undimmed()).and_then(|rows| crate::agent_work::claude_input_text(&rows))
+}
+
+/// The same text once whitespace is ignored: the box wraps and indents long prompts.
+fn same_text(a: &str, b: &str) -> bool {
+    a.chars().filter(|c| !c.is_whitespace()).eq(b.chars().filter(|c| !c.is_whitespace()))
+}
+
+/// Clear the refused prompt Claude put back in its input box, if the box still holds it.
+fn clear_restored(d: &Daemon, sid: &str, m: &QueuedMessage) -> Result<(), String> {
+    use midna_proto::frame::{ClientMsg, KeyAction, KeyMsg, MOD_CTRL};
+    let Some(restored) = d.queue.book().blocked.get(&m.id).cloned() else { return Ok(()) };
+    let rt = d.rt(sid).ok_or("the terminal's process ended")?;
+    if !input_box(&rt).is_some_and(|t| same_text(&t, &restored)) {
+        return Ok(());
+    }
+    if !rt.client(ClientMsg::Key(KeyMsg { action: KeyAction::Press, mods: MOD_CTRL, key: "c".into(), text: String::new() })) {
+        return Err("the terminal stopped taking input".into());
+    }
+    let t0 = Instant::now();
+    while input_box(&rt).is_some_and(|t| !t.trim().is_empty()) {
+        if t0.elapsed() > CLEAR_WAIT {
+            return Err("the blocked prompt didn't clear from the input box".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 /// Unix time of the terminal's last output, prompt or status change.
@@ -235,6 +282,7 @@ fn still_running(d: &Daemon, other: &str) -> Option<String> {
 
 /// Type one message the way `session.input` would for whoever queued it.
 fn type_message(d: &Arc<Daemon>, sid: &str, m: &QueuedMessage) -> Result<(), String> {
+    clear_restored(d, sid, m)?;
     let ctx = ctx_for(&m.by);
     let input = |text: &str, enter: bool, images: Vec<String>| {
         let p = SessionInputParams { id: sid.to_string(), text: text.to_string(), enter, images };
@@ -494,13 +542,17 @@ pub fn send_now(d: &Arc<Daemon>, sid: &str, id: &str) -> Result<(), RpcError> {
 }
 
 /// A local trigger's `send_to_session`: its steps, in order, at the end of the queue.
-pub fn add_steps(d: &Daemon, sid: &str, t: &Trigger, by: Actor, steps: Vec<(String, bool)>) -> Result<usize, String> {
+/// `restored` is the refused prompt when the trigger answers `agent.prompt_blocked`.
+pub fn add_steps(d: &Daemon, sid: &str, t: &Trigger, by: Actor, steps: Vec<(String, bool)>, restored: Option<String>) -> Result<usize, String> {
     if d.core().state.session(sid).is_some_and(|s| s.queue.iter().any(|m| m.trigger_id.as_deref() == Some(t.id.as_str()))) {
         return Err("still queued from an earlier firing".into());
     }
     let n = steps.len();
     for (text, enter) in steps {
-        add(d, sid, text, enter, vec![], SendWhen::Idle, None, by.clone(), Some(t.id.clone())).map_err(|e| e.message)?;
+        let m = add(d, sid, text, enter, vec![], SendWhen::Idle, None, by.clone(), Some(t.id.clone())).map_err(|e| e.message)?;
+        if let Some(r) = restored.as_ref().filter(|r| !r.trim().is_empty()) {
+            d.queue.book().blocked.insert(m.id, r.clone());
+        }
     }
     Ok(n)
 }

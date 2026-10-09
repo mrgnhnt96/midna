@@ -639,7 +639,8 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
                 return Err(format!("{} has no prompt to resend yet", s.name));
             }
             let rendered: Vec<(String, bool)> = steps.iter().map(|x| (r(&x.text, false), x.enter)).collect();
-            let n = crate::queue::add_steps(d, &s.id, t, actor_of(t), rendered)?;
+            let restored = (event == kinds::AGENT_PROMPT_BLOCKED).then(|| lookup(data, "prompt")).flatten();
+            let n = crate::queue::add_steps(d, &s.id, t, actor_of(t), rendered, restored)?;
             Ok((None, format!("Queued {n} step{} for {}", if n == 1 { "" } else { "s" }, s.name)))
         }),
         TriggerAction::SetStatus { label, color, icon, base, clear_on } => target().map(|s| {
