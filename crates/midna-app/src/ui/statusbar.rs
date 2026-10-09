@@ -289,7 +289,7 @@ fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
     div().id("daemon").child(daemon).tooltip(tip("midnad: the background daemon that runs your terminals. They keep running when this window closes.")).into_any_element()
 }
 
-/// "Keeping awake" while midnad holds its keep-awake assertion (nothing otherwise). Click: Settings.
+/// A sun while midnad holds its keep-awake assertion (nothing otherwise); the tooltip says why. Click: Settings.
 fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let k = &m.keep_awake;
     if k["held"] != true {
@@ -306,8 +306,7 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
             .gap(px(4.))
             .cursor_pointer()
             .hover(move |s| s.text_color(fg))
-            .child(Icon::Sun.el(11., t.work))
-            .child("Keeping awake")
+            .child(Icon::Sun.el(12., t.work))
             .tooltip(tip(format!("{line}. The display may still sleep; closing the lid still sleeps the Mac. Settings › Agents › Keep the Mac awake.")))
             .on_click(move |_, _, cx| crate::settings_window::open(backend.clone(), cx))
             .into_any_element(),
