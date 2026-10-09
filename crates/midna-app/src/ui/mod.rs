@@ -114,12 +114,34 @@ fn state_color(state: StatusState) -> &'static str {
 }
 
 /// A terminal's dot: a trigger's custom status first, then a `ui.status.looks` color, else
-/// the built-in dot.
+/// the built-in dot. A done dot whose agent still runs background work gets a ring
+/// (`ui.status.background_ring`).
 pub fn terminal_dot(m: &MainWindow, t: &Theme, s: &Session, size: f32) -> Div {
     let state = m.effective_state(s);
     if s.custom_status.is_some() {
         return session_dot(t, state, s.custom_status.as_ref(), size);
     }
+    let dot = plain_terminal_dot(m, t, s, state, size);
+    match background_ring(m, t, s) {
+        Some(ring) if state == StatusState::Done => {
+            // A circle drawn around the dot, outside its box so rows don't shift (a spread
+            // shadow keeps the dot's corner radius and comes out square).
+            let out = size * 0.375;
+            let circle = div().absolute().top(px(-out)).left(px(-out)).size(px(size + 2. * out)).rounded_full().border_color(ring);
+            div().relative().size(px(size)).flex_none().child(border_w(circle, size * 0.19)).child(dot)
+        }
+        _ => dot,
+    }
+}
+
+/// The ring color for a terminal with background work still running, unless the setting is off.
+pub fn background_ring(m: &MainWindow, t: &Theme, s: &Session) -> Option<Hsla> {
+    crate::app::background_note(s)?;
+    let c = m.settings.get("ui.status.background_ring").and_then(|v| v.as_str()).unwrap_or("blue");
+    (c != "off").then(|| t.status_color(c))
+}
+
+fn plain_terminal_dot(m: &MainWindow, t: &Theme, s: &Session, state: StatusState, size: f32) -> Div {
     match look(m, s).color {
         Some(c) => {
             let color = t.status_color(&c);

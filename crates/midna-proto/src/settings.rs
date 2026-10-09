@@ -407,6 +407,8 @@ fn check_insights_layout(value: &str) -> Result<(), String> {
 }
 /// Theme colors an Insights color setting can name (or `#RRGGBB`).
 pub const CHART_COLORS: &[&str] = &["accent", "work", "need", "ok", "err", "fg", "dim"];
+/// Colors `ui.status.background_ring` can name (or `#RRGGBB`); off hides the ring.
+pub const RING_COLORS: &[&str] = &["blue", "purple", "orange", "yellow", "teal", "pink", "amber", "gray", "off"];
 
 /// Built-in parts of `ui.header.script` / `ui.row.script` / `ui.status.script`. Join them
 /// with `+` (`worktree+branch`); `github` = worktree+branch+sync+diff+files+pr.
@@ -517,6 +519,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Header toolbar buttons, left to right (More is always last): subagents, links, ide, image, split, popout, restart, or an absolute path to your own button script (it prints the button's look and runs again with MIDNA_CLICK=1 when clicked; `midna explain scripts`). A built-in left out moves into the More (…) menu; its shortcut still works. Adding a script path is human only."),
     s!("ui.status.looks", SettingKind::RuleList, L(&[]), "appearance", false,
         "Restyle built-in statuses, one rule per status, only what you list: `<status> = <color> icon:<name> label:<text>` (each part optional). status: idle, working, needs_you, done, failed, exited, optionally for one kind of terminal (`claude.working`, `codex.done`, `shell.failed`; its fields override the plain rule's). color = the dot (red, orange, amber, yellow, green, teal, blue, purple, pink, gray or #rrggbb); icon replaces the agent icon (check, cross, bell, lock, bolt, play, …); label shows in the header and the row's second line. A trigger's custom status still wins. E.g. `needs_you = pink icon:bell label:Your turn`."),
+    s!("ui.status.background_ring", en_other(RING_COLORS), S("blue"), "appearance", false,
+        "The ring around a done terminal's dot while its agent's background shells or agents still run (the folded project bar counts it as working): blue, purple, orange, yellow, teal, pink, amber, gray, #rrggbb, or off for no ring. Pick a color that stands apart from done's green for your eyes."),
     s!("ui.status.script", en_path(&["worktree+branch", "branch", "github", "none"]), S("worktree+branch"), "appearance", false,
         "Script behind the status bar's `script` item, run for the selected terminal: built-in parts joined with + or an executable path (`midna explain scripts`)."),
     s!("ui.status.items", SettingKind::ItemList { options: STATUS_ITEMS, allow_paths: true }, L(&["daemon", "usage", "cache", "webhooks", "triggers", "hooks", "accessibility", "awake", "spacer", "script", "update", "keys"]), "appearance", false,

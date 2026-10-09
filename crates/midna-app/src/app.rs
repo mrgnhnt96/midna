@@ -1221,6 +1221,15 @@ impl MainWindow {
         if s.status.state != StatusState::Failed && self.need_for_session(&s.id).is_some() { StatusState::NeedsYou } else { s.status.state }
     }
 
+    /// What a folded project's bar counts the session as: a finished turn whose background
+    /// shells or agents still run is working (the agent comes back when they end).
+    pub fn counted_state(&self, s: &Session) -> StatusState {
+        match self.effective_state(s) {
+            StatusState::Done if background_note(s).is_some() => StatusState::Working,
+            st => st,
+        }
+    }
+
     pub fn need_for_session(&self, sid: &str) -> Option<&NeedsYou> {
         self.needs.iter().find(|n| n.session_id.as_deref() == Some(sid))
     }
@@ -2147,9 +2156,36 @@ fn neighbour(rows: &[(String, RowGroup)], id: &str, alive: impl Fn(&str) -> bool
         .map(|(x, _)| x.clone())
 }
 
+/// The agent's background work still running after its turn, as one line ("1 shell still
+/// running", "2 shells and 1 agent still running"); None when there is none.
+pub fn background_note(s: &Session) -> Option<String> {
+    let live: Vec<&str> = s.agent_info.as_ref()?.background.iter().filter(|b| b.status.is_empty() || b.status == "running").map(|b| b.kind.as_str()).collect();
+    let count = |n: usize, one: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        n => Some(format!("{n} {one}s")),
+    };
+    let shells = live.iter().filter(|k| **k == "shell").count();
+    let agents = live.iter().filter(|k| k.contains("agent")).count();
+    let parts: Vec<String> = [count(shells, "shell"), count(agents, "agent"), count(live.len() - shells - agents, "task")].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| format!("{} still running", parts.join(" and ")))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{neighbour, RowGroup};
+    use super::{background_note, neighbour, RowGroup};
+    use crate::model::Session;
+    use midna_proto::{AgentInfo, BackgroundTask};
+
+    #[test]
+    fn background_note_counts_live_work_by_kind() {
+        let task = |kind: &str, status: &str| BackgroundTask { id: kind.into(), kind: kind.into(), status: status.into(), ..Default::default() };
+        let with = |tasks: Vec<BackgroundTask>| Session { agent_info: Some(AgentInfo { background: tasks, ..Default::default() }), ..Default::default() };
+        assert_eq!(background_note(&Session::default()), None);
+        assert_eq!(background_note(&with(vec![task("shell", "completed")])), None);
+        assert_eq!(background_note(&with(vec![task("shell", "running")])).as_deref(), Some("1 shell still running"));
+        assert_eq!(background_note(&with(vec![task("shell", ""), task("shell", "running"), task("subagent", "running")])).as_deref(), Some("2 shells and 1 agent still running"));
+    }
 
     fn rows(spec: &[(&str, Option<&str>)]) -> Vec<(String, RowGroup)> {
         spec.iter().map(|(id, p)| (id.to_string(), match *p { Some("bg") => RowGroup::Background, p => RowGroup::Project(p.map(str::to_string)) })).collect()

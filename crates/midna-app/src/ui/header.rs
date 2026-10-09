@@ -23,7 +23,10 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .pr(px(10.))
         .border_b_1()
         .border_color(t.line)
-        .child(terminal_dot(m, t, s, 9.))
+        .child(match crate::app::background_note(s).filter(|_| m.effective_state(s) == crate::model::StatusState::Done) {
+            Some(note) => div().id("header-dot").child(terminal_dot(m, t, s, 9.)).tooltip(tip(format!("Turn done · {note}"))).into_any_element(),
+            None => terminal_dot(m, t, s, 9.).into_any_element(),
+        })
         .child(match crate::ui::rename::field(m, &s.id, crate::ui::rename::At::Header, t, 15., cx) {
             Some(f) => f,
             None => {

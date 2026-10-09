@@ -1211,3 +1211,11 @@ A tooltip used to be one row with no width limit, so a setting's full descriptio
 - **Elsewhere**: list rows, the floating badge and toasts title it "Change “<label>”" with a one-line summary ("Adds ci-status.sh · Removes Awake", "Turns it on", "Sets it to 12") instead of the command. Approving from the badge saves the agent's value.
 - **Dev**: `MIDNA_DEBUG_SCREEN=needs:<id>` opens Needs you on an item; the fake backend has `n_settng` (a status-bar script ask). The fake backend reads `app-state.json` from the working directory, so snapshot runs start from a folder holding `{"onboarding":{"finished":true}}`.
 - **Dropped from the board**: the "Review in Settings" button (the user didn't want it) and the switch example, which only illustrated how a Bool looks.
+
+## Done with background work still running (`ui/mod.rs` `terminal_dot`, `app.rs` `background_note`, `ui/fold_peek.rs`; 2026-10-09)
+
+- **Why**: a Claude terminal whose turn ended while its `cargo test` background shell ran showed a plain green "done" dot, while Claude's own footer said "done · 1 shell still running". The daemon already knew (`AgentInfo.background` from the Stop snapshot); the app only read `status.state`. Option A on canvas https://claude.ai/artifact/5jAmvaYTkkuawEAgKSCNXf, with B's bar.
+- **Dot**: status stays `done` (notifications, the queue and "turn finished" keep their meaning). A done dot whose `background` has a task with status `running` (or none) gets a ring: a bordered circle drawn outside the dot's box so rows don't shift. A spread `BoxShadow` can't do it: it keeps the dot's corner radius (clamped to half its size) and comes out as a rounded square. A trigger's custom status skips the ring.
+- **Bar**: `MainWindow::counted_state` counts such a terminal as working in a folded project's bar and peek card, where its line reads "Turn done · 1 shell still running" (shells, agents, other tasks counted by `kind`). The header dot's tooltip says the same.
+- **Setting**: `ui.status.background_ring` (blue, purple, orange, yellow, teal, pink, amber, gray, #rrggbb, or off), default blue: the user asked for it because blue on green is hard to tell apart for some color blindness.
+- **Dev**: the fake backend has `a1f0000b` "test timing" (done, one running shell).

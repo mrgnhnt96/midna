@@ -28,6 +28,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "ui.status.script" => "What the status bar's script item shows.",
         "ui.status.items" => "What the status bar shows, left to right.",
         "ui.status.looks" => "Each status's color, icon and label.",
+        "ui.status.background_ring" => "Ring on a done dot while background shells or agents run.",
         "git.refresh_secs" => "How often git details update.",
         "sidebar.footer.stats" => "The numbers on the sidebar's Insights card.",
         "sidebar.footer.range" => "What the Insights card counts.",

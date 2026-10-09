@@ -242,6 +242,14 @@ impl FakeBackend {
                 s("a1f00005", "p_drops1", "golden", Agent, Some(Claude), NeedsYou, Some("Asked a question"), 12, git("main", 0, 0, 0, None)),
                 s("a1f00006", "p_drops1", "flutter build", Shell, None, Failed, Some("exit 1"), 9, git("main", 0, 0, 0, None)),
                 s("a1f00007", "p_midna1", "spike", Agent, Some(Claude), Working, None, 0, git("main", 210, 41, 9, None)),
+                // A finished turn whose background shell still runs: the ringed dot.
+                Session {
+                    agent_info: Some(midna_proto::AgentInfo {
+                        background: vec![midna_proto::BackgroundTask { id: "bsh1".into(), kind: "shell".into(), status: "running".into(), command: Some("cargo test --workspace".into()), ..Default::default() }],
+                        ..Default::default()
+                    }),
+                    ..s("a1f0000b", "p_midna1", "test timing", Agent, Some(Claude), Done, None, 3, git("main", 0, 0, 0, None))
+                },
                 // A local trigger's custom status (the built-in prompt-blocked one).
                 Session {
                     custom_status: Some(CustomStatus {
