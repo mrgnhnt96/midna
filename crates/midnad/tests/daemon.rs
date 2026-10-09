@@ -837,3 +837,21 @@ fn close_on_exit_closes_a_clean_exit_and_keeps_a_failure() {
     let closed = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.closed"] } }));
     assert!(closed.to_string().contains(&clean) && closed.to_string().contains("\"system\""), "{closed}");
 }
+
+#[test]
+fn pinned_projects_survive_a_restart() {
+    let mut d = TestDaemon::start();
+    let mut h = d.human();
+    let p = call(&mut h, "project.add", json!({ "path": "/tmp" }));
+    assert!(p.get("pinned").is_none(), "unpinned by default: {p}");
+    let id = p["id"].as_str().unwrap().to_string();
+    assert_eq!(call(&mut h, "project.update", json!({ "id": id, "pinned": true }))["pinned"], true);
+    // Leaving `pinned` out keeps it.
+    assert_eq!(call(&mut h, "project.update", json!({ "id": id, "name": "tmp2" }))["pinned"], true);
+    drop(h);
+    d.restart();
+    let mut h = d.human();
+    let p = call(&mut h, "project.list", json!({})).as_array().unwrap().iter().find(|p| p["id"] == id.as_str()).cloned().unwrap();
+    assert_eq!(p["pinned"], true, "{p}");
+    assert!(call(&mut h, "project.update", json!({ "id": id, "pinned": false })).get("pinned").is_none());
+}

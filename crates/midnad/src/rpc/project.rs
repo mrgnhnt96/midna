@@ -48,7 +48,7 @@ fn add_inner(d: &Daemon, actor: Actor, path: &str, name: Option<String>, auto_cr
     }
     let name = name.unwrap_or_else(|| path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&path).to_string());
     let order = core.state.projects.iter().map(|p| p.order + 1).max().unwrap_or(0);
-    let p = Project { id: format!("p_{}", hex_id(6)), name, path, icon: None, order, commands: vec![], last_opened_at: None, auto_created };
+    let p = Project { id: format!("p_{}", hex_id(6)), name, path, icon: None, order, commands: vec![], last_opened_at: None, auto_created, pinned: false };
     core.state.projects.push(p.clone());
     d.mark_dirty();
     d.emit(kinds::PROJECT_ADDED, actor, Some(p.id.clone()), None, serde_json::to_value(&p).unwrap_or_default());
@@ -154,6 +154,9 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: ProjectUpdateParams) -> R {
     }
     if let Some(c) = p.commands {
         proj.commands = c;
+    }
+    if let Some(v) = p.pinned {
+        proj.pinned = v;
     }
     if ctx.is_human() {
         // Renamed or given commands by the human: theirs now, not an agent's leftover.

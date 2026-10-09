@@ -129,6 +129,8 @@ fn lines(m: &MainWindow) -> usize {
     for g in m.groups() {
         let folded = g.project.is_some_and(|p| m.collapsed.contains(&p.id));
         n += usize::from(g.project.is_some());
+        // A pinned project with no terminals has its ghost "New terminal" row.
+        n += usize::from(g.sessions.is_empty());
         n += g.sessions.iter().filter(|s| !folded || m.selected.as_deref() == Some(&s.id)).count();
     }
     n

@@ -1378,7 +1378,7 @@ fn projects(a: &Args, out: OutFn) -> Res {
             println!("no projects");
         }
         for p in list {
-            println!("{}  {}  {}", s_(&p, "id"), s_(&p, "name"), s_(&p, "path"));
+            println!("{}  {}  {}{}", s_(&p, "id"), s_(&p, "name"), s_(&p, "path"), if p["pinned"] == true { "  (pinned)" } else { "" });
             for c in p["commands"].as_array().into_iter().flatten() {
                 println!("    {}{}: {}", s_(c, "name"), if c["pinned"] == true { " (pinned)" } else { "" }, s_(c, "run"));
             }
@@ -1413,6 +1413,11 @@ fn projects(a: &Args, out: OutFn) -> Res {
             a.check(&["name", "icon"])?;
             let id = a.need(2, "project id")?;
             let v = call("project.update", json!({ "id": id, "name": a.get("name"), "icon": a.get("icon") }))?;
+            out(&v, &|v| print_projects(&json!([v])));
+        }
+        verb @ ("pin" | "unpin") => {
+            let id = a.need(2, "project id")?;
+            let v = call("project.update", json!({ "id": id, "pinned": verb == "pin" }))?;
             out(&v, &|v| print_projects(&json!([v])));
         }
         "add-command" => {

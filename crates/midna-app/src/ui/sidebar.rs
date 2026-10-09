@@ -243,7 +243,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let n = m.needs_in_project(pid.as_deref());
         let menu_key = pid.clone().unwrap_or_else(|| "root".into());
         let menu_open = m.menu == Menu::Project(menu_key.clone());
-        let collapsed = pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
+        // A pinned project with no terminals: its heading (and the ghost row under it) opens one.
+        let pinned = g.project.is_some_and(|p| p.pinned);
+        let empty = g.sessions.is_empty();
+        let collapsed = !empty && pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
         // A heading click cascades the rows (as the badge's list does): unfolding, the room opens
         // over FOLD_MS while they drop in one after another; folding, they lift away (the bottom
         // one first), then the room closes. `fold`: 0 = open, 1 = folded (the room's height).
@@ -280,14 +283,19 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             .pb(px(2.))
             .pl(px(10.))
             .cursor_pointer()
-            .tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project"))
-            .on_click(cx.listener(move |m, _, _, cx| {
-                if let Some(p) = toggle_key.clone() {
-                    toggle_fold(m, p, cx);
-                }
+            .map(|d| match empty {
+                true => d.tooltip(super::header::tip(format!("New terminal in {}", g.name))),
+                false => d.tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project")),
+            })
+            .on_click(cx.listener(move |m, _, _, cx| match toggle_key.clone() {
+                Some(p) if empty => m.open_session(Some(p), None, cx),
+                Some(p) => toggle_fold(m, p, cx),
+                None => {}
             }))
             .child(chevron)
-            .child(caps_label(t, &g.name).flex_1().truncate())
+            .child(caps_label(t, &g.name).min_w_0().truncate())
+            .when(pinned, |d| d.child(Icon::PushPin.el(11., t.dim)))
+            .child(div().flex_1())
             .when(n > 0, |d| {
                 d.child(
                     div()
@@ -328,7 +336,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                     .when(menu_open, |d| {
                         // New terminal opens in the current project, so its keys belong on this menu only there
                         let keys = (m.current_project_id() == pid).then(|| m.key_label("keys.new_terminal")).filter(|k| !k.is_empty());
-                        d.child(project_menu(t, pid.clone(), keys, cx))
+                        d.child(project_menu(t, pid.clone(), pinned, keys, cx))
                     }),
             );
         let header = wipe(line, 0., header.into_any_element());
@@ -339,8 +347,13 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             wipe(line, 0., div().flex_none().h(px(crate::ui::fold_peek::BAR_H * fold)).opacity(fold).child(bar).into_any_element())
         });
         line += usize::from(g.project.is_some());
+        let new_row = pid.clone().filter(|_| empty).map(|p| {
+            let el = wipe(line, 26., ghost_row(t, p, cx).into_any_element());
+            line += 1;
+            el
+        });
         // Root terminals belong to no project: no heading, just rows.
-        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).when(g.project.is_none(), |d| d.pt(px(4.)));
+        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(new_row).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());
@@ -1036,9 +1049,33 @@ pub fn open_project_button(m: &MainWindow, t: &Theme, id: &'static str, cx: &mut
         .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).font_weight(FontWeight::NORMAL).child(m.key_label("keys.open_project")))
 }
 
-fn project_menu(t: &Theme, pid: Option<String>, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// The dashed "New terminal" row under a pinned project with no terminals.
+fn ghost_row(t: &Theme, pid: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(format!("ghost-{pid}")))
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .mx(px(6.))
+        .mt(px(2.))
+        .h(px(32.))
+        .px(px(12.))
+        .rounded(px(7.))
+        .border_1()
+        .border_dashed()
+        .border_color(t.line)
+        .text_color(t.dim)
+        .cursor_pointer()
+        .hover(|s| s.border_color(t.accent_soft).bg(t.accent_soft).text_color(t.accent))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_session(Some(pid.clone()), None, cx)))
+        .child(div().w(px(12.)).flex().justify_center().child(Icon::Plus.el(10., t.dim)))
+        .child(div().flex_1().child("New terminal"))
+}
+
+fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let p1 = pid.clone();
     let p2 = pid.clone();
+    let p3 = pid.clone();
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             menu_box(t)
@@ -1066,7 +1103,17 @@ fn project_menu(t: &Theme, pid: Option<String>, terminal_keys: Option<String>, c
                             m.request_refresh(crate::app::refresh::SESSIONS, cx)
                         });
                     }),
-                )),
+                ))
+                // Root has no project to pin.
+                .when_some(p3, |d, p| {
+                    d.child(div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line)).child(
+                        menu_item(t, "pin", if pinned { "Unpin from sidebar" } else { "Pin to sidebar" }, "", cx.listener(move |m, _, _, cx| {
+                            m.menu = Menu::None;
+                            m.rpc("project.update", serde_json::json!({"id": p, "pinned": !pinned}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::PROJECTS, cx));
+                        }))
+                        .child(Icon::PushPin.el(13., t.dim)),
+                    )
+                }),
         ),
     )
     .with_priority(1)

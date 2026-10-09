@@ -186,7 +186,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
 fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Session, RpcError> {
     // Resolve the project: explicit, the caller's, the one containing cwd, or a new one for cwd.
     // With none of those the terminal opens at root: no project, starting in $HOME.
-    let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false };
+    let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false, pinned: false };
     let mut p = p;
     p.cwd = p.cwd.take().map(|c| absolute_cwd(d, ctx, &c)).transpose()?;
     let project = match (&p.project_id, &p.cwd) {

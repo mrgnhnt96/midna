@@ -79,6 +79,10 @@ pub struct Project {
     /// terminals is running; any other project.remove is human only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_created: bool,
+    /// Pinned to the sidebar: it stays there with no terminals open, where clicking it
+    /// opens one. Unpinned projects leave the sidebar when their last terminal closes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A folder under one of the `projects.roots` settings that could be opened as a project.

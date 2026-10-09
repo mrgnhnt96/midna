@@ -1161,8 +1161,8 @@ impl MainWindow {
             }
         }
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
-        // and commands, and ⌘O / ⌘K "Go to project" reopen it.
-        groups.retain(|g| !g.sessions.is_empty());
+        // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays.
+        groups.retain(|g| !g.sessions.is_empty() || g.project.is_some_and(|p| p.pinned));
         let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
         for g in groups.iter_mut().chain(std::iter::once(&mut root)) {
             g.sessions.sort_by_key(|s| rank(s));
@@ -1640,8 +1640,11 @@ impl MainWindow {
         let groups: Vec<Group> = self.groups().into_iter().filter(|g| g.project.is_some()).collect();
         let Some(g) = groups.get(a.0) else { return };
         let pick = g.sessions.iter().find(|s| s.status.state == StatusState::NeedsYou).or(g.sessions.first()).map(|s| s.id.clone());
-        if let Some(id) = pick {
-            self.select(id, window, cx);
+        let pid = g.project.map(|p| p.id.clone());
+        match pick {
+            Some(id) => self.select(id, window, cx),
+            // A pinned project with no terminals: open one, as clicking it does.
+            None => self.open_session(pid, None, cx),
         }
     }
 

@@ -17,6 +17,8 @@ pub struct Project {
     pub order: u32,
     pub commands: Vec<ProjectCommand>,
     pub last_opened_at: Option<String>,
+    /// Stays in the sidebar with no terminals open.
+    pub pinned: bool,
 }
 
 /// A folder under a `projects.roots` folder (`project.discover`).

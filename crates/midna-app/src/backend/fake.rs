@@ -155,7 +155,8 @@ fn transcript(lines: &[(&str, &str)]) -> String {
 impl FakeBackend {
     pub fn new() -> Self {
         let p = |id: &str, name: &str, order: u32| Project { id: id.into(), name: name.into(), path: format!("~/Development/{name}"), order, ..Default::default() };
-        let projects = vec![p("p_zonai1", "zonai", 0), p("p_drops1", "drops-app", 1), p("p_midna1", "midna", 2)];
+        // dotfiles: pinned with no terminals, so the sidebar shows its "New terminal" row.
+        let projects = vec![p("p_zonai1", "zonai", 0), p("p_drops1", "drops-app", 1), p("p_midna1", "midna", 2), Project { pinned: true, ..p("p_dotfiles1", "dotfiles", 3) }];
         let git = |branch: &str, add: u32, rem: u32, files: u32, pr: Option<(u64, Checks)>| {
             Some(GitInfo {
                 branch: branch.into(),
@@ -474,6 +475,13 @@ impl Backend for FakeBackend {
         Ok(match method {
             "daemon.info" => json!({"version": "fake", "pid": std::process::id()}),
             "project.list" => serde_json::to_value(&st.projects)?,
+            "project.update" => {
+                let proj = st.projects.iter_mut().find(|x| Some(&x.id) == p("id").as_ref()).ok_or_else(|| anyhow::anyhow!("no project"))?;
+                if let Some(v) = params.get("pinned").and_then(Value::as_bool) {
+                    proj.pinned = v;
+                }
+                serde_json::to_value(&*proj)?
+            }
             "project.discover" => json!([
                 {"name": "kass", "path": "~/Development/kass", "root": "~/Development", "git": true},
                 {"name": "midna", "path": "~/Development/rust/midna", "root": "~/Development", "git": true},

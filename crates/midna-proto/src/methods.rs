@@ -678,6 +678,9 @@ pub struct ProjectUpdateParams {
     pub icon: Option<String>,
     #[serde(default)]
     pub commands: Option<Vec<ProjectCommand>>,
+    /// Keep it in the sidebar with no terminals open (see `Project.pinned`).
+    #[serde(default)]
+    pub pinned: Option<bool>,
 }
 
 // ------------------------------------------------------------------ sessions

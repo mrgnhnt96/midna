@@ -121,7 +121,8 @@ fn build() -> Vec<MethodSpec> {
         m::<ProjectAddParams, Project>("project.add").mutating().d(
             "Add a project for a directory. Returns the existing project if the path is already registered."),
         m::<ProjectUpdateParams, Project>("project.update").mutating().d(
-            "Change a project's name, icon, or saved commands. Saved commands ({name, run, pinned}) show up in the human's command bar as \"Run <name>\"; pinned ones are suggested. `commands` replaces the whole list."),
+            "Change a project's name, icon, saved commands, or whether it's pinned to the sidebar. Saved commands ({name, run, pinned}) show up in the human's command bar as \"Run <name>\"; pinned ones are suggested. `commands` replaces the whole list. \
+             A project with `pinned` true stays in the sidebar with no terminals open; clicking it opens one."),
         m::<IdParams, OkResult>("project.remove").mutating().human().d(
             "Remove a project and close its terminals. Human only: an agent's call becomes a needs-you approval the human answers. \
              Exception: agents may remove a project midna created for one of their session.open calls (`auto_created`) once \

@@ -86,11 +86,12 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "projects",
         aliases: &["project"],
-        usage: "projects [list]\n       projects discover\n       projects add <path> [--name N]\n       projects update <id> [--name N] [--icon I]\n       \
+        usage: "projects [list]\n       projects discover\n       projects add <path> [--name N]\n       projects update <id> [--name N] [--icon I]\n       projects pin|unpin <id>\n       \
                 projects add-command <id> --name N [--pinned] -- <command line>\n       projects remove-command <id> <name>\n       \
                 projects remove <id>",
         summary: "list and edit projects (directories that group terminals)",
-        details: "Saved commands show up in the human's command bar as \"Run <name>\" (pinned ones are\n\
+        details: "A pinned project stays in the sidebar with no terminals open; clicking it opens one.\n\
+                  Saved commands show up in the human's command bar as \"Run <name>\" (pinned ones are\n\
                   suggested). `discover` lists folders under the projects.roots setting\n\
                   that can be opened. `remove` is human only (it asks the human), except for a project midna\n\
                   created for an agent's `open --cwd` (auto_created) once none of its terminals runs.",
