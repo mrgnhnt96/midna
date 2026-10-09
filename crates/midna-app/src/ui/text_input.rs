@@ -4,7 +4,8 @@
 //!
 //! Typing arrives through GPUI's input handler (so dead keys, option characters and IME
 //! composition work, with the candidate window anchored at the cursor). The field's own key
-//! handler takes the editing keys (arrows, ⌥/⌘ word and line moves, ⇧ selection, ⌫/⌦, ⌘A/C/X/V);
+//! handler takes the editing keys (arrows, ⌥/⌘ word and line moves, ⇧ selection, ⌫/⌦, ⌘A/C/X/V,
+//! ⌘Z/⇧⌘Z undo and redo);
 //! everything else (↩, esc, ⇥, ↑/↓ outside `wrap`, ⌘-shortcuts) bubbles to the parent, which decides what
 //! submit/cancel mean. Font, size and color are inherited from the parent element.
 //!
@@ -49,6 +50,8 @@ pub struct TextField {
     last_line_h: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     selecting: bool,
+    /// Undo/redo (never kept for a secret field).
+    history: History,
 }
 
 impl EventEmitter<FieldChanged> for TextField {}
@@ -68,6 +71,7 @@ impl TextField {
             last_line_h: px(0.),
             last_bounds: None,
             selecting: false,
+            history: History::default(),
         }
     }
 
@@ -75,8 +79,10 @@ impl TextField {
         &self.content
     }
 
-    /// Replace the whole text (cursor at the end).
+    /// Replace the whole text (cursor at the end). Starts a fresh undo history: the caller is
+    /// loading something new (the image sheet's field moving to another note).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.history = History::default();
         if self.content == text {
             return;
         }
@@ -97,6 +103,7 @@ impl TextField {
 
     /// Clear, overwriting the old buffer first so a secret doesn't linger in memory.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.history = History::default();
         if self.content.is_empty() {
             return;
         }
@@ -174,6 +181,10 @@ impl TextField {
 
     fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
         let text = if self.wrap { text.replace("\r\n", "\n").replace('\r', "\n") } else { text.replace(['\r', '\n'], " ") };
+        // An IME commit replaces its marked text; the history was saved when composing began.
+        if !self.secret && self.marked.is_none() {
+            self.history.record(&self.content, &self.selected, &range, &text);
+        }
         self.content.replace_range(range.clone(), &text);
         let end = range.start + text.len();
         self.selected = end..end;
@@ -181,6 +192,19 @@ impl TextField {
         self.marked = None;
         cx.emit(FieldChanged);
         cx.notify();
+    }
+
+    /// ⌘Z (`redo` false) or ⇧⌘Z. False when there's nothing to undo or redo.
+    fn undo(&mut self, redo: bool, cx: &mut Context<Self>) -> bool {
+        let now = Snap { text: self.content.clone(), selected: self.selected.clone() };
+        let Some(s) = (if redo { self.history.redo(now) } else { self.history.undo(now) }) else { return false };
+        self.content = s.text;
+        self.selected = s.selected;
+        self.reversed = false;
+        self.marked = None;
+        cx.emit(FieldChanged);
+        cx.notify();
+        true
     }
 
     fn newline(&mut self, _: &Newline, _w: &mut Window, cx: &mut Context<Self>) {
@@ -287,6 +311,11 @@ impl TextField {
                 if ks.key == "x" {
                     let r = self.selected.clone();
                     self.replace(r, "", cx);
+                }
+            }
+            "z" if m.platform && !m.alt && !m.control => {
+                if !self.undo(m.shift, cx) {
+                    return;
                 }
             }
             "v" if m.platform => {
@@ -460,6 +489,67 @@ pub fn word_right(s: &str, off: usize) -> usize {
     off + skip + word
 }
 
+/// The text and selection before an edit.
+#[derive(Clone, Debug, PartialEq)]
+struct Snap {
+    text: String,
+    selected: Range<usize>,
+}
+
+/// Undo and redo stacks. A run of typing (or of ⌫/⌦) at one spot is a single step, like
+/// macOS text fields; moving the cursor, or switching between typing and deleting, starts a
+/// new one.
+#[derive(Default)]
+struct History {
+    undo: Vec<Snap>,
+    redo: Vec<Snap>,
+    /// The run being extended: whether it inserts, and where its next edit would land.
+    run: Option<(bool, usize)>,
+}
+
+impl History {
+    const MAX: usize = 200;
+
+    /// Called before `range` of `text` is replaced with `new`.
+    fn record(&mut self, text: &str, selected: &Range<usize>, range: &Range<usize>, new: &str) {
+        let insert = range.is_empty() && !new.is_empty();
+        let delete = !range.is_empty() && new.is_empty() && selected.is_empty();
+        let continues = match self.run {
+            Some((true, at)) => insert && range.start == at,
+            Some((false, at)) => delete && (range.end == at || range.start == at),
+            None => false,
+        };
+        if !continues {
+            self.undo.push(Snap { text: text.to_string(), selected: selected.clone() });
+            if self.undo.len() > Self::MAX {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.run = if insert {
+            Some((true, range.start + new.len()))
+        } else if delete {
+            Some((false, range.start))
+        } else {
+            None
+        };
+    }
+
+    fn undo(&mut self, now: Snap) -> Option<Snap> {
+        let s = self.undo.pop()?;
+        self.redo.push(now);
+        self.run = None;
+        Some(s)
+    }
+
+    fn redo(&mut self, now: Snap) -> Option<Snap> {
+        let s = self.redo.pop()?;
+        self.undo.push(now);
+        self.run = None;
+        Some(s)
+    }
+}
+
 impl EntityInputHandler for TextField {
     fn text_for_range(&mut self, r: Range<usize>, actual: &mut Option<Range<usize>>, _w: &mut Window, _cx: &mut Context<Self>) -> Option<String> {
         if self.secret {
@@ -490,6 +580,9 @@ impl EntityInputHandler for TextField {
 
     fn replace_and_mark_text_in_range(&mut self, r: Option<Range<usize>>, text: &str, sel: Option<Range<usize>>, _w: &mut Window, cx: &mut Context<Self>) {
         let range = r.as_ref().map(|r| self.range_from_utf16(r)).or(self.marked.clone()).unwrap_or(self.selected.clone());
+        if !self.secret && self.marked.is_none() {
+            self.history.record(&self.content, &self.selected, &range, "");
+        }
         self.content.replace_range(range.clone(), text);
         self.marked = (!text.is_empty()).then(|| range.start..range.start + text.len());
         self.selected = sel
@@ -757,7 +850,7 @@ fn size_of(w: Pixels, h: Pixels) -> Size<Pixels> {
 
 #[cfg(test)]
 mod tests {
-    use super::{word_at, word_left, word_right};
+    use super::{History, Snap, word_at, word_left, word_right};
 
     #[test]
     fn word_moves() {
@@ -790,5 +883,48 @@ mod tests {
         assert_eq!(word_at("a\nbc", 1), 0..1);
         assert_eq!(word_at("", 0), 0..0);
         assert_eq!(&"héllo wörld"[word_at("héllo wörld", 8)], "wörld");
+    }
+
+    /// Applies an edit the way `TextField::replace` does, recording it first.
+    fn edit(h: &mut History, text: &mut String, sel: &mut std::ops::Range<usize>, range: std::ops::Range<usize>, new: &str) {
+        h.record(text, sel, &range, new);
+        text.replace_range(range.clone(), new);
+        let end = range.start + new.len();
+        *sel = end..end;
+    }
+
+    #[test]
+    fn typing_and_deleting_are_one_step_each() {
+        let (mut h, mut t, mut sel) = (History::default(), String::new(), 0..0);
+        for (i, c) in "hello".chars().enumerate() {
+            edit(&mut h, &mut t, &mut sel, i..i, &c.to_string());
+        }
+        edit(&mut h, &mut t, &mut sel, 4..5, "");
+        edit(&mut h, &mut t, &mut sel, 3..4, "");
+        assert_eq!(t, "hel");
+        let s = h.undo(Snap { text: t.clone(), selected: sel.clone() }).unwrap();
+        assert_eq!(s.text, "hello");
+        let s = h.undo(Snap { text: s.text, selected: s.selected }).unwrap();
+        assert_eq!(s.text, "");
+        assert!(h.undo(s.clone()).is_none());
+        let s = h.redo(s).unwrap();
+        assert_eq!(s.text, "hello");
+        let s = h.redo(s).unwrap();
+        assert_eq!(s.text, "hel");
+        assert!(h.redo(s).is_none());
+    }
+
+    #[test]
+    fn moving_the_cursor_starts_a_new_step_and_edits_drop_redo() {
+        let (mut h, mut t, mut sel) = (History::default(), String::new(), 0..0);
+        edit(&mut h, &mut t, &mut sel, 0..0, "ab");
+        sel = 0..0;
+        edit(&mut h, &mut t, &mut sel, 0..0, "x");
+        assert_eq!(t, "xab");
+        let s = h.undo(Snap { text: t.clone(), selected: sel.clone() }).unwrap();
+        assert_eq!(s.text, "ab");
+        let (mut t, mut sel) = (s.text, s.selected);
+        edit(&mut h, &mut t, &mut sel, 2..2, "c");
+        assert!(h.redo(Snap { text: t, selected: sel }).is_none());
     }
 }

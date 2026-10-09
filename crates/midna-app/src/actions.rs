@@ -219,6 +219,7 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["cmd-shift-enter"], "Approve all", "Needs-you cards"),
     fixed(&["enter"], "Edit the selected note", "Image sheet"),
     fixed(&["backspace"], "Remove the selected note", "Image sheet"),
+    fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo in the note being edited", "Image sheet"),
     fixed(&["cmd-up", "cmd-down"], "Previous / next image", "Image sheet"),
     fixed(&["cmd-w"], "Remove the image, or close the sheet when there's none", "Image sheet"),
     fixed(&["cmd-=", "cmd--", "cmd-0"], "Zoom in / out / fit", "Image sheet"),
