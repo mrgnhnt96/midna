@@ -30,6 +30,8 @@ mod shortcuts;
 mod awake;
 #[path = "settings_cleanup.rs"]
 mod cleanup;
+#[path = "settings_blurbs.rs"]
+mod blurbs;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
@@ -777,6 +779,13 @@ impl RowSpec {
         self.cli.strip_prefix("midna settings set ").and_then(|r| r.split_whitespace().next())
     }
 
+    /// The catalog's whole description of the setting this row changes (shown on hover).
+    fn full_description(&self) -> Option<&'static str> {
+        let k = self.key()?;
+        let spec = midna_proto::settings::setting(k).or_else(|| midna_proto::notify::split_kind_key(k).and_then(|(f, _)| midna_proto::settings::custom_kind_spec(f)))?;
+        Some(spec.description.trim_end_matches(" Human only."))
+    }
+
     /// What a search looks at besides the name and description, in the order a match is
     /// explained ("Option: Restart when idle").
     fn fields(&self) -> Vec<(&'static str, String)> {
@@ -800,6 +809,11 @@ impl RowSpec {
         let kw = related(self.key().unwrap_or(&self.label));
         if !kw.is_empty() {
             out.push(("Related", kw.to_string()));
+        }
+        // the row shows a short line; a search still finds words in the whole description,
+        // and says which sentence matched
+        if let Some(full) = self.full_description() {
+            out.extend(sentences(full).into_iter().map(|s| ("About", s.to_string())));
         }
         if !self.cli.is_empty() {
             out.push(("Command", self.cli.clone()));
@@ -1094,12 +1108,17 @@ impl SettingsWindow {
             text.clone()
         };
         let changed = entry.is_some_and(|e| e.value != e.default);
-        // the who column already says it
-        let mut note = spec.description.trim_end_matches(" Human only.").to_string();
+        // a line of its own (blurbs.rs); the catalog's whole description shows on hover
+        let mut note = blurbs::blurb(key).map(str::to_string).unwrap_or_else(|| brief(spec.description.trim_end_matches(" Human only.")));
         if changed {
             let default = spec.default.to_json();
             let shown = midna_proto::keep_awake::display(key, &default).unwrap_or_else(|| value_text(&default));
-            note.push_str(&format!(" (default: {})", if shown.is_empty() { "none" } else { &shown }));
+            // a long default (a list, a layout) would bury the line
+            match shown.chars().count() {
+                0 => note.push_str(" (default: none)"),
+                n if n > 32 => note.push_str(" (changed from its default)"),
+                _ => note.push_str(&format!(" (default: {shown})")),
+            }
         }
         Some(RowSpec { label: label_for(key), note: Some((note, Hsla::default())), control, cli: format!("midna settings set {key} {cli_value}"), who, warn: false })
     }
@@ -1173,9 +1192,9 @@ impl SettingsWindow {
         let path = h["path"].as_str().unwrap_or(if agent == "claude" { "~/.claude/settings.json" } else { "~/.codex/config.toml" });
         let detail = h["detail"].as_str().map(str::to_string);
         let per_terminal = if agent == "claude" {
-            "midna adds its hooks to the agents it starts. Install globally so a claude you type into a terminal reports too."
+            "Agents midna starts already report; install so a claude you type reports too."
         } else {
-            "midna adds its notify to the agents it starts. Install globally so a codex you type into a terminal reports too; your own notify keeps running."
+            "Agents midna starts already report; install so a codex you type reports too."
         };
         let (dot, text, color, note, action): (Hsla, String, Hsla, String, Option<(&str, bool)>) = match h["state"].as_str() {
             Some("current") => (t.ok, "Global · current".into(), t.fg, format!("In {path}. Does nothing outside midna terminals."), Some(("Remove…", true))),
@@ -1308,7 +1327,7 @@ impl SettingsWindow {
             (true, true) => Some(("Back to schedule".to_string(), Act::KeepAwakeToday("clear"), false)),
             (true, false) => Some(("Off for today".to_string(), Act::KeepAwakeToday("off"), false)),
         };
-        let mut note = "Stops idle sleep only: the display still sleeps, the screen locks, closing the lid sleeps the Mac.".to_string();
+        let mut note = "Stops idle sleep only; the display and a closed lid still sleep.".to_string();
         if let Some(w) = k["work"].as_array().filter(|w| held && !w.is_empty()) {
             note = format!("For {}. {note}", w.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
         }
@@ -1388,6 +1407,14 @@ impl SettingsWindow {
                 })
                 .collect::<Vec<_>>()
         };
+        // The group heading already says what these switches do; each row is just its kind.
+        let headed = |key: fn(&str) -> String| {
+            let mut rows = per_kind(key);
+            for r in &mut rows {
+                r.note = None;
+            }
+            rows
+        };
         match name {
             "@update" => vec![lifecycle_rows(t).update, changelog_row(t)],
             "@cli" => vec![lifecycle_rows(t).cli],
@@ -1403,9 +1430,9 @@ impl SettingsWindow {
                     if seen { "Handshake detected" } else { "Handshake not detected" }.into(),
                     if seen { t.fg } else { t.dim },
                     Some(if seen {
-                        "Dictation opens the composer under the terminal; Kass inserts into it directly.".into()
+                        "Dictation types into the composer under the terminal.".into()
                     } else {
-                        "Dictation composer: needs the Kass handshake (com.mrgnhnt.kass.dictationWillBegin). Detected once Kass sends one.".into()
+                        "Detected the first time Kass starts a dictation.".into()
                     }),
                     "midna info",
                 );
@@ -1423,7 +1450,7 @@ impl SettingsWindow {
                     NP::Denied => (Some(false), "Off in System Settings", "Turn midna's notifications on to get approvals, failures and finished turns."),
                     NP::NotAsked => (None, "Not requested yet", "macOS asks the first time midna has something to tell you."),
                     NP::Unknown => (None, "Checking…", "Approvals, failures and finished turns show as macOS notifications."),
-                    NP::Dev => (None, "Dev build", "Not running from Midna.app: notifications go through osascript (shown as Script Editor)."),
+                    NP::Dev => (None, "Dev build", "Not running from Midna.app, so they show as Script Editor's."),
                 };
                 vec![self.permission(t, "Notifications", ok, state, why, PANE_NOTIF)]
             }
@@ -1439,7 +1466,7 @@ impl SettingsWindow {
                         (Some(e), _) => (t.err, Some(format!("Doesn't match the app, and updating it failed: {e}"))),
                         (None, Some(l)) => (
                             t.need,
-                            Some(format!("Waiting for the Mac to calm down (load {:.1} on {} cores) before updating; it updates by itself then.", l.load1, l.cpus)),
+                            Some(format!("Updates by itself once the Mac is less busy (load {:.1} on {} cores).", l.load1, l.cpus)),
                         ),
                         (None, None) => (t.err, Some("Doesn't match the app. Update it in place: your terminals keep running.".into())),
                     },
@@ -1462,7 +1489,7 @@ impl SettingsWindow {
                 let changed = self.entries.iter().filter(|e| e.value != e.default).count();
                 vec![RowSpec {
                     label: "Reset settings".into(),
-                    note: Some(("Every setting back to its default. Terminals, rules and the event log are kept.".into(), Hsla::default())),
+                    note: Some(("Every setting back to its default; nothing else changes.".into(), Hsla::default())),
                     control: Control::Text {
                         dot: Some(t.err),
                         text: if self.armed_reset {
@@ -1480,7 +1507,7 @@ impl SettingsWindow {
             }
             "@reset_midna" => vec![RowSpec {
                 label: "Reset midna".into(),
-                note: Some(("Closes every terminal, removes projects, triggers and needs-you items, and resets settings. Rules and the event log are kept.".into(), Hsla::default())),
+                note: Some(("Closes every terminal and clears projects, triggers and settings; rules stay.".into(), Hsla::default())),
                 control: Control::Text {
                     dot: Some(t.err),
                     text: if self.armed_daemon_reset { "Closes every terminal now. Click again to confirm.".into() } else { "Start over".into() },
@@ -1495,10 +1522,10 @@ impl SettingsWindow {
             // `midna notify set` (or mutes itself from its … menu).
             "@kinds" => silenced(per_kind(setting_key)),
             // Which kinds become macOS banners: for other terminals, and for the one in front of you.
-            "@banners" => silenced(per_kind(push_key)),
-            "@banners_focused" => silenced(per_kind(push_focused_key)),
+            "@banners" => silenced(headed(push_key)),
+            "@banners_focused" => silenced(headed(push_focused_key)),
             // Which kinds count toward the unread number on the status bar's bell.
-            "@bell" => per_kind(bell_key),
+            "@bell" => headed(bell_key),
             "@images" => silenced(self.notify_image_rows(t)),
             // Each kind's title and text: `notify.title.<kind>` / `notify.body.<kind>` templates,
             // typed here (↩ saves; empty = midna's own, `none` = no text).
@@ -1508,6 +1535,8 @@ impl SettingsWindow {
                     for (key, part) in [(title_key(k), "title"), (body_key(k), "text")] {
                         let Some(mut r) = self.spec_row(&key) else { continue };
                         r.label = format!("{label}: {part}");
+                        // the template variables are in the description, on hover
+                        r.note = Some((if part == "title" { "Empty = midna's own title." } else { "Empty = midna's own text; none = no text." }.into(), Hsla::default()));
                         r.control = Control::Edit { key: key.clone(), actions: vec![] };
                         texts.push(r);
                     }
@@ -1560,7 +1589,7 @@ impl SettingsWindow {
                     .map(|k| RowSpec {
                         label: k.label.clone(),
                         note: Some((
-                            format!("Agents send it with “midna notify send --kind {}”. ↩ saves a new name; Remove drops its settings too.", k.key),
+                            format!("Sent with midna notify send --kind {}.", k.key),
                             Hsla::default(),
                         )),
                         control: Control::Edit { key: format!("label:{}", k.key), actions: vec![("Test".into(), Act::TestKind(k.key.clone())), ("Remove".into(), Act::RemoveKind(k.key.clone()))] },
@@ -1571,7 +1600,7 @@ impl SettingsWindow {
                     .collect();
                 rows.push(RowSpec {
                     label: "Add a kind".into(),
-                    note: Some(("Its own sound, color, duration and switch, for notifications agents or triggers send as it (\"Deploys\", \"CI\").".into(), Hsla::default())),
+                    note: Some(("A kind agents and triggers can send as, like Deploys or CI.".into(), Hsla::default())),
                     control: Control::AddKind,
                     cli: "midna notify kinds add <key> --label <name>".into(),
                     who: Who::Agents,
@@ -2467,6 +2496,7 @@ impl SettingsWindow {
             _ => vec![],
         };
         let tip_key: SharedString = r.key().unwrap_or_default().to_string().into();
+        let full = r.full_description();
         let note = r.note.map(|(n, c)| (n, if c == Hsla::default() { t.dim } else { c }));
         let lock = r.who == Who::Human && r.cli.starts_with("midna settings set ");
         let label_hit = words.iter().any(|w| r.label.to_lowercase().contains(w.as_str()));
@@ -2475,7 +2505,13 @@ impl SettingsWindow {
             _ => None,
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
-        let wide = matches!(r.control, Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns);
+        // theme chips, the cleanup lists, and a row of choices too long to sit beside the name
+        // without squeezing its description into a narrow column, go under it
+        let wide = match &r.control {
+            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns => true,
+            Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
+            _ => false,
+        };
         // the hours track takes the control column's whole width
         let grow = matches!(r.control, Control::Hours);
         let control = self.control(t, r.control, words, id, window, cx);
@@ -2548,27 +2584,38 @@ impl SettingsWindow {
                             .flex_col()
                             .child(div().flex().items_center().gap(px(6.)).child(marked(t, r.label, words)).when(lock, |d| d.child(Icon::Lock.el(11., t.dim))))
                             .when_some(note, |d, (n, c)| {
-                                // the catalog's descriptions are written for agents: the first
-                                // sentence here, all of it on hover (and when only the rest matched)
+                                // a short line (blurbs.rs, or a status); the catalog's whole
+                                // description, written for agents, on hover
                                 let first = brief(&n);
                                 let seen = |s: &str| words.iter().any(|w| s.to_lowercase().contains(w.as_str()));
                                 let short = if words.is_empty() || seen(&first) || label_hit { first } else { excerpt(&n, words) };
-                                let cut = short.len() < n.len();
+                                // the catalog's whole description, keeping the row's "(default: …)" for the card's footer
+                                let tip = match full {
+                                    Some(f) if f != short => Some(match n.rfind(" (default: ") {
+                                        Some(i) if n.ends_with(')') => format!("{f}{}", &n[i..]),
+                                        _ => f.to_string(),
+                                    }),
+                                    _ => (short.len() < n.len()).then_some(n),
+                                };
                                 // dev: `MIDNA_SETTINGS_TIP=<setting key>` draws that row's tooltip under it, for screenshots
-                                let shown = (cut && crate::dev::var("MIDNA_SETTINGS_TIP").is_ok_and(|k| k == tip_key.as_ref()))
-                                    .then(|| crate::ui::tooltip::card(t, &n, &tip_values, &tip_key).mt(px(6.)));
+                                let shown = tip
+                                    .as_ref()
+                                    .filter(|_| crate::dev::var("MIDNA_SETTINGS_TIP").is_ok_and(|k| k == tip_key.as_ref()))
+                                    .map(|tip| crate::ui::tooltip::card(t, tip, &tip_values, &tip_key).mt(px(6.)));
                                 d.child(
                                     div()
                                         .id(SharedString::from(format!("note-{id}")))
                                         .text_size(px(11.5))
                                         .line_height(px(15.))
                                         .text_color(c)
-                                        .when(cut, |d| d.tooltip(crate::ui::header::tip_setting(n, tip_values, tip_key)))
+                                        .line_clamp(3)
+                                        .when_some(tip, |d, tip| d.tooltip(crate::ui::header::tip_setting(tip, tip_values, tip_key)))
                                         .child(marked(t, short, words)),
                                 )
                                 .children(shown)
                             })
                             .when_some(via, |d, (what, text)| {
+                                let prose = what == "About";
                                 d.child(
                                     div()
                                         .flex()
@@ -2578,13 +2625,19 @@ impl SettingsWindow {
                                         .line_height(px(15.))
                                         .text_color(t.dim)
                                         .child(div().flex_none().child(what))
-                                        .child(div().min_w_0().truncate().font_family(t.mono_font.clone()).child(marked(t, text, words))),
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .when(prose, |d| d.line_clamp(2))
+                                                .when(!prose, |d| d.truncate().font_family(t.mono_font.clone()))
+                                                .child(marked(t, text, words)),
+                                        ),
                                 )
                             }),
                     )
                     .children(inline.map(|c| div().flex().justify_end().min_w_0().max_w(relative(0.62)).when(grow, |d| d.flex_none().w(relative(0.62))).child(c))),
             )
-            .children(below.map(|c| div().pt(px(8.)).child(c)))
+            .children(below.map(|c| div().pt(px(8.)).flex().child(c)))
             .children(cli_line)
     }
 
@@ -2864,7 +2917,7 @@ impl SettingsWindow {
                     .gap(px(8.))
                     .min_w_0()
                     .when_some(dot, |d, c| d.child(div().size(px(7.)).rounded_full().flex_none().bg(c)))
-                    .child(div().min_w_0().text_color(color).truncate().child(text))
+                    .child(div().min_w_0().text_color(color).line_clamp(2).child(text))
                     .when_some(action, |d, (label, act, strong)| {
                         let danger = matches!(act, Act::ResetSettings | Act::ResetDaemon);
                         let armed = match act {

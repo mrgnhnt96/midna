@@ -71,8 +71,7 @@ impl SettingsWindow {
         let mut rows = vec![RowSpec {
             label: "All sounds".into(),
             note: Some((
-                "Every kind's volume (notifications and sound effects) is scaled by this; 0 = silent. Sounds play at your Mac's alert volume. Focus or midna's sound setting in System Settings silences the ones that come with a banner."
-                    .into(),
+                blurbs::blurb("notify.volume").unwrap_or_default().into(),
                 Hsla::default(),
             )),
             control: Control::Volume { key: "notify.volume".into() },
@@ -141,7 +140,7 @@ impl SettingsWindow {
         let all = self.text_of("notify.image");
         let mut rows = vec![RowSpec {
             label: "Every notification".into(),
-            note: Some(("Shown beside the text. Each kind can use its own. Not shown when the app isn't running (macOS shows Script Editor's).".into(), Hsla::default())),
+            note: Some((blurbs::blurb("notify.image").unwrap_or_default().into(), Hsla::default())),
             control: Control::Image { key: "notify.image".into(), cat: None },
             cli: format!("midna settings set notify.image {}", if all.is_empty() { "<imported image>".to_string() } else { all }),
             who: Who::Agents,
