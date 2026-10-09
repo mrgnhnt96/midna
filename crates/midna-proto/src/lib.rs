@@ -6,6 +6,7 @@ pub mod client;
 pub mod cron;
 pub mod error;
 pub mod frame;
+pub mod keep_awake;
 pub mod methods;
 pub mod notify;
 pub mod openrpc;

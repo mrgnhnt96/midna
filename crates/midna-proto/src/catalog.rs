@@ -488,6 +488,18 @@ fn build() -> Vec<MethodSpec> {
             "When the Mac slept, from the daemon's sleep log (the last 14 days; a sleep is a wall-clock jump the \
              monotonic clock didn't make). midna's idle triggers, queued messages waiting for quiet, needs-you expiry \
              and a queued restart's grace count awake time only: leave these out of an elapsed time to do the same."),
+        // keep awake
+        m::<NoParams, KeepAwakeStatus>("keep_awake.status").d(
+            "Whether midnad is keeping the Mac from idle-sleeping right now (a PreventUserIdleSystemSleep power assertion; \
+             the display may still sleep, closing the lid still sleeps), why or why not (reason: work | always | disabled | \
+             outside_hours | day_off | today_off | battery_low | no_work | failed), what work keeps it (with_work mode), when \
+             the hours next open or close, the battery, the schedule in words, every keep_awake.* setting and today's override."),
+        m::<KeepAwakeSetParams, KeepAwakeStatus>("keep_awake.set").mutating().d(
+            "Change keep-awake: any of enabled (alias on), mode (with_work|always), start/end (8am, 17:30), days (weekdays, \
+             mon-fri, [\"sat\",\"sun\"]), hours (per day: {\"fri\": \"9am-3pm\", \"sat\": \"off\", \"mon\": null}), min_battery, \
+             linger_mins, and today (off | on | until 5pm | {on, until} | clear; replaces the rest of today, ends at midnight). \
+             Only the fields given change, all checked before any is saved; the rest are the keep_awake.* settings. Returns \
+             keep_awake.status. Event keep_awake.changed fires when the assertion is taken or released."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

@@ -1339,6 +1339,8 @@ pub mod kinds {
     /// A Claude plan usage window reached 100% (`{agent, window: five_hour|seven_day,
     /// used_percentage, resets_at}`), once per window and reset time; see `usage.get`.
     pub const USAGE_LIMIT_REACHED: &str = "usage.limit_reached";
+    /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).
+    pub const KEEP_AWAKE_CHANGED: &str = "keep_awake.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.
     pub const NOTIFY_POSTED: &str = "notify.posted";
     /// `notify.play`: play a sound now (data: `notify::Played`); the app plays it.

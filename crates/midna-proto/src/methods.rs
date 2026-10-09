@@ -2238,3 +2238,137 @@ pub struct AgentUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limited_until: Option<Timestamp>,
 }
+
+// ------------------------------------------------------------------ keep awake
+
+/// Why the keep-awake assertion is held, or isn't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepAwakeReason {
+    /// Held: there is work (see `work`), or it lingers after it (`keep_awake.linger_mins`).
+    Work,
+    /// Held: `keep_awake.mode` is always and the hours are open.
+    Always,
+    /// `keep_awake.enabled` is off.
+    Disabled,
+    /// Outside today's hours.
+    OutsideHours,
+    /// Today isn't a keep-awake day.
+    DayOff,
+    /// The today override turned it off (or its `until` passed).
+    TodayOff,
+    /// On battery below `keep_awake.min_battery` (until 5 points above it, or AC).
+    BatteryLow,
+    /// with_work mode and nothing to do.
+    NoWork,
+    /// macOS refused the assertion (see `line`); retried every few seconds.
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeSettings {
+    /// `keep_awake.enabled`.
+    pub enabled: bool,
+    /// `keep_awake.mode`: with_work | always.
+    pub mode: String,
+    /// `keep_awake.start`, HH:MM local.
+    pub start: String,
+    /// `keep_awake.end`, HH:MM local (at or before start = past midnight; equal = all day).
+    pub end: String,
+    /// `keep_awake.days`: mon … sun.
+    pub days: Vec<String>,
+    /// `keep_awake.hours` as day -> `HH:MM-HH:MM` | `off` | `all day`.
+    pub hours: std::collections::BTreeMap<String, String>,
+    /// `keep_awake.min_battery`, percent (0 = no limit).
+    pub min_battery: i64,
+    /// `keep_awake.linger_mins`.
+    pub linger_mins: i64,
+}
+
+/// The one-off override for today (ends by itself at local midnight).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeToday {
+    /// The local date it applies to, YYYY-MM-DD.
+    pub date: String,
+    /// false = off for the rest of today; true = on until `until` (then off).
+    pub on: bool,
+    /// HH:MM local; absent = midnight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// In words: `on until 5 PM today`.
+    pub line: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeBattery {
+    pub percent: u8,
+    pub on_ac: bool,
+    /// Below keep_awake.min_battery (with hysteresis) on battery.
+    pub low: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeStatus {
+    /// midnad holds the power assertion right now (the Mac won't idle-sleep).
+    pub held: bool,
+    pub reason: KeepAwakeReason,
+    /// In words: `Keeping awake: 2 agents working` / `Not keeping awake: outside hours (9 AM–6 PM weekdays); on again Mon 9 AM`.
+    pub line: String,
+    /// The hours (with the today override) are open now.
+    pub window_open: bool,
+    /// When the hours next open, if they are closed (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_on: Option<Timestamp>,
+    /// When the hours next close, if they are open (RFC 3339). Held only while there is work in
+    /// with_work mode, so it can end sooner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_off: Option<Timestamp>,
+    /// What is keeping it awake (with_work): `2 agents working`, `1 terminal with queued input`.
+    pub work: Vec<String>,
+    /// When the assertion was taken (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_since: Option<Timestamp>,
+    /// None on a Mac without a battery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<KeepAwakeBattery>,
+    /// The hours in words: `9 AM–6 PM weekdays; Fri 9 AM–3 PM`.
+    pub schedule: String,
+    pub settings: KeepAwakeSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<KeepAwakeToday>,
+}
+
+/// Every field is optional; only the ones given change (each is the `keep_awake.*` setting of
+/// the same name). All are checked before any is saved.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct KeepAwakeSetParams {
+    /// Master switch (`on` works too, like Taskboard's work hours).
+    #[serde(default, alias = "on", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// with_work | always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// `8am`, `8:30 AM`, `08:00`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    /// `weekdays`, `weekends`, `daily`, `mon-fri`, `mon,wed,fri` or an array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<Value>,
+    /// Per-day hours, merged into the current ones: `{"fri": "9am-3pm", "sat": "off", "sun": "all day", "mon": null}`
+    /// (null or "default" = that day follows start/end/days again). A list of `day = hours` rules
+    /// or a string replaces them all ("" clears them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Value>,
+    /// Percent, 0-100 (0 = no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_battery: Option<Value>,
+    /// Minutes, 0-240.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger_mins: Option<Value>,
+    /// Today only: `off` (rest of today), `on` (until midnight), `until 5pm` / `5pm`,
+    /// `{"on": true, "until": "17:00"}`, or `clear` (back to the schedule). Ends at midnight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub today: Option<Value>,
+}
