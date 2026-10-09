@@ -1490,7 +1490,8 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// ⌘-click: open an OSC 8 hyperlink, a URL, or `path:line` under the pointer.
+    /// ⌘-click: open an OSC 8 hyperlink, a URL, `path:line` or another terminal's id under the
+    /// pointer.
     fn open_link_at(&mut self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
         if x < 0. || y < 0. {
             return;
@@ -1503,9 +1504,15 @@ impl TerminalView {
         });
     }
 
-    /// Open a `session.link_at` result: URLs in the browser, files in the editor.
+    /// Open a `session.link_at` result: URLs in the browser, files in the editor, another
+    /// terminal by bringing it to the front.
     fn open_link(&self, v: &Value, cx: &mut Context<Self>) {
         let target = v.get("target").and_then(Value::as_str).unwrap_or("").to_string();
+        if v.get("kind").and_then(Value::as_str) == Some("session") {
+            let backend = self.backend.clone();
+            cx.background_executor().spawn(async move { backend.call("session.focus", json!({ "id": target })) }).detach();
+            return;
+        }
         if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
             // Dev runs never launch browsers or editors.
             eprintln!("midna-app debug-term: link {v}");
@@ -1617,6 +1624,7 @@ impl TerminalView {
         let has_sel = !self.ext.selection.is_empty();
         let link_label = match link.as_ref().and_then(|v| v.get("kind")).and_then(Value::as_str) {
             Some("file") => "Open file",
+            Some("session") => "Go to terminal",
             _ => "Open link",
         };
         let clear_keys = crate::actions::label(cx, "keys.clear");

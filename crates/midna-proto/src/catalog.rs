@@ -175,8 +175,9 @@ fn build() -> Vec<MethodSpec> {
             "Clear a terminal like its right-click \"Clear\": drops the scrollback and presses ctrl-l so the shell (or app) \
              redraws. On the alternate screen (vim, less, an agent's TUI) only ctrl-l is sent. Returns {ok, scrollback_cleared}."),
         m::<SessionLinkAtParams, LinkAtResult>("session.link_at").d(
-            "What link is at a viewport cell: an OSC 8 hyperlink, a detected http(s) URL, or an existing file path with \
-             optional :line[:column] (relative paths resolve against the shell's directory)."),
+            "What link is at a viewport cell: an OSC 8 hyperlink, a detected http(s) URL, another terminal (its id, an \
+             agent's conversation id or a midna://session/<id> link; kind `session`, target its id), or an existing file \
+             path with optional :line[:column] (relative paths resolve against the shell's directory)."),
         m::<SessionFindParams, FindResult>("session.find").mutating().d(
             "Find text in a terminal's scrollback and screen: scrolls to the next (or previous, `backwards`) match and \
              selects it. Returns the match count and the current match's index."),

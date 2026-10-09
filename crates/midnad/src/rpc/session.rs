@@ -613,13 +613,26 @@ pub fn select_all(d: &Daemon, p: IdParams) -> R {
 pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
     use crate::engine::Link;
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    let cwd = d.core().state.session(&p.id).map(|s| s.cwd.clone()).unwrap_or_default();
+    let (cwd, tabs) = {
+        let core = d.core();
+        let cwd = core.state.session(&p.id).map(|s| s.cwd.clone()).unwrap_or_default();
+        // Terminals a word can name: by id, and agents by their conversation id.
+        let mut tabs = Vec::new();
+        for s in &core.state.sessions {
+            tabs.push((s.id.clone(), s.id.clone()));
+            if let Some(c) = s.agent_info.as_ref().and_then(|i| i.conversation_id.clone()) {
+                tabs.push((c, s.id.clone()));
+            }
+        }
+        (cwd, tabs)
+    };
     let (col, row) = (p.col, p.row);
-    let link = rt.with(move |e| e.link_at(col, row, &cwd)).ok_or_else(|| RpcError::internal("engine did not answer"))?;
+    let link = rt.with(move |e| e.link_at(col, row, &cwd, &tabs)).ok_or_else(|| RpcError::internal("engine did not answer"))?;
     ok(match link {
         Some(Link::Url(u)) => LinkAtResult { kind: "url".into(), target: Some(u), ..Default::default() },
         Some(Link::App { url, app }) => LinkAtResult { kind: "url".into(), target: Some(url), app: Some(app), ..Default::default() },
         Some(Link::File { path, line, column }) => LinkAtResult { kind: "file".into(), target: Some(path), line, column, app: None },
+        Some(Link::Session(id)) => LinkAtResult { kind: "session".into(), target: Some(id), ..Default::default() },
         None => LinkAtResult { kind: "none".into(), ..Default::default() },
     })
 }

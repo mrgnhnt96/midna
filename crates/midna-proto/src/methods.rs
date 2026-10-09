@@ -922,7 +922,9 @@ pub struct SessionLinkAtParams {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct LinkAtResult {
     /// `url` (OSC 8 hyperlink, a detected http(s) URL, or a `<scheme>://` URL an app opens),
-    /// `file` (an existing path), or `none`.
+    /// `file` (an existing path), `session` (another terminal: its id, 8+ hex digits of an
+    /// agent's conversation id, or a `midna://session/<id>` link; `target` is the terminal's
+    /// id), or `none`.
     pub kind: String,
     #[serde(default)]
     pub target: Option<String>,

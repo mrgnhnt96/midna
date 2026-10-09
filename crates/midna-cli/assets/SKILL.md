@@ -78,6 +78,9 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   files edited since the human's last prompt (`--turn N` for prompt N of `midna prompts`).
 - `midna usage` shows Claude's plan usage (5-hour and weekly windows, account-wide) and whether
   it is limited until a reset. Check it before starting long work for someone else.
+- When you tell the human about another terminal, name it by its id (`midna list`) or link it as
+  `[name](midna://session/<id>)`: ⌘-clicking a terminal's id, an agent's conversation id (its
+  first 8+ characters do) or a `midna://session/<id>` link brings that terminal to the front.
 - Prefer opening your own terminal over typing into one someone else is using. Never answer
   another agent's permission prompt unless `midna read --screen` shows that prompt.
 

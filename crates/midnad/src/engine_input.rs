@@ -69,7 +69,12 @@ pub enum Link {
     /// A `<scheme>://…` URL an app on this Mac opens (`taskboard://…`), and that app's name.
     App { url: String, app: String },
     File { path: String, line: Option<u32>, column: Option<u32> },
+    /// Another terminal, by id (see `tab_ref`).
+    Session(String),
 }
+
+/// Scheme of an explicit terminal link: `midna://session/<id>`.
+pub const SESSION_LINK: &str = "midna://session/";
 
 /// Result of a find step.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -558,16 +563,20 @@ impl Engine {
         Some((chars, hit?))
     }
 
-    /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL, an app link
-    /// (`schemes.rs`) or an existing file path (`path:line[:col]`, relative paths resolved
-    /// against `cwd`, then the shell's OSC 7 directory).
-    pub fn link_at(&self, x: u16, y: u16, cwd: &str) -> Option<Link> {
+    /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL, a reference to
+    /// another terminal (`tabs`, see `tab_ref`), an app link (`schemes.rs`) or an existing file
+    /// path (`path:line[:col]`, relative paths resolved against `cwd`, then the shell's OSC 7
+    /// directory).
+    pub fn link_at(&self, x: u16, y: u16, cwd: &str, tabs: &[(String, String)]) -> Option<Link> {
         if let Ok(r) = self.term.grid_ref(Point::Viewport(PointCoordinate { x, y: y as u32 })) {
             let mut buf = vec![0u8; 2048];
             if let Ok(n) = r.hyperlink_uri(&mut buf)
                 && n > 0
             {
                 let url = String::from_utf8_lossy(&buf[..n]).into_owned();
+                if url.starts_with(SESSION_LINK) {
+                    return tab_ref(&url, tabs).map(Link::Session);
+                }
                 let app = url.split_once("://").and_then(|(scheme, _)| crate::schemes::app_for(scheme));
                 return Some(match app {
                     Some(app) => Link::App { url, app },
@@ -577,7 +586,7 @@ impl Engine {
         }
         let (chars, i) = self.logical_line(x, y)?;
         let pwd = osc7_path(self.term.pwd().unwrap_or(""));
-        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for)
+        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for, tabs)
     }
 
     /// Find `query` (case-insensitive unless it has capitals) in scrollback + screen, moving
@@ -680,8 +689,8 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// Link detection on a logical line: `i` is the clicked char. `app_for` names the app a URL
-/// scheme opens (`schemes::app_for`).
-pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&str) -> Option<String>) -> Option<Link> {
+/// scheme opens (`schemes::app_for`); `tabs` are the terminals a word can name (`tab_ref`).
+pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&str) -> Option<String>, tabs: &[(String, String)]) -> Option<Link> {
     if i >= chars.len() || chars[i].is_whitespace() {
         return None;
     }
@@ -706,6 +715,12 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&st
             return Some(Link::Url(url.to_string()));
         }
     }
+    // Another terminal: its id, an agent's conversation id, or `midna://session/<id>`.
+    let t = word.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | '`' | ',' | ';'));
+    let t = t.trim_end_matches(['.', ':']);
+    if let Some(id) = tab_ref(t, tabs) {
+        return Some(Link::Session(id));
+    }
     // App links: `<scheme>://…` when an app opens the scheme.
     for (start, url, app) in crate::schemes::app_links(&word, trim_url, app_for) {
         if click >= start && click < start + url.len() {
@@ -713,8 +728,6 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&st
         }
     }
     // File paths, optionally with :line[:col].
-    let t = word.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | '`' | ',' | ';'));
-    let t = t.trim_end_matches(['.', ':']);
     if t.is_empty() || t.contains("://") {
         return None;
     }
@@ -736,6 +749,21 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&st
     };
     let found = candidates.into_iter().find(|p| p.exists())?;
     Some(Link::File { path: found.to_string_lossy().into_owned(), line, column })
+}
+
+/// The terminal a word names: `tabs` maps each key (a terminal id, an agent's conversation id)
+/// to its terminal. The word, optionally `midna://session/<key>`, must be 8+ hex digits (dashes
+/// allowed, as in a UUID) equal to a key or the start of one, and name one terminal only. A bare
+/// word also needs a digit, so hex-looking words (`deadbeef`, `accepted`) stay text.
+pub fn tab_ref(word: &str, tabs: &[(String, String)]) -> Option<String> {
+    let explicit = word.strip_prefix(SESSION_LINK);
+    let w = explicit.unwrap_or(word).trim_end_matches('/').to_ascii_lowercase();
+    if w.len() < 8 || !w.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || (explicit.is_none() && !w.chars().any(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    let mut hits = tabs.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with(&w)).map(|(_, id)| id);
+    let id = hits.next()?;
+    hits.all(|o| o == id).then(|| id.clone())
 }
 
 fn trim_url(s: &str) -> &str {
@@ -1001,17 +1029,17 @@ mod tests {
     fn links() {
         let mut e = Engine::new(60, 4, None);
         e.feed(b"see \x1b]8;;https://example.com/x\x1b\\here\x1b]8;;\x1b\\ or https://midna.dev/a_(b). ok", 1);
-        assert_eq!(e.link_at(5, 0, "/"), Some(Link::Url("https://example.com/x".into())));
-        assert_eq!(e.link_at(20, 0, "/"), Some(Link::Url("https://midna.dev/a_(b)".into())));
-        assert_eq!(e.link_at(1, 0, "/"), None);
+        assert_eq!(e.link_at(5, 0, "/", &[]), Some(Link::Url("https://example.com/x".into())));
+        assert_eq!(e.link_at(20, 0, "/", &[]), Some(Link::Url("https://midna.dev/a_(b)".into())));
+        assert_eq!(e.link_at(1, 0, "/", &[]), None);
         let dir = std::env::temp_dir().join(format!("midna-link-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
         let mut e = Engine::new(40, 4, None);
         e.feed(b"error at src/main.rs:12:5: oops", 1);
-        let got = e.link_at(12, 0, dir.to_str().unwrap());
+        let got = e.link_at(12, 0, dir.to_str().unwrap(), &[]);
         assert_eq!(got, Some(Link::File { path: dir.join("src/main.rs").to_string_lossy().into(), line: Some(12), column: Some(5) }));
-        assert_eq!(e.link_at(2, 0, dir.to_str().unwrap()), None);
+        assert_eq!(e.link_at(2, 0, dir.to_str().unwrap(), &[]), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1025,7 +1053,7 @@ mod tests {
 
     #[test]
     fn detect_app_links() {
-        let at = |s: &str, i: usize| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], &taskboard);
+        let at = |s: &str, i: usize| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], &taskboard, &[]);
         let app = |u: &str| Some(Link::App { url: u.into(), app: "Taskboard".into() });
         assert_eq!(at("open taskboard://#/?task=T6 now", 8), app("taskboard://#/?task=T6"));
         // Trailing punctuation and brackets the URL didn't open stay out.
@@ -1035,7 +1063,7 @@ mod tests {
         assert_eq!(at("seetaskboard://#/?task=T6", 5), None);
         // Unregistered schemes stay plain text.
         assert_eq!(at("got foo://bar/baz", 6), None);
-        assert_eq!(detect_link(&"taskboard://#/?task=T6".chars().collect::<Vec<_>>(), 3, &[], &no_apps), None);
+        assert_eq!(detect_link(&"taskboard://#/?task=T6".chars().collect::<Vec<_>>(), 3, &[], &no_apps, &[]), None);
         // Nothing after the `://`.
         assert_eq!(at("taskboard://", 3), None);
     }
@@ -1043,7 +1071,34 @@ mod tests {
     #[test]
     fn detect_url_in_wrapped_text() {
         let chars: Vec<char> = "(https://a.b/c?d=1).".chars().collect();
-        assert_eq!(detect_link(&chars, 5, &[], &no_apps), Some(Link::Url("https://a.b/c?d=1".into())));
+        assert_eq!(detect_link(&chars, 5, &[], &no_apps, &[]), Some(Link::Url("https://a.b/c?d=1".into())));
+    }
+
+    #[test]
+    fn tab_links() {
+        let tabs: Vec<(String, String)> = [("019da528", "019da528"), ("e0af734f", "e0af734f"), ("3f2a9c01-77d4-4b1e-9a0b-5c6d7e8f9a0b", "e0af734f")]
+            .iter()
+            .map(|(k, id)| (k.to_string(), id.to_string()))
+            .collect();
+        let sess = |s: &str| Some(s.to_string());
+        assert_eq!(tab_ref("019da528", &tabs), sess("019da528"));
+        assert_eq!(tab_ref("019DA528", &tabs), sess("019da528"));
+        assert_eq!(tab_ref("midna://session/e0af734f", &tabs), sess("e0af734f"));
+        // A conversation id, whole or its first 8+, names its terminal.
+        assert_eq!(tab_ref("3f2a9c01", &tabs), sess("e0af734f"));
+        assert_eq!(tab_ref("3f2a9c01-77d4-4b1e-9a0b-5c6d7e8f9a0b", &tabs), sess("e0af734f"));
+        // Too short, not hex, or no live terminal: plain text.
+        assert_eq!(tab_ref("019da5", &tabs), None);
+        assert_eq!(tab_ref("deadbeef", &tabs), None);
+        assert_eq!(tab_ref("12345678", &tabs), None);
+        let ambiguous = vec![("aaaa1111x".into(), "s1".into()), ("aaaa1111y".into(), "s2".into())];
+        assert_eq!(tab_ref("aaaa1111", &ambiguous), None);
+
+        let mut e = Engine::new(80, 4, None);
+        e.feed(b"Your \"Taskboard\" tab (019da528) is busy; see \x1b]8;;midna://session/e0af734f\x1b\\this tab\x1b]8;;\x1b\\ ok", 1);
+        assert_eq!(e.link_at(25, 0, "/", &tabs), Some(Link::Session("019da528".into())));
+        assert_eq!(e.link_at(47, 0, "/", &tabs), Some(Link::Session("e0af734f".into())));
+        assert_eq!(e.link_at(25, 0, "/", &[]), None);
     }
 
     #[test]

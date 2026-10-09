@@ -855,3 +855,18 @@ fn pinned_projects_survive_a_restart() {
     assert_eq!(p["pinned"], true, "{p}");
     assert!(call(&mut h, "project.update", json!({ "id": id, "pinned": false })).get("pinned").is_none());
 }
+
+#[test]
+fn another_terminals_id_is_a_link_to_it() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let (here, there) = (open_sh(&mut c), open_sh(&mut c));
+    call(&mut c, "session.input", json!({ "id": here, "text": format!("clear; echo 'tab ({there}) and (ffff0000)'"), "enter": true }));
+    let at = |c: &mut Client, col: u16| {
+        (0..24).map(|row| call(c, "session.link_at", json!({ "id": here, "col": col, "row": row }))).find(|l| l["kind"] != "none")
+    };
+    let link = wait_for(5, "tab link", || at(&mut c, 6));
+    assert_eq!((link["kind"].as_str(), link["target"].as_str()), (Some("session"), Some(there.as_str())), "{link}");
+    // An id no terminal has stays plain text.
+    assert!(at(&mut c, 22).is_none());
+}
