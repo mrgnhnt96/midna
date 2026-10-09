@@ -20,7 +20,7 @@ Requirements:
 - Rust (edition 2024)
 - the pinned toolchain in `.toolchain/` (Zig 0.15.2, an SDK shim, the ghostty source). It's gitignored; `scripts/setup-toolchain.sh` sets it up.
 
-Always source `env.sh` first. Besides the toolchain, it points cargo's build dir at the main checkout's `target/`, so git worktrees share compiled crates while each still links its own binaries into its own `target/`.
+Always source `env.sh` first.
 
 ```sh
 . ./env.sh
