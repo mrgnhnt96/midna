@@ -1246,22 +1246,56 @@ impl TerminalView {
         self.copy_selection(window, cx);
     }
 
+    /// ⌘X: copy the selection, then erase it as ⌫ would. Outside the input line (output, a
+    /// full-screen app) there's nothing to erase, so it only copies.
+    fn on_cut(&mut self, _: &TermCut, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((s, e)) = self.kbd_range() {
+            Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
+            self.erase_selection(cx);
+            cx.notify();
+            return;
+        }
+        if self.ext.selection.is_empty() {
+            return;
+        }
+        // Erase once copied: the keys that erase drop the engine's selection.
+        self.call("session.selection", json!({ "id": self.session_id }), window, cx, |t, r, _, cx| {
+            if let Some(text) = r.ok().and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string)) {
+                Self::to_clipboard(text, cx);
+                t.erase_selection(cx);
+                cx.notify();
+            }
+        });
+    }
+
     fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A keyboard selection (⇧ moves, ⌘A in an agent's box) is ours, not the engine's.
+        if let Some((s, e)) = self.kbd_range() {
+            Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
+            return;
+        }
         if self.ext.selection.is_empty() {
             return;
         }
         // The engine formats the selection: wide chars, wrapped lines and scrolled-off rows.
         self.call("session.selection", json!({ "id": self.session_id }), window, cx, |_, r, _, cx| {
             if let Some(text) = r.ok().and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string)) {
-                if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
-                    // Dev runs leave the real pasteboard alone.
-                    eprintln!("midna-app debug-term: copied {text:?}");
-                    return;
-                }
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                crate::sounds::play("copied");
+                Self::to_clipboard(text, cx);
             }
         });
+    }
+
+    fn to_clipboard(text: String, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
+            // Dev runs leave the real pasteboard alone.
+            eprintln!("midna-app debug-term: copied {text:?}");
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        crate::sounds::play("copied");
     }
 
     /// ⌘A: in an agent's input box, select its text (as ⇧⌘↓ from its start would) and put the
@@ -1979,13 +2013,14 @@ impl Render for TerminalView {
             }))
             .on_key_down(cx.listener(Self::on_key))
             .on_key_up(cx.listener(Self::on_key_up))
-            // With the secret sheet open, ⌘V/⌘C/⌘A belong to its name field (its key handler),
+            // With the secret sheet open, ⌘V/⌘C/⌘X/⌘A belong to its name field (its key handler),
             // never the terminal: a second ⌘V there would paste the token into the agent.
             .when(self.secret_sheet.is_none(), |d| {
                 d.on_action(cx.listener(Self::on_paste))
                     .on_action(cx.listener(Self::on_paste_image_inline))
                     .on_action(cx.listener(|t, _: &TermPasteSecret, w, cx| t.paste_as_secret(w, cx)))
                     .on_action(cx.listener(Self::on_copy))
+                    .on_action(cx.listener(Self::on_cut))
                     .on_action(cx.listener(Self::on_select_all))
                     .on_action(cx.listener(|t, _: &TermClear, w, cx| t.menu_action("clear", w, cx)))
                     .on_action(cx.listener(Self::on_prev_prompt))

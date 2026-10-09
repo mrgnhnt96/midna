@@ -176,18 +176,46 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
     let width = first.cells.len().saturating_sub(4);
     let mut text = lines[0].clone();
     for pair in lines.windows(2) {
-        let (prev, next) = (pair[0].chars().count(), &pair[1]);
-        let word = next.chars().take_while(|c| *c != ' ').count();
-        if prev >= width {
-            // Cut mid-word (a path, a URL): nothing was dropped.
-        } else if word > 0 && prev > 0 && prev + 1 + word > width {
-            text.push(' ');
-        } else {
-            text.push('\n');
-        }
-        text.push_str(next);
+        text.push_str(row_break(&pair[0], &pair[1], width));
+        text.push_str(&pair[1]);
     }
     Some(text)
+}
+
+/// What joins two rows of Claude's input text, `width` cells wide: nothing, the space it
+/// wrapped at, or a line break (see [`input_text`]).
+fn row_break(prev: &str, next: &str, width: usize) -> &'static str {
+    let prev = prev.chars().count();
+    let word = next.chars().take_while(|c| *c != ' ').count();
+    if prev >= width {
+        "" // Cut mid-word (a path, a URL): nothing was dropped.
+    } else if word > 0 && prev > 0 && prev + 1 + word > width {
+        " "
+    } else {
+        "\n"
+    }
+}
+
+/// The text a keyboard selection from `s` to `e` (in reading order) holds, for ⌘C and ⌘X.
+/// In an agent's box rows are joined as [`input_text`] joins them; a shell's rows are one
+/// soft-wrapped line.
+pub fn selected_text(grid: &[RowData], s: Pos, e: Pos, agent: bool) -> String {
+    let indent = if agent { AGENT_INDENT } else { 0 };
+    let width = grid.get(s.1 as usize).map_or(0, |r| r.cells.len().saturating_sub(4));
+    let mut text = String::new();
+    let mut prev: Option<String> = None;
+    for y in s.1..=e.1 {
+        let Some(row) = grid.get(y as usize) else { break };
+        let x0 = if y == s.1 { s.0 } else { leading_blanks(row).min(indent) };
+        let x1 = if y == e.1 { e.0.min(text_end(row)) } else { text_end(row) };
+        let whole = text_of(row, indent, text_end(row).max(indent));
+        if let (Some(p), true) = (&prev, agent) {
+            text.push_str(row_break(p, &whole, width));
+        }
+        text.push_str(&text_of(row, x0, x1));
+        prev = Some(whole);
+    }
+    text
 }
 
 /// The moves to the end of Claude Code's input from the cursor: down to its last row, then
@@ -730,6 +758,19 @@ mod tests {
         assert_eq!(input_text(&empty, (2, 1)).as_deref(), Some(""), "the placeholder");
         let g = grid(&[&rule, "❯ one", "", "  two", &rule]);
         assert_eq!(input_end(&g, (0, 2)), Some(vec![Send::Arrow("down"), Send::Bytes(b"\x05")]), "from a blank line");
+    }
+
+    #[test]
+    fn reads_a_keyboard_selection() {
+        let rule = "─".repeat(30);
+        let g = grid(&[&rule, "❯ the quick brown fox jumps", "  over the lazy dog", &rule]);
+        assert_eq!(selected_text(&g, (6, 1), (11, 1), true), "quick");
+        assert_eq!(selected_text(&g, (22, 1), (10, 2), true), "jumps over the", "a wrap is a space");
+        assert_eq!(selected_text(&g, (2, 1), (19, 2), true), "the quick brown fox jumps over the lazy dog", "⌘A");
+        let g = grid(&[&rule, "❯ first line", "    indented", "", "  after blank", &rule]);
+        assert_eq!(selected_text(&g, (8, 1), (7, 4), true), "line\n  indented\n\nafter");
+        let g = grid(&["$ echo abcdefghij", "klmnop"]);
+        assert_eq!(selected_text(&g, (7, 0), (3, 1), false), "abcdefghijklm", "a shell's wrapped line");
     }
 
     #[test]

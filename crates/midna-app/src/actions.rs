@@ -47,6 +47,8 @@ actions!(
         ShowAll,
         // terminal
         TermCopy,
+        /// ⌘X: copy the selection, and erase it when it's in the input line.
+        TermCut,
         TermPaste,
         TermPasteSecret,
         /// Paste the clipboard's image as its path, skipping the image sheet.
@@ -274,6 +276,7 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     }
     b.push(KeyBinding::new("escape", Dismiss, Some("MidnaOverlay")));
     b.push(KeyBinding::new("cmd-c", TermCopy, TERM));
+    b.push(KeyBinding::new("cmd-x", TermCut, TERM));
     b.push(KeyBinding::new("cmd-v", TermPaste, TERM));
     b.push(KeyBinding::new("cmd-alt-v", TermPasteSecret, TERM));
     b.push(KeyBinding::new("cmd-a", TermSelectAll, TERM));
