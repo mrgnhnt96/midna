@@ -60,6 +60,9 @@ pub struct State {
     /// checked against and recorded on, and the `on` actions they run.
     #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
     pub notify_sent: std::collections::VecDeque<crate::notify::Sent>,
+    /// Today's keep-awake override (`keep_awake.set` today); dropped once its date is past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_awake_today: Option<midna_proto::keep_awake::Today>,
 }
 
 impl State {

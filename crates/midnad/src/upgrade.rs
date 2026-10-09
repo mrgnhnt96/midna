@@ -307,6 +307,8 @@ pub fn handoff_and_exec(d: &Arc<Daemon>, bin: &Path, reason: &str) -> String {
         let args = [prog.clone(), cs("--foreground"), cs("--resume"), CString::new(path.as_os_str().as_bytes()).unwrap_or_default()];
         let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
         argv.push(std::ptr::null());
+        // An IOKit assertion isn't promised to outlive or follow an exec; the new image takes it again.
+        crate::keep_awake::release(d);
         unsafe { libc::execv(prog.as_ptr(), argv.as_ptr()) };
         Err(format!("execv {}: {}", bin.display(), std::io::Error::last_os_error()))
     })();

@@ -351,7 +351,7 @@ impl SessionFacts {
     }
 }
 
-fn is_live(t: &Trigger) -> bool {
+pub(crate) fn is_live(t: &Trigger) -> bool {
     t.source == TriggerSource::Local && t.enabled && t.state == TriggerState::Active
 }
 

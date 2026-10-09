@@ -128,6 +128,11 @@ pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str) {
     d.resume.watch().entry(sid.clone()).or_insert_with(|| Watch::new(Cause::Network, NETWORK_WATCH_FOR));
 }
 
+/// How many agents are waiting to be resumed.
+pub fn watching(d: &Daemon) -> usize {
+    d.resume.watch().len()
+}
+
 pub fn start(d: &Arc<Daemon>) {
     let w = Arc::downgrade(d);
     let _ = std::thread::Builder::new().name("resume".into()).spawn(move || {

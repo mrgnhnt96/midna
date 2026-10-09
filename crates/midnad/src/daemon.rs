@@ -188,6 +188,8 @@ pub struct Daemon {
     pub resume: crate::resume::Runtime,
     /// When the Mac slept (`clock.rs`), so idle and expiry checks count awake time only.
     pub clock: crate::clock::Clock,
+    /// The keep-awake power assertion (`keep_awake.rs`). Lock after `core`, never before it.
+    pub keep_awake: crate::keep_awake::Runtime,
 }
 
 impl Daemon {
@@ -241,6 +243,7 @@ impl Daemon {
             queue: Default::default(),
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),
+            keep_awake: Default::default(),
             cfg,
         }))
     }

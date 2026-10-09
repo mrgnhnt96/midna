@@ -17,6 +17,7 @@ pub mod hooks;
 pub mod images;
 pub mod insights;
 pub mod install;
+pub mod keep_awake;
 pub mod links;
 pub mod local;
 pub mod queue;
