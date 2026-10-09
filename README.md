@@ -20,13 +20,13 @@ Requirements:
 - Rust (edition 2024)
 - the pinned toolchain in `.toolchain/` (Zig 0.15.2, an SDK shim, the ghostty source). It's gitignored; `scripts/setup-toolchain.sh` sets it up.
 
-Always source `env.sh` first.
+Always source `env.sh` first. Besides the toolchain, it points cargo's build dir at the main checkout's `target/`, so git worktrees share compiled crates while each still links its own binaries into its own `target/`.
 
 ```sh
 . ./env.sh
 cargo build                      # midnad, midna (CLI), midna-app
-cargo test --workspace           # everything uses temp MIDNA_HOMEs
-cargo test -p midna-app          # or just the crates you touched (see AGENTS.md)
+scripts/test.sh                  # every test, each on a temp MIDNA_HOME (one run at a time per Mac)
+scripts/test.sh -p midna-app     # or just the crates you touched (see AGENTS.md)
 scripts/smoke.sh                 # end-to-end day in the life against a real temp daemon
 ```
 

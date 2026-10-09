@@ -30,12 +30,14 @@ The full suite is slow (the midnad and CLI integration tests start real temp dae
 
 | You changed | Run |
 |---|---|
-| only `midna-app` | `cargo test -p midna-app` |
-| only `midna-cli` | `cargo test -p midna-cli` |
-| `midnad` | `cargo test -p midnad -p midna-cli` |
-| `midna-proto` | `cargo test --workspace` |
+| only `midna-app` | `scripts/test.sh -p midna-app` |
+| only `midna-cli` | `scripts/test.sh -p midna-cli` |
+| `midnad` | `scripts/test.sh -p midnad -p midna-cli` |
+| `midna-proto` | `scripts/test.sh` (the whole workspace) |
 
-Add `-p` flags when a change spans crates. Within one crate, run just the test target or filter you need while iterating (`cargo test -p midnad --test guard`, `cargo test -p midna-app insights::`), then that crate's whole suite once at the end. Keep `cargo test --workspace` for proto changes, cross-cutting refactors and releases.
+`scripts/test.sh` takes `cargo test`'s arguments. It builds at low priority, then waits its turn: one checkout's tests run at a time across the machine, so parallel agents don't push each other's integration tests past their timeouts. Add `-p` flags when a change spans crates. Within one crate, run just the tests you need while iterating (`scripts/test.sh -p midnad --test guard`, `scripts/test.sh -p midna-app insights::`), then that crate's whole suite once at the end. Keep the whole workspace for proto changes, cross-cutting refactors and releases.
+
+Worktrees share the main checkout's compiled crates (`env.sh` sets cargo's build dir), and cargo lets one build run at a time.
 
 ## Style
 
