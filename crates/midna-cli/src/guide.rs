@@ -236,7 +236,7 @@ const TOPICS: &[(&str, &str)] = &[
         updates live on settings.changed. Keybindings are settings too (keys.*)."),
     ("scripts", "What the terminal header, each sidebar row and the status bar show is set by scripts. Settings: \
         ui.header.script, ui.row.script, ui.status.script (run for the selected terminal), and ui.status.items, the \
-        status bar's items left to right (daemon, policy, webhooks, triggers, hooks, accessibility, script, spacer, update, \
+        status bar's items left to right (daemon, usage, cache, policy, webhooks, triggers, hooks, accessibility, awake, script, spacer, update, \
         keys, or an absolute path to a script, one item each; leave an item out to hide it).\n\
         Header buttons: ui.header.buttons lists the toolbar left to right (subagents, links, ide, image, split, popout, \
         restart, or a script path; More is always last). A built-in left out moves into the … menu and its shortcut \

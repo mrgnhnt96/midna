@@ -78,7 +78,8 @@ pub mod refresh {
     pub const ROWS: u32 = 256;
     pub const HOOKS: u32 = 512;
     pub const KEEP_AWAKE: u32 = 1024;
-    pub const ALL: u32 = 0x7ff;
+    pub const USAGE: u32 = 2048;
+    pub const ALL: u32 = 0xfff;
 }
 
 pub struct MainWindow {
@@ -97,6 +98,8 @@ pub struct MainWindow {
     pub hooks: Value,
     /// `keep_awake.status`: whether midnad keeps the Mac awake now (the status bar's `awake`).
     pub keep_awake: Value,
+    /// `usage.get`: Claude's plan limits (the status bar's `usage`).
+    pub usage: midna_proto::UsageGetResult,
     pub hooks_sheet: Option<crate::ui::hooks::HooksSheet>,
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
@@ -269,7 +272,7 @@ impl MainWindow {
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(15)).await;
-                if this.update(cx, |m, cx| m.request_refresh(refresh::HEADER | refresh::ROWS | refresh::INSIGHTS, cx)).is_err() {
+                if this.update(cx, |m, cx| m.request_refresh(refresh::HEADER | refresh::ROWS | refresh::INSIGHTS | refresh::USAGE, cx)).is_err() {
                     break;
                 }
             }
@@ -347,6 +350,7 @@ impl MainWindow {
             webhooks: Value::Null,
             hooks: Value::Null,
             keep_awake: Value::Null,
+            usage: Default::default(),
             hooks_sheet: None,
             ax_prompt: false,
             onboarding,
@@ -580,6 +584,10 @@ impl MainWindow {
                 }
                 if k.starts_with("agent.") || k.starts_with("trigger.") {
                     what |= refresh::INSIGHTS;
+                }
+                // A turn's status lines carry the plan limits.
+                if k.starts_with("agent.") || k.starts_with("usage.") {
+                    what |= refresh::USAGE;
                 }
                 if k.starts_with("trigger.") {
                     what |= refresh::WEBHOOKS;
@@ -880,6 +888,9 @@ impl MainWindow {
                     if what & refresh::KEEP_AWAKE != 0 {
                         r.keep_awake = call("keep_awake.status", json!({}));
                     }
+                    if what & refresh::USAGE != 0 {
+                        r.usage = call("usage.get", json!({})).and_then(|v| serde_json::from_value(v).ok());
+                    }
                     if what & refresh::HEADER != 0
                         && let Some(sid) = &header_for
                     {
@@ -1019,6 +1030,9 @@ impl MainWindow {
         }
         if let Some(k) = r.keep_awake {
             self.keep_awake = k;
+        }
+        if let Some(u) = r.usage {
+            self.usage = u;
         }
         if let Some((sid, segs)) = r.header {
             if !self.links.by_session.contains_key(&sid) {
@@ -2033,6 +2047,7 @@ struct RefreshResult {
     webhooks: Option<Value>,
     hooks: Option<Value>,
     keep_awake: Option<Value>,
+    usage: Option<midna_proto::UsageGetResult>,
     triggers: Option<usize>,
     header: Option<(String, Vec<Segment>)>,
     status: Option<(String, HashMap<String, Vec<Segment>>)>,

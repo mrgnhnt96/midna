@@ -1,4 +1,4 @@
-//! Bottom status bar: the items in `ui.status.items`, in order (midnad status, policy, webhooks
+//! Bottom status bar: the items in `ui.status.items`, in order (midnad status, Claude usage, webhooks
 //! path, triggers today, agent hooks, the `ui.status.script` segments, key hints, …).
 //! Right-click shows or hides each one.
 use super::header::tip;
@@ -76,7 +76,7 @@ fn merge_order(base: &[String], mine: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_order, scripts_wanted, toggled};
+    use super::{cache_left, merge_order, moved, pace, scripts_wanted, toggled};
     use ::core::prelude::v1::test;
 
     fn v(s: &[&str]) -> Vec<String> {
@@ -96,6 +96,32 @@ mod tests {
         assert_eq!(toggled(&v(&["daemon", "spacer", "keys"]), "script", "ui.status.items"), v(&["daemon", "spacer", "script", "keys"]));
         assert_eq!(toggled(&v(&["keys", "daemon"]), "webhooks", "ui.status.items"), v(&["keys", "daemon", "webhooks"]));
         assert_eq!(toggled(&v(&[]), "daemon", "ui.status.items"), v(&["daemon"]));
+    }
+
+    #[test]
+    fn dragging_moves_an_item_to_the_targets_place() {
+        assert_eq!(moved(&v(&["a", "b", "c", "d"]), "a", "c"), v(&["b", "c", "a", "d"]));
+        assert_eq!(moved(&v(&["a", "b", "c", "d"]), "d", "b"), v(&["a", "d", "b", "c"]));
+        assert_eq!(moved(&v(&["a", "b"]), "x", "b"), v(&["a", "b"]));
+    }
+
+    #[test]
+    fn cache_goes_cold_a_ttl_after_the_turn() {
+        assert_eq!(cache_left(true, 0, 300, 10_000), None);
+        assert_eq!(cache_left(false, 1000, 300, 1100), Some(200));
+        assert!(cache_left(false, 1000, 300, 1400).unwrap() <= 0);
+    }
+
+    #[test]
+    fn pace_projects_the_window_linearly() {
+        let h = 3600;
+        // (pct, observed, resets_at, len) with the window starting at 0; 2h in at 20%: 50% by the reset
+        assert_eq!(pace(20., 2 * h, 5 * h, 5 * h), Some(super::Pace::Within { at_reset: 50. }));
+        // 1h in at 40%: 100% at 2.5h, 2.5h before the reset
+        assert_eq!(pace(40., h, 5 * h, 5 * h), Some(super::Pace::Out { in_secs: 5 * h / 2 - h }));
+        // too early to tell, or nothing used
+        assert_eq!(pace(10., 60, 5 * h, 5 * h), None);
+        assert_eq!(pace(0., h, 5 * h, 5 * h), None);
     }
 
     #[test]
@@ -157,6 +183,8 @@ pub fn scripts_wanted(items: Option<&serde_json::Value>, script: Option<&serde_j
 fn item_label(item: &str) -> &str {
     match item {
         "daemon" => "midnad status",
+        "usage" => "Claude usage (5-hour and weekly)",
+        "cache" => "Prompt cache (selected Claude terminal)",
         "policy" => "Policy and approval rules",
         "webhooks" => "Webhooks",
         "triggers" => "Triggers today",
@@ -220,6 +248,8 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
         // The daemon-backed items need midnad; the rest always show.
         let el = match item.as_str() {
             "daemon" => Some(daemon_item(m, t)),
+            "usage" if connected => usage_item(m, t),
+            "cache" if connected => cache_item(m, t),
             "policy" if connected => Some(policy_item(m, t)),
             "webhooks" if connected => Some(webhooks_item(m, t, cx)),
             "triggers" if connected => Some(triggers_item(m, t, cx)),
@@ -277,6 +307,115 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
     )
 }
 
+/// Claude's plan limits as the taskboard draws them: per window a label, a 34×5 bar and the
+/// percentage, amber from 75% and red from 90%. A window Claude doesn't report (the 5-hour one
+/// on some plans) is left out; nothing shows until a Claude terminal has reported any.
+fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
+    let u = m.usage.claude.as_ref()?;
+    let now = midna_proto::time::now_unix();
+    let stale = midna_proto::time::parse_rfc3339(&u.observed_at).is_some_and(|s| now - s > 3600);
+    let mut row = div().id("usage").flex().items_center().gap(px(10.)).when(stale, |d| d.opacity(0.6));
+    let mut tips = Vec::new();
+    for (label, name, len, w) in [("5h", "5-hour", 5 * 3600, &u.five_hour), ("7d", "Weekly", 7 * 86400, &u.seven_day)] {
+        let Some(w) = w else { continue };
+        let pct = if w.expired { 0. } else { w.used_percentage.clamp(0., 100.) };
+        let (bar_c, val_c) = if pct >= 90. {
+            (t.err, t.err)
+        } else if pct >= 75. {
+            (t.need, t.need)
+        } else {
+            (t.ok, t.dim)
+        };
+        let value = if w.expired { "—".to_string() } else { format!("{}%", pct.round()) };
+        let resets_at = w.resets_at.as_deref().and_then(midna_proto::time::parse_rfc3339);
+        let resets = w.resets_at.as_deref().map(|r| format!(", resets {}", crate::ui::screen_kit::day_label(r))).unwrap_or_default();
+        let observed = midna_proto::time::parse_rfc3339(&u.observed_at).unwrap_or(now);
+        let projection = match resets_at.and_then(|r| pace(pct, observed, r, len)) {
+            Some(Pace::Out { in_secs }) => {
+                let at = midna_proto::time::format_unix(observed + in_secs);
+                format!("\nAt this pace you'll run out {} ({})", crate::ui::screen_kit::day_label(&at), crate::ui::screen_kit::left(observed + in_secs - now).replace(" left", " from now"))
+            }
+            Some(Pace::Within { at_reset }) => format!("\nWithin range: about {}% by the reset at this pace", at_reset.round()),
+            None => String::new(),
+        };
+        tips.push(if w.expired { format!("{name} limit: reset since the last report") } else { format!("{name} limit: {}% used{resets}{projection}", pct.round()) });
+        row = row.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .child(label)
+                .child(div().w(px(34.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.line).child(div().h_full().rounded_full().bg(bar_c).w(relative((pct / 100.) as f32))))
+                .child(div().min_w(px(24.)).flex().justify_end().text_color(val_c).child(value)),
+        );
+    }
+    if tips.is_empty() {
+        return None;
+    }
+    if stale {
+        tips.push(format!("Last reported {}", crate::ui::screen_kit::ago(Some(&u.observed_at))));
+    }
+    Some(row.tooltip(tip(tips.join("\n"))).into_any_element())
+}
+
+/// Whether the selected Claude terminal's prompt cache is still warm: a flame while it is, a
+/// snowflake once it has gone cold. Claude keeps a conversation's cache for an hour on
+/// subscription plans (they report plan limits) and five minutes on an API key, from its last
+/// request; a turn in progress keeps it warm, and its last request is about when the terminal
+/// last changed state (stopped, or asked you something). Nothing shows for other terminals,
+/// or when no terminal is selected.
+fn cache_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
+    if m.screen != Screen::Terminal {
+        return None;
+    }
+    let s = m.selected_session()?;
+    use crate::model::{AgentKind, StatusState};
+    if s.agent != Some(AgentKind::Claude) || matches!(s.status.state, StatusState::Failed | StatusState::Exited) {
+        return None;
+    }
+    let info = s.agent_info.as_ref()?;
+    let ttl = if info.rate_limits.is_some() { 3600 } else { 300 };
+    let since = midna_proto::time::parse_rfc3339(s.status.since.as_deref()?)?;
+    let left = cache_left(s.status.state == StatusState::Working, since, ttl, midna_proto::time::now_unix());
+    let ttl_text = if ttl == 3600 { "1 hour" } else { "5 minutes" };
+    let (icon, color, text) = match left {
+        None => (Icon::Flame, t.work, "Prompt cache warm: a turn is running".to_string()),
+        Some(l) if l > 0 => (Icon::Flame, t.work, format!("Prompt cache warm: {} (it lasts {ttl_text} after the last request)", crate::ui::screen_kit::left(l))),
+        Some(_) => (Icon::Snowflake, t.dim, format!("Prompt cache cold: the next message re-reads the whole conversation at full price (it lasts {ttl_text} after the last request)")),
+    };
+    Some(div().id("cache").flex().items_center().child(icon.el(12., color)).tooltip(tip(text)).into_any_element())
+}
+
+/// Seconds the cache stays warm (≤ 0: cold), or None while a turn keeps it warm.
+fn cache_left(working: bool, since: i64, ttl: i64, now: i64) -> Option<i64> {
+    (!working).then(|| since + ttl - now)
+}
+
+#[derive(Debug, PartialEq)]
+enum Pace {
+    /// 100% is reached `in_secs` after the reading, before the window resets.
+    Out { in_secs: i64 },
+    /// The window resets first, at about `at_reset`%.
+    Within { at_reset: f64 },
+}
+
+/// Where a window is headed if it keeps being used at its average rate so far: `pct` used at
+/// `observed` (unix secs) of a `len`-second window that resets at `resets_at`. None in its first
+/// 10 minutes (too little to go on), with nothing used, or once it's over.
+fn pace(pct: f64, observed: i64, resets_at: i64, len: i64) -> Option<Pace> {
+    let elapsed = observed - (resets_at - len);
+    let left = resets_at - observed;
+    if elapsed < 600 || left <= 0 || pct <= 0. {
+        return None;
+    }
+    let rate = pct / elapsed as f64;
+    if pct >= 100. {
+        return Some(Pace::Out { in_secs: 0 });
+    }
+    let to_full = ((100. - pct) / rate) as i64;
+    if to_full < left { Some(Pace::Out { in_secs: to_full }) } else { Some(Pace::Within { at_reset: (pct + rate * left as f64).min(100.) }) }
+}
+
 fn policy_item(m: &MainWindow, t: &Theme) -> AnyElement {
     let policy = m.setting_str("policy.default").unwrap_or_else(|| "default".into());
     let rules = m.rules_count;
@@ -324,26 +463,57 @@ fn script_item(m: &MainWindow, item: &str, t: &Theme, cx: &mut Context<MainWindo
     (!segs.is_empty()).then(|| div().id(SharedString::from(format!("status-{item}"))).child(crate::ui::sidebar::segments(segs, t, 11.5, cx).gap(px(10.))).into_any_element())
 }
 
-/// Right-click menu: a check row per built-in item and per script path in the list (saved to
+/// A status bar item being dragged in the right-click menu.
+struct StatusDrag(String);
+
+/// Right-click menu: a check row per item, the shown ones first in the bar's order, then the
+/// hidden ones (a check row per built-in item and per script path in the list, saved to
 /// `ui.status.items`; unchecking a script path drops it, adding one is done by asking an agent
-/// or `midna settings set`). Opens upward from where the bar was clicked, and stays open so several can be toggled.
+/// or `midna settings set`). Drag a shown row to move it on the bar; the order is saved when it's
+/// dropped. Opens upward from where the bar was clicked, and stays open so several can be toggled.
 fn menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let current = items(m);
     let mut list = crate::ui::sidebar::menu_box(t).occlude().mb(px(4.)).text_size(px(12.5));
-    let all = midna_proto::settings::STATUS_ITEMS.iter().map(|s| s.to_string()).chain(current.iter().filter(|i| i.starts_with('/')).cloned());
+    let hidden = midna_proto::settings::STATUS_ITEMS.iter().map(|s| s.to_string()).filter(|i| !current.contains(i));
+    let all: Vec<String> = current.iter().cloned().chain(hidden).collect();
     for item in all {
         let on = current.iter().any(|i| *i == item);
         let next = toggled(&current, &item, "ui.status.items");
-        list = list.child(
-            crate::ui::sidebar::menu_item(t, &format!("status-item-{item}"), item_label(&item), if item.starts_with('/') { "unchecking removes it" } else { "" }, cx.listener(move |m, _, _, cx| {
-                m.settings.insert("ui.status.items".into(), serde_json::json!(next));
-                m.rpc("settings.set", serde_json::json!({"key": "ui.status.items", "value": next}), cx, |_, _, _, _| {});
-                cx.notify();
-            }))
-            .child(div().size(px(14.)).flex_none().when(on, |d| d.child(Icon::Check.el(13., t.accent)))),
-        );
+        let row = crate::ui::sidebar::menu_item(t, &format!("status-item-{item}"), item_label(&item), if item.starts_with('/') { "unchecking removes it" } else { "" }, cx.listener(move |m, _, _, cx| {
+            save_items(m, next.clone(), cx);
+        }))
+        .child(div().size(px(14.)).flex_none().when(on, |d| d.child(Icon::Check.el(13., t.accent))));
+        let target = item.clone();
+        list = list.child(row.when(on, |d| {
+            d.on_drag(StatusDrag(item.clone()), |_, _, _, cx| cx.new(|_| crate::ui::sidebar::NoGhost))
+                .on_drag_move(cx.listener(move |m, ev: &DragMoveEvent<StatusDrag>, _, cx| {
+                    let y = ev.event.position.y;
+                    let dragged = ev.drag(cx).0.clone();
+                    if dragged != target && ev.bounds.top() <= y && y < ev.bounds.bottom() {
+                        let next = moved(&items(m), &dragged, &target);
+                        m.settings.insert("ui.status.items".into(), serde_json::json!(next));
+                        cx.notify();
+                    }
+                }))
+                .on_drop(cx.listener(|m, _: &StatusDrag, _, cx| save_items(m, items(m), cx)))
+        }));
     }
     deferred(anchored().position(m.status_menu_at).anchor(Anchor::BottomLeft).snap_to_window_with_margin(px(8.)).child(list)).with_priority(1)
+}
+
+fn save_items(m: &mut MainWindow, next: Vec<String>, cx: &mut Context<MainWindow>) {
+    m.settings.insert("ui.status.items".into(), serde_json::json!(next));
+    m.rpc("settings.set", serde_json::json!({"key": "ui.status.items", "value": next}), cx, |_, _, _, _| {});
+    cx.notify();
+}
+
+/// `items` with `dragged` moved to `target`'s place.
+fn moved(items: &[String], dragged: &str, target: &str) -> Vec<String> {
+    let mut out = items.to_vec();
+    let (Some(from), Some(to)) = (out.iter().position(|i| i == dragged), out.iter().position(|i| i == target)) else { return out };
+    let d = out.remove(from);
+    out.insert(to, d);
+    out
 }
 
 /// "Update ready · restart to apply" (quiet; click installs and relaunches). Shells live in

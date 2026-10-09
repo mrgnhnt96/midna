@@ -31,7 +31,7 @@ struct DraggedRow {
 struct ResizeDrag;
 
 /// Nothing follows the cursor: the row itself moves as the drag crosses its neighbours.
-struct NoGhost;
+pub struct NoGhost;
 
 impl Render for NoGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

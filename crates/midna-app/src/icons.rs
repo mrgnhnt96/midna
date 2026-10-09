@@ -79,6 +79,9 @@ pub enum Icon {
     /// Linked: one theme in both modes. `ChainBroken`: a theme per macOS mode.
     Chain,
     ChainBroken,
+    /// The status bar's `cache`: the selected agent's prompt cache is warm / cold.
+    Flame,
+    Snowflake,
 }
 
 impl Icon {
@@ -137,6 +140,8 @@ impl Icon {
             Icon::WaveLine => "icons/wave-line.svg",
             Icon::Moon => "icons/moon.svg",
             Icon::Sun => "icons/sun.svg",
+            Icon::Flame => "icons/flame.svg",
+            Icon::Snowflake => "icons/snowflake.svg",
             Icon::Chain => "icons/chain.svg",
             Icon::ChainBroken => "icons/chain-broken.svg",
         }
@@ -326,6 +331,8 @@ fn source(path: &str) -> Option<&'static str> {
         // docs/design/ThemeStep-B.dc.html
         "icons/moon.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"><path d="M13.5 10A6 6 0 0 1 6 2.5a6 6 0 1 0 7.5 7.5z"/></svg>"##,
         "icons/sun.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg>"##,
+        "icons/flame.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"><path d="M8 14.5c-2.8 0-4.5-1.9-4.5-4.3 0-2.6 2-3.9 2.6-6.7 1.9 1.1 2.4 3 2.3 4.2.8-.5 1.3-1.4 1.4-2.4 1.6 1.4 2.7 3.1 2.7 4.9 0 2.4-1.7 4.3-4.5 4.3z"/></svg>"##,
+        "icons/snowflake.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><path d="M8 1.5v13M2.4 4.75l11.2 6.5M2.4 11.25l11.2-6.5M6.3 2.6 8 4.2l1.7-1.6M6.3 13.4 8 11.8l1.7 1.6"/></svg>"##,
         "icons/chain.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2M9 11.5l-1.2 1.2a2.6 2.6 0 0 1-3.7-3.7L5.3 7.8"/></svg>"##,
         "icons/chain-broken.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M7 4.5l1.2-1.2a2.6 2.6 0 0 1 3.7 3.7L10.7 8.2M9 11.5l-1.2 1.2a2.6 2.6 0 0 1-3.7-3.7L5.3 7.8M2.5 2.5l1.5 1.5M12 12l1.5 1.5"/></svg>"##,
         "icons/tile-outline.svg" => r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#000" stroke-width="2"><rect x="1" y="1" width="12" height="12"/></svg>"##,
