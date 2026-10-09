@@ -464,6 +464,9 @@ pub struct Badge {
     /// and the height each had: each finishes, however quickly you open the next).
     expanded: Option<(String, Instant)>,
     collapsing: Vec<(String, Instant, f32)>,
+    /// Rows you took off the list (their ×), sliding away toward the badge and closing their
+    /// room as the capsule beside it does (`LINE_OUT`), and since when.
+    going: Vec<(Waiting, Instant)>,
     /// The capsule beside the badge flying into the list.
     landing: Option<Landing>,
     /// How far the list is scrolled (px), and a glide in progress (from, to, since).
@@ -905,6 +908,7 @@ impl Badge {
             cleared: vec![],
             expanded: None,
             collapsing: vec![],
+            going: vec![],
             landing: None,
             scroll: 0.,
             glide: None,
@@ -1008,6 +1012,7 @@ impl Badge {
         self.list_closing = None;
         self.expanded = None;
         self.collapsing.clear();
+        self.going.clear();
         self.glide = None;
         self.hot = None;
         self.hot_left = None;
@@ -1019,6 +1024,13 @@ impl Badge {
     fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(serial) = line_serial(id) {
             return self.dismiss_line(serial, cx);
+        }
+        // A row (not its open card) slides away as the capsule beside the badge does.
+        if self.list && !super::queue::reduce_motion() && self.card_k(id, Instant::now()).is_none()
+            && let Some(w) = self.rows().into_iter().find(|w| w.id == id).cloned()
+        {
+            self.going.retain(|(g, _)| g.id != id);
+            self.going.push((w, Instant::now()));
         }
         for l in self.lines.iter_mut().filter(|l| l.waiting.as_deref() == Some(id)) {
             l.leaving.get_or_insert(Instant::now());
@@ -1133,6 +1145,21 @@ impl Badge {
         None
     }
 
+    /// How far a row you took off the list is gone: 0 just going, 1 gone. None: it isn't.
+    fn going_k(&self, id: &str, now: Instant) -> Option<f32> {
+        let (_, at) = self.going.iter().find(|(w, _)| w.id == id)?;
+        Some(ease_in((now.duration_since(*at).as_secs_f32() / LINE_OUT.as_secs_f32()).min(1.)))
+    }
+
+    /// The list's rows with the ones going still in their places (newest first).
+    fn list_rows(&self) -> Vec<&Waiting> {
+        let mut rows = self.rows();
+        let going: Vec<&Waiting> = self.going.iter().map(|(w, _)| w).filter(|w| !rows.iter().any(|r| r.id == w.id)).collect();
+        rows.extend(going);
+        rows.sort_by(|a, b| b.at.cmp(&a.at));
+        rows
+    }
+
     /// A card's full height: a collapsing one's as it was, the open one's measured.
     fn card_height_of(&self, id: &str) -> f32 {
         self.collapsing.iter().find(|(c, _, _)| c == id).map_or_else(|| self.card_height(), |(_, _, h)| *h)
@@ -1150,7 +1177,11 @@ impl Badge {
         let mut heights = vec![];
         let mut y = 0.;
         for w in rows {
-            let h = self.card_k(&w.id, now).map_or(ROW, |k| ROW + (self.card_height_of(&w.id) - ROW) * k.min(1.));
+            let h = match self.going_k(&w.id, now) {
+                // Leaving: its room (and the gap after it) closes.
+                Some(e) => (ROW + GAP) * (1. - e) - GAP,
+                None => self.card_k(&w.id, now).map_or(ROW, |k| ROW + (self.card_height_of(&w.id) - ROW) * k.min(1.)),
+            };
             tops.push(y);
             heights.push(h);
             y += h + GAP;
@@ -1214,6 +1245,7 @@ impl Badge {
                 || self.list_closing.is_some()
                 || now.duration_since(self.list_since) < CASCADE_IN_STEP * CASCADE_ROWS as u32 + CASCADE_IN
                 || !self.collapsing.is_empty()
+                || !self.going.is_empty()
                 || self.landing.is_some()
                 || self.cool.is_some()
                 || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE)
@@ -1706,6 +1738,9 @@ impl Badge {
                 changed = true;
             }
         }
+        let before = self.going.len();
+        self.going.retain(|(_, t)| now.duration_since(*t) < LINE_OUT);
+        changed |= self.going.len() != before;
 
         if self.watched_at.is_none_or(|t| now.duration_since(t) >= WATCH_EVERY) {
             self.watched_at = Some(now);
@@ -2358,7 +2393,7 @@ impl Badge {
         if !self.list {
             return None;
         }
-        let rows = self.rows();
+        let rows = self.list_rows();
         if rows.is_empty() {
             return None;
         }
@@ -2390,6 +2425,12 @@ impl Badge {
             let landing = self.landing.as_ref().filter(|l| l.id == w.id);
             let el = match self.card_k(&w.id, now) {
                 Some(k) => drop(self.card(t, w, k, CARD_W, now, cx)),
+                // Taken off (its ×): toward the badge and out, its room closing after it.
+                None if let Some(e) = self.going_k(&w.id, now) => {
+                    let dir = if right { 1. } else { -1. };
+                    let capsule = self.capsule(t, w, now, 1., 1., cx);
+                    div().relative().flex().h(px(ROW)).mb(px(-(ROW + GAP) * e)).left(px(dir * 20. * e)).opacity(1. - e).child(capsule).into_any_element()
+                }
                 None if let Some(l) = landing => {
                     let capsule = self.capsule(t, w, now, 1., 1., cx);
                     div().relative().flex().child(div().flex().opacity(0.).child(capsule)).child(measure(l.to.clone())).into_any_element()
