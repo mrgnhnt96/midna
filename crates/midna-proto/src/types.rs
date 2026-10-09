@@ -1343,6 +1343,10 @@ pub mod kinds {
     pub const PROCS_LOOP_STOPPED: &str = "procs.loop_stopped";
     /// An idle git worktree was removed (`{path, repo, branch, idle_hours, by}`); the branch stays.
     pub const WORKTREE_REMOVED: &str = "worktree.removed";
+    /// A cleanup after a closed terminal started (`{run}`, a `CleanupRun`).
+    pub const CLEANUP_STARTED: &str = "cleanup.started";
+    /// It finished (`{run}`): what it removed, what it kept and why.
+    pub const CLEANUP_FINISHED: &str = "cleanup.finished";
     pub const AUDIT: &str = "audit";
     /// A policy decision made by the defaults table (no rule matched): `{decision, action,
     /// default, passthrough}`. `passthrough` = an unmatched tool call midna has no opinion on.

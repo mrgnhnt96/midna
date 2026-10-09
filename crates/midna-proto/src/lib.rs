@@ -1,6 +1,7 @@
 //! midna wire types, method catalog, OpenRPC generation, frame codec and a blocking client.
 //! See docs/ARCHITECTURE.md.
 pub mod catalog;
+pub mod cleanup;
 pub mod agent_cli;
 pub mod client;
 pub mod cron;
@@ -20,6 +21,9 @@ pub mod time;
 pub mod types;
 
 pub use catalog::{MethodSpec, catalog, method};
+pub use cleanup::{
+    CleanupGetParams, CleanupPlan, CleanupPreviewParams, CleanupRun, CleanupRunParams, CleanupRunsParams, CleanupRunsResult, CleanupState, CleanupTarget,
+};
 pub use client::{AttachStream, Client, ClientError, Subscription};
 pub use error::RpcError;
 pub use frame::{Cell, Frame, RowData};

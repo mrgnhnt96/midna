@@ -196,6 +196,8 @@ pub struct Daemon {
     pub guard: crate::guard::Runtime,
     /// Worktrees seen in use (`worktrees.rs`). Never held together with `core`.
     pub worktrees: crate::worktrees::Runtime,
+    /// What terminals touched, and cleanup runs (`cleanup.rs`). Never held together with `core`.
+    pub cleanup: crate::cleanup::Runtime,
 }
 
 impl Daemon {
@@ -253,6 +255,7 @@ impl Daemon {
             wake: Default::default(),
             guard: Default::default(),
             worktrees: Default::default(),
+            cleanup: Default::default(),
             cfg,
         }))
     }

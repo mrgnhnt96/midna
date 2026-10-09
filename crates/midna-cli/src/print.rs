@@ -434,3 +434,94 @@ pub fn worktrees_clean(v: &Value) {
         println!("kept {}: {}", s(&f, "path"), s(&f, "error"));
     }
 }
+
+/// `midna cleanup items`.
+pub fn cleanup_items(v: &Value) {
+    use midna_proto::cleanup as cl;
+    let items: Vec<String> = v["items"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let (on, own) = cl::split_items(&items);
+    let enabled = v["enabled"].as_bool() != Some(false);
+    println!("cleanup after a closed terminal: {}", if enabled { "on" } else { "off (`midna cleanup enable`)" });
+    for b in cl::BUILTINS {
+        println!("  [{}] {:<14} {}", if on.contains(b) { "x" } else { " " }, b, cl::builtin_label(b).unwrap_or(""));
+    }
+    if own.is_empty() {
+        println!("your own items: none (`midna cleanup add \"…\"`)");
+    } else {
+        println!("your own items:");
+        for (i, item) in own.iter().enumerate() {
+            println!("  {}. {item}", i + 1);
+        }
+    }
+    let keep: Vec<&str> = v["keep"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    println!("never touched: {}", if keep.is_empty() { "the default branch only".to_string() } else { format!("{} (and the default branch)", keep.join(", ")) });
+}
+
+fn cleanup_line(r: &Value) -> String {
+    let state = match s(r, "state").as_str() {
+        "running" => "running".to_string(),
+        "failed" => "failed".to_string(),
+        _ => format!("{} removed, {} kept", r["removed"].as_array().map_or(0, Vec::len), r["kept"].as_array().map_or(0, Vec::len)),
+    };
+    let dry = if r["dry_run"].as_bool() == Some(true) { " (dry run)" } else { "" };
+    format!("{}  {}  {:<28} {state}{dry}", s(r, "id"), s(r, "started_at"), format!("{} ({})", s(r, "session_name"), s(r, "session_id")))
+}
+
+/// `midna cleanup runs`.
+pub fn cleanup_runs(v: &Value) {
+    let runs = v["runs"].as_array().cloned().unwrap_or_default();
+    if runs.is_empty() {
+        println!("no cleanups yet");
+    }
+    for r in runs {
+        println!("{}", cleanup_line(&r));
+    }
+}
+
+/// `midna cleanup show <id>` and `run`.
+pub fn cleanup_run(r: &Value) {
+    println!("{}", cleanup_line(r));
+    if !s(r, "repo").is_empty() {
+        println!("repo {}  model {}", s(r, "repo"), s(r, "model"));
+    }
+    let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
+    for t in list("targets") {
+        println!("  target  {} {}", s(&t, "kind"), s(&t, "name"));
+    }
+    for i in list("items") {
+        println!("  item    {}", plain(&i));
+    }
+    let dry = r["dry_run"].as_bool() == Some(true);
+    for x in list("removed") {
+        println!("{} {}", if dry { "would remove" } else { "removed" }, plain(&x));
+    }
+    for x in list("kept") {
+        println!("kept    {}", plain(&x));
+    }
+    for l in s(r, "summary").lines().filter(|l| l.starts_with("DENIED: ")) {
+        println!("denied  {}", &l[8..]);
+    }
+    if let Some(c) = r["cost_usd"].as_f64() {
+        println!("cost    ${c:.4}");
+    }
+    if !s(r, "error").is_empty() {
+        println!("error   {}", s(r, "error"));
+    }
+}
+
+/// `midna cleanup preview`.
+pub fn cleanup_plan(p: &Value) {
+    match p["would_run"].as_bool() {
+        Some(true) => println!("closing {} would clean up with {}:", s(p, "session_id"), s(p, "model")),
+        _ => println!("closing {} would clean up nothing: {}", s(p, "session_id"), s(p, "reason")),
+    }
+    for t in p["targets"].as_array().cloned().unwrap_or_default() {
+        println!("  target  {} {}", s(&t, "kind"), s(&t, "name"));
+    }
+    for i in p["items"].as_array().cloned().unwrap_or_default() {
+        println!("  item    {}", plain(&i));
+    }
+    for k in p["skipped"].as_array().cloned().unwrap_or_default() {
+        println!("  left    {}", plain(&k));
+    }
+}

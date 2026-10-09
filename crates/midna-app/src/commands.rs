@@ -702,6 +702,18 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .cli(format!("midna close {} --force", x.id))
             .danger(if working { format!("{} is working; this ends it mid-task.", x.name) } else { format!("Ends {} and closes its tab.", x.name) }),
         );
+        out.push(
+            Command::new(
+                format!("close-keep:{}", x.id),
+                CmdIcon::Deny,
+                format!("Close terminal, keep everything: {}", x.name),
+                Run::Rpc { method: "session.close".into(), params: json!({"id": x.id, "force": true, "cleanup": false}) },
+            )
+            .sub(format!("{pname} · closes it without cleaning up its branches and worktrees"))
+            .kw("kill close keep no cleanup")
+            .cli(format!("midna close {} --force --no-cleanup", x.id))
+            .danger(if working { format!("{} is working; this ends it mid-task.", x.name) } else { format!("Ends {} and closes its tab; its branches and worktrees stay.", x.name) }),
+        );
     }
 
     // ---- App

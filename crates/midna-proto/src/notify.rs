@@ -76,6 +76,8 @@ pub static CATEGORIES: &[NotifyCategory] = &[
     c!("exited", "Terminal exited", false, "none", "A terminal's process exited cleanly (a shell's `exit`, a monitor or command that finished).", &[]),
     c!("triggers", "Trigger fired", false, "none", "A webhook trigger fired and started an agent or a command.", &["name", "outcome"]),
     c!("restarted", "Agent restarted", false, "none", "midna restarted an agent into the same conversation (an agent update was installed).", &["reason"]),
+    c!("cleanup", "Cleaned up after a terminal", true, "none",
+        "After a terminal closed, midna's cleanup removed what it left behind (cleanup.items), or kept something and says why.", &["removed", "kept", "terminal"]),
 ];
 
 /// A sound with no notification: something you did, or a small UI cue.

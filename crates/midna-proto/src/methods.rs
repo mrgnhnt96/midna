@@ -764,6 +764,9 @@ pub struct SessionCloseParams {
     /// Close even if the session is working (sends SIGKILL after SIGHUP).
     #[serde(default)]
     pub force: bool,
+    /// false: don't clean up after it (`cleanup.enabled`) this time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

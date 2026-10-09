@@ -333,6 +333,12 @@ when it is taken or released.
 - `midna worktrees` lists the git worktrees of repos midna watches and why each is kept;
   idle ones (24h, nothing in them, no uncommitted changes) are removed by midnad, branches kept.
   Clean up the worktrees you create when you're done with them.
+- When your terminal closes, midna cleans up after it (`cleanup.enabled`): a cheap headless model
+  removes the linked worktree you worked in or made, the branches you made and their remote
+  branches, once merged and with nothing uncommitted, plus the human's own `cleanup.items`.
+  `midna cleanup preview` shows what closing this terminal would clean up; `midna cleanup runs`
+  what earlier ones did. If the human asks you to clean up something every time, add it with
+  `midna cleanup add "<instruction>"`. Don't rely on it for unmerged work: it keeps that.
 
 ## Settings
 

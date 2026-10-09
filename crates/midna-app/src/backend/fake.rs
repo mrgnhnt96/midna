@@ -133,6 +133,12 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         e("keep_awake.linger_mins", json!(5), "keep holding after the work", false),
         e("keep_awake.wake", json!(false), "wake the Mac for scheduled work", false),
     ];
+    // cleaning up after a closed terminal, with one item of your own so the list shows one
+    let cleanup = midna_proto::settings::SETTINGS.iter().filter(|s| s.key.starts_with("cleanup."));
+    v.extend(cleanup.map(|s| {
+        let value = if s.key == "cleanup.items" { json!(["worktree", "branch", "remote_branch", "Stop any docker compose stack started in this folder"]) } else { s.default.to_json() };
+        e(s.key, value, s.description, s.human_only)
+    }));
     // every shortcut, so the Shortcuts tab and tooltips match the daemon
     let keys = midna_proto::settings::SETTINGS.iter().filter(|s| matches!(s.ty, midna_proto::settings::SettingKind::Keybinding));
     v.extend(keys.map(|s| e(s.key, s.default.to_json(), s.description, false)));
@@ -530,6 +536,12 @@ impl Backend for FakeBackend {
                 serde_json::to_value(fake_insights_detail(range, &st.sessions, &st.projects))?
             }
             "insights.activity" => json!([]),
+            "cleanup.runs" => json!({ "runs": [
+                {"id": "cu-1a2b3c", "session_id": "s4", "session_name": "Fix login", "project_id": "p_zonai1", "cwd": "/tmp", "model": "haiku", "by": "session.close",
+                 "started_at": ago(2), "state": "done", "targets": [], "removed": ["worktree fix-login", "branch fix/login", "origin/fix/login"], "kept": [], "summary": "", "cost_usd": 0.0041},
+                {"id": "cu-4d5e6f", "session_id": "s5", "session_name": "Status bar meters", "project_id": "p_zonai1", "cwd": "/tmp", "model": "haiku", "by": "session.close",
+                 "started_at": ago(64), "state": "done", "targets": [], "removed": ["worktree status-meters"], "kept": ["branch status-meters — 2 commits not pushed"], "summary": "", "cost_usd": 0.0032},
+            ]}),
             "webhooks.status" => json!({"path": st.setting("webhooks.path"), "health": "ok"}),
             // MIDNA_FAKE_HOOKS = not_installed | stale | current (default) for screenshots.
             "hooks.status" | "hooks.install" | "hooks.uninstall" => {

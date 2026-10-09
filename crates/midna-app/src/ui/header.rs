@@ -349,7 +349,11 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                 )
                 .children(keys("keys.mute")))
                 .child(menu_item(t, "more-replace", "Replace with new session", "", cx.listener(|m, _, _, cx| m.replace_selected(cx))).children(keys("keys.replace")))
-                .child(menu_item(t, "more-close", "Close terminal", "", cx.listener(|m, _, _, cx| m.close_selected(cx))).children(keys("keys.close"))),
+                .child(
+                    menu_item(t, "more-close", "Close terminal", "", cx.listener(|m, ev: &ClickEvent, _, cx| m.close_selected(!ev.modifiers().alt, cx)))
+                        .tooltip(tip("⌥-click: close and keep everything (no cleanup)"))
+                        .children(keys("keys.close")),
+                ),
         ),
     )
     .with_priority(1)

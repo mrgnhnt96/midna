@@ -5,6 +5,7 @@ pub mod agent_args;
 pub mod agent_state;
 pub mod agent_work;
 pub mod auto_name;
+pub mod cleanup;
 pub mod clock;
 pub mod conn;
 pub mod daemon;

@@ -294,7 +294,11 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
         let default = if may_force_close { Some(Effect::Allow) } else { (!own && !may_close_idle).then_some(Effect::Ask) };
         super::policy::gate_with(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), default)?;
     }
+    let closing = crate::cleanup::capture(d, &p.id, p.cleanup);
     close_inner(d, ctx, &p.id, p.force);
+    if let Some(c) = closing {
+        crate::cleanup::after_close(d, c);
+    }
     ok(OkResult { ok: true })
 }
 
@@ -926,7 +930,11 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
     d.set_status(sid, state, Some(reason.clone()), code, Actor::system());
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
     if close_on_exit && state == StatusState::Exited {
+        let closing = crate::cleanup::capture(d, sid, None);
         close_inner(d, &Ctx::internal_system(), sid, false);
+        if let Some(c) = closing {
+            crate::cleanup::after_close(d, c);
+        }
         return;
     }
     if state == StatusState::Failed && kind != SessionKind::Shell {

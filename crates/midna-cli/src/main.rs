@@ -352,9 +352,13 @@ fn run(a: &Args) -> Res {
         }
         "open" => open(a, &out),
         "close" => {
-            a.check(&["force"])?;
+            a.check(&["force", "no-cleanup"])?;
             let id = a.need(1, "terminal id")?;
-            let v = call("session.close", json!({ "id": id, "force": a.has("force") }))?;
+            let mut p = json!({ "id": id, "force": a.has("force") });
+            if a.has("no-cleanup") {
+                p["cleanup"] = json!(false);
+            }
+            let v = call("session.close", p)?;
             out(&v, &|_| println!("closed {id}"));
             Ok(())
         }
@@ -477,6 +481,7 @@ fn run(a: &Args) -> Res {
         "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
         "system" | "load" => system(a, &out),
         "worktrees" | "worktree" => worktrees(a, &out),
+        "cleanup" | "clean-up" => cleanup(a, &out),
         "usage" => {
             a.check(&[])?;
             out(&call("usage.get", json!({}))?, &print::usage);
@@ -917,6 +922,135 @@ fn system(a: &Args, out: OutFn) -> Res {
         other => return Err(Fail::Usage(format!("unknown system subcommand `{other}` (load|pause|resume|stop)"))),
     }
     Ok(())
+}
+
+/// A terminal from the command line, else the one this runs in.
+fn this_terminal(a: &Args, i: usize) -> Result<String, Fail> {
+    match a.pos.get(i) {
+        Some(id) => Ok(id.clone()),
+        None => std::env::var("MIDNA_SESSION").ok().filter(|s| !s.is_empty()).ok_or_else(|| Fail::Usage("missing terminal id (outside a midna terminal)".into())),
+    }
+}
+
+fn list_setting(key: &str) -> Result<Vec<String>, Fail> {
+    let v = call("settings.get", json!({ "key": key }))?;
+    Ok(v["value"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default())
+}
+
+/// `midna cleanup`: what midna cleans up after a closed terminal, and what it did.
+fn cleanup(a: &Args, out: OutFn) -> Res {
+    use midna_proto::cleanup as cl;
+    let save = |key: &str, items: Vec<String>| -> Result<Value, Fail> { Ok(call("settings.set", json!({ "key": key, "value": items }))?) };
+    let items_view = |out: OutFn| -> Res {
+        let enabled = call("settings.get", json!({ "key": "cleanup.enabled" }))?["value"].as_bool().unwrap_or(true);
+        let v = json!({ "enabled": enabled, "items": list_setting("cleanup.items")?, "keep": list_setting("cleanup.keep")? });
+        out(&v, &print::cleanup_items);
+        Ok(())
+    };
+    match a.pos.get(1).map(String::as_str).unwrap_or("runs") {
+        "runs" | "list" | "ls" => {
+            a.check(&["terminal", "limit"])?;
+            let mut p = json!({});
+            if let Some(t) = a.get("terminal") {
+                p["session_id"] = json!(t);
+            }
+            if let Some(n) = a.get("limit") {
+                p["limit"] = json!(n.parse::<u32>().map_err(|_| Fail::Usage("--limit takes a number".into()))?);
+            }
+            out(&call("cleanup.runs", p)?, &print::cleanup_runs);
+            Ok(())
+        }
+        "show" | "get" => {
+            a.check(&[])?;
+            out(&call("cleanup.get", json!({ "id": a.need(2, "run id")? }))?, &print::cleanup_run);
+            Ok(())
+        }
+        "items" => {
+            a.check(&[])?;
+            items_view(out)
+        }
+        "add" => {
+            a.check(&[])?;
+            let text = a.pos[2..].join(" ");
+            if text.trim().is_empty() {
+                return Err(Fail::Usage("missing item: `midna cleanup add \"stop the dev server started here\"`".into()));
+            }
+            let mut items = list_setting("cleanup.items")?;
+            items.push(text);
+            save("cleanup.items", items)?;
+            items_view(out)
+        }
+        "remove" | "rm" => {
+            a.check(&[])?;
+            let what = a.pos[2..].join(" ");
+            let mut items = list_setting("cleanup.items")?;
+            let (_, own) = cl::split_items(&items);
+            // A number counts your own items from 1, as `midna cleanup items` shows them.
+            let target = match what.trim().parse::<usize>() {
+                Ok(n) if n >= 1 && n <= own.len() => own[n - 1].clone(),
+                _ => cl::builtin(&what).map(str::to_string).unwrap_or_else(|| what.trim().to_string()),
+            };
+            let before = items.len();
+            items.retain(|i| *i != target);
+            if items.len() == before {
+                return Err(Fail::Usage(format!("no cleanup item `{}` (`midna cleanup items` lists them)", what.trim())));
+            }
+            save("cleanup.items", items)?;
+            items_view(out)
+        }
+        verb @ ("enable" | "disable" | "on" | "off") => {
+            a.check(&[])?;
+            let on = matches!(verb, "enable" | "on");
+            let what = a.pos[2..].join(" ");
+            if what.trim().is_empty() {
+                call("settings.set", json!({ "key": "cleanup.enabled", "value": on }))?;
+                return items_view(out);
+            }
+            let b = cl::builtin(&what).ok_or_else(|| Fail::Usage(format!("`{}` isn't built in ({}); add your own with `midna cleanup add`", what.trim(), cl::BUILTINS.join(", "))))?;
+            save("cleanup.items", cl::set_builtin(&list_setting("cleanup.items")?, b, on))?;
+            items_view(out)
+        }
+        verb @ ("keep" | "unkeep") => {
+            a.check(&[])?;
+            let given: Vec<String> = a.pos[2..].iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+            if given.is_empty() {
+                return Err(Fail::Usage(format!("missing pattern: `midna cleanup {verb} 'release/*'` or a folder")));
+            }
+            let mut keep = list_setting("cleanup.keep")?;
+            if verb == "keep" {
+                keep.extend(given);
+            } else {
+                keep.retain(|k| !given.contains(k));
+            }
+            save("cleanup.keep", keep)?;
+            items_view(out)
+        }
+        "preview" => {
+            a.check(&[])?;
+            out(&call("cleanup.preview", json!({ "session_id": this_terminal(a, 2)? }))?, &print::cleanup_plan);
+            Ok(())
+        }
+        "run" => {
+            a.check(&["dry-run", "force", "no-wait"])?;
+            let run = call("cleanup.run", json!({ "session_id": this_terminal(a, 2)?, "dry_run": a.has("dry-run"), "force": a.has("force") }))?;
+            if a.has("no-wait") {
+                out(&run, &print::cleanup_run);
+                return Ok(());
+            }
+            let id = run["id"].as_str().unwrap_or_default().to_string();
+            let timeout = call("settings.get", json!({ "key": "cleanup.timeout_secs" }))?["value"].as_u64().unwrap_or(300) + 30;
+            let start = std::time::Instant::now();
+            loop {
+                let v = call("cleanup.get", json!({ "id": id }))?;
+                if v["state"] != "running" || start.elapsed().as_secs() > timeout {
+                    out(&v, &print::cleanup_run);
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        other => Err(Fail::Usage(format!("unknown cleanup subcommand `{other}` (runs|show|items|add|remove|enable|disable|keep|unkeep|preview|run)"))),
+    }
 }
 
 /// `midna worktrees [list] [--repo DIR] | clean [path] [--dry-run] [--ignore-idle]`.

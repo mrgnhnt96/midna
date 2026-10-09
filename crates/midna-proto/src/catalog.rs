@@ -1,5 +1,6 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
+use crate::cleanup::*;
 use crate::methods::*;
 use crate::system::*;
 use crate::types::*;
@@ -148,7 +149,8 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionCloseParams, OkResult>("session.close").mutating().d(
             "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`): \
              it asks the human unless they turned on agents.may_force_close (or a rule allows it). Closing another idle terminal asks unless \
-             agents.may_close_idle is on. An approval still pending when its terminal closes is withdrawn."),
+             agents.may_close_idle is on. An approval still pending when its terminal closes is withdrawn. Afterwards midna cleans up \
+             what it left behind (cleanup.enabled); `cleanup: false` skips that once."),
         m::<SessionRenameParams, Session>("session.rename").mutating().d("Rename a terminal (the sidebar label the human sees). Give terminals you open a short, task-describing name."),
         m::<SessionInputParams, OkResult>("session.input").mutating().d(
             "Type text into a terminal, optionally followed by Enter; to an agent (Claude Code, Codex) this is a chat message. \
@@ -351,6 +353,18 @@ fn build() -> Vec<MethodSpec> {
              no live lock, idle worktrees.auto_clean_hours. `ignore_idle` waives the idle time only; `path` picks one; \
              `dry_run` only lists. Uses `git worktree remove` (never forced: git keeps ones with untracked files); \
              branches stay. Event worktree.removed."),
+        m::<CleanupRunsParams, CleanupRunsResult>("cleanup.runs").d(
+            "Cleanups after closed terminals, newest first: the terminal, repo, what the model was asked to clean up \
+             (targets and your own cleanup.items), what it removed, what it kept and why, its answer and cost."),
+        m::<CleanupGetParams, CleanupRun>("cleanup.get").d("One cleanup run by id."),
+        m::<CleanupPreviewParams, CleanupPlan>("cleanup.preview").d(
+            "What closing a live terminal would clean up, without running anything: the branches and worktrees it \
+             made or worked in (less cleanup.keep and ones another terminal is in), your own cleanup.items, and the \
+             prompt the model would get."),
+        m::<CleanupRunParams, CleanupRun>("cleanup.run").mutating().d(
+            "Clean up after a live terminal now (it stays open), as if it had closed. `dry_run` has the model say what \
+             it would remove and change nothing. Returns the run as it starts; events cleanup.started and \
+             cleanup.finished follow (`midna cleanup show <id>`)."),
         m::<SubagentLogParams, SubagentLog>("session.subagent_log").d(
             "Read one of a terminal's subagents (Claude) from its own transcript: what it was asked, what it said, \
              its tool calls and the first line of each result. Read from `from` = 0, then pass the last `next` to \

@@ -1877,13 +1877,19 @@ impl MainWindow {
         cx.notify();
     }
 
-    pub fn close_selected(&mut self, cx: &mut Context<Self>) {
+    /// Close the selected terminal; `cleanup` false skips cleaning up after it this once
+    /// (⌥-click on “Close terminal”).
+    pub fn close_selected(&mut self, cleanup: bool, cx: &mut Context<Self>) {
         let Some(id) = self.selected.clone() else {
             return;
         };
         self.menu = Menu::None;
         crate::sounds::play("closed");
-        self.rpc("session.close", json!({"id": id}), cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
+        let mut params = json!({"id": id});
+        if !cleanup {
+            params["cleanup"] = json!(false);
+        }
+        self.rpc("session.close", params, cx, |m, _, _, cx| m.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx));
     }
 
     /// The id "Copy session id" copies, and what to call it: an agent's own conversation id

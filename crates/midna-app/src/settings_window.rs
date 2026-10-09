@@ -27,17 +27,19 @@ mod notify_rows;
 mod shortcuts;
 #[path = "settings_awake.rs"]
 mod awake;
+#[path = "settings_cleanup.rs"]
+mod cleanup;
 
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
 
 /// Open (or bring forward) the Settings window. Not while setup is showing.
 pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
-    if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0)
-        && h.update(cx, |_, w, _| w.activate_window()).is_ok()
     if !crate::ui::onboarding::settings_allowed() {
         return;
     }
+    if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0)
+        && h.update(cx, |_, w, _| w.activate_window()).is_ok()
     {
         return;
     }
@@ -163,6 +165,11 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
         "Runaway work",
         &["system.busy_load", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours"],
     ),
+    (
+        Sec::Agents,
+        "Clean up after a terminal closes",
+        &["cleanup.enabled", "cleanup.sessions", "cleanup.model", "cleanup.items", "cleanup.keep", "cleanup.tools", "cleanup.timeout_secs", "@cleanup_runs"],
+    ),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
         Sec::Limits,
@@ -217,6 +224,8 @@ pub struct SettingsWindow {
     keep_awake: Value,
     /// The keep-awake hours while their track is being dragged (settings_awake.rs).
     hours_live: Option<awake::HoursLive>,
+    /// Clean up after a terminal closes: the new-item fields and recent runs (settings_cleanup.rs).
+    cleanup: cleanup::State,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
@@ -298,6 +307,7 @@ impl SettingsWindow {
             hooks: Value::Null,
             keep_awake: Value::Null,
             hours_live: None,
+            cleanup: cleanup::State::new(cx),
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
@@ -370,6 +380,17 @@ impl SettingsWindow {
                 self.keep_awake = e.data.clone();
                 cx.notify();
             }
+            BackendEvent::Event(e) if e.kind == midna_proto::kinds::CLEANUP_STARTED || e.kind == midna_proto::kinds::CLEANUP_FINISHED => {
+                let backend = self.backend.clone();
+                cx.spawn(async move |this, cx| {
+                    let runs = cx.background_executor().spawn(async move { cleanup::fetch_runs(&backend) }).await;
+                    let _ = this.update(cx, |s, cx| {
+                        s.cleanup.runs = runs;
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
             BackendEvent::Conn(crate::backend::ConnState::Connected) => self.load(cx),
             _ => {}
         }
@@ -414,7 +435,8 @@ impl SettingsWindow {
                     let hooks = backend.call("hooks.status", json!({})).unwrap_or(Value::Null);
                     let kinds = backend.call("notify.kinds.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::NotifyKindsList>(v).ok());
                     let keep_awake = backend.call("keep_awake.status", json!({})).unwrap_or(Value::Null);
-                    (list, info, webhooks, media, hooks, kinds, keep_awake)
+                    let cleanups = cleanup::fetch_runs(&backend);
+                    (list, info, webhooks, media, hooks, kinds, keep_awake, cleanups)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -431,6 +453,7 @@ impl SettingsWindow {
                 s.media = r.3;
                 s.hooks = r.4;
                 s.keep_awake = r.6;
+                s.cleanup.runs = r.7;
                 s.sync_edits(cx);
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
@@ -481,6 +504,7 @@ impl SettingsWindow {
         for k in &self.custom {
             want.push((format!("label:{}", k.key), k.label.clone(), "Name"));
         }
+        want.push(("cleanup.model".into(), self.value("cleanup.model").as_str().unwrap_or("").to_string(), "haiku"));
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         for (key, value, placeholder) in want {
             match self.edits.get_mut(&key) {
@@ -711,6 +735,10 @@ enum Control {
     Hours,
     /// `keep_awake.days` as seven buttons.
     Days,
+    /// `cleanup.items`, `cleanup.keep` and the recent runs (settings_cleanup.rs).
+    CleanupItems,
+    CleanupKeep,
+    CleanupRuns,
 }
 
 #[derive(Clone)]
@@ -861,6 +889,13 @@ fn label_for(key: &str) -> String {
         "guard.overload_secs" => "After the Mac is busy for (seconds)",
         "guard.loop_max_hours" => "Stop agents' poll loops after (hours)",
         "worktrees.auto_clean_hours" => "Remove idle git worktrees after (hours)",
+        "cleanup.enabled" => "Clean up after a closed terminal",
+        "cleanup.sessions" => "For which terminals",
+        "cleanup.model" => "Model",
+        "cleanup.items" => "What to clean up",
+        "cleanup.keep" => "Never touch",
+        "cleanup.tools" => "Extra tools for your items",
+        "cleanup.timeout_secs" => "Give up after (seconds)",
         "agents.system_hint" => "Tell agents they're in midna",
         "policy.default" => "When no rule matches",
         "policy.request_timeout_secs" => "Approval timeout (seconds)",
@@ -961,6 +996,8 @@ fn option_label(key: &str, v: &str) -> String {
         ("terminal.link_preview", "cmd") => "On ⌘-hover".into(),
         ("terminal.prompt_bar", "scrolled") => "When scrolled back".into(),
         ("terminal.prompt_bar", "always") => "Always".into(),
+        ("cleanup.sessions", "agents") => "Agent terminals".into(),
+        ("cleanup.sessions", "all") => "All terminals".into(),
         ("terminal.preview_path_click", "reveal") => "Reveal in Finder".into(),
         ("terminal.preview_path_click", "ide") => "Open in IDE".into(),
         ("terminal.preview_path_click", "copy") => "Copy path".into(),
@@ -1196,6 +1233,15 @@ impl SettingsWindow {
                 r.cli = "midna keep-awake hours <start> <end>".into();
             }
             "keep_awake.days" => r.control = Control::Days,
+            "cleanup.items" => {
+                r.control = Control::CleanupItems;
+                r.cli = "midna cleanup add \"…\"".into();
+            }
+            "cleanup.keep" => {
+                r.control = Control::CleanupKeep;
+                r.cli = "midna cleanup keep \"release/*\"".into();
+            }
+            "cleanup.model" => r.control = Control::Edit { key: key.into(), actions: vec![] },
             "keep_awake.wake" => {
                 let w = &self.keep_awake["wake"];
                 if let Some(line) = w["line"].as_str().filter(|_| r.note.is_none()) {
@@ -1498,6 +1544,14 @@ impl SettingsWindow {
                 rows
             }
             // Kinds you added: rename, test or remove each; then add one.
+            "@cleanup_runs" => vec![RowSpec {
+                label: "Recent cleanups".into(),
+                note: None,
+                control: Control::CleanupRuns,
+                cli: "midna cleanup runs".into(),
+                who: Who::Agents,
+                warn: false,
+            }],
             "@custom_kinds" => {
                 let mut rows: Vec<RowSpec> = self
                     .custom
@@ -2430,7 +2484,7 @@ impl SettingsWindow {
             _ => None,
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
-        let wide = matches!(r.control, Control::Theme { .. });
+        let wide = matches!(r.control, Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns);
         // the hours track takes the control column's whole width
         let grow = matches!(r.control, Control::Hours);
         let control = self.control(t, r.control, words, id, window, cx);
@@ -2804,6 +2858,9 @@ impl SettingsWindow {
             Control::Keys { setting, keys } => self.keys_control(t, setting, keys, id, cx),
             Control::Hours => self.hours_control(t, cx),
             Control::Days => self.days_control(t, cx),
+            Control::CleanupItems => self.cleanup_items_control(t, window, cx),
+            Control::CleanupKeep => self.cleanup_keep_control(t, window, cx),
+            Control::CleanupRuns => self.cleanup_runs_control(t),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
@@ -2894,6 +2951,7 @@ impl SettingsWindow {
                     SettingKind::PathList => "[paths]".into(),
                     SettingKind::RuleList => "[\"match = value\"]".into(),
                     SettingKind::ItemList { options, allow_paths } => format!("[{}{}]", options.join(" | "), if allow_paths { " | <path>" } else { "" }),
+                    SettingKind::TextList { .. } => "[text]".into(),
                 };
                 let (c, cc) = if s.human_only { (format!("// {opts} · human only: agents get a needs-you confirmation"), t.fg) } else { (format!("// {opts}"), t.dim) };
                 let k = s.key.split_once('.').map(|(_, r)| r).filter(|_| !p.is_empty()).unwrap_or(s.key);
@@ -3142,7 +3200,7 @@ mod tests {
         let known = [
             "@update", "@cli", "@login", "@keep_awake", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
             "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
-            "@custom_kinds", "@bell",
+            "@custom_kinds", "@bell", "@cleanup_runs",
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {

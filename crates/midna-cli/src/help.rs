@@ -142,12 +142,13 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "close",
         aliases: &[],
-        usage: "close <id> [--force]",
+        usage: "close <id> [--force] [--no-cleanup]",
         summary: "close a terminal and kill its process",
         details: "A working terminal needs --force. `close --force` and closing another terminal may ask the\n\
                   human (settings agents.may_close_idle and agents.may_force_close, rules on `close …`); add\n\
                   --no-wait to get the needs-you id back at once instead of waiting (see `midna needs`).\n\
-                  An approval still open when its terminal closes is withdrawn.",
+                  An approval still open when its terminal closes is withdrawn. Afterwards midna cleans up what\n\
+                  it left behind (`midna cleanup`); --no-cleanup skips that this once.",
         methods: &["session.close"],
     },
     Verb {
@@ -553,6 +554,29 @@ pub static VERBS: &[Verb] = &[
                   \x20       SIGKILL after 3s. Its shell or agent keeps running. Human only\n\
                   midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.",
         methods: &["system.load", "session.pause", "session.resume", "session.stop_processes"],
+    },
+    Verb {
+        name: "cleanup",
+        aliases: &["clean-up"],
+        usage: "cleanup [runs] [--terminal ID] [--limit N] | show <run> | items | add <text> | remove <n|text> | \
+                enable|disable [item] | keep|unkeep <pattern…> | preview [terminal] | run [terminal] [--dry-run] [--force] [--no-wait]",
+        summary: "clean up the branches and worktrees a closed terminal left behind",
+        details: "When a terminal closes (cleanup.enabled; cleanup.sessions = agents or all), a cheap headless model\n\
+                  (cleanup.model, haiku) removes what it left: the linked worktree it worked in or made, the branches it\n\
+                  made, and their remote branches. Only what is safe: merged (or its PR merged), nothing uncommitted,\n\
+                  never forced, never cleanup.keep or the default branch. It says what it kept and why.\n\
+                  runs     what cleanups did, newest first; show <run> for one\n\
+                  items    what gets cleaned up: the built-ins (worktree, branch, remote_branch) and your own items\n\
+                  add      add your own item, a plain instruction: `midna cleanup add \"stop the docker stack started here\"`\n\
+                  remove   remove one of your items (by its number in `items`, or its text) or a built-in\n\
+                  enable / disable   a built-in, or with nothing after it, cleanup itself\n\
+                  keep / unkeep      branches (globs like release/*) or folders cleanup never touches\n\
+                  preview  what closing a terminal (this one by default) would clean up, and the prompt\n\
+                  run      clean up after a terminal now, leaving it open; --dry-run changes nothing, --force ignores\n\
+                  \x20        cleanup.enabled and cleanup.sessions. Waits for the result unless --no-wait.\n\
+                  `midna close <id> --no-cleanup` skips it once. Your items may need tools beyond git and gh: the human\n\
+                  adds them to cleanup.tools (Claude's --allowedTools form, e.g. Bash(docker compose down:*)).",
+        methods: &["cleanup.runs", "cleanup.get", "cleanup.preview", "cleanup.run", "session.close"],
     },
     Verb {
         name: "worktrees",

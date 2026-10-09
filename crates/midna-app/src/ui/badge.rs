@@ -726,7 +726,7 @@ fn default_color(category: &str) -> &'static str {
     match category {
         "approval" | "attention" => "need",
         "failed" => "err",
-        "turn_done" | "background" | "pr_checks" => "ok",
+        "turn_done" | "background" | "pr_checks" | "cleanup" => "ok",
         "from_trigger" | "triggers" | "restarted" => "work",
         "exited" => "dim",
         _ => "accent",
@@ -745,6 +745,7 @@ fn icon_of(category: &str) -> Icon {
         "agent" => Icon::Orbit,
         "from_trigger" | "triggers" => Icon::Triggers,
         "restarted" => Icon::Restart,
+        "cleanup" => Icon::Trash,
         _ => Icon::Bell,
     }
 }

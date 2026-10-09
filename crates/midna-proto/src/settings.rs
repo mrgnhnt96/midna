@@ -18,6 +18,8 @@ pub enum SettingType {
     RuleList,
     /// An ordered list of names from the options (JSON array of strings, no repeats).
     ItemList(Vec<String>),
+    /// An ordered list of free text (JSON array of strings, no repeats).
+    TextList,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +51,9 @@ pub enum SettingKind {
     /// JSON array of names from `options` (and, with `allow_paths`, absolute paths), in order,
     /// no repeats. A string is split on commas and newlines. Empty is allowed (show nothing).
     ItemList { options: &'static [&'static str], allow_paths: bool },
+    /// JSON array of free text, in order, no repeats. A string is split on newlines (and, with
+    /// `commas`, on commas too).
+    TextList { commas: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,6 +86,7 @@ impl SettingSpec {
             SettingKind::RuleList => SettingType::RuleList,
             SettingKind::Enum { options, .. } => SettingType::Enum(options.iter().map(|s| s.to_string()).collect()),
             SettingKind::ItemList { options, .. } => SettingType::ItemList(options.iter().map(|s| s.to_string()).collect()),
+            SettingKind::TextList { .. } => SettingType::TextList,
         }
     }
 
@@ -177,6 +183,24 @@ impl SettingSpec {
                         let paths = if allow_paths { ", or an absolute path to a script" } else { "" };
                         return Err(format!("{}: unknown item `{i}` (one of: {}{paths})", self.key, options.join(", ")));
                     }
+                    if !out.contains(&i) {
+                        out.push(i);
+                    }
+                }
+                Ok(json!(out))
+            }
+            SettingKind::TextList { commas } => {
+                let items: Vec<String> = match v {
+                    Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(|| format!("{} expects a list of text", self.key))).collect::<Result<_, _>>()?,
+                    Value::String(t) if commas => t.split([',', '\n']).map(str::to_string).collect(),
+                    Value::String(t) => t.split('\n').map(str::to_string).collect(),
+                    _ => return Err(format!("{} expects a list of text", self.key)),
+                };
+                if self.key == "cleanup.items" {
+                    return Ok(json!(crate::cleanup::normalize_items(items.iter().map(String::as_str))));
+                }
+                let mut out: Vec<&str> = vec![];
+                for i in items.iter().map(|i| i.trim()).filter(|i| !i.is_empty()) {
                     if !out.contains(&i) {
                         out.push(i);
                     }
@@ -586,6 +610,20 @@ pub static SETTINGS: &[SettingSpec] = &[
         "How long the Mac must stay busy before system.overloaded fires (and guard.overload_alert shows).") },
     SettingSpec { range: Some((0, 168)), ..s!("guard.loop_max_hours", SettingKind::Int, I(3), "general", false,
         "Stop background shell loops an agent left running (a `while`/`until` loop around a sleep, polling for a build, a file or a process) once they are this many hours old. Only processes under agent terminals; the agent and its shell keep running. 0 = never.") },
+    s!("cleanup.enabled", SettingKind::Bool, B(true), "agents", false,
+        "When a terminal closes, have a cheap headless model (cleanup.model) clean up what it left behind: the items in cleanup.items. It removes only what is safe (merged, pushed, nothing uncommitted), never touches cleanup.keep, and says what it kept and why. `midna cleanup runs` lists what it did; `midna close --no-cleanup` skips it once."),
+    s!("cleanup.sessions", en(&["agents", "all"]), S("agents"), "agents", false,
+        "Which closed terminals get cleaned up after: agents (agent terminals, including agents typed into a shell) or all (shells too)."),
+    s!("cleanup.model", SettingKind::String, S("haiku"), "agents", false,
+        "The Claude model that cleans up (`claude -p --model …`): an alias like haiku or sonnet, or a full model id."),
+    s!("cleanup.items", SettingKind::TextList { commas: false }, L(&["worktree", "branch", "remote_branch"]), "agents", false,
+        "What to clean up after a terminal, in order. Built in: worktree (the linked git worktree it worked in or made, never forced), branch (local branches it made, once merged), remote_branch (their upstreams, once merged). Leave one out to turn it off. Anything else is your own item, a plain instruction like “stop the docker compose stack started in this folder”. One per line; `midna cleanup add|remove|enable|disable` edits it."),
+    s!("cleanup.keep", SettingKind::TextList { commas: true }, L(&["main", "master", "develop", "release/*"]), "agents", false,
+        "Branches (globs like release/*) and folders (absolute paths, covering everything inside) cleanup never touches. A repo's default branch is always kept."),
+    s!("cleanup.tools", SettingKind::TextList { commas: true }, L(&[]), "agents", true,
+        "Extra tools the cleanup model may use for your own cleanup.items, as Claude's --allowedTools takes them: `Bash(docker compose down:*)`, `Bash(rm -rf node_modules:*)`. It always has the git and gh commands it needs. Human only."),
+    SettingSpec { range: Some((30, 3600)), ..s!("cleanup.timeout_secs", SettingKind::Int, I(300), "agents", false,
+        "How long one cleanup may run before midna stops it.") },
     SettingSpec { range: Some((0, 8760)), ..s!("worktrees.auto_clean_hours", SettingKind::Int, I(24), "general", false,
         "Remove linked git worktrees (of repos midna's terminals use) after this many hours without activity, when no terminal or process is in them, they have no uncommitted changes and no live `git worktree lock`. Their branches stay. `midna worktrees` lists them. 0 = never.") },
     s!("policy.default", en(&["auto", "allow", "ask", "deny"]), S("auto"), "policy", true,
@@ -649,6 +687,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("notify.exited", SettingKind::Bool, B(false), "notifications", false, "Notify when a terminal's process exits cleanly."),
     s!("notify.triggers", SettingKind::Bool, B(false), "notifications", false, "Notify when a webhook trigger fires."),
     s!("notify.restarted", SettingKind::Bool, B(false), "notifications", false, "Notify when midna restarts an agent into the same conversation after an update."),
+    s!("notify.cleanup", SettingKind::Bool, B(true), "notifications", false, "Notify when midna has cleaned up after a closed terminal (cleanup.enabled): what it removed, and what it kept and why."),
     s!("notify.turn_done_min_secs", SettingKind::Int, I(30), "notifications", false,
         "An agent's turn must take at least this long to notify when it finishes (quick replies you watched don't). 0 = every turn."),
     SettingSpec { range: Some((0, 100)), ..s!("notify.volume", SettingKind::Int, I(100), "notifications", false,
@@ -667,6 +706,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     snd!("exited", "none"), push!("exited", false), pushf!("exited"), vol!("exited"), pic!("exited"), ttl!("exited"), txt!("exited", ""), stay!("exited", 6), color!("exited", "dim"), bell!("exited", false),
     snd!("triggers", "none"), push!("triggers", false), pushf!("triggers"), vol!("triggers"), pic!("triggers"), ttl!("triggers"), txt!("triggers", "{{name}} and {{outcome}}. "), stay!("triggers", 6), color!("triggers", "work"), bell!("triggers", false),
     snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "), stay!("restarted", 6), color!("restarted", "work"), bell!("restarted", false),
+    snd!("cleanup", "none"), push!("cleanup", false), pushf!("cleanup"), vol!("cleanup"), pic!("cleanup"), ttl!("cleanup"), txt!("cleanup", "{{terminal}} (the closed terminal's name), {{removed}} and {{kept}} (what went and what stayed, comma-separated). "), stay!("cleanup", 8), color!("cleanup", "ok"), bell!("cleanup", false),
     snd!("approved", "Rise"), vol!("approved"),
     snd!("denied", "Nn-nn"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),

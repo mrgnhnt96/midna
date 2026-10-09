@@ -161,6 +161,7 @@ pub fn refresh_session(d: &Daemon, sid: &str) {
         s.git = info.clone();
         s.project_id.clone()
     };
+    crate::cleanup::observe(d, sid, info.as_ref());
     d.mark_dirty();
     d.emit(kinds::SESSION_GIT, Actor::system(), Some(project), Some(sid.into()), json!({ "git": info }));
     crate::auto_name::on_context(d, sid);

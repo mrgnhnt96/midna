@@ -292,6 +292,13 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             draft.key = Some(format!("pr_checks:{}:{:?}", pr.url, pr.checks));
             Some(draft)
         }
+        kinds::CLEANUP_FINISHED => {
+            let run: CleanupRun = serde_json::from_value(e.data.get("run")?.clone()).ok()?;
+            let text = crate::cleanup::notification_text(&run)?;
+            let mut draft = Draft::new("cleanup", e, text).var("terminal", run.session_name.clone()).var("removed", run.removed.join(", ")).var("kept", run.kept.join(", "));
+            draft.key = Some(format!("cleanup:{}", run.id));
+            Some(draft)
+        }
         kinds::TRIGGER_FIRED => {
             let id = s(&e.data, "trigger_id");
             let name = d.core().state.triggers.iter().find(|t| t.id == id).map(|t| t.name.clone()).unwrap_or_else(|| id.to_string());
@@ -514,6 +521,7 @@ fn sample_vars(category: &str) -> Value {
         "pr_checks" => json!({ "number": 42, "checks": "failing", "failing": 2 }),
         "triggers" => json!({ "name": "Review PRs", "outcome": "started an agent" }),
         "restarted" => json!({ "reason": "Claude Code updated" }),
+        "cleanup" => json!({ "terminal": "Fix login", "removed": "worktree fix-login, branch fix/login, origin/fix/login", "kept": "" }),
         // A kind you added gets what was sent, like `agent`.
         _ => json!({ "title": "Deploy finished", "body": "staging is on f568837" }),
     }
