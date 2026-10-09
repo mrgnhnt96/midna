@@ -8,8 +8,10 @@
 # has an inverted icon and the Gruvbox theme. Its terminals survive a rerun (daemon upgraded in
 # place).
 #
-#   scripts/dev-app.sh [--test] [--no-build]
+#   scripts/dev-app.sh [--test[=CRATES]] [--no-build]
 #     --test       run `cargo test --workspace` first and stop if it fails
+#     --test=app   test only the named crates (comma separated: app, daemon, cli, proto) plus
+#                  the crates that depend on them, e.g. --test=daemon tests midnad and midna-cli
 #     --no-build   skip the build; just reinstall and restart from the last dev build
 #   scripts/dev-app.sh --uninstall   quit it, stop and unregister its daemon, delete the app
 #                                    (its home stays; delete it by hand to start fresh)
@@ -24,13 +26,14 @@ DEST="$HOME/Applications/Midna Dev.app"
 OUT="$ROOT/dist/dev"
 LOG="$DEV_HOME/app.log"
 
-TEST=0 BUILD=1 UNINSTALL=0
+TEST=0 TEST_CRATES="" BUILD=1 UNINSTALL=0
 for a in "$@"; do
   case "$a" in
     --test) TEST=1 ;;
+    --test=*) TEST=1; TEST_CRATES="${a#--test=}" ;;
     --no-build) BUILD=0 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "dev-app.sh: unknown option $a" >&2; exit 2 ;;
   esac
 done
@@ -60,9 +63,31 @@ fi
 source ./env.sh >/dev/null
 export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
 
+# Crate graph: midna-proto <- midnad <- midna-cli, and midna-proto <- midna-app. A crate's
+# dependents are tested with it, so --test=proto is the whole workspace.
+test_args() {
+  [ -n "$TEST_CRATES" ] || { echo "--workspace"; return; }
+  local app=0 daemon=0 cli=0 c
+  for c in ${TEST_CRATES//,/ }; do
+    case "$c" in
+      app|midna-app) app=1 ;;
+      daemon|midnad) daemon=1 cli=1 ;;
+      cli|midna-cli) cli=1 ;;
+      proto|midna-proto) echo "--workspace"; return ;;
+      *) echo "dev-app.sh: unknown crate $c (app, daemon, cli, proto)" >&2; exit 2 ;;
+    esac
+  done
+  local args=""
+  [ "$app" = 0 ] || args="$args -p midna-app"
+  [ "$daemon" = 0 ] || args="$args -p midnad"
+  [ "$cli" = 0 ] || args="$args -p midna-cli"
+  echo "${args# }"
+}
+
 if [ "$TEST" = 1 ]; then
-  echo "==> cargo test"
-  if ! cargo test --workspace; then
+  args="$(test_args)"
+  echo "==> cargo test $args"
+  if ! cargo test $args; then
     echo "tests failed; not installing" >&2
     exit 1
   fi
