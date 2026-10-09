@@ -630,7 +630,7 @@ pub fn hbars<V: 'static>(
                     .flex_col()
                     .overflow_hidden()
                     .child(div().text_size(px(12.5)).text_color(t.fg).whitespace_nowrap().overflow_hidden().text_ellipsis().child(row.label.clone()))
-                    .child(div().text_size(px(11.)).text_color(t.dim).whitespace_nowrap().overflow_hidden().text_ellipsis().child(row.sub.clone())),
+                    .when(!row.sub.is_empty(), |c| c.child(div().text_size(px(11.)).text_color(t.dim).whitespace_nowrap().overflow_hidden().text_ellipsis().child(row.sub.clone()))),
             )
             .child(bar)
             .child(div().w(px(64.)).flex_none().flex().justify_end().text_size(px(12.)).text_color(t.fg).child(unit.fmt(total)))
