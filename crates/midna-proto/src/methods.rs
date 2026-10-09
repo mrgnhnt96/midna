@@ -921,7 +921,8 @@ pub struct SessionLinkAtParams {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct LinkAtResult {
-    /// `url` (OSC 8 hyperlink or a detected http(s) URL), `file` (an existing path), or `none`.
+    /// `url` (OSC 8 hyperlink, a detected http(s) URL, or a `<scheme>://` URL an app opens),
+    /// `file` (an existing path), or `none`.
     pub kind: String,
     #[serde(default)]
     pub target: Option<String>,
@@ -929,6 +930,9 @@ pub struct LinkAtResult {
     pub line: Option<u32>,
     #[serde(default)]
     pub column: Option<u32>,
+    /// For a `url` whose scheme an app on this Mac opens (`taskboard://…`): that app's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

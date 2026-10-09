@@ -2385,6 +2385,9 @@ mod tests {
         let i = 30;
         assert_eq!(link_span(&row, i, None), Some((30, 43)));
         assert_eq!(link_span(&row, 3, None), None); // on a space
+        // An app link: the URL, not the comma after it.
+        let row: Vec<char> = "open taskboard://#/?task=T6, then".chars().collect();
+        assert_eq!(link_span(&row, 10, Some("taskboard://#/?task=T6")), Some((5, 26)));
     }
 
     use crate::frame::{KeyAction, MOD_ALT, MOD_CTRL, MOD_SHIFT};

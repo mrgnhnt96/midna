@@ -118,6 +118,8 @@ pub(super) struct Link {
     url: bool,
     target: String,
     line: Option<u32>,
+    /// The app a `taskboard://…` link opens in (`Taskboard`); never fetched.
+    app: Option<String>,
 }
 
 impl Link {
@@ -129,7 +131,8 @@ impl Link {
             _ => return None,
         };
         let line = v.get("line").and_then(Value::as_u64).map(|n| n as u32).filter(|n| *n > 0);
-        Some(Link { url, target, line })
+        let app = v.get("app").and_then(Value::as_str).filter(|a| url && !a.is_empty()).map(str::to_string);
+        Some(Link { url, target, line, app })
     }
 }
 
@@ -206,10 +209,11 @@ pub(super) struct Preview {
 }
 
 impl TerminalView {
-    /// The pointer is on a links-popover row for `target` (a URL when `url`), or (`None`) left it.
-    pub fn preview_external(&mut self, target: Option<(String, bool)>, cx: &mut Context<Self>) {
+    /// The pointer is on a links-popover row for `target` (a URL when `url`, opening in `app`
+    /// for an app link), or (`None`) left it.
+    pub fn preview_external(&mut self, target: Option<(String, bool, Option<String>)>, cx: &mut Context<Self>) {
         self.preview.external = target.is_some();
-        self.preview_set(target.map(|(target, url)| Link { url, target, line: None }), cx);
+        self.preview_set(target.map(|(target, url, app)| Link { url, target, line: None, app }), cx);
     }
 
     /// The pointer is on `link` (`None`: on no link, or off the grid).
@@ -250,7 +254,11 @@ impl TerminalView {
         let path = Path::new(&link.target);
         let is_dir = !link.url && path.is_dir();
         let project = (!link.url).then(|| env.projects.iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.len()).cloned()).flatten();
-        let (name, sub) = if link.url { url_title(&link.target) } else { path_title(path, is_dir, project.as_deref()) };
+        let (name, sub) = match &link.app {
+            Some(app) => (app.clone(), link.target.split_once("://").map_or(link.target.as_str(), |(_, r)| r).to_string()),
+            None if link.url => url_title(&link.target),
+            None => path_title(path, is_dir, project.as_deref()),
+        };
         let ide = (!link.url).then(|| self.preview_ide(&env, path, is_dir, project.as_deref())).flatten();
         let l = link.clone();
         let load = cx.spawn(async move |this, cx| {
@@ -503,7 +511,9 @@ impl TerminalView {
         }
         let held = self.preview.over || self.preview.menu;
 
-        let icon = if c.link.url {
+        let icon = if c.link.app.is_some() {
+            Icon::Link.el(14., t.dim)
+        } else if c.link.url {
             if matches!(c.body, Body::Pr(_)) { Icon::Pr.el(14., t.ok) } else { Icon::Globe.el(14., t.dim) }
         } else if c.is_dir {
             Icon::Project.el(14., t.dim)
@@ -649,7 +659,10 @@ impl TerminalView {
         let mut row = div().flex().items_center().gap(px(6.)).px(px(10.)).py(px(8.)).border_t_1().border_color(t.line);
         if c.link.url {
             row = row
-                .child(primary("lp-browse").on_click(cx.listener(|t, _, _, cx| t.preview_browse(cx))).child("Open in browser"))
+                .child(primary("lp-browse").on_click(cx.listener(|t, _, _, cx| t.preview_browse(cx))).child(match &c.link.app {
+                    Some(app) => format!("Open in {app}"),
+                    None => "Open in browser".into(),
+                }))
                 .child(secondary("lp-copy", "Copy URL").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))))
                 .when(!c.listed, |r| r.child(secondary("lp-add", "Add to links").on_click(cx.listener(|t, _, _, cx| t.preview_add_link(cx)))));
         } else {
@@ -900,6 +913,9 @@ pub(super) fn human_size(n: u64) -> String {
 // ------------------------------------------------------------------ loading (off the main thread)
 
 fn load(link: &Link) -> Body {
+    if let Some(app) = &link.app {
+        return Body::Note(format!("Opens in {app}"));
+    }
     if link.url { load_url(&link.target) } else { load_path(Path::new(&link.target), link.line) }
 }
 
@@ -1191,8 +1207,19 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Check, FILE_LINES, excerpt, fade, fetchable, github_pr, page_meta, parse_pr, path_title, url_title};
+    use super::{Body, Check, FILE_LINES, Link, excerpt, fade, fetchable, github_pr, load, page_meta, parse_pr, path_title, url_title};
+    use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn app_links_name_their_app() {
+        let l = Link::from_link_at(&json!({ "kind": "url", "target": "taskboard://#/?task=T6", "app": "Taskboard" })).unwrap();
+        assert_eq!(l.app.as_deref(), Some("Taskboard"));
+        // Never fetched: the card just says where it opens.
+        assert!(matches!(load(&l), Body::Note(n) if n == "Opens in Taskboard"));
+        let l = Link::from_link_at(&json!({ "kind": "url", "target": "https://a.com" })).unwrap();
+        assert_eq!(l.app, None);
+    }
 
     #[test]
     fn fade_holds_then_falls() {
