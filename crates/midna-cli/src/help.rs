@@ -284,7 +284,9 @@ pub static VERBS: &[Verb] = &[
                   It works from outside midna terminals too (a background server, a cron job). --open <url> makes a\n\
                   click open that URL instead of selecting the terminal. --id <id> names it: sending again with the\n\
                   same id replaces the one still showing (a repeating alert), and `withdraw <id>` takes it away once\n\
-                  it no longer applies. --action <label> (up to 4) adds buttons: --wait 10m blocks until the human\n\
+                  it no longer applies. --action <label> (up to 6, 24 characters each) adds buttons;\n\
+                  ones sharing a first word, or the text before \": \" (\"Later: 1 hour\"), fold into one split button\n\
+                  whose face is the first of them, so put the usual pick first: --wait 10m blocks until the human\n\
                   picks one, clicks or dismisses it and prints the label, `clicked`, `dismissed` or `no response`;\n\
                   without --wait, `response <id>` asks later, and every response is a `notify.responded` event\n\
                   (`midna trigger add --event notify.responded --match action='Snooze*' …` reacts to it). Buttons\n\

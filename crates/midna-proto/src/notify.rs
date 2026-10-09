@@ -436,10 +436,11 @@ pub struct CallbackRun {
     pub outcome: String,
 }
 
-/// At most this many buttons on a notification.
-pub const MAX_ACTIONS: usize = 4;
-/// A button's label, at most this many characters.
-pub const ACTION_MAX: usize = 40;
+/// At most this many buttons on a notification (a card folds like ones into a split button and
+/// puts what doesn't fit under More).
+pub const MAX_ACTIONS: usize = 6;
+/// A button's label, at most this many characters (short enough to sit in a card's row).
+pub const ACTION_MAX: usize = 24;
 
 /// A `notify.send` id: 1–64 of `A-Z a-z 0-9 . _ : -`.
 pub fn valid_id(id: &str) -> bool {

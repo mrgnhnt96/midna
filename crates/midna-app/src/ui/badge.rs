@@ -45,6 +45,7 @@ use crate::backend::Backend;
 use crate::icons::Icon;
 use crate::model::*;
 use crate::theme::Theme;
+use super::button_slots::Slot;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::notify::Posted;
@@ -490,6 +491,10 @@ pub struct Badge {
     /// Open the stack at this item once it's back (its answer failed).
     reopen: Option<String>,
     menu: bool,
+    /// The card whose split button or More is showing its menu, which (by its place in the
+    /// row), and when one last opened or closed (the card's height follows).
+    button_menu: Option<(String, usize)>,
+    button_menu_at: Option<Instant>,
     /// The pointer is over a zone.
     hover: Option<&'static str>,
     /// Since when the pointer's been on the badge, while resting there may still open the list
@@ -927,6 +932,8 @@ impl Badge {
             failed: HashMap::new(),
             reopen: None,
             menu: false,
+            button_menu: None,
+            button_menu_at: None,
             hover: None,
             hover_since: None,
             hover_opened: None,
@@ -1069,6 +1076,8 @@ impl Badge {
     /// so the card sits in the middle, or collapse it if it's the open one.
     fn toggle_card(&mut self, id: &str) {
         let now = Instant::now();
+        // A button menu closes with its card.
+        self.button_menu = None;
         let height = self.card_height();
         if let Some((e, _)) = self.expanded.take() {
             self.collapsing.retain(|(c, _, _)| *c != e);
@@ -2625,6 +2634,75 @@ impl Badge {
         row
     }
 
+    /// One place in a card's row of buttons: a button, a split button (its face the first of
+    /// its group, its caret the menu) or More.
+    fn slot(&self, t: &Theme, w: &Waiting, sent: &Sent, n: usize, slot: &Slot, open: bool, cx: &mut Context<Self>) -> AnyElement {
+        let caret = |color: Hsla| {
+            let turn = if open { std::f32::consts::PI } else { 0. };
+            Icon::Chevron.el(10., color).with_transformation(Transformation::rotate(radians(turn)))
+        };
+        let toggle = move |b: &mut Badge, id: &str, cx: &mut Context<Badge>| {
+            b.button_menu = if b.button_menu.as_ref().is_some_and(|(c, m)| c == id && *m == n) { None } else { Some((id.to_string(), n)) };
+            b.button_menu_at = Some(Instant::now());
+            cx.notify();
+        };
+        match slot {
+            Slot::One(i) => {
+                let (id, sent, label) = (w.id.clone(), sent.clone(), sent.actions[*i].clone());
+                button(t, ("card-action", *i), &label, *i == 0).on_click(cx.listener(move |b, _, _, cx| b.pick(&id, &sent, label.clone(), cx))).into_any_element()
+            }
+            Slot::Group { members, .. } => {
+                let first = members[0];
+                let primary = first == 0;
+                let (id, sent, label) = (w.id.clone(), sent.clone(), sent.actions[first].clone());
+                let card = w.id.clone();
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(px(2.))
+                    .child(button(t, ("card-action", first), &label, primary).rounded_r(px(4.)).on_click(cx.listener(move |b, _, _, cx| b.pick(&id, &sent, label.clone(), cx))))
+                    .child(
+                        button(t, ("card-caret", n), "", primary)
+                            .rounded_l(px(4.))
+                            .pl(px(7.))
+                            .pr(px(9.))
+                            .child(caret(if primary { t.accent_fg } else { t.fg }))
+                            .on_click(cx.listener(move |b, _, _, cx| toggle(b, &card, cx))),
+                    )
+                    .into_any_element()
+            }
+            Slot::More(_) => {
+                let card = w.id.clone();
+                button(t, ("card-more", n), "More", false).gap(px(5.)).child(caret(t.fg)).on_click(cx.listener(move |b, _, _, cx| toggle(b, &card, cx))).into_any_element()
+            }
+        }
+    }
+
+    /// A split button's or More's menu, under the row: a pick reports its full label.
+    fn slot_menu(&self, t: &Theme, w: &Waiting, sent: &Sent, slot: &Slot, cx: &mut Context<Self>) -> AnyElement {
+        let members = slot.members();
+        let names: Vec<String> = match slot {
+            Slot::Group { names, .. } => names.clone(),
+            _ => members.iter().map(|&i| sent.actions[i].clone()).collect(),
+        };
+        let mut list = div().flex().flex_col().p(px(4.)).rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).text_size(px(12.5));
+        for (&i, name) in members.iter().zip(names) {
+            let (id, sent, label) = (w.id.clone(), sent.clone(), sent.actions[i].clone());
+            list = list.child(
+                div()
+                    .id(("card-pick", i))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.accent_soft))
+                    .child(name)
+                    .on_click(cx.listener(move |b, _, _, cx| b.pick(&id, &sent, label.clone(), cx))),
+            );
+        }
+        list.into_any_element()
+    }
+
     /// A row's card, `k` of the way grown out of its capsule: what it's about in full and its
     /// buttons. Its top row (dot, terminal, kind, ⌃) collapses it.
     fn card(&self, t: &Theme, w: &Waiting, k: f32, width: f32, now: Instant, cx: &mut Context<Self>) -> AnyElement {
@@ -2658,20 +2736,22 @@ impl Badge {
             .when(!w.label.is_empty(), |d| d.child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(w.label.clone())))
             .child(div().flex_1())
             .child(Icon::Chevron.el(12., t.dim).with_transformation(Transformation::rotate(radians(std::f32::consts::PI))));
-        let mut buttons = div().flex().gap(px(8.)).pt(px(4.));
+        let mut buttons = div().flex().flex_wrap().gap(px(8.)).pt(px(4.));
+        let mut menu = None;
         if let Some(need) = w.need.clone().filter(|_| w.approval) {
             let (a, d) = (need.clone(), need);
             buttons = buttons
                 .child(button(t, "card-approve", "Approve", true).flex_1().on_click(cx.listener(move |b, _, _, cx| b.approve(a.clone(), false, cx))))
                 .child(button(t, "card-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| b.approve(d.clone(), true, cx))));
         } else if let Some(sent) = w.sent.clone().filter(|s| !s.actions.is_empty()) {
-            // A `notify.send` notification's own buttons.
-            for (i, label) in sent.actions.iter().enumerate() {
-                let (id, sent, label) = (w.id.clone(), sent.clone(), label.clone());
-                let first = i == 0;
-                buttons = buttons.child(button(t, ("card-action", i), &label, first).on_click(cx.listener(move |b, _, _, cx| b.pick(&id, &sent, label.clone(), cx))));
+            // A `notify.send` notification's own buttons, like ones folded into a split button.
+            let slots = super::button_slots::slots(&sent.actions);
+            let open = self.button_menu.as_ref().filter(|(c, _)| *c == w.id).map(|(_, n)| *n);
+            for (n, slot) in slots.iter().enumerate() {
+                buttons = buttons.child(self.slot(t, w, &sent, n, slot, open == Some(n), cx));
             }
             buttons = buttons.child(div().flex_1());
+            menu = open.and_then(|n| slots.get(n)).map(|slot| self.slot_menu(t, w, &sent, slot, cx));
         } else {
             let id = w.id.clone();
             buttons = buttons.child(button(t, "card-dismiss", "Dismiss", false).on_click(cx.listener(move |b, _, _, cx| b.forget(&id, cx)))).child(div().flex_1());
@@ -2720,7 +2800,8 @@ impl Badge {
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
             .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
             .when(!w.options.is_empty(), |d| d.child(options(t, w)))
-            .child(buttons);
+            .child(buttons)
+            .children(menu);
         div()
             .id(SharedString::from(format!("card-{}", w.id)))
             .flex_none()
@@ -2792,7 +2873,10 @@ impl Render for Badge {
         root = root.child(edge(div().absolute(), PAD).child(self.badge(&t, cx)));
         let now = Instant::now();
         // The list's, or the capsule beside the badge's × and arrow growing in or shrinking away.
-        let card_moving = !self.collapsing.is_empty() || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE);
+        let card_moving = !self.collapsing.is_empty()
+            || self.expanded.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < CARD_IN + CARD_FADE_AFTER + CARD_FADE)
+            // A button menu opening or closing: the card's height is measured as it paints.
+            || self.button_menu_at.is_some_and(|t| now.duration_since(t) < Duration::from_millis(100));
         if self.list_moving(now) || card_moving || self.cool.is_some() || self.hot.as_ref().is_some_and(|(_, t)| now.duration_since(*t) < GROW) {
             window.request_animation_frame();
         }

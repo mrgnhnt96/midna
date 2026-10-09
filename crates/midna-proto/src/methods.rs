@@ -338,7 +338,8 @@ pub struct NotifySendParams {
     /// selecting a terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<String>,
-    /// Buttons to show (at most 4, each 1–40 characters). The human's pick comes back as
+    /// Buttons to show (at most 6, each 1–24 characters). Ones sharing a first word, or the text
+    /// before `": "` (`Later: 1 hour`), fold into one split button. The human's pick comes back as
     /// `response` (with `wait_secs`), from `notify.response`, and as a `notify.responded` event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,

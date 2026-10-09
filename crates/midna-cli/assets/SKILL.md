@@ -93,6 +93,10 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   terminal). Use it when the human asked to be told ("ping me when CI is green") or a result
   needs them while they may be away. Approvals, failures and long finished turns already notify:
   don't duplicate them, and don't send progress updates.
+- `--action <label>` adds buttons (up to 6, 24 characters each). Ones sharing a first word
+  (`Snooze 15 min`, `Snooze 1 hour`) or the text before `": "` (`Later: 1 hour`, `Later: tomorrow`)
+  fold into one split button: its face is the first of them, the rest are in its menu. Put the
+  usual pick first. The response is always the full label.
 - Which notifications the human gets is a setting: `midna notify` shows them for your terminal,
   `midna notify set turn_done on` (or `--global`, or `midna notify mute`) changes them. Do it
   when they ask; don't turn off something they rely on.

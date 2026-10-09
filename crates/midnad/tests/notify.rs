@@ -436,7 +436,7 @@ fn send_with_open_url_actions_and_id() {
     assert_eq!(n["actions"], json!(["Snooze 15 min", "Snooze 1 hour"]));
 
     // Bad ids, URLs and buttons are refused up front.
-    for (k, v) in [("id", json!("has space")), ("open", json!("morgan.harman/reviews")), ("actions", json!(["a", "b", "c", "d", "e"])), ("actions", json!(["x", "x"]))] {
+    for (k, v) in [("id", json!("has space")), ("open", json!("morgan.harman/reviews")), ("actions", json!(["a", "b", "c", "d", "e", "f", "g"])), ("actions", json!(["x".repeat(25)])), ("actions", json!(["x", "x"]))] {
         let mut bad = json!({ "title": "t" });
         bad[k] = v;
         assert!(call_err(&mut a, "notify.send", bad).message.contains(k.trim_end_matches('s')), "{k}");

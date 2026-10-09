@@ -260,7 +260,8 @@ fn build() -> Vec<MethodSpec> {
              (\"ping me when the build is green\") or when a result needs them and they may be away. Clicking it selects \
              your terminal, or opens `open` (a URL) instead; it works from outside midna terminals too. `id` names it: \
              sending again with the same id replaces the one showing (a repeating alert), and notify.withdraw removes it. \
-             `actions` (up to 4 buttons, e.g. [\"Snooze 15 min\", \"Snooze 1 hour\"]) report the human's pick as \
+             `actions` (up to 6 buttons of 1–24 characters, e.g. [\"Snooze 15 min\", \"Snooze 1 hour\"]; ones sharing a first word, \
+             or the text before \": \" (\"Later: 1 hour\"), fold into one split button whose face is the first) report the human's pick as \
              `response` {kind: action|clicked|dismissed, action?}: wait for it with `wait_secs`, ask later with \
              notify.response, or react to the `notify.responded` event (a local trigger on it). `on` runs something the \
              moment the human responds, with nothing waiting: {\"<button label>\"|\"clicked\"|\"dismissed\": <trigger action>}, \

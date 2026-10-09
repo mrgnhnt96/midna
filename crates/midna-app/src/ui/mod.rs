@@ -3,6 +3,7 @@ pub mod annotate;
 pub mod ax_prompt;
 pub mod badge;
 pub mod banner;
+pub mod button_slots;
 pub mod update_banner;
 pub mod charts;
 pub mod close_anim;
