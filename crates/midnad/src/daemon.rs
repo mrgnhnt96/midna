@@ -399,6 +399,7 @@ impl Daemon {
             approval: None,
             trigger_id: None,
             question: None,
+            setting: None,
         }
     }
 
