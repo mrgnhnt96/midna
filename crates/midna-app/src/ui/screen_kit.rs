@@ -175,6 +175,13 @@ impl LineInput {
         LineInput { field, focus }
     }
 
+    /// A field that takes only the digits 0–9.
+    pub fn digits(cx: &mut App, placeholder: impl Into<SharedString>) -> LineInput {
+        let input = LineInput::new(cx, false, placeholder);
+        input.field.update(cx, |f, _| f.digits = true);
+        input
+    }
+
     pub fn text(&self, cx: &App) -> String {
         self.field.read(cx).text().to_string()
     }

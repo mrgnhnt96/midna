@@ -552,7 +552,7 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Update feed the app checks every 6 hours; {channel} is replaced by updates.channel. Updates must carry midna's ed25519 signature whatever the URL. Human only."),
     s!("webhooks.path", en(&["tailscale_funnel", "self_relay", "midna_relay", "off"]), S("off"), "webhooks", true,
         "How GitHub/Bitbucket webhooks reach this Mac."),
-    s!("webhooks.port", SettingKind::Int, I(7787), "webhooks", false, "Local port the webhook receiver listens on."),
+    SettingSpec { range: Some((1024, 65535)), ..s!("webhooks.port", SettingKind::Int, I(7787), "webhooks", false, "Local port the webhook receiver listens on.") },
     s!("webhooks.relay_url", SettingKind::String, S(""), "webhooks", true, "URL of the self-hosted relay when webhooks.path is self_relay."),
     s!("triggers.agent_mode", en(&["supervised", "inherit"]), S("supervised"), "webhooks", true,
         "How agents started by a webhook trigger run. Their prompt contains text from the webhook (untrusted). supervised: Claude gets --permission-mode default and Codex approval_policy=on-request + sandbox_mode=workspace-write, so tool calls still ask (as needs-you items) even if your own config bypasses permissions. inherit: your normal agent config applies. Human only."),
@@ -811,6 +811,17 @@ pub fn setting(key: &str) -> Option<&'static SettingSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_number_has_a_range() {
+        // Settings draws each as a field held to it
+        for s in SETTINGS.iter().filter(|s| matches!(s.ty, SettingKind::Int)) {
+            let (lo, hi) = s.range.unwrap_or_else(|| panic!("{}: no range", s.key));
+            let def = s.default.to_json().as_i64().unwrap();
+            assert!(lo <= def && def <= hi, "{}: default {def} outside {lo}–{hi}", s.key);
+        }
+        assert!(setting("webhooks.port").unwrap().coerce(&serde_json::json!(80)).is_err());
+    }
 
     #[test]
     fn path_lists_take_arrays_or_comma_separated_text() {
