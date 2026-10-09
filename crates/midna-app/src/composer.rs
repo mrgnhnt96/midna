@@ -249,6 +249,19 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
     cx.notify();
 }
 
+/// Give focus back to the composer if it's open over the selected terminal (the image sheet
+/// closed over it): its ↩ sends the text and the images together. False = nothing to focus.
+pub fn refocus(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    if !m.composer.open || !on_target(m) || !can_show(m) {
+        return false;
+    }
+    let t = cx.global::<Theme>().clone();
+    show_native(m, window, &t);
+    m.composer.focus.focus(window, cx);
+    cx.notify();
+    true
+}
+
 /// `keys.composer`: open by hand, or bring focus back to an open composer.
 fn open_manual(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if !can_show(m) {

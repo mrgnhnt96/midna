@@ -1474,7 +1474,12 @@ impl MainWindow {
         self.menu = Menu::None;
         crate::ui::queue::hide(self, cx);
         match self.overlay {
-            Overlay::None => self.focus_terminal(window, cx),
+            Overlay::None => {
+                // Back from the image sheet to an open composer: its ↩ takes the images too.
+                if !(was == Overlay::Annotate && crate::composer::refocus(self, window, cx)) {
+                    self.focus_terminal(window, cx);
+                }
+            }
             Overlay::CommandBar => {
                 if was != Overlay::CommandBar {
                     crate::sounds::play("command_bar");
