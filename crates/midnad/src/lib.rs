@@ -34,6 +34,7 @@ pub mod pty;
 pub mod restart;
 pub mod resume;
 pub mod rpc;
+pub mod schemes;
 pub mod server;
 pub mod state;
 pub mod stream;

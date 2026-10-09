@@ -618,7 +618,8 @@ pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
     let link = rt.with(move |e| e.link_at(col, row, &cwd)).ok_or_else(|| RpcError::internal("engine did not answer"))?;
     ok(match link {
         Some(Link::Url(u)) => LinkAtResult { kind: "url".into(), target: Some(u), ..Default::default() },
-        Some(Link::File { path, line, column }) => LinkAtResult { kind: "file".into(), target: Some(path), line, column },
+        Some(Link::App { url, app }) => LinkAtResult { kind: "url".into(), target: Some(url), app: Some(app), ..Default::default() },
+        Some(Link::File { path, line, column }) => LinkAtResult { kind: "file".into(), target: Some(path), line, column, app: None },
         None => LinkAtResult { kind: "none".into(), ..Default::default() },
     })
 }

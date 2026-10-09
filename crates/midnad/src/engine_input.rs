@@ -66,6 +66,8 @@ impl Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Link {
     Url(String),
+    /// A `<scheme>://…` URL an app on this Mac opens (`taskboard://…`), and that app's name.
+    App { url: String, app: String },
     File { path: String, line: Option<u32>, column: Option<u32> },
 }
 
@@ -556,21 +558,26 @@ impl Engine {
         Some((chars, hit?))
     }
 
-    /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL or an existing
-    /// file path (`path:line[:col]`, relative paths resolved against `cwd`, then the shell's
-    /// OSC 7 directory).
+    /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL, an app link
+    /// (`schemes.rs`) or an existing file path (`path:line[:col]`, relative paths resolved
+    /// against `cwd`, then the shell's OSC 7 directory).
     pub fn link_at(&self, x: u16, y: u16, cwd: &str) -> Option<Link> {
         if let Ok(r) = self.term.grid_ref(Point::Viewport(PointCoordinate { x, y: y as u32 })) {
             let mut buf = vec![0u8; 2048];
             if let Ok(n) = r.hyperlink_uri(&mut buf)
                 && n > 0
             {
-                return Some(Link::Url(String::from_utf8_lossy(&buf[..n]).into_owned()));
+                let url = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let app = url.split_once("://").and_then(|(scheme, _)| crate::schemes::app_for(scheme));
+                return Some(match app {
+                    Some(app) => Link::App { url, app },
+                    None => Link::Url(url),
+                });
             }
         }
         let (chars, i) = self.logical_line(x, y)?;
         let pwd = osc7_path(self.term.pwd().unwrap_or(""));
-        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd])
+        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for)
     }
 
     /// Find `query` (case-insensitive unless it has capitals) in scrollback + screen, moving
@@ -672,8 +679,9 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Link detection on a logical line: `i` is the clicked char.
-pub fn detect_link(chars: &[char], i: usize, dirs: &[&str]) -> Option<Link> {
+/// Link detection on a logical line: `i` is the clicked char. `app_for` names the app a URL
+/// scheme opens (`schemes::app_for`).
+pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&str) -> Option<String>) -> Option<Link> {
     if i >= chars.len() || chars[i].is_whitespace() {
         return None;
     }
@@ -696,6 +704,12 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str]) -> Option<Link> {
         let url = trim_url(rest);
         if click >= start && click < start + url.len().max(1) && url.len() > 8 {
             return Some(Link::Url(url.to_string()));
+        }
+    }
+    // App links: `<scheme>://…` when an app opens the scheme.
+    for (start, url, app) in crate::schemes::app_links(&word, trim_url, app_for) {
+        if click >= start && click < start + url.len() {
+            return Some(Link::App { url: url.to_string(), app });
         }
     }
     // File paths, optionally with :line[:col].
@@ -1001,10 +1015,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn no_apps(_: &str) -> Option<String> {
+        None
+    }
+
+    fn taskboard(scheme: &str) -> Option<String> {
+        (scheme == "taskboard").then(|| "Taskboard".to_string())
+    }
+
+    #[test]
+    fn detect_app_links() {
+        let at = |s: &str, i: usize| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], &taskboard);
+        let app = |u: &str| Some(Link::App { url: u.into(), app: "Taskboard".into() });
+        assert_eq!(at("open taskboard://#/?task=T6 now", 8), app("taskboard://#/?task=T6"));
+        // Trailing punctuation and brackets the URL didn't open stay out.
+        assert_eq!(at("(see taskboard://#/?task=T6).", 10), app("taskboard://#/?task=T6"));
+        assert_eq!(at("taskboard://#/?task=T6, then", 0), app("taskboard://#/?task=T6"));
+        // A scheme glued to a word is a different scheme, which no app opens.
+        assert_eq!(at("seetaskboard://#/?task=T6", 5), None);
+        // Unregistered schemes stay plain text.
+        assert_eq!(at("got foo://bar/baz", 6), None);
+        assert_eq!(detect_link(&"taskboard://#/?task=T6".chars().collect::<Vec<_>>(), 3, &[], &no_apps), None);
+        // Nothing after the `://`.
+        assert_eq!(at("taskboard://", 3), None);
+    }
+
     #[test]
     fn detect_url_in_wrapped_text() {
         let chars: Vec<char> = "(https://a.b/c?d=1).".chars().collect();
-        assert_eq!(detect_link(&chars, 5, &[]), Some(Link::Url("https://a.b/c?d=1".into())));
+        assert_eq!(detect_link(&chars, 5, &[], &no_apps), Some(Link::Url("https://a.b/c?d=1".into())));
     }
 
     #[test]

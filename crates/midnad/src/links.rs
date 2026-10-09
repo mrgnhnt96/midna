@@ -550,8 +550,13 @@ pub fn command_head(cmd: &str) -> String {
 
 // ------------------------------------------------------------------ urls
 
-/// The http(s) URLs in `text`. `all = false` keeps only pull requests.
+/// The http(s) URLs and app links (`schemes.rs`) in `text`. `all = false` keeps only pull
+/// requests.
 pub fn urls_in(text: &str, source: LinkSource, via: Option<String>, all: bool) -> Vec<Found> {
+    urls_in_with(text, source, via, all, &crate::schemes::app_for)
+}
+
+fn urls_in_with(text: &str, source: LinkSource, via: Option<String>, all: bool, app_for: &dyn Fn(&str) -> Option<String>) -> Vec<Found> {
     let mut out = vec![];
     let mut rest = text;
     while let Some(i) = rest.find("http") {
@@ -574,10 +579,23 @@ pub fn urls_in(text: &str, source: LinkSource, via: Option<String>, all: bool) -
         }
         let (kind, target, title) = classify_url(url);
         if all || kind == LinkKind::Pr {
-            out.push(Found { kind, target, title, named: false, source, via: via.clone() });
+            out.push((text.len() - tail.len(), Found { kind, target, title, named: false, source, via: via.clone() }));
         }
     }
-    out
+    if all {
+        for (at, url, app) in crate::schemes::app_links(text, trim_url, app_for) {
+            out.push((at, Found { kind: LinkKind::Web, title: app_title(url, &app), target: url.to_string(), named: false, source, via: via.clone() }));
+        }
+        out.sort_by_key(|(at, _)| *at);
+    }
+    out.into_iter().map(|(_, f)| f).collect()
+}
+
+/// An app link's title: the app, then what follows the scheme (`Taskboard · #/?task=T6`).
+fn app_title(url: &str, app: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let title = format!("{app} · {rest}");
+    if title.chars().count() > TITLE_MAX { format!("{}…", title.chars().take(TITLE_MAX - 1).collect::<String>()) } else { title }
 }
 
 /// Strip trailing punctuation, and a closing bracket the URL didn't open (`(see https://x.y)`).
@@ -642,6 +660,18 @@ mod tests {
 
     fn kinds(f: &[Found]) -> Vec<(LinkKind, &str)> {
         f.iter().map(|f| (f.kind, f.target.as_str())).collect()
+    }
+
+    #[test]
+    fn finds_app_links() {
+        let taskboard = |scheme: &str| (scheme == "taskboard").then(|| "Taskboard".to_string());
+        let t = "Opened T6: taskboard://#/?task=T6. See [it](taskboard://#/?task=T7), https://a.com/x, \
+                 seetaskboard://#/x and foo://bar/baz.";
+        let f = urls_in_with(t, LinkSource::Agent, None, true, &taskboard);
+        assert_eq!(kinds(&f), vec![(LinkKind::Web, "taskboard://#/?task=T6"), (LinkKind::Web, "taskboard://#/?task=T7"), (LinkKind::Web, "https://a.com/x")]);
+        assert_eq!(f[0].title, "Taskboard · #/?task=T6");
+        // Pull requests only: no app links.
+        assert!(urls_in_with(t, LinkSource::Tool, None, false, &taskboard).is_empty());
     }
 
     #[test]

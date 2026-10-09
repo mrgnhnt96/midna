@@ -245,8 +245,14 @@ fn undo_remove(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> bool {
 /// Preview `l` in the selected terminal's link-preview card (`None`: stop).
 fn preview(m: &MainWindow, l: Option<&Link>, cx: &mut Context<MainWindow>) {
     let Some(view) = m.terminal.clone().filter(|v| Some(&v.read(cx).session_id) == m.selected.as_ref()) else { return };
-    let target = l.map(|l| (l.target.clone(), l.kind != LinkKind::File));
+    let target = l.map(|l| (l.target.clone(), l.kind != LinkKind::File, app(l)));
     view.update(cx, |t, cx| t.preview_external(target, cx));
+}
+
+/// The app an app link (`taskboard://…`) opens in: the daemon titles those `<app> · <rest>`.
+fn app(l: &Link) -> Option<String> {
+    let web = l.kind == LinkKind::Web && !l.target.starts_with("http://") && !l.target.starts_with("https://");
+    web.then(|| l.title.split_once(" · ").map(|(app, _)| app.to_string())).flatten()
 }
 
 /// The pointer left the popover's rows (or it closed): let the preview card go.
