@@ -9,6 +9,7 @@ pub mod cleanup;
 pub mod clock;
 pub mod conn;
 pub mod daemon;
+pub mod ended;
 pub mod engine;
 pub mod eventlog;
 pub mod git;

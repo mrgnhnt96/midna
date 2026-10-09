@@ -193,7 +193,7 @@ pub fn remove(d: &Arc<Daemon>, ctx: &Ctx, p: IdParams) -> R {
         core.state.sessions.iter().filter(|s| s.project_id == p.id).map(|s| s.id.clone()).collect()
     };
     for sid in sessions {
-        super::session::close_inner(d, ctx, &sid, true);
+        super::session::close_inner(d, ctx, &sid, true, "project_removed");
     }
     d.core().state.projects.retain(|x| x.id != p.id);
     d.mark_dirty();

@@ -17,7 +17,7 @@ pub fn reset(d: &Arc<Daemon>, ctx: &Ctx, p: DaemonResetParams) -> R {
     // Terminals first: their needs-you items go with them.
     let sessions: Vec<Id> = d.core().state.sessions.iter().map(|s| s.id.clone()).collect();
     for sid in &sessions {
-        super::session::close_inner(d, ctx, sid, true);
+        super::session::close_inner(d, ctx, sid, true, "reset");
     }
     out.sessions_closed = sessions.len() as u32;
 

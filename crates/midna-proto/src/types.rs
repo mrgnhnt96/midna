@@ -1313,6 +1313,12 @@ pub mod kinds {
     pub const AGENT_TURN_ENDED: &str = "agent.turn_ended";
     pub const AGENT_PROMPT_SUBMITTED: &str = "agent.prompt_submitted";
     pub const AGENT_COST: &str = "agent.cost";
+    /// The agent's own session ended (its SessionEnd hook): `{agent, reason, conversation, how,
+    /// by, terminal_closed}`. `reason` is the agent's (Claude: prompt_input_exit, clear, logout,
+    /// other). `how`/`by` say what ended it: close | force_close | replace | exited | reset |
+    /// project_removed | restart, by whoever did that; or `agent_exit`, by the agent itself.
+    /// Arrives after `session.closed` when the terminal was closed.
+    pub const AGENT_SESSION_ENDED: &str = "agent.session_ended";
     /// A UserPromptSubmit hook refused the prompt (`{hook, message, prompt}`); the agent never
     /// started a turn. Seen in Claude's transcript.
     pub const AGENT_PROMPT_BLOCKED: &str = "agent.prompt_blocked";
