@@ -837,6 +837,20 @@ pub struct NeedsYou {
     /// options, which the title only summarizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<NeedsYouQuestion>,
+    /// An agent's ask to change a human-only setting: what it is now and what it would be.
+    /// Approving may save a different value (`needs_you.resolve`'s `value`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setting: Option<SettingChange>,
+}
+
+/// A setting an agent asked to change, as it was when it asked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingChange {
+    pub key: String,
+    /// Its value when the agent asked.
+    pub from: Value,
+    /// The value the agent asked for (the default, for a reset).
+    pub to: Value,
 }
 
 /// The first question of an AskUserQuestion call, as the agent wrote it.

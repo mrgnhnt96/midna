@@ -1045,6 +1045,10 @@ pub struct NeedsYouRaiseParams {
 pub struct NeedsYouResolveParams {
     pub id: Id,
     pub resolution: Resolution,
+    /// Approving a setting change (an item with `setting`): save this value instead of the
+    /// one the agent asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
