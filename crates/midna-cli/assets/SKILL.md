@@ -331,7 +331,11 @@ when it is taken or released.
 
 - `midna system` shows the load per core and the terminals using the most CPU. Before starting
   heavy work (a workspace build, many worktree subagents at once), check it; on a busy Mac run
-  fewer at a time.
+  fewer at a time. While busy, midna denies new subagents and builds/tests/installs
+  (`guard.busy_gate`, reason "the Mac is busy"): wait a few minutes and try again, don't loop on
+  it. An agent runs at most `guard.max_subagents` subagents at once; start the next when one
+  finishes. What you start while busy may run in macOS's background mode (slower); that's
+  expected.
 - Don't wait on a process with `until ! pgrep -f "<pattern>"; do sleep N; done`: your own loop's
   command line contains the pattern, so two such loops see each other and never end. Wait for
   your background task's completion notice, or on a file the command writes. midnad stops poll

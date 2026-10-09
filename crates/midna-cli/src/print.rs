@@ -402,7 +402,8 @@ pub fn system_load(v: &Value) {
     for t in top {
         let busiest = t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
         let paused = if t["paused"].as_bool() == Some(true) { " [paused]" } else { "" };
-        println!("{:<12} {:>6} {:>6}  {}{paused}  ({busiest})", s(&t, "session_id"), t["cpu_percent"], t["processes"], s(&t, "name"));
+        let slowed = if t["backgrounded"].as_bool() == Some(true) { " [slowed]" } else { "" };
+        println!("{:<12} {:>6} {:>6}  {}{paused}{slowed}  ({busiest})", s(&t, "session_id"), t["cpu_percent"], t["processes"], s(&t, "name"));
     }
     println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
 }

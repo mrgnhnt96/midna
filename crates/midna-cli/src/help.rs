@@ -554,7 +554,10 @@ pub static VERBS: &[Verb] = &[
                   resume  continue it\n\
                   stop    end what the terminal started (or only the pids given, with their children): SIGTERM,\n\
                   \x20       SIGKILL after 3s. Its shell or agent keeps running. Human only\n\
-                  midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.",
+                  midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.\n\
+                  While busy, what the heaviest agent terminals start runs in macOS's background mode\n\
+                  (guard.background_agents; \"slowed\" in the list), and agents are denied new subagents and\n\
+                  builds/tests/installs (guard.busy_gate). An agent runs at most guard.max_subagents subagents at once.",
         methods: &["system.load", "session.pause", "session.resume", "session.stop_processes"],
     },
     Verb {

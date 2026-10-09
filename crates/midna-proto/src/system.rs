@@ -7,6 +7,9 @@
 //!   terminal) unless the caller forces it.
 //! - Overload: busy for `guard.overload_secs` in a row. midnad emits `system.overloaded` with
 //!   the terminals using the most CPU, so the app can offer to pause or stop them.
+//! - Busy agents: while busy, what agent terminals start runs in macOS's background mode
+//!   (`guard.background_agents`), and agents are told to wait instead of starting heavy work
+//!   (`guard.busy_gate`). An agent runs at most `guard.max_subagents` subagents at once.
 //! - Runaway loops: background `while`/`until` shell loops an agent started (polling for a
 //!   build, a file, a process) that outlive `guard.loop_max_hours` are stopped.
 //! - Worktrees: linked git worktrees of repos midna's terminals use are removed after
@@ -55,6 +58,10 @@ pub struct HeavyTerminal {
     /// `busiest` are then what it was using when it was paused.
     #[serde(default)]
     pub paused: bool,
+    /// What its agent started runs in macOS's background mode while the Mac is busy
+    /// (`guard.background_agents`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backgrounded: bool,
 }
 
 /// A terminal paused with `session.pause` (`Session.paused`): its whole process tree is
@@ -213,6 +220,24 @@ pub fn is_poll_loop(command: &str) -> bool {
     loops && script.contains("sleep")
 }
 
+/// A shell command that builds, tests or installs: what `guard.busy_gate` holds back while the
+/// Mac is busy. Any part of a compound command counts (`source env.sh && cargo test`).
+pub fn is_heavy_command(command: &str) -> bool {
+    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || ";&|()`".contains(c)).filter(|w| !w.is_empty()).collect();
+    words.iter().enumerate().any(|(i, w)| {
+        let prog = w.rsplit('/').next().unwrap_or(w);
+        // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
+        let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).copied().unwrap_or("");
+        match prog {
+            "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
+            "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
+            "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "install" | "i" | "ci" | "add" | "build" | "test" | "run"),
+            "swift" | "go" | "flutter" | "dart" | "docker" => matches!(sub, "build" | "test" | "install" | "compile"),
+            _ => false,
+        }
+    })
+}
+
 /// Whether `path` is `dir` or inside it (both absolute, compared component-wise).
 pub fn path_within(path: &str, dir: &str) -> bool {
     let dir = dir.trim_end_matches('/');
@@ -248,6 +273,20 @@ mod tests {
         assert!(!is_poll_loop("bash -c cargo build --workspace"));
         assert!(!is_poll_loop("python3 -c while True: sleep(1)"));
         assert!(!is_poll_loop("bash -c until make; do echo retry; done"));
+    }
+
+    #[test]
+    fn heavy_commands() {
+        assert!(is_heavy_command("cargo test --workspace"));
+        assert!(is_heavy_command("source ./env.sh && cargo build -p midnad"));
+        assert!(is_heavy_command("cargo +nightly clippy"));
+        assert!(is_heavy_command("cd app; npm install"));
+        assert!(is_heavy_command("/usr/bin/xcodebuild -scheme App"));
+        assert!(is_heavy_command("(cd web && pnpm run build)"));
+        assert!(!is_heavy_command("cargo --version"));
+        assert!(!is_heavy_command("git status"));
+        assert!(!is_heavy_command("grep -rn cargo crates"));
+        assert!(!is_heavy_command("cmake --version"));
     }
 
     #[test]

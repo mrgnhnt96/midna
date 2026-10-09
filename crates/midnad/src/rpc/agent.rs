@@ -25,6 +25,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     if ev == "SessionEnd" {
         session_ended(d, &sid, &project, &actor, p.agent, payload, d.ends.take(&sid));
     }
+    if let Some(pid) = ctx.pid.filter(|_| p.session.is_none()) {
+        crate::guard::note_hook_caller(d, &sid, pid);
+    }
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
         crate::links::after_hook(d, &sid, p.agent, ev, payload);

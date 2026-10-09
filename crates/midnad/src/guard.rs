@@ -4,7 +4,15 @@
 //! - after `guard.overload_secs` busy, emit `system.overloaded` with the heaviest terminals
 //!   (the app offers Pause / Stop processes), and `system.calm` once the load drops back;
 //! - stop background poll loops under agent terminals older than `guard.loop_max_hours`
-//!   (`until ! pgrep -f X; do sleep 5; done` never ends when two agents wait on each other).
+//!   (`until ! pgrep -f X; do sleep 5; done` never ends when two agents wait on each other);
+//! - while busy, put what the heaviest agent terminals started into macOS's background mode
+//!   (`guard.background_agents`), and take it back out once the load drops. The agent process
+//!   itself (known from the hooks it runs) and the shell above it stay as they are, so new
+//!   commands start at normal priority and are caught on the next tick.
+//!
+//! `hold` is the other half: `policy.request` asks it before an agent's tool call, and it denies
+//! new subagents past `guard.max_subagents`, and new subagents and heavy commands while busy
+//! (`guard.busy_gate`).
 //!
 //! `session.pause` stops (SIGSTOP) a terminal's whole process tree, agent included, and
 //! `session.resume` continues it; `session.stop_processes` ends what a terminal started
@@ -18,7 +26,7 @@ use crate::procs;
 use midna_proto::system::{self as sys, HeavyTerminal, Paused, SystemLoad};
 use midna_proto::*;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -29,6 +37,11 @@ const CALM_SHARE: f64 = 0.8;
 const KILL_GRACE: Duration = Duration::from_secs(3);
 /// Terminals listed in `system.overloaded` / `system.load`.
 const TOP: usize = 5;
+/// An agent terminal using at least this much CPU (percent of one core) while the Mac is busy
+/// goes into background mode.
+const BACKGROUND_FROM: u32 = 100;
+/// Shells and launchers between an agent and the hook command it runs.
+const LAUNCHERS: [&str; 7] = ["sh", "bash", "zsh", "dash", "fish", "env", "midna"];
 
 #[derive(Default)]
 pub struct Runtime(Mutex<Inner>);
@@ -42,6 +55,13 @@ struct Inner {
     last: HashMap<i32, (u64, i64)>,
     last_at: Option<Instant>,
     top: Vec<HeavyTerminal>,
+    /// Agent terminals whose processes are in background mode.
+    backgrounded: HashSet<Id>,
+    /// Each agent terminal's agent process (pid, start), from the hooks it runs.
+    agents: HashMap<Id, (i32, i64)>,
+    /// Background mode was cleared from every agent terminal once since midnad started (a
+    /// restart forgets which terminals it put there).
+    swept: bool,
 }
 
 fn log(msg: &str) {
@@ -96,9 +116,9 @@ pub fn load(d: &Daemon) -> SystemLoad {
     let busy_at = busy_at(d);
     let pct = sys::load_percent(load1, cpus);
     let overload_secs = d.setting("guard.overload_secs").as_i64().unwrap_or(120).max(0) as u64;
-    let (busy_since, sampled) = {
+    let (busy_since, sampled, backgrounded) = {
         let g = d.guard.inner();
-        (g.busy_since, g.top.clone())
+        (g.busy_since, g.top.clone(), g.backgrounded.clone())
     };
     let busy_for = busy_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
     // Paused terminals use no CPU now; they're listed with what they used when paused.
@@ -109,11 +129,14 @@ pub fn load(d: &Daemon) -> SystemLoad {
         .iter()
         .filter_map(|s| {
             let p = s.paused.as_ref()?;
-            Some(HeavyTerminal { session_id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), cpu_percent: p.cpu_percent, processes: p.processes, busiest: p.busiest.clone(), paused: true })
+            Some(HeavyTerminal { session_id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), cpu_percent: p.cpu_percent, processes: p.processes, busiest: p.busiest.clone(), paused: true, backgrounded: false })
         })
         .collect();
     let mut top: Vec<HeavyTerminal> = sampled.into_iter().filter(|t| !paused.iter().any(|p| p.session_id == t.session_id)).collect();
     top.truncate(TOP);
+    for t in &mut top {
+        t.backgrounded = backgrounded.contains(&t.session_id);
+    }
     top.extend(paused);
     top.sort_by(|a, b| b.cpu_percent.cmp(&a.cpu_percent));
     SystemLoad {
@@ -146,6 +169,7 @@ fn tick(d: &Arc<Daemon>) {
     let table = procs::table();
     sample(d, &table);
     overload(d);
+    background(d, &table);
     stop_old_loops(d, &table);
     drop_stale_pauses(d);
 }
@@ -172,6 +196,148 @@ fn drop_stale_pauses(d: &Daemon) {
     for id in stale {
         d.emit(kinds::SESSION_RESUMED, Actor::system(), None, Some(id), json!({ "processes": 0, "reason": "restarted" }));
     }
+}
+
+// ------------------------------------------------------------------ background mode
+
+/// Note the agent behind a hook: `pid` runs the hook, the agent is its nearest ancestor that
+/// isn't a shell or launcher.
+pub fn note_hook_caller(d: &Daemon, sid: &str, pid: i32) {
+    let known = d.guard.inner().agents.get(sid).copied();
+    if known.is_some_and(|(p, start)| procs::table_start(p) == Some(start)) {
+        return;
+    }
+    let mut p = pid;
+    for _ in 0..8 {
+        let Some(up) = procs::parent(p).filter(|&up| up > 1) else { return };
+        p = up;
+        let Some(name) = procs::name(p) else { return };
+        if !LAUNCHERS.contains(&name.as_str()) {
+            if let Some(start) = procs::table_start(p) {
+                d.guard.inner().agents.insert(sid.to_string(), (p, start));
+            }
+            return;
+        }
+    }
+}
+
+/// The agent process and everything above it up to the terminal's own process: never put into
+/// background mode, so what it starts next begins at normal priority.
+fn agent_chain(table: &HashMap<i32, procs::Row>, root: i32, agent: (i32, i64)) -> Option<Vec<i32>> {
+    let (mut p, start) = agent;
+    if table.get(&p).map(|r| r.start) != Some(start) {
+        return None;
+    }
+    let mut chain = vec![p];
+    while p != root {
+        p = table.get(&p).map(|r| r.ppid).filter(|&up| up > 1)?;
+        chain.push(p);
+    }
+    Some(chain)
+}
+
+/// Every process under `root` but `keep` into (or out of) background mode; how many changed.
+fn set_tree_background(table: &HashMap<i32, procs::Row>, root: i32, keep: &[i32], on: bool) -> usize {
+    procs::descendants(table, root).into_iter().filter(|pid| !keep.contains(pid)).filter(|&pid| procs::set_background(pid, on)).count()
+}
+
+fn background(d: &Daemon, table: &HashMap<i32, procs::Row>) {
+    let enabled = d.setting("guard.background_agents").as_bool().unwrap_or(true);
+    let (load1, _, _) = loadavg();
+    let pct = sys::load_percent(load1, cpus()) as f64;
+    let busy_at = busy_at(d) as f64;
+    let (busy, calm) = (pct >= busy_at, pct < busy_at * CALM_SHARE);
+    let terms = terminals(d);
+    let (heavy, agents, was, swept) = {
+        let g = d.guard.inner();
+        let heavy: HashSet<Id> = g.top.iter().filter(|t| t.cpu_percent >= BACKGROUND_FROM).map(|t| t.session_id.clone()).collect();
+        (heavy, g.agents.clone(), g.backgrounded.clone(), g.swept)
+    };
+    let mut now = was.clone();
+    if !enabled || calm {
+        now.clear();
+    } else if busy {
+        now.extend(heavy);
+    }
+    for (id, _, _, root, agent) in &terms {
+        let chain = agents.get(id).and_then(|&a| agent_chain(table, *root, a));
+        if now.contains(id) {
+            // Keep the agent itself as it is; without it known, leave the terminal alone.
+            let Some(chain) = chain.filter(|_| *agent && !is_paused(d, id)) else {
+                now.remove(id);
+                continue;
+            };
+            let n = set_tree_background(table, *root, &chain, true);
+            if !was.contains(id) {
+                log(&format!("busy: {id}'s processes go into background mode ({n})"));
+                d.emit(kinds::GUARD_BACKGROUNDED, Actor::system(), None, Some(id.clone()), json!({ "processes": n }));
+            }
+        } else if was.contains(id) || (!swept && *agent) {
+            let n = set_tree_background(table, *root, &[], false);
+            if was.contains(id) {
+                log(&format!("calm: {id}'s processes leave background mode ({n})"));
+                d.emit(kinds::GUARD_FOREGROUNDED, Actor::system(), None, Some(id.clone()), json!({ "processes": n }));
+            }
+        }
+    }
+    let live: HashSet<&Id> = terms.iter().map(|t| &t.0).collect();
+    now.retain(|id| live.contains(id));
+    let mut g = d.guard.inner();
+    g.backgrounded = now;
+    g.agents.retain(|id, _| live.contains(id));
+    g.swept |= !busy;
+}
+
+// ------------------------------------------------------------------ hold
+
+/// Why an agent's tool call should wait, if it should: a subagent past `guard.max_subagents`,
+/// or (`guard.busy_gate`) a subagent or heavy command while the Mac is busy.
+pub fn hold(d: &Daemon, a: &PolicyAction) -> Option<String> {
+    if a.kind != ActionKind::Tool {
+        return None;
+    }
+    let sid = a.session.as_deref()?;
+    let (tool, arg) = match a.value.split_once('(') {
+        Some((t, rest)) => (t, rest.strip_suffix(')').unwrap_or(rest)),
+        None => (a.value.as_str(), ""),
+    };
+    let subagent = matches!(tool, "Agent" | "Task");
+    let reason = subagent.then(|| too_many_subagents(d, sid)).flatten().or_else(|| {
+        let heavy = subagent || tool == "Bash" && sys::is_heavy_command(arg);
+        if !heavy || !d.setting("guard.busy_gate").as_bool().unwrap_or(true) {
+            return None;
+        }
+        let l = busy(d)?;
+        let what = if subagent { "more subagents" } else { "builds, tests or installs" };
+        Some(format!(
+            "the Mac is busy (load {} on {} cores, {}%; busy from {}%). Don't start {what} now: wait a few minutes and try again (`midna system` shows the load). Work already running carries on.",
+            l.load1, l.cpus, l.load_percent, l.busy_at
+        ))
+    });
+    if reason.is_some() && subagent {
+        // A denied Agent call never starts its subagent: it mustn't count as one about to.
+        let mut core = d.core();
+        if let Some(info) = core.state.session_mut(sid).and_then(|s| s.agent_info.as_mut()) {
+            info.pending_agents.pop();
+        }
+    }
+    reason
+}
+
+fn too_many_subagents(d: &Daemon, sid: &str) -> Option<String> {
+    let max = d.setting("guard.max_subagents").as_i64().unwrap_or(4).max(0) as usize;
+    let running = running_subagents(d, sid);
+    (max > 0 && running >= max).then(|| format!("this terminal already runs {running} subagents (guard.max_subagents = {max}). Wait for one to finish, then start the next."))
+}
+
+/// Subagents running in `sid` or about to start: the Agent call being decided is already
+/// among the pending ones (its PreToolUse came first), so it doesn't count.
+fn running_subagents(d: &Daemon, sid: &str) -> usize {
+    let core = d.core();
+    let Some(info) = core.state.session(sid).and_then(|s| s.agent_info.as_ref()) else { return 0 };
+    let mut ids: HashSet<&str> = info.subagents.iter().map(|a| a.id.as_str()).collect();
+    ids.extend(info.background.iter().filter(|t| t.kind.contains("agent")).map(|t| t.id.as_str()));
+    ids.len() + info.pending_agents.len().saturating_sub(1)
 }
 
 /// Live terminals: (id, name, cwd, root pid, is an agent).
@@ -215,7 +381,7 @@ fn sample(d: &Daemon, table: &HashMap<i32, procs::Row>) {
         let mut names: Vec<(String, (u32, u64))> = busiest.into_iter().filter(|(_, (_, used))| *used > 0).collect();
         names.sort_by(|a, b| b.1.1.cmp(&a.1.1));
         let busiest = names.into_iter().take(3).map(|(n, (count, _))| if count > 1 { format!("{n} ×{count}") } else { n }).collect();
-        top.push(HeavyTerminal { session_id: id, name, cwd, cpu_percent, processes: pids.len() as u32, busiest, paused: false });
+        top.push(HeavyTerminal { session_id: id, name, cwd, cpu_percent, processes: pids.len() as u32, busiest, paused: false, backgrounded: false });
     }
     top.sort_by(|a, b| b.cpu_percent.cmp(&a.cpu_percent));
     top.truncate(TOP);
@@ -386,4 +552,41 @@ pub fn stop_processes(d: &Daemon, actor: Actor, p: StopProcessesParams) -> Resul
     terminate(&chosen);
     d.emit(kinds::PROCS_STOPPED, actor, None, Some(p.session_id.clone()), json!({ "stopped": stopped }));
     Ok(json!(StopProcessesResult { session_id: p.session_id, stopped }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    /// Scheduling priority `ps` reports (background mode drops it to 4).
+    fn pri(pid: i32) -> i32 {
+        let o = Command::new("ps").args(["-o", "pri=", "-p", &pid.to_string()]).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().parse().unwrap()
+    }
+
+    #[test]
+    fn background_mode_skips_the_agent_and_comes_back_out() {
+        let mut sh = Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]).stdout(Stdio::null()).spawn().unwrap();
+        let root = sh.id() as i32;
+        let child = loop {
+            let t = procs::table();
+            if let Some(p) = procs::descendants(&t, root).into_iter().find(|&p| p != root) {
+                break p;
+            }
+            std::thread::yield_now();
+        };
+        let table = procs::table();
+        let chain = agent_chain(&table, root, (root, table[&root].start)).unwrap();
+        assert_eq!(chain, vec![root]);
+        assert_eq!(set_tree_background(&table, root, &chain, true), 1);
+        assert!(pri(child) <= 4 && pri(root) > 4, "child {} root {}", pri(child), pri(root));
+        set_tree_background(&table, root, &[], false);
+        assert!(pri(child) > 4, "{}", pri(child));
+        // An agent outside the terminal's tree, or a reused pid, isn't one of its processes.
+        assert!(agent_chain(&table, root, (std::process::id() as i32, 0)).is_none());
+        assert!(agent_chain(&table, root, (root, table[&root].start + 1)).is_none());
+        terminate(&[child]);
+        let _ = sh.wait();
+    }
 }

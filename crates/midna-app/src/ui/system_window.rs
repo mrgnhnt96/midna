@@ -318,6 +318,9 @@ impl SystemWindow {
             if !term.busiest.is_empty() {
                 parts.push(term.busiest.join(", "));
             }
+            if term.backgrounded {
+                parts.push("slowed down".into());
+            }
             parts.join(" · ")
         };
         let text = self.preview.as_ref().filter(|(id, _)| *id == sid).map(|(_, x)| x.clone()).unwrap_or_default();
@@ -468,6 +471,7 @@ pub fn debug(which: &str, backend: Arc<dyn Backend>, cx: &mut App) {
         processes: n,
         busiest: busiest.iter().map(|s| s.to_string()).collect(),
         paused,
+        backgrounded: false,
     };
     let load = SystemLoad {
         load1: 48.6,

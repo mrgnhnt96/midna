@@ -59,6 +59,19 @@ pub fn parent(pid: i32) -> Option<i32> {
     bsd_info(pid).map(|b| b.ppid)
 }
 
+/// Process name, or None if `pid` is gone.
+pub fn name(pid: i32) -> Option<String> {
+    bsd_info(pid).map(|b| b.name)
+}
+
+/// Put `pid` into macOS's background mode (lowest CPU priority, efficiency cores, throttled
+/// disk) or take it back out. Unlike a nice value, a user can undo it. Children started later
+/// inherit it; ones already running don't.
+pub fn set_background(pid: i32, on: bool) -> bool {
+    let prio = if on { libc::PRIO_DARWIN_BG } else { 0 };
+    unsafe { libc::setpriority(libc::PRIO_DARWIN_PROCESS, pid as libc::id_t, prio) == 0 }
+}
+
 /// Full argv joined by spaces (KERN_PROCARGS2), or None when the OS won't say.
 pub fn command_line(pid: i32) -> Option<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];

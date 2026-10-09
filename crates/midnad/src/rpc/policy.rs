@@ -72,6 +72,13 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
         needs_you_id: None,
         reason: r.rule.as_ref().map(|x| format!("rule {} ({} `{}`)", x.id, x.effect.as_str(), x.matcher.pattern)),
     };
+    // A rule's allow is about permission, not load: the guard still holds heavy work back.
+    if res.decision != Effect::Deny
+        && let Some(reason) = crate::guard::hold(d, &a)
+    {
+        d.emit(kinds::GUARD_HELD, ctx.actor(), a.project.clone(), a.session.clone(), json!({ "action": a, "reason": reason }));
+        return ok(PolicyRequestResult { decision: Effect::Deny, source: DecisionSource::Guard, rule: None, needs_you_id: None, reason: Some(reason) });
+    }
     // Unmatched tool calls have no midna opinion: the agent's own permission flow decides.
     if res.decision != Effect::Ask || (res.source == DecisionSource::Default && a.kind == ActionKind::Tool) {
         return ok(decided(&res));

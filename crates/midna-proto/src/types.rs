@@ -760,6 +760,9 @@ pub enum DecisionSource {
     /// The approval was withdrawn before anyone answered: the terminal it was about closed,
     /// or the caller that asked went away (its connection or its terminal).
     Withdrawn,
+    /// midna's load guard held it back: the Mac is busy (`guard.busy_gate`) or the agent
+    /// already runs `guard.max_subagents` subagents.
+    Guard,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1364,6 +1367,13 @@ pub mod kinds {
     /// A background shell loop an agent left polling ran past `guard.loop_max_hours` and was
     /// stopped (`{pid, command, hours}`).
     pub const PROCS_LOOP_STOPPED: &str = "procs.loop_stopped";
+    /// An agent's tool call was denied by the load guard (`{action, reason}`): the Mac is busy
+    /// (`guard.busy_gate`) or it already runs `guard.max_subagents` subagents.
+    pub const GUARD_HELD: &str = "guard.held";
+    /// While busy, what an agent terminal started went into macOS's background mode, or came
+    /// back out once the load dropped (`{processes}`; `guard.background_agents`).
+    pub const GUARD_BACKGROUNDED: &str = "guard.backgrounded";
+    pub const GUARD_FOREGROUNDED: &str = "guard.foregrounded";
     /// An idle git worktree was removed (`{path, repo, branch, idle_hours, by}`); the branch stays.
     pub const WORKTREE_REMOVED: &str = "worktree.removed";
     /// A cleanup after a closed terminal started (`{run}`, a `CleanupRun`).
