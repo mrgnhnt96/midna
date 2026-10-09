@@ -905,7 +905,11 @@ fn keep_awake(a: &Args, out: OutFn) -> Res {
             let hours = need(3, "hours (9am-3pm, off, all day or default)")?;
             Some(json!({ "hours": days.iter().map(|d| (d.clone(), json!(hours))).collect::<serde_json::Map<_, _>>() }))
         }
-        "today" => Some(json!({ "today": need(2, "off, on, until <time> or clear")? })),
+        "today" | "for" | "until" => {
+            // `keep-awake for 5h` / `until 1am` are `today for 5h` / `today until 1am`.
+            let v = if a.pos[1] == "today" { need(2, "off, on, until <time>, for <hours> or clear")? } else { format!("{} {}", a.pos[1], need(2, "a time or how long")?) };
+            Some(json!({ "today": v }))
+        }
         "mode" => Some(json!({ "mode": a.need(2, "mode (with_work or always)")? })),
         "battery" => Some(json!({ "min_battery": a.need(2, "percent")? })),
         "linger" => Some(json!({ "linger_mins": a.need(2, "minutes")? })),

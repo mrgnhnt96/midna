@@ -283,7 +283,8 @@ const TOPICS: &[(&str, &str)] = &[
         it holds in mode with_work while there is work (an agent working or with background work, subagents or a wakeup due, \
         queued input, an agent waiting to resume, a schedule trigger due before the hours end) and keep_awake.linger_mins \
         after; mode always holds the whole time. On battery below keep_awake.min_battery it lets go, and takes it again 5 \
-        points above or on power. `today` (off | on | until 5pm | clear) replaces the rest of today and ends at midnight. \
+        points above or on power. `today` (off | on | until 5pm | for 5h | clear) overrides the schedule: off for the rest of today, on until \
+        midnight, or on until a time (even past midnight: `until 1am`, `for 5h` at 8 PM; 24 hours at most), then the schedule again. \
         Status says held, reason (work, always, disabled, outside_hours, day_off, today_off, battery_low, no_work, failed), \
         next_on / next_off and what work keeps it; event keep_awake.changed fires when that changes. keep_awake.wake \
         (`midna keep-awake wake on`) also wakes a sleeping Mac 2 minutes before the next work due inside the hours (a schedule \

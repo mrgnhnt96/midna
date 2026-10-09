@@ -14,7 +14,7 @@
 //! another process (tests) never touches IOKit: it records what it would hold, and its battery
 //! is whatever `set_battery` says.
 use crate::daemon::Daemon;
-use midna_proto::keep_awake::{self as ka, Battery, BatteryGate, Closed, Plan, Today};
+use midna_proto::keep_awake::{self as ka, Battery, BatteryGate, Closed, Plan};
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -213,7 +213,7 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
     let date = ka::local_date(now);
     let (s, today) = {
         let mut core = d.core();
-        let stale = core.state.keep_awake_today.as_ref().is_some_and(|t| t.date != date);
+        let stale = core.state.keep_awake_today.as_ref().is_some_and(|t| t.ended(now));
         if stale {
             core.state.keep_awake_today = None;
         }
@@ -304,7 +304,7 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
         Disabled => "Keep-awake is off (keep_awake.enabled)".into(),
         OutsideHours => format!("Not keeping awake: outside hours ({schedule}){again}"),
         DayOff => format!("Not keeping awake: today is off ({schedule}){again}"),
-        TodayOff => format!("Not keeping awake: {}{again}", today.as_ref().map(Today::words).unwrap_or_else(|| "off today".into())),
+        TodayOff => format!("Not keeping awake: {}{again}", today.as_ref().map(|t| t.words(&date)).unwrap_or_else(|| "off today".into())),
         BatteryLow => {
             let pct = battery.map(|b| b.percent).unwrap_or_default();
             let back = (s.min_battery as u8).saturating_add(ka::BATTERY_HYSTERESIS);
@@ -325,7 +325,7 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
         battery: battery.map(|b| KeepAwakeBattery { percent: b.percent, on_ac: b.on_ac, low }),
         schedule,
         settings: s,
-        today: today.map(|t| KeepAwakeToday { line: t.words(), date: t.date, on: t.on, until: t.until }),
+        today: today.map(|t| KeepAwakeToday { line: t.words(&date), date: t.date, on: t.on, until: t.until, until_date: t.until_date }),
         wake,
     };
     if changed || force {

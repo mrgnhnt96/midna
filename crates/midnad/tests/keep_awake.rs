@@ -108,6 +108,13 @@ fn today_overrides_and_per_day_hours() {
     call(&mut h, "keep_awake.set", json!({ "today": null }));
     assert_eq!(status(&mut h)["reason"], "today_off", "null leaves it alone");
     call(&mut h, "keep_awake.set", json!({ "today": "normal" }));
+    // On for a while runs past midnight (24 hours always does).
+    let s = call(&mut h, "keep_awake.set", json!({ "today": "for 24 hours" }));
+    let tomorrow = midna_proto::keep_awake::local_date(time::now_unix() + 86_400);
+    assert_eq!((s["today"]["until_date"].as_str(), s["held"].as_bool()), (Some(tomorrow.as_str()), Some(true)), "{s}");
+    assert!(s["today"]["line"].as_str().unwrap().ends_with("tomorrow"), "{s}");
+    assert!(call_err(&mut h, "keep_awake.set", json!({ "today": "for 25 hours" })).message.contains("24 hours"));
+    call(&mut h, "keep_awake.set", json!({ "today": "clear" }));
 
     // Per-day hours merge by day; null puts a day back on the schedule.
     call(&mut h, "keep_awake.set", json!({ "hours": { "fri": "9am-3pm" } }));

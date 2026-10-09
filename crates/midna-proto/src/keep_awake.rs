@@ -10,8 +10,10 @@
 //!   midnight into the next day (`22:00`–`02:00`), and `start` = `end` is all day.
 //! - `keep_awake.hours` gives single days their own window or turns them off
 //!   (`fri = 09:00-15:00`, `sat = off`). A day listed there follows it whatever `days` says.
-//! - The today override replaces the rest of today: `off`, or on until a time (then off until
-//!   midnight). It belongs to its date, so it ends by itself at midnight.
+//! - The today override replaces the schedule for a while: `off` for the rest of today, `on`
+//!   until midnight, or on until a time (`until 5pm`, `for 5 hours`), which may be past midnight
+//!   (`until 1am` at 8 PM); when that time comes the schedule takes over again. It belongs to
+//!   its date, so it ends by itself at midnight (or at its time past midnight).
 use crate::time;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -300,7 +302,9 @@ fn cap(d: &str) -> String {
 }
 
 /// The one-off override for one local date: off for the rest of it, or on until `until`
-/// (`HH:MM`; none = midnight) and off after. Kept in midnad's state; ignored once the date is past.
+/// (`HH:MM`; none = midnight) and the schedule after. `until_date` set means `until` is on that
+/// later date (`for 5 hours` at 8 PM): on through midnight until then. Kept in midnad's state
+/// and dropped once [`Today::ended`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Today {
     /// `YYYY-MM-DD`, local.
@@ -308,36 +312,99 @@ pub struct Today {
     pub on: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    /// `YYYY-MM-DD`, local: the next day, when `until` runs past midnight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_date: Option<String>,
 }
 
+/// The longest an on override may run.
+const MAX_SPAN: u32 = 24 * 60;
+
 impl Today {
-    /// `off for the rest of today`, `on until 5 PM today`, `on for the rest of today`.
-    pub fn words(&self) -> String {
+    /// `off for the rest of today`, `on until 5 PM today`, `on until 1 AM tomorrow`, `on for the
+    /// rest of today`. `date` is the local date now.
+    pub fn words(&self, date: &str) -> String {
+        let day = if self.until_date.as_deref().is_some_and(|d| d != date) { "tomorrow" } else { "today" };
         match (self.on, self.until.as_deref()) {
             (false, _) => "off for the rest of today".into(),
-            (true, Some(u)) => format!("on until {} today", clock(minutes(u, 0))),
+            (true, Some(u)) => format!("on until {} {day}", clock(minutes(u, 0))),
             (true, None) => "on for the rest of today".into(),
         }
     }
+
+    /// Whether it still applies on local `date`.
+    pub fn covers(&self, date: &str) -> bool {
+        self.date == date || self.until_date.as_deref() == Some(date)
+    }
+
+    /// Whether it's over at unix time `now`: its dates are past, or it's on and its `until` came.
+    pub fn ended(&self, now: i64) -> bool {
+        let date = local_date(now);
+        let (.., h, mi, _) = time::local_parts(now);
+        let last_day = self.until_date.as_deref().is_none_or(|d| d == date);
+        !self.covers(&date) || (self.on && last_day && self.until.as_deref().is_some_and(|u| h * 60 + mi >= minutes(u, 0)))
+    }
+}
+
+/// A length of time in minutes: `5h`, `5 hours`, `90 min`, `1h30m`, `1.5 hours`, `an hour`.
+pub fn parse_span(v: &str) -> Result<u32, String> {
+    let bad = || format!("`{}` isn't a length of time; use 5h, 90 min or 1h30m", v.trim());
+    let s = v.trim().to_lowercase().replace("an hour", "1h").replace("a hour", "1h").replace(' ', "");
+    let (mut total, mut parts) = (0f64, 0);
+    let mut rest = s.as_str();
+    while !rest.is_empty() {
+        let n: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        rest = &rest[n.len()..];
+        let unit: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        rest = &rest[unit.len()..];
+        let n: f64 = n.parse().map_err(|_| bad())?;
+        let per = match unit.as_str() {
+            "h" | "hr" | "hrs" | "hour" | "hours" => 60.,
+            "m" | "min" | "mins" | "minute" | "minutes" => 1.,
+            _ => return Err(bad()),
+        };
+        total += n * per;
+        parts += 1;
+    }
+    if parts == 0 || total < 1. {
+        return Err(bad());
+    }
+    Ok(total.round() as u32)
 }
 
 /// Read a today override: `off`, `on` (until midnight), `until 5pm`, `on until 5pm`, `5pm`,
-/// `true`/`false`, `{"on": true, "until": "5pm"}`; `clear`, `normal` or null = none. `now` is
-/// the current local time (unix): the date it applies to, and `until` must be later.
+/// `for 5 hours`, `5h`, `true`/`false`, `{"on": true, "until": "5pm"}`, `{"on": true, "for":
+/// "5h"}`; `clear`, `normal` or null = none. `now` is the current local time (unix): the date it
+/// applies to. An `until` at or before now is tomorrow's (`until 1am` at 8 PM), and a span ends
+/// that long from now; either may run past midnight, up to 24 hours.
 pub fn parse_today(v: &Value, now: i64) -> Result<Option<Today>, String> {
     let date = local_date(now);
     let (.., h, mi, _) = time::local_parts(now);
     let now_min = h * 60 + mi;
-    let make = |on: bool, until: Option<&str>| -> Result<Option<Today>, String> {
-        let until = match until.map(str::trim).filter(|u| !u.is_empty()) {
-            None => None,
-            Some(u) => match parse_time(u)? {
-                0 => None,
-                m if m <= now_min => return Err(format!("{} has already passed today", clock(m))),
-                m => Some(hhmm(m)),
-            },
+    // Minutes from now until the end.
+    let make = |on: bool, ahead: Option<u32>| -> Result<Option<Today>, String> {
+        let Some(ahead) = ahead.filter(|_| on) else {
+            return Ok(Some(Today { date: date.clone(), on, until: None, until_date: None }));
         };
-        Ok(Some(Today { date: date.clone(), on, until: if on { until } else { None } }))
+        if ahead > MAX_SPAN {
+            return Err("keep-awake can be turned on for 24 hours at most".into());
+        }
+        let end = now + i64::from(ahead) * 60;
+        let (.., eh, emi, _) = time::local_parts(end);
+        let end_date = local_date(end);
+        let (until, until_date) = match (end_date == date, eh * 60 + emi) {
+            (true, m) => (Some(hhmm(m)), None),
+            // Midnight tonight: the rest of today.
+            (false, 0) if local_date(end - 60) == date => (None, None),
+            (false, m) => (Some(hhmm(m)), Some(end_date)),
+        };
+        Ok(Some(Today { date: date.clone(), on, until, until_date }))
+    };
+    let until = |u: &str| -> Result<Option<u32>, String> {
+        Ok(match parse_time(u)? {
+            m if m > now_min => Some(m - now_min),
+            m => Some(m + 1440 - now_min),
+        })
     };
     match v {
         Value::Null => Ok(None),
@@ -349,7 +416,13 @@ pub fn parse_today(v: &Value, now: i64) -> Result<Option<Today>, String> {
                 None | Some(Value::Null) => !off,
                 Some(x) => return Err(format!("today.on expects true or false, not {x}")),
             };
-            make(on && !off, o.get("until").and_then(Value::as_str))
+            let ahead = match (o.get("until").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()), o.get("for").and_then(Value::as_str)) {
+                (Some(_), Some(_)) => return Err("today takes until or for, not both".into()),
+                (Some(u), None) => until(u)?,
+                (None, Some(f)) => Some(parse_span(f)?),
+                (None, None) => None,
+            };
+            make(on && !off, ahead)
         }
         Value::String(s) => {
             let t = s.trim().to_lowercase();
@@ -358,12 +431,17 @@ pub fn parse_today(v: &Value, now: i64) -> Result<Option<Today>, String> {
                 "off" | "false" | "no" | "sleep" => make(false, None),
                 "on" | "true" | "yes" | "all day" | "rest of day" | "until midnight" | "on until midnight" => make(true, None),
                 _ => {
-                    let rest = t.trim_start_matches("on").trim().trim_start_matches("until").trim();
-                    make(true, Some(rest))
+                    let rest = t.trim_start_matches("on").trim();
+                    let span = rest.trim_start_matches("for").trim().trim_start_matches("the").trim().trim_start_matches("next").trim();
+                    match parse_span(span) {
+                        Ok(m) => make(true, Some(m)),
+                        Err(_) if rest.starts_with("for") => Err(parse_span(span).unwrap_err()),
+                        Err(_) => make(true, until(rest.trim_start_matches("until").trim())?),
+                    }
                 }
             }
         }
-        x => Err(format!("today expects off, on, until <time> or clear, not {x}")),
+        x => Err(format!("today expects off, on, until <time>, for <hours> or clear, not {x}")),
     }
 }
 
@@ -378,15 +456,21 @@ pub fn local_date(t: i64) -> String {
 pub enum Closed {
     OutsideHours,
     DayOff,
-    /// The today override turned it off (or its `until` passed).
+    /// The today override turned it off.
     TodayOff,
 }
 
 /// Whether the window is open at local `date` (`YYYY-MM-DD`), weekday `wd` (0 = mon), minute `m`.
 pub fn open_local(plan: &Plan, today: Option<&Today>, date: &str, wd: usize, m: u32) -> Result<(), Closed> {
-    if let Some(t) = today.filter(|t| t.date == date) {
-        let before = t.until.as_deref().is_none_or(|u| m < minutes(u, 0));
-        return if t.on && before { Ok(()) } else { Err(Closed::TodayOff) };
+    if let Some(t) = today.filter(|t| t.covers(date)) {
+        if !t.on {
+            return Err(Closed::TodayOff);
+        }
+        // On until a time (today's, or past midnight on until_date); the schedule after it.
+        let runs_past_today = t.date == date && t.until_date.is_some();
+        if runs_past_today || t.until.as_deref().is_none_or(|u| m < minutes(u, 0)) {
+            return Ok(());
+        }
     }
     let own = plan.span(wd);
     if let Some((s, len)) = own
@@ -585,17 +669,57 @@ mod tests {
         let late = parse_today(&json!("until 8pm"), now).unwrap();
         assert_eq!(late.as_ref().unwrap().until.as_deref(), Some("20:00"));
         assert_eq!(open_at(&p, late.as_ref(), at(5, 19, 0)), Ok(()));
-        assert_eq!(open_at(&p, late.as_ref(), at(5, 20, 0)), Err(Closed::TodayOff));
+        assert_eq!(open_at(&p, late.as_ref(), at(5, 20, 0)), Err(Closed::OutsideHours), "then the schedule");
         let early = parse_today(&json!({"on": true, "until": "3pm"}), now).unwrap();
-        assert_eq!(open_at(&p, early.as_ref(), at(5, 16, 0)), Err(Closed::TodayOff), "on until ends today's window");
+        assert_eq!(open_at(&p, early.as_ref(), at(5, 16, 0)), Ok(()), "after on until, the schedule");
+        assert!(!early.as_ref().unwrap().ended(at(5, 14, 59)) && early.as_ref().unwrap().ended(at(5, 15, 0)));
+        assert_eq!(open_at(&p, late.as_ref(), at(5, 21, 0)), Err(Closed::OutsideHours), "the schedule is closed at 9 PM");
+        assert!(!off.as_ref().unwrap().ended(at(5, 23, 59)) && off.as_ref().unwrap().ended(at(6, 0, 0)), "off lasts the day");
         let sat = parse_today(&json!("on"), at(10, 8, 0)).unwrap();
         assert_eq!(open_at(&p, sat.as_ref(), at(10, 23, 59)), Ok(()), "a day off can be turned on");
         assert_eq!(open_at(&p, sat.as_ref(), at(11, 0, 0)), Err(Closed::DayOff), "until midnight");
         assert_eq!(parse_today(&json!("clear"), now), Ok(None));
         assert_eq!(parse_today(&Value::Null, now), Ok(None));
-        assert!(parse_today(&json!("until 9am"), now).unwrap_err().contains("already passed"));
         assert!(parse_today(&json!("whenever"), now).is_err());
         assert_eq!(parse_today(&json!(false), now).unwrap().unwrap().on, false);
+    }
+
+    #[test]
+    fn an_override_can_run_past_midnight() {
+        let p = plan("9am", "6pm", "weekdays", &[]);
+        // Monday 8 PM, on for the next 5 hours: until 1 AM Tuesday, then Tuesday's schedule.
+        let now = at(5, 20, 0);
+        let five = parse_today(&json!("for the next 5 hours"), now).unwrap().unwrap();
+        assert_eq!((five.until.as_deref(), five.until_date.as_deref()), (Some("01:00"), Some("2026-10-06")));
+        assert_eq!(five.words("2026-10-05"), "on until 1 AM tomorrow");
+        assert_eq!(five.words("2026-10-06"), "on until 1 AM today");
+        assert!(five.covers("2026-10-06") && !five.covers("2026-10-07"));
+        assert!(!five.ended(at(5, 23, 0)) && !five.ended(at(6, 0, 59)) && five.ended(at(6, 1, 0)));
+        let t = Some(&five);
+        assert_eq!(open_at(&p, t, at(5, 23, 59)), Ok(()));
+        assert_eq!(open_at(&p, t, at(6, 0, 30)), Ok(()), "past midnight");
+        assert_eq!(open_at(&p, t, at(6, 1, 0)), Err(Closed::OutsideHours), "then the schedule");
+        assert_eq!(open_at(&p, t, at(6, 10, 0)), Ok(()));
+        assert_eq!(next_change(&p, t, now), Some(at(6, 1, 0)));
+        // The same said other ways.
+        for v in [json!("5h"), json!("for 5 hours"), json!("until 1am"), json!("on until 1 AM"), json!({"for": "4h 60m"}), json!({"on": true, "until": "01:00"})] {
+            assert_eq!(parse_today(&v, now).unwrap().as_ref(), Some(&five), "{v}");
+        }
+        // A time already past today is tomorrow's.
+        let nine = parse_today(&json!("until 9am"), at(5, 10, 0)).unwrap().unwrap();
+        assert_eq!(nine.until_date.as_deref(), Some("2026-10-06"));
+        // Ending at midnight is the rest of today; a span inside today is an until.
+        let four = parse_today(&json!("for 4 hours"), now).unwrap().unwrap();
+        assert_eq!((four.until, four.until_date), (None, None));
+        let short = parse_today(&json!("for 90 min"), now).unwrap().unwrap();
+        assert_eq!((short.until.as_deref(), short.until_date), (Some("21:30"), None));
+        assert!(parse_today(&json!("for 25 hours"), now).unwrap_err().contains("24 hours"));
+        assert!(parse_today(&json!("for a while"), now).is_err());
+        assert!(parse_today(&json!({"until": "1am", "for": "5h"}), now).is_err());
+        assert_eq!(parse_span("1h30m"), Ok(90));
+        assert_eq!(parse_span("1.5 hours"), Ok(90));
+        assert_eq!(parse_span("an hour"), Ok(60));
+        assert!(parse_span("5").is_err());
     }
 
     #[test]

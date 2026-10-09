@@ -543,7 +543,8 @@ pub static VERBS: &[Verb] = &[
         usage: "keep-awake [status] | on | off\n       \
                 keep-awake hours <start> <end> [days]   (8am 6pm weekdays)\n       \
                 keep-awake days <days> | day <days> <9am-3pm|off|all day|default>\n       \
-                keep-awake today off|on|until <time>|clear\n       \
+                keep-awake today off|on|until <time>|for <hours>|clear\n       \
+                keep-awake for <hours> | until <time>   (5h, 90 min; 1am: on past midnight)\n       \
                 keep-awake mode with_work|always | battery <percent> | linger <minutes>\n       \
                 keep-awake wake [on|off|setup|remove]   (wake the Mac for work scheduled inside the hours)",
         summary: "keep the Mac from idle-sleeping during work hours while agents have work",
@@ -552,7 +553,9 @@ pub static VERBS: &[Verb] = &[
                   there is work: an agent working, queued input, an agent waiting to resume, a schedule trigger or\n\
                   wakeup due (mode always: the whole time). Only idle sleep: the display sleeps and the lid still\n\
                   sleeps the Mac. On battery it lets go below keep_awake.min_battery (again 5 points above, or on\n\
-                  power). `today` replaces the rest of today (off, or on until a time) and ends at midnight.\n\
+                  power). `today off` is off for the rest of today; `on` is on until midnight; on until a time\n\
+                  (`until 5pm`, `for 5h`, or past midnight: `until 1am`; 24 hours at most) is on until then, and\n\
+                  the schedule takes over after.\n\
                   Times: 8am, 5:30pm, 17:30. Days: weekdays, weekends, daily, mon-fri, mon,wed,fri.\n\
                   `wake` (keep_awake.wake) also wakes a sleeping Mac 2 minutes before the next work due inside the\n\
                   hours (a schedule trigger, a message queued --at a time, an agent's wakeup) and holds it until the\n\

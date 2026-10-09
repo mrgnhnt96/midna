@@ -2266,7 +2266,7 @@ pub enum KeepAwakeReason {
     OutsideHours,
     /// Today isn't a keep-awake day.
     DayOff,
-    /// The today override turned it off (or its `until` passed).
+    /// The today override turned it off.
     TodayOff,
     /// On battery below `keep_awake.min_battery` (until 5 points above it, or AC).
     BatteryLow,
@@ -2299,17 +2299,21 @@ pub struct KeepAwakeSettings {
     pub wake: bool,
 }
 
-/// The one-off override for today (ends by itself at local midnight).
+/// The one-off override for today (ends by itself at local midnight, or at `until` on
+/// `until_date` when it's on past midnight).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct KeepAwakeToday {
     /// The local date it applies to, YYYY-MM-DD.
     pub date: String,
-    /// false = off for the rest of today; true = on until `until` (then off).
+    /// false = off for the rest of today; true = on until `until` (then the schedule).
     pub on: bool,
     /// HH:MM local; absent = midnight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
-    /// In words: `on until 5 PM today`.
+    /// YYYY-MM-DD local: the next day, when `until` is past midnight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_date: Option<String>,
+    /// In words: `on until 5 PM today`, `on until 1 AM tomorrow`.
     pub line: String,
 }
 
@@ -2418,7 +2422,10 @@ pub struct KeepAwakeSetParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<bool>,
     /// Today only: `off` (rest of today), `on` (until midnight), `until 5pm` / `5pm`,
-    /// `{"on": true, "until": "17:00"}`, or `clear` (back to the schedule). Ends at midnight.
+    /// `for 5 hours` / `5h`, `{"on": true, "until": "17:00"}`, `{"on": true, "for": "5h"}`, or
+    /// `clear` (back to the schedule). On until a time ends there, even past midnight (`until
+    /// 1am`, `for 5 hours` at 8 PM; 24 hours at most), and the schedule takes over; the rest end
+    /// at midnight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub today: Option<Value>,
 }
