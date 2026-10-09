@@ -11,7 +11,7 @@ use super::*;
 use midna_proto::settings::{SCRIPT_PARTS, is_builtin_script};
 
 /// The settings shown as chips.
-pub(super) const KEYS: &[&str] = &["sidebar.footer.stats", "sidebar.footer.buttons", "ui.header.buttons", "ui.status.items", "ui.row.script", "ui.status.script"];
+pub(crate) const KEYS: &[&str] = &["sidebar.footer.stats", "sidebar.footer.buttons", "ui.header.buttons", "ui.status.items", "ui.row.script", "ui.status.script"];
 
 #[derive(Default)]
 pub(super) struct State {
@@ -33,7 +33,7 @@ impl Render for NoGhost {
 }
 
 /// `ui.row.script` / `ui.status.script`: built-in parts joined with `+`, or one path.
-fn is_script(key: &str) -> bool {
+pub(crate) fn is_script(key: &str) -> bool {
     key.ends_with(".script")
 }
 
@@ -43,7 +43,7 @@ fn max_on(key: &str) -> Option<usize> {
 }
 
 /// A script setting's value as chips: its parts (`none` = nothing), or the path as one.
-fn script_items(v: &str) -> Vec<String> {
+pub(crate) fn script_items(v: &str) -> Vec<String> {
     if !is_builtin_script(v) {
         return vec![v.trim().to_string()];
     }
@@ -57,13 +57,13 @@ fn script_items(v: &str) -> Vec<String> {
 }
 
 /// The chips on, back to a script setting's value.
-fn script_value(items: &[String]) -> String {
+pub(crate) fn script_value(items: &[String]) -> String {
     if items.is_empty() { "none".into() } else { items.join("+") }
 }
 
 /// `items` with `item` turned on (at the end) or off. A script path can't be joined with parts,
 /// so in a script setting turning one on replaces everything else.
-fn toggled(items: &[String], item: &str, script: bool) -> Vec<String> {
+pub(crate) fn toggled(items: &[String], item: &str, script: bool) -> Vec<String> {
     if items.iter().any(|i| i == item) {
         return items.iter().filter(|i| *i != item).cloned().collect();
     }
@@ -77,7 +77,7 @@ fn toggled(items: &[String], item: &str, script: bool) -> Vec<String> {
 }
 
 /// `items` with `dragged` moved to `target`'s place.
-fn moved(items: &[String], dragged: &str, target: &str) -> Vec<String> {
+pub(crate) fn moved(items: &[String], dragged: &str, target: &str) -> Vec<String> {
     let mut out = items.to_vec();
     let (Some(from), Some(to)) = (out.iter().position(|i| i == dragged), out.iter().position(|i| i == target)) else { return out };
     let d = out.remove(from);
@@ -86,7 +86,7 @@ fn moved(items: &[String], dragged: &str, target: &str) -> Vec<String> {
 }
 
 /// A chip's name: a path's file name, else the option with spaces.
-fn chip_label(item: &str) -> String {
+pub(crate) fn chip_label(item: &str) -> String {
     if item.starts_with('/') {
         return item.rsplit('/').next().unwrap_or(item).to_string();
     }

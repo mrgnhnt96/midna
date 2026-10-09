@@ -711,13 +711,15 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         .map(|n| {
             let category = category_of(n.kind).to_string();
             let image = image(&category);
-            let command = n.approval.as_ref().map(|a| a.action.value.clone()).filter(|v| !v.is_empty());
+            // a setting change reads as the setting, not the call
+            let change = n.setting.is_some();
+            let command = n.approval.as_ref().map(|a| a.action.value.clone()).filter(|v| !v.is_empty() && !change);
             let title = match n.question.as_ref().filter(|q| !q.text.trim().is_empty()) {
                 Some(q) if !q.header.trim().is_empty() => q.header.trim().to_string(),
                 Some(_) => "Asked a question".to_string(),
-                None => capitalize(n.title.trim()),
+                None => super::setting_change::title(n).unwrap_or_else(|| capitalize(n.title.trim())),
             };
-            let detail = n.question.as_ref().map(|q| q.text.trim().to_string()).or_else(|| Some(n.detail.trim().to_string())).filter(|d| !d.is_empty() && Some(d) != command.as_ref());
+            let detail = n.question.as_ref().map(|q| q.text.trim().to_string()).or_else(|| super::setting_change::summary(n)).or_else(|| Some(n.detail.trim().to_string())).filter(|d| !d.is_empty() && Some(d) != command.as_ref());
             Waiting {
                 id: n.id.clone(),
                 sent: None,
@@ -1473,9 +1475,9 @@ impl Badge {
                     name: name.clone(),
                     label: midna_proto::notify::category(&p.category).map(|c| c.label.to_string()).unwrap_or_default(),
                     color: color.clone(),
-                    title: need.as_ref().map(|n| capitalize(n.title.trim())).unwrap_or(first),
-                    detail: need.as_ref().map(|n| n.detail.trim().to_string()).filter(|d| !d.is_empty()),
-                    command: need.as_ref().and_then(|n| n.approval.as_ref()).map(|a| a.action.value.clone()).filter(|v| !v.is_empty()),
+                    title: need.as_ref().map(|n| super::setting_change::title(n).unwrap_or_else(|| capitalize(n.title.trim()))).unwrap_or(first),
+                    detail: need.as_ref().map(|n| super::setting_change::summary(n).unwrap_or_else(|| n.detail.trim().to_string())).filter(|d| !d.is_empty()),
+                    command: need.as_ref().filter(|n| n.setting.is_none()).and_then(|n| n.approval.as_ref()).map(|a| a.action.value.clone()).filter(|v| !v.is_empty()),
                     approval: need.as_ref().map_or(p.category == "approval", |n| n.is_approval()),
                     options: need.as_ref().map(options_of).unwrap_or_default(),
                     multi: need.as_ref().and_then(|n| n.question.as_ref()).is_some_and(|q| q.multi_select),
