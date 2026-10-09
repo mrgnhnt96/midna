@@ -31,10 +31,13 @@ mod awake;
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
 
-/// Open (or bring forward) the Settings window.
+/// Open (or bring forward) the Settings window. Not while setup is showing.
 pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0)
         && h.update(cx, |_, w, _| w.activate_window()).is_ok()
+    if !crate::ui::onboarding::settings_allowed() {
+        return;
+    }
     {
         return;
     }

@@ -146,8 +146,22 @@ pub fn theme_pick(m: &MainWindow, system_dark: bool) -> ThemePick {
     }
 }
 
+/// Whether the setup screen is up (set as it draws, and on load before the first frame).
+/// Settings stays shut meanwhile; dev: `MIDNA_SETTINGS_IN_SETUP=1` lets it open anyway.
+static SHOWING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_showing(on: bool) {
+    SHOWING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Settings may open: setup isn't showing (or the dev override is on).
+pub fn settings_allowed() -> bool {
+    !SHOWING.load(std::sync::atomic::Ordering::Relaxed) || crate::dev::var("MIDNA_SETTINGS_IN_SETUP").is_ok()
+}
+
 pub fn load(backend: &std::sync::Arc<dyn crate::backend::Backend>) -> Onboarding {
     let saved: Saved = crate::ui::statusbar::load_state(backend, "onboarding");
+    set_showing(!saved.finished);
     Onboarding { theme_done: saved.finished, saved, ..Default::default() }
 }
 

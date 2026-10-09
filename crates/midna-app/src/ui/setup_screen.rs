@@ -306,7 +306,6 @@ enum Action {
     ThemeMatch(bool),
     ThemeSlot(bool),
     Back,
-    Replay,
 }
 
 struct Copy {
@@ -393,7 +392,6 @@ fn origin(a: Action) -> (f32, f32) {
         }
         Action::ThemeStep(_) | Action::ThemeTo(_) | Action::ThemeMatch(_) | Action::ThemeSlot(_) => SHIFT_ORIGIN,
         Action::Back => (8.5, 12.),
-        Action::Replay => OPEN_ORIGIN,
     }
 }
 
@@ -645,7 +643,6 @@ fn run(m: &mut MainWindow, a: Action, window: &mut Window, cx: &mut Context<Main
                 ob::pick(m, STEPS[i - 1], cx);
             }
         }
-        Action::Replay => m.onboarding.card_seq += 1,
     }
     ripple(m, origin(a), cx);
 }
@@ -1425,7 +1422,7 @@ fn guide_done(md: &Model) -> Div {
     col
 }
 
-/// Top bar, jumps, card and footer: the window's content above the tiles. The card is at
+/// Top bar, jumps and card: the window's content above the tiles. The card is at
 /// entrance progress `card_e`, or (live, `animate`) runs its entrance as an animation.
 fn content(md: &Model, card_e: f32, animate: Option<u64>, mut cx: Option<&mut Context<MainWindow>>) -> Div {
     let (fg, dim, glow) = (rgb(md.pal.fg, 1.), rgb(md.pal.dim, 1.), rgb(md.pal.glow, 1.));
@@ -1461,17 +1458,6 @@ fn content(md: &Model, card_e: f32, animate: Option<u64>, mut cx: Option<&mut Co
         .child(halo_el)
         .child(card_el)
         .child(pips(md, cx.as_deref_mut()))
-        .child(
-            div()
-                .absolute()
-                .left(md.u(40.))
-                .top(md.u(DESIGN_H - 28. - 15.))
-                .w(md.u(DESIGN_W - 80.))
-                .flex()
-                .justify_between()
-                .child(tracked(md, if md.preview.is_some() { "← → BROWSE THEMES · ⌘K ASK AN AGENT" } else { "↩ CONTINUE · ESC LATER · ⌘K ASK AN AGENT" }, MONO, 12., FontWeight::NORMAL, 0.12, dim))
-                .child(clickable(div().child(tracked(md, "REPLAY INTRO", MONO, 12., FontWeight::NORMAL, 0.12, dim)), "setup-replay", Action::Replay, cx)),
-        )
 }
 
 /// The opening at `ms`: desktop where the ripple hasn't reached its orange yet, the window
@@ -1634,6 +1620,7 @@ fn shifting_tiles(md: &Model, sh: &Shift, ms: f32) -> Div {
 
 /// The opening (while `twilight` plays it) or the live screen. `None` when setup isn't showing.
 pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    ob::set_showing(visible(m));
     if !visible(m) {
         return None;
     }
