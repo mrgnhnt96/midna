@@ -33,6 +33,9 @@ mod cleanup;
 #[path = "settings_blurbs.rs"]
 mod blurbs;
 
+#[path = "settings_looks.rs"]
+mod looks;
+
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
 
@@ -229,6 +232,8 @@ pub struct SettingsWindow {
     hours_live: Option<awake::HoursLive>,
     /// Clean up after a terminal closes: the new-item fields and recent runs (settings_cleanup.rs).
     cleanup: cleanup::State,
+    /// `ui.status.looks`: the label fields and the custom color field (settings_looks.rs).
+    looks: looks::State,
     /// `notify.media`: the sounds and images notifications can use.
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
@@ -311,6 +316,7 @@ impl SettingsWindow {
             keep_awake: Value::Null,
             hours_live: None,
             cleanup: cleanup::State::new(cx),
+            looks: looks::State::new(cx),
             media: Value::Null,
             custom: vec![],
             edits: Default::default(),
@@ -524,6 +530,7 @@ impl SettingsWindow {
                 }
             }
         }
+        self.sync_looks(cx);
     }
 
     /// An editable row's ↩: save its text (a setting, or a kind's name).
@@ -742,6 +749,8 @@ enum Control {
     CleanupItems,
     CleanupKeep,
     CleanupRuns,
+    /// `ui.status.looks`: a row per status (settings_looks.rs).
+    Looks,
 }
 
 #[derive(Clone)]
@@ -1280,6 +1289,10 @@ impl SettingsWindow {
             "terminal.preview_path_click" if self.value("terminal.link_preview") == json!("off") => r.note = off("link previews are off"),
             "terminal.auto_name_updates" if self.value("terminal.auto_name") == json!("off") => r.note = off("automatic names are off"),
             "agents.may_move_windows" if !accessibility_trusted() => r.note = Some(("No effect until Accessibility is granted".into(), t.need)),
+            "ui.status.looks" => {
+                r.control = Control::Looks;
+                r.cli = "midna settings set ui.status.looks \"needs_you = pink icon:bell label:Your turn\"".into();
+            }
             "keep_awake.start" => {
                 let (start, end) = self.hours();
                 r.label = "Hours".into();
@@ -2530,10 +2543,10 @@ impl SettingsWindow {
             _ => None,
         };
         let active = keys_setting.is_some_and(|k| self.editing.as_ref().is_some_and(|e| e.setting() == k) || self.shortcut_menu.is_some_and(|(s, _)| s == k));
-        // theme chips, the cleanup lists, and a row of choices too long to sit beside the name
+        // theme chips, the cleanup lists, the status looks, and a row of choices too long to sit beside the name
         // without squeezing its description into a narrow column, go under it
         let wide = match &r.control {
-            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns => true,
+            Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks => true,
             Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
             _ => false,
         };
@@ -2934,6 +2947,7 @@ impl SettingsWindow {
             Control::CleanupItems => self.cleanup_items_control(t, window, cx),
             Control::CleanupKeep => self.cleanup_keep_control(t, window, cx),
             Control::CleanupRuns => self.cleanup_runs_control(t),
+            Control::Looks => self.looks_control(t, window, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
