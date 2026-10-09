@@ -793,7 +793,11 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     // line: its label in its color.
     let custom_line = custom.as_ref().filter(|_| !compact).map(|c| {
         let since = c.since.as_deref().map(since_short).unwrap_or_default();
-        let text = if since.is_empty() { c.label.clone() } else { format!("{} · {since}", c.label) };
+        let mut text = if since.is_empty() { c.label.clone() } else { format!("{} · {since}", c.label) };
+        // paused · 3m · 34 processes held
+        if let Some(held) = c.detail.as_ref().filter(|_| s.paused.is_some()) {
+            text = format!("{text} · {held}");
+        }
         (text, t.status_color(&c.color))
     });
     let custom_icon = custom.as_ref().and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);

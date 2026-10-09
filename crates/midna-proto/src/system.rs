@@ -51,9 +51,28 @@ pub struct HeavyTerminal {
     /// The busiest process names with counts: `rustc ×14`, `cargo ×4`.
     #[serde(default)]
     pub busiest: Vec<String>,
-    /// Paused with session.pause (its processes are stopped).
+    /// Paused with session.pause (its processes are stopped). `cpu_percent`, `processes` and
+    /// `busiest` are then what it was using when it was paused.
     #[serde(default)]
     pub paused: bool,
+}
+
+/// A terminal paused with `session.pause` (`Session.paused`): its whole process tree is
+/// stopped until `session.resume`. What it was running then, for the app to show.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Paused {
+    pub since: Timestamp,
+    /// Processes stopped.
+    pub processes: u32,
+    /// CPU the terminal was using just before (percent of one core; 0 when not sampled yet).
+    #[serde(default)]
+    pub cpu_percent: u32,
+    /// Its busiest processes then: `rustc ×11`, `cargo`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub busiest: Vec<String>,
+    /// The terminal's own process when it was paused. A terminal that has started a new one
+    /// since (a restart) isn't paused anymore.
+    pub pid: i32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

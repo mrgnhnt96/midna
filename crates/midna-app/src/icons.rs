@@ -177,6 +177,7 @@ impl Icon {
             "file" => Icon::File,
             "search" => Icon::Search,
             "play" => Icon::Play,
+            "pause" => Icon::Pause,
             "claude" => Icon::Claude,
             "codex" => Icon::Codex,
             "rules" | "shield" => Icon::Rules,

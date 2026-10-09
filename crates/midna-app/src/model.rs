@@ -149,6 +149,8 @@ pub struct Session {
     pub queue: Vec<midna_proto::QueuedMessage>,
     /// Nothing is typed from the queue while paused.
     pub queue_paused: bool,
+    /// Paused with `session.pause`: its processes are stopped until it's resumed.
+    pub paused: Option<midna_proto::Paused>,
 }
 
 /// Lenient copy of `midna_proto::CustomStatus` (only what the GUI shows).
@@ -522,6 +524,7 @@ mod tests {
                 waiting_for: vec![],
             }],
             queue_paused: true,
+            paused: Some(p::Paused { since: "2026-10-03T10:00:00Z".into(), processes: 34, cpu_percent: 271, busiest: vec!["rustc ×11".into()], pid: 4242 }),
             adopted: None,
             close_on_exit: false,
             auto_name: None,
@@ -535,6 +538,7 @@ mod tests {
         assert_eq!((cs.label.as_str(), cs.color.as_str(), cs.base, cs.clear_on.as_str()), ("Prompt blocked", "amber", StatusState::NeedsYou, "prompt"));
         assert_eq!((got[0].queue[0].when.clone(), got[0].queue_paused), (p::SendWhen::IdleFor { minutes: 5 }, true));
         assert!(got[0].background);
+        assert_eq!(got[0].paused.as_ref().map(|p| (p.processes, p.cpu_percent)), Some((34, 271)));
         let seg = p::Segment { link: Some("u".into()), tooltip: Some("PR".into()), ..p::Segment::new("#3", Some(p::Tone::Accent)).icon("pr") };
         let got: Vec<Segment> = parse_list(&serde_json::json!({"segments": [seg]}));
         assert_eq!((got[0].tone, got[0].icon.as_deref(), got[0].tooltip.as_deref()), (Some(Tone::Accent), Some("pr"), Some("PR")));

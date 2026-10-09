@@ -8,15 +8,17 @@
 //!
 //! `session.pause` stops (SIGSTOP) a terminal's whole process tree, agent included, and
 //! `session.resume` continues it; `session.stop_processes` ends what a terminal started
-//! (SIGTERM, SIGKILL after 3s) while its shell or agent keeps running.
+//! (SIGTERM, SIGKILL after 3s) while its shell or agent keeps running. A pause is kept on the
+//! terminal (`Session.paused`, so it outlives a daemon upgrade) and dropped once the terminal
+//! runs a new process (a restart).
 //!
 //! Dev: `MIDNA_DEBUG_LOAD=<load1>` reports that load average instead of the real one.
 use crate::daemon::Daemon;
 use crate::procs;
-use midna_proto::system::{self as sys, HeavyTerminal, SystemLoad};
+use midna_proto::system::{self as sys, HeavyTerminal, Paused, SystemLoad};
 use midna_proto::*;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -40,7 +42,6 @@ struct Inner {
     last: HashMap<i32, (u64, i64)>,
     last_at: Option<Instant>,
     top: Vec<HeavyTerminal>,
-    paused: HashSet<Id>,
 }
 
 fn log(msg: &str) {
@@ -95,12 +96,26 @@ pub fn load(d: &Daemon) -> SystemLoad {
     let busy_at = busy_at(d);
     let pct = sys::load_percent(load1, cpus);
     let overload_secs = d.setting("guard.overload_secs").as_i64().unwrap_or(120).max(0) as u64;
-    let g = d.guard.inner();
-    let busy_for = g.busy_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-    let mut top = g.top.clone();
-    for t in &mut top {
-        t.paused = g.paused.contains(&t.session_id);
-    }
+    let (busy_since, sampled) = {
+        let g = d.guard.inner();
+        (g.busy_since, g.top.clone())
+    };
+    let busy_for = busy_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+    // Paused terminals use no CPU now; they're listed with what they used when paused.
+    let paused: Vec<HeavyTerminal> = d
+        .core()
+        .state
+        .sessions
+        .iter()
+        .filter_map(|s| {
+            let p = s.paused.as_ref()?;
+            Some(HeavyTerminal { session_id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), cpu_percent: p.cpu_percent, processes: p.processes, busiest: p.busiest.clone(), paused: true })
+        })
+        .collect();
+    let mut top: Vec<HeavyTerminal> = sampled.into_iter().filter(|t| !paused.iter().any(|p| p.session_id == t.session_id)).collect();
+    top.truncate(TOP);
+    top.extend(paused);
+    top.sort_by(|a, b| b.cpu_percent.cmp(&a.cpu_percent));
     SystemLoad {
         load1: round2(load1),
         load5: round2(load5),
@@ -110,7 +125,7 @@ pub fn load(d: &Daemon) -> SystemLoad {
         busy_at,
         busy: pct >= busy_at,
         busy_for_secs: busy_for,
-        overloaded: g.busy_since.is_some() && busy_for >= overload_secs,
+        overloaded: busy_since.is_some() && busy_for >= overload_secs,
         top,
     }
 }
@@ -132,6 +147,31 @@ fn tick(d: &Arc<Daemon>) {
     sample(d, &table);
     overload(d);
     stop_old_loops(d, &table);
+    drop_stale_pauses(d);
+}
+
+/// A paused terminal running another process now (restarted, or its process ended) isn't
+/// paused anymore.
+fn drop_stale_pauses(d: &Daemon) {
+    let pids: HashMap<Id, i32> = d.terminal_pids().into_iter().collect();
+    let stale: Vec<Id> = {
+        let mut core = d.core();
+        let mut stale = vec![];
+        for s in core.state.sessions.iter_mut() {
+            if s.paused.as_ref().is_some_and(|p| pids.get(&s.id) != Some(&p.pid)) {
+                s.paused = None;
+                stale.push(s.id.clone());
+            }
+        }
+        stale
+    };
+    if stale.is_empty() {
+        return;
+    }
+    d.mark_dirty();
+    for id in stale {
+        d.emit(kinds::SESSION_RESUMED, Actor::system(), None, Some(id), json!({ "processes": 0, "reason": "restarted" }));
+    }
 }
 
 /// Live terminals: (id, name, cwd, root pid, is an agent).
@@ -230,7 +270,7 @@ fn stop_old_loops(d: &Daemon, table: &HashMap<i32, procs::Row>) {
     }
     let now = time::now_unix();
     for (id, _, _, root, agent) in terminals(d) {
-        if !agent || d.guard.inner().paused.contains(&id) {
+        if !agent || is_paused(d, &id) {
             continue;
         }
         for pid in procs::descendants(table, root) {
@@ -295,21 +335,25 @@ pub fn pause(d: &Daemon, actor: Actor, p: SessionPauseParams, on: bool) -> Resul
     for pid in &order {
         unsafe { libc::kill(*pid, sig) };
     }
-    {
-        let mut g = d.guard.inner();
-        if on {
-            g.paused.insert(p.session_id.clone());
-        } else {
-            g.paused.remove(&p.session_id);
+    let paused = on.then(|| {
+        // What it was using at the last sample, for the app to show while it's paused.
+        let was = d.guard.inner().top.iter().find(|t| t.session_id == p.session_id).cloned().unwrap_or_default();
+        Paused { since: time::now_rfc3339(), processes: pids.len() as u32, cpu_percent: was.cpu_percent, busiest: was.busiest, pid: root }
+    });
+    if let Some(s) = d.core().state.session_mut(&p.session_id) {
+        // Pausing an already paused terminal keeps what it was using before.
+        if !(on && s.paused.is_some()) {
+            s.paused = paused;
         }
     }
+    d.mark_dirty();
     let kind = if on { kinds::SESSION_PAUSED } else { kinds::SESSION_RESUMED };
     d.emit(kind, actor, None, Some(p.session_id.clone()), json!({ "processes": pids.len() }));
     Ok(json!(SessionPauseResult { session_id: p.session_id, paused: on, processes: pids.len() as u32 }))
 }
 
 pub fn is_paused(d: &Daemon, sid: &str) -> bool {
-    d.guard.inner().paused.contains(sid)
+    d.core().state.session(sid).is_some_and(|s| s.paused.is_some())
 }
 
 /// `session.stop_processes`: end what a terminal started; its own process stays.

@@ -252,6 +252,7 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
         custom_status: None,
         queue: vec![],
         queue_paused: false,
+        paused: None,
         adopted: None,
         close_on_exit: p.close_on_exit,
         auto_name: None,

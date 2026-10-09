@@ -100,6 +100,12 @@ pub struct MainWindow {
     pub keep_awake: Value,
     /// `usage.get`: Claude's plan limits (the status bar's `usage`).
     pub usage: midna_proto::UsageGetResult,
+    /// `system.load` while the Mac is overloaded or a terminal is paused (`ui/paused.rs`).
+    pub load: Option<midna_proto::SystemLoad>,
+    /// The paused card's Stop processes is asking to confirm, for this terminal.
+    pub pause_confirm: Option<String>,
+    /// A Resume or Stop from the paused card in flight, for this terminal.
+    pub pause_busy: Option<String>,
     pub hooks_sheet: Option<crate::ui::hooks::HooksSheet>,
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
@@ -277,6 +283,15 @@ impl MainWindow {
                 }
             }
         }));
+        // The CPU / paused status item and the overload window follow system.load while they show.
+        tasks.push(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(crate::ui::paused::POLL).await;
+                if this.update(cx, |m, cx| crate::ui::paused::poll(m, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
         cx.observe_window_appearance(window, |m, window, cx| m.apply_theme(window, cx)).detach();
         // Custom theme files ($MIDNA_HOME/themes) are edited by hand or by agents: follow them live.
         tasks.push(cx.spawn_in(window, async move |this, cx| {
@@ -351,6 +366,9 @@ impl MainWindow {
             hooks: Value::Null,
             keep_awake: Value::Null,
             usage: Default::default(),
+            load: None,
+            pause_confirm: None,
+            pause_busy: None,
             hooks_sheet: None,
             ax_prompt: false,
             onboarding,
@@ -645,6 +663,10 @@ impl MainWindow {
                     {
                         crate::sounds::play_file(&p.file, p.volume);
                     }
+                }
+                // Every window's status bar shows the load while the Mac is overloaded.
+                if k == midna_proto::kinds::SYSTEM_OVERLOADED || k == midna_proto::kinds::SYSTEM_CALM {
+                    crate::ui::paused::on_load_event(self, k, &e.data, cx);
                 }
                 // The Mac stayed busy: offer to pause or stop the terminals behind it (once per spell).
                 if self.is_home() {

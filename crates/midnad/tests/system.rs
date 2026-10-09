@@ -45,6 +45,11 @@ fn pause_stops_the_whole_tree_and_resume_continues_it() {
     for pid in [sh, sleep] {
         assert!(state(pid).unwrap().starts_with('T'), "{pid} not stopped: {:?}", state(pid));
     }
+    // The terminal says it's paused, and system.load lists it though it uses no CPU now.
+    let s = call(&mut h, "session.get", json!({ "id": id }));
+    assert_eq!((s["paused"]["processes"].as_u64(), s["paused"]["pid"].as_i64()), (Some(2), Some(sh)), "{s}");
+    let l = call(&mut h, "system.load", json!({}));
+    assert!(l["top"].as_array().unwrap().iter().any(|t| t["session_id"] == id.as_str() && t["paused"] == true), "{l}");
     // Agents can't pause a terminal by themselves.
     let e = call_err(&mut d.agent(None), "session.pause", json!({ "session_id": id }));
     assert_ne!(e.code, 0, "{e:?}");
@@ -52,6 +57,8 @@ fn pause_stops_the_whole_tree_and_resume_continues_it() {
     for pid in [sh, sleep] {
         assert!(!state(pid).unwrap().starts_with('T'), "{pid} still stopped: {:?}", state(pid));
     }
+    let s = call(&mut h, "session.get", json!({ "id": id }));
+    assert!(s.get("paused").is_none(), "{s}");
     let kinds: Vec<String> = call(&mut h, "events.list", json!({ "since_seq": 0, "limit": 1000 })).as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap().to_string()).collect();
     assert!(kinds.contains(&"session.paused".into()) && kinds.contains(&"session.resumed".into()), "{kinds:?}");
 }

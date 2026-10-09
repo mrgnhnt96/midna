@@ -47,7 +47,15 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             }
         })
         .child(terminal_icon(m, t, s, 14., t.dim))
-        .when_some(status_label(m, s), |d, c| {
+        .when_some(status_label(m, s), |d, mut c| {
+            if s.paused.is_some() {
+                // "Paused 3m"; Resume is on the card over the terminal.
+                let since = c.since.as_deref().map(crate::model::since_short).filter(|x| x != "now");
+                c.label = since.map_or_else(|| "Paused".into(), |x| format!("Paused {x}"));
+                c.icon = Some("pause".into());
+                let tip = format!("Its processes are stopped ({}) until you resume it", c.detail.clone().unwrap_or_default());
+                return d.child(div().id("header-paused").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, &c, 11.5)));
+            }
             let by = if s.custom_status.is_some() { "Set by a trigger" } else { "Set in ui.status.looks" };
             let tip = c.detail.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| by.into());
             d.child(div().id("header-custom-status").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, &c, 11.5)))

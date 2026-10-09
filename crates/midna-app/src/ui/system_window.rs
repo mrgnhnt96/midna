@@ -6,9 +6,11 @@
 //!   build safely (the handoff can time out and hang up every terminal). Shown once per launch;
 //!   Wait closes it and the lifecycle thread updates by itself once the load drops, Update
 //!   anyway forces it. Closes itself when the update goes through.
-//! - Overloaded: the Mac has been busy for `guard.overload_secs` (`system.overloaded`). Lists
-//!   the terminals using the most CPU with Pause / Resume and Stop processes (what the terminal
-//!   started; its shell or agent keeps running). Closes itself on `system.calm`.
+//! - Overloaded: the Mac has been busy for `guard.overload_secs` (`system.overloaded`). Design B
+//!   on the "Overload dialog concepts" canvas: the terminals using the most CPU on the left
+//!   (paused ones with what they used), the picked one's latest output on the right with Open
+//!   terminal, Pause / Resume and Stop processes (what the terminal started; it stays open),
+//!   which asks first. Closes itself on `system.calm`; the status bar's CPU item reopens it.
 //!
 //! Dev: `MIDNA_DEBUG_SCREEN=system-upgrade` / `system-overload` opens them with sample data.
 use crate::backend::Backend;
@@ -38,15 +40,24 @@ pub struct SystemWindow {
     /// A Pause / Resume / Stop in flight, per terminal.
     busy: HashMap<String, &'static str>,
     error: Option<String>,
+    /// Overloaded: the terminal picked in the list (the heaviest until one is clicked).
+    picked: Option<String>,
+    /// Its latest output (`session.read`), for the terminal it was read for.
+    preview: Option<(String, String)>,
+    /// Stop processes is asking to confirm, for this terminal.
+    confirm: Option<String>,
 }
 
 const WIDTH: f32 = 540.;
+const OVERLOAD_SIZE: (f32, f32) = (880., 560.);
+/// Lines of output the overload window shows for the picked terminal.
+const PREVIEW_LINES: u32 = 14;
 
 /// Open the window (or bring it forward with this load).
 pub fn show(kind: Kind, load: SystemLoad, backend: Arc<dyn Backend>, cx: &mut App) {
     if let Some(h) = cx.try_global::<Open>().and_then(|o| o.0.get(&kind).copied())
         && h.update(cx, |w, window, cx| {
-            w.load = load.clone();
+            w.set_load(load.clone(), cx);
             window.activate_window();
             cx.notify();
         })
@@ -54,17 +65,16 @@ pub fn show(kind: Kind, load: SystemLoad, backend: Arc<dyn Backend>, cx: &mut Ap
     {
         return;
     }
-    let rows = if kind == Kind::Overloaded { load.top.len().max(1) as f32 } else { 0. };
-    let height = match kind {
-        Kind::UpgradePostponed => 262.,
-        Kind::Overloaded => 210. + rows * 62.,
+    let (width, height) = match kind {
+        Kind::UpgradePostponed => (WIDTH, 262.),
+        Kind::Overloaded => OVERLOAD_SIZE,
     };
     let title = match kind {
         Kind::UpgradePostponed => "Midna update waiting",
         Kind::Overloaded => "Your Mac is overloaded",
     };
     let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WIDTH), px(height)), cx))),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(width), px(height)), cx))),
         titlebar: Some(TitlebarOptions { title: Some(title.into()), appears_transparent: true, traffic_light_position: Some(point(px(14.), px(15.))) }),
         kind: WindowKind::Normal,
         is_resizable: false,
@@ -77,7 +87,9 @@ pub fn show(kind: Kind, load: SystemLoad, backend: Arc<dyn Backend>, cx: &mut Ap
                 cx.default_global::<Open>().0.remove(&kind);
             })
             .detach();
-            SystemWindow { kind, load, backend, busy: HashMap::new(), error: None }
+            let mut w = SystemWindow { kind, load: SystemLoad::default(), backend, busy: HashMap::new(), error: None, picked: None, preview: None, confirm: None };
+            w.set_load(load, cx);
+            w
         })
     });
     match opened {
@@ -93,7 +105,7 @@ pub fn show(kind: Kind, load: SystemLoad, backend: Arc<dyn Backend>, cx: &mut Ap
 pub fn refresh(kind: Kind, load: SystemLoad, cx: &mut App) {
     if let Some(h) = cx.try_global::<Open>().and_then(|o| o.0.get(&kind).copied()) {
         let _ = h.update(cx, |w, _, cx| {
-            w.load = load;
+            w.set_load(load, cx);
             cx.notify();
         });
     }
@@ -110,24 +122,76 @@ fn load_line(l: &SystemLoad) -> String {
     format!("load {:.1} on {} cores ({}%)", l.load1, l.cpus, l.load_percent)
 }
 
+/// "busy 4 min".
+fn busy_for(l: &SystemLoad) -> String {
+    let mins = l.busy_for_secs / 60;
+    if mins >= 1 { format!("busy {mins} min") } else { "busy".into() }
+}
+
 impl SystemWindow {
+    /// New numbers. The picked terminal stays picked while it's listed, else the heaviest is.
+    fn set_load(&mut self, load: SystemLoad, cx: &mut Context<Self>) {
+        self.load = load;
+        let listed = |id: &str| self.load.top.iter().any(|t| t.session_id == id);
+        if self.kind == Kind::Overloaded && !self.picked.as_deref().is_some_and(listed) {
+            let first = self.load.top.first().map(|t| t.session_id.clone());
+            self.pick(first, cx);
+        } else if let Some(sid) = self.picked.clone() {
+            self.read_preview(sid, cx);
+        }
+    }
+
+    fn pick(&mut self, sid: Option<String>, cx: &mut Context<Self>) {
+        if self.picked != sid {
+            self.confirm = None;
+        }
+        self.picked = sid.clone();
+        if let Some(sid) = sid {
+            self.read_preview(sid, cx);
+        }
+        cx.notify();
+    }
+
+    /// The picked terminal's latest output.
+    fn read_preview(&mut self, sid: String, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let id = sid.clone();
+            let res = cx.background_executor().spawn(async move { backend.call("session.read", json!({ "id": id, "lines": PREVIEW_LINES })) }).await;
+            let text = res.ok().and_then(|v| v["text"].as_str().map(|s| s.trim_end().to_string())).unwrap_or_default();
+            let _ = this.update(cx, |w, cx| {
+                w.preview = Some((sid, text));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Pause / Resume / Stop processes on one terminal, then fresh numbers from system.load.
+    /// Stopping a paused terminal's processes resumes it too, so it's usable again.
     fn act(&mut self, session: String, what: &'static str, cx: &mut Context<Self>) {
         self.busy.insert(session.clone(), what);
         self.error = None;
+        self.confirm = None;
         cx.notify();
         let backend = self.backend.clone();
         let sid = session.clone();
+        let paused = self.load.top.iter().any(|t| t.session_id == session && t.paused);
         cx.spawn(async move |this, cx| {
             let res = cx
                 .background_executor()
                 .spawn(async move {
-                    let (method, p) = match what {
-                        "pause" => ("session.pause", json!({ "session_id": sid })),
-                        "resume" => ("session.resume", json!({ "session_id": sid })),
-                        _ => ("session.stop_processes", json!({ "session_id": sid })),
-                    };
-                    backend.call(method, p)?;
+                    let p = json!({ "session_id": sid });
+                    match what {
+                        "pause" => _ = backend.call("session.pause", p)?,
+                        "resume" => _ = backend.call("session.resume", p)?,
+                        _ => {
+                            backend.call("session.stop_processes", p.clone())?;
+                            if paused {
+                                backend.call("session.resume", p)?;
+                            }
+                        }
+                    }
                     // Stopped processes take a sample (10s) to show; paused ones show at once.
                     Ok::<_, anyhow::Error>(serde_json::from_value::<SystemLoad>(backend.call("system.load", json!({}))?)?)
                 })
@@ -135,7 +199,7 @@ impl SystemWindow {
             let _ = this.update(cx, |w, cx| {
                 w.busy.remove(&session);
                 match res {
-                    Ok(l) => w.load = l,
+                    Ok(l) => w.set_load(l, cx),
                     Err(e) => w.error = Some(format!("{e:#}")),
                 }
                 cx.notify();
@@ -148,6 +212,7 @@ impl SystemWindow {
         let l = &self.load;
         let text = |s: String| div().text_color(t.fg).child(s);
         div()
+            .p(px(18.))
             .flex()
             .flex_col()
             .gap(px(10.))
@@ -172,80 +237,183 @@ impl SystemWindow {
             )
     }
 
+    /// The list on the left, the picked terminal on the right.
     fn overload_body(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
         let l = &self.load;
-        let mins = l.busy_for_secs / 60;
-        let how_long = if mins >= 1 { format!(" for {mins} min") } else { String::new() };
-        let mut rows = div().flex().flex_col().gap(px(6.));
-        if l.top.is_empty() {
-            rows = rows.child(div().text_color(t.dim).child("None of Midna's terminals is using much CPU; something outside Midna is."));
-        }
-        for (i, term) in l.top.iter().enumerate() {
-            rows = rows.child(self.row(t, i, term, cx));
-        }
-        div()
+        let list = div()
+            .id("overload-list")
+            .w(px(300.))
+            .flex_none()
             .flex()
             .flex_col()
+            .gap(px(2.))
+            .p(px(10.))
+            .border_r_1()
+            .border_color(t.line)
+            .overflow_y_scroll()
+            .children(l.top.iter().enumerate().map(|(i, term)| self.list_row(t, i, term, cx)));
+        let picked = self.picked.as_ref().and_then(|id| l.top.iter().find(|t| &t.session_id == id));
+        let detail = match picked {
+            Some(term) => self.detail(t, term, cx).into_any_element(),
+            None => div()
+                .flex_1()
+                .p(px(20.))
+                .text_color(t.dim)
+                .child("None of Midna's terminals is using much CPU; something outside Midna is.")
+                .into_any_element(),
+        };
+        div().flex().flex_1().min_h_0().child(list).child(detail)
+    }
+
+    fn list_row(&self, t: &Theme, i: usize, term: &HeavyTerminal, cx: &mut Context<Self>) -> Stateful<Div> {
+        let picked = self.picked.as_deref() == Some(term.session_id.as_str());
+        let teal = crate::ui::paused_color(t);
+        let sid = term.session_id.clone();
+        let second = if term.paused {
+            div().text_size(px(12.)).text_color(teal).child(format!("paused · was {}%", term.cpu_percent))
+        } else {
+            let heavy = term.cpu_percent >= 100;
+            let share = (term.cpu_percent as f32 / (self.load.cpus.max(1) * 100) as f32).clamp(0.02, 1.);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().w(px(90.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.line).child(div().h_full().rounded_full().w(relative(share)).bg(if heavy { t.status_color("orange") } else { t.dim })))
+                .child(div().text_size(px(12.)).text_color(if heavy { t.status_color("orange") } else { t.dim }).child(format!("{}%", term.cpu_percent)))
+        };
+        let dot = div().size(px(8.)).flex_none().rounded_full().bg(if term.paused { teal } else { t.work });
+        div()
+            .id(("overload-row", i))
+            .flex()
+            .items_center()
             .gap(px(10.))
-            .child(div().text_color(t.fg).child(format!("The Mac has been busy{how_long}: {}. Terminals using the most CPU:", load_line(l))))
-            .child(rows)
-            .children(self.error.as_ref().map(|e| div().text_color(t.err).text_size(px(12.)).child(e.clone())))
+            .px(px(12.))
+            .py(px(9.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .when(picked, |d| d.bg(t.raised))
+            .when(!picked, |d| d.hover(|s| s.bg(t.raised.opacity(0.5))))
+            .on_click(cx.listener(move |w, _, _, cx| w.pick(Some(sid.clone()), cx)))
+            .child(dot)
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .pt(px(4.))
-                    .child(div().text_color(t.dim).text_size(px(12.)).child("Pause stops a terminal until you resume it; nothing is lost."))
-                    .child(btn(t, "dismiss", "Dismiss").on_click(|_, window, _| window.remove_window())),
+                    .flex_col()
+                    .gap(px(3.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::BOLD).overflow_hidden().text_ellipsis().whitespace_nowrap().child(term.name.clone()))
+                    .child(second),
             )
     }
 
-    fn row(&self, t: &Theme, i: usize, term: &HeavyTerminal, cx: &mut Context<Self>) -> Div {
+    fn detail(&self, t: &Theme, term: &HeavyTerminal, cx: &mut Context<Self>) -> Div {
+        let teal = crate::ui::paused_color(t);
         let sid = term.session_id.clone();
         let busy = self.busy.get(&sid).copied();
-        let detail = {
-            let mut parts = vec![format!("{}% CPU", term.cpu_percent), format!("{} processes", term.processes)];
+        let confirming = self.confirm.as_deref() == Some(sid.as_str());
+        let line = {
+            let cpu = if term.paused { format!("{}% CPU before pausing", term.cpu_percent) } else { format!("{}% CPU", term.cpu_percent) };
+            let mut parts = vec![cpu, crate::ui::paused::processes(term.processes)];
             if !term.busiest.is_empty() {
                 parts.push(term.busiest.join(", "));
             }
             parts.join(" · ")
         };
-        let (s1, s2) = (sid.clone(), sid.clone());
-        let pause = if term.paused {
-            btn_primary(t, ("resume", i), if busy == Some("resume") { "Resuming…" } else { "Resume" }).on_click(cx.listener(move |w, _, _, cx| w.act(s1.clone(), "resume", cx)))
-        } else {
-            btn(t, ("pause", i), if busy == Some("pause") { "Pausing…" } else { "Pause" }).on_click(cx.listener(move |w, _, _, cx| w.act(s1.clone(), "pause", cx)))
-        };
-        let stop = btn_danger(t, ("stop", i), if busy == Some("stop") { "Stopping…" } else { "Stop processes" }, 28.)
-            .on_click(cx.listener(move |w, _, _, cx| w.act(s2.clone(), "stop", cx)));
-        div()
+        let text = self.preview.as_ref().filter(|(id, _)| *id == sid).map(|(_, x)| x.clone()).unwrap_or_default();
+        let output = div()
+            .id("overload-output")
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(8.))
+            .flex_col()
+            .justify_end()
+            .p(px(12.))
             .rounded(px(8.))
             .border_1()
             .border_color(t.line)
-            .bg(t.panel)
+            .bg(t.term)
+            .font_family(t.mono_font.clone())
+            .text_size(px(12.))
+            .line_height(px(19.))
+            .text_color(t.dim)
+            .children(text.lines().map(|l| div().whitespace_nowrap().child(if l.is_empty() { " ".to_string() } else { l.to_string() })))
+            .when(term.paused, |d| d.child(div().pt(px(4.)).text_color(teal).child("── paused ──")));
+        let (s1, s2, s3, s4) = (sid.clone(), sid.clone(), sid.clone(), sid.clone());
+        let open = btn(t, "overload-open", "Open terminal").on_click(cx.listener(move |w, _, _, _| {
+            let backend = w.backend.clone();
+            let id = s1.clone();
+            std::thread::spawn(move || _ = backend.call("session.focus", json!({ "id": id })));
+        }));
+        let open = open.child(crate::icons::Icon::PopOut.el(12., t.fg));
+        let toggle = if term.paused {
+            btn_primary(t, "overload-resume", if busy == Some("resume") { "Resuming…" } else { "Resume" }).on_click(cx.listener(move |w, _, _, cx| w.act(s2.clone(), "resume", cx)))
+        } else {
+            btn_primary(t, "overload-pause", if busy == Some("pause") { "Pausing…" } else { "Pause" })
+                .bg(teal)
+                .border_color(teal)
+                .text_color(t.bg)
+                .child(crate::icons::Icon::Pause.el(11., t.bg))
+                .on_click(cx.listener(move |w, _, _, cx| w.act(s2.clone(), "pause", cx)))
+        };
+        let actions = if confirming {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(t.err)
+                .bg(t.err.opacity(0.08))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().font_weight(FontWeight::BOLD).child(format!("Stop {}?", crate::ui::paused::processes(term.processes))))
+                        .child(div().text_color(t.dim).text_size(px(12.5)).child(crate::ui::paused::stop_line(&term.busiest))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(btn(t, "overload-cancel", "Cancel").on_click(cx.listener(|w, _, _, cx| {
+                            w.confirm = None;
+                            cx.notify();
+                        })))
+                        .child(btn_danger(t, "overload-stop-yes", if busy == Some("stop") { "Stopping…" } else { "Stop processes" }, 28.).on_click(cx.listener(move |w, _, _, cx| w.act(s3.clone(), "stop", cx)))),
+                )
+        } else {
+            div().flex().items_center().gap(px(8.)).child(open).child(toggle).child(div().flex_1()).child(
+                btn(t, "overload-stop", "Stop processes…").text_color(t.err).on_click(cx.listener(move |w, _, _, cx| {
+                    w.confirm = Some(s4.clone());
+                    cx.notify();
+                })),
+            )
+        };
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .p(px(18.))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.))
-                            .child(div().font_weight(FontWeight::BOLD).overflow_hidden().text_ellipsis().whitespace_nowrap().child(term.name.clone()))
-                            .children(term.paused.then(|| div().text_color(t.need).text_size(px(11.)).child("paused"))),
-                    )
-                    .child(div().text_color(t.dim).text_size(px(12.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(detail)),
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().font_weight(FontWeight::BOLD).text_size(px(16.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(term.name.clone()))
+                    .when(term.paused, |d| d.child(crate::ui::custom_status_label(t, &crate::model::CustomStatus { label: "paused".into(), color: "teal".into(), ..Default::default() }, 11.))),
             )
-            .child(pause)
-            .child(stop)
+            .child(div().text_color(t.dim).text_size(px(12.5)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(line))
+            .child(output)
+            .when(!term.paused && !confirming, |d| d.child(div().text_color(t.dim).text_size(px(12.)).child("Pause holds these processes where they are; Resume picks up where they left off.")))
+            .children(self.error.as_ref().map(|e| div().text_color(t.err).text_size(px(12.)).child(e.clone())))
+            .child(actions)
     }
 }
 
@@ -256,6 +424,7 @@ impl Render for SystemWindow {
             Kind::UpgradePostponed => "Midna's update is waiting for a calmer moment",
             Kind::Overloaded => "Your Mac is overloaded",
         };
+        let aside = (self.kind == Kind::Overloaded).then(|| format!("CPU {}% · {}", self.load.load_percent, busy_for(&self.load)));
         let body = match self.kind {
             Kind::UpgradePostponed => self.upgrade_body(&t, cx),
             Kind::Overloaded => self.overload_body(&t, cx),
@@ -271,8 +440,21 @@ impl Render for SystemWindow {
             .font_family(t.ui_font.clone())
             .text_size(px(13.))
             .line_height(px(19.))
-            .child(div().flex_none().h(px(40.)).pl(px(84.)).flex().items_center().border_b_1().border_color(t.line).bg(t.panel).font_weight(FontWeight::BOLD).child(heading))
-            .child(div().flex_1().p(px(18.)).child(body))
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(40.))
+                    .pl(px(84.))
+                    .pr(px(16.))
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(t.line)
+                    .bg(t.panel)
+                    .child(div().flex_1().font_weight(FontWeight::BOLD).child(heading))
+                    .children(aside.map(|a| div().text_color(t.dim).text_size(px(12.)).child(a))),
+            )
+            .child(div().flex().flex_col().flex_1().min_h_0().child(body))
     }
 }
 

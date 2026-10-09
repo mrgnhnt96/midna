@@ -16,6 +16,7 @@ pub mod hooks;
 pub mod insights;
 pub mod onboarding;
 pub mod links;
+pub mod paused;
 pub mod queue;
 pub mod need_anim;
 pub mod needs_you;
@@ -113,11 +114,26 @@ fn state_color(state: StatusState) -> &'static str {
     }
 }
 
-/// A terminal's dot: a trigger's custom status first, then a `ui.status.looks` color, else
-/// the built-in dot. A done dot whose agent still runs background work gets a ring
+/// Paused terminals (`session.pause`) show in teal: not amber, which means needs-you.
+pub fn paused_color(t: &Theme) -> Hsla {
+    t.status_color("teal")
+}
+
+/// A terminal's dot: paused first, then a trigger's custom status, then a `ui.status.looks`
+/// color, else the built-in dot. A done dot whose agent still runs background work gets a ring
 /// (`ui.status.background_ring`).
 pub fn terminal_dot(m: &MainWindow, t: &Theme, s: &Session, size: f32) -> Div {
     let state = m.effective_state(s);
+    if s.paused.is_some() {
+        let color = paused_color(t);
+        return div().size(px(size)).flex_none().rounded_full().bg(color).shadow(vec![BoxShadow {
+            color: color.opacity(0.18),
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(3.),
+            inset: false,
+        }]);
+    }
     if s.custom_status.is_some() {
         return session_dot(t, state, s.custom_status.as_ref(), size);
     }
@@ -156,9 +172,12 @@ fn plain_terminal_dot(m: &MainWindow, t: &Theme, s: &Session, state: StatusState
     }
 }
 
-/// The agent icon spot: a `ui.status.looks` icon (in the look's color) while that status
-/// holds, else the terminal's agent/kind icon in `color`.
+/// The agent icon spot: pause bars while paused, a `ui.status.looks` icon (in the look's
+/// color) while that status holds, else the terminal's agent/kind icon in `color`.
 pub fn terminal_icon(m: &MainWindow, t: &Theme, s: &Session, size: f32, color: Hsla) -> Svg {
+    if s.paused.is_some() {
+        return crate::icons::Icon::Pause.el(size, paused_color(t));
+    }
     let l = look(m, s);
     match l.icon.as_deref().and_then(crate::icons::Icon::from_name) {
         Some(i) => i.el(size, l.color.as_deref().map_or(color, |c| t.status_color(c))),
@@ -166,9 +185,14 @@ pub fn terminal_icon(m: &MainWindow, t: &Theme, s: &Session, size: f32, color: H
     }
 }
 
-/// The label to show for a terminal's status: a trigger's custom status, else a
-/// `ui.status.looks` label (as a custom status in the look's color, or the status's own).
+/// The label to show for a terminal's status: "paused" while paused, a trigger's custom
+/// status, else a `ui.status.looks` label (as a custom status in the look's color, or the
+/// status's own).
 pub fn status_label(m: &MainWindow, s: &Session) -> Option<CustomStatus> {
+    if let Some(p) = &s.paused {
+        let held = if p.processes == 1 { "1 process held".to_string() } else { format!("{} processes held", p.processes) };
+        return Some(CustomStatus { label: "paused".into(), color: "teal".into(), base: m.effective_state(s), detail: Some(held), since: Some(p.since.clone()), ..Default::default() });
+    }
     if let Some(c) = &s.custom_status {
         return Some(c.clone());
     }
@@ -260,7 +284,8 @@ impl Render for MainWindow {
                             Some(term) => {
                                 let term = term.clone();
                                 let el = split::render(self, &term, &t, window, cx);
-                                close_anim::pane(self, el, window)
+                                let el = close_anim::pane(self, el, window);
+                                paused::over_pane(self, el, &t, cx)
                             }
                             None => screens::empty_terminal(self, &t, cx).into_any_element(),
                         })

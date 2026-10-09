@@ -244,7 +244,14 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
     if connected {
         bar = bar.child(crate::ui::notifications::bell(m, t, cx));
     }
-    for item in items(m) {
+    let items = items(m);
+    // CPU and paused terminals: not a `ui.status.items` choice, it only shows while it matters
+    // (after the daemon item, else first).
+    let mut load = if connected { crate::ui::paused::status_item(m, t, cx) } else { None };
+    if !items.iter().any(|i| i == "daemon") {
+        bar = bar.children(load.take());
+    }
+    for item in items {
         // The daemon-backed items need midnad; the rest always show.
         let el = match item.as_str() {
             "daemon" => Some(daemon_item(m, t)),
@@ -264,6 +271,9 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
             _ => None,
         };
         bar = bar.children(el);
+        if item == "daemon" {
+            bar = bar.children(load.take());
+        }
     }
     bar.when(m.menu == Menu::StatusBar, |d| d.child(menu(m, t, cx)))
 }
