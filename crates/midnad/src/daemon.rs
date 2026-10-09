@@ -192,6 +192,10 @@ pub struct Daemon {
     pub keep_awake: crate::keep_awake::Runtime,
     /// The wakes midnad has asked macOS for (`wake.rs`). Lock after `core` and `keep_awake`.
     pub wake: crate::wake::Runtime,
+    /// Load, CPU per terminal and paused terminals (`guard.rs`). Lock after `core`, never before it.
+    pub guard: crate::guard::Runtime,
+    /// Worktrees seen in use (`worktrees.rs`). Never held together with `core`.
+    pub worktrees: crate::worktrees::Runtime,
 }
 
 impl Daemon {
@@ -247,6 +251,8 @@ impl Daemon {
             clock: crate::clock::Clock::open(Some(&cfg.home)),
             keep_awake: Default::default(),
             wake: Default::default(),
+            guard: Default::default(),
+            worktrees: Default::default(),
             cfg,
         }))
     }

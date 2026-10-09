@@ -142,11 +142,15 @@ fn daemon(a: &Args, out: OutFn) -> Res {
     match sub {
         "info" => out(&call("daemon.info", json!({}))?, &print::kv),
         "upgrade" => {
+            a.check(&["force"])?;
             let path = a.need(2, "path to the new midnad binary")?;
             let abs = std::fs::canonicalize(path).map_err(|e| Fail::Usage(format!("{path}: {e}")))?;
-            out(&call("daemon.upgrade", json!({ "binary_path": abs }))?, &scheduled);
+            out(&call("daemon.upgrade", json!({ "binary_path": abs, "force": a.has("force") }))?, &scheduled);
         }
-        "restart" => out(&call("daemon.restart", json!({}))?, &scheduled),
+        "restart" => {
+            a.check(&["force"])?;
+            out(&call("daemon.restart", json!({ "force": a.has("force") }))?, &scheduled)
+        }
         "stop" => out(&call("daemon.stop", json!({}))?, &|_| println!("midnad is stopping")),
         "reset" => {
             a.check(&["drop-rules"])?;
@@ -471,6 +475,8 @@ fn run(a: &Args) -> Res {
         "events" => events(a),
         "insights" => insights(a, &out),
         "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
+        "system" | "load" => system(a, &out),
+        "worktrees" | "worktree" => worktrees(a, &out),
         "usage" => {
             a.check(&[])?;
             out(&call("usage.get", json!({}))?, &print::usage);
@@ -879,6 +885,64 @@ fn settings(a: &Args, out: OutFn) -> Res {
 }
 
 /// `midna keep-awake …`: every form prints the status after it.
+/// `midna system [load] | pause <terminal> | resume <terminal> | stop <terminal> [pid…]`.
+fn system(a: &Args, out: OutFn) -> Res {
+    a.check(&[])?;
+    let sid = |what: &str| -> Result<String, Fail> { Ok(a.need(2, what)?.to_string()) };
+    match a.pos.get(1).map(String::as_str).unwrap_or("load") {
+        "load" | "status" => out(&call("system.load", json!({}))?, &print::system_load),
+        "pause" => out(&call("session.pause", json!({ "session_id": sid("terminal id to pause")? }))?, &|v| {
+            println!("paused {} ({} processes stopped); `midna system resume {}` continues it", v["session_id"].as_str().unwrap_or(""), v["processes"], v["session_id"].as_str().unwrap_or(""))
+        }),
+        "resume" => out(&call("session.resume", json!({ "session_id": sid("terminal id to resume")? }))?, &|v| {
+            println!("resumed {} ({} processes continued)", v["session_id"].as_str().unwrap_or(""), v["processes"])
+        }),
+        "stop" => {
+            let id = sid("terminal id")?;
+            let pids: Vec<i32> = a.pos.iter().skip(3).map(|p| p.parse().map_err(|_| Fail::Usage(format!("`{p}` isn't a pid")))).collect::<Result<_, _>>()?;
+            let mut p = json!({ "session_id": id });
+            if !pids.is_empty() {
+                p["pids"] = json!(pids);
+            }
+            out(&call("session.stop_processes", p)?, &|v| {
+                let stopped = v["stopped"].as_array().cloned().unwrap_or_default();
+                if stopped.is_empty() {
+                    println!("nothing was running under it");
+                }
+                for s in stopped {
+                    println!("stopped {:>7}  {}", s["pid"], s["command"].as_str().filter(|c| !c.is_empty()).or(s["name"].as_str()).unwrap_or(""));
+                }
+            })
+        }
+        other => return Err(Fail::Usage(format!("unknown system subcommand `{other}` (load|pause|resume|stop)"))),
+    }
+    Ok(())
+}
+
+/// `midna worktrees [list] [--repo DIR] | clean [path] [--dry-run] [--ignore-idle]`.
+fn worktrees(a: &Args, out: OutFn) -> Res {
+    match a.pos.get(1).map(String::as_str).unwrap_or("list") {
+        "list" => {
+            a.check(&["repo"])?;
+            let mut p = json!({});
+            if let Some(r) = a.get("repo") {
+                p["repo"] = json!(std::fs::canonicalize(r).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| r.to_string()));
+            }
+            out(&call("worktrees.list", p)?, &print::worktrees)
+        }
+        "clean" => {
+            a.check(&["dry-run", "ignore-idle"])?;
+            let mut p = json!({ "dry_run": a.has("dry-run"), "ignore_idle": a.has("ignore-idle") });
+            if let Some(path) = a.pos.get(2) {
+                p["path"] = json!(std::fs::canonicalize(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.clone()));
+            }
+            out(&call("worktrees.clean", p)?, &print::worktrees_clean)
+        }
+        other => return Err(Fail::Usage(format!("unknown worktrees subcommand `{other}` (list|clean)"))),
+    }
+    Ok(())
+}
+
 fn keep_awake(a: &Args, out: OutFn) -> Res {
     a.check(&[])?;
     let rest = |from: usize| a.pos.get(from..).map(|p| p.join(" ")).unwrap_or_default();

@@ -646,6 +646,21 @@ impl MainWindow {
                         crate::sounds::play_file(&p.file, p.volume);
                     }
                 }
+                // The Mac stayed busy: offer to pause or stop the terminals behind it (once per spell).
+                if self.is_home() {
+                    use crate::ui::system_window::{self as sw, Kind};
+                    let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 120);
+                    if k == midna_proto::kinds::SYSTEM_OVERLOADED
+                        && fresh
+                        && e.data.get("alert").and_then(|a| a.as_bool()).unwrap_or(true)
+                        && let Ok(l) = serde_json::from_value::<midna_proto::SystemLoad>(e.data.clone())
+                    {
+                        sw::show(Kind::Overloaded, l, self.backend.clone(), cx);
+                    }
+                    if k == midna_proto::kinds::SYSTEM_CALM {
+                        sw::close(Kind::Overloaded, cx);
+                    }
+                }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
                 }
@@ -1112,6 +1127,7 @@ impl MainWindow {
                         self.close_ask = Some(Default::default());
                     }
                     "hooks" => crate::ui::hooks::open(self, false, window, cx),
+                    "system-upgrade" | "system-overload" => crate::ui::system_window::debug(&s, self.backend.clone(), cx),
                     "ax" => self.ax_prompt = true,
                     "onboarding" => crate::ui::onboarding::reopen(self, cx),
                     "popout-queue" => {

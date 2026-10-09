@@ -111,7 +111,8 @@ impl Backend for DaemonBackend {
                 }
                 Err(ClientError::Rpc(e)) => {
                     self.give_back(c);
-                    return Err(anyhow!("{e}"));
+                    // Same text as before; callers can downcast to RpcError for the code.
+                    return Err(anyhow::Error::new(e));
                 }
                 // The transport broke: the idle connections went with the same daemon image.
                 Err(ClientError::Io(e)) if io_retry => {

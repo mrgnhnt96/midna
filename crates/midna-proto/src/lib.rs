@@ -14,6 +14,7 @@ pub mod paths;
 pub mod prompts;
 pub mod secrets;
 pub mod settings;
+pub mod system;
 pub mod themes;
 pub mod time;
 pub mod types;
@@ -24,6 +25,10 @@ pub use error::RpcError;
 pub use frame::{Cell, Frame, RowData};
 pub use methods::*;
 pub use openrpc::openrpc;
+pub use system::{
+    HeavyTerminal, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
+    WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,
+};
 pub use types::*;
 
 /// The midna release version: `MIDNA_BUILD_VERSION` at build time (set by

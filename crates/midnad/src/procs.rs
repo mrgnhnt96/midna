@@ -128,6 +128,75 @@ pub fn tree(root: i32) -> Vec<ProcessInfo> {
     out
 }
 
+/// One row of the whole process table, with the CPU time it has used so far.
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub pid: i32,
+    pub ppid: i32,
+    pub name: String,
+    /// Unix seconds.
+    pub start: i64,
+    /// User + system CPU time, nanoseconds.
+    pub cpu_ns: u64,
+}
+
+/// Every process we may inspect (other users' are left out).
+pub fn table() -> HashMap<i32, Row> {
+    let mut out = HashMap::new();
+    for pid in all_pids() {
+        if pid > 0
+            && let Some(b) = bsd_info(pid)
+        {
+            out.insert(pid, Row { pid, ppid: b.ppid, name: b.name, start: b.start, cpu_ns: cpu_ns(pid).unwrap_or(0) });
+        }
+    }
+    out
+}
+
+/// `root` and everything under it in `table`.
+pub fn descendants(table: &HashMap<i32, Row>, root: i32) -> Vec<i32> {
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for r in table.values() {
+        if r.pid != r.ppid {
+            children.entry(r.ppid).or_default().push(r.pid);
+        }
+    }
+    let (mut out, mut stack) = (vec![], vec![root]);
+    while let Some(pid) = stack.pop() {
+        if !table.contains_key(&pid) || out.contains(&pid) {
+            continue;
+        }
+        out.push(pid);
+        stack.extend(children.get(&pid).into_iter().flatten().copied());
+    }
+    out
+}
+
+/// When `pid` started (unix seconds), to tell it from a later process reusing the number.
+pub fn table_start(pid: i32) -> Option<i64> {
+    bsd_info(pid).map(|b| b.start)
+}
+
+/// CPU time a process has used (user + system), in nanoseconds.
+#[allow(deprecated)] // libc's mach_timebase_info (the mach2 crate isn't worth adding for it)
+pub fn cpu_ns(pid: i32) -> Option<u64> {
+    let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, &mut info as *mut _ as *mut libc::c_void, size) };
+    if got != size {
+        return None;
+    }
+    // Mach absolute time units (ticks on Apple silicon, nanoseconds on Intel).
+    static TIMEBASE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    let (numer, denom) = *TIMEBASE.get_or_init(|| {
+        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
+        if ok { (tb.numer, tb.denom) } else { (1, 1) }
+    });
+    let ticks = info.pti_total_user.saturating_add(info.pti_total_system);
+    Some((ticks as u128 * numer as u128 / denom as u128) as u64)
+}
+
 /// Tag each process with the agent's background shell task whose command it runs. Claude runs a
 /// background command through a shell (`zsh -c '<snapshot>; eval "<command>"'`), so the shell
 /// and everything under it belong to that task.

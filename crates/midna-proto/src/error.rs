@@ -15,6 +15,9 @@ pub const NOT_IMPLEMENTED: i64 = 5;
 /// `caller.no_wait`: the call waits on the human (data.needs_you_id) and carries on without
 /// the caller; needs_you.get reports how it ended.
 pub const PENDING: i64 = 6;
+/// The Mac is too busy for this right now (`daemon.upgrade` / `daemon.restart`); data says how
+/// busy. Pass `force` to do it anyway.
+pub const BUSY: i64 = 7;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RpcError {

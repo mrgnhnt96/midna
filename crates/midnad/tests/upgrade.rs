@@ -18,8 +18,14 @@ struct Bin {
 
 impl Bin {
     /// Copies of the built midnad as v1/v2 (so `cargo build` can't swap them mid-test and the
-    /// watchdog has a stable fallback path), started from v1.
+    /// watchdog has a stable fallback path), started from v1, on a calm Mac (MIDNA_DEBUG_LOAD=0:
+    /// `cargo test` itself loads the real one).
     fn start() -> Bin {
+        Bin::start_with_load(0.)
+    }
+
+    /// The daemon reports this load average.
+    fn start_with_load(load1: f64) -> Bin {
         let home = PathBuf::from(format!("/tmp/midna-u-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
@@ -38,6 +44,7 @@ impl Bin {
             .env("MIDNA_NO_GH", "1")
             .env("MIDNA_NOTIFY_SYSTEM", "0")
             .env("MIDNA_UPGRADE_WATCHDOG_SECS", "5")
+            .env("MIDNA_DEBUG_LOAD", load1.to_string())
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -376,4 +383,35 @@ fn restart_rpc_is_a_graceful_handoff() {
     call(&mut c, "session.input", json!({ "id": sh_id, "text": "exit 4", "enter": true }));
     let st = wait_for(10, "exit code", || Some(session(&mut c, &sh_id)["status"].clone()).filter(|s| s["state"] == "failed"));
     assert_eq!(st["exit_code"], 4, "{st}");
+}
+
+#[test]
+fn a_busy_mac_postpones_the_upgrade_unless_forced() {
+    let cpus = std::thread::available_parallelism().unwrap().get() as f64;
+    // Twice as much work as cores: 200% against the default system.busy_load of 150%.
+    let d = Bin::start_with_load(cpus * 2.);
+    let mut c = d.human();
+    let pid0 = d.info()["pid"].as_i64().unwrap();
+    for (m, p) in [("daemon.upgrade", json!({ "binary_path": d.path("v2") })), ("daemon.restart", json!({}))] {
+        let e = match c.call_value(m, p) {
+            Err(ClientError::Rpc(e)) => e,
+            other => panic!("{m}: expected busy, got {other:?}"),
+        };
+        assert_eq!(e.code, midna_proto::error::BUSY, "{m}: {e:?}");
+        assert!(e.message.contains("busy"), "{e:?}");
+        assert_eq!(e.data.as_ref().unwrap()["load_percent"], 200, "{e:?}");
+    }
+    let ev = call(&mut c, "events.list", json!({ "since_seq": 0, "limit": 100, "filter": { "kinds": ["daemon.upgrade_postponed"] } }));
+    assert_eq!(ev.as_array().unwrap().len(), 2, "{ev}");
+    assert_eq!(ev[0]["data"]["reason"], "upgrade");
+
+    // Raising the bar makes it calm enough; force goes ahead regardless.
+    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 250 }));
+    assert_eq!(call(&mut c, "system.load", json!({}))["busy"], false);
+    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 150 }));
+    let r = call(&mut c, "daemon.upgrade", json!({ "binary_path": d.path("v2"), "force": true }));
+    assert_eq!(r["ok"], json!(true));
+    let up = d.wait_upgraded(1);
+    assert_eq!(up["fallback"], json!(false), "{up}");
+    assert_eq!(d.info()["pid"].as_i64().unwrap(), pid0);
 }

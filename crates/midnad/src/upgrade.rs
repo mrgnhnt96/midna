@@ -12,8 +12,12 @@
 //! 4. The new image restores every session under its id, writes `handoff/resumed`, and emits
 //!    `daemon.upgraded`. Client connections (CLOEXEC) closed at the exec and reconnect.
 //!
+//! Busy Mac: `daemon.upgrade` / `daemon.restart` are refused with error BUSY while the load is at
+//! or above `system.busy_load` (guard.rs), unless `force`; the app then offers to wait.
+//!
 //! Watchdog: if the new image dies, or hasn't written `resumed` within `watchdog_secs`
-//! (killed then), the watchdog itself execs the old binary with `--resume --fallback` on the
+//! (more when the Mac is loaded; and while the new image keeps using CPU, up to
+//! WATCHDOG_MAX), or is killed then, the watchdog itself execs the old binary with `--resume --fallback` on the
 //! same handoff. It holds the fds, so the terminals survive; the shells are no longer the
 //! daemon's children, so exits are tracked with kqueue and carry no exit code.
 use crate::daemon::{Config, Daemon};
@@ -34,6 +38,14 @@ use std::time::{Duration, Instant};
 pub const HANDOFF_VERSION: u32 = 1;
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_WATCHDOG_SECS: u64 = 10;
+/// The watchdog never waits longer than this, however busy the new image looks.
+const WATCHDOG_MAX: Duration = Duration::from_secs(120);
+
+/// DEFAULT_WATCHDOG_SECS, stretched by how loaded the Mac is (load per core above 1), up to 60s.
+pub fn watchdog_secs(load1: f64, cpus: u32) -> u64 {
+    let per_core = if cpus == 0 { 1. } else { load1 / cpus as f64 };
+    ((DEFAULT_WATCHDOG_SECS as f64 * per_core.max(1.)).ceil() as u64).min(60)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Handoff {
@@ -169,11 +181,21 @@ pub fn restart_binary(cfg: &Config) -> PathBuf {
 
 /// `daemon.upgrade` / `daemon.restart`: selftest now (errors go to the caller), then hand off
 /// on a separate thread shortly after, so the caller's answer is flushed before the exec.
-pub fn request(d: &Arc<Daemon>, bin: &Path, reason: &str) -> Result<Value, RpcError> {
+/// Refused with BUSY while the Mac is busy, unless `force`.
+pub fn request(d: &Arc<Daemon>, bin: &Path, reason: &str, force: bool) -> Result<Value, RpcError> {
     if !d.cfg.owns_process {
         return Err(RpcError::conflict("this daemon runs inside another process (tests); it can't re-exec"));
     }
     let bin = std::fs::canonicalize(bin).map_err(|e| RpcError::bad_params(format!("{}: {e}", bin.display())))?;
+    if !force && let Some(l) = crate::guard::busy(d) {
+        let msg = format!(
+            "the Mac is busy (load {:.1} on {} cores, {}% of system.busy_load {}%): the {reason} waits until it calms down, \
+             because under this load the handoff can time out and hang up every terminal. Pass force to {reason} anyway",
+            l.load1, l.cpus, l.load_percent, l.busy_at
+        );
+        d.emit(kinds::DAEMON_UPGRADE_POSTPONED, Actor::system(), None, None, json!({ "to": bin, "reason": reason, "load1": l.load1, "cpus": l.cpus, "load_percent": l.load_percent, "busy_at": l.busy_at }));
+        return Err(RpcError::new(midna_proto::error::BUSY, msg).with_data(json!(l)));
+    }
     if d.upgrading.swap(true, Ordering::SeqCst) {
         return Err(RpcError::conflict("an upgrade is already in progress"));
     }
@@ -274,7 +296,10 @@ pub fn handoff_and_exec(d: &Arc<Daemon>, bin: &Path, reason: &str) -> String {
             app_path: d.cfg.app_path.clone(),
             listener_fd: listener,
             event_seq: d.log.seq(),
-            watchdog_secs: std::env::var("MIDNA_UPGRADE_WATCHDOG_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_WATCHDOG_SECS),
+            watchdog_secs: std::env::var("MIDNA_UPGRADE_WATCHDOG_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                let (load1, _, _) = crate::guard::loadavg();
+                watchdog_secs(load1, crate::guard::cpus())
+            }),
             sessions,
         };
         let path = dir.join("handoff.json");
@@ -483,6 +508,10 @@ pub fn watchdog_main(path: &Path) -> ! {
     };
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let t0 = Instant::now();
+    // The new image's CPU time at the last check: one still using CPU is resuming, just slowly
+    // (a loaded Mac), so it gets more time, up to WATCHDOG_MAX.
+    let (mut cpu, mut cpu_at) = (crate::procs::cpu_ns(h.daemon_pid).unwrap_or(0), Instant::now());
+    let mut working = true;
     let why = loop {
         if dir.join("resumed").exists() || !path.exists() {
             std::process::exit(0);
@@ -490,7 +519,17 @@ pub fn watchdog_main(path: &Path) -> ! {
         if unsafe { libc::getppid() } != h.daemon_pid {
             break "the new daemon exited before resuming";
         }
-        if t0.elapsed() > Duration::from_secs(h.watchdog_secs) {
+        if cpu_at.elapsed() >= Duration::from_secs(2) {
+            let now = crate::procs::cpu_ns(h.daemon_pid).unwrap_or(cpu);
+            working = now > cpu;
+            (cpu, cpu_at) = (now, Instant::now());
+        }
+        let late = t0.elapsed() > Duration::from_secs(h.watchdog_secs);
+        if late && working && t0.elapsed() < WATCHDOG_MAX {
+            std::thread::sleep(Duration::from_millis(25));
+            continue;
+        }
+        if late {
             unsafe { libc::kill(h.daemon_pid, libc::SIGKILL) };
             let t1 = Instant::now();
             while unsafe { libc::getppid() } == h.daemon_pid && t1.elapsed() < Duration::from_secs(3) {

@@ -73,11 +73,13 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "daemon",
         aliases: &[],
-        usage: "daemon info | restart | stop | upgrade <path> | reset [--drop-rules]",
+        usage: "daemon info | restart [--force] | stop | upgrade <path> [--force] | reset [--drop-rules]",
         summary: "manage midnad itself",
         details: "restart  graceful restart; terminals keep running (anyone may)\n\
                   stop     stop midnad and hang up every terminal (human only: asks the human)\n\
                   upgrade  replace midnad in place with another binary (human only: asks the human)\n\
+                  \x20        restart and upgrade wait while the Mac is busy (system.busy_load; `midna system`):\n\
+                  \x20        a handoff under heavy load can time out and hang up every terminal. --force: go anyway\n\
                   reset    close every terminal, remove projects, triggers and needs-you items, reset settings;\n\
                   \x20        keeps the event log and rules (--drop-rules removes rules too). Human only: asks the human",
         methods: &["daemon.info", "daemon.restart", "daemon.stop", "daemon.upgrade", "daemon.reset"],
@@ -536,6 +538,34 @@ pub static VERBS: &[Verb] = &[
         details: "Turns, human messages, spend, working and waiting time, approvals and triggers fired. `detail`: agents\n\
                   working at once, turn lengths, waits on you, idle time, approvals, corrections, heatmap and records.",
         methods: &["insights.summary", "insights.series", "insights.detail", "insights.activity"],
+    },
+    Verb {
+        name: "system",
+        aliases: &["load"],
+        usage: "system [load] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
+        summary: "the Mac's load, and pausing or stopping terminals that hog it",
+        details: "load    load average per core, busy/overloaded, and the terminals using the most CPU (busiest\n\
+                  \x20       processes: rustc ×14). Busy = system.busy_load (150% of the cores by default); busy for\n\
+                  \x20       guard.overload_secs fires system.overloaded and the app offers Pause / Stop processes.\n\
+                  pause   stop (SIGSTOP) the terminal's whole process tree, agent included, until resumed. Human only\n\
+                  resume  continue it\n\
+                  stop    end what the terminal started (or only the pids given, with their children): SIGTERM,\n\
+                  \x20       SIGKILL after 3s. Its shell or agent keeps running. Human only\n\
+                  midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.",
+        methods: &["system.load", "session.pause", "session.resume", "session.stop_processes"],
+    },
+    Verb {
+        name: "worktrees",
+        aliases: &["worktree"],
+        usage: "worktrees [list] [--repo DIR] | clean [path] [--dry-run] [--ignore-idle]",
+        summary: "git worktrees agents left behind, and removing idle ones",
+        details: "list   linked worktrees of the repos midna's terminals and projects are in: branch, idle hours, and\n\
+                  \x20      why each is kept (a terminal or process in it, a live lock, uncommitted changes, recent use)\n\
+                  clean  remove the ones the rules allow now; --ignore-idle waives only the idle time; a path picks one.\n\
+                  \x20      `git worktree remove`, never forced (git keeps ones with untracked files); branches stay.\n\
+                  midnad removes idle ones by itself after worktrees.auto_clean_hours (24 by default; 0 = never).\n\
+                  A Claude Code lock (claude agent … (pid N)) counts only while that pid runs.",
+        methods: &["worktrees.list", "worktrees.clean"],
     },
     Verb {
         name: "keep-awake",

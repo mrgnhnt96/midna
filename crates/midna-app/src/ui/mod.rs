@@ -34,6 +34,7 @@ pub mod split;
 pub mod statusbar;
 pub mod subagent_window;
 pub mod subagents;
+pub mod system_window;
 pub mod text_input;
 pub mod triggers;
 pub mod twilight;

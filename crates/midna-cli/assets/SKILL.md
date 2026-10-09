@@ -318,6 +318,22 @@ Only the fields given change, and one bad field saves none (error -32602 names i
 are also ordinary `keep_awake.*` settings. Event `keep_awake.changed` (data = the status) fires
 when it is taken or released.
 
+## Load, runaway work and worktrees
+
+- `midna system` shows the load per core and the terminals using the most CPU. Before starting
+  heavy work (a workspace build, many worktree subagents at once), check it; on a busy Mac run
+  fewer at a time.
+- Don't wait on a process with `until ! pgrep -f "<pattern>"; do sleep N; done`: your own loop's
+  command line contains the pattern, so two such loops see each other and never end. Wait for
+  your background task's completion notice, or on a file the command writes. midnad stops poll
+  loops under agent terminals after `guard.loop_max_hours`.
+- `midna system pause|resume|stop <terminal>` are human only (you get an approval); the app
+  offers them when the Mac stays overloaded (`system.overloaded`).
+- `midna daemon upgrade|restart` wait while the Mac is busy (error 7); `--force` is the human's call.
+- `midna worktrees` lists the git worktrees of repos midna watches and why each is kept;
+  idle ones (24h, nothing in them, no uncommitted changes) are removed by midnad, branches kept.
+  Clean up the worktrees you create when you're done with them.
+
 ## Settings
 
 - `midna settings list` shows every key, its value, its default and whether it is human only.

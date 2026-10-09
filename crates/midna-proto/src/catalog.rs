@@ -1,6 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::methods::*;
+use crate::system::*;
 use crate::types::*;
 use schemars::JsonSchema;
 use serde_json::Value;
@@ -100,10 +101,13 @@ fn build() -> Vec<MethodSpec> {
             "Replace the running daemon with another midnad binary without killing terminals: the new binary must pass \
              `--selftest`, then every terminal's screen is saved and the daemon re-execs in place (same pid), keeping \
              PTYs, ids and child processes. Connections drop and must reconnect; `daemon.upgraded` reports the result. \
-             Human only: agents (and `midna daemon upgrade`) get a needs-you approval instead."),
-        m::<NoParams, UpgradeResult>("daemon.restart").mutating().d(
+             Human only: agents (and `midna daemon upgrade`) get a needs-you approval instead. While the Mac is busy \
+             (system.busy_load) it is refused with error 7 (busy, data = system.load) and `daemon.upgrade_postponed`, \
+             since a handoff under heavy load can time out and hang up every terminal; `force` upgrades anyway."),
+        m::<RestartParams, UpgradeResult>("daemon.restart").mutating().d(
             "Graceful restart: the same handoff as daemon.upgrade, re-exec'ing the daemon's own binary (or \
-             MIDNA_HOME/bin/current). Terminals keep running. Use it to pick up a rebuilt or reinstalled midnad."),
+             MIDNA_HOME/bin/current). Terminals keep running. Use it to pick up a rebuilt or reinstalled midnad. \
+             Like daemon.upgrade, refused with error 7 (busy) while the Mac is busy unless `force`."),
         m::<NoParams, OkResult>("daemon.stop").mutating().human().d(
             "Stop the daemon for good: every terminal's process groups get SIGHUP (SIGKILL after a grace period), \
              then midnad exits. Human only; agents get a needs-you approval. Prefer daemon.restart to keep terminals."),
@@ -323,6 +327,30 @@ fn build() -> Vec<MethodSpec> {
             "Every OS process under a terminal (its process tree: pid, ppid, pgid, depth, command), with the agent's \
              background task id when a process belongs to one. Subagents run inside the agent process and appear in \
              `session.get` -> agent_info.subagents / background instead."),
+        m::<SessionPauseParams, SessionPauseResult>("session.pause").mutating().human().d(
+            "Pause a terminal: stop (SIGSTOP) its whole process tree, the agent or shell included, so it uses no CPU \
+             until session.resume. Output stops; nothing is lost. For a terminal hogging the Mac (system.load lists \
+             them). Human only; agents get a needs-you approval. Event session.paused."),
+        m::<SessionPauseParams, SessionPauseResult>("session.resume").mutating().d(
+            "Continue (SIGCONT) a terminal paused with session.pause. Event session.resumed."),
+        m::<StopProcessesParams, StopProcessesResult>("session.stop_processes").mutating().human().d(
+            "Stop what a terminal started (builds, test runs, background loops, dev servers) without closing it: \
+             SIGTERM to every process under the terminal's own process, or only `pids` (and their children), then \
+             SIGKILL after 3s for any still running. The shell or agent itself keeps running, so the conversation \
+             goes on. Human only; agents get a needs-you approval. Event procs.stopped."),
+        m::<NoParams, SystemLoad>("system.load").d(
+            "The Mac's load average per core, whether midna counts it as busy (system.busy_load) or overloaded \
+             (busy for guard.overload_secs), and the terminals using the most CPU with their busiest processes \
+             (`rustc ×14`). A busy Mac postpones daemon upgrades; `system.overloaded` fires once per busy spell."),
+        m::<WorktreesListParams, WorktreesList>("worktrees.list").d(
+            "Linked git worktrees of the repos midna's terminals and projects are in: branch, last activity, idle hours, \
+             terminals and processes in each, lock, uncommitted changes, and whether worktrees.auto_clean_hours would \
+             remove it now (else keep_because)."),
+        m::<WorktreesCleanParams, WorktreesCleanResult>("worktrees.clean").mutating().d(
+            "Remove idle worktrees now, by the auto-clean rules: no terminal or process in it, no uncommitted changes, \
+             no live lock, idle worktrees.auto_clean_hours. `ignore_idle` waives the idle time only; `path` picks one; \
+             `dry_run` only lists. Uses `git worktree remove` (never forced: git keeps ones with untracked files); \
+             branches stay. Event worktree.removed."),
         m::<SubagentLogParams, SubagentLog>("session.subagent_log").d(
             "Read one of a terminal's subagents (Claude) from its own transcript: what it was asked, what it said, \
              its tool calls and the first line of each result. Read from `from` = 0, then pass the last `next` to \

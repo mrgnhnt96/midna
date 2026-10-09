@@ -646,6 +646,17 @@ pub struct DaemonInfo {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct UpgradeParams {
     pub binary_path: String,
+    /// Upgrade even though the Mac is busy (else refused with error BUSY; see system.busy_load).
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// `daemon.restart`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RestartParams {
+    /// Restart even though the Mac is busy (else refused with error BUSY; see system.busy_load).
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// `daemon.upgrade` / `daemon.restart`: the new binary passed `--selftest` and the handoff

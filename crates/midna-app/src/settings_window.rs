@@ -155,6 +155,11 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
         "Keep the Mac awake",
         &["@keep_awake", "keep_awake.enabled", "keep_awake.mode", "keep_awake.start", "keep_awake.days", "keep_awake.min_battery", "keep_awake.linger_mins", "keep_awake.wake"],
     ),
+    (
+        Sec::Agents,
+        "Runaway work",
+        &["system.busy_load", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours"],
+    ),
     (Sec::Agents, "Kass dictation", &["@kass", "kass.auto_send"]),
     (
         Sec::Limits,
@@ -848,6 +853,11 @@ fn label_for(key: &str) -> String {
         "keep_awake.min_battery" => "Stop on battery below",
         "keep_awake.linger_mins" => "Keep holding after the work",
         "keep_awake.wake" => "Wake the Mac for scheduled work",
+        "system.busy_load" => "Busy at load per core (%)",
+        "guard.overload_alert" => "Offer to pause terminals hogging the Mac",
+        "guard.overload_secs" => "After the Mac is busy for (seconds)",
+        "guard.loop_max_hours" => "Stop agents' poll loops after (hours)",
+        "worktrees.auto_clean_hours" => "Remove idle git worktrees after (hours)",
         "agents.system_hint" => "Tell agents they're in midna",
         "policy.default" => "When no rule matches",
         "policy.request_timeout_secs" => "Approval timeout (seconds)",
@@ -1368,13 +1378,19 @@ impl SettingsWindow {
             }
             "@version" => {
                 let daemon = self.info.get("version").and_then(Value::as_str);
-                let failed = crate::lifecycle::snapshot().and_then(|l| l.daemon_upgrade_error);
+                let life = crate::lifecycle::snapshot();
+                let failed = life.as_ref().and_then(|l| l.daemon_upgrade_error.clone());
+                let postponed = life.and_then(|l| l.daemon_postponed);
                 let (dot, note) = match daemon {
                     None => (t.dim, None),
                     Some(v) if v == midna_proto::VERSION => (t.ok, None),
-                    Some(_) => match &failed {
-                        Some(e) => (t.err, Some(format!("Doesn't match the app, and updating it failed: {e}"))),
-                        None => (t.err, Some("Doesn't match the app. Update it in place: your terminals keep running.".into())),
+                    Some(_) => match (&failed, &postponed) {
+                        (Some(e), _) => (t.err, Some(format!("Doesn't match the app, and updating it failed: {e}"))),
+                        (None, Some(l)) => (
+                            t.need,
+                            Some(format!("Waiting for the Mac to calm down (load {:.1} on {} cores) before updating; it updates by itself then.", l.load1, l.cpus)),
+                        ),
+                        (None, None) => (t.err, Some("Doesn't match the app. Update it in place: your terminals keep running.".into())),
                     },
                 };
                 let mut daemon_row = status("Daemon version", dot, daemon.unwrap_or("not connected").into(), if daemon.is_some() { t.fg } else { t.dim }, note, "midna info");

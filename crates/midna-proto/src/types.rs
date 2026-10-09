@@ -1324,6 +1324,25 @@ pub mod kinds {
     pub const DAEMON_UPGRADE_FAILED: &str = "daemon.upgrade_failed";
     /// An explicit stop (`daemon.stop`, SIGINT) is hanging up every terminal.
     pub const DAEMON_STOPPING: &str = "daemon.stopping";
+    /// An upgrade/restart waits because the Mac is busy (`{to, reason, load1, cpus, load_percent,
+    /// busy_at}`); `force` runs it anyway.
+    pub const DAEMON_UPGRADE_POSTPONED: &str = "daemon.upgrade_postponed";
+    /// The Mac has been busy for `guard.overload_secs` (a `SystemLoad`, with the heaviest
+    /// terminals). Once per busy spell.
+    pub const SYSTEM_OVERLOADED: &str = "system.overloaded";
+    /// The load is back under `system.busy_load` after a `system.overloaded` (`{load1, cpus}`).
+    pub const SYSTEM_CALM: &str = "system.calm";
+    /// A terminal's processes were stopped (SIGSTOP) by session.pause, or continued
+    /// (`{processes}`).
+    pub const SESSION_PAUSED: &str = "session.paused";
+    pub const SESSION_RESUMED: &str = "session.resumed";
+    /// Processes under a terminal were stopped by session.stop_processes (`{stopped}`).
+    pub const PROCS_STOPPED: &str = "procs.stopped";
+    /// A background shell loop an agent left polling ran past `guard.loop_max_hours` and was
+    /// stopped (`{pid, command, hours}`).
+    pub const PROCS_LOOP_STOPPED: &str = "procs.loop_stopped";
+    /// An idle git worktree was removed (`{path, repo, branch, idle_hours, by}`); the branch stays.
+    pub const WORKTREE_REMOVED: &str = "worktree.removed";
     pub const AUDIT: &str = "audit";
     /// A policy decision made by the defaults table (no rule matched): `{decision, action,
     /// default, passthrough}`. `passthrough` = an unmatched tool call midna has no opinion on.

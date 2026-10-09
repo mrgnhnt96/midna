@@ -374,3 +374,63 @@ pub fn usage(v: &Value) {
         println!("  LIMITED{until}");
     }
 }
+
+/// `midna system`.
+pub fn system_load(v: &Value) {
+    let state = if v["overloaded"].as_bool() == Some(true) {
+        format!("overloaded (busy {} min)", v["busy_for_secs"].as_u64().unwrap_or(0) / 60)
+    } else if v["busy"].as_bool() == Some(true) {
+        "busy".into()
+    } else {
+        "calm".into()
+    };
+    println!(
+        "load {:.2} {:.2} {:.2} on {} cores: {}% per core, {state} (busy at {}%, setting system.busy_load)",
+        v["load1"].as_f64().unwrap_or(0.),
+        v["load5"].as_f64().unwrap_or(0.),
+        v["load15"].as_f64().unwrap_or(0.),
+        v["cpus"],
+        v["load_percent"],
+        v["busy_at"]
+    );
+    let top = v["top"].as_array().cloned().unwrap_or_default();
+    if top.is_empty() {
+        println!("no terminal is using much CPU");
+        return;
+    }
+    println!("{:<12} {:>6} {:>6}  {}", "TERMINAL", "CPU%", "PROCS", "NAME / BUSIEST");
+    for t in top {
+        let busiest = t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        let paused = if t["paused"].as_bool() == Some(true) { " [paused]" } else { "" };
+        println!("{:<12} {:>6} {:>6}  {}{paused}  ({busiest})", s(&t, "session_id"), t["cpu_percent"], t["processes"], s(&t, "name"));
+    }
+    println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
+}
+
+/// `midna worktrees`.
+pub fn worktrees(v: &Value) {
+    let hours = v["auto_clean_hours"].as_u64().unwrap_or(0);
+    let list = v["worktrees"].as_array().cloned().unwrap_or_default();
+    let repos = v["repos"].as_array().map(|r| r.len()).unwrap_or(0);
+    let rule = if hours == 0 { "auto-clean off (worktrees.auto_clean_hours = 0)".to_string() } else { format!("removed after {hours}h idle") };
+    println!("{} worktree(s) in {repos} watched repo(s); {rule}", list.len());
+    for w in list {
+        let verdict = if w["removable"].as_bool() == Some(true) { "removable now".to_string() } else { format!("kept: {}", s(&w, "keep_because")) };
+        println!("{}  [{}]  idle {}h  {verdict}", s(&w, "path"), s(&w, "branch"), w["idle_hours"]);
+    }
+}
+
+/// `midna worktrees clean`.
+pub fn worktrees_clean(v: &Value) {
+    let dry = v["dry_run"].as_bool() == Some(true);
+    let removed = v["removed"].as_array().cloned().unwrap_or_default();
+    if removed.is_empty() {
+        println!("nothing to remove (`midna worktrees` says why each is kept)");
+    }
+    for w in removed {
+        println!("{} {}  [{}, branch kept]", if dry { "would remove" } else { "removed" }, s(&w, "path"), s(&w, "branch"));
+    }
+    for f in v["failed"].as_array().cloned().unwrap_or_default() {
+        println!("kept {}: {}", s(&f, "path"), s(&f, "error"));
+    }
+}

@@ -7,6 +7,11 @@
 //! - `MIDNA_UPDATE_FEED_URL` overrides the `updates.feed_url` setting.
 //! - `MIDNA_UPDATE_CHECK_SECS` overrides the 6h interval (first check is ~5s after launch).
 //! - `MIDNA_DEBUG_UPDATE=apply` installs an update (and relaunches) as soon as it's ready.
+//!
+//! A busy Mac (midnad answers daemon.upgrade with BUSY) postpones moving the daemon onto the
+//! installed build: the first time per launch (or when asked from Settings) a system window
+//! recommends waiting (`ui/system_window.rs`); the upgrade is retried quietly every
+//! BUSY_RETRY and goes through once the load drops, or at once with Update anyway.
 use crate::backend::Backend;
 use crate::install::{self, CliLink, LoginItem, Mode};
 use crate::updater::{self, FeedEntry};
@@ -16,6 +21,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How often a postponed daemon upgrade is tried again.
+const BUSY_RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateState {
@@ -40,6 +48,8 @@ pub enum Cmd {
     InstallCli,
     /// Settings: move the running daemon onto the installed build (shells survive).
     UpgradeDaemon,
+    /// The postponed-upgrade window's Update anyway: upgrade even though the Mac is busy.
+    UpgradeDaemonNow,
 }
 
 enum Msg {
@@ -49,7 +59,18 @@ enum Msg {
     Update(UpdateState),
     /// The last daemon upgrade's error (None once it worked).
     DaemonUpgrade(Option<String>),
+    /// The daemon upgrade waits for a calmer Mac (None: it isn't waiting any more). `ask`
+    /// opens the system window; otherwise an open one just gets the new numbers.
+    DaemonPostponed { load: Option<midna_proto::SystemLoad>, ask: bool },
     Quit,
+}
+
+/// What ensure_daemon_current did.
+enum Upgrade {
+    Done,
+    /// The Mac is busy; try again later.
+    Postponed(midna_proto::SystemLoad),
+    Failed,
 }
 
 /// What the UI shows. Mirrored in a static so views without an `App` (Settings' row builder)
@@ -63,6 +84,8 @@ pub struct Snapshot {
     pub update: UpdateState,
     /// Why moving the daemon onto the installed build failed, if it did.
     pub daemon_upgrade_error: Option<String>,
+    /// The daemon upgrade is waiting for the Mac to calm down (its last load reading).
+    pub daemon_postponed: Option<midna_proto::SystemLoad>,
 }
 
 static SNAP: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
@@ -107,6 +130,7 @@ pub fn start(backend: Arc<dyn Backend>, cx: &mut App) {
         install_error: None,
         update: if installed { UpdateState::Idle } else { UpdateState::Off("development build".into()) },
         daemon_upgrade_error: None,
+        daemon_postponed: None,
     });
     cx.set_global(Lifecycle { tx: Some(cmd_tx) });
     let reporter = backend.clone();
@@ -120,12 +144,21 @@ pub fn start(backend: Arc<dyn Backend>, cx: &mut App) {
                     return;
                 }
                 let is_update = matches!(msg, Msg::Update(_));
+                if let Msg::DaemonPostponed { load, ask } = &msg {
+                    use crate::ui::system_window::{self as sw, Kind};
+                    match load {
+                        Some(l) if *ask => sw::show(Kind::UpgradePostponed, l.clone(), reporter.clone(), cx),
+                        Some(l) => sw::refresh(Kind::UpgradePostponed, l.clone(), cx),
+                        None => sw::close(Kind::UpgradePostponed, cx),
+                    }
+                }
                 edit(|l| match msg {
                     Msg::Login(s) => l.login = s,
                     Msg::Cli(s) => l.cli = s,
                     Msg::Install(e) => l.install_error = e,
                     Msg::Update(s) => l.update = s,
                     Msg::DaemonUpgrade(e) => l.daemon_upgrade_error = e,
+                    Msg::DaemonPostponed { load, .. } => l.daemon_postponed = load,
                     Msg::Quit => {}
                 });
                 if is_update && !fake {
@@ -303,6 +336,21 @@ impl Worker {
         }
         let started = Instant::now();
         let mut kicked = false;
+        // A postponed daemon upgrade: when to try again. The window asks once per launch.
+        let mut retry_upgrade: Option<Instant> = None;
+        let mut asked = false;
+        let upgrade = |this: &Self, force: bool, ask: bool, retry: &mut Option<Instant>, asked: &mut bool| {
+            *retry = None;
+            match this.ensure_daemon_current(&home, force) {
+                Upgrade::Postponed(load) => {
+                    let ask = ask || !*asked;
+                    *asked = true;
+                    *retry = Some(Instant::now() + BUSY_RETRY);
+                    this.send(Msg::DaemonPostponed { load: Some(load), ask });
+                }
+                Upgrade::Done | Upgrade::Failed => this.send(Msg::DaemonPostponed { load: None, ask: false }),
+            }
+        };
         loop {
             if !daemon_checked {
                 if login == LoginItem::RequiresApproval || matches!(login, LoginItem::Checking | LoginItem::NotRegistered) {
@@ -315,7 +363,7 @@ impl Worker {
                 }
                 if install::socket_alive(&socket) {
                     daemon_checked = true;
-                    self.ensure_daemon_current(&home);
+                    upgrade(&self, false, false, &mut retry_upgrade, &mut asked);
                 } else if !kicked && matches!(login, LoginItem::Enabled | LoginItem::Legacy) && started.elapsed() > Duration::from_secs(4) {
                     kicked = true;
                     log("daemon not answering; launchctl kickstart");
@@ -326,7 +374,8 @@ impl Worker {
                 next_check = Instant::now() + interval;
                 update = self.check(bundle, &home);
             }
-            let wait = if daemon_checked { next_check.saturating_duration_since(Instant::now()).max(Duration::from_millis(50)) } else { Duration::from_millis(500) };
+            let until = retry_upgrade.map_or(next_check, |r| r.min(next_check));
+            let wait = if daemon_checked { until.saturating_duration_since(Instant::now()).max(Duration::from_millis(50)) } else { Duration::from_millis(500) };
             match self.rx.recv_timeout(wait) {
                 Ok(Cmd::CheckNow) => {
                     if !matches!(update, UpdateState::Off(_)) {
@@ -348,8 +397,13 @@ impl Worker {
                     let cli = self.link_cli(&home, true);
                     self.send(Msg::Cli(cli));
                 }
-                Ok(Cmd::UpgradeDaemon) => self.ensure_daemon_current(&home),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(Cmd::UpgradeDaemon) => upgrade(&self, false, true, &mut retry_upgrade, &mut asked),
+                Ok(Cmd::UpgradeDaemonNow) => upgrade(&self, true, false, &mut retry_upgrade, &mut asked),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if retry_upgrade.is_some_and(|r| Instant::now() >= r) {
+                        upgrade(&self, false, false, &mut retry_upgrade, &mut asked);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
             if let UpdateState::Ready { app, version, .. } = update.clone()
@@ -373,12 +427,14 @@ impl Worker {
     }
 
     /// The running daemon must be `bin/current/midnad`; if not (the app was just updated),
-    /// upgrade it in place. Terminals survive (same-PID execv with the PTYs handed over).
-    fn ensure_daemon_current(&self, home: &Path) {
+    /// upgrade it in place. Terminals survive (same-PID execv with the PTYs handed over). A busy
+    /// Mac postpones it unless `force`.
+    fn ensure_daemon_current(&self, home: &Path, force: bool) -> Upgrade {
         let want = install::current_daemon(home);
         let fail = |e: String| {
             log(&e);
             self.send(Msg::DaemonUpgrade(Some(e)));
+            Upgrade::Failed
         };
         let Ok(want_canon) = std::fs::canonicalize(&want) else {
             return fail(format!("no installed daemon at {}", want.display()));
@@ -393,15 +449,25 @@ impl Worker {
         // unresolved bin/current path, so the version check catches those.)
         if running.as_ref() == Some(&want_canon) && version == midna_proto::VERSION {
             self.send(Msg::DaemonUpgrade(None));
-            return log(&format!("daemon {version} is current ({})", want_canon.display()));
+            log(&format!("daemon {version} is current ({})", want_canon.display()));
+            return Upgrade::Done;
         }
-        log(&format!("daemon {version} runs {:?}; upgrading in place to {}", running, want_canon.display()));
-        match self.backend.call("daemon.upgrade", json!({ "binary_path": want })) {
+        log(&format!("daemon {version} runs {:?}; upgrading in place to {}{}", running, want_canon.display(), if force { " (forced)" } else { "" }));
+        match self.backend.call("daemon.upgrade", json!({ "binary_path": want, "force": force })) {
             Ok(v) => {
                 log(&format!("daemon.upgrade: {v}"));
                 self.send(Msg::DaemonUpgrade(None));
+                Upgrade::Done
             }
-            Err(e) => fail(format!("daemon.upgrade failed: {e}")),
+            Err(e) => match e.downcast_ref::<midna_proto::RpcError>().filter(|r| r.code == midna_proto::error::BUSY) {
+                Some(r) => {
+                    let load = r.data.clone().and_then(|d| serde_json::from_value(d).ok()).unwrap_or_default();
+                    log(&format!("daemon.upgrade postponed: {}", r.message));
+                    self.send(Msg::DaemonUpgrade(None));
+                    Upgrade::Postponed(load)
+                }
+                None => fail(format!("daemon.upgrade failed: {e}")),
+            },
         }
     }
 

@@ -20,13 +20,13 @@ pub fn daemon_info(d: &Daemon, ctx: &Ctx) -> R {
 
 /// `daemon.upgrade` (human only; agents were turned into a needs-you approval by `call`).
 pub fn daemon_upgrade(d: &Arc<Daemon>, p: UpgradeParams) -> R {
-    crate::upgrade::request(d, std::path::Path::new(&p.binary_path), "upgrade")
+    crate::upgrade::request(d, std::path::Path::new(&p.binary_path), "upgrade", p.force)
 }
 
 /// `daemon.restart`: the same handoff, re-exec'ing our own (or the installed) binary.
-pub fn daemon_restart(d: &Arc<Daemon>) -> R {
+pub fn daemon_restart(d: &Arc<Daemon>, p: RestartParams) -> R {
     let bin = crate::upgrade::restart_binary(&d.cfg);
-    crate::upgrade::request(d, &bin, "restart")
+    crate::upgrade::request(d, &bin, "restart", p.force)
 }
 
 /// `daemon.stop` (human only): answer first, then hang up every terminal and stop.

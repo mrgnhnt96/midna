@@ -12,6 +12,7 @@ pub mod engine;
 pub mod eventlog;
 pub mod git;
 pub mod global_hooks;
+pub mod guard;
 pub mod headless;
 pub mod hooks;
 pub mod images;
@@ -41,6 +42,7 @@ pub mod upgrade;
 pub mod usage;
 pub mod wake;
 pub mod webhooks;
+pub mod worktrees;
 
 pub use daemon::Config;
 pub use server::{Handle, start, start_with};
