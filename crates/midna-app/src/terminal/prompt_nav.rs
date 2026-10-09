@@ -88,6 +88,10 @@ pub struct PromptNav {
     /// Live ↓ is in the bar, and since when it has been sliding in or out (`LIVE_MS`).
     live: bool,
     live_at: Option<Instant>,
+    /// The pointer is on the bar, so its → (to the prompt it names) is out, and since when it
+    /// has been sliding in or out (`LIVE_MS`).
+    go: bool,
+    go_at: Option<Instant>,
     pill: Rc<RefCell<PillWidth>>,
     /// The agent's view (or the scrollback) is scrolled back from the live end.
     scrolled: bool,
@@ -232,7 +236,8 @@ impl TerminalView {
             self.nav.live_at = (!cx.reduce_motion()).then(Instant::now);
         }
         // While holding, look again: the agent may not paint another frame once it is live.
-        let anim = self.nav.live_at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS) || self.nav.pill.borrow().moving();
+        let moving = |at: Option<Instant>| at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS);
+        let anim = moving(self.nav.live_at) || moving(self.nav.go_at) || self.nav.pill.borrow().moving();
         if anim || (self.nav.scrolled && self.ext.alt_screen && self.nav.holding()) {
             window.request_animation_frame();
         }
@@ -286,28 +291,46 @@ impl TerminalView {
         if !nav.prompts.is_empty() {
             out.push(self.render_rail(theme, cx));
         }
-        if nav.scrolled || row {
+        // The bar's pill only names a prompt (never "Before your first prompt"): without one, the
+        // bar is just Live ↓ while scrolled back.
+        if nav.scrolled || (row && self.shown_prompt().is_some()) {
             out.push(self.render_bar(theme, cx));
         }
         out
     }
 
+    /// The prompt the bar names: the one being jumped to, or the one the view is in (an index
+    /// into the list), at the live end the last one sent; failing that, Claude's pinned copy of it.
+    fn shown_prompt(&self) -> Option<(Option<usize>, &str)> {
+        let nav = &self.nav;
+        let live = || nav.on_screen().last().copied().filter(|_| !nav.scrolled);
+        match nav.pending.map(|p| p.0).or(nav.here).or_else(live).and_then(|i| nav.prompts.get(i).map(|p| (i, p))) {
+            Some((i, p)) => Some((Some(i), p.text.as_str())),
+            None if nav.before_first => None,
+            None => nav.pinned.as_deref().map(|t| (None, t)),
+        }
+    }
+
     fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let nav = &self.nav;
-        let shown = nav.pending.map(|p| p.0).or(nav.here);
         let vis = nav.on_screen();
-        let (num, title, pos) = match shown.and_then(|i| nav.prompts.get(i).map(|p| (i, p))) {
-            Some((i, p)) => {
+        let shown = self.shown_prompt();
+        let target = shown.and_then(|s| s.0);
+        let (num, title, pos) = match shown {
+            Some((Some(i), text)) => {
                 let pos = vis.iter().position(|&j| j == i).map(|k| format!("{}/{}", k + 1, vis.len())).unwrap_or_default();
-                (format!("#{}", p.n), scr::key(&p.text), pos)
+                (format!("#{}", nav.prompts[i].n), scr::key(text), pos)
             }
-            None if nav.before_first => (String::new(), "Before your first prompt".to_string(), String::new()),
-            None if nav.pinned.is_some() => (String::new(), nav.pinned.clone().unwrap_or_default(), String::new()),
-            None => (String::new(), "Your prompts".to_string(), String::new()),
+            Some((None, text)) => (String::new(), text.to_string(), String::new()),
+            None => (String::new(), String::new(), String::new()),
         };
+        let eased = |at: Option<Instant>| at.map_or(1., |at| 1. - (1. - (at.elapsed().as_secs_f32() * 1000. / LIVE_MS).min(1.)).powi(3));
         // Live ↓ slides in from the left edge, pushing the pill over, and back out at the live end.
-        let e = nav.live_at.map_or(1., |at| 1. - (1. - (at.elapsed().as_secs_f32() * 1000. / LIVE_MS).min(1.)).powi(3));
+        let e = eased(nav.live_at);
         let live = if nav.live { e } else { 1. - e };
+        // → grows out of the pill's right while the pointer is on the bar.
+        let e = eased(nav.go_at);
+        let go = if target.is_none() { 0. } else if nav.go { e } else { 1. - e };
         let stop = |d: Stateful<Div>| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         // Live ↓ leads while scrolled back, then the prompt pill (a click opens the list); the
         // rest of the row stays the terminal's.
@@ -323,6 +346,14 @@ impl TerminalView {
             .px(px(8.))
             .text_size(px(12.5))
             .font_family(t.ui_font.clone())
+            .on_hover(cx.listener(|v, on: &bool, _, cx| {
+                if v.nav.go != *on {
+                    v.nav.go = *on;
+                    gpui_kit::base::apply_system_reduce_motion(cx);
+                    v.nav.go_at = (!cx.reduce_motion()).then(Instant::now);
+                    cx.notify();
+                }
+            }))
             .when(live > 0., |d| {
                 d.child(div().flex_none().w(px(LIVE_W * live)).h(px(24.)).overflow_hidden().opacity(live).child(
                     stop(div().id("prompt-live"))
@@ -342,7 +373,7 @@ impl TerminalView {
                         .on_click(cx.listener(|v, _, w, cx| v.jump_to(None, w, cx))),
                 ))
             })
-            .child(
+            .when(!title.is_empty(), |d| d.child(
                 // The pill is as wide as its content (up to 520px), easing to a new prompt's width.
                 stop(div().id("prompt-title"))
                     .flex_none()
@@ -381,7 +412,30 @@ impl TerminalView {
                             .child(crate::icons::Icon::Chevron.el(10., t.dim)),
                     ))
                     .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx)),
-            )
+            ))
+            .when_some(target.filter(|_| go > 0.), |d, i| {
+                // Like a notification's →: takes you to the prompt the pill names.
+                d.child(
+                    stop(div().id("prompt-go"))
+                        .flex_none()
+                        .h(px(24.))
+                        .w(px(24. * go))
+                        .ml(px(6. * go))
+                        .rounded(px(12.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.line)
+                        .opacity(go)
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.line))
+                        .child(crate::icons::Icon::Arrow.el(11., t.fg))
+                        .on_click(cx.listener(move |v, _, w, cx| v.jump_to(Some(i), w, cx))),
+                )
+            })
             .into_any_element()
     }
 
