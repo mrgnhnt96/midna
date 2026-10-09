@@ -1119,6 +1119,8 @@ impl MainWindow {
                     "notifications" => self.set_screen(Screen::Notifications, window, cx),
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
+                    // dev: a needs-you item by id (`needs:n_settng`)
+                    s if s.starts_with("needs:") => crate::ui::needs_you::show(self, s["needs:".len()..].to_string(), window, cx),
                     "toast" | "toast-long" => crate::ui::toast::debug(self, &s, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
@@ -1532,6 +1534,11 @@ impl MainWindow {
     // ------------------------------------------------------------------ actions
 
     pub fn resolve(&mut self, need_id: String, res: Resolution, cx: &mut Context<Self>) {
+        self.resolve_with(need_id, res, None, cx);
+    }
+
+    /// [`Self::resolve`], saving `value` instead of what a setting change asked for.
+    pub fn resolve_with(&mut self, need_id: String, res: Resolution, value: Option<serde_json::Value>, cx: &mut Context<Self>) {
         self.menu = Menu::None;
         if let Some(sid) = self.needs.iter().find(|n| n.id == need_id).and_then(|n| n.session_id.clone()) {
             crate::ui::need_anim::note_outcome(self, &sid, &res);
@@ -1545,7 +1552,10 @@ impl MainWindow {
             Resolution::Deny => crate::sounds::play("denied"),
             Resolution::Dismiss => {}
         }
-        let params = json!({"id": need_id, "resolution": res});
+        let mut params = json!({"id": need_id, "resolution": res});
+        if let Some(v) = value {
+            params["value"] = v;
+        }
         self.rpc("needs_you.resolve", params, cx, |m, _, _, cx| m.request_refresh(refresh::NEEDS | refresh::SESSIONS | refresh::RULES, cx));
         cx.notify();
     }

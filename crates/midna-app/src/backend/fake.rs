@@ -294,6 +294,32 @@ impl FakeBackend {
                 question: Some(fake_question()),
                 ..Default::default()
             },
+            // An agent asking to add its own script to the status bar (setting_change.rs).
+            NeedsYou {
+                id: "n_settng".into(),
+                session_id: Some("a1f00008".into()),
+                project_id: Some("p_midna1".into()),
+                kind: NeedsYouKind::Approval,
+                title: "Agent asks to change ui.status.items".into(),
+                detail: "Human-only action requested by an agent: settings set ui.status.items …".into(),
+                asked_by: Actor { kind: "agent".into(), session: Some("a1f00008".into()), name: Some("claude".into()) },
+                created_at: ago(2),
+                approval: Some(ApprovalRequest {
+                    action: PolicyAction {
+                        kind: "cli".into(),
+                        value: "settings set ui.status.items daemon,usage,cache,/Users/me/.config/midna/scripts/ci-status.sh,webhooks,triggers,hooks,spacer,script,update,keys".into(),
+                        session: Some("a1f00008".into()),
+                        project: Some("p_midna1".into()),
+                    },
+                    matched_rule: None,
+                }),
+                setting: Some(SettingChange {
+                    key: "ui.status.items".into(),
+                    from: json!(["daemon", "usage", "cache", "webhooks", "triggers", "hooks", "accessibility", "awake", "spacer", "script", "update", "keys"]),
+                    to: json!(["daemon", "usage", "cache", "/Users/me/.config/midna/scripts/ci-status.sh", "webhooks", "triggers", "hooks", "spacer", "script", "update", "keys"]),
+                }),
+                ..Default::default()
+            },
             NeedsYou {
                 id: "n_blockd".into(),
                 session_id: Some("a1f00008".into()),

@@ -39,6 +39,23 @@ mod folders;
 #[path = "settings_chips.rs"]
 mod chips;
 
+pub(crate) use chips::{KEYS as CHIP_KEYS, chip_label, is_script, moved, script_items, script_value, toggled};
+
+/// A setting's line under its name, as its row here shows it.
+pub(crate) fn note_for(key: &str) -> String {
+    let spec = midna_proto::settings::setting(key);
+    blurbs::blurb(key).map(str::to_string).or_else(|| spec.map(|s| brief(s.description.trim_end_matches(" Human only.")))).unwrap_or_default()
+}
+
+/// Where a setting lives in this window: "Settings › Appearance › Bars".
+pub(crate) fn place_of(key: &str) -> String {
+    match LAYOUT.iter().find(|(_, _, keys)| keys.contains(&key)) {
+        Some((sec, "", _)) => format!("Settings › {}", sec.label()),
+        Some((sec, group, _)) => format!("Settings › {} › {group}", sec.label()),
+        None => "Settings".into(),
+    }
+}
+
 struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
 impl Global for SettingsWindowHandle {}
 
@@ -915,7 +932,7 @@ fn preset_label(key: &str, v: i64) -> String {
     }
 }
 
-fn label_for(key: &str) -> String {
+pub(crate) fn label_for(key: &str) -> String {
     match key {
         "theme" => "Theme",
         "theme.dark" => "When macOS is dark",
@@ -1045,7 +1062,7 @@ fn stay_label(secs: i64) -> String {
 /// The colors a kind can take besides the theme's (`notify.color.<kind>`).
 const MORE_COLORS: [&str; 4] = ["#e879b9", "#5fc9d8", "#a3d977", "#f0884a"];
 
-fn option_label(key: &str, v: &str) -> String {
+pub(crate) fn option_label(key: &str, v: &str) -> String {
     match (key, v) {
         ("webhooks.path", "tailscale_funnel") => "Funnel".into(),
         ("webhooks.path", "self_relay") => "Self-hosted".into(),
@@ -1085,7 +1102,7 @@ fn option_label(key: &str, v: &str) -> String {
     }
 }
 
-fn value_text(v: &Value) -> String {
+pub(crate) fn value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => "null".into(),

@@ -30,6 +30,7 @@ pub mod screen_kit;
 pub mod screens;
 pub mod setup_screen;
 pub mod settings;
+pub mod setting_change;
 pub mod sidebar;
 pub mod sidebar_anim;
 pub mod split;
