@@ -235,6 +235,12 @@ pub struct AnnotateView {
     pub editing: Option<usize>,
     /// None = fit. Otherwise screen px per image px.
     pub zoom: Option<f32>,
+    /// How far the image is panned from its resting place (0 or less on each axis): wheels and
+    /// trackpads move it, zooming keeps the point under the pointer in place. The sheet places
+    /// the image itself (see [`AnnotateView::image_origin`]), so this is exactly what's shown.
+    offset: Point<Pixels>,
+    /// ⌥-drag or middle-drag panning: where it started and the offset then.
+    pub pan: Option<(Point<Pixels>, Point<Pixels>)>,
     /// Drag in progress on the image: start and current point, as fractions.
     pub drag: Option<((f32, f32), (f32, f32))>,
     pub show_text: bool,
@@ -266,6 +272,8 @@ impl AnnotateView {
             sel: None,
             editing: None,
             zoom: None,
+            offset: Point::default(),
+            pan: None,
             drag: None,
             show_text: false,
             loading: 0,
@@ -314,6 +322,8 @@ impl AnnotateView {
         self.editing = None;
         self.drag = None;
         self.zoom = None;
+        self.pan = None;
+        self.offset = Point::default();
         self.open = true;
         self.focus.focus(window, cx);
         cx.notify();
@@ -503,6 +513,8 @@ impl AnnotateView {
             self.cur = i;
             self.sel = None;
             self.zoom = None;
+            self.pan = None;
+            self.offset = Point::default();
         }
         cx.notify();
     }
@@ -527,21 +539,119 @@ impl AnnotateView {
         cx.notify();
     }
 
+    /// The toolbar's buttons and ⌘= ⌘- ⌘0: zoom about the viewport's center.
     pub fn zoom(&mut self, by: Option<f32>, cx: &mut Context<Self>) {
-        self.zoom = by.map(|f| (self.current_scale(cx) * f).clamp(0.05, 8.));
+        self.zoom_at(by, None, cx);
+    }
+
+    /// Zoom by `by` (None = fit), keeping the image point under `at` (window px; the viewport's
+    /// center when None) where it is on screen. Worked out from the offset rather than the
+    /// last paint, so several pinch events between frames add up.
+    pub fn zoom_at(&mut self, by: Option<f32>, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let old = self.current_scale(cx);
+        // Start from what's shown: a resize may have left the offset out of range.
+        self.offset = self.clamped(self.offset, cx);
+        let min = self.fit_scale(cx) * ZOOM_OUT_MIN;
+        self.zoom = by.map(|f| (old * f).clamp(min, ZOOM_MAX.max(min)));
+        // Fit (⌘0, the zoom label) puts the image back in its place.
+        if by.is_none() {
+            self.offset = Point::default();
+        }
+        let new = self.current_scale(cx);
+        if let (Some(vp), Some((w, h))) = (self.viewport.get(), self.shot(cx).map(|s| (s.w as f32, s.h as f32))) {
+            let at = at.unwrap_or(vp.center());
+            let off = self.offset;
+            let (vw, vh) = (f32::from(vp.size.width), f32::from(vp.size.height));
+            let ox = anchored(f32::from(at.x - vp.origin.x), f32::from(off.x), w, old, new, vw);
+            let oy = anchored(f32::from(at.y - vp.origin.y), f32::from(off.y), h, old, new, vh);
+            self.set_offset(point(px(ox), px(oy)), cx);
+        }
         cx.notify();
+    }
+
+    fn set_offset(&mut self, o: Point<Pixels>, cx: &App) {
+        self.offset = self.clamped(o, cx);
+    }
+
+    /// `o`, kept so the image pans at most [`OVERSCROLL`] of the viewport past its edges (or
+    /// past its resting place, when it fits) at the current scale.
+    fn clamped(&self, o: Point<Pixels>, cx: &App) -> Point<Pixels> {
+        let Some((w, h)) = self.shot(cx).map(|s| (s.w as f32, s.h as f32)) else {
+            return Point::default();
+        };
+        let (vw, vh) = self.viewport_size();
+        let s = self.current_scale(cx);
+        point(px(pan_limit(f32::from(o.x), w * s, vw)), px(pan_limit(f32::from(o.y), h * s, vh)))
+    }
+
+    /// Where the image's top-left sits in the viewport: centered when it fits, else after the
+    /// padding, then panned.
+    pub fn image_origin(&self, cx: &App) -> Point<Pixels> {
+        let Some((w, h)) = self.shot(cx).map(|s| (s.w as f32, s.h as f32)) else {
+            return Point::default();
+        };
+        let (vw, vh) = self.viewport_size();
+        let s = self.current_scale(cx);
+        let o = self.clamped(self.offset, cx);
+        point(px(lead(w * s, vw) + f32::from(o.x)), px(lead(h * s, vh) + f32::from(o.y)))
+    }
+
+    fn viewport_size(&self) -> (f32, f32) {
+        self.viewport.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height))).unwrap_or((640., 400.))
+    }
+
+    /// A wheel or two-finger scroll over the image: pans both ways at once; with ⇧ a mouse
+    /// wheel pans sideways; with ⌘ or ⌃ it zooms about the pointer.
+    pub fn wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let mut d = ev.delta.pixel_delta(px(WHEEL_LINE));
+        if ev.modifiers.platform || ev.modifiers.control {
+            self.zoom_at(Some((f32::from(d.y) * WHEEL_ZOOM).exp()), Some(ev.position), cx);
+            return;
+        }
+        if ev.modifiers.shift && d.x == px(0.) {
+            d = point(d.y, px(0.));
+        }
+        self.set_offset(self.offset + d, cx);
+        cx.notify();
+    }
+
+    /// A trackpad pinch: zoom about its center.
+    pub fn pinch(&mut self, ev: &PinchEvent, cx: &mut Context<Self>) {
+        self.zoom_at(Some((1. + ev.delta).max(0.1)), Some(ev.position), cx);
+    }
+
+    pub fn pan_start(&mut self, p: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit(window, cx);
+        self.drag = None;
+        self.pan = Some((p, self.clamped(self.offset, cx)));
+        cx.notify();
+    }
+
+    pub fn pan_move(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some((start, off)) = self.pan {
+            self.set_offset(off + (p - start), cx);
+            cx.notify();
+        }
+    }
+
+    pub fn pan_end(&mut self, cx: &mut Context<Self>) {
+        if self.pan.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Screen px per image px: the zoom, or the fit into the viewport (at most 2×).
     pub fn current_scale(&self, cx: &App) -> f32 {
-        if let Some(z) = self.zoom {
-            return z;
-        }
+        self.zoom.unwrap_or_else(|| self.fit_scale(cx))
+    }
+
+    /// The scale that fits the whole image in the viewport (at most 2×).
+    fn fit_scale(&self, cx: &App) -> f32 {
         let Some(s) = self.shot(cx) else {
             return 1.;
         };
-        let (vw, vh) = self.viewport.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height))).unwrap_or((640., 400.));
-        fit_scale(s.w, s.h, vw - 32., vh - 32.)
+        let (vw, vh) = self.viewport_size();
+        fit_scale(s.w, s.h, vw - 2. * STAGE_PAD, vh - 2. * STAGE_PAD)
     }
 
     /// ⌘V in the sheet, or its Paste button.
@@ -708,6 +818,38 @@ impl AnnotateView {
 
 /// A drag of at least this many screen pixels draws an area; less is a click.
 const DRAG_MIN: f32 = 5.;
+
+/// The space around the image inside the viewport.
+pub const STAGE_PAD: f32 = 16.;
+/// Zooming out stops at half the fit; in, at 8×.
+const ZOOM_OUT_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 8.;
+/// How far past its edges the image can be scrolled, as a fraction of the viewport.
+const OVERSCROLL: f32 = 0.35;
+/// Pixels per wheel line, and how much zoom a pixel of ⌘-scroll is (a notch ≈ 10%).
+const WHEEL_LINE: f32 = 20.;
+const WHEEL_ZOOM: f32 = 0.005;
+
+/// Where an image `d` px long starts in a viewport `v` px long, before scrolling: centered
+/// when it fits, else after the padding.
+fn lead(d: f32, v: f32) -> f32 {
+    (v.max(d + 2. * STAGE_PAD) - d) / 2.
+}
+
+/// One axis of [`AnnotateView::clamped`]: offset `o` for an image `d` px long in a viewport
+/// `v` px long.
+fn pan_limit(o: f32, d: f32, v: f32) -> f32 {
+    let slack = v * OVERSCROLL;
+    o.clamp(-(d + 2. * STAGE_PAD - v).max(0.) - slack, slack)
+}
+
+/// One axis of [`AnnotateView::zoom_at`]: the scroll offset that keeps the image point at `at`
+/// (px from the viewport's start) under it when an image `len` px long goes from scale `old`
+/// to `new`, given the offset `off` now. Not yet kept within the image.
+fn anchored(at: f32, off: f32, len: f32, old: f32, new: f32, v: f32) -> f32 {
+    let f = (at - off - lead(len * old, v)) / (len * old);
+    at - f * len * new - lead(len * new, v)
+}
 
 pub fn fit_scale(w: u32, h: u32, vw: f32, vh: f32) -> f32 {
     if w == 0 || h == 0 {
@@ -997,7 +1139,7 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMsg, Mark, Note, Outgoing, Source, fit_scale, load, notes_text};
+    use super::{ClientMsg, Mark, Note, OVERSCROLL, Outgoing, STAGE_PAD, Source, anchored, fit_scale, lead, load, notes_text, pan_limit};
     use ::core::prelude::v1::test;
     use std::path::PathBuf;
 
@@ -1051,6 +1193,29 @@ mod tests {
             ClientMsg::Paste("Annotations".into()),
         ];
         assert_eq!(o.steps(), want);
+    }
+
+    #[test]
+    fn zooming_keeps_the_point_under_the_pointer() {
+        // A 1000 px image at 1× in a 600 px viewport, scrolled 200 px in, pointer at 300.
+        let (len, v, at, off): (f32, f32, f32, f32) = (1000., 600., 300., -200.);
+        let before = (at - off - lead(len * 1., v)) / (len * 1.);
+        let new_off = anchored(at, off, len, 1., 2., v);
+        let after = (at - new_off - lead(len * 2., v)) / (len * 2.);
+        assert!((before - after).abs() < 1e-6, "{before} vs {after}");
+        // Zooming out to where it fits centers it, whatever the pointer.
+        assert_eq!(lead(400., v), 100.);
+        assert_eq!(lead(len, v), STAGE_PAD);
+    }
+
+    #[test]
+    fn panning_goes_a_little_past_the_edges() {
+        // An image that fits still moves by the slack either way.
+        assert_eq!(pan_limit(1000., 400., 600.), 600. * OVERSCROLL);
+        assert_eq!(pan_limit(-1000., 400., 600.), -600. * OVERSCROLL);
+        // A bigger one scrolls to its far edge, then the slack.
+        assert_eq!(pan_limit(-5000., 1000., 600.), -(1000. + 2. * STAGE_PAD - 600.) - 600. * OVERSCROLL);
+        assert_eq!(pan_limit(-50., 1000., 600.), -50.);
     }
 
     #[test]

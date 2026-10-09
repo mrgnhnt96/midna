@@ -385,9 +385,12 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |v, _, w, cx| {
-                        cx.stop_propagation();
-                        v.edit(i, w, cx);
+                    cx.listener(move |v, ev: &MouseDownEvent, w, cx| {
+                        // ⌥ pans, from the viewport.
+                        if !ev.modifiers.alt {
+                            cx.stop_propagation();
+                            v.edit(i, w, cx);
+                        }
                     }),
                 )
                 .child(badge(t, i + 1, size).border_2().border_color(if selected { t.accent_fg } else { white() }).shadow(vec![drop()]))
@@ -402,6 +405,7 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
     }
     let stage_cell = a.stage.clone();
     let dragging = a.drag.is_some();
+    let panning = a.pan.is_some();
     let entity = cx.entity();
     let image = div()
         .id("annot-image")
@@ -409,9 +413,17 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
         .flex_none()
         .w(px(dw))
         .h(px(dh))
-        .cursor_crosshair()
+        .map(|d| if panning { d.cursor_grabbing() } else { d.cursor_crosshair() })
         .shadow(vec![ring(t.line, 1.)])
-        .on_mouse_down(MouseButton::Left, cx.listener(|v, ev: &MouseDownEvent, w, cx| v.pointer_down(ev.position, w, cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, ev: &MouseDownEvent, w, cx| {
+                // ⌥-drag pans, from the viewport.
+                if !ev.modifiers.alt {
+                    v.pointer_down(ev.position, w, cx);
+                }
+            }),
+        )
         .child(img(shot.image.clone()).size_full())
         .child(
             canvas(
@@ -443,37 +455,77 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
         )
         .children(marks);
 
-    // The viewport scrolls when zoomed past the fit; its size drives the fit.
+    // The viewport clips the image and places it itself (`image_origin`), so panning and
+    // zooming about the pointer match what's on screen; its size drives the fit. A wheel or
+    // two-finger scroll pans both ways, ⌘-scroll or a pinch zooms about the pointer, and
+    // ⌥-drag or a middle-drag pans.
     let vp_cell = a.viewport.clone();
+    let entity = cx.entity();
+    let origin = a.image_origin(cx);
     let viewport = div()
+        .id("annot-viewport")
         .relative()
         .flex_1()
         .min_h_0()
+        .overflow_hidden()
+        .when(panning, |d| d.cursor_grabbing())
+        .on_scroll_wheel(cx.listener(|v, ev: &ScrollWheelEvent, _, cx| {
+            cx.stop_propagation();
+            v.wheel(ev, cx);
+        }))
+        .on_pinch(cx.listener(|v, ev: &PinchEvent, _, cx| {
+            cx.stop_propagation();
+            v.pinch(ev, cx);
+        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, ev: &MouseDownEvent, w, cx| {
+                if ev.modifiers.alt {
+                    cx.stop_propagation();
+                    v.pan_start(ev.position, w, cx);
+                }
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(|v, ev: &MouseDownEvent, w, cx| {
+                cx.stop_propagation();
+                v.pan_start(ev.position, w, cx);
+            }),
+        )
         .child(
             canvas(
                 move |b, window, _| {
-                    if vp_cell.get().map(|o| o.size) != Some(b.size) {
+                    if vp_cell.get() != Some(b) {
                         vp_cell.set(Some(b));
                         window.refresh();
                     }
                 },
-                |_, _, _, _| {},
+                move |_, _, window, _| {
+                    if !panning {
+                        return;
+                    }
+                    // Like a drag, a pan follows the pointer anywhere in the window.
+                    let e = entity.clone();
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            e.update(cx, |v, cx| v.pan_move(ev.position, cx));
+                        }
+                    });
+                    let e = entity.clone();
+                    window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble && matches!(ev.button, MouseButton::Left | MouseButton::Middle) {
+                            e.update(cx, |v, cx| v.pan_end(cx));
+                        }
+                    });
+                },
             )
             .absolute()
             .top_0()
             .left_0()
             .size_full(),
         )
-        .child(
-            div()
-                .id("annot-viewport")
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .overflow_scroll()
-                .child(div().flex().items_center().justify_center().min_w(relative(1.)).min_h(relative(1.)).p(px(16.)).child(image)),
-        );
+        .child(div().absolute().left(origin.x).top(origin.y).child(image));
 
     div()
         .flex()
