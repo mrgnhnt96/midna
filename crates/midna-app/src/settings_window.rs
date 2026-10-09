@@ -865,6 +865,34 @@ struct Shown {
     rows: Vec<Hit>,
 }
 
+/// The choices a number setting shows instead of a field, as (value, label).
+fn presets(key: &str) -> Option<&'static [(i64, &'static str)]> {
+    Some(match key {
+        "keep_awake.min_battery" => &[(0, "No limit"), (10, "10%"), (20, "20%"), (30, "30%"), (50, "50%")],
+        "keep_awake.linger_mins" => &[(0, "None"), (5, "5 min"), (10, "10 min"), (15, "15 min"), (30, "30 min")],
+        "agents.restart_idle_secs" => &[(3, "3 s"), (5, "5 s"), (10, "10 s"), (15, "15 s"), (60, "1 min")],
+        "policy.request_timeout_secs" => &[(60, "1 min"), (300, "5 min"), (900, "15 min"), (3600, "60 min")],
+        "git.refresh_secs" => &[(5, "5 s"), (10, "10 s"), (30, "30 s"), (60, "60 s")],
+        "notify.turn_done_min_secs" => &[(0, "Every turn"), (10, "10 s"), (30, "30 s"), (60, "1 min"), (300, "5 min")],
+        "needs_you.expire_hours" => &[(0, "Never"), (4, "4 h"), (12, "12 h"), (24, "24 h"), (72, "3 days")],
+        _ => return None,
+    })
+}
+
+/// A number setting's value that isn't one of its presets, in the presets' unit.
+fn preset_label(key: &str, v: i64) -> String {
+    let unit = key.rsplit('_').next().unwrap_or("");
+    match unit {
+        "battery" => format!("{v}%"),
+        "mins" => format!("{v} min"),
+        "hours" if v > 0 && v % 24 == 0 => format!("{} days", v / 24),
+        "hours" => format!("{v} h"),
+        "secs" if v > 0 && v % 3600 == 0 => format!("{} h", v / 3600),
+        "secs" if v > 0 && v % 60 == 0 => format!("{} min", v / 60),
+        _ => format!("{v} s"),
+    }
+}
+
 fn label_for(key: &str) -> String {
     match key {
         "theme" => "Theme",
@@ -913,8 +941,8 @@ fn label_for(key: &str) -> String {
         "cleanup.timeout_secs" => "Give up after (seconds)",
         "agents.system_hint" => "Tell agents they're in midna",
         "policy.default" => "When no rule matches",
-        "policy.request_timeout_secs" => "Approval timeout (seconds)",
-        "git.refresh_secs" => "Git refresh (seconds)",
+        "policy.request_timeout_secs" => "Approval timeout",
+        "git.refresh_secs" => "Git refresh",
         "kass.auto_send" => "Send dictation when Kass finishes",
         "windows.close_with_terminals" => "Closing a window with terminals",
         "ide.app" => "Open in IDE",
@@ -934,7 +962,7 @@ fn label_for(key: &str) -> String {
         "ui.status.looks" => "Status looks",
         "terminal.option_as_meta" => "Option as Meta",
         "agents.restart_on_update" => "After an agent update",
-        "agents.restart_idle_secs" => "Idle before a restart (seconds)",
+        "agents.restart_idle_secs" => "Idle before a restart",
         "agents.adopt_typed" => "Adopt agents typed in a shell",
         "agents.shell_on_exit" => "Drop to a shell when an agent exits",
         "agents.resume_after_sleep" => "Resume after sleep",
@@ -949,7 +977,7 @@ fn label_for(key: &str) -> String {
         "terminal.preview_path_click" => "Clicking a preview's path",
         "terminal.image_paste" => "⌘V of an image",
         "notify.enabled" => "Show notifications",
-        "notify.turn_done_min_secs" => "“Agent finished” after (seconds)",
+        "notify.turn_done_min_secs" => "“Agent finished” after",
         "notify.volume" => "All sounds",
         "notify.sounds" => "Play sounds",
         "notify.sounds_in_app" => "While you're using midna",
@@ -961,7 +989,7 @@ fn label_for(key: &str) -> String {
         "needs_you.clear_failed_on_run" => "A terminal working again clears its failures",
         "needs_you.withdraw_orphans" => "Take back approvals nobody can act on",
         "notify.badge.clear_on_open" => "Opening a terminal clears its badge notifications",
-        "needs_you.expire_hours" => "Take back unanswered items after (hours, 0 = never)",
+        "needs_you.expire_hours" => "Take back unanswered items after",
         "notify.badge.idle" => "Show it with nothing waiting",
         "notify.badge.corner" => "Corner",
         "notify.badge.snap" => "When you drop it",
@@ -1112,7 +1140,8 @@ impl SettingsWindow {
         let mut note = blurbs::blurb(key).map(str::to_string).unwrap_or_else(|| brief(spec.description.trim_end_matches(" Human only.")));
         if changed {
             let default = spec.default.to_json();
-            let shown = midna_proto::keep_awake::display(key, &default).unwrap_or_else(|| value_text(&default));
+            let preset = presets(key).and_then(|c| c.iter().find(|(v, _)| default.as_i64() == Some(*v))).map(|(_, l)| l.to_string());
+            let shown = preset.or_else(|| midna_proto::keep_awake::display(key, &default)).unwrap_or_else(|| value_text(&default));
             // a long default (a list, a layout) would bury the line
             match shown.chars().count() {
                 0 => note.push_str(" (default: none)"),
@@ -1237,6 +1266,15 @@ impl SettingsWindow {
         if key.starts_with("keep_awake.") && key != "keep_awake.enabled" && self.value("keep_awake.enabled") != json!(true) {
             r.note = off("keep-awake is off");
         }
+        if let Some(choices) = presets(key) {
+            let current = self.value(key).as_i64().unwrap_or(0);
+            let mut options: Vec<(String, String)> = choices.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+            // a value set some other way (the CLI, an agent) shows as one more choice
+            if !choices.iter().any(|(v, _)| *v == current) {
+                options.push((current.to_string(), preset_label(key, current)));
+            }
+            r.control = Control::Seg { key: key.into(), options, current: current.to_string() };
+        }
         match key {
             "notify.turn_done_min_secs" | "notify.when_app_closed" if self.notify_off() => r.note = off("notifications are off"),
             "terminal.preview_path_click" if self.value("terminal.link_preview") == json!("off") => r.note = off("link previews are off"),
@@ -1275,19 +1313,6 @@ impl SettingsWindow {
                     r.control = Control::Text { dot: None, text: "Needs your password once".into(), color: t.dim, action: Some(("Set up…".into(), Act::WakeSetup, true)) };
                     r.cli = "midna keep-awake wake setup".into();
                 }
-            }
-            "keep_awake.min_battery" | "keep_awake.linger_mins" => {
-                let choices: &[(i64, &str)] = if key == "keep_awake.min_battery" {
-                    &[(0, "No limit"), (10, "10%"), (20, "20%"), (30, "30%"), (50, "50%")]
-                } else {
-                    &[(0, "None"), (5, "5 min"), (10, "10 min"), (15, "15 min"), (30, "30 min")]
-                };
-                let current = self.value(key).as_i64().unwrap_or(0);
-                let mut options: Vec<(String, String)> = choices.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
-                if !choices.iter().any(|(v, _)| *v == current) {
-                    options.push((current.to_string(), current.to_string()));
-                }
-                r.control = Control::Seg { key: key.into(), options, current: current.to_string() };
             }
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
@@ -3148,7 +3173,7 @@ fn snapshot(handle: WindowHandle<SettingsWindow>, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
-    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, search};
+    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, preset_label, presets, search};
     use midna_proto::notify::{CATEGORIES, EFFECTS};
     use midna_proto::settings::{SETTINGS, setting};
 
@@ -3219,6 +3244,29 @@ mod tests {
         assert_eq!(brief(long), "Script that renders the terminal header line.");
         // a search shows the sentence that matched
         assert_eq!(excerpt("Spacing of rows. Compact fits more. Done.", &["fits".into()]), "… Compact fits more.");
+    }
+
+    #[test]
+    fn presets_are_values_their_setting_takes() {
+        for key in ["keep_awake.min_battery", "keep_awake.linger_mins", "agents.restart_idle_secs", "policy.request_timeout_secs", "git.refresh_secs", "notify.turn_done_min_secs", "needs_you.expire_hours"] {
+            let spec = setting(key).unwrap();
+            let choices = presets(key).unwrap();
+            assert!(choices.len() <= 5, "{key}: more than a row of segments");
+            assert!(spec.range.is_some(), "{key}: no range");
+            for (v, _) in choices {
+                assert!(spec.coerce(&serde_json::json!(v)).is_ok(), "{key} = {v}");
+            }
+            // the default is one of them, so a fresh install shows no extra choice
+            assert!(choices.iter().any(|(v, _)| Some(*v) == spec.default.to_json().as_i64()), "{key}: default isn't a preset");
+        }
+        // a value set from the CLI shows in the presets' unit
+        assert_eq!(preset_label("agents.restart_idle_secs", 45), "45 s");
+        assert_eq!(preset_label("policy.request_timeout_secs", 120), "2 min");
+        assert_eq!(preset_label("policy.request_timeout_secs", 7200), "2 h");
+        assert_eq!(preset_label("needs_you.expire_hours", 48), "2 days");
+        assert_eq!(preset_label("needs_you.expire_hours", 6), "6 h");
+        assert_eq!(preset_label("keep_awake.linger_mins", 20), "20 min");
+        assert_eq!(preset_label("keep_awake.min_battery", 40), "40%");
     }
 
     #[test]
