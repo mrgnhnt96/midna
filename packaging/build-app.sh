@@ -78,7 +78,7 @@ if [ "$BUILD" = 1 ]; then
   . "$ROOT/env.sh"
   echo "==> cargo build --release (midna $VERSION, target $TARGET_DIR)"
   if [ -n "$PUBKEY" ]; then export MIDNA_UPDATE_PUBKEY="$PUBKEY"; else unset MIDNA_UPDATE_PUBKEY; fi
-  MIDNA_DEV_HOME="$DEV_HOME" MIDNA_BUILD_VERSION="$VERSION" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" \
+  MIDNA_DEV_HOME="$DEV_HOME" MIDNA_BUILD_VERSION="$VERSION" MACOSX_DEPLOYMENT_TARGET=12.0 CARGO_TARGET_DIR="$TARGET_DIR" CARGO_BUILD_BUILD_DIR="$TARGET_DIR" \
     cargo build --release -p midna-app -p midnad -p midna-cli --bin midna-app --bin midnad --bin midna ${FEATURES[@]+"${FEATURES[@]}"}
 fi
 for b in midna-app midnad midna; do [ -x "$BIN/$b" ] || { echo "missing $BIN/$b" >&2; exit 1; }; done

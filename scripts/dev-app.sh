@@ -9,7 +9,7 @@
 # place).
 #
 #   scripts/dev-app.sh [--test[=CRATES]] [--no-build]
-#     --test       run `cargo test --workspace` first and stop if it fails
+#     --test       run all the tests (scripts/test.sh) first and stop if they fail
 #     --test=app   test only the named crates (comma separated: app, daemon, cli, proto) plus
 #                  the crates that depend on them, e.g. --test=daemon tests midnad and midna-cli
 #     --no-build   skip the build; just reinstall and restart from the last dev build
@@ -86,8 +86,8 @@ test_args() {
 
 if [ "$TEST" = 1 ]; then
   args="$(test_args)"
-  echo "==> cargo test $args"
-  if ! cargo test $args; then
+  echo "==> scripts/test.sh $args"
+  if ! scripts/test.sh $args; then
     echo "tests failed; not installing" >&2
     exit 1
   fi
