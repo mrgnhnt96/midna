@@ -7,8 +7,8 @@
 //! spring to their new shares; a color that empties shrinks away, its gap with it.
 //!
 //! Getting to the card: once it's open, another color (this project's or another's) takes over
-//! only after the pointer rests on it for `SWITCH`; and while the pointer moves inside the aim
-//! zone, a triangle from where it left the bar to the card's near edge, no bar reacts at all.
+//! only after the pointer rests on it for `SWITCH`, and each move inside the aim zone (a
+//! triangle from where it left the bar to the card's near edge) restarts that wait.
 //! Leaving the bar gives `GRACE` to reach the card. In the lower half of the window the card
 //! grows upward from the bar. Its list scrolls past `LIST_MAX`.
 use crate::app::MainWindow;
@@ -199,6 +199,8 @@ impl Width {
 #[derive(Default)]
 pub struct FoldPeek {
     pub open: Option<Spot>,
+    /// The color the pointer is on.
+    hovered: Option<Key>,
     /// A switch waiting on the pointer to rest; a close waiting out the grace period.
     pending: Option<Task<()>>,
     closing: Option<Task<()>>,
@@ -284,29 +286,44 @@ fn spot(m: &MainWindow) -> Option<Spot> {
 /// The pointer came onto a color.
 fn enter(m: &mut MainWindow, key: Key, cx: &mut Context<MainWindow>) {
     let p = &mut m.fold_peek;
+    p.hovered = Some(key.clone());
     let open = p.open.as_ref().map(|o| (o.project.clone(), o.bucket));
-    let same = open.as_ref() == Some(&key);
-    // Heading for the card: colors crossed on the way don't react.
-    if open.is_some() && !same && p.aiming() {
+    // Heading for the card: colors crossed on the way wait until the pointer rests (`moved`
+    // restarts the wait).
+    if open.is_some() && open.as_ref() != Some(&key) && p.aiming() {
+        switch_after_rest(m, key, cx);
         return;
     }
     p.closing = None;
     p.pending = None;
-    if same {
-        return;
+    match open {
+        Some(o) if o == key => {}
+        Some(_) => switch_after_rest(m, key, cx),
+        None => {
+            if let Some(spot) = spot_of(m, &key) {
+                show(m, spot, cx);
+            }
+        }
     }
-    let Some(b) = p.bars.borrow().get(&key).copied() else { return };
-    let spot = Spot { project: key.0.clone(), bucket: key.1, mid_y: f32::from(b.center().y) };
-    if open.is_none() {
-        show(m, spot, cx);
-        return;
-    }
-    // A card is open: switch only if the pointer rests here.
+}
+
+fn spot_of(m: &MainWindow, key: &Key) -> Option<Spot> {
+    let b = m.fold_peek.bars.borrow().get(key).copied()?;
+    Some(Spot { project: key.0.clone(), bucket: key.1, mid_y: f32::from(b.center().y) })
+}
+
+/// A card is open: switch to `key` once the pointer has rested on it for `SWITCH`.
+fn switch_after_rest(m: &mut MainWindow, key: Key, cx: &mut Context<MainWindow>) {
     m.fold_peek.pending = Some(cx.spawn(async move |this, cx| {
         cx.background_executor().timer(SWITCH).await;
         let _ = this.update(cx, |m, cx| {
             m.fold_peek.pending = None;
-            show(m, spot, cx);
+            if m.fold_peek.hovered.as_ref() != Some(&key) {
+                return;
+            }
+            if let Some(spot) = spot_of(m, &key) {
+                show(m, spot, cx);
+            }
         });
     }));
 }
@@ -319,6 +336,7 @@ fn show(m: &mut MainWindow, spot: Spot, cx: &mut Context<MainWindow>) {
     }
     p.set_grow((spot.project.clone(), spot.bucket), 1., reduce);
     p.open = Some(spot);
+    p.closing = None;
     p.aim = None;
     p.aim_until = None;
     p.card.set(None);
@@ -326,8 +344,13 @@ fn show(m: &mut MainWindow, spot: Spot, cx: &mut Context<MainWindow>) {
 }
 
 /// The pointer left a color: the aim zone runs from here to the card.
-fn leave(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
+fn leave(m: &mut MainWindow, key: &Key, window: &Window, cx: &mut Context<MainWindow>) {
     let p = &mut m.fold_peek;
+    // Leaving one color for the next can arrive after entering it.
+    if p.hovered.as_ref() != Some(key) {
+        return;
+    }
+    p.hovered = None;
     p.pending = None;
     if p.open.is_none() {
         return;
@@ -339,13 +362,18 @@ fn leave(m: &mut MainWindow, window: &Window, cx: &mut Context<MainWindow>) {
     close_after(m, GRACE, cx);
 }
 
-/// The pointer moved over the sidebar: inside the aim zone, the card holds and bars stay quiet.
+/// The pointer moved over the sidebar: inside the aim zone, the card holds and a color it's
+/// crossing waits for it to rest.
 pub fn moved(m: &mut MainWindow, pos: Point<Pixels>, cx: &mut Context<MainWindow>) {
     let p = &mut m.fold_peek;
     let Some(aim) = p.aim.filter(|_| p.open.is_some()) else { return };
     if in_triangle(pos, aim) {
         p.aim_until = Some(Instant::now() + AIM_HOLD);
-        p.pending = None;
+        let open = p.open.as_ref().map(|o| (o.project.clone(), o.bucket));
+        match p.hovered.clone().filter(|h| open.as_ref() != Some(h)) {
+            Some(h) => switch_after_rest(m, h, cx),
+            None => m.fold_peek.pending = None,
+        }
         close_after(m, GRACE, cx);
     }
 }
@@ -380,7 +408,7 @@ pub fn forget(m: &MainWindow, project: &str) {
 
 /// The bar under a folded project's heading.
 pub fn bar(m: &MainWindow, t: &Theme, project: &str, sessions: &[&Session], window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
-    let n = tally(sessions.iter().map(|s| m.effective_state(s)));
+    let n = tally(sessions.iter().map(|s| m.counted_state(s)));
     let widths = m.fold_peek.widths(project, n, cx.reduce_motion());
     if m.fold_peek.growing() || m.fold_peek.widening(project) {
         window.request_animation_frame();
@@ -420,7 +448,7 @@ pub fn bar(m: &MainWindow, t: &Theme, project: &str, sessions: &[&Session], wind
                 })
                 .when(n > 0, |d| {
                     d.on_hover(cx.listener(move |m, over: &bool, w, cx| {
-                        if *over { enter(m, key.clone(), cx) } else { leave(m, w, cx) }
+                        if *over { enter(m, key.clone(), cx) } else { leave(m, &key, w, cx) }
                     }))
                 })
                 .child(div().flex_1().h(px(h.max(1.))).mx(px(-REACH * v.max(0.))).rounded(px(h / 2.)).bg(b.fill(t)))
@@ -437,7 +465,7 @@ pub fn card(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     }
     let groups = m.groups();
     let g = groups.iter().find(|g| g.project.is_some_and(|p| p.id == spot.project))?;
-    let mine: Vec<&Session> = g.sessions.iter().copied().filter(|s| Bucket::of(m.effective_state(s)) == spot.bucket).collect();
+    let mine: Vec<&Session> = g.sessions.iter().copied().filter(|s| Bucket::of(m.counted_state(s)) == spot.bucket).collect();
     if mine.is_empty() {
         return None;
     }
@@ -525,6 +553,8 @@ fn peek_row(m: &MainWindow, t: &Theme, s: &Session, bucket: Bucket, cx: &mut Con
             .filter(|r| !r.is_empty())
             .or_else(|| need.map(|n| n.title.clone()))
             .or_else(|| s.status.exit_code.map(|c| format!("exit {c}"))),
+        // Counted as working only because its background work runs on: say so.
+        Bucket::Working if m.effective_state(s) == StatusState::Done => crate::app::background_note(s).map(|n| format!("Turn done · {n}")),
         _ => None,
     };
     let id = s.id.clone();
