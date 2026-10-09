@@ -3,7 +3,8 @@
 //! bar shows how its terminals stand: one color per status, most urgent first, each as wide as
 //! its count. Pointing at a color grows it (a small spring) and opens a card beside the sidebar
 //! listing that status's terminals, each with its time and, for needs-you and failed, its
-//! reason; click one to open it.
+//! reason; click one to open it. As terminals come, go or change state, the colors' widths
+//! spring to their new shares; a color that empties shrinks away, its gap with it.
 //!
 //! Getting to the card: once it's open, another color (this project's or another's) takes over
 //! only after the pointer rests on it for `SWITCH`; and while the pointer moves inside the aim
@@ -30,6 +31,12 @@ const CARD_GRACE: Duration = Duration::from_millis(200);
 const AIM_HOLD: Duration = Duration::from_millis(120);
 /// A color growing or shrinking back.
 const GROW_MS: f32 = 180.;
+/// A color's width moving to its new share.
+const WIDTH_MS: f32 = 300.;
+/// Between two colors.
+const GAP: f32 = 2.;
+/// A color's narrowest.
+const MIN_W: f32 = 4.;
 /// The bar's height: the hit area around the line.
 pub const BAR_H: f32 = 14.;
 const LINE: f32 = 3.;
@@ -104,13 +111,25 @@ impl Bucket {
     }
 }
 
-/// How many terminals are in each color, in bar order, leaving out empty ones.
-pub fn counts(states: impl IntoIterator<Item = StatusState>) -> Vec<(Bucket, usize)> {
+/// How many terminals are in each color, in bar order.
+fn tally(states: impl IntoIterator<Item = StatusState>) -> [usize; 5] {
     let mut n = [0usize; 5];
     for s in states {
         n[Bucket::ORDER.iter().position(|b| *b == Bucket::of(s)).unwrap_or(4)] += 1;
     }
-    Bucket::ORDER.iter().zip(n).filter(|(_, n)| *n > 0).map(|(b, n)| (*b, n)).collect()
+    n
+}
+
+/// The gap before each color, given how present each is (0 = gone, 1 = there): a color
+/// growing in or shrinking away brings its gap in or takes it away with it, and the first
+/// color shown has none.
+fn gaps(present: &[f32]) -> Vec<f32> {
+    let mut before = 0f32;
+    present.iter().map(|&p| {
+        let g = GAP * p * before;
+        before = before.max(p);
+        g
+    }).collect()
 }
 
 /// `p` inside the triangle `abc` (edges included).
@@ -154,6 +173,29 @@ impl Grow {
     }
 }
 
+/// One color's width (its count, as a flex weight) moving: since when, from and to.
+#[derive(Clone, Copy, Debug)]
+struct Width {
+    at: Instant,
+    from: f32,
+    to: f32,
+}
+
+impl Width {
+    fn at_rest(to: f32) -> Self {
+        Width { at: Instant::now() - Duration::from_secs(1), from: to, to }
+    }
+
+    fn value(&self) -> f32 {
+        let x = self.at.elapsed().as_secs_f32() * 1000. / WIDTH_MS;
+        if x >= 1. { self.to } else { (self.from + (self.to - self.from) * spring(x)).max(0.) }
+    }
+
+    fn moving(&self) -> bool {
+        self.at.elapsed().as_secs_f32() * 1000. < WIDTH_MS
+    }
+}
+
 #[derive(Default)]
 pub struct FoldPeek {
     pub open: Option<Spot>,
@@ -167,6 +209,8 @@ pub struct FoldPeek {
     bars: Rc<RefCell<HashMap<Key, Bounds<Pixels>>>>,
     card: Rc<Cell<Option<Bounds<Pixels>>>>,
     grow: HashMap<Key, Grow>,
+    /// Each folded project's colors' widths, kept while its bar shows (set while painting).
+    widths: RefCell<HashMap<Key, Width>>,
 }
 
 impl FoldPeek {
@@ -182,6 +226,27 @@ impl FoldPeek {
         let from = self.grown(&key);
         let at = if reduce { Instant::now() - Duration::from_secs(1) } else { Instant::now() };
         self.grow.insert(key, Grow { at, from, to });
+    }
+
+    /// `project`'s colors' widths for counts `n`: a change springs from where the width is
+    /// now; a bar just shown starts at rest.
+    fn widths(&self, project: &str, n: [usize; 5], reduce: bool) -> [f32; 5] {
+        let mut ws = self.widths.borrow_mut();
+        let fresh = !ws.keys().any(|(p, _)| p == project);
+        let mut out = [0.; 5];
+        for (i, b) in Bucket::ORDER.into_iter().enumerate() {
+            let to = n[i] as f32;
+            let w = ws.entry((project.to_string(), b)).or_insert_with(|| Width::at_rest(if fresh { to } else { 0. }));
+            if w.to != to {
+                *w = if reduce { Width::at_rest(to) } else { Width { at: Instant::now(), from: w.value(), to } };
+            }
+            out[i] = w.value();
+        }
+        out
+    }
+
+    fn widening(&self, project: &str) -> bool {
+        self.widths.borrow().iter().any(|((p, _), w)| p == project && w.moving())
     }
 
     fn aiming(&self) -> bool {
@@ -305,19 +370,30 @@ pub fn close(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
+/// `project` isn't folded: its bar starts at rest the next time it shows.
+pub fn forget(m: &MainWindow, project: &str) {
+    let mut ws = m.fold_peek.widths.borrow_mut();
+    if ws.keys().any(|(p, _)| p == project) {
+        ws.retain(|(p, _), _| p != project);
+    }
+}
+
 /// The bar under a folded project's heading.
 pub fn bar(m: &MainWindow, t: &Theme, project: &str, sessions: &[&Session], window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
-    let parts = counts(sessions.iter().map(|s| m.effective_state(s)));
-    if m.fold_peek.growing() {
+    let n = tally(sessions.iter().map(|s| m.effective_state(s)));
+    let widths = m.fold_peek.widths(project, n, cx.reduce_motion());
+    if m.fold_peek.growing() || m.fold_peek.widening(project) {
         window.request_animation_frame();
     }
-    let keys: Vec<Key> = parts.iter().map(|(b, _)| (project.to_string(), *b)).collect();
+    // Colors with terminals, and emptied ones still shrinking away.
+    let parts: Vec<(Bucket, usize, f32)> = Bucket::ORDER.into_iter().zip(n).zip(widths).map(|((b, n), w)| (b, n, w)).filter(|(_, n, w)| *n > 0 || *w > 0.).collect();
+    let gaps = gaps(&parts.iter().map(|(_, _, w)| w.min(1.)).collect::<Vec<_>>());
+    let keys: Vec<Key> = parts.iter().map(|(b, ..)| (project.to_string(), *b)).collect();
     let bars = m.fold_peek.bars.clone();
     let keys_paint = keys.clone();
     div()
         .flex()
         .items_center()
-        .gap(px(2.))
         .h(px(BAR_H))
         .ml(px(26.))
         .mr(px(12.))
@@ -327,7 +403,7 @@ pub fn bar(m: &MainWindow, t: &Theme, project: &str, sessions: &[&Session], wind
                 bars.insert(k.clone(), b);
             }
         })
-        .children(parts.into_iter().zip(keys).map(|((b, n), key)| {
+        .children(parts.into_iter().zip(gaps).zip(keys).map(|(((b, n, w), gap), key)| {
             let v = if m.fold_peek.open.is_none() && debug_key().as_ref() == Some(&key) { 1. } else { m.fold_peek.grown(&key) };
             let h = LINE + (GROWN - LINE) * v;
             div()
@@ -336,14 +412,17 @@ pub fn bar(m: &MainWindow, t: &Theme, project: &str, sessions: &[&Session], wind
                 .items_center()
                 .h_full()
                 .flex_basis(px(0.))
-                .min_w(px(4.))
+                .min_w(px(MIN_W * w.min(1.)))
+                .ml(px(gap))
                 .map(|mut d| {
-                    d.style().flex_grow = Some(n as f32);
+                    d.style().flex_grow = Some(w);
                     d
                 })
-                .on_hover(cx.listener(move |m, over: &bool, w, cx| {
-                    if *over { enter(m, key.clone(), cx) } else { leave(m, w, cx) }
-                }))
+                .when(n > 0, |d| {
+                    d.on_hover(cx.listener(move |m, over: &bool, w, cx| {
+                        if *over { enter(m, key.clone(), cx) } else { leave(m, w, cx) }
+                    }))
+                })
                 .child(div().flex_1().h(px(h.max(1.))).mx(px(-REACH * v.max(0.))).rounded(px(h / 2.)).bg(b.fill(t)))
         }))
 }
@@ -490,11 +569,44 @@ mod tests {
     use ::core::prelude::v1::test;
 
     #[test]
-    fn counts_follow_bar_order_and_skip_empty_colors() {
+    fn tally_follows_bar_order() {
         use StatusState as S;
-        let got = counts([S::Idle, S::Working, S::NeedsYou, S::Exited, S::Working, S::Failed]);
-        assert_eq!(got, vec![(Bucket::NeedsYou, 1), (Bucket::Failed, 1), (Bucket::Working, 2), (Bucket::Idle, 2)]);
-        assert!(counts([]).is_empty());
+        assert_eq!(tally([S::Idle, S::Working, S::NeedsYou, S::Exited, S::Working, S::Failed]), [1, 1, 2, 0, 2]);
+        assert_eq!(tally([]), [0; 5]);
+    }
+
+    #[test]
+    fn gaps_come_and_go_with_their_colors() {
+        assert_eq!(gaps(&[1., 1., 1.]), vec![0., GAP, GAP]);
+        // The first color shrinking away takes the gap after it.
+        assert_eq!(gaps(&[0.5, 1.]), vec![0., GAP * 0.5]);
+        // A middle one takes its own and leaves one between its neighbours.
+        assert_eq!(gaps(&[1., 0.25, 1.]), vec![0., GAP * 0.25, GAP]);
+        assert_eq!(gaps(&[0., 0., 1.]), vec![0., 0., 0.]);
+    }
+
+    #[test]
+    fn widths_start_at_rest_then_spring() {
+        let p = FoldPeek::default();
+        assert_eq!(p.widths("p", [1, 0, 2, 0, 0], false), [1., 0., 2., 0., 0.]);
+        assert!(!p.widening("p"));
+        // A new terminal: its color grows from nothing.
+        let w = p.widths("p", [1, 0, 3, 0, 1], false);
+        assert!(w[2] < 3. && w[4] < 1. && p.widening("p"));
+        assert!(p.widths("p", [1, 0, 3, 0, 1], true)[2] < 3., "same counts leave it moving");
+        // Reduce motion: straight there.
+        p.widths("q", [1, 0, 2, 0, 0], true);
+        assert_eq!(p.widths("q", [0, 0, 3, 0, 1], true), [0., 0., 3., 0., 1.]);
+    }
+
+    #[test]
+    fn a_new_color_on_a_shown_bar_grows_from_nothing() {
+        let p = FoldPeek::default();
+        p.widths("p", [0, 0, 2, 0, 0], false);
+        assert!(p.widths("p", [0, 1, 2, 0, 0], false)[1] < 0.5);
+        // Forgotten (unfolded): the next showing starts at rest.
+        p.widths.borrow_mut().clear();
+        assert_eq!(p.widths("p", [0, 1, 2, 0, 0], false), [0., 1., 2., 0., 0.]);
     }
 
     #[test]

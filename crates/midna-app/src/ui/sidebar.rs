@@ -346,6 +346,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             let bar = crate::ui::fold_peek::bar(m, t, p, &g.sessions, window, cx);
             wipe(line, 0., div().flex_none().h(px(crate::ui::fold_peek::BAR_H * fold)).opacity(fold).child(bar).into_any_element())
         });
+        if let Some(p) = pid.as_deref().filter(|_| fold_bar.is_none()) {
+            crate::ui::fold_peek::forget(m, p);
+        }
         line += usize::from(g.project.is_some());
         let new_row = pid.clone().filter(|_| empty).map(|p| {
             let el = wipe(line, 26., ghost_row(t, p, cx).into_any_element());
