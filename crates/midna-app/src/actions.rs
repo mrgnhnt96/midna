@@ -222,6 +222,8 @@ pub const FIXED: &[Fixed] = &[
     fixed(&["cmd-up", "cmd-down"], "Previous / next image", "Image sheet"),
     fixed(&["cmd-w"], "Remove the image, or close the sheet when there's none", "Image sheet"),
     fixed(&["cmd-=", "cmd--", "cmd-0"], "Zoom in / out / fit", "Image sheet"),
+    Fixed { keys: &["cmd"], label: Some("⌘ scroll · pinch"), title: "Zoom about the pointer", place: "Image sheet" },
+    Fixed { keys: &["alt"], label: Some("⌥ drag · scroll"), title: "Pan the image (a middle-drag too)", place: "Image sheet" },
     fixed(&["cmd-v"], "Add the image on the clipboard", "Image sheet"),
     fixed(&["enter"], "Send to the terminal", "Composer"),
     fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo", "Composer"),
