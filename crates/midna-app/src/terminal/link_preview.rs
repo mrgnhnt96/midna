@@ -8,7 +8,8 @@
 //!
 //! Files show the lines around the target line (wide lines scroll sideways), folders their
 //! entries, images the image, GitHub pull requests their state and checks (`gh`), other web
-//! pages their title and description (fetched with `curl`, never for local or private hosts).
+//! pages their title and description (fetched with `curl`, never for local or private hosts),
+//! app links (`taskboard://…`) whatever their app's `MidnaLinkPreview` command prints.
 //! The footer opens a file in the IDE (`ide.rs`: real app icons, remembered per project; with
 //! nothing remembered yet the first click lists the editors), and clicking the path in the
 //! header reveals, opens or copies it (`terminal.preview_path_click`).
@@ -167,6 +168,8 @@ enum Body {
     Dir { rows: Vec<(String, bool, Option<u64>)>, total: usize },
     Pr(Pr),
     Web { title: Option<String>, desc: Option<String> },
+    /// What the link's app says about it (`MidnaLinkPreview`).
+    App(AppPreview),
 }
 
 struct Card {
@@ -521,6 +524,7 @@ impl TerminalView {
             Icon::File.el(14., t.dim)
         };
         let sub = match (&c.body, c.is_dir) {
+            (Body::App(p), _) => p.title.clone(),
             (Body::Dir { total, .. }, true) => format!("{}{}{total} item{}", c.sub, if c.sub.is_empty() { "" } else { " · " }, if *total == 1 { "" } else { "s" }),
             _ => c.sub.clone(),
         };
@@ -530,7 +534,10 @@ impl TerminalView {
             .gap(px(8.))
             .min_w_0()
             .child(div().flex_none().font_weight(FontWeight::BOLD).whitespace_nowrap().child(c.name.clone()))
-            .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(sub));
+            .child(match c.body {
+                Body::App(_) => div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(sub),
+                _ => div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(sub),
+            });
         let title = if c.link.url {
             div().flex_1().min_w_0().child(title).into_any_element()
         } else {
@@ -659,9 +666,10 @@ impl TerminalView {
         let mut row = div().flex().items_center().gap(px(6.)).px(px(10.)).py(px(8.)).border_t_1().border_color(t.line);
         if c.link.url {
             row = row
-                .child(primary("lp-browse").on_click(cx.listener(|t, _, _, cx| t.preview_browse(cx))).child(match &c.link.app {
-                    Some(app) => format!("Open in {app}"),
-                    None => "Open in browser".into(),
+                .child(primary("lp-browse").on_click(cx.listener(|t, _, _, cx| t.preview_browse(cx))).child(match (&c.body, &c.link.app) {
+                    (Body::App(AppPreview { open_label: Some(l), .. }), _) => l.clone(),
+                    (_, Some(app)) => format!("Open in {app}"),
+                    (_, None) => "Open in browser".into(),
                 }))
                 .child(secondary("lp-copy", "Copy URL").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))))
                 .when(!c.listed, |r| r.child(secondary("lp-add", "Add to links").on_click(cx.listener(|t, _, _, cx| t.preview_add_link(cx)))));
@@ -862,6 +870,48 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
             .when_some(desc.clone(), |d, s| d.child(div().text_color(t.dim).child(s)))
             .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(link.target.clone()))
             .into_any_element(),
+        Body::App(p) => {
+            let pill = p.status.as_ref().map(|(label, tone)| {
+                let bg = match tone {
+                    Tone::Ok => t.ok,
+                    Tone::Warn => t.need,
+                    Tone::Err => t.err,
+                    Tone::Busy => t.work,
+                    Tone::Idle => t.dim,
+                };
+                div().flex_none().px(px(8.)).rounded_full().bg(bg).text_color(t.term).font_weight(FontWeight::BOLD).child(label.clone())
+            });
+            let bar = p.progress.map(|(done, total)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(div().flex_1().h(px(5.)).rounded_full().bg(t.line).child(div().h_full().rounded_full().bg(t.ok).w(relative(done as f32 / total as f32))))
+                    .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(format!("{done}/{total}")))
+            });
+            let mut fields = div().flex().flex_col().gap(px(2.)).text_size(px(12.));
+            for (k, v) in &p.fields {
+                fields = fields.child(div().flex().gap(px(10.)).child(div().flex_none().w(px(84.)).text_color(t.dim).child(k.clone())).child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(v.clone())));
+            }
+            let mut lines = div().flex().flex_col().gap(px(2.)).text_color(t.dim);
+            for l in &p.lines {
+                lines = lines.child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(l.clone()));
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .px(px(14.))
+                .py(px(12.))
+                .when(pill.is_some() || p.subtitle.is_some(), |d| {
+                    d.child(div().flex().items_center().gap(px(10.)).text_size(px(12.)).children(pill).when_some(p.subtitle.clone(), |d, s| d.child(div().min_w_0().text_color(t.dim).child(s))))
+                })
+                .when(!p.fields.is_empty(), |d| d.child(fields))
+                .when(!p.lines.is_empty(), |d| d.child(lines))
+                .children(bar)
+                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(link.target.clone()))
+                .into_any_element()
+        }
     }
 }
 
@@ -914,7 +964,7 @@ pub(super) fn human_size(n: u64) -> String {
 
 fn load(link: &Link) -> Body {
     if let Some(app) = &link.app {
-        return Body::Note(format!("Opens in {app}"));
+        return load_app(&link.target).map(Body::App).unwrap_or_else(|| Body::Note(format!("Opens in {app}")));
     }
     if link.url { load_url(&link.target) } else { load_path(Path::new(&link.target), link.line) }
 }
@@ -1014,10 +1064,177 @@ fn load_url(url: &str) -> Body {
     body
 }
 
-/// Run `cmd`, keeping at most `limit` bytes of its output; killed after `timeout`.
+// ------------------------------------------------------------------ app links
+//
+// The app that opens a link's scheme can fill the card. Its Info.plist names a command inside
+// the bundle, `MidnaLinkPreview` = `["Contents/Resources/bin/tool", "preview"]` (the path, then
+// any args; a bare string is the path alone). Midna runs `<path> <args…> <url>` with no stdin,
+// for at most `APP_TIMEOUT`, and reads one JSON object from its stdout:
+//
+//   {"title": "…", "subtitle": "…", "status": {"label": "Working", "tone": "ok|warn|err|busy|idle"},
+//    "fields": [["Goal", "G6"], …], "lines": ["…", …], "progress": {"done": 1, "total": 2},
+//    "open_label": "Open task"}
+//
+// Only `title` is required. A non-zero exit, a timeout or bad JSON falls back to "Opens in <App>".
+
+const APP_TIMEOUT: Duration = Duration::from_millis(1500);
+/// App previews show live state (a task's status), so they're reused for less time than pages.
+const APP_TTL: Duration = Duration::from_secs(15);
+const APP_FIELDS: usize = 6;
+const APP_LINES: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Tone {
+    Ok,
+    Warn,
+    Err,
+    Busy,
+    Idle,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AppPreview {
+    title: String,
+    subtitle: Option<String>,
+    status: Option<(String, Tone)>,
+    fields: Vec<(String, String)>,
+    lines: Vec<String>,
+    /// (done, total), total > 0.
+    progress: Option<(u64, u64)>,
+    open_label: Option<String>,
+}
+
+/// One line of text from the app, trimmed and cut to `max` characters (None when empty).
+fn app_text(v: Option<&Value>, max: usize) -> Option<String> {
+    let s = v?.as_str()?.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s: String = if s.chars().count() > max { s.chars().take(max - 1).collect::<String>() + "…" } else { s };
+    (!s.is_empty()).then_some(s)
+}
+
+fn parse_app_preview(out: &[u8]) -> Option<AppPreview> {
+    let v: Value = serde_json::from_slice(out).ok()?;
+    let title = app_text(v.get("title"), 200)?;
+    let status = v.get("status").and_then(|s| {
+        let label = app_text(s.get("label"), 40)?;
+        let tone = match s.get("tone").and_then(Value::as_str) {
+            Some("ok") => Tone::Ok,
+            Some("warn") => Tone::Warn,
+            Some("err") => Tone::Err,
+            Some("busy") => Tone::Busy,
+            _ => Tone::Idle,
+        };
+        Some((label, tone))
+    });
+    let fields = v.get("fields").and_then(Value::as_array).into_iter().flatten().filter_map(|f| Some((app_text(f.get(0), 40)?, app_text(f.get(1), 200)?))).take(APP_FIELDS).collect();
+    let lines = v.get("lines").and_then(Value::as_array).into_iter().flatten().filter_map(|l| app_text(Some(l), 300)).take(APP_LINES).collect();
+    let progress = v.get("progress").and_then(|p| {
+        let (done, total) = (p.get("done")?.as_u64()?, p.get("total")?.as_u64()?);
+        (total > 0).then_some((done.min(total), total))
+    });
+    Some(AppPreview { title, subtitle: app_text(v.get("subtitle"), 300), status, fields, lines, progress, open_label: app_text(v.get("open_label"), 40) })
+}
+
+/// `MidnaLinkPreview` (as `plutil` prints it in JSON) -> (path inside the bundle, args).
+fn parse_preview_command(v: &Value) -> Option<(String, Vec<String>)> {
+    let mut parts = match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    }
+    .into_iter();
+    let path = parts.next().filter(|p| !p.is_empty() && !p.starts_with('/') && !Path::new(p).components().any(|c| matches!(c, std::path::Component::ParentDir)))?;
+    Some((path, parts.collect()))
+}
+
+/// The command `bundle` declares for previews, resolved inside it (a symlink out of it is refused).
+fn preview_command(bundle: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let mut cmd = std::process::Command::new("/usr/bin/plutil");
+    cmd.args(["-extract", "MidnaLinkPreview", "json", "-o", "-"]).arg(bundle.join("Contents/Info.plist"));
+    let (ok, out) = run_capped(cmd, 16 << 10, Duration::from_secs(2))?;
+    let (rel, args) = parse_preview_command(&serde_json::from_slice(&out).ok().filter(|_| ok)?)?;
+    let bundle = bundle.canonicalize().ok()?;
+    let path = bundle.join(rel).canonicalize().ok()?;
+    (path.starts_with(&bundle) && path.is_file()).then_some((path, args))
+}
+
+/// URL -> when it was asked and what came back (None, so a failing command isn't rerun each hover).
+type AppCache = HashMap<String, (Instant, Option<AppPreview>)>;
+static APP_CACHE: LazyLock<Mutex<AppCache>> = LazyLock::new(Default::default);
+
+/// The preview the link's app supplies, None when it declares none or it fails.
+fn load_app(url: &str) -> Option<AppPreview> {
+    if let Some((at, p)) = APP_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+        && at.elapsed() < APP_TTL
+    {
+        return p;
+    }
+    let preview = ls::default_app(url).and_then(|bundle| preview_command(&bundle)).and_then(|(path, args)| run_preview(&path, &args, url, APP_TIMEOUT));
+    if let Ok(mut c) = APP_CACHE.lock() {
+        c.retain(|_, (at, _)| at.elapsed() < APP_TTL);
+        c.insert(url.to_string(), (Instant::now(), preview.clone()));
+    }
+    preview
+}
+
+/// `<path> <args…> <url>`, when it exits 0 in time with a preview on stdout.
+fn run_preview(path: &Path, args: &[String], url: &str, timeout: Duration) -> Option<AppPreview> {
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(args).arg(url);
+    let (ok, out) = run_capped(cmd, 64 << 10, timeout)?;
+    ok.then(|| parse_app_preview(&out)).flatten()
+}
+
+/// Launch Services' default app for a URL, as `midnad`'s `schemes.rs` names it for `session.link_at`.
+mod ls {
+    use core_foundation_sys::base::{CFRelease, CFTypeRef, kCFAllocatorDefault};
+    use core_foundation_sys::string::{CFStringCreateWithBytes, kCFStringEncodingUTF8};
+    use core_foundation_sys::url::{CFURLCreateWithString, CFURLGetFileSystemRepresentation, CFURLRef};
+    use std::path::PathBuf;
+
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        fn LSCopyDefaultApplicationURLForURL(url: CFURLRef, roles: u32, err: *mut CFTypeRef) -> CFURLRef;
+    }
+
+    /// kLSRolesAll.
+    const ROLES_ALL: u32 = 0xFFFF_FFFF;
+
+    /// The bundle of the app that opens `url`.
+    pub fn default_app(url: &str) -> Option<PathBuf> {
+        use std::os::unix::ffi::OsStrExt;
+        unsafe {
+            let s = CFStringCreateWithBytes(kCFAllocatorDefault, url.as_ptr(), url.len() as _, kCFStringEncodingUTF8, 0);
+            if s.is_null() {
+                return None;
+            }
+            let u = CFURLCreateWithString(kCFAllocatorDefault, s, std::ptr::null());
+            CFRelease(s as CFTypeRef);
+            if u.is_null() {
+                return None;
+            }
+            let app = LSCopyDefaultApplicationURLForURL(u, ROLES_ALL, std::ptr::null_mut());
+            CFRelease(u as CFTypeRef);
+            if app.is_null() {
+                return None;
+            }
+            let mut buf = [0u8; 4096];
+            let ok = CFURLGetFileSystemRepresentation(app, 1, buf.as_mut_ptr(), buf.len() as _);
+            CFRelease(app as CFTypeRef);
+            if ok == 0 {
+                return None;
+            }
+            let len = buf.iter().position(|b| *b == 0)?;
+            Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+        }
+    }
+}
+
+/// Run `cmd`, keeping at most `limit` bytes of its output; killed after `timeout`, with anything
+/// it started (in its own process group, so a child holding the pipe can't outlive it).
 fn run_capped(mut cmd: std::process::Command, limit: usize, timeout: Duration) -> Option<(bool, Vec<u8>)> {
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn().ok()?;
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut buf = vec![];
@@ -1030,7 +1247,7 @@ fn run_capped(mut cmd: std::process::Command, limit: usize, timeout: Duration) -
             Ok(Some(st)) => break st.success(),
             Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(40)),
             _ => {
-                let _ = child.kill();
+                unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
                 let _ = child.wait();
                 break false;
             }
@@ -1207,15 +1424,16 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Body, Check, FILE_LINES, Link, excerpt, fade, fetchable, github_pr, load, page_meta, parse_pr, path_title, url_title};
+    use super::{AppPreview, Body, Check, FILE_LINES, Link, Tone, excerpt, fade, fetchable, github_pr, load, page_meta, parse_app_preview, parse_pr, parse_preview_command, path_title, preview_command, run_preview, url_title};
     use serde_json::json;
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn app_links_name_their_app() {
-        let l = Link::from_link_at(&json!({ "kind": "url", "target": "taskboard://#/?task=T6", "app": "Taskboard" })).unwrap();
+        let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://#/?task=T6", "app": "Taskboard" })).unwrap();
         assert_eq!(l.app.as_deref(), Some("Taskboard"));
-        // Never fetched: the card just says where it opens.
+        // No app supplies a preview: the card just says where it opens.
         assert!(matches!(load(&l), Body::Note(n) if n == "Opens in Taskboard"));
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "https://a.com" })).unwrap();
         assert_eq!(l.app, None);
@@ -1292,5 +1510,87 @@ mod tests {
         let p = Path::new("/w/midna/crates/app/src/terminal.rs");
         assert_eq!(path_title(p, false, Some("/w/midna")), ("terminal.rs".into(), "crates/app/src".into()));
         assert_eq!(path_title(Path::new("/w/midna/docs"), true, Some("/w/midna")), ("docs/".into(), "midna".into()));
+    }
+
+    #[test]
+    fn app_previews_parse() {
+        let out = br#"{"title": " Ask the  app ", "subtitle": "G6", "status": {"label": "Working", "tone": "busy"},
+            "fields": [["Goal", "G6"], ["bad"], [1, 2], ["PR", "12"]], "lines": ["one", "", 3, "two"],
+            "progress": {"done": 5, "total": 2}, "open_label": "Open task", "extra": true}"#;
+        assert_eq!(
+            parse_app_preview(out),
+            Some(AppPreview {
+                title: "Ask the app".into(),
+                subtitle: Some("G6".into()),
+                status: Some(("Working".into(), Tone::Busy)),
+                fields: vec![("Goal".into(), "G6".into()), ("PR".into(), "12".into())],
+                lines: vec!["one".into(), "two".into()],
+                progress: Some((2, 2)),
+                open_label: Some("Open task".into()),
+            })
+        );
+        // Only the title is needed; an unknown tone is idle; an empty total is no progress.
+        let p = parse_app_preview(br#"{"title": "T", "status": {"label": "Odd", "tone": "purple"}, "progress": {"done": 0, "total": 0}}"#).unwrap();
+        assert_eq!((p.status, p.progress, p.fields.len()), (Some(("Odd".into(), Tone::Idle)), None, 0));
+        // No title, an empty one, not an object, not JSON: no preview.
+        for bad in [&br#"{"subtitle": "x"}"#[..], br#"{"title": "  "}"#, b"[1]", b"Error: no such task", b""] {
+            assert_eq!(parse_app_preview(bad), None, "{}", String::from_utf8_lossy(bad));
+        }
+        // Long text is cut.
+        let long = format!(r#"{{"title": "{}"}}"#, "x".repeat(500));
+        assert_eq!(parse_app_preview(long.as_bytes()).unwrap().title.chars().count(), 200);
+    }
+
+    #[test]
+    fn preview_commands_stay_in_the_bundle() {
+        assert_eq!(parse_preview_command(&json!("Contents/MacOS/tool")), Some(("Contents/MacOS/tool".into(), vec![])));
+        assert_eq!(parse_preview_command(&json!(["Contents/Resources/bin/tb", "preview", "--json"])), Some(("Contents/Resources/bin/tb".into(), vec!["preview".into(), "--json".into()])));
+        for bad in [json!("/bin/sh"), json!("Contents/../../x"), json!([]), json!([""]), json!(["a", 1]), json!({"path": "a"})] {
+            assert_eq!(parse_preview_command(&bad), None, "{bad}");
+        }
+    }
+
+    fn script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn bundles_declare_their_preview() {
+        let dir = std::env::temp_dir().join(format!("midna-app-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("Fake.app");
+        let plist = |v: &str| {
+            let xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleName</key><string>Fake</string>{v}</dict></plist>"#);
+            std::fs::create_dir_all(app.join("Contents")).unwrap();
+            std::fs::write(app.join("Contents/Info.plist"), xml).unwrap();
+        };
+        script(&app.join("Contents/Resources/bin/tool"), r#"echo "{\"title\": \"$1 $2\"}""#);
+        script(&dir.join("outside"), "true");
+
+        plist("<key>MidnaLinkPreview</key><array><string>Contents/Resources/bin/tool</string><string>preview</string></array>");
+        let (path, args) = preview_command(&app).unwrap();
+        assert_eq!(args, vec!["preview".to_string()]);
+        // The command gets its args, then the URL.
+        assert_eq!(run_preview(&path, &args, "fake://x/1", Duration::from_secs(5)).map(|p| p.title), Some("preview fake://x/1".into()));
+
+        // Declared nothing, or a path that leads out of the bundle: no command.
+        plist("");
+        assert_eq!(preview_command(&app), None);
+        std::os::unix::fs::symlink(dir.join("outside"), app.join("Contents/Resources/bin/escape")).unwrap();
+        plist("<key>MidnaLinkPreview</key><string>Contents/Resources/bin/escape</string>");
+        assert_eq!(preview_command(&app), None);
+
+        // A failure, bad output or a hang falls back.
+        let bin = app.join("Contents/Resources/bin");
+        script(&bin.join("fails"), r#"echo '{"title": "x"}'; exit 1"#);
+        script(&bin.join("garbled"), "echo not json");
+        script(&bin.join("hangs"), r#"sleep 5; echo '{"title": "x"}'"#);
+        for name in ["fails", "garbled", "hangs"] {
+            assert_eq!(run_preview(&bin.join(name), &[], "fake://x", Duration::from_millis(300)), None, "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
