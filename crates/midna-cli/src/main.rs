@@ -493,9 +493,8 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "window" => {
-            let action = a.need(1, "window action")?;
-            let value = a.pos.get(3).map(|v| serde_json::from_str::<Value>(v).unwrap_or_else(|_| json!(v)));
-            let v = call("window.command", json!({ "action": action, "target": a.pos.get(2), "value": value }))?;
+            a.need(1, "window action")?;
+            let v = call("window.command", window_params(&a.pos[1..]))?;
             out(&v, &|v| println!("delivered to {} GUI window(s)", v["delivered"]));
             Ok(())
         }
@@ -1681,4 +1680,37 @@ fn projects(a: &Args, out: OutFn) -> Res {
         other => return Err(Fail::Usage(format!("unknown projects subcommand `{other}`"))),
     }
     Ok(())
+}
+
+/// `window <action> [target] [value]` as `window.command` params. `window split close` takes
+/// no target: its `close` is the value.
+fn window_params(pos: &[String]) -> Value {
+    let (action, mut target, mut value) = (&pos[0], pos.get(1), pos.get(2));
+    if action == "split" && value.is_none() && target.is_some_and(|t| t == "close") {
+        (target, value) = (None, target);
+    }
+    let value = value.map(|v| serde_json::from_str::<Value>(v).unwrap_or_else(|_| json!(v)));
+    json!({ "action": action, "target": target, "value": value })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_params;
+    use serde_json::json;
+
+    fn params(args: &[&str]) -> serde_json::Value {
+        window_params(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn window_split_close_has_no_target() {
+        assert_eq!(params(&["split", "close"]), json!({ "action": "split", "target": null, "value": "close" }));
+    }
+
+    #[test]
+    fn window_split_keeps_target_and_value() {
+        assert_eq!(params(&["split", "ab12", "stacked"]), json!({ "action": "split", "target": "ab12", "value": "stacked" }));
+        assert_eq!(params(&["split", "ab12"]), json!({ "action": "split", "target": "ab12", "value": null }));
+        assert_eq!(params(&["snap", "ab12", "[1,2]"]), json!({ "action": "snap", "target": "ab12", "value": [1, 2] }));
+    }
 }
