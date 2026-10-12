@@ -132,7 +132,9 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
         .items_center()
         .gap(px(8.))
         .h(px(28.))
-        .px(px(12.))
+        .pl(px(12.))
+        // Side by side, the strip runs along the top right, where the badge docks.
+        .pr(px(if stacked { 12. } else { super::badge::docked_room(cx).max(12.) }))
         .border_b_1()
         .border_color(t.line)
         .bg(t.bg)
