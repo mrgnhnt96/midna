@@ -511,12 +511,34 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
     let cut = fwd(sel!(cut:));
     let all = fwd(sel!(selectAll:));
     el.on_action(cx.listener(|m, _: &OpenComposer, w, cx| open_manual(m, w, cx)))
-        .on_action(cx.listener(move |m, _: &ComposerPaste, w, cx| paste(m, w, cx)))
+        .on_action(cx.listener(move |m, _: &ComposerPaste, w, cx| {
+            if !paste_image(m, w, cx) {
+                paste(m, w, cx)
+            }
+        }))
         .on_action(cx.listener(move |m, _: &ComposerCopy, w, cx| copy(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerCut, w, cx| cut(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerSelectAll, w, cx| all(m, w, cx)))
         .on_action(cx.listener(|m, _: &ComposerUndo, _, _| undo(m, false)))
         .on_action(cx.listener(|m, _: &ComposerRedo, _, _| undo(m, true)))
+}
+
+/// ⌘V of a bare image (a screenshot) over an agent: open the image sheet with it, as ⌘V in
+/// the terminal does. Its images go with the composer's text when it's sent (`submit`). False =
+/// paste as text.
+fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    if crate::terminal::image_paste_inline() || !crate::annotate::clipboard_is_image(cx) {
+        return false;
+    }
+    let Some(id) = m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) else {
+        return false;
+    };
+    release_native_focus(m);
+    if crate::annotate::open(m, Some(id), window, cx) {
+        let s = crate::annotate::clipboard_sources(cx);
+        m.annot.update(cx, |v, cx| v.add(s, window, cx));
+    }
+    true
 }
 
 /// ⌘-shortcuts for the field (GPUI sees key equivalents before the text view does, and the

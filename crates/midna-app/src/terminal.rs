@@ -56,6 +56,10 @@ pub fn set_image_paste_inline(on: bool) {
     IMAGE_PASTE_INLINE.store(on, Ordering::Relaxed);
 }
 
+pub fn image_paste_inline() -> bool {
+    IMAGE_PASTE_INLINE.load(Ordering::Relaxed)
+}
+
 type StreamSlot = Rc<RefCell<Option<Arc<dyn TermStream>>>>;
 
 /// ⌘F find bar state.
