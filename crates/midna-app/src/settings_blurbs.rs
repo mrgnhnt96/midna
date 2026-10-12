@@ -96,7 +96,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "notify.turn_done_min_secs" => "Shorter turns finish quietly; 0 = every turn.",
         "notify.when_app_closed" => "midnad posts them itself while the app is quit.",
         "notify.badge" => "Counts what needs you in a corner of the screen.",
-        "notify.badge.idle" => "Off: it hides until something needs you.",
+        "notify.badge.idle" => "Off: it hides until something needs you, unless it's set to always.",
         "notify.badge.corner" => "You can also drag the badge to a corner.",
         "notify.badge.snap" => "Where the badge goes when you drop it.",
         "notify.badge.inset_x" | "notify.badge.inset_y" => "Drag the badge to change this.",
