@@ -630,6 +630,12 @@ pub fn takes(cx: &App) -> bool {
     h.read(cx).is_ok_and(|b| b.mode != Mode::Off)
 }
 
+/// Room to leave at the main window's right edge, under the header, for the badge docked there
+/// (0 with it off): it's a window of its own, so it takes the clicks on whatever it covers.
+pub fn docked_room(cx: &App) -> f32 {
+    if takes(cx) { DOCK.0 as f32 + SIZE + 8. } else { 0. }
+}
+
 /// You opened terminal `session` (`notify.badge.clear_on_open`): its held notifications and its
 /// capsule go (needs-you items stay until they're handled).
 pub fn seen(session: &str, cx: &mut App) {
