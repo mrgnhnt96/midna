@@ -1773,8 +1773,8 @@ pub enum WindowAction {
     Snap,
     Close,
     OpenScreen,
-    /// Show `target` (a session) in the main window's split pane: `value` = `side` (default)
-    /// or `stacked`; `close` folds the split (the session keeps running).
+    /// Make `target` (a session) the split of the main window's selected terminal: `value` =
+    /// `side` (default) or `stacked`; `close` hides that split (the session keeps running).
     Split,
 }
 

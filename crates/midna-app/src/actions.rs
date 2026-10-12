@@ -74,7 +74,7 @@ actions!(
         ToggleMute,
         /// Split: side by side ⇄ stacked.
         ToggleSplitOrientation,
-        /// Show the split's terminal in the main pane.
+        /// Give the split's terminal its own sidebar row.
         SplitToMain,
         /// Focus the other split pane.
         FocusOtherPane,

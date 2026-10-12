@@ -192,7 +192,7 @@ fn toolbar_button(m: &MainWindow, b: String, t: &Theme, cx: &mut Context<MainWin
                 crate::annotate::open(m, None, window, cx);
             }))
             .into_any_element(),
-        "split" => tool(t, "tb-split", Icon::Split, if m.split.is_some() { "Close split" } else { "Split" }, "keys.split")
+        "split" => tool(t, "tb-split", Icon::Split, crate::ui::split::label(m), "keys.split")
             .when(m.split.is_some(), |d| d.bg(t.raised))
             .on_click(cx.listener(|m, _, window, cx| crate::ui::split::toggle(m, window, cx)))
             .into_any_element(),
@@ -314,7 +314,7 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                 crate::annotate::open(m, None, w, cx);
             }))
             .children(keys("keys.add_image")),
-            "split" => menu_item(t, &id, if m.split.is_some() { "Close split" } else { "Split" }, "", cx.listener(|m, _, w, cx| {
+            "split" => menu_item(t, &id, crate::ui::split::label(m), "", cx.listener(|m, _, w, cx| {
                 m.menu = Menu::None;
                 crate::ui::split::toggle(m, w, cx);
             }))

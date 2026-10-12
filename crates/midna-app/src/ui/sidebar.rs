@@ -238,6 +238,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .py(px(4.))
         .overflow_y_scroll()
         .on_scroll_wheel(cx.listener(|m, _, _, cx| crate::ui::fold_peek::close(m, cx)));
+    let split_focused = crate::ui::split::focused(m, window, cx);
     for (gi, g) in m.groups().into_iter().enumerate() {
         let pid = g.project.map(|p| p.id.clone());
         let n = m.needs_in_project(pid.as_deref());
@@ -365,9 +366,14 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let ghosts = |next: Option<&str>, cx: &mut Context<MainWindow>| -> Vec<AnyElement> {
             if fold > 0. { vec![] } else { m.close_anim.ghosts(&key, next).map(|gh| ghost(m, gh, t, compact, cx)).collect() }
         };
-        // A terminal just opened unfolds where it lands.
+        // A terminal just opened unfolds where it lands. Its split's row comes with it.
         let row_el = |s: &Session, cx: &mut Context<MainWindow>| -> AnyElement {
-            let el = measured(m, &s.id, row(m, s, &key, t, compact, cx).into_any_element());
+            let host = row(m, s, &key, t, compact, cx).into_any_element();
+            let host = match split_row(m, s, split_focused, t, compact, cx) {
+                Some(child) => div().flex().flex_col().child(host).child(child).into_any_element(),
+                None => host,
+            };
+            let el = measured(m, &s.id, host);
             match (m.close_anim.opening(&s.id), m.close_anim.arrival(&s.id)) {
                 (Some(o), _) => unfold(o, el, t),
                 (None, Some(a)) => arrive(a, el),
@@ -900,6 +906,48 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                     .child(div().min_w_0().truncate().child(text)),
             )
         })
+}
+
+/// `host`'s split, as a row tucked under it (design A on the Midna Splits canvas): a `└`,
+/// its dot and name, "hidden" while ⌘D has it folded away. Lit while its pane has the
+/// cursor. A click shows the host with its split and puts the cursor in the split.
+fn split_row(m: &MainWindow, host: &Session, focused: bool, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> Option<Stateful<Div>> {
+    let split = m.splits.get(&host.id)?;
+    let s = m.sessions.iter().find(|s| s.id == split.session)?;
+    let on_screen = m.selected.as_deref() == Some(&host.id) && !split.hidden;
+    let lit = on_screen && focused;
+    let host_id = host.id.clone();
+    Some(
+        div()
+            .id(SharedString::from(format!("split-row-{}", s.id)))
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .w_full()
+            .pl(px(18.))
+            .pr(px(14.))
+            .py(px(if compact { 3. } else { 5. }))
+            .cursor_pointer()
+            .when(lit, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
+            .when(!lit, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+            .tooltip(super::header::tip(if split.hidden { "Show this split" } else { "Go to this split" }))
+            .on_click(cx.listener(move |m, _, w, cx| crate::ui::split::open_from_row(m, host_id.clone(), w, cx)))
+            .child(div().w(px(10.)).flex_none().text_color(t.line).font_family(t.mono_font.clone()).text_size(px(12.)).child("└"))
+            .child(super::terminal_dot(m, t, s, 7.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if on_screen { t.fg } else { t.dim })
+                    .child(crate::ui::rename::shown_name(m, &s.id, &s.name, cx)),
+            )
+            .when(split.hidden, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.dim).child("hidden")))
+            .child(super::terminal_icon(m, t, s, 12., t.dim)),
+    )
 }
 
 /// The selected row's background and accent edge, on its own: for a highlight on the move.

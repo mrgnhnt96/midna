@@ -135,6 +135,9 @@ struct Saved {
     terminals: Vec<String>,
     #[serde(default)]
     selected: Option<String>,
+    /// Each terminal's split (`ui/split.rs`), by the terminal it belongs to.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    splits: HashMap<String, crate::ui::split::SplitOf>,
 }
 
 /// Save the windows, where they are and their terminals, a moment from now (window moves
@@ -167,7 +170,7 @@ fn save_layout(cx: &mut App) {
         let Ok(b) = m.handle.update(cx, |_, w, _| w.bounds()) else { continue };
         let r = reg.borrow();
         let terminals = all.iter().filter(|s| r.shows(s, m.id)).cloned().collect();
-        out.push(Saved { bounds: [b.origin.x.into(), b.origin.y.into(), b.size.width.into(), b.size.height.into()], terminals, selected: e.read(cx).selected.clone() });
+        out.push(Saved { bounds: [b.origin.x.into(), b.origin.y.into(), b.size.width.into(), b.size.height.into()], terminals, selected: e.read(cx).selected.clone(), splits: e.read(cx).splits.clone() });
     }
     crate::ui::statusbar::update_state(&backend, "windows", serde_json::to_value(out).unwrap_or_default());
 }
@@ -194,9 +197,11 @@ pub fn restore(backend: Arc<dyn Backend>, fallback: Bounds<Pixels>, cx: &mut App
                 reg.borrow_mut().claim(t, id);
             }
         }
-        if let Some(sel) = w.selected.clone() {
-            let _ = h.update(cx, |m, _, _| m.selected = Some(sel));
-        }
+        let (sel, splits) = (w.selected.clone(), w.splits.clone());
+        let _ = h.update(cx, |m, _, _| {
+            m.selected = sel.or(m.selected.take());
+            m.splits = splits;
+        });
         front = Some(h);
     }
     front

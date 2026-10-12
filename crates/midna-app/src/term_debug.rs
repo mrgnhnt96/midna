@@ -179,12 +179,7 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
             window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: mods(&words) }), cx);
         }
         "split" => main.update(cx, |m, cx| crate::ui::split::toggle(m, window, cx)),
-        "stack" => main.update(cx, |m, cx| {
-            if let Some(s) = m.split.as_mut() {
-                s.stacked = !s.stacked;
-            }
-            cx.notify();
-        }),
+        "stack" => main.update(cx, |m, cx| crate::ui::split::flip(m, cx)),
         "focus" => {
             let v = if arg == "split" { m.split.as_ref().map(|s| s.view.clone()) } else { m.terminal.clone() };
             if let Some(v) = v {
