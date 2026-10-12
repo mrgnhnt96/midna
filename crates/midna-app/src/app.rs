@@ -197,8 +197,13 @@ pub struct MainWindow {
     pub terminal: Option<Entity<TerminalView>>,
     /// The next terminal while it attaches; `terminal` stays on screen until this has a frame.
     pending_terminal: Option<(Entity<TerminalView>, Subscription)>,
-    /// Second terminal pane (`ui/split.rs`), next to or under `terminal`.
+    /// Second terminal pane (`ui/split.rs`), next to or under `terminal`: the selected
+    /// terminal's split.
     pub split: Option<crate::ui::split::Split>,
+    /// Each terminal's split (`ui/split.rs`), by the terminal it belongs to.
+    pub splits: HashMap<String, crate::ui::split::SplitOf>,
+    /// Put the cursor in the split pane once it's attached.
+    pub focus_split: bool,
     pub focus: FocusHandle,
     pub overlay_focus: FocusHandle,
     pub toast: Option<(String, Instant)>,
@@ -407,6 +412,8 @@ impl MainWindow {
             terminal: None,
             pending_terminal: None,
             split: None,
+            splits: HashMap::new(),
+            focus_split: false,
             focus,
             overlay_focus: cx.focus_handle(),
             toast: None,
@@ -819,17 +826,14 @@ impl MainWindow {
                 }
             }
             "split" => match value {
-                "close" => crate::ui::split::close(self, window, cx),
+                "close" => crate::ui::split::hide(self, window, cx),
                 _ => {
                     if let Some(t) = target.filter(|t| self.sessions.iter().any(|s| &s.id == t)) {
                         if self.selected.as_deref() == Some(t.as_str()) {
                             self.toast("That terminal is already in the main pane.", cx);
                         } else {
-                            crate::ui::split::show(self, t, window, cx);
-                            if let Some(s) = self.split.as_mut() {
-                                s.stacked = value == "stacked";
-                            }
                             self.screen = Screen::Terminal;
+                            crate::ui::split::show(self, t, value == "stacked", window, cx);
                         }
                     }
                 }
@@ -1038,6 +1042,10 @@ impl MainWindow {
                 self.marked.clear();
             }
             crate::ui::queue::sync(&self.sessions, cx);
+            crate::ui::split::prune(self, cx);
+            if let Some(host) = self.selected.as_deref().and_then(|id| crate::ui::split::host_of(self, id)) {
+                self.selected = Some(host);
+            }
         }
         if let Some(before) = before {
             crate::ui::close_anim::arrive(self, &before, cx);
@@ -1208,7 +1216,8 @@ impl MainWindow {
     pub fn groups(&self) -> Vec<Group<'_>> {
         let mut groups: Vec<Group> = self.projects.iter().map(|p| Group { project: Some(p), name: p.name.clone(), sessions: vec![] }).collect();
         let mut root = Group { project: None, name: "root".into(), sessions: vec![] };
-        for s in self.sessions.iter().filter(|s| !s.background && self.shows(&s.id)) {
+        // A split's terminal sits under the terminal it belongs to (`ui/split.rs`), not as a row.
+        for s in self.sessions.iter().filter(|s| !s.background && self.shows(&s.id) && !crate::ui::split::is_split(self, &s.id)) {
             match s.project_id.as_ref().and_then(|pid| groups.iter_mut().find(|g| g.project.is_some_and(|p| &p.id == pid))) {
                 Some(g) => g.sessions.push(s),
                 None => root.sessions.push(s),
@@ -1280,6 +1289,15 @@ impl MainWindow {
     }
 
     pub fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        // A split's terminal shows beside the terminal it belongs to, with the cursor in it.
+        if let Some(host) = crate::ui::split::host_of(self, &id) {
+            if let Some(s) = self.splits.get_mut(&host) {
+                s.hidden = false;
+            }
+            self.focus_split = true;
+            self.select(host, window, cx);
+            return;
+        }
         // Another main window has it: show it there. Nobody has it yet: it's this window's.
         if self.windows.borrow().owned(&id) {
             if !self.shows(&id) {
@@ -1313,6 +1331,7 @@ impl MainWindow {
             self.screen = Screen::Terminal;
         }
         self.ensure_terminal(window, cx);
+        crate::ui::split::sync(self, window, cx);
         cx.notify();
     }
 
@@ -1461,7 +1480,9 @@ impl MainWindow {
 
     fn show_terminal(&mut self, view: Entity<TerminalView>, window: &mut Window, cx: &mut Context<Self>) {
         // An inline rename started by the double-click that selected this terminal keeps focus.
-        if self.overlay == Overlay::None && self.screen == Screen::Terminal && self.renaming.is_none() {
+        // The split pane, focused on the way here (its row was clicked), keeps the cursor.
+        let split_has = crate::ui::split::focused(self, window, cx);
+        if self.overlay == Overlay::None && self.screen == Screen::Terminal && self.renaming.is_none() && !split_has {
             let fh = view.read(cx).focus_handle().clone();
             fh.focus(window, cx);
         }
@@ -1857,7 +1878,7 @@ impl MainWindow {
             }
         }
         crate::sounds::play("closed");
-        crate::ui::split::close(self, window, cx);
+        crate::ui::split::forget(self, &id, window, cx);
         self.sessions.retain(|s| s.id != id);
         self.sessions_floor = self.refresh_seq + 1;
         self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
@@ -1865,7 +1886,7 @@ impl MainWindow {
     }
 
     /// We opened or closed a terminal: lists fetched before now are stale. Refetch.
-    fn sessions_changed(&mut self, cx: &mut Context<Self>) {
+    pub fn sessions_changed(&mut self, cx: &mut Context<Self>) {
         self.sessions_floor = self.refresh_seq + 1;
         self.request_refresh(refresh::SESSIONS | refresh::NEEDS, cx);
     }
@@ -1923,9 +1944,8 @@ impl MainWindow {
 
     /// `id` is moving to its own window (`ui::popout`): take it out of the main and split panes.
     pub fn release(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.split.as_ref().is_some_and(|s| s.session_id(cx) == id) {
-            crate::ui::split::close(self, window, cx);
-        }
+        crate::ui::split::forget(self, id, window, cx);
+        crate::ui::split::forget_host(self, id, window, cx);
         if self.selected.as_deref() == Some(id) {
             self.select_neighbour(id, window, cx);
         }
@@ -1935,8 +1955,9 @@ impl MainWindow {
     /// `ids` are moving to another main window (a sidebar drag): take them out of the main
     /// and split panes, showing the nearest terminal that stays.
     pub fn hand_off(&mut self, ids: &[String], window: &mut Window, cx: &mut Context<Self>) {
-        if self.split.as_ref().is_some_and(|s| ids.contains(&s.session_id(cx))) {
-            crate::ui::split::close(self, window, cx);
+        for id in ids {
+            crate::ui::split::forget(self, id, window, cx);
+            crate::ui::split::forget_host(self, id, window, cx);
         }
         self.marked.retain(|x| !ids.contains(x));
         if self.marked.len() < 2 {
@@ -2131,7 +2152,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &CopySessionId, _w, cx| m.copy_session_id(cx)))
             .on_action(cx.listener(|m, _: &ToggleMute, _w, cx| m.toggle_mute(cx)))
             .on_action(cx.listener(|m, _: &ToggleSplitOrientation, _w, cx| crate::ui::split::flip(m, cx)))
-            .on_action(cx.listener(|m, _: &SplitToMain, w, cx| crate::ui::split::to_main(m, w, cx)))
+            .on_action(cx.listener(|m, _: &SplitToMain, w, cx| crate::ui::split::to_own_row(m, w, cx)))
             .on_action(cx.listener(|m, _: &FocusOtherPane, w, cx| crate::ui::split::focus_other(m, w, cx)))
     }
 }
