@@ -573,6 +573,8 @@ pub struct Badge {
     reprevent: Option<Instant>,
     /// A click on the badge can't activate midna (`prevent_activation`): the pointer's on it.
     preventing: bool,
+    /// Midna came forward with the badge as its key window, and focus went to a main window.
+    handed_off: bool,
     /// `MIDNA_DEBUG_BADGE`: open the list (`list`), the list with its first card (`card`) or
     /// the menu (`menu`) once there's something.
     debug: Option<String>,
@@ -1013,6 +1015,7 @@ impl Badge {
             ns: super::twilight::ns_window(window),
             reprevent: None,
             preventing: false,
+            handed_off: false,
             _ticker: ticker,
         }
     }
@@ -2106,6 +2109,19 @@ impl Badge {
             self.preventing = prevent;
             prevent_activation(&ns, prevent);
         }
+        // Something other than a click on the badge brought midna forward (an app switcher like
+        // Charmstone, ⌘-Tab) and AppKit made the badge, midna's frontmost window, its key window:
+        // midna's active but none of its windows came up. Its last-used main window takes over.
+        let badge_key = crate::sounds::app_active()
+            && objc2::MainThreadMarker::new()
+                .and_then(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow())
+                .is_some_and(|k| std::ptr::eq(&*k, &*ns));
+        let stray = badge_key && self.hover.is_none() && self.pressing.is_none();
+        if stray && !self.handed_off {
+            crate::lifecycle::log("midna came forward with the badge as its key window: focusing the main window");
+            crate::windows::with_active(cx, |_, window, _| window.activate_window());
+        }
+        self.handed_off = stray;
         // The list: × and arrow linger, then shrink; finished animations end.
         if self.hot.is_some() && self.hot_left.is_none() && !matches!(self.hover, Some("panel" | "line")) {
             // The pointer left the window's list without a hover-out reaching us.
