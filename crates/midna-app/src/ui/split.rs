@@ -2,8 +2,9 @@
 //! At most two panes. Each pane is its own `TerminalView` with its own frame stream and
 //! focus; the header, banner and composer keep following the sidebar selection (the left /
 //! top pane). ⌘D or the header's split button opens a new shell in the current project in
-//! the second pane; its strip toggles side-by-side ⇄ stacked and closes it (the session keeps
-//! running and stays in the sidebar).
+//! the second pane, and hides it again (the session keeps running and stays in the sidebar).
+//! Its strip toggles side-by-side ⇄ stacked, moves it to the main pane, and its ✕ (or ⌘W in
+//! the pane) closes its terminal.
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
 use crate::theme::Theme;
@@ -145,7 +146,7 @@ pub fn render(m: &mut MainWindow, main: &Entity<TerminalView>, t: &Theme, window
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(name))
         .child(button("split-orient", if stacked { "⇆" } else { "⇅" }, if stacked { "Side by side" } else { "Stack top and bottom" }, "keys.split_orientation").on_click(cx.listener(|m, _, _, cx| flip(m, cx))))
         .child(button("split-select", "↖", "Show in the main pane", "keys.split_to_main").on_click(cx.listener(|m, _, window, cx| to_main(m, window, cx))))
-        .child(button("split-close", "✕", "Close this pane (the terminal keeps running)", "keys.split").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))));
+        .child(button("split-close", "✕", "Close this terminal", "keys.close").on_click(cx.listener(|m, _, window, cx| m.close_split_terminal("Click ✕", window, cx))));
     let first = edge(div().flex().flex_col().flex_1().min_w_0().min_h_0(), main_focused).child(div().flex_1().min_h_0().child(main.clone()));
     let tray = super::annotate::tray(&sid, t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| {
         if let Some(s) = &m.split {

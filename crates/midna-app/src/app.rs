@@ -1794,7 +1794,8 @@ impl MainWindow {
     }
 
     /// ⌘W in the main window: close the selected terminal and select its neighbour in the
-    /// sidebar. A busy one (working, needs you) asks for a second ⌘W first. With no terminal
+    /// sidebar, or the split pane's terminal when that pane has focus. A busy one (working,
+    /// needs you) asks for a second ⌘W first. With no terminal
     /// selected, close the window.
     fn close_tab(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
         // A menu, overlay or screen (Rules, Triggers, Insights) in front closes first, like esc.
@@ -1806,25 +1807,58 @@ impl MainWindow {
             self.close_marked(window, cx);
             return;
         }
+        if self.split.as_ref().is_some_and(|s| s.view.read(cx).focus_handle().contains_focused(window, cx)) {
+            self.close_split_terminal("Press ⌘W", window, cx);
+            return;
+        }
         let Some(s) = self.selected_session() else {
             crate::ui::close_window::request(self, window, cx);
             return;
         };
         let (id, name) = (s.id.clone(), s.name.clone());
         let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
-        let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| *a == id && t.elapsed() < Duration::from_secs(2));
-        if busy && !confirmed {
-            self.close_armed = Some((id, Instant::now()));
-            self.toast(format!("{name} is still running. Press ⌘W again to close it."), cx);
+        if !self.close_confirmed(&id, &name, busy, "Press ⌘W", cx) {
             return;
         }
-        self.close_armed = None;
         crate::sounds::play("closed");
         let next = neighbour(&self.sidebar_rows(Some(&id), cx), &id, |_| true);
         crate::ui::close_anim::start(self, std::slice::from_ref(&id), next.as_deref(), cx);
         self.select_neighbour(&id, window, cx);
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
+        self.sessions_floor = self.refresh_seq + 1;
+        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
+        cx.notify();
+    }
+
+    /// A busy terminal (working, needs you) closes on the second try within 2s; the first one
+    /// says so (`again`: "Press ⌘W", "Click ✕").
+    fn close_confirmed(&mut self, id: &str, name: &str, busy: bool, again: &str, cx: &mut Context<Self>) -> bool {
+        let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| a == id && t.elapsed() < Duration::from_secs(2));
+        if busy && !confirmed {
+            self.close_armed = Some((id.to_string(), Instant::now()));
+            self.toast(format!("{name} is still running. {again} again to close it."), cx);
+            return false;
+        }
+        self.close_armed = None;
+        true
+    }
+
+    /// Close the split pane's terminal, and the pane with it (⌘W in it, its ✕).
+    pub fn close_split_terminal(&mut self, again: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.split.as_ref().map(|s| s.session_id(cx)) else {
+            return;
+        };
+        if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+            let name = s.name.clone();
+            let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
+            if !self.close_confirmed(&id, &name, busy, again, cx) {
+                return;
+            }
+        }
+        crate::sounds::play("closed");
+        crate::ui::split::close(self, window, cx);
+        self.sessions.retain(|s| s.id != id);
         self.sessions_floor = self.refresh_seq + 1;
         self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
         cx.notify();
