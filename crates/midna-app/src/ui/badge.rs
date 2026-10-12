@@ -29,8 +29,9 @@
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
 //! `notify.badge`: `background` (hidden only while another midna build is the app in front),
-//! `always`, or `off` (in-app cards show instead, `ui/toast.rs`). `notify.badge.idle`: it stays
-//! out with nothing waiting (counting 0) instead of going away.
+//! `always` (out all the time, counting 0 with nothing waiting), or `off` (in-app cards show
+//! instead, `ui/toast.rs`). `notify.badge.idle`: in `background`, it stays out with nothing
+//! waiting (counting 0) instead of going away.
 //!
 //! Within midna (this build in front), the badge springs from its screen corner onto the front
 //! window's top right and follows it there (laid out as top right, whatever its corner; it can't
@@ -619,6 +620,8 @@ pub fn init(backend: Arc<dyn Backend>, cx: &mut App) {
             ns.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel);
             ns.setHasShadow(false);
             ns.setIgnoresMouseEvents(true);
+            // Hiding midna (⌘H, an app switcher like Charmstone) leaves the badge out.
+            ns.setCanHide(false);
             place(&ns, Corner::TopRight);
         }
         cx.new(|cx| Badge::new(backend, window, cx))
@@ -2013,7 +2016,7 @@ impl Badge {
             self.menu = false;
             changed = true;
         }
-        let want = enabled && (self.idle || self.count > 0 || !self.lines.is_empty() || self.list || self.menu);
+        let want = enabled && (self.idle || matches!(self.mode, Mode::Always) || self.count > 0 || !self.lines.is_empty() || self.list || self.menu);
         if want != self.shown {
             self.shown = want;
             crate::lifecycle::log(&format!(
