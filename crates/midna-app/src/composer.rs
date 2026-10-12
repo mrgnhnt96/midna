@@ -523,22 +523,47 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
         .on_action(cx.listener(|m, _: &ComposerRedo, _, _| undo(m, true)))
 }
 
-/// ⌘V of a bare image (a screenshot) over an agent: open the image sheet with it, as ⌘V in
-/// the terminal does. Its images go with the composer's text when it's sent (`submit`). False =
-/// paste as text.
+/// ⌘V of a bare image (a screenshot), as ⌘V in the terminal does: over an agent, open the image
+/// sheet with it (its images go with the composer's text when it's sent, `submit`); with
+/// `terminal.image_paste` inline, or any other target, type its file path. False = paste as text.
 fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
-    if crate::terminal::image_paste_inline() || !crate::annotate::clipboard_is_image(cx) {
+    if !crate::annotate::clipboard_is_image(cx) {
         return false;
     }
-    let Some(id) = m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) else {
-        return false;
-    };
-    release_native_focus(m);
-    if crate::annotate::open(m, Some(id), window, cx) {
-        let s = crate::annotate::clipboard_sources(cx);
-        m.annot.update(cx, |v, cx| v.add(s, window, cx));
+    let sources = crate::annotate::clipboard_sources(cx);
+    match m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) {
+        Some(id) if !crate::terminal::image_paste_inline() => {
+            release_native_focus(m);
+            if crate::annotate::open(m, Some(id), window, cx) {
+                m.annot.update(cx, |v, cx| v.add(sources, window, cx));
+            }
+        }
+        _ => paste_image_paths(sources, cx),
     }
     true
+}
+
+/// Save the images (off the UI thread, as the sheet does) and type their paths at the cursor,
+/// space-separated, as one undoable edit.
+fn paste_image_paths(sources: Vec<crate::annotate::Source>, cx: &mut Context<MainWindow>) {
+    cx.spawn(async move |this, cx| {
+        let saved = cx.background_executor().spawn(async move { sources.into_iter().map(crate::annotate::save).collect::<Vec<_>>() }).await;
+        let paths: Vec<String> = saved
+            .into_iter()
+            .filter_map(|r| r.map_err(|e| eprintln!("midna-app: couldn't paste image: {e}")).ok())
+            .map(|p| p.display().to_string())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let _ = this.update(cx, |m, _| {
+            native(m, |n| unsafe {
+                let s = NSString::from_str(&paths.join(" "));
+                let _: () = msg_send![&*n.tv, insertText: &*s, replacementRange: n.tv.selectedRange()];
+            });
+        });
+    })
+    .detach();
 }
 
 /// ⌘-shortcuts for the field (GPUI sees key equivalents before the text view does, and the
