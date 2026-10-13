@@ -72,11 +72,18 @@ fn main() {
         });
         // ⌘Q outside the main window (Settings, pop-outs) has no hold overlay: quit at once.
         cx.on_action(|_: &HoldToQuit, cx| cx.dispatch_action(&Quit));
-        // Fallback for a window with nothing focused; each window's root also handles it.
+        // A window with nothing focused (the overload window, a subagent's) dispatches keys to
+        // its root node only, which is above the root div's own CloseWindow handler, so ⌘W
+        // lands here. The window is mid-dispatch (taken out of the app), so close it after.
+        // A main window's ⌘W closes a terminal or asks first (`close_tab`): never just remove it.
         cx.on_action(|_: &CloseWindow, cx| {
-            if let Some(w) = cx.active_window() {
-                let _ = w.update(cx, |_, window, _| window.remove_window());
+            let Some(w) = cx.active_window() else { return };
+            if w.downcast::<app::MainWindow>().is_some() {
+                return;
             }
+            cx.defer(move |cx| {
+                let _ = w.update(cx, |_, window, _| window.remove_window());
+            });
         });
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
