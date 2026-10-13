@@ -27,6 +27,6 @@ Edit its block in `synth.py`, run it, listen, and copy `out/<rendered as>.wav` o
 The script was tuned over several rounds of listening, so it doesn't rebuild every shipped file exactly. The shipped WAVs are the source of truth.
 
 - **Rebuilt exactly:** Portal, Call, Strum, Rise, Fwip, Thump, Close.
-- **Close relatives only:** Hm, Nn-nn, Whoosh and Tick-tick come from the first round, when every sound shared one random sequence; their recipes are at the end of the script. Uh-oh and Tick were approved before `write()` started trimming and fading the ends. The shipped Tick is also `tw-tick` at half its level.
+- **Close relatives only:** Hm, Nn-nn, Whoosh and Tick-tick come from the first round, when every sound shared one random sequence; their recipes are at the end of the script. Uh-oh and Tick were approved before `write()` started trimming and fading the ends. The shipped Tick is also `tw-tick` at half its level, and the shipped Tick-tick is a quarter of its approved level (it was ~13 dB louder than Tick).
 
 `KEEP` lists the approved sounds, and `write()` won't overwrite a file in `out/` that's in it. To redo one, remove it from `KEEP`. Every block calls `seed("<name>")`, so a sound's noise stays the same from run to run.
