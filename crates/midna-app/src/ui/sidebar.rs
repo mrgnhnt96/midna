@@ -1139,24 +1139,26 @@ fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Opt
                 .child(menu_item(
                     t,
                     "new-term",
-                    "New terminal here",
+                    "Open new terminal",
                     "",
+                    // `open_session` selects and focuses the new terminal as soon as the daemon answers.
                     cx.listener(move |m, _, _, cx| {
                         m.menu = Menu::None;
-                        m.rpc("session.open", serde_json::json!({"kind": "shell", "project_id": p1}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::SESSIONS, cx));
+                        m.open_session(p1.clone(), None, cx);
+                        cx.notify();
                     }),
                 )
                 .children(terminal_keys.map(|k| super::header::key_chip(t, k.into()))))
                 .child(menu_item(
                     t,
                     "new-agent",
-                    "New agent here",
+                    "Open new agent",
                     "",
                     cx.listener(move |m, _, _, cx| {
                         m.menu = Menu::None;
-                        m.rpc("session.open", serde_json::json!({"kind": "agent", "agent": "claude", "project_id": p2}), cx, |m, _, _, cx| {
-                            m.request_refresh(crate::app::refresh::SESSIONS, cx)
-                        });
+                        let a = m.last_agent(p2.as_deref());
+                        m.open_session(p2.clone(), Some(a), cx);
+                        cx.notify();
                     }),
                 ))
                 // Root has no project to pin.

@@ -1672,7 +1672,7 @@ impl MainWindow {
     }
 
     /// The agent most recently started in a project (Claude when none).
-    fn last_agent(&self, project: Option<&str>) -> AgentKind {
+    pub fn last_agent(&self, project: Option<&str>) -> AgentKind {
         self.sessions
             .iter()
             .filter(|s| s.project_id.as_deref() == project && s.agent.is_some())
