@@ -427,8 +427,9 @@ fn build() -> Vec<MethodSpec> {
              agents can draft freely. event: GitHub `pull_request.opened`/`push`/`check_run.completed` (event[.action]), \
              Bitbucket `pullrequest:created`. filter: repo (owner/name), branch, action, label (globs). action: \
              {kind:start_agent, project_id, agent, prompt_template} | {kind:run_command, project_id, command, background?, headless?, timeout_secs?} | {kind:attention, message}. \
-             Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path like {{pull_request.head.ref}}. \
-             In run_command each value is shell-quoted; it opens a monitor terminal as a tab, or with background:true in the sidebar's \
+             Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path like {{pull_request.head.ref}}; {{payload}} and object/array paths render as JSON. \
+             In run_command each value is shell-quoted, and the command gets the delivery's JSON body in the file $MIDNA_PAYLOAD (headless: \
+             also on stdin) with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY (the delivery id); it opens a monitor terminal as a tab, or with background:true in the sidebar's \
              Background group, or with headless:true runs with no terminal (exit code and output tail go on the delivery's command_runs; \
              stopped after timeout_secs, default 1800). Set github_hook_id to enable missed-delivery recovery. \
              LOCAL triggers (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human \

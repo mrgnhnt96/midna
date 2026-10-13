@@ -561,3 +561,48 @@ fn approving_a_deferred_enable_refuses_if_the_trigger_changed() {
     call(&mut h, "needs_you.resolve", json!({ "id": nid2, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     assert_eq!(webhook_triggers(&mut h)[0]["enabled"], true);
 }
+
+#[test]
+fn headless_run_command_gets_the_delivery_body() {
+    let d = D::start();
+    let mut h = d.human();
+    let pid = project(&mut h);
+    let out = d.home.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    // Each run writes what it got to out/<n>.{stdin,file,env}, n counting runs.
+    let cmd = format!(
+        "cd {} && n=$(ls | grep -c stdin); cat > $n.stdin; cp \"$MIDNA_PAYLOAD\" $n.file; printf '%s %s %s %s' \"$MIDNA_EVENT\" \"$MIDNA_ACTION\" \"$MIDNA_DELIVERY_GUID\" \"$MIDNA_DELIVERY\" > $n.env",
+        out.display()
+    );
+    let t = call(
+        &mut h,
+        "trigger.add",
+        json!({ "name": "Relay", "source": "github", "event": "pull_request.*",
+                "action": { "kind": "run_command", "project_id": pid, "command": cmd, "headless": true, "timeout_secs": 30 } }),
+    );
+    let tid = t["id"].as_str().unwrap().to_string();
+    call(&mut h, "trigger.set_secret", json!({ "id": tid, "secret": SECRET }));
+    call(&mut h, "trigger.set_enabled", json!({ "id": tid, "enabled": true }));
+    let dry = call(&mut h, "trigger.test", json!({ "trigger_id": tid, "payload": pr("opened", 9) }));
+    assert!(dry["summary"].as_str().unwrap().contains("body on stdin and in $MIDNA_PAYLOAD"), "{dry}");
+
+    let payload = pr("opened", 9);
+    assert_eq!(github(d.port(), "pull_request", "guid-body-1", SECRET, &payload).0, 202);
+    let first = wait_deliveries(&mut h, 1).remove(0);
+    let read = |n: u32, ext: &str| wait_for(10, &format!("{n}.{ext}"), || std::fs::read_to_string(out.join(format!("{n}.{ext}"))).ok().filter(|s| !s.is_empty()));
+    assert_eq!(serde_json::from_str::<Value>(&read(0, "stdin")).unwrap(), payload);
+    assert_eq!(read(0, "stdin"), payload.to_string(), "the body as it was sent");
+    assert_eq!(read(0, "file"), payload.to_string());
+    assert_eq!(read(0, "env"), format!("pull_request opened guid-body-1 {}", first["id"].as_str().unwrap()));
+
+    // A replay gives its command the same body and GUID.
+    let r = call(&mut h, "trigger.replay", json!({ "delivery_id": first["id"] }));
+    assert_eq!(read(1, "stdin"), payload.to_string());
+    assert_eq!(read(1, "env"), format!("pull_request opened guid-body-1 {}", r["id"].as_str().unwrap()));
+
+    // So does a recovered one.
+    let daemon = d.handle.as_ref().unwrap().daemon.clone();
+    let rec = midnad::webhooks::process::recover(&daemon, "pull_request", "guid-body-2", pr("synchronize", 10)).expect("recovered");
+    assert_eq!(read(2, "stdin"), pr("synchronize", 10).to_string());
+    assert_eq!(read(2, "env"), format!("pull_request synchronize guid-body-2 {}", rec.id));
+}

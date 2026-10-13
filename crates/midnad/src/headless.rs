@@ -1,7 +1,9 @@
 //! Headless `run_command`: a trigger's command run with no terminal (`TriggerAction::RunCommand`
 //! with `headless`). It runs through the login shell in the project's folder with the env a
-//! terminal gets (less `MIDNA_SESSION`, plus `MIDNA_TRIGGER` / `MIDNA_DELIVERY`), stdin closed,
-//! in its own process group. Its exit code and the end of its output go on the delivery that
+//! terminal gets (less `MIDNA_SESSION`, plus `MIDNA_TRIGGER` / `MIDNA_DELIVERY`), in its own
+//! process group. For a webhook delivery its stdin is the delivery's JSON body, which is also in
+//! the file `$MIDNA_PAYLOAD`, with `MIDNA_EVENT`, `MIDNA_ACTION` and `MIDNA_DELIVERY_GUID` set
+//! (`Body`); otherwise stdin is closed. Its exit code and the end of its output go on the delivery that
 //! fired it (`Delivery::command_runs`), then `trigger.command_finished` is emitted.
 //!
 //! Each run has a thread of its own that waits for it, so the trigger thread never blocks.
@@ -26,9 +28,32 @@ const DRAIN: Duration = Duration::from_secs(2);
 /// What a run still going when midnad last stopped says.
 pub const LOST: &str = "midnad restarted while it ran";
 
+/// The webhook delivery a command runs for.
+pub struct Body<'a> {
+    /// The delivery's JSON body.
+    pub json: &'a str,
+    /// Where that body is kept while the delivery is (`$MIDNA_PAYLOAD`).
+    pub file: &'a std::path::Path,
+    pub event: &'a str,
+    pub action: Option<&'a str>,
+    pub guid: &'a str,
+}
+
+impl Body<'_> {
+    /// `MIDNA_PAYLOAD`, `MIDNA_EVENT`, `MIDNA_ACTION`, `MIDNA_DELIVERY_GUID`.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        let mut v = vec![("MIDNA_PAYLOAD", self.file.to_string_lossy().into_owned()), ("MIDNA_EVENT", self.event.to_string())];
+        if let Some(a) = self.action {
+            v.push(("MIDNA_ACTION", a.to_string()));
+        }
+        v.push(("MIDNA_DELIVERY_GUID", self.guid.to_string()));
+        v
+    }
+}
+
 /// Start `command` for trigger `t` (delivery `delivery_id`) in `project_id`'s folder. Returns
 /// the run as it starts; when it can't start, already finished with `error`.
-pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, command: &str, timeout_secs: Option<u64>) -> CommandRun {
+pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, command: &str, timeout_secs: Option<u64>, body: Option<&Body>) -> CommandRun {
     let mut run = CommandRun {
         trigger_id: t.id.clone(),
         command: command.to_string(),
@@ -50,7 +75,8 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
     };
     let argv = crate::rpc::session::exec_argv(&[command.to_string()]);
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]).current_dir(if std::path::Path::new(&cwd).is_dir() { cwd.as_str() } else { "/" }).stdin(Stdio::null());
+    cmd.args(&argv[1..]).current_dir(if std::path::Path::new(&cwd).is_dir() { cwd.as_str() } else { "/" });
+    cmd.stdin(if body.is_some() { Stdio::piped() } else { Stdio::null() });
     for k in crate::pty::ENV_SCRUB {
         cmd.env_remove(k);
     }
@@ -66,6 +92,9 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
         }
     }
     cmd.env_remove("MIDNA_SESSION").env("MIDNA_TRIGGER", &t.id).env("MIDNA_DELIVERY", delivery_id);
+    for (k, v) in body.map(Body::env).unwrap_or_default() {
+        cmd.env(k, v);
+    }
     let (reader, writer) = match std::io::pipe() {
         Ok(p) => p,
         Err(e) => return failed(run, e),
@@ -85,10 +114,18 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
             Ok(())
         });
     }
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return failed(run, e),
     };
+    // A command that doesn't read its stdin just closes it: the write fails and that's fine.
+    if let (Some(mut stdin), Some(b)) = (child.stdin.take(), body) {
+        let json = b.json.to_string();
+        let _ = std::thread::Builder::new().name("headless-in".into()).spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(json.as_bytes());
+        });
+    }
     // The pipe's write ends are the child's now: drop ours so EOF comes when it's done.
     drop(cmd);
     let out = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -113,7 +150,6 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS));
     let (d, del, started) = (d.clone(), delivery_id.to_string(), run.clone());
     let _ = std::thread::Builder::new().name("headless-run".into()).spawn(move || {
-        let mut child = child;
         let pid = child.id() as i32;
         let began = Instant::now();
         let mut killed_at: Option<Instant> = None;

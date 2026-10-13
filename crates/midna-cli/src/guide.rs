@@ -195,8 +195,10 @@ const TOPICS: &[(&str, &str)] = &[
         finishes when the human answers; follow it with `midna needs get|wait <id>` (needs_you.get). An approval is \
         withdrawn if the terminal it is about closes, or its asker disconnects or closes, before anyone answers."),
     ("triggers", "A webhook trigger maps a GitHub/Bitbucket event (`pull_request.opened`, `pullrequest:created`, globs \
-        ok) plus filters (repo, branch, action, label) to an action: start_agent (prompt template), run_command (a \
-        monitor terminal; values shell-quoted; background: true opens it in the sidebar's Background group, headless: true \
+        ok) plus filters (repo, branch, action, label) to an action: start_agent (prompt template; `{{payload}}` and \
+        object/array paths render as JSON), run_command (a \
+        monitor terminal; values shell-quoted; the delivery's JSON body is in the file $MIDNA_PAYLOAD, and on stdin when \
+        headless, with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY set; background: true opens it in the sidebar's Background group, headless: true \
         runs it with no terminal and keeps its exit code and the last 50 lines of output on the delivery's command_runs, \
         stopped after timeout_secs, default 30 minutes) or attention. States: needs_secret → draft → active ⇄ paused. Agents \
         draft; the human pastes the secret and enables. `midna triggers test <id> --payload f.json` dry-runs one.\n\
