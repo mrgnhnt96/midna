@@ -1681,6 +1681,17 @@ impl MainWindow {
             .unwrap_or(AgentKind::Claude)
     }
 
+    /// Whether a pinned project with no terminals opens an agent rather than a shell (`projects.empty_opens`).
+    pub fn empty_opens_agent(&self) -> bool {
+        self.setting_str("projects.empty_opens").as_deref() == Some("agent")
+    }
+
+    /// Open what `projects.empty_opens` asks for in `pid`, a pinned project with no terminals.
+    pub fn open_in_empty(&mut self, pid: String, cx: &mut Context<Self>) {
+        let agent = self.empty_opens_agent().then(|| self.last_agent(Some(&pid)));
+        self.open_session(Some(pid), agent, cx);
+    }
+
     fn new_terminal(&mut self, _: &NewTerminal, _w: &mut Window, cx: &mut Context<Self>) {
         let p = self.current_project_id();
         self.open_session(p, None, cx);
@@ -1741,7 +1752,10 @@ impl MainWindow {
         match pick {
             Some(id) => self.select(id, window, cx),
             // A pinned project with no terminals: open one, as clicking it does.
-            None => self.open_session(pid, None, cx),
+            None => match pid {
+                Some(p) => self.open_in_empty(p, cx),
+                None => self.open_session(None, None, cx),
+            },
         }
     }
 

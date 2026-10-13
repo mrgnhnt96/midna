@@ -554,6 +554,8 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
         "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
+    s!("projects.empty_opens", en(&["terminal", "agent"]), S("terminal"), "general", false,
+        "What clicking a pinned project with no terminals opens (its heading, its New row, or its ⌘1–9): terminal, a shell; or agent, the agent last started in that project (Claude if none)."),
     s!("updates.feed_url", SettingKind::String, S(DEFAULT_FEED_URL), "general", true,
         "Update feed the app checks every 6 hours; {channel} is replaced by updates.channel. Updates must carry midna's ed25519 signature whatever the URL. Human only."),
     s!("webhooks.path", en(&["tailscale_funnel", "self_relay", "midna_relay", "off"]), S("off"), "webhooks", true,

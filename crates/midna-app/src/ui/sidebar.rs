@@ -285,11 +285,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             .pl(px(10.))
             .cursor_pointer()
             .map(|d| match empty {
-                true => d.tooltip(super::header::tip(format!("New terminal in {}", g.name))),
+                true => d.tooltip(super::header::tip(format!("{} in {}", if m.empty_opens_agent() { "New agent" } else { "New terminal" }, g.name))),
                 false => d.tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project")),
             })
             .on_click(cx.listener(move |m, _, _, cx| match toggle_key.clone() {
-                Some(p) if empty => m.open_session(Some(p), None, cx),
+                Some(p) if empty => m.open_in_empty(p, cx),
                 Some(p) => toggle_fold(m, p, cx),
                 None => {}
             }))
@@ -352,7 +352,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         }
         line += usize::from(g.project.is_some());
         let new_row = pid.clone().filter(|_| empty).map(|p| {
-            let el = wipe(line, 26., ghost_row(t, p, cx).into_any_element());
+            let el = wipe(line, 26., ghost_row(t, p, m.empty_opens_agent(), cx).into_any_element());
             line += 1;
             el
         });
@@ -1104,8 +1104,9 @@ pub fn open_project_button(m: &MainWindow, t: &Theme, id: &'static str, cx: &mut
         .child(div().font_family(t.mono_font.clone()).text_size(px(11.)).font_weight(FontWeight::NORMAL).child(m.key_label("keys.open_project")))
 }
 
-/// The dashed "New terminal" row under a pinned project with no terminals.
-fn ghost_row(t: &Theme, pid: String, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+/// The dashed "New terminal" ("New agent" with `projects.empty_opens` = agent) row under a
+/// pinned project with no terminals.
+fn ghost_row(t: &Theme, pid: String, agent: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     div()
         .id(SharedString::from(format!("ghost-{pid}")))
         .flex()
@@ -1122,9 +1123,9 @@ fn ghost_row(t: &Theme, pid: String, cx: &mut Context<MainWindow>) -> Stateful<D
         .text_color(t.dim)
         .cursor_pointer()
         .hover(|s| s.border_color(t.accent_soft).bg(t.accent_soft).text_color(t.accent))
-        .on_click(cx.listener(move |m, _, _, cx| m.open_session(Some(pid.clone()), None, cx)))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_in_empty(pid.clone(), cx)))
         .child(div().w(px(12.)).flex().justify_center().child(Icon::Plus.el(10., t.dim)))
-        .child(div().flex_1().child("New terminal"))
+        .child(div().flex_1().child(if agent { "New agent" } else { "New terminal" }))
 }
 
 fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
