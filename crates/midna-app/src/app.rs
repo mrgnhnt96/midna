@@ -1683,7 +1683,7 @@ impl MainWindow {
 
     /// Whether a pinned project with no terminals opens an agent rather than a shell (`projects.empty_opens`).
     pub fn empty_opens_agent(&self) -> bool {
-        self.setting_str("projects.empty_opens").as_deref() == Some("agent")
+        self.setting_str("projects.empty_opens").as_deref() != Some("terminal")
     }
 
     /// Open what `projects.empty_opens` asks for in `pid`, a pinned project with no terminals.
