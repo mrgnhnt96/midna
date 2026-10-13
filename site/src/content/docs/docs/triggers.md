@@ -36,7 +36,8 @@ midna triggers add --name "Review new PRs" --event pull_request.opened \
 - **Event**: GitHub `event` or `event.action` (`pull_request.opened`, `pull_request.*`), or a Bitbucket event key (`pullrequest:created`).
 - **Filters**: `--repo`, `--branch`, `--action`, `--label`, each a case-insensitive glob.
 - **Action**: `--agent claude|codex --prompt TEMPLATE`, `--run CMD`, or `--attention MSG`.
-- **Templates**: `{{pr.number}}`, `{{pr.title}}`, `{{pr.url}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, or any payload path like `{{pull_request.head.ref}}`.
+- **Templates**: `{{pr.number}}`, `{{pr.title}}`, `{{pr.url}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, or any payload path like `{{pull_request.head.ref}}`. `{{payload}}` is the whole body as JSON, and so is any path to an object or a list (`{{pull_request.labels}}`).
+- **The payload in a command**: a `--run` command gets the delivery's JSON body in the file named by `$MIDNA_PAYLOAD`, plus `$MIDNA_EVENT`, `$MIDNA_ACTION`, `$MIDNA_DELIVERY_GUID` and `$MIDNA_DELIVERY` (the delivery's id). With `--headless` the body is on its stdin too, so `--run 'relay-to-jira' --headless` can read it straight in. Bodies can be bigger than a command line allows, so prefer these to `{{payload}}`.
 
 ### 3. Set the secret and switch it on
 

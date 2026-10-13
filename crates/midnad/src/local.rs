@@ -614,7 +614,7 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
         TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let n = name();
             if *headless {
-                let run = crate::headless::start(d, t, del_id, project_id, &r(command, true), *timeout_secs);
+                let run = crate::headless::start(d, t, del_id, project_id, &r(command, true), *timeout_secs, None);
                 let out = match &run.error {
                     Some(e) => Err(e.clone()),
                     None => Ok((None, format!("Running with no terminal › {n}"))),

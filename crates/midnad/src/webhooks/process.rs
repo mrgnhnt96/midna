@@ -66,6 +66,19 @@ fn payload_dir(d: &Daemon) -> PathBuf {
     d.cfg.home.join("deliveries")
 }
 
+/// Where a delivery's body is kept for its `run_command`s (`$MIDNA_PAYLOAD`), pruned with it.
+fn body_file(d: &Daemon, delivery_id: &str) -> PathBuf {
+    payload_dir(d).join(format!("{delivery_id}.body.json"))
+}
+
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?.write_all(bytes)
+}
+
 fn new_delivery(source: TriggerSource, event: &str, guid: &str) -> Delivery {
     Delivery {
         id: format!("d_{}", hex_id(6)),
@@ -341,8 +354,13 @@ pub fn complete(d: &Arc<Daemon>, w: Work) -> Delivery {
     let Work { mut delivery, firing, facts, payload, store } = w;
     let mut outcomes = vec![];
     let id = delivery.id.clone();
+    let json = payload.to_string();
+    let file = body_file(d, &id);
+    let runs_command = firing.iter().any(|t| matches!(t.action, TriggerAction::RunCommand { .. }));
+    let body = (runs_command && write_private(&file, json.as_bytes()).is_ok())
+        .then(|| crate::headless::Body { json: &json, file: &file, event: &delivery.event, action: facts.action.as_deref(), guid: &delivery.delivery_guid });
     for t in &firing {
-        let (session, outcome) = run_action(d, t, &facts, &payload, &id, &mut delivery.command_runs);
+        let (session, outcome) = run_action(d, t, &facts, &payload, &id, body.as_ref(), &mut delivery.command_runs);
         if let Some(sid) = &session {
             delivery.sessions_started.push(sid.clone());
         }
@@ -390,8 +408,8 @@ fn agent_label(a: AgentKind) -> &'static str {
 }
 
 /// Run one trigger's action for delivery `del_id`. Returns (session started, one-line outcome);
-/// a headless command's run goes in `runs`.
-pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_id: &str, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
+/// a headless command's run goes in `runs`. A `run_command` gets the delivery's `body`.
+pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_id: &str, body: Option<&crate::headless::Body>, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
     let ctx = Ctx::internal_trigger(trigger_actor(t));
     let name = || {
         let tpl = t.session_name_template.clone().unwrap_or_else(|| match &f.pr_number {
@@ -419,7 +437,7 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
             let cmd = payload::render(command, f, payload, true);
             let n = name();
             if *headless {
-                let run = crate::headless::start(d, t, del_id, project_id, &cmd, *timeout_secs);
+                let run = crate::headless::start(d, t, del_id, project_id, &cmd, *timeout_secs, body);
                 let out = match &run.error {
                     Some(e) => (None, format!("Could not run command: {e}")),
                     None => (None, format!("Running with no terminal › {n}")),
@@ -427,6 +445,18 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
                 runs.push(run);
                 return out;
             }
+            // A terminal's stdin is the terminal, so the body is only in $MIDNA_PAYLOAD there.
+            let cmd = match body {
+                Some(b) => {
+                    let env: Vec<String> = [("MIDNA_TRIGGER", t.id.clone()), ("MIDNA_DELIVERY", del_id.to_string())]
+                        .into_iter()
+                        .chain(b.env())
+                        .map(|(k, v)| format!("{k}={}", payload::shell_quote(&v)))
+                        .collect();
+                    format!("export {}; {cmd}", env.join(" "))
+                }
+                None => cmd,
+            };
             match open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [cmd], "background": background })) {
                 Ok(id) => (Some(id), format!("Ran command{} › {n}", if *background { " in Background" } else { "" })),
                 Err(e) => (None, format!("Could not run command: {e}")),
@@ -456,13 +486,8 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
 /// Append a delivery (pruning old ones), keep its payload for replay, emit `trigger.delivery`.
 pub fn record(d: &Daemon, del: &Delivery, payload: Option<&Value>) {
     if let Some(p) = payload {
-        let dir = payload_dir(d);
-        let _ = std::fs::create_dir_all(&dir);
         let body = json!({ "source": del.source, "event": del.event, "guid": del.delivery_guid, "payload": p });
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(dir.join(format!("{}.json", del.id))) {
-            use std::io::Write;
-            let _ = f.write_all(body.to_string().as_bytes());
-        }
+        let _ = write_private(&payload_dir(d).join(format!("{}.json", del.id)), body.to_string().as_bytes());
     }
     let pruned: Vec<Id> = {
         let mut core = d.core();
@@ -472,6 +497,7 @@ pub fn record(d: &Daemon, del: &Delivery, payload: Option<&Value>) {
     };
     for id in pruned {
         let _ = std::fs::remove_file(payload_dir(d).join(format!("{id}.json")));
+        let _ = std::fs::remove_file(body_file(d, &id));
     }
     d.mark_dirty();
     let project = del.trigger_id.as_deref().and_then(|tid| {
@@ -526,7 +552,9 @@ pub fn dry_run(t: &Trigger, event: &str, payload: Value) -> Delivery {
     let would = match &t.action {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent_label(*agent), payload::render_prompt(prompt_template, &facts, &payload)),
         TriggerAction::RunCommand { command, background, headless, .. } => {
-            format!("would run{}: {}", crate::local::run_where(*background, *headless), payload::render(command, &facts, &payload, true))
+            let size = payload.to_string().len();
+            let body = if *headless { format!("the {size}-byte body on stdin and in $MIDNA_PAYLOAD") } else { format!("the {size}-byte body in $MIDNA_PAYLOAD") };
+            format!("would run{}: {} · with {body}", crate::local::run_where(*background, *headless), payload::render(command, &facts, &payload, true))
         }
         TriggerAction::Attention { message } => format!("would raise attention: {}", payload::render(message, &facts, &payload, false)),
         TriggerAction::Notify { title, body, .. } => format!("would notify: {} {}", payload::render(title, &facts, &payload, false), payload::render(body, &facts, &payload, false)).trim().to_string(),
