@@ -290,10 +290,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let n = m.needs_in_project(pid.as_deref());
         let menu_key = pid.clone().unwrap_or_else(|| "root".into());
         let menu_open = m.menu == Menu::Project(menu_key.clone());
-        // A pinned project with no terminals: its heading (and the ghost row under it) opens one.
+        // A pinned project with no terminals: the ghost row under its heading opens one, and the
+        // heading folds it away like any other.
         let pinned = g.project.is_some_and(|p| p.pinned);
         let empty = g.sessions.is_empty();
-        let collapsed = !empty && pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
+        let collapsed = pid.as_ref().is_some_and(|p| m.collapsed.contains(p));
         // A heading click cascades the rows (as the badge's list does): unfolding, the room opens
         // over FOLD_MS while they drop in one after another; folding, they lift away (the bottom
         // one first), then the room closes. `fold`: 0 = open, 1 = folded (the room's height).
@@ -330,14 +331,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             .pb(px(2.))
             .pl(px(10.))
             .cursor_pointer()
-            .map(|d| match empty {
-                true => d.tooltip(super::header::tip(format!("{} in {}", if m.empty_opens_agent() { "New agent" } else { "New terminal" }, g.name))),
-                false => d.tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project")),
-            })
-            .on_click(cx.listener(move |m, _, _, cx| match toggle_key.clone() {
-                Some(p) if empty => m.open_in_empty(p, cx),
-                Some(p) => toggle_fold(m, p, cx),
-                None => {}
+            .tooltip(super::header::tip_keys(if collapsed { "Show this project's terminals" } else { "Fold this project" }, "keys.fold_project"))
+            .on_click(cx.listener(move |m, _, _, cx| {
+                if let Some(p) = toggle_key.clone() {
+                    toggle_fold(m, p, cx);
+                }
             }))
             .child(chevron)
             .child(caps_label(t, &g.name).min_w_0().truncate())
@@ -389,7 +387,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let header = wipe(line, 0., header.into_any_element());
         // Folded: a bar under the heading shows how its terminals stand (`ui::fold_peek`); it
         // opens with the fold.
-        let fold_bar = pid.as_deref().filter(|_| collapsed && fold > 0.).map(|p| {
+        let fold_bar = pid.as_deref().filter(|_| collapsed && !empty && fold > 0.).map(|p| {
             let bar = crate::ui::fold_peek::bar(m, t, p, &g.sessions, window, cx);
             wipe(line, 0., div().flex_none().h(px(crate::ui::fold_peek::BAR_H * fold)).opacity(fold).child(bar).into_any_element())
         });
@@ -397,8 +395,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             crate::ui::fold_peek::forget(m, p);
         }
         line += usize::from(g.project.is_some());
-        let new_row = pid.clone().filter(|_| empty).map(|p| {
-            let el = wipe(line, 26., ghost_row(t, p, m.empty_opens_agent(), cx).into_any_element());
+        // Folded, the ghost row goes with the fold (as the rows do).
+        let new_row = pid.clone().filter(|_| empty && fold < 1.).map(|p| {
+            let ghost = ghost_row(t, p, m.empty_opens_agent(), cx);
+            let ghost = div().flex_none().overflow_hidden().h(px(34. * (1. - fold))).opacity(1. - fold).child(ghost);
+            let el = wipe(line, 26., ghost.into_any_element());
             line += 1;
             el
         });
