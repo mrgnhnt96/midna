@@ -388,8 +388,8 @@ fn restart_rpc_is_a_graceful_handoff() {
 #[test]
 fn a_busy_mac_postpones_the_upgrade_unless_forced() {
     let cpus = std::thread::available_parallelism().unwrap().get() as f64;
-    // Twice as much work as cores: 200% against the default system.busy_load of 150%.
-    let d = Bin::start_with_load(cpus * 2.);
+    // Two and a half times as much work as cores: 250% against the default system.busy_load of 200%.
+    let d = Bin::start_with_load(cpus * 2.5);
     let mut c = d.human();
     let pid0 = d.info()["pid"].as_i64().unwrap();
     for (m, p) in [("daemon.upgrade", json!({ "binary_path": d.path("v2") })), ("daemon.restart", json!({}))] {
@@ -399,16 +399,16 @@ fn a_busy_mac_postpones_the_upgrade_unless_forced() {
         };
         assert_eq!(e.code, midna_proto::error::BUSY, "{m}: {e:?}");
         assert!(e.message.contains("busy"), "{e:?}");
-        assert_eq!(e.data.as_ref().unwrap()["load_percent"], 200, "{e:?}");
+        assert_eq!(e.data.as_ref().unwrap()["load_percent"], 250, "{e:?}");
     }
     let ev = call(&mut c, "events.list", json!({ "since_seq": 0, "limit": 100, "filter": { "kinds": ["daemon.upgrade_postponed"] } }));
     assert_eq!(ev.as_array().unwrap().len(), 2, "{ev}");
     assert_eq!(ev[0]["data"]["reason"], "upgrade");
 
     // Raising the bar makes it calm enough; force goes ahead regardless.
-    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 250 }));
+    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 300 }));
     assert_eq!(call(&mut c, "system.load", json!({}))["busy"], false);
-    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 150 }));
+    call(&mut c, "settings.set", json!({ "key": "system.busy_load", "value": 200 }));
     let r = call(&mut c, "daemon.upgrade", json!({ "binary_path": d.path("v2"), "force": true }));
     assert_eq!(r["ok"], json!(true));
     let up = d.wait_upgraded(1);
