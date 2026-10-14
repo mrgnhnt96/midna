@@ -53,6 +53,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             }
             d.clear_agent_blocked(&sid);
             start_turn(d, &sid, &project, &actor);
+            crate::resume::on_turn_started(d, &sid);
         }
         "Stop" | "StopFailure" => {
             end_turn(d, &sid, &project, &actor, ev, payload.get("last_assistant_message").and_then(Value::as_str));

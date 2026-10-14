@@ -71,6 +71,42 @@ fn a_turn_that_died_in_sleep_is_continued() {
 }
 
 #[test]
+fn a_failure_stays_pending_when_idle_prompt_marks_it_done_before_the_network_is_back() {
+    // On wake Claude's delayed idle_prompt turns `failed` into `done` before Wi-Fi reconnects.
+    let (d, bin, online) = daemon("idle");
+    let mut h = d.human();
+    online.store(false, Ordering::Relaxed);
+    let sid = sleep_through_a_turn(&d, &mut h);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    hook(&mut d.agent(Some(&sid)), "Notification", json!({ "notification_type": "idle_prompt", "message": "Claude is waiting for your input" }));
+    assert_eq!(call(&mut h, "session.get", json!({ "id": sid }))["status"]["state"], "done");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(queued(&mut h, &sid).is_empty(), "nothing goes in while offline");
+    online.store(true, Ordering::Relaxed);
+    let item = wait_for(10, "continue queued", || queued(&mut h, &sid).first().cloned());
+    assert_eq!(item["text"].as_str(), Some("continue"), "{item}");
+    wait_for(15, "continue typed", || Some(read(&mut h, &sid)).filter(|t| t.contains("continue")));
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
+fn a_turn_finished_by_hand_after_a_failure_is_left_alone() {
+    let (d, bin, online) = daemon("by-hand");
+    let mut h = d.human();
+    online.store(false, Ordering::Relaxed);
+    let sid = sleep_through_a_turn(&d, &mut h);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut a = d.agent(Some(&sid));
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "continue" }));
+    hook(&mut a, "Stop", json!({}));
+    online.store(true, Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_secs(7));
+    assert!(queued(&mut h, &sid).is_empty(), "the human already continued it");
+    assert_eq!(midnad::resume::watching(&d.daemon()), 0);
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
 fn nothing_is_typed_when_the_setting_is_off() {
     let (d, bin, _) = daemon("off");
     let mut h = d.human();
@@ -116,6 +152,7 @@ fn connection_errors_are_told_apart() {
     assert!(is_network_error("unknown", "Connection error."));
     assert!(is_network_error("unknown", "fetch failed: getaddrinfo ENOTFOUND api.anthropic.com"));
     assert!(is_network_error("server_error", "Request timed out."));
+    assert!(is_network_error("unknown", "API Error: Your computer went to sleep mid-response. The response above may be incomplete."));
     assert!(!is_network_error("rate_limit", "Rate limit reached."));
     assert!(!is_network_error("authentication_failed", "Invalid API key"));
     assert!(!is_network_error("", ""));
