@@ -284,6 +284,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.resume" => crate::guard::pause(d, ctx.actor(), parse(p)?, false),
         "session.stop_processes" => crate::guard::stop_processes(d, ctx.actor(), parse(p)?),
         "system.load" => crate::guard::system_load(d),
+        "system.run_anyway" => crate::guard::run_anyway(d, ctx.actor(), ctx.session.clone(), parse(p)?),
         "worktrees.list" => crate::worktrees::list(d, parse(p)?),
         "worktrees.clean" => crate::worktrees::clean(d, parse(p)?),
         "cleanup.runs" => crate::cleanup::runs(d, parse(p)?),

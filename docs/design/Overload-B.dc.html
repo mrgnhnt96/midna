@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>B Verdict first</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#B79AE8}a:hover{color:#CDB6F2}
+</style>
+</helmet>
+<div style="width: 880px; height: 560px; box-sizing: border-box; display: flex; flex-direction: column; background: #0F1117; color: #E4E7EE; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; font-size: 13px; line-height: 19px; border: 1px solid #282D3B; border-radius: 10px; overflow: hidden">
+  <div style="height: 40px; flex: none; display: flex; align-items: center; padding: 0 16px 0 14px; gap: 8px; background: #151821; border-bottom: 1px solid #282D3B">
+    <div style="display: flex; gap: 8px; width: 70px" aria-hidden="true">
+      <span style="width: 12px; height: 12px; border-radius: 6px; background: #F2665C"></span>
+      <span style="width: 12px; height: 12px; border-radius: 6px; background: #F2A93B"></span>
+      <span style="width: 12px; height: 12px; border-radius: 6px; background: #4A5168"></span>
+    </div>
+    <div style="flex: 1; font-weight: 700">Your Mac is overloaded</div>
+    <div style="color: #9AA2B3; font-size: 12px">Mac CPU {{mac}} · busy 3 min</div>
+  </div>
+  <div style="flex: none; display: flex; flex-direction: column; gap: 12px; padding: 22px 24px 18px">
+    <div style="font-size: 22px; line-height: 28px; font-weight: 700">{{verdict}}</div>
+    <div style="color: #9AA2B3; font-size: 13.5px">{{sub}}</div>
+    <div style="display: flex; gap: 2px; height: 14px; border-radius: 7px; overflow: hidden; background: #282D3B; margin-top: 4px">
+      <div style="height: 100%; background: #6EA2FF; width: {{midnaW}}"></div>
+      <div style="height: 100%; background: #8A8F9C; width: {{otherW}}"></div>
+    </div>
+  </div>
+  <div style="flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 0 24px 18px">
+    <sc-for list="{{cols}}" as="c" hint-placeholder-count="2">
+      <div style="display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: 10px; border: 1px solid #282D3B; background: #151821; min-height: 0">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 0 4px 6px">
+          <span style="width: 10px; height: 10px; border-radius: 3px; background: {{c.color}}"></span>
+          <span style="flex: 1; font-weight: 700">{{c.label}}</span>
+          <span style="font-weight: 700">{{c.pct}}</span>
+        </div>
+        <sc-for list="{{c.rows}}" as="r" hint-placeholder-count="3">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-top: 1px solid #1D2130">
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+              <span style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span>
+              <span style="font-size: 12px; color: #9AA2B3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.what}}</span>
+            </div>
+            <span style="flex: none; width: 38px; text-align: right; font-size: 12px; color: #9AA2B3">{{r.pct}}</span>
+            <sc-if value="{{r.pause}}" hint-placeholder-val="{{ false }}">
+              <button style="height: 26px; padding: 0 10px; border-radius: 6px; border: 1px solid #3FC4C0; background: transparent; color: #3FC4C0; font: inherit; font-size: 12px">Pause</button>
+            </sc-if>
+          </div>
+        </sc-for>
+        <div style="flex: 1"></div>
+        <div style="padding: 6px 4px 0; font-size: 12px; color: #9AA2B3">{{c.foot}}</div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 24px; border-top: 1px solid #282D3B; background: #151821">
+    <span style="color: #9AA2B3; font-size: 12px">Load 46.9 on 12 cores · the disk is busy too</span>
+    <div style="flex: 1"></div>
+    <button style="height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid #282D3B; background: #1D2130; color: #E4E7EE; font: inherit">Open Activity Monitor</button>
+    <button style="height: 30px; padding: 0 14px; border-radius: 7px; border: 1px solid #B79AE8; background: #B79AE8; color: #15111C; font: inherit; font-weight: 600">OK</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["Other apps are the cause","Midna is the cause"],"default":"Other apps are the cause"},"$preview":{"width":880,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const outside = (this.props.scenario ?? "Other apps are the cause") !== "Midna is the cause";
+    const t = (name, what, pct) => ({ name, what, pct, pause: true });
+    const a = (name, what, pct) => ({ name, what, pct, pause: false });
+    const inMidna = (pct, rows, foot) => ({ label: "In Midna", color: "#6EA2FF", pct, rows, foot });
+    const outMidna = (pct, rows) => ({ label: "Outside Midna", color: "#8A8F9C", pct, rows, foot: "Midna can't pause these. Quit them in their app." });
+    return outside
+      ? { mac: "88%", midnaW: "6%", otherW: "82%",
+          verdict: "Other apps are using your Mac",
+          sub: "Midna's terminals use 6% of it, so your agents carry on as normal: nothing is paused, held back or slowed down.",
+          cols: [
+            outMidna("82%", [a("clang ×22", "Xcode", "51%"), a("mds_stores", "Spotlight", "13%"), a("fseventsd", "macOS file events", "10%"), a("dartvm", "Dart", "8%")]),
+            inMidna("6%", [t("Periodic check-ins for long-running agents", "claude, node ×3", "5%"), t("T254 Goals list with rows that expand", "claude", "<1%"), t("T296 Photo storage interface", "claude", "<1%")], "+ 2 more under 1%")] }
+      : { mac: "94%", midnaW: "86%", otherW: "8%",
+          verdict: "Midna's terminals are using your Mac",
+          sub: "They use 86% of it. Agents wait before starting more builds or subagents, and the busiest terminal is slowed down.",
+          cols: [
+            inMidna("86%", [t("taskboard backlog agents", "rustc ×14, cargo ×4, ld · slowed down", "78%"), t("kass dictation", "node ×3", "6%"), t("T254 Goals list with rows that expand", "claude", "2%")], "Pause holds a terminal where it is; Resume picks up again."),
+            outMidna("8%", [a("WindowServer", "macOS", "4%"), a("mds_stores", "Spotlight", "3%")])] };
+  }
+}
+</script>
+</body>
+</html>

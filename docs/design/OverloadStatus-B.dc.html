@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>B status bar</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#B79AE8}a:hover{color:#CDB6F2}
+</style>
+</helmet>
+<div style="width: 880px; height: 340px; box-sizing: border-box; position: relative; display: flex; flex-direction: column; background: #0F1117; color: #E4E7EE; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; font-size: 13px; line-height: 19px; border: 1px solid #282D3B; border-radius: 10px; overflow: hidden">
+  <div style="flex: 1; min-height: 0; display: flex">
+    <div style="width: 264px; flex: none; display: flex; flex-direction: column; justify-content: flex-end; background: #151821; border-right: 1px solid #282D3B">
+      <div style="display: flex; justify-content: space-around; padding: 10px 8px; border-top: 1px solid #282D3B; font-size: 12px; color: #9AA2B3"><span>Triggers</span><span>Rules</span><span>Settings</span></div>
+    </div>
+    <div style="flex: 1; background: #0B0D12; padding: 16px 20px; font-family: 'SF Mono', Menlo, monospace; font-size: 12px; color: #4A5168; white-space: pre">  Opus 5.5 · $2.80
+  ▸▸ bypass permissions on · 1 shell</div>
+  </div>
+  <div style="height: 30px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 14px; background: #151821; border-top: 1px solid #282D3B; font-size: 12.5px">
+    <span style="display: flex; align-items: center; gap: 5px"><span style="color: #F2A93B">●</span>Mac CPU 88%<span style="color: #9AA2B3">· other apps</span></span>
+    <span style="display: flex; align-items: center; gap: 5px"><span style="color: #4CC38A">●</span>Hooks</span>
+  </div>
+  <div style="position: absolute; left: 12px; bottom: 38px; width: 320px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 9px; border: 1px solid #282D3B; background: #1D2130; font-size: 12.5px; box-shadow: 0 10px 30px rgba(0,0,0,0.45)">
+    <div style="font-weight: 700; font-size: 14px">Other apps are using your Mac</div>
+    <div style="display: flex; gap: 2px; height: 10px; border-radius: 5px; overflow: hidden; background: #282D3B">
+      <div style="height: 100%; width: 6%; background: #6EA2FF"></div>
+      <div style="height: 100%; width: 82%; background: #8A8F9C"></div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+      <div style="display: flex; flex-direction: column"><span style="font-size: 20px; font-weight: 700; line-height: 26px">82%</span><span style="color: #9AA2B3">other apps · mostly Xcode</span></div>
+      <div style="display: flex; flex-direction: column"><span style="font-size: 20px; font-weight: 700; line-height: 26px; color: #6EA2FF">6%</span><span style="color: #9AA2B3">Midna's terminals</span></div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; color: #9AA2B3"><span style="width: 8px; height: 8px; border-radius: 4px; background: #4CC38A"></span>Your agents carry on as normal.</div>
+    <div style="color: #4A5168; font-size: 12px">Click for details</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":340}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

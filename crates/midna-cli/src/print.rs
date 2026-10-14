@@ -375,37 +375,60 @@ pub fn usage(v: &Value) {
     }
 }
 
-/// `midna system`.
+/// `midna system`. Every percent is a share of the whole Mac (all cores).
 pub fn system_load(v: &Value) {
+    let cpus = v["cpus"].as_u64().unwrap_or(1).max(1) as u32;
+    let (cpu, midna) = (v["cpu_percent"].as_u64().unwrap_or(0) as u32, v["midna_percent"].as_u64().unwrap_or(0) as u32);
     let state = if v["overloaded"].as_bool() == Some(true) {
         format!("overloaded (busy {} min)", v["busy_for_secs"].as_u64().unwrap_or(0) / 60)
-    } else if v["busy"].as_bool() == Some(true) {
+    } else if v["cpu_busy"].as_bool() == Some(true) {
         "busy".into()
     } else {
         "calm".into()
     };
+    let cause = match (v["cpu_busy"].as_bool() == Some(true), v["held"].as_bool() == Some(true)) {
+        (true, true) => ", because of midna's terminals: agents wait to start heavy work",
+        (true, false) => ", because of other apps: agents carry on",
+        _ => "",
+    };
+    println!("CPU {cpu}% of the Mac: midna's terminals {midna}%, other apps {}%; {state}{cause} (busy at {}%, setting system.busy_cpu)", cpu.saturating_sub(midna), v["busy_cpu_at"]);
+    let upgrades = if v["busy"].as_bool() == Some(true) { "high: daemon upgrades wait" } else { "fine for upgrades" };
     println!(
-        "load {:.2} {:.2} {:.2} on {} cores: {}% per core, {state} (busy at {}%, setting system.busy_load)",
+        "load {:.2} {:.2} {:.2} on {cpus} cores: {}% per core, {upgrades} (at {}%, setting system.busy_load)",
         v["load1"].as_f64().unwrap_or(0.),
         v["load5"].as_f64().unwrap_or(0.),
         v["load15"].as_f64().unwrap_or(0.),
-        v["cpus"],
         v["load_percent"],
         v["busy_at"]
     );
+    let names = |t: &Value| t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+    let mac = |t: &Value| midna_proto::system::share_label(midna_proto::system::share_of_mac(t["cpu_percent"].as_u64().unwrap_or(0) as u32, cpus));
     let top = v["top"].as_array().cloned().unwrap_or_default();
     if top.is_empty() {
         println!("no terminal is using much CPU");
-        return;
+    } else {
+        println!("{:<12} {:>5} {:>6}  {}", "TERMINAL", "CPU", "PROCS", "NAME / BUSIEST");
+        for t in &top {
+            let paused = if t["paused"].as_bool() == Some(true) { " [paused]" } else { "" };
+            let slowed = if t["backgrounded"].as_bool() == Some(true) { " [slowed]" } else { "" };
+            println!("{:<12} {:>5} {:>6}  {}{paused}{slowed}  ({})", s(t, "session_id"), mac(t), t["processes"], s(t, "name"), names(t));
+        }
     }
-    println!("{:<12} {:>6} {:>6}  {}", "TERMINAL", "CPU%", "PROCS", "NAME / BUSIEST");
-    for t in top {
-        let busiest = t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-        let paused = if t["paused"].as_bool() == Some(true) { " [paused]" } else { "" };
-        let slowed = if t["backgrounded"].as_bool() == Some(true) { " [slowed]" } else { "" };
-        println!("{:<12} {:>6} {:>6}  {}{paused}{slowed}  ({busiest})", s(&t, "session_id"), t["cpu_percent"], t["processes"], s(&t, "name"));
+    let others = v["others"].as_array().cloned().unwrap_or_default();
+    if !others.is_empty() {
+        println!("{:<12} {:>5} {:>6}  {}", "OTHER APP", "CPU", "PROCS", "BUSIEST");
+        for o in &others {
+            let busiest = names(o);
+            println!("{:<12} {:>5} {:>6}  {busiest}", s(o, "name"), mac(o), o["processes"]);
+        }
     }
-    println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
+    let system = v["system_percent"].as_u64().unwrap_or(0);
+    if system > 0 {
+        println!("macOS and other users' processes: {system}%");
+    }
+    if !top.is_empty() {
+        println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
+    }
 }
 
 /// `midna worktrees`.

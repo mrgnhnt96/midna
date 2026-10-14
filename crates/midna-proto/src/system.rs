@@ -4,12 +4,18 @@
 //!
 //! - Busy: the 1-minute load average per core at or above `system.busy_load` percent. A busy
 //!   Mac postpones a daemon upgrade (the handoff can time out under load and hang up every
-//!   terminal) unless the caller forces it.
-//! - Overload: busy for `guard.overload_secs` in a row. midnad emits `system.overloaded` with
-//!   the terminals using the most CPU, so the app can offer to pause or stop them.
-//! - Busy agents: while busy, what agent terminals start runs in macOS's background mode
-//!   (`guard.background_agents`), and agents are told to wait instead of starting heavy work
-//!   (`guard.busy_gate`). An agent runs at most `guard.max_subagents` subagents at once.
+//!   terminal) unless the caller forces it. The load average also counts work waiting on the
+//!   disk, so it's only used for that.
+//! - CPU busy: the Mac's CPU in use (all cores, from the kernel's tick counters) at or above
+//!   `system.busy_cpu` percent. Overload, the busy gate and background mode go by this.
+//! - Overload: CPU busy for `guard.overload_secs` in a row. midnad emits `system.overloaded`
+//!   with the terminals and the other apps using the most CPU, so the app can say which it is
+//!   and offer to pause terminals.
+//! - Held: CPU busy and midna's terminals use at least half of the CPU in use
+//!   ([`midna_is_the_cause`]). Only then does what agent terminals start run in macOS's
+//!   background mode (`guard.background_agents`), and agents are told to wait instead of
+//!   starting heavy work (`guard.busy_gate`): when other apps keep the Mac busy, holding
+//!   agents back frees nothing. An agent runs at most `guard.max_subagents` subagents at once.
 //! - Runaway loops: background `while`/`until` shell loops an agent started (polling for a
 //!   build, a file, a process) that outlive `guard.loop_max_hours` are stopped.
 //! - Worktrees: linked git worktrees of repos midna's terminals use are removed after
@@ -19,8 +25,8 @@ use crate::types::{Id, Timestamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// `system.load`: the load average, whether midna counts the Mac as busy, and the terminals
-/// using the most CPU.
+/// `system.load`: the Mac's CPU use and load average, whether midna counts it as busy, and the
+/// terminals and other apps using the most CPU.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SystemLoad {
     pub load1: f64,
@@ -31,8 +37,25 @@ pub struct SystemLoad {
     pub load_percent: u32,
     /// `system.busy_load`, in percent.
     pub busy_at: u32,
+    /// The load average is at or above `system.busy_load`: daemon upgrades wait.
     pub busy: bool,
-    /// Busy for at least `guard.overload_secs` (seconds busy so far, 0 when not busy).
+    /// The Mac's CPU in use over the last sample, percent of all its cores (100 = all busy).
+    #[serde(default)]
+    pub cpu_percent: u32,
+    /// What midna's terminals use of it, percent of all cores (the rest is other apps).
+    #[serde(default)]
+    pub midna_percent: u32,
+    /// `system.busy_cpu`, in percent.
+    #[serde(default)]
+    pub busy_cpu_at: u32,
+    /// `cpu_percent` is at or above `system.busy_cpu`.
+    #[serde(default)]
+    pub cpu_busy: bool,
+    /// CPU busy because of midna's terminals ([`midna_is_the_cause`]): the busy gate holds agents'
+    /// heavy work back, and `midna system wait` waits for this to clear.
+    #[serde(default)]
+    pub held: bool,
+    /// CPU busy for this long (seconds, 0 when not); `overloaded` from `guard.overload_secs`.
     #[serde(default)]
     pub busy_for_secs: u64,
     #[serde(default)]
@@ -40,6 +63,43 @@ pub struct SystemLoad {
     /// Terminals by CPU use, heaviest first (only those using any).
     #[serde(default)]
     pub top: Vec<HeavyTerminal>,
+    /// Apps and processes outside midna's terminals by CPU use, heaviest first. macOS's own
+    /// processes (run as root or other users) can't be read one by one; they're in `system_percent`.
+    #[serde(default)]
+    pub others: Vec<OtherProcess>,
+    /// CPU in use that no listed terminal or app accounts for: macOS and other users' processes,
+    /// percent of all cores.
+    #[serde(default)]
+    pub system_percent: u32,
+}
+
+/// An app (its processes grouped by the `.app` they run from) or a lone process outside midna's
+/// terminals, and the CPU it uses.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OtherProcess {
+    /// The app's name (`Xcode`), else the process name (`fseventsd`).
+    pub name: String,
+    /// Percent of one core, summed over its processes, like `HeavyTerminal.cpu_percent`.
+    pub cpu_percent: u32,
+    pub processes: u32,
+    /// An app's busiest process names with counts: `clang ×22`, `XCBBuildService`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub busiest: Vec<String>,
+}
+
+/// Whether midna's terminals are what keeps the CPU busy: they use at least half of what's in use.
+pub fn midna_is_the_cause(cpu_percent: u32, midna_percent: u32) -> bool {
+    cpu_percent > 0 && midna_percent * 2 >= cpu_percent
+}
+
+/// A per-core percent (800 = eight cores) as a share of the whole Mac, in percent.
+pub fn share_of_mac(cpu_percent: u32, cpus: u32) -> f64 {
+    cpu_percent as f64 / cpus.max(1) as f64
+}
+
+/// A share of the Mac for people: `51%`, `<1%` (above 0 but under 1), `0%`.
+pub fn share_label(share: f64) -> String {
+    if share > 0. && share < 1. { "<1%".into() } else { format!("{}%", share.round() as u32) }
 }
 
 /// A terminal and the CPU its processes use.
@@ -62,6 +122,19 @@ pub struct HeavyTerminal {
     /// (`guard.background_agents`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub backgrounded: bool,
+}
+
+/// `system.run_anyway`: which terminal's agent goes ahead (default: the caller's own).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RunAnywayParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RunAnywayResult {
+    pub session_id: Id,
+    pub run_anyway: bool,
 }
 
 /// A terminal paused with `session.pause` (`Session.paused`): its whole process tree is
@@ -431,6 +504,16 @@ pub fn lock_pid(reason: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cause_and_shares() {
+        assert!(midna_is_the_cause(90, 80));
+        assert!(midna_is_the_cause(90, 45));
+        assert!(!midna_is_the_cause(88, 6));
+        assert!(!midna_is_the_cause(0, 0));
+        assert_eq!(share_of_mac(940, 12).round(), 78.);
+        assert_eq!((share_label(0.3), share_label(5.4), share_label(0.)), ("<1%".into(), "5%".into(), "0%".into()));
+    }
 
     #[test]
     fn load_percent_per_core() {

@@ -545,14 +545,19 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "system",
         aliases: &["load"],
-        usage: "system [load] | wait [--timeout S] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
+        usage: "system [load] | wait [--timeout S] | run-anyway [terminal] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
         summary: "the Mac's load, and pausing or stopping terminals that hog it",
-        details: "load    load average per core, busy/overloaded, and the terminals using the most CPU (busiest\n\
-                  \x20       processes: rustc ×14). Busy = system.busy_load (200% of the cores by default); busy for\n\
-                  \x20       guard.overload_secs fires system.overloaded and the app offers Pause / Stop processes.\n\
-                  wait    block until the Mac isn't busy (the busy gate's own check), then print the load. Exit 4\n\
-                  \x20       if still busy at --timeout seconds (default: no limit). When a build, test or subagent\n\
-                  \x20       is held, run it as a background command and retry once it ends; midnad never stops it.\n\
+        details: "load    the Mac's CPU in use (all cores) and what midna's terminals and other apps use of it\n\
+                  \x20       (busiest processes: rustc ×14), busy/overloaded, and the load average. Busy =\n\
+                  \x20       system.busy_cpu (90% by default); busy for guard.overload_secs fires system.overloaded and\n\
+                  \x20       the app says whether terminals or other apps are the cause. Agents are only held back when\n\
+                  \x20       midna's terminals use at least half of the CPU in use.\n\
+                  wait    block until agents aren't held back (the busy gate's own check), then print the load.\n\
+                  \x20       Exit 4 if still held at --timeout seconds (default: no limit). When a build, test or\n\
+                  \x20       subagent is held, run it as a background command and retry once it ends; midnad never\n\
+                  \x20       stops it.\n\
+                  run-anyway  the human said to go ahead though the Mac is busy: the busy gate lets this terminal\n\
+                  \x20       (or the one given) through until the human's next prompt. Only when the human asked\n\
                   pause   stop (SIGSTOP) the terminal's whole process tree, agent included, until resumed. Human only\n\
                   resume  continue it\n\
                   stop    end what the terminal started (or only the pids given, with their children): SIGTERM,\n\
@@ -561,7 +566,7 @@ pub static VERBS: &[Verb] = &[
                   While busy, what the heaviest agent terminals start runs in macOS's background mode\n\
                   (guard.background_agents; \"slowed\" in the list), and agents are denied new subagents and\n\
                   builds/tests/installs (guard.busy_gate; `system wait` waits it out). An agent runs at most guard.max_subagents subagents at once.",
-        methods: &["system.load", "session.pause", "session.resume", "session.stop_processes"],
+        methods: &["system.load", "system.run_anyway", "session.pause", "session.resume", "session.stop_processes"],
     },
     Verb {
         name: "cleanup",

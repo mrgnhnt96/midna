@@ -31,7 +31,7 @@ pub use frame::{Cell, Frame, RowData};
 pub use methods::*;
 pub use openrpc::openrpc;
 pub use system::{
-    HeavyTerminal, Paused, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
+    HeavyTerminal, OtherProcess, Paused, RunAnywayParams, RunAnywayResult, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
     WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,
 };
 pub use types::*;
