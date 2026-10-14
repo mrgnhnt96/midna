@@ -5,6 +5,8 @@
 #       [--arch universal|aarch64|x86_64] [--min-macos 12.0]
 # Writes <out>/Midna-<version>.app.tar.gz and <out>/<channel>.json. Upload the archive to
 # <url-base>/ and the JSON to the feed URL (updates.feed_url, {channel} -> channel).
+# MIDNA_RELEASE_TOOL: a prebuilt packaging/release-tool binary to use instead of building it
+# (CI builds it once and hands it to the job that packs the notarized app).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="" URL_BASE="" CHANNEL=stable NOTES="" OUT="$ROOT/dist/updates" KEY="${MIDNA_UPDATE_KEY:-$HOME/.config/midna-dev/update-ed25519.key}"
@@ -27,8 +29,12 @@ done
 [ -f "$KEY" ] || { echo "no signing key at $KEY (packaging/gen-update-key.sh makes a dev one)" >&2; exit 1; }
 /usr/bin/codesign --verify --deep --strict "$APP"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-TOOL="$ROOT/packaging/release-tool/target/release/midna-release"
-cargo build --release -q --manifest-path "$ROOT/packaging/release-tool/Cargo.toml"
+if [ -n "${MIDNA_RELEASE_TOOL:-}" ]; then
+  TOOL="$MIDNA_RELEASE_TOOL"
+else
+  TOOL="$ROOT/packaging/release-tool/target/release/midna-release"
+  cargo build --release -q --manifest-path "$ROOT/packaging/release-tool/Cargo.toml"
+fi
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"   # tar runs from the app's folder, so a relative --out would miss
 ARCHIVE="$OUT/Midna-$VERSION.app.tar.gz"

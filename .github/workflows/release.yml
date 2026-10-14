@@ -8,6 +8,14 @@ name: Release
 # stable.json names the newest public release, beta.json the newest of any.
 # A beta tag (v0.3.0-beta.1) is published as a prerelease, which the website
 # and the stable channel skip.
+#
+# Three jobs, so a failure late in the run doesn't cost a rebuild: "Re-run
+# failed jobs" runs only the failed job and the ones after it.
+#   build    compile and sign the app (the slow part)
+#   package  notarize the app, make and notarize the DMG, make the update
+#   publish  the GitHub release and the channel manifests
+# Calls to Apple go through scripts/retry.sh, since its service drops
+# connections now and then.
 on:
   push:
     tags: ["v*"]
@@ -24,10 +32,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  build:
     if: github.actor == 'mrgnhnt96'
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4
@@ -54,24 +62,69 @@ jobs:
       - name: Set up toolchain
         run: ./scripts/setup-toolchain.sh
 
-      # The Developer ID certificate goes in a keychain of its own that lives
-      # only for this run.
       - name: Import signing certificate
         env:
           CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: packaging/ci-keychain.sh import
+
+      # The release public key is compiled in; without it the app would never
+      # accept an update, so refuse to build rather than ship that.
+      - name: Build and sign app
+        env:
+          MIDNA_UPDATE_PUBKEY: ${{ vars.MIDNA_UPDATE_PUBKEY }}
+          MIDNA_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_IDENTITY }}
         run: |
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          password=$(openssl rand -hex 24)
-          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          rm "$RUNNER_TEMP/certificate.p12"
-          security find-identity -v -p codesigning "$keychain"
+          [ -n "$MIDNA_UPDATE_PUBKEY" ] || { echo "::error::Set the MIDNA_UPDATE_PUBKEY repository variable"; exit 1; }
+          packaging/build-app.sh --version "${GITHUB_REF_NAME#v}" --out dist/release
+
+      # It signs the update feed in the package job, which has no Rust.
+      - name: Build release tool
+        run: cargo build --release -q --manifest-path packaging/release-tool/Cargo.toml
+
+      - name: Clean up signing
+        if: always()
+        run: packaging/ci-keychain.sh delete
+
+      # ditto keeps the symlinks and extended attributes the signature needs;
+      # upload-artifact's own zip would drop them (and the tool's exec bit).
+      - name: Pack build
+        run: |
+          mkdir -p build
+          ditto -c -k --keepParent dist/release/Midna.app build/Midna.app.zip
+          cp packaging/release-tool/target/release/midna-release build/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build/
+          compression-level: 0
+          retention-days: 7
+
+  package:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: build
+
+      - name: Unpack build
+        run: |
+          ditto -x -k build/Midna.app.zip dist/release
+          chmod +x build/midna-release
+          echo "MIDNA_RELEASE_TOOL=$PWD/build/midna-release" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: packaging/ci-keychain.sh import
 
       - name: App Store Connect API key and update key
         env:
@@ -83,16 +136,6 @@ jobs:
            echo "$UPDATE_KEY" > "$RUNNER_TEMP/update-ed25519.key")
           echo "MIDNA_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
           echo "MIDNA_UPDATE_KEY=$RUNNER_TEMP/update-ed25519.key" >> "$GITHUB_ENV"
-
-      # The release public key is compiled in; without it the app would never
-      # accept an update, so refuse to build rather than ship that.
-      - name: Build and sign app
-        env:
-          MIDNA_UPDATE_PUBKEY: ${{ vars.MIDNA_UPDATE_PUBKEY }}
-          MIDNA_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_IDENTITY }}
-        run: |
-          [ -n "$MIDNA_UPDATE_PUBKEY" ] || { echo "::error::Set the MIDNA_UPDATE_PUBKEY repository variable"; exit 1; }
-          packaging/build-app.sh --version "${GITHUB_REF_NAME#v}" --out dist/release
 
       # Notarized and stapled before it's archived, so the ticket travels
       # with the DMG and with every update.
@@ -110,22 +153,22 @@ jobs:
         id: dmg
         run: |
           name="Midna-${GITHUB_REF_NAME#v}-macos-arm64"
-          ./scripts/build-dmg.sh dist/release/Midna.app "$name.dmg"
-          echo "file=$name.dmg" >> "$GITHUB_OUTPUT"
+          mkdir -p release
+          ./scripts/build-dmg.sh dist/release/Midna.app "release/$name.dmg"
+          echo "file=release/$name.dmg" >> "$GITHUB_OUTPUT"
 
       # The DMG gets its own signature and notarization ticket, so the
-      # download itself passes Gatekeeper too.
+      # download itself passes Gatekeeper too. The timestamp is a call to
+      # Apple as well.
       - name: Sign and notarize DMG
         env:
           IDENTITY: ${{ vars.DEVELOPER_ID_IDENTITY }}
-          KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          MIDNA_NOTARY_KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          MIDNA_NOTARY_ISSUER: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
           DMG: ${{ steps.dmg.outputs.file }}
         run: |
-          codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-          xcrun notarytool submit "$DMG" --key "$MIDNA_NOTARY_KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait
-          xcrun stapler staple "$DMG"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+          ./scripts/retry.sh 4 codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+          packaging/notarize.sh "$DMG"
 
       # The release notes are this version's section of CHANGELOG.md, or its
       # Unreleased section when the version has none yet.
@@ -136,45 +179,68 @@ jobs:
               /^## / { if (found) exit; found = ($2 == v || $2 == "[" v "]"); next }
               found' CHANGELOG.md
           }
-          section "${GITHUB_REF_NAME#v}" > notes.md
-          [ -s notes.md ] || section Unreleased > notes.md
-          [ -s notes.md ] || echo "See the [changelog](https://midna.mrgnhnt.com/changelog/)." > notes.md
+          section "${GITHUB_REF_NAME#v}" > release/notes.md
+          [ -s release/notes.md ] || section Unreleased > release/notes.md
+          [ -s release/notes.md ] || echo "See the [changelog](https://midna.mrgnhnt.com/changelog/)." > release/notes.md
 
       # The update archive and its signed feed entry (docs/RELEASING.md). The
       # entry points at this release's copy of the archive.
       - name: Update archive and feed entry
-        id: update
         env:
           MIDNA_UPDATE_PUBKEY: ${{ vars.MIDNA_UPDATE_PUBKEY }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          # The key in the secret has to match the one compiled into the app.
+          [ "$("$MIDNA_RELEASE_TOOL" pubkey "$MIDNA_UPDATE_KEY")" = "$MIDNA_UPDATE_PUBKEY" ] ||
+            { echo "::error::MIDNA_UPDATE_KEY doesn't match MIDNA_UPDATE_PUBKEY"; exit 1; }
           packaging/make-update.sh --app dist/release/Midna.app \
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME" \
-            --channel feed --notes "$(cat notes.md)" --arch aarch64 --out dist/updates
-          tool=packaging/release-tool/target/release/midna-release
-          # The key in the secret has to match the one compiled into the app.
-          [ "$("$tool" pubkey "$MIDNA_UPDATE_KEY")" = "$MIDNA_UPDATE_PUBKEY" ] ||
-            { echo "::error::MIDNA_UPDATE_KEY doesn't match MIDNA_UPDATE_PUBKEY"; exit 1; }
-          echo "archive=dist/updates/Midna-$version.app.tar.gz" >> "$GITHUB_OUTPUT"
+            --channel feed --notes "$(cat release/notes.md)" --arch aarch64 --out release
 
       - name: Clean up signing
         if: always()
         run: |
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          packaging/ci-keychain.sh delete
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/update-ed25519.key"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      # A re-run finds the release already made and replaces its files.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF_NAME" == *-beta.* ]]; then
-            flags=(--prerelease --latest=false)
+          version="${GITHUB_REF_NAME#v}"
+          files=("release/Midna-$version-macos-arm64.dmg" "release/Midna-$version.app.tar.gz")
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file release/notes.md
           else
-            flags=(--latest)
+            if [[ "$GITHUB_REF_NAME" == *-beta.* ]]; then
+              flags=(--prerelease --latest=false)
+            else
+              flags=(--latest)
+            fi
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "Midna $version" --notes-file release/notes.md "${flags[@]}"
           fi
-          gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.file }}" \
-            "${{ steps.update.outputs.archive }}" \
-            --title "Midna ${GITHUB_REF_NAME#v}" --notes-file notes.md "${flags[@]}"
 
       # What the updater reads: releases/download/channels/{stable,beta}.json.
       # stable.json follows public releases (scripts/release.sh only tags
@@ -192,13 +258,13 @@ jobs:
           fi
           files=()
           if [[ "$version" != *-beta.* ]]; then
-            cp dist/updates/feed.json stable.json
+            cp release/feed.json stable.json
             files+=(stable.json)
           fi
           current=$(gh release download channels --pattern beta.json --output - 2>/dev/null \
             | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])' || true)
           if [ -z "$current" ] || [ "$(./scripts/newest-version.py "$current" "$version")" = "$version" ]; then
-            cp dist/updates/feed.json beta.json
+            cp release/feed.json beta.json
             files+=(beta.json)
           else
             echo "beta.json stays on $current, newer than $version."
