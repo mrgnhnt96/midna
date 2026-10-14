@@ -10,7 +10,9 @@
 //! `agents.resume_after_sleep_prompt` through the queue, so it goes in only once the agent is
 //! ready and never on top of a draft. A failure after that is retried, `MAX_TRIES` in all, the
 //! later tries further apart (the network can take a while to settle). An agent that finishes
-//! its turn by itself, exits or closes is dropped.
+//! its turn by itself, exits or closes is dropped. A failure still waiting for the network stays
+//! pending even when Claude's `idle_prompt` then turns `failed` into `done` (on wake it often
+//! lands before Wi-Fi is back); only a new turn (`on_turn_started`) clears it.
 use crate::daemon::Daemon;
 use midna_proto::*;
 use std::collections::HashMap;
@@ -60,11 +62,14 @@ struct Watch {
     queued: Option<Id>,
     /// `status.since` of the failure already answered, so it isn't answered twice.
     answered: Option<Timestamp>,
+    /// A failure seen but not answered yet (waiting for the network), kept until it is answered
+    /// or the agent starts another turn, whatever its status says meanwhile.
+    pending: Option<Timestamp>,
 }
 
 impl Watch {
     fn new(cause: Cause, for_: Duration) -> Watch {
-        Watch { cause, until: Instant::now() + for_, tries: 0, queued: None, answered: None }
+        Watch { cause, until: Instant::now() + for_, tries: 0, queued: None, answered: None, pending: None }
     }
 }
 
@@ -112,9 +117,10 @@ fn reachable(host: &str) -> bool {
 }
 
 /// Whether a `StopFailure`'s error reads like a lost connection rather than, say, a rate limit.
+/// Claude's "Your computer went to sleep mid-response" counts: the connection died with the Mac.
 pub fn is_network_error(error: &str, details: &str) -> bool {
     let text = format!("{error} {details}").to_lowercase();
-    ["connection", "network", "offline", "socket", "fetch failed", "timed out", "timeout", "econnreset", "econnrefused", "enotfound", "etimedout", "eai_again", "enetunreach", "ehostunreach"]
+    ["connection", "network", "offline", "socket", "fetch failed", "timed out", "timeout", "econnreset", "econnrefused", "enotfound", "etimedout", "eai_again", "enetunreach", "ehostunreach", "went to sleep"]
         .iter()
         .any(|w| text.contains(w))
 }
@@ -126,6 +132,15 @@ pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str) {
         return;
     }
     d.resume.watch().entry(sid.clone()).or_insert_with(|| Watch::new(Cause::Network, NETWORK_WATCH_FOR));
+}
+
+/// A new turn started (someone typed, maybe our own `continue`): a pending failure is answered.
+pub fn on_turn_started(d: &Daemon, sid: &Id) {
+    if let Some(w) = d.resume.watch().get_mut(sid)
+        && let Some(failure) = w.pending.take()
+    {
+        w.answered = Some(failure);
+    }
 }
 
 /// How many agents are waiting to be resumed.
@@ -208,8 +223,11 @@ fn tick(d: &Daemon) {
         if !queued {
             w.queued = None;
         }
-        let failed = state == StatusState::Failed && alive && w.answered.as_ref() != Some(&since);
-        let finished = matches!(state, StatusState::Done | StatusState::Idle) && !in_turn && w.queued.is_none();
+        if state == StatusState::Failed && w.answered.as_ref() != Some(&since) {
+            w.pending = Some(since.clone());
+        }
+        let failed = alive && w.pending.is_some();
+        let finished = matches!(state, StatusState::Done | StatusState::Idle) && !in_turn && w.queued.is_none() && w.pending.is_none();
         if !alive || finished || Instant::now() > w.until || (failed && w.tries >= MAX_TRIES) {
             watch.remove(&sid);
             continue;
@@ -227,7 +245,7 @@ fn tick(d: &Daemon) {
         let Some(w) = watch.get_mut(&sid) else { continue };
         let at = time::format_unix(time::now_unix() + BACKOFF[w.tries]);
         w.tries += 1;
-        w.answered = Some(since);
+        w.answered = w.pending.take();
         drop(watch);
         let added = crate::queue::add(d, &sid, prompt.clone(), true, vec![], SendWhen::At { at }, None, actor(cause), None);
         let mut watch = d.resume.watch();
