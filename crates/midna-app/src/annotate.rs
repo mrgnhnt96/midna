@@ -1017,6 +1017,47 @@ pub fn clipboard_is_image(cx: &App) -> bool {
     item.text().is_none() && item.entries().iter().any(|e| matches!(e, ClipboardEntry::Image(_)))
 }
 
+/// Pasted text that is only paths to image files on disk (one per line, as a shell or Finder
+/// copies them: bare, quoted, backslash-escaped or `~/`). Empty for anything else, so ordinary
+/// text, a non-image path or a path that doesn't exist pastes as text.
+pub fn pasted_image_paths(text: &str) -> Vec<PathBuf> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut out = vec![];
+    for line in &lines {
+        let Some(p) = unshell_path(line) else { return vec![] };
+        if !looks_like_image(&p) || !p.is_file() {
+            return vec![];
+        }
+        out.push(p);
+    }
+    out
+}
+
+/// One shell word as a path: `'…'` or `"…"` stripped, `\ ` escapes undone, `~/` expanded.
+/// None when it isn't absolute (relative paths depend on a cwd we can't see) or is several words.
+fn unshell_path(word: &str) -> Option<PathBuf> {
+    let quoted = |q: char| word.len() >= 2 && word.starts_with(q) && word.ends_with(q);
+    let s = if quoted('\'') || quoted('"') {
+        word[1..word.len() - 1].to_string()
+    } else {
+        let mut s = String::new();
+        let mut chars = word.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => s.push(chars.next()?),
+                c if c.is_whitespace() => return None,
+                c => s.push(c),
+            }
+        }
+        s
+    };
+    let p = match s.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+        None => PathBuf::from(s),
+    };
+    p.is_absolute().then_some(p)
+}
+
 pub fn looks_like_image(p: &Path) -> bool {
     let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
     matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "heif" | "tif" | "tiff" | "bmp")
@@ -1143,12 +1184,39 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMsg, Mark, Note, OVERSCROLL, Outgoing, STAGE_PAD, Source, anchored, fit_scale, lead, load, notes_text, pan_limit};
+    use super::{ClientMsg, Mark, Note, OVERSCROLL, Outgoing, STAGE_PAD, Source, anchored, fit_scale, lead, load, notes_text, pan_limit, pasted_image_paths};
     use ::core::prelude::v1::test;
     use std::path::PathBuf;
 
     fn note(mark: Mark, text: &str) -> Note {
         Note { mark, text: text.into() }
+    }
+
+    #[test]
+    fn pasted_paths_to_image_files_are_images_in_any_shell_spelling() {
+        let dir = std::env::temp_dir().join(format!("midna-pasted-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let logo = dir.join("LHM Logo (4).jpeg");
+        let shot = dir.join("shot.PNG");
+        let notes = dir.join("notes.txt");
+        for f in [&logo, &shot, &notes] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let l = logo.display().to_string();
+        let s = shot.display().to_string();
+        assert_eq!(pasted_image_paths(&format!("'{l}'")), vec![logo.clone()]);
+        assert_eq!(pasted_image_paths(&format!(" \"{l}\"\n")), vec![logo.clone()]);
+        assert_eq!(pasted_image_paths(&l.replace(' ', "\\ ").replace('(', "\\(").replace(')', "\\)")), vec![logo.clone()]);
+        assert_eq!(pasted_image_paths(&format!("{s}\n'{l}'")), vec![shot.clone(), logo.clone()]);
+        // Not only image files, so it's text.
+        assert!(pasted_image_paths(&l).is_empty(), "unquoted spaces are several words");
+        assert!(pasted_image_paths(&notes.display().to_string()).is_empty());
+        assert!(pasted_image_paths(&format!("{s}\n{}", notes.display())).is_empty());
+        assert!(pasted_image_paths(&dir.join("gone.png").display().to_string()).is_empty());
+        assert!(pasted_image_paths("shot.png").is_empty());
+        assert!(pasted_image_paths(&format!("see {s}")).is_empty());
+        assert!(pasted_image_paths("").is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
