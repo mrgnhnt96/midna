@@ -548,7 +548,7 @@ pub static VERBS: &[Verb] = &[
         usage: "system [load] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
         summary: "the Mac's load, and pausing or stopping terminals that hog it",
         details: "load    load average per core, busy/overloaded, and the terminals using the most CPU (busiest\n\
-                  \x20       processes: rustc ×14). Busy = system.busy_load (150% of the cores by default); busy for\n\
+                  \x20       processes: rustc ×14). Busy = system.busy_load (200% of the cores by default); busy for\n\
                   \x20       guard.overload_secs fires system.overloaded and the app offers Pause / Stop processes.\n\
                   pause   stop (SIGSTOP) the terminal's whole process tree, agent included, until resumed. Human only\n\
                   resume  continue it\n\

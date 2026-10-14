@@ -106,7 +106,7 @@ pub fn cpus() -> u32 {
 }
 
 fn busy_at(d: &Daemon) -> u32 {
-    d.setting("system.busy_load").as_i64().unwrap_or(150).max(1) as u32
+    d.setting("system.busy_load").as_i64().unwrap_or(200).max(1) as u32
 }
 
 /// The load right now, with the heaviest terminals from the last sample.

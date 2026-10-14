@@ -479,7 +479,7 @@ pub fn debug(which: &str, backend: Arc<dyn Backend>, cx: &mut App) {
         load15: 40.3,
         cpus: 12,
         load_percent: 405,
-        busy_at: 150,
+        busy_at: 200,
         busy: true,
         busy_for_secs: 420,
         overloaded: true,
