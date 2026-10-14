@@ -39,6 +39,10 @@ The full suite is slow (the midnad and CLI integration tests start real temp dae
 
 Each checkout builds into its own `target/`. Never point a worktree's `CARGO_TARGET_DIR` (or cargo's build dir) at another checkout's `target/`: cargo gives the same crate the same artifact names in every checkout, so they overwrite each other and a build can link another checkout's stale midna crate.
 
+## Releases never skip a version
+
+If a release's workflow fails or is cancelled before its GitHub release is published, cut that **same** version again. Never move on to the next number. Fix the cause, delete the tag (`git push origin :refs/tags/vX && git tag -d vX`) and run `./scripts/release.sh X` again. Before you pick a number, check that the newest tag has a release (`gh release view v<newest>`). `release.sh` refuses to go past one that doesn't. Details are in `docs/RELEASING.md` ("A release failed").
+
 ## Style
 
 - Never run `cargo fmt`. Long lines are formatted by hand, and there's no `rustfmt.toml`.
