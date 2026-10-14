@@ -277,6 +277,14 @@ fn artifact_watch(t: &BackgroundTask) -> bool {
     t.kind == "monitor" && t.description.starts_with("live updates for artifact ")
 }
 
+/// Artifact watches saved by a daemon from before they were filtered out stay "running"
+/// until the agent's next `Stop`, which an idle terminal never sends: drop them on load.
+pub fn drop_artifact_watches(st: &mut crate::state::State) {
+    for info in st.sessions.iter_mut().filter_map(|s| s.agent_info.as_mut()) {
+        info.background.retain(|t| !artifact_watch(t));
+    }
+}
+
 fn cron(v: &Value) -> Option<AgentCron> {
     Some(AgentCron {
         id: str_at(v, "/id")?,
@@ -558,6 +566,25 @@ mod tests {
             {"id": "m1", "type": "monitor", "status": "running", "description": "tail the build log"}]}));
         assert_eq!(i.background.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["m1"]);
         assert_eq!(i.in_flight().len(), 1);
+    }
+
+    #[test]
+    fn saved_artifact_watches_drop_on_load() {
+        // A state.json written before artifact watches were filtered out.
+        let dir = std::env::temp_dir().join(format!("midna-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let st = json!({"version": 1, "sessions": [{
+            "id": "s1", "project_id": "p", "name": "claude", "kind": "agent", "agent": "claude", "cwd": "/x", "command": ["claude"],
+            "status": {"state": "idle", "since": "2026-10-09T18:07:28Z"}, "created_at": "2026-10-09T18:00:00Z", "last_activity_at": "2026-10-09T18:07:28Z",
+            "agent_info": {"background_at": "2026-10-09T18:07:28Z", "background": [
+                {"id": "st7", "kind": "monitor", "status": "running", "description": "live updates for artifact https://claude.ai/artifact/X (auto-armed on publish)"},
+                {"id": "m1", "kind": "monitor", "status": "running", "description": "tail the build log"}]}}]});
+        std::fs::write(&path, st.to_string()).unwrap();
+        let loaded = crate::state::State::load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        let ids: Vec<&str> = loaded.sessions[0].agent_info.as_ref().unwrap().background.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["m1"]);
     }
 
     #[test]
