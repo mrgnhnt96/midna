@@ -46,10 +46,19 @@ if [ -n "$latest" ] && [ "$(./scripts/newest-version.py "${latest#v}" "$version"
   echo "$tag isn't newer than $latest." >&2
   exit 1
 fi
+# Never skip a version. A tag whose release was never published (its workflow
+# failed or was cancelled) gets its number re-cut, not a new one after it.
+if [ -n "$latest" ] && ! gh release view "$latest" >/dev/null 2>&1; then
+  echo "$latest has no GitHub release: its workflow failed, was cancelled or is still running." >&2
+  echo "Don't skip it. Once no run is going, delete its tag and cut it again:" >&2
+  echo "  git push origin :refs/tags/$latest && git tag -d $latest && ./scripts/release.sh ${latest#v}" >&2
+  exit 1
+fi
 
 ./scripts/set-version.sh "$version"
 git add Cargo.toml Cargo.lock
-git commit -m "chore: release $tag"
+# Re-cutting a version main already has (see above) has nothing to commit.
+git diff --cached --quiet || git commit -m "chore: release $tag"
 git tag -a "$tag" -m "Midna $version"
 git push origin "$branch" "$tag"
 

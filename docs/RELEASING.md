@@ -37,6 +37,21 @@ Apple's notary and timestamp services drop connections now and then (`The networ
 was lost`, `stapler` error 68). `notarize.sh` and the DMG's `codesign --timestamp` retry those
 calls through `scripts/retry.sh` (4 tries, 15s/30s/60s apart); if a job still fails, re-run it.
 
+### A release failed
+
+**Never skip a version.** If the workflow fails or is cancelled before the GitHub release is
+published, nobody has that version, so cut the same number again:
+
+1. A flaky step (Apple's network, a runner hiccup): **Re-run failed jobs**. Stop there.
+2. Something to fix in the code: cancel any run still going (`gh run cancel <id>`), merge
+   the fix to `main`, then delete the tag and cut it again:
+   `git push origin :refs/tags/vX && git tag -d vX && ./scripts/release.sh X`.
+   `main` already has version X, so `release.sh` has nothing to commit and tags the new head.
+
+`release.sh` refuses to cut a newer version while the newest tag has no GitHub release, and
+prints those commands. Once a release *is* published, its number is used up: installed copies
+may already have it, and updates never go backwards.
+
 Before tagging, rename `## Unreleased` in `CHANGELOG.md` to `## 0.2.0 — <date>`. The website
 (`site/`, deployed by `.github/workflows/site.yml`) shows the changelog, and its `/download/` page
 starts the DMG from the latest non-prerelease.
