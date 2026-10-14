@@ -310,7 +310,7 @@ pub fn hold(d: &Daemon, a: &PolicyAction) -> Option<String> {
         let l = busy(d)?;
         let what = if subagent { "more subagents" } else { "builds, tests or installs" };
         Some(format!(
-            "the Mac is busy (load {} on {} cores, {}%; busy from {}%). Don't start {what} now: wait a few minutes and try again (`midna system` shows the load). Work already running carries on.",
+            "the Mac is busy (load {} on {} cores, {}%; busy from {}%). Don't start {what} now: run `midna system wait` as a background command (it returns once the Mac calms down) and try again when it finishes. Work already running carries on.",
             l.load1, l.cpus, l.load_percent, l.busy_at
         ))
     });

@@ -34,6 +34,7 @@ fn a_busy_mac_holds_heavy_work_back() {
     let r = request(&mut a, "Bash(source ./env.sh && cargo test --workspace)");
     assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("deny"), Some("guard")), "{r}");
     assert!(r["reason"].as_str().unwrap().contains("the Mac is busy"), "{r}");
+    assert!(r["reason"].as_str().unwrap().contains("`midna system wait` as a background command"), "{r}");
     let r = launch(&mut a, 1);
     assert_eq!(r["source"], "guard", "{r}");
     // Light commands go through: midna has no opinion on them.

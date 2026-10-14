@@ -545,11 +545,14 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "system",
         aliases: &["load"],
-        usage: "system [load] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
+        usage: "system [load] | wait [--timeout S] | pause <terminal> | resume <terminal> | stop <terminal> [pid …]",
         summary: "the Mac's load, and pausing or stopping terminals that hog it",
         details: "load    load average per core, busy/overloaded, and the terminals using the most CPU (busiest\n\
                   \x20       processes: rustc ×14). Busy = system.busy_load (200% of the cores by default); busy for\n\
                   \x20       guard.overload_secs fires system.overloaded and the app offers Pause / Stop processes.\n\
+                  wait    block until the Mac isn't busy (the busy gate's own check), then print the load. Exit 4\n\
+                  \x20       if still busy at --timeout seconds (default: no limit). When a build, test or subagent\n\
+                  \x20       is held, run it as a background command and retry once it ends; midnad never stops it.\n\
                   pause   stop (SIGSTOP) the terminal's whole process tree, agent included, until resumed. Human only\n\
                   resume  continue it\n\
                   stop    end what the terminal started (or only the pids given, with their children): SIGTERM,\n\
@@ -557,7 +560,7 @@ pub static VERBS: &[Verb] = &[
                   midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.\n\
                   While busy, what the heaviest agent terminals start runs in macOS's background mode\n\
                   (guard.background_agents; \"slowed\" in the list), and agents are denied new subagents and\n\
-                  builds/tests/installs (guard.busy_gate). An agent runs at most guard.max_subagents subagents at once.",
+                  builds/tests/installs (guard.busy_gate; `system wait` waits it out). An agent runs at most guard.max_subagents subagents at once.",
         methods: &["system.load", "session.pause", "session.resume", "session.stop_processes"],
     },
     Verb {
