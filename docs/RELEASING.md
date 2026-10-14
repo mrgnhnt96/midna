@@ -14,18 +14,28 @@ install and auto-update").
 
 `release.sh` checks the version is newer than the last one (`scripts/newest-version.py`), writes it
 into `Cargo.toml`/`Cargo.lock` (`scripts/set-version.sh`), commits, tags `vX.Y.Z` and pushes.
-The tag runs `.github/workflows/release.yml` on a `macos-15` runner, which:
+The tag runs `.github/workflows/release.yml`, in three jobs that hand their files on as
+artifacts, so **Re-run failed jobs** picks up where it stopped instead of rebuilding:
 
-1. checks the files' version matches the tag, sets up `.toolchain/` (`scripts/setup-toolchain.sh`)
-2. imports the Developer ID certificate into a throwaway keychain
-3. `packaging/build-app.sh` with the **release** update public key compiled in
-4. `packaging/notarize.sh` (App Store Connect API key), staples
-5. `scripts/build-dmg.sh` (branded window, `packaging/assets/dmg`), signs, notarizes and staples the DMG
-6. release notes = this version's `CHANGELOG.md` section, else its `## Unreleased` section
-7. `packaging/make-update.sh`: the `.app.tar.gz` and its signed feed entry
-8. publishes the GitHub release (DMG + archive; betas as prereleases)
-9. updates the feeds on the `channels` release: `stable.json` (public releases) and `beta.json`
-   (newest of any; a stable hotfix older than the current beta leaves it alone)
+- **build** (`macos-15`, the slow one)
+  1. checks the files' version matches the tag, sets up `.toolchain/` (`scripts/setup-toolchain.sh`)
+  2. imports the Developer ID certificate into a throwaway keychain (`packaging/ci-keychain.sh`)
+  3. `packaging/build-app.sh` with the **release** update public key compiled in
+  4. builds `packaging/release-tool`, which signs the feed in the next job
+- **package** (`macos-15`)
+  5. `packaging/notarize.sh` (App Store Connect API key), staples
+  6. `scripts/build-dmg.sh` (branded window, `packaging/assets/dmg`), signs, notarizes and staples the DMG
+  7. release notes = this version's `CHANGELOG.md` section, else its `## Unreleased` section
+  8. `packaging/make-update.sh`: the `.app.tar.gz` and its signed feed entry
+- **publish** (`ubuntu-latest`)
+  9. publishes the GitHub release (DMG + archive; betas as prereleases), or replaces its files
+     when a re-run finds it already made
+  10. updates the feeds on the `channels` release: `stable.json` (public releases) and `beta.json`
+      (newest of any; a stable hotfix older than the current beta leaves it alone)
+
+Apple's notary and timestamp services drop connections now and then (`The network connection
+was lost`, `stapler` error 68). `notarize.sh` and the DMG's `codesign --timestamp` retry those
+calls through `scripts/retry.sh` (4 tries, 15s/30s/60s apart); if a job still fails, re-run it.
 
 Before tagging, rename `## Unreleased` in `CHANGELOG.md` to `## 0.2.0 — <date>`. The website
 (`site/`, deployed by `.github/workflows/site.yml`) shows the changelog, and its `/download/` page
@@ -98,7 +108,8 @@ Midna.app/Contents/
 Never run automatically: it uploads the app to Apple. One-time setup:
 `xcrun notarytool store-credentials midna-notary --apple-id … --team-id U2G2XV3688`. Then
 `packaging/notarize.sh dist/<v>/Midna.app` zips, submits with `--wait`, staples, and runs
-`spctl`. Notarize **before** `make-update.sh` so the archive carries the stapled ticket.
+`spctl`, retrying the submit and the staple (`MIDNA_NOTARY_ATTEMPTS`, default 4). Given a signed
+`.dmg` it submits that as is. Notarize **before** `make-update.sh` so the archive carries the stapled ticket.
 Un-notarized Developer ID builds run fine for the developer; Gatekeeper blocks them on other
 Macs when they're downloaded through a browser (quarantine). Updates fetched by midna itself
 aren't quarantined.
