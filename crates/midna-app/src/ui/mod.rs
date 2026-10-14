@@ -280,19 +280,29 @@ impl Render for MainWindow {
                         .flex_1()
                         .min_h_0()
                         .bg(t.term)
-                        .child(match &self.terminal {
-                            Some(term) => {
-                                let term = term.clone();
-                                let el = split::render(self, &term, &t, window, cx);
-                                let el = close_anim::pane(self, el, window);
-                                paused::over_pane(self, el, &t, cx)
-                            }
-                            None => screens::empty_terminal(self, &t, cx).into_any_element(),
-                        })
+                        // The composer floats over the pane's bottom rows instead of taking them:
+                        // shrinking the pane resized the terminal, and agents redraw on every resize.
+                        .child(
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_h_0()
+                                .child(match &self.terminal {
+                                    Some(term) => {
+                                        let term = term.clone();
+                                        let el = split::render(self, &term, &t, window, cx);
+                                        let el = close_anim::pane(self, el, window);
+                                        paused::over_pane(self, el, &t, cx)
+                                    }
+                                    None => screens::empty_terminal(self, &t, cx).into_any_element(),
+                                })
+                                .children(crate::composer::render(self, &t, cx)),
+                        )
                         .children(banner::render(self, &t, cx))
                         .children(update_banner::render(self, &t, cx))
-                        .children(self.selected.clone().and_then(|id| annotate::tray(&id, &t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| m.focus_terminal(w, cx))))
-                        .children(crate::composer::render(self, &t, cx)),
+                        .children(self.selected.clone().and_then(|id| annotate::tray(&id, &t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| m.focus_terminal(w, cx)))),
                 )
                 .into_any_element(),
             (_, Screen::Rules) => rules::render(self, window, cx),

@@ -1,4 +1,4 @@
-//! The composer: a native `NSTextView` under the terminal that appears only while dictating
+//! The composer: a native `NSTextView` over the bottom of the terminal that appears only while dictating
 //! (Kass) or when opened by hand (`keys.composer`, default ⇧⌘D). Proven in
 //! `spikes/kass-composer`: gpui-kit's own input fails Kass's Accessibility checks, a real
 //! `NSTextView` passes them (role AXTextArea, settable AXSelectedText, readable value and
@@ -491,6 +491,12 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .id("composer")
             .key_context(CTX_COMPOSER)
             .track_focus(&m.composer.focus)
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(t.term)
+            .occlude()
             .flex()
             .flex_col()
             .items_center()
