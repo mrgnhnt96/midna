@@ -793,7 +793,8 @@ pub fn usage() -> String {
         }
     }
     out.push_str(
-        "\nNew here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
+        "\n`midna <folder>` (e.g. `midna .`) opens the Midna app on that folder: a shell already there, else a new one.\n\
+         New here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
          Free text with flags goes after `--`, e.g. `midna check command -- git push --force`.\n\
          --no-wait (any verb): don't block on an approval; print its needs-you id and exit 4 (the call\n\
          carries on when the human answers; follow it with `midna needs get|wait <id>`).\n\
