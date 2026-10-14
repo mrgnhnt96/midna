@@ -1178,6 +1178,15 @@ impl TerminalView {
             }
             return;
         }
+        // A pasted path to an image file (copied from Finder or a shell) opens the sheet, like
+        // dropping that file. Elsewhere it's just text, so the path pastes as is.
+        if self.find.is_none() && self.is_agent() && !IMAGE_PASTE_INLINE.load(Ordering::Relaxed) {
+            let paths = cx.read_from_clipboard().and_then(|c| c.text()).map(|t| crate::annotate::pasted_image_paths(&t)).unwrap_or_default();
+            if !paths.is_empty() {
+                window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths }), cx);
+                return;
+            }
+        }
         self.paste_clipboard_text(window, cx);
     }
 
