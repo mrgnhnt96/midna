@@ -167,6 +167,10 @@ pub struct MainWindow {
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
     pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
+    /// The terminals shown before and after this one, for ⌥⌘← / ⌥⌘→ (`tab_history`).
+    pub history: crate::tab_history::TabHistory,
+    /// Set while ⌥⌘← / ⌥⌘→ select a terminal, so the move isn't recorded as a new visit.
+    navigating: bool,
     /// This window's id in `windows` (which terminals it shows).
     pub id: EntityId,
     pub windows: crate::windows::Shared,
@@ -392,6 +396,8 @@ impl MainWindow {
             twilight_lights: true,
             twilight_masked: false,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
+            history: Default::default(),
+            navigating: false,
             id,
             windows,
             drag_out: None,
@@ -1326,6 +1332,9 @@ impl MainWindow {
         }
         if self.selected.as_deref() != Some(&id) {
             crate::windows::save_soon(cx);
+            if let Some(old) = self.selected.take().filter(|_| !self.navigating) {
+                self.history.left(old);
+            }
             self.selected = Some(id.clone());
             self.menu = Menu::None;
             crate::ui::toast::sync(self, cx);
@@ -1822,6 +1831,7 @@ impl MainWindow {
             m.sessions.retain(|x| x.id != id);
             m.windows.borrow_mut().claim(&new, m.id);
             crate::windows::save_soon(cx);
+            m.history.replaced(&id, &new);
             if shown {
                 m.selected = Some(new);
                 m.terminal = None;
@@ -2065,6 +2075,22 @@ impl MainWindow {
         self.select(order[next as usize].clone(), window, cx);
     }
 
+    /// ⌥⌘← / ⌥⌘→: the terminal shown before (or, after going back, after) this one.
+    fn history_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
+        let alive = |id: &str| order.iter().any(|x| x == id);
+        let current = self.selected.clone();
+        let to = if forward { self.history.forward(current, alive) } else { self.history.back(current, alive) };
+        let Some(to) = to else {
+            return;
+        };
+        crate::sounds::play("switched");
+        crate::ui::close_anim::switch(self, &to, cx);
+        self.navigating = true;
+        self.select(to, window, cx);
+        self.navigating = false;
+    }
+
     pub fn register_actions<E: InteractiveElement>(el: E, cx: &mut Context<Self>) -> E {
         el.on_action(cx.listener(Self::approve_once))
             .on_action(cx.listener(Self::deny))
@@ -2144,6 +2170,8 @@ impl MainWindow {
             }))
             .on_action(cx.listener(|m, _: &NextTerminal, w, cx| m.select_step(1, w, cx)))
             .on_action(cx.listener(|m, _: &PrevTerminal, w, cx| m.select_step(-1, w, cx)))
+            .on_action(cx.listener(|m, _: &TerminalBack, w, cx| m.history_step(false, w, cx)))
+            .on_action(cx.listener(|m, _: &TerminalForward, w, cx| m.history_step(true, w, cx)))
             .on_action(cx.listener(|m, _: &RenameSession, w, cx| {
                 if let Some(id) = m.selected.clone() {
                     crate::ui::rename::start(m, &id, crate::ui::rename::At::Header, w, cx);

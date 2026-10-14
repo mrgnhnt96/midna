@@ -65,6 +65,9 @@ actions!(
         /// Select the next / previous terminal in sidebar order.
         NextTerminal,
         PrevTerminal,
+        /// Back / forward through the terminals you've shown, like a browser (`tab_history`).
+        TerminalBack,
+        TerminalForward,
         /// Rename the selected terminal in the header.
         RenameSession,
         /// The header's … menu.
@@ -143,6 +146,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.prompts", OpenPrompts, MAIN),
     shortcut!("keys.next_terminal", NextTerminal, MAIN),
     shortcut!("keys.prev_terminal", PrevTerminal, MAIN),
+    shortcut!("keys.terminal_back", TerminalBack, MAIN),
+    shortcut!("keys.terminal_forward", TerminalForward, MAIN),
     shortcut!("keys.project_menu", ToggleProjectMenu, MAIN),
     shortcut!("keys.fold_project", FoldProject, MAIN),
     shortcut!("keys.sidebar", ToggleSidebar, MAIN),

@@ -29,6 +29,7 @@ mod notify;
 mod report;
 mod settings_window;
 mod sounds;
+mod tab_history;
 mod term_debug;
 mod term_edit;
 mod terminal;

@@ -786,6 +786,8 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.approve_options", KB, S("cmd-shift-enter"), "keys", false, "Show the approve options (15 min, 1 h, session, always) for the focused approval."),
     s!("keys.next_terminal", KB, S("cmd-alt-down"), "keys", false, "Select the next terminal in the sidebar (past the last: the first)."),
     s!("keys.prev_terminal", KB, S("cmd-alt-up"), "keys", false, "Select the previous terminal in the sidebar (past the first: the last)."),
+    s!("keys.terminal_back", KB, S("cmd-alt-left"), "keys", false, "Go back to the terminal you were on before this one, like a browser's back button."),
+    s!("keys.terminal_forward", KB, S("cmd-alt-right"), "keys", false, "Go forward again to the terminal you went back from."),
     s!("keys.project_menu", KB, S("cmd-alt-p"), "keys", false, "Open the current project's … menu in the sidebar."),
     s!("keys.fold_project", KB, S("cmd-alt-f"), "keys", false, "Fold or unfold the current project's terminals in the sidebar."),
     s!("keys.sidebar", KB, S("cmd-b"), "keys", false, "Collapse the sidebar to a rail of status dots, or expand it again."),
