@@ -151,7 +151,7 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
             }
             if let Some(tasks) = p.get("background_tasks").and_then(Value::as_array) {
                 // A stopping subagent still lists itself as running in its own snapshot.
-                info.background = tasks.iter().filter_map(background_task).filter(|t| stopping.as_ref() != Some(&t.id)).collect();
+                info.background = tasks.iter().filter_map(background_task).filter(|t| stopping.as_ref() != Some(&t.id) && !artifact_watch(t)).collect();
                 info.background_at = Some(now.to_string());
             }
             if let Some(crons) = p.get("session_crons").and_then(Value::as_array) {
@@ -269,6 +269,12 @@ fn background_task(v: &Value) -> Option<BackgroundTask> {
         tool: str_at(v, "/tool"),
         name: str_at(v, "/name"),
     })
+}
+
+/// Claude's own watch on an artifact it published ("live updates for artifact <url>
+/// (auto-armed on publish)"): listed as a running monitor, but it is a connection, not work.
+fn artifact_watch(t: &BackgroundTask) -> bool {
+    t.kind == "monitor" && t.description.starts_with("live updates for artifact ")
 }
 
 fn cron(v: &Value) -> Option<AgentCron> {
@@ -542,6 +548,16 @@ mod tests {
         hook(&mut i, "PostToolUse", json!({"session_id": "c1", "tool_name": "Agent", "tool_input": {"subagent_type": "Explore"},
             "tool_response": {"isAsync": true, "status": "async_launched", "agentId": "a10", "description": "look around"}}));
         assert_eq!((i.background[1].kind.as_str(), i.background[1].agent_type.as_deref()), ("subagent", Some("Explore")));
+    }
+
+    #[test]
+    fn an_artifact_watch_is_not_background_work() {
+        let mut i = AgentInfo::default();
+        hook(&mut i, "Stop", json!({"session_id": "c1", "background_tasks": [
+            {"id": "sr0", "type": "monitor", "status": "running", "description": "live updates for artifact https://claude.ai/artifact/X (auto-armed on publish)"},
+            {"id": "m1", "type": "monitor", "status": "running", "description": "tail the build log"}]}));
+        assert_eq!(i.background.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["m1"]);
+        assert_eq!(i.in_flight().len(), 1);
     }
 
     #[test]
