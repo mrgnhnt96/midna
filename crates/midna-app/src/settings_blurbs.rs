@@ -156,6 +156,8 @@ pub(super) fn shortcut_title(setting: &str) -> String {
         "keys.approve_options" => "Show the approve options",
         "keys.next_terminal" => "Next terminal",
         "keys.prev_terminal" => "Previous terminal",
+        "keys.terminal_back" => "Back to the last terminal",
+        "keys.terminal_forward" => "Forward again",
         "keys.project_menu" => "Open the project's … menu",
         "keys.fold_project" => "Fold or unfold the project",
         "keys.sidebar" => "Collapse or expand the sidebar",
