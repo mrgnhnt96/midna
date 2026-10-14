@@ -37,6 +37,9 @@ pub const LINE_H: f32 = 20.0;
 /// Design: padding 14px 20px.
 const PAD_X: f32 = 20.0;
 const PAD_Y: f32 = 14.0;
+/// How often a terminal that isn't the focused one of the active window repaints its output.
+/// Frames merge in the sink meanwhile, and focusing it draws the latest screen at once.
+const IDLE_PAINT: Duration = Duration::from_millis(250);
 /// Kitty keyboard flags (see the kitty spec).
 const KITTY_REPORT_EVENTS: u8 = 2;
 
@@ -153,6 +156,8 @@ pub struct TerminalView {
     /// Repaint when queued messages change (the pill, `queue_pill.rs`).
     _queue_sub: Option<Subscription>,
     fps: Option<FpsMeter>,
+    /// When a frame was last asked for or taken in (`pull`): paces the repaints of a terminal out of focus.
+    painted: Instant,
     _tasks: Vec<Task<()>>,
 }
 
@@ -275,20 +280,37 @@ impl TerminalView {
         let (wtx, wrx) = async_channel::bounded::<()>(1);
         let sink = Arc::new(FrameSink::new(wtx));
         let mut tasks = vec![];
-        // frames -> repaint
+        // frames -> repaint. Each repaint redraws the whole window, so only the terminal being
+        // typed in paints every frame; the others (a split pane, a pop-out, all of them while
+        // another app is in front) paint every IDLE_PAINT.
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             while wrx.recv().await.is_ok() {
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let Ok(wait) = this.update_in(cx, |t, window, _| (!t.live(window) && !t.grid.is_empty()).then(|| IDLE_PAINT.saturating_sub(t.painted.elapsed()))) else {
+                    break;
+                };
+                if let Some(wait) = wait.filter(|w| !w.is_zero()) {
+                    cx.background_executor().timer(wait).await;
+                }
+                // Counted from the request, not the paint: a wake that queued up meanwhile would
+                // otherwise find the old time and ask again before this paint lands.
+                if this.update(cx, |t, cx| {
+                    t.painted = Instant::now();
+                    cx.notify()
+                }).is_err() {
                     break;
                 }
             }
         }));
+        // Focusing a terminal (or bringing the window forward) draws what came in meanwhile.
+        cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_activation(window, |_, _, cx| cx.notify()).detach();
         // cursor blink, scrollbar fade
         tasks.push(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(530)).await;
-                let r = this.update(cx, |t, cx| {
-                    let on = t.last_input.elapsed() < Duration::from_millis(1000) || !t.blink_on;
+                let r = this.update_in(cx, |t, window, cx| {
+                    // Only the focused terminal of the active window blinks; the others hold a steady cursor.
+                    let on = t.last_input.elapsed() < Duration::from_millis(1000) || !t.blink_on || !t.live(window);
                     let fading = t.last_scroll.elapsed() < Duration::from_millis(2200);
                     if on != t.blink_on || fading {
                         t.blink_on = on;
@@ -403,6 +425,7 @@ impl TerminalView {
             nav: Default::default(),
             _queue_sub: cx.try_global::<crate::ui::queue::QueueStore>().is_some().then(|| cx.observe_global::<crate::ui::queue::QueueStore>(|_, cx| cx.notify())),
             fps,
+            painted: Instant::now(),
             _tasks: tasks,
         };
         v.attach(window, cx);
@@ -595,6 +618,7 @@ impl TerminalView {
             self.status = StreamStatus::Ended;
         }
         let Some(f) = self.sink.take() else { return };
+        self.painted = Instant::now();
         if let Some(m) = self.fps.as_mut() {
             m.frames += 1;
             m.rows += f.changed.len() as u64;
@@ -1774,6 +1798,11 @@ impl TerminalView {
         let b = self.bounds.get()?;
         let (cx_, cy) = self.cursor.unwrap_or((0, 0));
         Some(Bounds::new(point(b.origin.x + px(PAD_X + self.cell_w * cx_ as f32), b.origin.y + px(PAD_Y + LINE_H * cy as f32)), size(px(self.cell_w), px(LINE_H))))
+    }
+
+    /// The terminal being typed in: focused, in the active window.
+    fn live(&self, window: &Window) -> bool {
+        self.focus.is_focused(window) && (window.is_window_active() || crate::dev::var_os("MIDNA_DEBUG_TERM").is_some())
     }
 
     /// Report focus changes (window activation included) to apps using mode 1004.

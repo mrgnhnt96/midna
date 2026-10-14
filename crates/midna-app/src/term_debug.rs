@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `switch:ROUNDS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -38,6 +38,43 @@ pub fn start(steps: String, window: &mut Window, cx: &mut Context<MainWindow>) {
                     cx.background_executor().timer(Duration::from_millis(8)).await;
                 }
                 eprintln!("midna-app debug-term: bench {n} draws, mean {:.2} ms, max {:.2} ms", total / n.max(1) as f64, worst);
+                continue;
+            }
+            if verb == "benchpane" {
+                // Like `bench`, but each draw is one the terminal's output asks for (the pane's view
+                // notifies), so views cached by the window are reused as in real use.
+                let until = std::time::Instant::now() + Duration::from_millis(arg.parse().unwrap_or(3000));
+                let (mut n, mut total, mut worst) = (0u32, 0f64, 0f64);
+                while std::time::Instant::now() < until {
+                    let _ = this.update(cx, |m, cx| m.terminal.clone().map(|t| t.update(cx, |_, cx| cx.notify())));
+                    let t0 = std::time::Instant::now();
+                    let _ = cx.update(|window, cx| window.draw(cx).clear(cx));
+                    let ms = t0.elapsed().as_secs_f64() * 1000.;
+                    (n, total, worst) = (n + 1, total + ms, worst.max(ms));
+                    cx.background_executor().timer(Duration::from_millis(8)).await;
+                }
+                eprintln!("midna-app debug-term: benchpane {n} draws, mean {:.2} ms, max {:.2} ms", total / n.max(1) as f64, worst);
+                continue;
+            }
+            if verb == "switch" {
+                // Select every terminal in the sidebar in turn (ARG rounds) and time each until its
+                // screen replaces the last one in the pane.
+                let ids = this.update(cx, |m, _| m.sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>()).unwrap_or_default();
+                let mut times = vec![];
+                for _ in 0..arg.parse().unwrap_or(1) {
+                    for id in &ids {
+                        let t0 = std::time::Instant::now();
+                        let _ = this.update_in(cx, |m, window, cx| m.select_only(id.clone(), window, cx));
+                        while t0.elapsed() < Duration::from_secs(2) && !this.update(cx, |m, cx| m.terminal.as_ref().is_some_and(|t| t.read(cx).session_id == *id)).unwrap_or(true) {
+                            cx.background_executor().timer(Duration::from_millis(1)).await;
+                        }
+                        times.push(t0.elapsed().as_secs_f64() * 1000.);
+                        cx.background_executor().timer(Duration::from_millis(150)).await;
+                    }
+                }
+                times.sort_by(f64::total_cmp);
+                let pct = |p: f64| times.get(((times.len() as f64 - 1.) * p).round() as usize).copied().unwrap_or(0.);
+                eprintln!("midna-app debug-term: switch {} switches, median {:.1} ms, p90 {:.1} ms, max {:.1} ms", times.len(), pct(0.5), pct(0.9), pct(1.));
                 continue;
             }
             let (verb, arg) = (verb.to_string(), arg.to_string());
