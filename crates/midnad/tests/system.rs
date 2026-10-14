@@ -31,7 +31,8 @@ fn load_is_reported() {
     let d = TestDaemon::start();
     let l = call(&mut d.human(), "system.load", json!({}));
     assert!(l["cpus"].as_u64().unwrap() >= 1, "{l}");
-    assert_eq!(l["busy_at"], 200, "{l}");
+    assert_eq!((l["busy_at"].as_u64(), l["busy_cpu_at"].as_u64()), (Some(200), Some(90)), "{l}");
+    assert!(l["cpu_percent"].as_u64().unwrap() <= 100 && l["others"].is_array(), "{l}");
     assert!(l["top"].is_array(), "{l}");
 }
 

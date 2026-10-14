@@ -343,9 +343,15 @@ fn build() -> Vec<MethodSpec> {
              SIGKILL after 3s for any still running. The shell or agent itself keeps running, so the conversation \
              goes on. Human only; agents get a needs-you approval. Event procs.stopped."),
         m::<NoParams, SystemLoad>("system.load").d(
-            "The Mac's load average per core, whether midna counts it as busy (system.busy_load) or overloaded \
-             (busy for guard.overload_secs), and the terminals using the most CPU with their busiest processes \
-             (`rustc ×14`). A busy Mac postpones daemon upgrades; `system.overloaded` fires once per busy spell."),
+            "The Mac's CPU in use (cpu_percent, all cores) and what midna's terminals use of it (midna_percent), \
+             whether it counts as CPU busy (system.busy_cpu), held (busy because of midna's terminals: the busy gate \
+             holds agents back) or overloaded (CPU busy for guard.overload_secs), the terminals and other apps using \
+             the most CPU with their busiest processes (`rustc ×14`), and the load average (busy: at or above \
+             system.busy_load, which postpones daemon upgrades). `system.overloaded` fires once per busy spell."),
+        m::<RunAnywayParams, RunAnywayResult>("system.run_anyway").mutating().d(
+            "The human told the agent to go ahead though the Mac is busy: the busy gate (guard.busy_gate) lets the \
+             terminal (session_id, default the caller's) start builds, tests, installs and subagents until the human's \
+             next prompt. Only when the human asked for it; the gate's deny reason says when. Event guard.run_anyway."),
         m::<WorktreesListParams, WorktreesList>("worktrees.list").d(
             "Linked git worktrees of the repos midna's terminals and projects are in: branch, last activity, idle hours, \
              terminals and processes in each, lock, uncommitted changes, and whether worktrees.auto_clean_hours would \

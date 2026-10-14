@@ -409,6 +409,10 @@ pub struct AgentInfo {
     /// prompt stays hidden. A newer update asks again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_declined: Option<String>,
+    /// The human told the agent to go ahead though the Mac is busy (`system.run_anyway`): the busy
+    /// gate lets it through. Cleared by the human's next prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_anyway: bool,
     /// In-flight background work (shells, subagents, monitors, workflows, MCP tasks) as of
     /// `background_at`. Replaced by each `Stop`; shells and agents started mid-turn are added live.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1353,10 +1357,10 @@ pub mod kinds {
     /// An upgrade/restart waits because the Mac is busy (`{to, reason, load1, cpus, load_percent,
     /// busy_at}`); `force` runs it anyway.
     pub const DAEMON_UPGRADE_POSTPONED: &str = "daemon.upgrade_postponed";
-    /// The Mac has been busy for `guard.overload_secs` (a `SystemLoad`, with the heaviest
-    /// terminals). Once per busy spell.
+    /// The Mac's CPU has been busy (`system.busy_cpu`) for `guard.overload_secs` (a `SystemLoad`,
+    /// with the heaviest terminals and other apps). Once per busy spell.
     pub const SYSTEM_OVERLOADED: &str = "system.overloaded";
-    /// The load is back under `system.busy_load` after a `system.overloaded` (`{load1, cpus}`).
+    /// The CPU is back under 80% of `system.busy_cpu` after a `system.overloaded` (`{cpu_percent, cpus}`).
     pub const SYSTEM_CALM: &str = "system.calm";
     /// A terminal's processes were stopped (SIGSTOP) by session.pause, or continued
     /// (`{processes}`).
@@ -1370,6 +1374,9 @@ pub mod kinds {
     /// An agent's tool call was denied by the load guard (`{action, reason}`): the Mac is busy
     /// (`guard.busy_gate`) or it already runs `guard.max_subagents` subagents.
     pub const GUARD_HELD: &str = "guard.held";
+    /// The human told a terminal's agent to go ahead though the Mac is busy (`system.run_anyway`):
+    /// the busy gate lets it through until their next prompt.
+    pub const GUARD_RUN_ANYWAY: &str = "guard.run_anyway";
     /// While busy, what an agent terminal started went into macOS's background mode, or came
     /// back out once the load dropped (`{processes}`; `guard.background_agents`).
     pub const GUARD_BACKGROUNDED: &str = "guard.backgrounded";

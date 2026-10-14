@@ -102,8 +102,10 @@ fn apply_claude(info: &mut AgentInfo, event: &str, p: &Value, now: &str) {
             }
         }
         "UserPromptSubmit" if main_thread && !p.get("prompt").and_then(Value::as_str).is_some_and(crate::prompts::is_task_notification) => {
-            // "Finished this turn" starts over with each prompt the human sends.
+            // "Finished this turn" starts over with each prompt the human sends, and so does a
+            // "run it anyway" (system.run_anyway).
             info.finished_subagents.clear();
+            info.run_anyway = false;
         }
         "PreToolUse" if main_thread && p.get("tool_name").and_then(Value::as_str) == Some("Agent") => {
             if let Some(tool_use_id) = str_at(p, "/tool_use_id") {

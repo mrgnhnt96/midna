@@ -1170,7 +1170,7 @@ impl MainWindow {
                         self.close_ask = Some(Default::default());
                     }
                     "hooks" => crate::ui::hooks::open(self, false, window, cx),
-                    "system-upgrade" | "system-overload" => crate::ui::system_window::debug(&s, self.backend.clone(), cx),
+                    "system-upgrade" | "system-overload" | "system-overload-midna" => crate::ui::system_window::debug(&s, self.backend.clone(), cx),
                     "ax" => self.ax_prompt = true,
                     "onboarding" => crate::ui::onboarding::reopen(self, cx),
                     "popout-queue" => {

@@ -908,7 +908,7 @@ fn settings(a: &Args, out: OutFn) -> Res {
 }
 
 /// `midna keep-awake …`: every form prints the status after it.
-/// `midna system [load] | wait [--timeout S] | pause <terminal> | resume <terminal> | stop <terminal> [pid…]`.
+/// `midna system [load] | wait [--timeout S] | run-anyway [terminal] | pause <terminal> | resume <terminal> | stop <terminal> [pid…]`.
 fn system(a: &Args, out: OutFn) -> Res {
     let sub = a.pos.get(1).map(String::as_str).unwrap_or("load");
     let flags: &[&str] = if sub == "wait" { &["timeout"] } else { &[] };
@@ -917,22 +917,33 @@ fn system(a: &Args, out: OutFn) -> Res {
     match sub {
         "load" | "status" => out(&call("system.load", json!({}))?, &print::system_load),
         "wait" => {
-            // The same check the busy gate makes (SystemLoad.busy), not `overloaded`: the gate opens
-            // as soon as the load drops under system.busy_load. A plain process, not a shell loop, so
-            // midnad never stops it as an old poll loop.
+            // The same check the busy gate makes (SystemLoad.held), not `overloaded`: the gate opens
+            // as soon as the CPU drops under system.busy_cpu or other apps become the cause. A plain
+            // process, not a shell loop, so midnad never stops it as an old poll loop. A daemon from
+            // before `held` existed reports `busy` only.
+            let held = |v: &Value| v.get("held").or_else(|| v.get("busy")).and_then(Value::as_bool) == Some(true);
             let deadline = a.num::<u64>("timeout")?.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
             let v = loop {
                 let v = call("system.load", json!({}))?;
-                if v["busy"].as_bool() != Some(true) || deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                if !held(&v) || deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     break v;
                 }
                 let left = deadline.map_or(std::time::Duration::MAX, |d| d.saturating_duration_since(std::time::Instant::now()));
                 std::thread::sleep(left.min(std::time::Duration::from_secs(5)));
             };
             out(&v, &print::system_load);
-            if v["busy"].as_bool() == Some(true) {
+            if held(&v) {
                 return Err(Fail::Pending("the Mac is still busy".into()));
             }
+        }
+        "run-anyway" => {
+            let p = match a.pos.get(2) {
+                Some(id) => json!({ "session_id": id }),
+                None => json!({}),
+            };
+            out(&call("system.run_anyway", p)?, &|v| {
+                println!("{} goes ahead while the Mac is busy, until the human's next prompt", v["session_id"].as_str().unwrap_or(""))
+            })
         }
         "pause" => out(&call("session.pause", json!({ "session_id": sid("terminal id to pause")? }))?, &|v| {
             println!("paused {} ({} processes stopped); `midna system resume {}` continues it", v["session_id"].as_str().unwrap_or(""), v["processes"], v["session_id"].as_str().unwrap_or(""))

@@ -1,12 +1,14 @@
-//! The load guard's hold on agents' tool calls: `guard.busy_gate` while the Mac is busy, and
-//! `guard.max_subagents`. Every daemon in this binary sees a busy Mac (MIDNA_DEBUG_LOAD).
+//! The load guard's hold on agents' tool calls: `guard.busy_gate` while midna's terminals keep
+//! the Mac's CPU busy, and `guard.max_subagents`. Every daemon in this binary sees a busy CPU
+//! (MIDNA_DEBUG_CPU); only the first test changes who it's busy because of, and the second one
+//! turns the gate off.
 mod common;
 use common::*;
 use midna_proto::Client;
 use serde_json::{Value, json};
 
 fn busy_daemon() -> TestDaemon {
-    unsafe { std::env::set_var("MIDNA_DEBUG_LOAD", "1000") };
+    unsafe { std::env::set_var("MIDNA_DEBUG_CPU", "100:100") };
     TestDaemon::start()
 }
 
@@ -35,6 +37,7 @@ fn a_busy_mac_holds_heavy_work_back() {
     assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("deny"), Some("guard")), "{r}");
     assert!(r["reason"].as_str().unwrap().contains("the Mac is busy"), "{r}");
     assert!(r["reason"].as_str().unwrap().contains("`midna system wait` as a background command"), "{r}");
+    assert!(r["reason"].as_str().unwrap().contains("`midna system run-anyway`"), "{r}");
     let r = launch(&mut a, 1);
     assert_eq!(r["source"], "guard", "{r}");
     // Light commands go through: midna has no opinion on them.
@@ -43,12 +46,25 @@ fn a_busy_mac_holds_heavy_work_back() {
     // A rule's allow is about permission, not load.
     call(&mut h, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "tool", "pattern": "Bash(cargo *)" }, "scope": { "kind": "global" } }));
     assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "guard");
+    // The human said to go ahead anyway: through until their next prompt.
+    let r = call(&mut a, "system.run_anyway", json!({}));
+    assert_eq!((r["session_id"].as_str(), r["run_anyway"].as_bool()), (Some(sid.as_str()), Some(true)), "{r}");
+    assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "rule");
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "next" }));
+    assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "guard");
+    // Other apps keeping the CPU busy hold nothing back: it would free nothing.
+    unsafe { std::env::set_var("MIDNA_DEBUG_CPU", "100:5") };
+    let l = call(&mut h, "system.load", json!({}));
+    assert_eq!((l["cpu_busy"].as_bool(), l["held"].as_bool()), (Some(true), Some(false)), "{l}");
+    assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "rule");
+    unsafe { std::env::set_var("MIDNA_DEBUG_CPU", "100:100") };
     // Off, heavy work goes ahead; agents can't turn it off themselves.
     assert!(call_err(&mut a, "settings.set", json!({ "key": "guard.busy_gate", "value": false })).code != 0);
     call(&mut h, "settings.set", json!({ "key": "guard.busy_gate", "value": false }));
     assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "rule");
     let kinds: Vec<String> = call(&mut h, "events.list", json!({ "since_seq": 0, "limit": 1000 })).as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds.iter().filter(|k| *k == "guard.held").count(), 3, "{kinds:?}");
+    assert_eq!(kinds.iter().filter(|k| *k == "guard.held").count(), 4, "{kinds:?}");
+    assert!(kinds.contains(&"guard.run_anyway".into()), "{kinds:?}");
 }
 
 #[test]

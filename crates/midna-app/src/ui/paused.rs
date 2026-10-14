@@ -1,9 +1,10 @@
 //! A busy Mac and paused terminals in the main window ("Overload dialog concepts" canvas):
 //! - the card over a paused terminal (concept 3): what it was running, Resume, and Stop
 //!   processes with a confirm;
-//! - the status bar item while the Mac is overloaded or anything is paused (concept i):
-//!   "● CPU 474% · 2 paused", its hover the terminals' share of the CPU as one bar (h3), a
-//!   click opening the overload window;
+//! - the status bar item while the Mac is overloaded or anything is paused:
+//!   "● Mac CPU 88% · other apps · 2 paused" (design B on the "Overload: real CPU" canvas), its
+//!   hover who is using the Mac in one sentence, the CPU bar and both shares, a click opening
+//!   the overload window;
 //! - `system.load`, followed while either shows.
 use crate::app::{MainWindow, refresh};
 use crate::icons::Icon;
@@ -13,7 +14,7 @@ use crate::ui::screen_kit::{btn, btn_danger, btn_primary};
 use crate::ui::system_window::{self as sw, Kind};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use midna_proto::{HeavyTerminal, SystemLoad};
+use midna_proto::SystemLoad;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -174,7 +175,7 @@ fn card(m: &MainWindow, s: &Session, t: &Theme, cx: &mut Context<MainWindow>) ->
         let (name, count) = name_and_count(b);
         div().flex().justify_between().child(name.to_string()).child(div().text_color(t.dim).child(count.to_string()))
     }));
-    let now = m.load.as_ref().map(|l| format!("The Mac is at CPU {}% now.", l.load_percent));
+    let now = m.load.as_ref().filter(|l| l.cpu_percent > 0).map(|l| format!("The Mac's CPU is at {}% now.", l.cpu_percent));
     let (sid1, sid2, sid3) = (s.id.clone(), s.id.clone(), s.id.clone());
     let actions = if confirming {
         div()
@@ -254,7 +255,7 @@ fn card(m: &MainWindow, s: &Session, t: &Theme, cx: &mut Context<MainWindow>) ->
 
 // ------------------------------------------------------------------ status bar item
 
-/// "● CPU 474% · 2 paused" while the Mac is overloaded or anything is paused.
+/// "● Mac CPU 88% · other apps · 2 paused" while the Mac is overloaded or anything is paused.
 pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let paused = paused_count(m);
     let over = m.load.as_ref().filter(|l| l.overloaded);
@@ -274,10 +275,15 @@ pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> O
             .cursor_pointer()
             .text_color(t.fg)
             .hover(move |s| s.text_color(fg))
-            .when_some(over, |d, l| d.child(div().text_color(t.status_color("orange")).child("●")).child(format!("CPU {}%", l.load_percent)))
+            .when_some(over, |d, l| {
+                let theirs = !midna_proto::system::midna_is_the_cause(l.cpu_percent, l.midna_percent);
+                d.child(div().text_color(t.status_color("orange")).child("●"))
+                    .child(format!("Mac CPU {}%", l.cpu_percent))
+                    .when(theirs, |d| d.child(div().text_color(t.dim).child("· other apps")))
+            })
             .when(over.is_some() && paused > 0, |d| d.child(div().text_color(t.dim).child("·")))
             .when(paused > 0, |d| d.child(div().text_color(teal).child(format!("{paused} paused"))))
-            .tooltip(move |_, cx| cx.new(|_| LoadTip { top: load.top.clone(), cpus: load.cpus }).into())
+            .tooltip(move |_, cx| cx.new(|_| LoadTip { load: load.clone() }).into())
             .on_click(cx.listener(move |m, _, _, cx| {
                 let l = m.load.clone().unwrap_or_default();
                 sw::show(Kind::Overloaded, l, backend.clone(), cx);
@@ -287,50 +293,43 @@ pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> O
     )
 }
 
-/// The status item's hover: who is using the CPU, as one bar split by terminal, with a legend.
+/// The status item's hover: who is using the Mac, the CPU bar, and the two shares, the cause first.
 struct LoadTip {
-    top: Vec<HeavyTerminal>,
-    cpus: u32,
-}
-
-/// Each row's color: paused ones in teal, the rest in blue, fading down the list.
-fn shade(t: &Theme, term: &HeavyTerminal, nth: usize) -> Hsla {
-    let base = if term.paused { super::paused_color(t) } else { t.work };
-    base.opacity([1., 0.6, 0.38, 0.25][nth.min(3)])
+    load: SystemLoad,
 }
 
 impl Render for LoadTip {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
-        let capacity = (self.cpus.max(1) * 100) as f32;
-        let (mut np, mut nr) = (0, 0);
-        let colors: Vec<Hsla> = self
-            .top
-            .iter()
-            .map(|term| {
-                let n = if term.paused { &mut np } else { &mut nr };
-                *n += 1;
-                shade(&t, term, *n - 1)
-            })
-            .collect();
-        let bar = div().flex().gap(px(2.)).h(px(8.)).w_full().rounded(px(4.)).overflow_hidden().bg(t.line).children(self.top.iter().zip(&colors).map(|(term, c)| {
-            div().h_full().bg(*c).w(relative((term.cpu_percent as f32 / capacity).clamp(0.01, 1.)))
-        }));
-        let rows = self.top.iter().zip(&colors).map(|(term, c)| {
+        let l = &self.load;
+        let ours = midna_proto::system::midna_is_the_cause(l.cpu_percent, l.midna_percent);
+        let (verdict, _) = sw::verdict(l);
+        let other = l.cpu_percent.saturating_sub(l.midna_percent);
+        let stat = |pct: u32, color: Hsla, label: String| {
             div()
+                .flex_1()
                 .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(div().size(px(8.)).flex_none().rounded(px(2.)).bg(*c))
-                .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(term.name.clone()))
-                .child(div().flex_none().text_color(t.dim).child(format!("{}%", term.cpu_percent)))
-        });
+                .flex_col()
+                .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::BOLD).text_color(color).child(midna_proto::system::share_label(pct as f64)))
+                .child(div().text_color(t.dim).child(label))
+        };
+        let apps = match l.others.first() {
+            Some(o) => format!("other apps · mostly {}", o.name),
+            None => "other apps".into(),
+        };
+        let stats = [stat(l.midna_percent, t.work, "Midna's terminals".into()), stat(other, t.fg, apps)];
+        let stats = if ours { stats } else { let [a, b] = stats; [b, a] };
+        let (dot, line) = match (l.cpu_busy, ours) {
+            (true, true) => (t.need, "Agents wait to start heavy work."),
+            _ => (t.ok, "Your agents carry on as normal."),
+        };
+        let paused = l.top.iter().filter(|t| t.paused).count();
         div()
-            .w(px(280.))
+            .w(px(320.))
             .flex()
             .flex_col()
-            .gap(px(9.))
-            .p(px(12.))
+            .gap(px(10.))
+            .p(px(14.))
             .rounded(px(9.))
             .border_1()
             .border_color(t.line)
@@ -338,8 +337,12 @@ impl Render for LoadTip {
             .text_color(t.fg)
             .text_size(px(12.5))
             .font_family(t.ui_font.clone())
-            .when(self.top.is_empty(), |d| d.child(div().text_color(t.dim).child("Nothing in Midna is using much CPU.")))
-            .when(!self.top.is_empty(), |d| d.child(bar).children(rows))
+            .child(div().font_weight(FontWeight::BOLD).text_size(px(14.)).child(verdict))
+            .child(sw::cpu_bar(&t, l, 10.))
+            .child(div().flex().gap(px(10.)).children(stats))
+            .child(div().flex().items_center().gap(px(8.)).text_color(t.dim).child(div().size(px(8.)).flex_none().rounded_full().bg(dot)).child(line))
+            .when(paused > 0, |d| d.child(div().text_color(super::paused_color(&t)).child(format!("{paused} paused"))))
+            .child(div().text_size(px(12.)).text_color(t.dim.opacity(0.7)).child("Click for details"))
     }
 }
 
