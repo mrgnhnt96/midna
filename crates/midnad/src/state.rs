@@ -72,6 +72,7 @@ impl State {
                 Ok(mut s) => {
                     s.drop_filesystem_root_project();
                     crate::headless::settle_lost(&mut s);
+                    crate::agent_work::drop_artifact_watches(&mut s);
                     s
                 }
                 Err(e) => {
