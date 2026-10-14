@@ -98,6 +98,52 @@ pub fn render(m: &MainWindow, t: &Theme, anim: Option<Frame>, window: &mut Windo
         .into_any_element()
 }
 
+/// The sidebar as a view of its own, so the window reuses its last layout and paint when only a
+/// terminal's screen changed: a terminal's output would otherwise lay out every row again, many
+/// times a second. It draws again whenever the main window is notified, and every `TICK` for the
+/// ages in its rows ("3m").
+pub struct SidebarView {
+    main: WeakEntity<MainWindow>,
+    anim: Option<Frame>,
+    _tasks: Vec<Task<()>>,
+    _sub: Subscription,
+}
+
+impl SidebarView {
+    const TICK: std::time::Duration = std::time::Duration::from_secs(15);
+
+    pub fn new(main: &Entity<MainWindow>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let tick = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Self::TICK).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
+        SidebarView { main: main.downgrade(), anim: None, _tasks: vec![tick], _sub: cx.observe(main, |_, _, cx| cx.notify()) }
+    }
+
+    /// The element the main window places: cached at the sidebar's width, except while ⌘B
+    /// animates it (its width moves every frame).
+    pub fn element(view: &Entity<Self>, m: &MainWindow, anim: Option<Frame>, cx: &mut App) -> AnyElement {
+        view.update(cx, |v, _| v.anim = anim);
+        if anim.is_some() {
+            return view.clone().into_any_element();
+        }
+        let w = if m.sidebar_collapsed { RAIL_WIDTH } else { m.sidebar_width };
+        view.clone().cached(StyleRefinement::default().flex_none().h_full().w(px(w))).into_any_element()
+    }
+}
+
+impl Render for SidebarView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let anim = self.anim;
+        let t = cx.global::<Theme>().clone();
+        self.main.update(cx, |m, cx| render(m, &t, anim, window, cx)).unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 pub fn clamp_width(w: f32) -> f32 {
     w.clamp(MIN_WIDTH, MAX_WIDTH)
 }

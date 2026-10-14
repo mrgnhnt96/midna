@@ -230,6 +230,8 @@ pub struct MainWindow {
     pub composer: crate::composer::Composer,
     /// The image sheet (`annotate.rs`); drafts are in the `Drafts` global.
     pub annot: Entity<crate::annotate::AnnotateView>,
+    /// The sidebar, cached between frames that only a terminal asked for (`ui::sidebar::SidebarView`).
+    pub sidebar_view: Entity<crate::ui::sidebar::SidebarView>,
     /// When the daemon connection last dropped (None while connected). The status bar says
     /// "midnad restarting…" for the first seconds of any drop, or until reconnect when a
     /// restart/upgrade was seen in the log just before.
@@ -336,6 +338,8 @@ impl MainWindow {
             crate::annotate::init(cx);
         }
         let annot = crate::annotate::new_for_main(window, cx);
+        let main = cx.entity();
+        let sidebar_view = cx.new(|cx| crate::ui::sidebar::SidebarView::new(&main, window, cx));
         crate::ui::links::wire(&links, cx);
         crate::ide::detect(cx);
         let mut this = MainWindow {
@@ -429,6 +433,7 @@ impl MainWindow {
             queue,
             composer: crate::composer::Composer::new(window, cx),
             annot,
+            sidebar_view,
             dropped_at: None,
             ide: crate::ide::IdePanel::new(cx),
             restart_expected: false,

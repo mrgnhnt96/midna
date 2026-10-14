@@ -261,7 +261,7 @@ impl Render for MainWindow {
         crate::composer::sync(self, window, cx);
         self.close_anim.prune();
         let sidebar_anim = sidebar_anim::frame(self, window);
-        let sidebar = sidebar::render(self, &t, sidebar_anim, window, cx);
+        let sidebar = sidebar::SidebarView::element(&self.sidebar_view.clone(), self, sidebar_anim, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
             (ConnState::NotRunning { .. }, _) | (ConnState::Connecting, _) => screens::not_running(self, &t, cx).into_any_element(),
             // NeedsYou-C replaces the pane right of the sidebar, whatever screen is under it.
