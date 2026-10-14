@@ -513,7 +513,26 @@ fn run(a: &Args) -> Res {
             println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             Ok(())
         }
+        // `midna .`, `midna ~/src/app`: show the folder in the app, like `code .`.
+        other if std::path::Path::new(other).exists() => open_folder(a, other),
         other => Err(Fail::Usage(format!("unknown verb `{other}`"))),
+    }
+}
+
+/// Hand `path` (a file: its folder) to the Midna app, the way Finder's "Open in Midna" does: it
+/// comes to the front on a shell already there, else a new one. Launches the app if it's not running.
+fn open_folder(a: &Args, path: &str) -> Res {
+    a.check(&[])?;
+    if a.pos.len() > 1 {
+        return Err(Fail::Usage(format!("one folder at a time: `midna {path}`")));
+    }
+    let abs = std::fs::canonicalize(path).map_err(|e| Fail::Usage(format!("{path}: {e}")))?;
+    let bundle = if midna_proto::paths::is_dev() { "com.mrgnhnt.midna.dev" } else { midna_proto::paths::BUNDLE_ID };
+    let status = std::process::Command::new("/usr/bin/open").args(["-b", bundle]).arg(&abs).status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => Err(Fail::Other(format!("could not open {} in the Midna app ({bundle}); is it installed?", abs.display()))),
+        Err(e) => Err(Fail::Other(format!("open: {e}"))),
     }
 }
 
