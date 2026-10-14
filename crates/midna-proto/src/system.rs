@@ -221,21 +221,198 @@ pub fn is_poll_loop(command: &str) -> bool {
 }
 
 /// A shell command that builds, tests or installs: what `guard.busy_gate` holds back while the
-/// Mac is busy. Any part of a compound command counts (`source env.sh && cargo test`).
+/// Mac is busy. Any simple command in a compound one counts (`source env.sh && cargo test`), but
+/// only by the program it runs: words in quotes, heredoc bodies and comments are text, not
+/// commands (`tb note "ran make"` and `cat > x.md <<EOF … cargo build … EOF` aren't builds).
 pub fn is_heavy_command(command: &str) -> bool {
-    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || ";&|()`".contains(c)).filter(|w| !w.is_empty()).collect();
-    words.iter().enumerate().any(|(i, w)| {
-        let prog = w.rsplit('/').next().unwrap_or(w);
-        // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
-        let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).copied().unwrap_or("");
-        match prog {
-            "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
-            "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
-            "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "install" | "i" | "ci" | "add" | "build" | "test" | "run"),
-            "swift" | "go" | "flutter" | "dart" | "docker" => matches!(sub, "build" | "test" | "install" | "compile"),
-            _ => false,
-        }
+    shell_commands(command).iter().any(|words| is_heavy_words(words))
+}
+
+/// Whether one simple command, as words, runs a build, test or install.
+fn is_heavy_words(words: &[String]) -> bool {
+    let mut i = 0;
+    // Look past assignments, shell keywords and wrappers to the program they run.
+    loop {
+        let Some(w) = words.get(i) else { return false };
+        let base = w.rsplit('/').next().unwrap_or(w);
+        // The index after the flags starting at `j`; flags in `with_arg` take the next word.
+        let flags = |mut j: usize, with_arg: &[&str]| {
+            while let Some(f) = words.get(j).filter(|f| f.starts_with('-') && f.len() > 1) {
+                j += if with_arg.contains(&f.as_str()) { 2 } else { 1 };
+            }
+            j
+        };
+        i = match base {
+            _ if is_assignment(w) => i + 1,
+            "!" | "{" | "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "time" | "nohup" | "exec" | "command" | "builtin" => {
+                flags(i + 1, &[])
+            }
+            "env" => {
+                let mut j = flags(i + 1, &["-u", "-C", "-S"]);
+                while words.get(j).is_some_and(|a| is_assignment(a)) {
+                    j += 1;
+                }
+                j
+            }
+            "nice" => flags(i + 1, &["-n"]),
+            "sudo" => flags(i + 1, &["-u", "-g", "-C", "-D"]),
+            "caffeinate" => flags(i + 1, &["-t", "-w"]),
+            "timeout" | "gtimeout" => flags(i + 1, &["-s", "-k", "--signal", "--kill-after"]) + 1,
+            "bash" | "zsh" | "sh" | "dash" | "fish" => {
+                // `bash -c '<script>'`: the script is the command. `bash x.sh` runs a file, never heavy.
+                let j = flags(i + 1, &[]);
+                let c = words[i + 1..j].iter().any(|f| !f.starts_with("--") && f.contains('c'));
+                return c && words.get(j).is_some_and(|s| is_heavy_command(s));
+            }
+            "eval" => return is_heavy_command(&words[i + 1..].join(" ")),
+            _ => break,
+        };
+    }
+    let prog = words[i].rsplit('/').next().unwrap_or(&words[i]);
+    // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
+    let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).map_or("", |s| s.as_str());
+    match prog {
+        "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
+        "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
+        "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "install" | "i" | "ci" | "add" | "build" | "test" | "run"),
+        "swift" | "go" | "flutter" | "dart" | "docker" => matches!(sub, "build" | "test" | "install" | "compile"),
+        _ => false,
+    }
+}
+
+/// `NAME=value` before a command.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     })
+}
+
+/// Splits a shell command into its simple commands, each a list of words, about the way a shell
+/// would: quoted text stays inside its word (its `;` and `|` don't split), and heredoc bodies and
+/// comments are dropped. `;` `&&` `||` `|` `&` `(` `)` backticks and newlines end a command.
+fn shell_commands(command: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut cmds = vec![];
+    let mut words = vec![];
+    let mut word = String::new();
+    let mut in_word = false;
+    // Heredoc terminators waiting for the end of the line their bodies start after.
+    let mut heredocs: Vec<String> = vec![];
+    let flush = |word: &mut String, in_word: &mut bool, words: &mut Vec<String>| {
+        if *in_word {
+            words.push(std::mem::take(word));
+            *in_word = false;
+        }
+    };
+    let end = |words: &mut Vec<String>, cmds: &mut Vec<Vec<String>>| {
+        if !words.is_empty() {
+            cmds.push(std::mem::take(words));
+        }
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match c {
+            '\'' => {
+                in_word = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    word.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '"' => {
+                in_word = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    word.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '\\' => {
+                in_word = true;
+                if let Some(n) = next.filter(|n| *n != '\n') {
+                    word.push(n);
+                }
+                i += 1;
+            }
+            '#' if !in_word => {
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
+            }
+            '<' if next == Some('<') && chars.get(i + 2) == Some(&'<') => {
+                // A here-string (`<<<`): its word is an argument like any other.
+                in_word = true;
+                word.push_str("<<<");
+                i += 2;
+            }
+            '<' if next == Some('<') => {
+                flush(&mut word, &mut in_word, &mut words);
+                i += 2;
+                if chars.get(i) == Some(&'-') {
+                    i += 1;
+                }
+                while chars.get(i).is_some_and(|c| *c == ' ' || *c == '\t') {
+                    i += 1;
+                }
+                let mut delim = String::new();
+                while let Some(&d) = chars.get(i).filter(|d| !d.is_whitespace() && !";&|()<>".contains(**d)) {
+                    if !"'\"\\".contains(d) {
+                        delim.push(d);
+                    }
+                    i += 1;
+                }
+                heredocs.push(delim);
+                continue;
+            }
+            '\n' => {
+                flush(&mut word, &mut in_word, &mut words);
+                end(&mut words, &mut cmds);
+                // Each pending heredoc's body runs up to a line that is just its terminator.
+                for delim in heredocs.drain(..) {
+                    loop {
+                        let start = i + 1;
+                        if start >= chars.len() {
+                            i = chars.len();
+                            break;
+                        }
+                        let stop = chars[start..].iter().position(|c| *c == '\n').map_or(chars.len(), |p| start + p);
+                        i = stop;
+                        if chars[start..stop].iter().collect::<String>().trim() == delim {
+                            break;
+                        }
+                    }
+                }
+            }
+            ';' | '|' | '(' | ')' | '`' => {
+                flush(&mut word, &mut in_word, &mut words);
+                end(&mut words, &mut cmds);
+            }
+            // `2>&1` and `&>log` are redirections, not a background `&`.
+            '&' if word.ends_with(['>', '<']) || next == Some('>') => {
+                in_word = true;
+                word.push(c);
+            }
+            '&' => {
+                flush(&mut word, &mut in_word, &mut words);
+                end(&mut words, &mut cmds);
+            }
+            c if c.is_whitespace() => flush(&mut word, &mut in_word, &mut words),
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+        i += 1;
+    }
+    flush(&mut word, &mut in_word, &mut words);
+    end(&mut words, &mut cmds);
+    cmds
 }
 
 /// Whether `path` is `dir` or inside it (both absolute, compared component-wise).
@@ -287,6 +464,33 @@ mod tests {
         assert!(!is_heavy_command("git status"));
         assert!(!is_heavy_command("grep -rn cargo crates"));
         assert!(!is_heavy_command("cmake --version"));
+        assert!(is_heavy_command("FOO=1 RUST_LOG=debug cargo test"));
+        assert!(is_heavy_command("env -u X CARGO_INCREMENTAL=0 nice -n 10 time cargo build"));
+        assert!(is_heavy_command("timeout 600 make -j8"));
+        assert!(is_heavy_command("bash -lc 'source env.sh && cargo test -p midnad'"));
+        assert!(is_heavy_command("cargo build 2>&1 | tail -20"));
+        assert!(is_heavy_command("echo `make`"));
+        assert!(is_heavy_command("for d in a b; do make -C $d; done"));
+        assert!(is_heavy_command("cat > x <<EOF\nhi\nEOF\ncargo test"));
+        assert!(is_heavy_command("echo hi # note\nmake"));
+    }
+
+    #[test]
+    fn heavy_commands_ignore_text() {
+        // Real false positives from `midna events --kind guard.held`.
+        assert!(!is_heavy_command(r#"tb checkpoint --done "split the make target; ran cargo build once" --next "cargo test""#));
+        assert!(!is_heavy_command("tb found 'flutter build fails on CI && make hangs' --kind bug"));
+        assert!(!is_heavy_command(r#"tb task new "Busy guard" --detail "it holds cargo build and make | dart test""#));
+        assert!(!is_heavy_command("cat >> x.py <<'EOF'\nRE = re.compile(r\"make tha\")\ncargo build\nEOF"));
+        assert!(!is_heavy_command("python3 - <<'EOF'\nopen('a').write(s.replace('cargo build', 'make'))\nEOF\ngit diff --stat"));
+        assert!(!is_heavy_command("cat > pr.md <<EOF\n## Why\nmake\n  cargo test --workspace\nEOF"));
+        assert!(!is_heavy_command("cat <<-EOF\n\tmake\n\tEOF"));
+        assert!(!is_heavy_command("cat > a <<A && cat > b <<\"B\"\nmake\nA\ncargo build\nB\ngit status"));
+        assert!(!is_heavy_command("git commit -m \"fix: don't run make; cargo build is enough\""));
+        assert!(!is_heavy_command("echo make cargo build"));
+        assert!(!is_heavy_command("grep <<< 'make all' make"));
+        assert!(!is_heavy_command("bash scripts/build.sh"));
+        assert!(!is_heavy_command("# cargo build\ngit status"));
     }
 
     #[test]
