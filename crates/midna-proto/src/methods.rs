@@ -156,6 +156,30 @@ pub struct LinksAddParams {
     pub pin: bool,
 }
 
+/// `links.patterns.register`: an app's own `terminal.link_patterns` rules, replacing what it
+/// registered before.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinkPatternsRegisterParams {
+    /// Who provides them, shown in Settings (`Taskboard`). 1–64 characters.
+    pub owner: String,
+    /// Rules in `terminal.link_patterns` form (`<regex> = <url template> [agents] [project:<name>]…`).
+    /// Empty removes the owner's patterns.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AppLinkPatterns {
+    pub owner: String,
+    pub patterns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LinkPatternsList {
+    /// The patterns apps registered, by owner. The user's own are `terminal.link_patterns`.
+    pub apps: Vec<AppLinkPatterns>,
+}
+
 // ------------------------------------------------------------------ queued messages
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

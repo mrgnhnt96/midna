@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn detect_pattern_links() {
-        let rules: Vec<String> = midna_proto::settings::DEFAULT_LINK_PATTERNS.iter().map(|s| s.to_string()).chain([r"#(\d+) = https://github.com/o/r/issues/$1".to_string()]).collect();
+        let rules: Vec<String> = [r"\b(T\d+)\b = taskboard://task/$1 agents", r"\b(G\d+)\b = taskboard://goal/$1 agents", r"#(\d+) = https://github.com/o/r/issues/$1"].iter().map(|s| s.to_string()).collect();
         let pats = midna_proto::link_patterns::parse_all(&rules);
         let at = |s: &str, i: usize, apps: &dyn Fn(&str) -> Option<String>| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], apps, &[], &pats);
         let app = |u: &str| Some(Link::App { url: u.into(), app: "Taskboard".into() });

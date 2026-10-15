@@ -1343,6 +1343,38 @@ fn links(a: &Args, out: OutFn) -> Res {
             let v = call("links.add", json!({ "session": session, "target": target, "title": a.get("title"), "note": a.get("why"), "pin": !a.has("no-pin") }))?;
             out(&v, &|v| println!("added {}  {}{}", s_(v, "id"), s_(v, "title"), if v["pinned"] == true { " (pinned)" } else { "" }));
         }
+        "patterns" => match a.pos.get(2).map(String::as_str).unwrap_or("list") {
+            "list" | "ls" => {
+                a.check(&[])?;
+                let v = call("links.patterns.list", json!({}))?;
+                out(&v, &|v| {
+                    let apps = v["apps"].as_array().cloned().unwrap_or_default();
+                    if apps.is_empty() {
+                        println!("no app has registered link patterns");
+                    }
+                    for app in apps {
+                        println!("{}", s_(&app, "owner"));
+                        for r in app["patterns"].as_array().into_iter().flatten() {
+                            println!("    {}", r.as_str().unwrap_or(""));
+                        }
+                    }
+                });
+            }
+            verb @ ("set" | "clear") => {
+                a.check(&["rule"])?;
+                let owner = a.need(3, "owner (the app's name)")?;
+                let rules: &[String] = if verb == "set" { a.all("rule") } else { &[] };
+                if verb == "set" && rules.is_empty() {
+                    return Err(Fail::Usage("links patterns set needs --rule '<regex> = <url template> [agents] [project:<name>]' (one or more); `clear` removes them".into()));
+                }
+                let v = call("links.patterns.register", json!({ "owner": owner, "patterns": rules }))?;
+                out(&v, &|v| match v["patterns"].as_array().map_or(0, Vec::len) {
+                    0 => println!("cleared {}'s link patterns", s_(v, "owner")),
+                    n => println!("{} now has {n} link pattern{}", s_(v, "owner"), if n == 1 { "" } else { "s" }),
+                });
+            }
+            other => return Err(Fail::Usage(format!("unknown `links patterns {other}`; see midna links --help"))),
+        },
         other => return Err(Fail::Usage(format!("unknown `links {other}`; see midna links --help"))),
     }
     Ok(())

@@ -76,6 +76,11 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   showed up as a link. Don't pin everything: a few pins are useful, twenty aren't.
   Links remember the prompts they came up in: `midna links --kind file --turn last` lists the
   files edited since the human's last prompt (`--turn N` for prompt N of `midna prompts`).
+- An app that owns refs (like `T42`) makes them clickable in terminal text by registering its
+  own link patterns: `midna links patterns set <app> --rule '<regex> = <url template> [agents]'`
+  (RPC `links.patterns.register {owner, patterns}`; each call replaces that app's set, `[]` or
+  `clear` removes it). They persist, apply alongside `terminal.link_patterns`, and show read-only
+  in Settings ▸ Terminal ▸ Links and paths.
 - `midna usage` shows Claude's plan usage (5-hour and weekly windows, account-wide) and whether
   it is limited until a reset. Check it before starting long work for someone else.
 - When you tell the human about another terminal, name it by its id (`midna list`) or link it as

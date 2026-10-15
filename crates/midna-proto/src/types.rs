@@ -1403,6 +1403,8 @@ pub mod kinds {
     pub const DAEMON_RESET: &str = "daemon.reset";
     /// A terminal's session links changed (`{count, added, pinned}`); read them with `links.list`.
     pub const LINKS_CHANGED: &str = "links.changed";
+    /// An app registered or removed its link patterns (`{owner, count}`); see `links.patterns.list`.
+    pub const LINK_PATTERNS_CHANGED: &str = "links.patterns_changed";
     /// A Claude plan usage window reached 100% (`{agent, window: five_hour|seven_day,
     /// used_percentage, resets_at}`), once per window and reset time; see `usage.get`.
     pub const USAGE_LIMIT_REACHED: &str = "usage.limit_reached";

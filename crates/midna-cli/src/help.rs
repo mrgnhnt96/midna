@@ -215,7 +215,10 @@ pub static VERBS: &[Verb] = &[
         usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned] [--turn N|last]\n       \
                 links pin|unpin <link-id|url|path> [--session <id>]\n       \
                 links remove <link-id|url|path> [--session <id>]\n       \
-                links add <url|path> [--title T] [--why <note>] [--no-pin] [--session <id>]",
+                links add <url|path> [--title T] [--why <note>] [--no-pin] [--session <id>]\n       \
+                links patterns [list]\n       \
+                links patterns set <owner> --rule '<regex> = <url template> [agents] [project:<name>]'…\n       \
+                links patterns clear <owner>",
         summary: "the links, PRs, artifacts and files that came up in an agent terminal's conversation",
         details: "midna collects them from the agent's transcript as it works: URLs the human pasted or you wrote or\n\
                   fetched, PRs and artifacts your tools printed, files you created or edited. The human sees them\n\
@@ -224,8 +227,12 @@ pub static VERBS: &[Verb] = &[
                   unless --no-pin, with an optional title and --why it matters (shown under it); `remove` drops one\n\
                   for good (only `add` brings it back). Each link knows the prompts it came up in (numbered as in\n\
                   `midna prompts`); --turn keeps one, e.g.\n\
-                  `midna links --kind file --turn last` = the files edited since the last prompt. Defaults to your own terminal.",
-        methods: &["links.list", "links.pin", "links.remove", "links.add"],
+                  `midna links --kind file --turn last` = the files edited since the last prompt. Defaults to your own terminal.\n\
+                  `patterns` is for apps: one registers the refs it owns (e.g. T42 -> myapp://task/T42) so they turn\n\
+                  into links in terminal text, alongside the human's terminal.link_patterns and in the same rule\n\
+                  format. `set` replaces that owner's patterns wholesale and they survive a restart; `clear` removes\n\
+                  them. Settings shows them read-only under Links and paths.",
+        methods: &["links.list", "links.pin", "links.remove", "links.add", "links.patterns.list", "links.patterns.register"],
     },
     Verb {
         name: "queue",

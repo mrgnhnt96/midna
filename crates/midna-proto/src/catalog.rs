@@ -225,6 +225,15 @@ fn build() -> Vec<MethodSpec> {
              optional title and a note on why it matters. Use it for something important the transcript would not show as \
              a link, or to give one a better name. Adding a target that is already there updates its title/note and pins it. \
              Defaults to your own terminal."),
+        m::<NoParams, LinkPatternsList>("links.patterns.list").d(
+            "The link patterns apps registered (links.patterns.register), by owner. They apply alongside the user's own \
+             terminal.link_patterns, in the same form."),
+        m::<LinkPatternsRegisterParams, AppLinkPatterns>("links.patterns.register").mutating().d(
+            "Register an app's own link patterns: text in terminal output that becomes a link, as rules in \
+             terminal.link_patterns form (`<regex> = <url template> [agents] [project:<name>]…`). They replace whatever \
+             that owner registered before, survive a daemon restart, apply alongside the user's terminal.link_patterns, and \
+             show read-only in Settings ▸ Terminal ▸ Links and paths as provided by the owner. An app registers them each \
+             time it starts; `patterns: []` removes them. A bad rule refuses the whole call."),
         m::<QueueListParams, QueueListResult>("queue.list").d(
             "A terminal's queued messages, in the order midnad will type them, and whether the queue is paused. The first \
              waiting one says what it is waiting for (`waiting_for`). Defaults to your own terminal."),

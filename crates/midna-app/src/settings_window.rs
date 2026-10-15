@@ -173,7 +173,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Appearance, "Sidebar footer", &["sidebar.footer.stats", "sidebar.footer.range", "sidebar.footer.buttons", "sidebar.footer.compact"]),
     (Sec::Appearance, "Insights", &["insights.layout", "insights.layouts", "insights.colors.agents", "insights.colors.you", "insights.colors.waiting"]),
     (Sec::Terminal, "Names", &["terminal.auto_name", "terminal.auto_name_updates"]),
-    (Sec::Terminal, "Links and paths", &["terminal.link_preview", "terminal.preview_path_click", "terminal.link_patterns"]),
+    (Sec::Terminal, "Links and paths", &["terminal.link_preview", "terminal.preview_path_click", "terminal.link_patterns", "@app_link_patterns"]),
     (Sec::Terminal, "Pasting", &["terminal.image_paste"]),
     (Sec::Terminal, "Keyboard", &["terminal.option_as_meta"]),
     (Sec::Terminal, "Agents", &["terminal.prompt_bar"]),
@@ -260,6 +260,8 @@ pub struct SettingsWindow {
     media: Value,
     /// `notify.kinds.list`: the notification kinds you added.
     custom: Vec<midna_proto::NotifyKindInfo>,
+    /// `links.patterns.list`: the link patterns apps registered.
+    app_patterns: Vec<midna_proto::AppLinkPatterns>,
     /// The text fields of editable rows (a kind's title and text, a kind's name, a number), by
     /// row key, with the value each was last filled from (so a reload doesn't clobber typing).
     edits: std::collections::HashMap<String, (LineInput, String)>,
@@ -345,6 +347,7 @@ impl SettingsWindow {
             chips: chips::State::default(),
             media: Value::Null,
             custom: vec![],
+            app_patterns: vec![],
             edits: Default::default(),
             edit_subs: Default::default(),
             edit_saves: Default::default(),
@@ -408,7 +411,7 @@ impl SettingsWindow {
                 self.note_change(&e);
                 self.load(cx);
             }
-            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" => self.load(cx),
+            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED => self.load(cx),
             BackendEvent::Event(e) if e.kind == "hooks.changed" => {
                 self.hooks = e.data.clone();
                 cx.notify();
@@ -473,7 +476,8 @@ impl SettingsWindow {
                     let kinds = backend.call("notify.kinds.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::NotifyKindsList>(v).ok());
                     let keep_awake = backend.call("keep_awake.status", json!({})).unwrap_or(Value::Null);
                     let cleanups = cleanup::fetch_runs(&backend);
-                    (list, info, webhooks, media, hooks, kinds, keep_awake, cleanups)
+                    let patterns = backend.call("links.patterns.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::LinkPatternsList>(v).ok());
+                    (list, info, webhooks, media, hooks, kinds, keep_awake, cleanups, patterns)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -491,6 +495,7 @@ impl SettingsWindow {
                 s.hooks = r.4;
                 s.keep_awake = r.6;
                 s.cleanup.runs = r.7;
+                s.app_patterns = r.8.map(|p| p.apps).unwrap_or_default();
                 s.sync_edits(cx);
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
@@ -1737,6 +1742,23 @@ impl SettingsWindow {
                 rows
             }
             // Kinds you added: rename, test or remove each; then add one.
+            // Patterns apps registered: shown, not edited (the app replaces them on its own).
+            "@app_link_patterns" => self
+                .app_patterns
+                .iter()
+                .flat_map(|a| a.patterns.iter().map(move |r| (a.owner.as_str(), r)))
+                .map(|(owner, rule)| {
+                    let (m, v) = rule.split_once('=').map(|(m, v)| (m.trim(), v.trim())).unwrap_or((rule.as_str(), ""));
+                    RowSpec {
+                        label: m.into(),
+                        note: Some((format!("Provided by {owner}"), t.dim)),
+                        control: Control::Text { dot: None, text: v.into(), color: t.fg, action: None },
+                        cli: "midna links patterns".into(),
+                        who: Who::ReadOnly,
+                        warn: false,
+                    }
+                })
+                .collect(),
             "@cleanup_runs" => vec![RowSpec {
                 label: "Recent cleanups".into(),
                 note: None,
@@ -3471,7 +3493,7 @@ mod tests {
         let known = [
             "@update", "@cli", "@login", "@keep_awake", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
             "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
-            "@custom_kinds", "@bell", "@cleanup_runs",
+            "@custom_kinds", "@bell", "@cleanup_runs", "@app_link_patterns",
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {
