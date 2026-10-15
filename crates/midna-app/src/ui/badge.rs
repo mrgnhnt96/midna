@@ -1460,6 +1460,8 @@ impl Badge {
     }
 
     fn add(&mut self, seq: u64, session: Option<String>, p: Posted, name: String, need: Option<NeedsYou>, cx: &mut Context<Self>) {
+        // Its lines show as plain text: `[text](url)` as `text`.
+        let p = Posted { body: midna_proto::notify::plain_body(&p.body), ..p };
         let stay = crate::ui::toast::stay_of(&p);
         let color = p.color.clone().unwrap_or_else(|| default_color(&p.category).into());
         let mut waiting = None;
