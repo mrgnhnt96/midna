@@ -33,6 +33,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         crate::links::after_hook(d, &sid, p.agent, ev, payload);
         crate::local::hook(d, &sid, p.agent, ev, payload);
     }
+    crate::guard::after_tool(d, &sid, ev, payload);
     match ev {
         "statusline" => {
             record_cost(d, &sid, &project, &actor, payload);

@@ -429,6 +429,18 @@ pub fn system_load(v: &Value) {
     if !top.is_empty() {
         println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
     }
+    let slots = v["build_slots"].as_u64().unwrap_or(0);
+    let builds = v["builds"].as_array().cloned().unwrap_or_default();
+    let holding = builds.iter().filter(|b| b["waiting"].as_bool() != Some(true)).count();
+    if slots > 0 || !builds.is_empty() {
+        let limit = if slots == 0 { "no limit".to_string() } else { format!("{holding} of {slots} slots in use") };
+        println!("builds and tests: {limit} (setting guard.build_slots)");
+    }
+    for b in &builds {
+        let what = if b["waiting"].as_bool() == Some(true) { "waits" } else { "holds" };
+        let mins = b["for_secs"].as_u64().unwrap_or(0) / 60;
+        println!("  {what} {:<5} {:<12} {}  ({})", format!("{mins}m"), s(b, "session_id"), s(b, "command").lines().next().unwrap_or(""), s(b, "name"));
+    }
 }
 
 /// `midna worktrees`.

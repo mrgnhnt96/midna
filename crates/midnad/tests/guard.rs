@@ -68,6 +68,42 @@ fn a_busy_mac_holds_heavy_work_back() {
 }
 
 #[test]
+fn builds_wait_in_line_for_a_slot() {
+    let d = busy_daemon();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "guard.busy_gate", "value": false }));
+    call(&mut h, "settings.set", json!({ "key": "guard.build_slots", "value": 1 }));
+    let (s1, s2) = (open_sh(&mut h), open_sh(&mut h));
+    let mut a = d.agent(Some(&s1));
+    assert_eq!(request(&mut a, "Bash(cargo build)")["source"], "default");
+    // Light commands never wait.
+    assert_eq!(request(&mut a, "Bash(git status)")["source"], "default");
+    let mut b = d.agent(Some(&s2));
+    let waiting = std::thread::spawn(move || request(&mut b, "Bash(flutter test)"));
+    let mut l = Value::Null;
+    for _ in 0..50 {
+        l = call(&mut h, "system.load", json!({}));
+        if l["builds"].as_array().unwrap().len() == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(l["build_slots"], 1, "{l}");
+    let builds = l["builds"].as_array().unwrap();
+    assert_eq!((builds[0]["session_id"].as_str(), builds[0]["waiting"].as_bool()), (Some(s1.as_str()), Some(false)), "{l}");
+    assert_eq!((builds[1]["session_id"].as_str(), builds[1]["command"].as_str(), builds[1]["waiting"].as_bool()), (Some(s2.as_str()), Some("flutter test"), Some(true)), "{l}");
+    assert!(!waiting.is_finished());
+    // The first build returned and nothing it started runs: the next one goes.
+    hook(&mut a, "PostToolUse", json!({ "tool_name": "Bash", "tool_input": { "command": "cargo build" }, "tool_response": {} }));
+    assert_eq!(waiting.join().unwrap()["source"], "default");
+    let l = call(&mut h, "system.load", json!({}));
+    assert_eq!(l["builds"].as_array().unwrap().len(), 1, "{l}");
+    // 0 = no limit.
+    call(&mut h, "settings.set", json!({ "key": "guard.build_slots", "value": 0 }));
+    assert_eq!(request(&mut a, "Bash(cargo test)")["source"], "default");
+}
+
+#[test]
 fn an_agent_runs_at_most_max_subagents() {
     let d = busy_daemon();
     let mut h = d.human();

@@ -482,6 +482,7 @@ pub fn debug(which: &str, backend: Arc<dyn Backend>, cx: &mut App) {
         top,
         others,
         system_percent: system,
+        ..Default::default()
     };
     let kind = if which == "system-upgrade" { Kind::UpgradePostponed } else { Kind::Overloaded };
     show(kind, load, backend, cx);

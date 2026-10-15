@@ -74,7 +74,7 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
     };
     // A rule's allow is about permission, not load: the guard still holds heavy work back.
     if res.decision != Effect::Deny
-        && let Some(reason) = crate::guard::hold(d, &a)
+        && let Some(reason) = crate::guard::hold(d, &a, &|| ctx.detached.is_none() && ctx.out.peer_gone())
     {
         d.emit(kinds::GUARD_HELD, ctx.actor(), a.project.clone(), a.session.clone(), json!({ "action": a, "reason": reason }));
         return ok(PolicyRequestResult { decision: Effect::Deny, source: DecisionSource::Guard, rule: None, needs_you_id: None, reason: Some(reason) });
