@@ -177,6 +177,17 @@ fn other_actions(n: &NeedsYou) -> (Option<(&'static str, Option<Resolution>)>, O
     }
 }
 
+/// What the approve and deny keys do to the selected item, for the footer: approve / deny,
+/// else its own actions (a question is only dismissed; its options are answered in its terminal).
+fn key_actions(n: Option<&NeedsYou>) -> (Option<String>, Option<String>) {
+    let Some(n) = n else { return (None, None) };
+    if approves(n) {
+        return (Some("approve".into()), Some("deny".into()));
+    }
+    let (a, b) = other_actions(n);
+    (a.map(|(l, _)| l.to_lowercase()), b.map(|(l, _)| l.to_lowercase()))
+}
+
 fn session_of<'a>(m: &'a MainWindow, n: &NeedsYou) -> Option<&'a Session> {
     n.session_id.as_ref().and_then(|sid| m.sessions.iter().find(|s| &s.id == sid))
 }
@@ -488,6 +499,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
 /// The left column: title and count, kind chips, one row per item, key hints.
 fn list(m: &MainWindow, t: &Theme, order: &[&NeedsYou], cur: usize, approve_key: &str, deny_key: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let all = waiting(m);
+    let (approve_hint, deny_hint) = key_actions(order.get(cur).copied());
     let mut chips = div().flex().flex_none().flex_wrap().gap(px(6.)).px(px(18.)).pb(px(12.));
     for (f, label) in FILTERS {
         let count = if f == Filter::All { all.len() } else { all.iter().filter(|n| filter_of(n) == f).count() };
@@ -632,8 +644,8 @@ fn list(m: &MainWindow, t: &Theme, order: &[&NeedsYou], cur: usize, approve_key:
                 .text_size(px(11.5))
                 .text_color(t.dim)
                 .child(hint(t, "↑↓", "move"))
-                .child(hint(t, approve_key, "approve"))
-                .child(hint(t, deny_key, "deny"))
+                .when_some(approve_hint, |d, l| d.child(hint(t, approve_key, &l)))
+                .when_some(deny_hint, |d, l| d.child(hint(t, deny_key, &l)))
                 .child(hint(t, "⌘O", "terminal")),
         )
 }
@@ -1056,8 +1068,11 @@ mod tests {
         use crate::model::{NeedsYou, NeedsYouKind, NeedsYouQuestion};
         let prompt = NeedsYou { kind: NeedsYouKind::PermissionPrompt, ..Default::default() };
         assert!(super::approves(&prompt));
-        let question = NeedsYou { question: Some(NeedsYouQuestion { text: "Which?".into(), ..Default::default() }), ..prompt };
+        let question = NeedsYou { question: Some(NeedsYouQuestion { text: "Which?".into(), ..Default::default() }), ..prompt.clone() };
         assert!(!super::approves(&question));
         assert!(matches!(super::filter_of(&question), super::Filter::Other));
+        assert_eq!(super::key_actions(Some(&prompt)), (Some("approve".into()), Some("deny".into())));
+        assert_eq!(super::key_actions(Some(&question)), (None, Some("dismiss".into())));
+        assert_eq!(super::key_actions(None), (None, None));
     }
 }
