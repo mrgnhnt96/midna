@@ -630,6 +630,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "While the Mac's CPU is busy (system.busy_cpu) because of midna's terminals (they use at least half of it), tell agents to wait instead of starting heavy work: new subagents, and commands that build, test or install (cargo build/test, npm install, xcodebuild, make, …) are denied with the load, so the agent tries again later."),
     SettingSpec { range: Some((0, 64)), ..s!("guard.max_subagents", SettingKind::Int, I(4), "general", true,
         "Most subagents one agent terminal runs at once. Another Agent call is denied until one finishes, so an agent can't start dozens of helpers together. 0 = no limit.") },
+    SettingSpec { range: Some((0, 16)), ..s!("guard.build_slots", SettingKind::Int, I(2), "general", true,
+        "Most builds, tests and installs (cargo build/test, flutter test, xcodebuild, npm install, …) that run at once across every terminal. Another one waits in line before it starts and goes once a slot frees, in the order they asked; a build sent to the background holds its slot until it ends. 0 = no limit.") },
     s!("cleanup.enabled", SettingKind::Bool, B(true), "agents", false,
         "When a terminal closes, have a cheap headless model (cleanup.model) clean up what it left behind: the items in cleanup.items. It removes only what is safe (merged, pushed, nothing uncommitted), never touches cleanup.keep, and says what it kept and why. `midna cleanup runs` lists what it did; `midna close --no-cleanup` skips it once."),
     s!("cleanup.sessions", en(&["agents", "all"]), S("agents"), "agents", false,

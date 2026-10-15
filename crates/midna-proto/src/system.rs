@@ -16,6 +16,10 @@
 //!   background mode (`guard.background_agents`), and agents are told to wait instead of
 //!   starting heavy work (`guard.busy_gate`): when other apps keep the Mac busy, holding
 //!   agents back frees nothing. An agent runs at most `guard.max_subagents` subagents at once.
+//! - Build slots: at most `guard.build_slots` builds, tests or installs run at once across every
+//!   terminal, however calm the Mac is. Another one waits in line, in its PreToolUse hook, and
+//!   starts when a slot frees: once the command has returned and nothing it started (a build
+//!   sent to the background) still runs.
 //! - Runaway loops: background `while`/`until` shell loops an agent started (polling for a
 //!   build, a file, a process) that outlive `guard.loop_max_hours` are stopped.
 //! - Worktrees: linked git worktrees of repos midna's terminals use are removed after
@@ -71,6 +75,28 @@ pub struct SystemLoad {
     /// percent of all cores.
     #[serde(default)]
     pub system_percent: u32,
+    /// `guard.build_slots`: builds, tests and installs that run at once (0 = no limit).
+    #[serde(default)]
+    pub build_slots: u32,
+    /// The builds holding a slot, then the ones waiting for one in line order.
+    #[serde(default)]
+    pub builds: Vec<BuildSlot>,
+}
+
+/// A build, test or install holding a build slot or waiting in line for one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildSlot {
+    pub session_id: Id,
+    /// The terminal's name.
+    pub name: String,
+    /// The command, cut to 200 characters.
+    pub command: String,
+    /// Waiting for a slot (else holding one).
+    #[serde(default)]
+    pub waiting: bool,
+    /// Seconds since it got its slot, or since it started waiting.
+    #[serde(default)]
+    pub for_secs: u64,
 }
 
 /// An app (its processes grouped by the `.app` they run from) or a lone process outside midna's
@@ -298,15 +324,21 @@ pub fn is_poll_loop(command: &str) -> bool {
 /// only by the program it runs: words in quotes, heredoc bodies and comments are text, not
 /// commands (`tb note "ran make"` and `cat > x.md <<EOF … cargo build … EOF` aren't builds).
 pub fn is_heavy_command(command: &str) -> bool {
-    shell_commands(command).iter().any(|words| is_heavy_words(words))
+    heavy_program(command).is_some()
 }
 
-/// Whether one simple command, as words, runs a build, test or install.
-fn is_heavy_words(words: &[String]) -> bool {
+/// The program of the first build, test or install in a shell command (`cargo` for
+/// `source env.sh && cargo test`): what holds a build slot (`guard.build_slots`).
+pub fn heavy_program(command: &str) -> Option<String> {
+    shell_commands(command).iter().find_map(|words| heavy_words(words))
+}
+
+/// The program one simple command, as words, runs when it's a build, test or install.
+fn heavy_words(words: &[String]) -> Option<String> {
     let mut i = 0;
     // Look past assignments, shell keywords and wrappers to the program they run.
     loop {
-        let Some(w) = words.get(i) else { return false };
+        let w = words.get(i)?;
         let base = w.rsplit('/').next().unwrap_or(w);
         // The index after the flags starting at `j`; flags in `with_arg` take the next word.
         let flags = |mut j: usize, with_arg: &[&str]| {
@@ -335,22 +367,23 @@ fn is_heavy_words(words: &[String]) -> bool {
                 // `bash -c '<script>'`: the script is the command. `bash x.sh` runs a file, never heavy.
                 let j = flags(i + 1, &[]);
                 let c = words[i + 1..j].iter().any(|f| !f.starts_with("--") && f.contains('c'));
-                return c && words.get(j).is_some_and(|s| is_heavy_command(s));
+                return words.get(j).filter(|_| c).and_then(|s| heavy_program(s));
             }
-            "eval" => return is_heavy_command(&words[i + 1..].join(" ")),
+            "eval" => return heavy_program(&words[i + 1..].join(" ")),
             _ => break,
         };
     }
     let prog = words[i].rsplit('/').next().unwrap_or(&words[i]);
     // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
     let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).map_or("", |s| s.as_str());
-    match prog {
+    let heavy = match prog {
         "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
         "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
         "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "install" | "i" | "ci" | "add" | "build" | "test" | "run"),
         "swift" | "go" | "flutter" | "dart" | "docker" => matches!(sub, "build" | "test" | "install" | "compile"),
         _ => false,
-    }
+    };
+    heavy.then(|| prog.to_string())
 }
 
 /// `NAME=value` before a command.
@@ -556,6 +589,10 @@ mod tests {
         assert!(is_heavy_command("for d in a b; do make -C $d; done"));
         assert!(is_heavy_command("cat > x <<EOF\nhi\nEOF\ncargo test"));
         assert!(is_heavy_command("echo hi # note\nmake"));
+        assert_eq!(heavy_program("source ./env.sh && /usr/bin/cargo test -p midnad").as_deref(), Some("cargo"));
+        assert_eq!(heavy_program("bash -lc 'cd app && flutter test'").as_deref(), Some("flutter"));
+        assert_eq!(heavy_program("git status; npm ci && xcodebuild").as_deref(), Some("npm"));
+        assert_eq!(heavy_program("cargo --version"), None);
     }
 
     #[test]

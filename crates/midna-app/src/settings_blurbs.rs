@@ -72,6 +72,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "guard.background_agents" => "When terminals keep the Mac busy, their builds run at low priority.",
         "guard.busy_gate" => "When terminals keep the Mac busy, no new subagents, builds or installs.",
         "guard.max_subagents" => "More wait their turn; 0 = no limit.",
+        "guard.build_slots" => "Across every terminal; more wait in line. 0 = no limit.",
         "guard.overload_alert" => "Show whether terminals or other apps are using the CPU.",
         "guard.overload_secs" => "How long the Mac must stay busy first.",
         "guard.loop_max_hours" => "Stop polling loops agents left running; 0 = never.",

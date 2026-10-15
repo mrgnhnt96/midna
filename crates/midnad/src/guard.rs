@@ -18,6 +18,13 @@
 //! `midna system run-anyway` (`system.run_anyway`): the gate lets that terminal through until the
 //! human's next prompt.
 //!
+//! `hold` also hands out build slots: at most `guard.build_slots` heavy commands run at once
+//! across every terminal. Another one waits in line inside its PreToolUse hook (the hook has a
+//! 600s timeout) and goes once a slot frees, in the order they asked. A slot frees once the
+//! command's PostToolUse came (`after_tool`) and none of the build's processes run anymore, so a
+//! build sent to the background holds it until it ends; a build that sits idle (a server from
+//! `cargo run`) gives it up.
+//!
 //! `session.pause` stops (SIGSTOP) a terminal's whole process tree, agent included, and
 //! `session.resume` continues it; `session.stop_processes` ends what a terminal started
 //! (SIGTERM, SIGKILL after 3s) while its shell or agent keeps running. A pause is kept on the
@@ -28,7 +35,7 @@
 //! `MIDNA_DEBUG_CPU=<cpu>[:<midna>]` that CPU in use (and midna's terminals' share of it).
 use crate::daemon::Daemon;
 use crate::procs;
-use midna_proto::system::{self as sys, HeavyTerminal, OtherProcess, Paused, SystemLoad};
+use midna_proto::system::{self as sys, BuildSlot, HeavyTerminal, OtherProcess, Paused, SystemLoad};
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -75,6 +82,35 @@ struct Inner {
     /// Background mode was cleared from every agent terminal once since midnad started (a
     /// restart forgets which terminals it put there).
     swept: bool,
+    /// Heavy commands holding a build slot, and the ones waiting for one in line order.
+    builds: Vec<Build>,
+    line: Vec<Waiter>,
+    tickets: u64,
+}
+
+/// A heavy command holding a build slot.
+struct Build {
+    session: Id,
+    command: String,
+    /// The program it runs (`cargo`), to find its processes by.
+    program: String,
+    /// Unix seconds and the instant it got the slot.
+    started: i64,
+    at: Instant,
+    /// Its PostToolUse came: it returned (or went to the background).
+    returned: bool,
+    /// Ticks in a row its processes ran but used next to no CPU.
+    idle: u8,
+}
+
+/// A heavy command waiting in line for a build slot.
+struct Waiter {
+    ticket: u64,
+    session: Id,
+    command: String,
+    at: Instant,
+    /// It waited SLOT_WAIT and the agent was told to retry: it keeps its place until PARKED.
+    parked: Option<Instant>,
 }
 
 fn log(msg: &str) {
@@ -210,6 +246,22 @@ pub fn load(d: &Daemon) -> SystemLoad {
     }
     top.extend(paused);
     top.sort_by(|a, b| b.cpu_percent.cmp(&a.cpu_percent));
+    let builds = {
+        let g = d.guard.inner();
+        let held = g.builds.iter().map(|b| (b.session.clone(), b.command.clone(), false, b.at));
+        let waiting = g.line.iter().filter(|w| w.parked.is_none()).map(|w| (w.session.clone(), w.command.clone(), true, w.at));
+        held.chain(waiting).collect::<Vec<_>>()
+    };
+    let builds = {
+        let core = d.core();
+        builds
+            .into_iter()
+            .map(|(sid, command, waiting, at)| {
+                let name = core.state.session(&sid).map(|s| s.name.clone()).unwrap_or_default();
+                BuildSlot { session_id: sid, name, command: command.chars().take(200).collect(), waiting, for_secs: at.elapsed().as_secs() }
+            })
+            .collect()
+    };
     SystemLoad {
         load1: round2(load1),
         load5: round2(load5),
@@ -228,6 +280,8 @@ pub fn load(d: &Daemon) -> SystemLoad {
         top,
         others,
         system_percent: system.round().clamp(0., 100.) as u32,
+        build_slots: build_slots(d) as u32,
+        builds,
     }
 }
 
@@ -246,6 +300,8 @@ fn round2(v: f64) -> f64 {
 
 fn tick(d: &Arc<Daemon>) {
     let table = procs::table();
+    // Before `sample` replaces the CPU times it measures idle builds against.
+    release_builds(d, &table, true);
     sample(d, &table);
     overload(d);
     background(d, &table);
@@ -372,8 +428,9 @@ fn background(d: &Daemon, table: &HashMap<i32, procs::Row>) {
 
 /// Why an agent's tool call should wait, if it should: a subagent past `guard.max_subagents`,
 /// or (`guard.busy_gate`) a subagent or heavy command while held (CPU busy because of midna's
-/// terminals), unless the human said to run it anyway (`system.run_anyway`).
-pub fn hold(d: &Daemon, a: &PolicyAction) -> Option<String> {
+/// terminals), unless the human said to run it anyway (`system.run_anyway`). A heavy command
+/// let through then waits here for a build slot; `gone` says the caller hung up.
+pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<String> {
     if a.kind != ActionKind::Tool {
         return None;
     }
@@ -405,7 +462,176 @@ pub fn hold(d: &Daemon, a: &PolicyAction) -> Option<String> {
             info.pending_agents.pop();
         }
     }
-    reason
+    if reason.is_some() || tool != "Bash" || runs_anyway(d, sid) {
+        return reason;
+    }
+    let program = sys::heavy_program(arg)?;
+    build_slot(d, sid, arg, program, gone)
+}
+
+// ------------------------------------------------------------------ build slots
+
+/// The longest a heavy command waits in line inside its PreToolUse hook (Claude gives the hook
+/// 600s). Then the agent is told to run it again, and it keeps its place for PARKED.
+const SLOT_WAIT: Duration = Duration::from_secs(540);
+const PARKED: Duration = Duration::from_secs(120);
+const SLOT_POLL: Duration = Duration::from_millis(500);
+/// A build with nothing running yet holds its slot this long without its PostToolUse (the
+/// agent was interrupted, or the hook never came).
+const STARTING: Duration = Duration::from_secs(30);
+/// A build whose processes use under IDLE_CPU percent of one core for IDLE_TICKS ticks in a row
+/// is serving (`cargo run`) or stuck, not building: it gives its slot up.
+const IDLE_CPU: f64 = 5.;
+const IDLE_TICKS: u8 = 3;
+/// No build holds a slot longer.
+const SLOT_MAX: Duration = Duration::from_secs(2 * 3600);
+
+fn build_slots(d: &Daemon) -> usize {
+    d.setting("guard.build_slots").as_i64().unwrap_or(2).max(0) as usize
+}
+
+/// Wait in line for a build slot: None once it holds one, else why it didn't get one.
+fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn Fn() -> bool) -> Option<String> {
+    let slots = build_slots(d);
+    if slots == 0 {
+        return None;
+    }
+    let started = Instant::now();
+    let ticket = {
+        let mut g = d.guard.inner();
+        g.line.retain(|w| w.parked.is_none_or(|p| p.elapsed() < PARKED));
+        // The agent running it again after SLOT_WAIT takes back its place.
+        match g.line.iter_mut().find(|w| w.parked.is_some() && w.session == sid && w.command == command) {
+            Some(w) => {
+                w.parked = None;
+                w.ticket
+            }
+            None => {
+                g.tickets += 1;
+                let ticket = g.tickets;
+                g.line.push(Waiter { ticket, session: sid.into(), command: command.into(), at: started, parked: None });
+                ticket
+            }
+        }
+    };
+    let mut waited = false;
+    loop {
+        {
+            let mut g = d.guard.inner();
+            if has_turn(&g.line, ticket, g.builds.len(), slots) {
+                g.line.retain(|w| w.ticket != ticket);
+                g.builds.push(Build { session: sid.into(), command: command.into(), program, started: time::now_unix(), at: Instant::now(), returned: false, idle: 0 });
+                if waited {
+                    log(&format!("build slot: {sid} goes after {}s in line", started.elapsed().as_secs()));
+                }
+                return None;
+            }
+            if !waited {
+                let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none()).count();
+                log(&format!("build slot: {sid} waits in line ({} running, {ahead} ahead)", g.builds.len()));
+                waited = true;
+            }
+        }
+        if gone() {
+            d.guard.inner().line.retain(|w| w.ticket != ticket);
+            return Some("the agent stopped waiting for a build slot".into());
+        }
+        if started.elapsed() >= SLOT_WAIT {
+            let mut g = d.guard.inner();
+            if let Some(w) = g.line.iter_mut().find(|w| w.ticket == ticket) {
+                w.parked = Some(Instant::now());
+            }
+            let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none()).count();
+            return Some(format!(
+                "{} builds and tests already run across the Mac's terminals (guard.build_slots = {slots}) and {ahead} more are ahead of this one. Run the same command again now: it keeps its place in line and starts when a slot frees. Don't sleep or poll first.",
+                g.builds.len()
+            ));
+        }
+        std::thread::sleep(SLOT_POLL);
+    }
+}
+
+/// Whether the waiter holding `ticket` gets a slot: the ones ahead of it in line (not parked)
+/// and the builds running leave one free.
+fn has_turn(line: &[Waiter], ticket: u64, running: usize, slots: usize) -> bool {
+    line.iter().filter(|w| w.parked.is_none()).position(|w| w.ticket == ticket).is_some_and(|ahead| running + ahead < slots)
+}
+
+/// A Bash call returned: the build it ran gives its slot up once nothing it started runs.
+pub fn after_tool(d: &Daemon, sid: &str, ev: &str, payload: &Value) {
+    if !matches!(ev, "PostToolUse" | "PostToolUseFailure") || payload.get("tool_name").and_then(Value::as_str) != Some("Bash") {
+        return;
+    }
+    let Some(command) = payload.pointer("/tool_input/command").and_then(Value::as_str) else { return };
+    {
+        let mut g = d.guard.inner();
+        let Some(b) = g.builds.iter_mut().find(|b| !b.returned && b.session == sid && b.command == command) else { return };
+        b.returned = true;
+    }
+    release_builds(d, &procs::table(), false);
+}
+
+/// The process names a build's program runs as: `flutter` is a dart program, npm and yarn run
+/// node, gradle and maven run java.
+fn build_processes(program: &str) -> Vec<&str> {
+    match program {
+        "flutter" | "dart" => vec!["dart", "dartvm", "dartaotruntime", "flutter_tester"],
+        "npm" | "pnpm" | "yarn" => vec!["node"],
+        "gradle" | "gradlew" | "mvn" => vec!["java"],
+        "swift" => vec!["swift", "swift-build", "swift-test", "swift-package"],
+        "make" | "gmake" => vec!["make", "gmake"],
+        p => vec![p],
+    }
+}
+
+/// The processes under `root` that a build started at `started` runs as: its program's, started
+/// since (the clock has 1s steps), with everything under them.
+fn build_pids(table: &HashMap<i32, procs::Row>, root: i32, b: &Build) -> Vec<i32> {
+    let names = build_processes(&b.program);
+    let mut pids = vec![];
+    for pid in procs::descendants(table, root) {
+        let r = &table[&pid];
+        if pid != root && r.start >= b.started - 1 && names.contains(&r.name.as_str()) && !pids.contains(&pid) {
+            pids.extend(procs::descendants(table, pid));
+        }
+    }
+    pids.sort();
+    pids.dedup();
+    pids
+}
+
+/// Whether a build gives its slot up, from whether its processes run and how long it has held it.
+fn released(b: &Build, running: bool) -> bool {
+    let held = b.at.elapsed();
+    (!running && (b.returned || held >= STARTING)) || b.idle >= IDLE_TICKS || held >= SLOT_MAX
+}
+
+/// Free the slots of builds that are over; `tick` also counts the ticks they sat idle (against
+/// the CPU times of the last sample).
+fn release_builds(d: &Daemon, table: &HashMap<i32, procs::Row>, tick: bool) {
+    let roots: HashMap<Id, i32> = d.terminal_pids().into_iter().collect();
+    let mut g = d.guard.inner();
+    if g.builds.is_empty() && g.line.is_empty() {
+        return;
+    }
+    // Waiters whose terminal closed hang up on their own; drop those of closed terminals anyway.
+    g.line.retain(|w| roots.contains_key(&w.session));
+    let secs = g.last_at.map(|t| t.elapsed().as_secs_f64()).filter(|s| *s > 0.5);
+    let mut builds = std::mem::take(&mut g.builds);
+    builds.retain_mut(|b| {
+        let Some(&root) = roots.get(&b.session) else { return false };
+        let pids = build_pids(table, root, b);
+        if tick && let Some(secs) = secs.filter(|_| !pids.is_empty()) {
+            let ns: u64 = pids.iter().map(|p| (&table[p], g.last.get(p))).map(|(r, was)| r.cpu_ns.saturating_sub(was.filter(|(_, s)| *s == r.start).map_or(0, |(c, _)| *c))).sum();
+            b.idle = if ns as f64 / 1e9 / secs * 100. < IDLE_CPU { b.idle + 1 } else { 0 };
+        }
+        let gone = released(b, !pids.is_empty());
+        if gone {
+            log(&format!("build slot: {} frees its slot after {}s ({})", b.session, b.at.elapsed().as_secs(), b.program));
+        }
+        !gone
+    });
+    g.builds = builds;
 }
 
 fn too_many_subagents(d: &Daemon, sid: &str) -> Option<String> {
@@ -732,6 +958,42 @@ mod tests {
         assert_eq!(app_name("/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang").as_deref(), Some("Xcode"));
         assert_eq!(app_name("/Applications/Google Chrome.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper").as_deref(), Some("Google Chrome"));
         assert_eq!(app_name("/System/Library/Frameworks/CoreServices.framework/Versions/A/Support/fseventsd"), None);
+    }
+
+    fn waiter(ticket: u64, parked: bool) -> Waiter {
+        Waiter { ticket, session: "s".into(), command: "cargo build".into(), at: Instant::now(), parked: parked.then(Instant::now) }
+    }
+
+    #[test]
+    fn build_slots_go_in_line_order() {
+        let line = vec![waiter(1, false), waiter(2, true), waiter(3, false), waiter(4, false)];
+        // Two slots, one taken: only the first in line goes.
+        assert!(has_turn(&line, 1, 1, 2));
+        assert!(!has_turn(&line, 3, 1, 2));
+        // Both free: the first two go together; a parked one keeps its place but holds no one up.
+        assert!(has_turn(&line, 3, 0, 2));
+        assert!(!has_turn(&line, 2, 0, 2));
+        assert!(!has_turn(&line, 4, 0, 2));
+        assert!(!has_turn(&line, 1, 2, 2));
+        assert!(!has_turn(&line, 9, 0, 2), "not in line");
+    }
+
+    #[test]
+    fn a_build_frees_its_slot_once_it_returned_and_stopped() {
+        let ago = |s: u64| Instant::now() - Duration::from_secs(s);
+        let b = |returned: bool, at: Instant, idle: u8| Build { session: "s".into(), command: "cargo build".into(), program: "cargo".into(), started: 0, at, returned, idle };
+        assert!(released(&b(true, ago(0), 0), false));
+        // Sent to the background: holds it while cargo runs.
+        assert!(!released(&b(true, ago(600), 0), true));
+        // Granted, not started yet.
+        assert!(!released(&b(false, ago(1), 0), false));
+        // Its PostToolUse never came.
+        assert!(released(&b(false, ago(STARTING.as_secs() + 1), 0), false));
+        // A server from `cargo run`.
+        assert!(released(&b(true, ago(60), IDLE_TICKS), true));
+        assert!(released(&b(false, ago(SLOT_MAX.as_secs() + 1), 0), true));
+        assert_eq!(build_processes("flutter")[0], "dart");
+        assert_eq!(build_processes("cargo"), vec!["cargo"]);
     }
 
     /// Scheduling priority `ps` reports (background mode drops it to 4).

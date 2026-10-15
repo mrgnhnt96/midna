@@ -565,7 +565,10 @@ pub static VERBS: &[Verb] = &[
                   midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.\n\
                   While busy, what the heaviest agent terminals start runs in macOS's background mode\n\
                   (guard.background_agents; \"slowed\" in the list), and agents are denied new subagents and\n\
-                  builds/tests/installs (guard.busy_gate; `system wait` waits it out). An agent runs at most guard.max_subagents subagents at once.",
+                  builds/tests/installs (guard.busy_gate; `system wait` waits it out). An agent runs at most guard.max_subagents subagents at once.\n\
+                  At most guard.build_slots builds/tests/installs (2 by default) run at once across every terminal:\n\
+                  another waits in line before it starts and goes when a slot frees, in the order they asked. A\n\
+                  build sent to the background holds its slot until it ends. `system load` lists who holds and waits.",
         methods: &["system.load", "system.run_anyway", "session.pause", "session.resume", "session.stop_processes"],
     },
     Verb {
