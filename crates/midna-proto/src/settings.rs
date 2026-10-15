@@ -299,8 +299,9 @@ macro_rules! bell {
     };
 }
 
-/// `terminal.link_patterns` out of the box: Taskboard's task and goal refs, in agent terminals.
-pub const DEFAULT_LINK_PATTERNS: &[&str] = &[r"\b(T\d+)\b = taskboard://task/$1 agents", r"\b(G\d+)\b = taskboard://goal/$1 agents"];
+/// `terminal.link_patterns` out of the box: none. An app's own refs come from the app
+/// (`links.patterns.register`), not from midna.
+pub const DEFAULT_LINK_PATTERNS: &[&str] = &[];
 
 use DefaultValue::{Bool as B, Int as I, List as L, Str as S};
 
@@ -663,7 +664,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("terminal.link_preview", en(&["hover", "cmd", "off"]), S("hover"), "terminal", false,
         "Preview a path or link in a card at the bottom right of the terminal: hover (resting the pointer on it), cmd (⌘-hover only) or off. The card stays while the pointer is on it and for a moment after it leaves."),
     s!("terminal.link_patterns", SettingKind::RuleList, L(DEFAULT_LINK_PATTERNS), "terminal", false,
-        "Text in terminal output that becomes a link, like URLs (⌘-click opens it, hovering previews it): `<regex> = <url template>`, with $1, ${name} … from the regex's groups ($0 = the whole match). Add `agents` to limit a rule to agent terminals, `project:<name>` (repeatable) to some projects. A match inside a URL or path, or glued to other text, isn't a link, and a URL whose scheme no app on this Mac opens stays text. The defaults link Taskboard's T42 and G3 in agent terminals. E.g. `\\bPROJ-(\\d+)\\b = https://acme.atlassian.net/browse/PROJ-$1 project:acme`."),
+        "Text in terminal output that becomes a link, like URLs (⌘-click opens it, hovering previews it): `<regex> = <url template>`, with $1, ${name} … from the regex's groups ($0 = the whole match). Add `agents` to limit a rule to agent terminals, `project:<name>` (repeatable) to some projects. A match inside a URL or path, or glued to other text, isn't a link, and a URL whose scheme no app on this Mac opens stays text. Apps add their own alongside these (links.patterns.register), shown read-only under this setting. E.g. `\\bPROJ-(\\d+)\\b = https://acme.atlassian.net/browse/PROJ-$1 project:acme`."),
     s!("terminal.auto_name", en(&["agent", "prompt", "context", "off"]), S("agent"), "terminal", false,
         "Name terminals by themselves, from what they're doing. agent: the short summary Claude or Codex puts in the terminal title (no extra model call), falling back to prompt, then context, until it has one. prompt: the prompt shortened to a few words, filler dropped, without any model. context: the git branch (feat/auto-tab-names = Auto tab names) or worktree, else the folder; this one names shell terminals too. off: keep the names terminals were given. A name you set yourself always stays; rename a terminal back to its default (claude, codex, zsh, …) to let midna name it again."),
     s!("terminal.auto_name_updates", en(&["follow", "first"]), S("follow"), "terminal", false,

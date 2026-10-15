@@ -297,6 +297,8 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "links.pin" => links::pin(d, ctx, parse(p)?),
         "links.add" => links::add(d, ctx, parse(p)?),
         "links.remove" => links::remove(d, ctx, parse(p)?),
+        "links.patterns.list" => links::patterns_list(d),
+        "links.patterns.register" => links::patterns_register(d, ctx, parse(p)?),
         "queue.list" => queue::list(d, ctx, parse(p)?),
         "queue.add" => queue::add(d, ctx, parse(p)?),
         "queue.update" => queue::update(d, ctx, parse(p)?),

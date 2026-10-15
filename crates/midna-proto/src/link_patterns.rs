@@ -165,7 +165,9 @@ mod tests {
 
     #[test]
     fn default_rules_parse() {
-        let rules: Vec<String> = crate::settings::DEFAULT_LINK_PATTERNS.iter().map(|s| s.to_string()).collect();
+        // midna ships no patterns of its own; apps register theirs.
+        assert!(crate::settings::DEFAULT_LINK_PATTERNS.is_empty());
+        let rules: Vec<String> = [r"\b(T\d+)\b = taskboard://task/$1 agents", r"\b(G\d+)\b = taskboard://goal/$1 agents"].iter().map(|s| s.to_string()).collect();
         assert_eq!(parse_all(&rules).len(), rules.len());
         let all = parse_all(&rules);
         let hit = |line: &str, at: usize| all.iter().find_map(|p| p.link_at(line, at)).map(|(_, u)| u);

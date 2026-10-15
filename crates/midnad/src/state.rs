@@ -56,6 +56,10 @@ pub struct State {
     /// `settings` under the same per-kind keys as a built-in kind's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_kinds: Vec<midna_proto::notify::CustomKind>,
+    /// Link patterns apps registered (`links.patterns.register`), by owner. Applied alongside
+    /// the human's `terminal.link_patterns`; each register replaces that owner's set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub app_link_patterns: BTreeMap<String, Vec<String>>,
     /// `notify.send` notifications midnad remembers, oldest first: what clicks and buttons are
     /// checked against and recorded on, and the `on` actions they run.
     #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]

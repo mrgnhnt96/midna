@@ -870,3 +870,31 @@ fn another_terminals_id_is_a_link_to_it() {
     // An id no terminal has stays plain text.
     assert!(at(&mut c, 22).is_none());
 }
+
+#[test]
+fn apps_register_their_own_link_patterns() {
+    let mut d = TestDaemon::start();
+    let mut c = d.human();
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"], json!([]));
+    // A bad rule refuses the whole call.
+    let e = call_err(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [r"(X\d+ = https://x.dev/$1"] }));
+    assert!(e.message.contains("bad regex"), "{}", e.message);
+    let r = call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [r"\b(ZQ\d+)\b = https://tracker.dev/$1"] }));
+    assert_eq!(r["patterns"].as_array().map(Vec::len), Some(1), "{r}");
+    // They link terminal text, like the human's own patterns.
+    let id = open_sh(&mut c);
+    call(&mut c, "session.input", json!({ "id": id, "text": "clear; echo 'see ZQ77 now'", "enter": true }));
+    let at = |c: &mut Client| (0..24).map(|row| call(c, "session.link_at", json!({ "id": id, "col": 5, "row": row }))).find(|l| l["kind"] != "none");
+    let link = wait_for(5, "app pattern link", || at(&mut c));
+    assert_eq!(link["target"], "https://tracker.dev/ZQ77", "{link}");
+    // They survive a restart.
+    drop(c);
+    d.restart();
+    let mut c = d.human();
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"][0]["owner"], "Tracker");
+    // Each register replaces the owner's set; an empty one removes it.
+    call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [r"\b(QQ\d+)\b = https://tracker.dev/$1"] }));
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"][0]["patterns"], json!([r"\b(QQ\d+)\b = https://tracker.dev/$1"]));
+    call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [] }));
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"], json!([]));
+}

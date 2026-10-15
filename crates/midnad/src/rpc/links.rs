@@ -2,6 +2,7 @@
 use super::{Ctx, R, ok};
 use crate::daemon::Daemon;
 use midna_proto::*;
+use serde_json::json;
 
 /// The terminal a call is about: `session`, else the caller's own.
 fn session(d: &Daemon, ctx: &Ctx, sid: Option<Id>) -> Result<Id, RpcError> {
@@ -44,4 +45,45 @@ pub fn remove(d: &Daemon, ctx: &Ctx, p: LinksRemoveParams) -> R {
 pub fn add(d: &Daemon, ctx: &Ctx, p: LinksAddParams) -> R {
     let sid = session(d, ctx, p.session.clone())?;
     ok(crate::links::add(d, &sid, &p, ctx.actor())?)
+}
+
+/// At most this many apps, and this many rules per app.
+const MAX_OWNERS: usize = 32;
+const MAX_APP_PATTERNS: usize = 64;
+
+pub fn patterns_list(d: &Daemon) -> R {
+    let core = d.core();
+    let apps = core.state.app_link_patterns.iter().map(|(owner, patterns)| AppLinkPatterns { owner: owner.clone(), patterns: patterns.clone() }).collect();
+    ok(LinkPatternsList { apps })
+}
+
+/// Replace an app's link patterns wholesale; an empty list removes them.
+pub fn patterns_register(d: &Daemon, ctx: &Ctx, p: LinkPatternsRegisterParams) -> R {
+    let owner = p.owner.trim().to_string();
+    if owner.is_empty() || owner.chars().count() > 64 || owner.chars().any(char::is_control) {
+        return Err(RpcError::bad_params("owner must be 1–64 characters, the app's name (e.g. \"Taskboard\")"));
+    }
+    if p.patterns.len() > MAX_APP_PATTERNS {
+        return Err(RpcError::bad_params(format!("at most {MAX_APP_PATTERNS} patterns per app")));
+    }
+    // Check every rule before storing any, so a bad one leaves the old set in place.
+    let patterns: Vec<String> = p.patterns.iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    for r in &patterns {
+        midna_proto::link_patterns::LinkPattern::parse(r).map_err(|e| RpcError::bad_params(format!("rule `{r}`: {e}")))?;
+    }
+    {
+        let mut core = d.core();
+        let apps = &mut core.state.app_link_patterns;
+        if patterns.is_empty() {
+            apps.remove(&owner);
+        } else {
+            if !apps.contains_key(&owner) && apps.len() >= MAX_OWNERS {
+                return Err(RpcError::bad_params(format!("at most {MAX_OWNERS} apps can register link patterns")));
+            }
+            apps.insert(owner.clone(), patterns.clone());
+        }
+    }
+    d.mark_dirty();
+    d.emit(kinds::LINK_PATTERNS_CHANGED, ctx.actor(), None, None, json!({ "owner": owner, "count": patterns.len() }));
+    ok(AppLinkPatterns { owner, patterns })
 }
