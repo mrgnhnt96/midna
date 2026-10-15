@@ -549,6 +549,49 @@ pub fn parse_keystroke(s: &str) -> Option<(u8, String)> {
     Some((mods, key))
 }
 
+/// The picker's terminal, for [`crate::question::answer`].
+struct PickerTerm<'a>(&'a term::RtHandle);
+
+impl crate::question::Term for PickerTerm<'_> {
+    fn screen(&mut self) -> Option<Vec<String>> {
+        self.0.read(true).map(|(l, _, _)| l)
+    }
+    fn key(&mut self, k: term::Key) -> bool {
+        self.0.key(k)
+    }
+    fn text(&mut self, s: &str) -> bool {
+        self.0.write(s.as_bytes())
+    }
+    fn pause(&mut self, d: std::time::Duration) {
+        std::thread::sleep(d);
+    }
+}
+
+/// `session.answer_question`: answer Claude Code's question picker for the human. The GUI, or a
+/// trusted client (`agents.trusted_clients`, see [`crate::conn`]) acting on the human's click.
+pub fn answer_question(d: &Daemon, ctx: &Ctx, p: SessionAnswerQuestionParams) -> R {
+    use crate::question::{Fail, answer};
+    if !ctx.is_human() && ctx.client.is_none() {
+        return Err(RpcError::human_only(
+            "only the human answers Claude's questions (the midna app, or a client listed in agents.trusted_clients outside midna terminals). Use needs_you.raise if you are blocked on one.",
+        ));
+    }
+    let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
+    if p.answers.is_empty() {
+        return Err(RpcError::bad_params("answers is empty: give one answer per question"));
+    }
+    let answered = answer(&mut PickerTerm(&rt), &p.answers).map_err(|f| match f {
+        Fail::Refused(m) => RpcError::conflict(format!("session {}: {m}; nothing was pressed that answers the picker", p.id)).with_data(json!({ "answered": false })),
+        Fail::Stopped(m) => RpcError::conflict(format!("session {}: {m}; stopped and left the picker for the human", p.id)).with_data(json!({ "answered": "partly" })),
+        Fail::Gone => RpcError::conflict(format!("session {} is not accepting input (process gone?)", p.id)),
+    })?;
+    if !ctx.is_human() {
+        let project = d.core().state.session(&p.id).map(|s| s.project_id.clone());
+        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), json!({ "answer_question": answered, "client": ctx.client }));
+    }
+    ok(SessionAnswerQuestionResult { ok: true, answers: answered })
+}
+
 pub fn key(d: &Daemon, ctx: &Ctx, p: SessionKeyParams) -> R {
     use midna_proto::frame::{ClientMsg, KeyAction, KeyMsg};
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;

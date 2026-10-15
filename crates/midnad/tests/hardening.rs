@@ -3,7 +3,7 @@
 //! Each test runs an in-process daemon on a temp MIDNA_HOME (see common/mod.rs).
 mod common;
 use common::{TestDaemon, call, call_err, open_sh, read, wait_for};
-use midna_proto::error::{HUMAN_ONLY, PARSE_ERROR, REFUSED};
+use midna_proto::error::{CONFLICT, HUMAN_ONLY, PARSE_ERROR, REFUSED};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -235,6 +235,32 @@ fn agents_cannot_type_into_a_permission_prompt() {
     // The human can.
     call(&mut h, "session.input", json!({ "id": id, "text": "echo human-ok", "enter": true }));
     wait_for(5, "human input", || read(&mut h, &id).contains("human-ok").then_some(()));
+}
+
+#[test]
+fn only_the_human_or_a_trusted_client_answers_a_question() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let id = open_sh(&mut h);
+    let params = json!({ "id": id, "answers": [{ "options": [0] }] });
+    // An agent is refused before anything looks at the screen.
+    let e = call_err(&mut d.agent(None), "session.answer_question", params.clone());
+    assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
+    // The human gets past the gate; a shell shows no picker, so nothing is pressed.
+    let e = call_err(&mut h, "session.answer_question", params.clone());
+    assert_eq!(e.code, CONFLICT, "{e:?}");
+    assert!(e.message.contains("does not show Claude's question picker"), "{e:?}");
+    // Listed in agents.trusted_clients (this unsigned test binary, by path): let through too.
+    let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+    call(&mut h, "settings.set", json!({ "key": "agents.trusted_clients", "value": [exe] }));
+    let e = call_err(&mut d.agent(None), "session.answer_question", params.clone());
+    assert_eq!(e.code, CONFLICT, "{e:?}");
+    // ...but never while claiming a terminal, as an agent in one would.
+    let e = call_err(&mut d.agent(Some(&id)), "session.answer_question", params.clone());
+    assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
+    // Nor for any other method.
+    let e = call_err(&mut d.agent(None), "settings.set", json!({ "key": "agents.trusted_clients", "value": [] }));
+    assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
 }
 
 #[test]

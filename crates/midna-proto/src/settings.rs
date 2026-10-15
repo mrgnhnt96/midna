@@ -575,6 +575,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Allow agents to install a downloaded update (`midna updates install`) without asking, e.g. an agent that tests each beta as it lands. The update's signature is still checked, and agents.restart_on_update still decides when running agents restart. Off: an agent's install asks you. Human only."),
     s!("agents.trust_folders", SettingKind::PathList, L(&[]), "agents", true,
         "Folders where midna answers an agent's \"trust this folder?\" startup dialog with Yes for you, instead of raising a needs-you item. An entry covers its folder and everything under it (~/Development trusts every project there). `*` matches within one folder name (~/work/client-*), `**` any number of folders (~/src/**/sandbox). Trusting a folder any other way adds it here: Trust on its needs-you item, or Yes in the agent's own dialog. Comma-separated on the CLI. Human only."),
+    s!("agents.trusted_clients", SettingKind::TextList { commas: true }, L(&[]), "agents", true,
+        "Programs that act for you on the human-only calls made for that, today session.answer_question (answering Claude's question picker from another app's button). An entry is a code-signing identifier (com.mrgnhnt.taskboard.daemon), honored only when the program is signed with the same Team ID as midna, or an absolute executable path, honored only by unsigned builds. A listed program running inside a midna terminal is still an agent. Comma-separated on the CLI. Human only."),
     s!("approve.from_cli", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to approve approval requests of their own session from the CLI. Human only."),
     s!("agents.claude.statusline", SettingKind::Bool, B(true), "agents", false,

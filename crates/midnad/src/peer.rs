@@ -110,6 +110,22 @@ impl GuiIdentity {
     }
 }
 
+/// The `agents.trusted_clients` entry the peer matches, if any. `team` is this daemon's Team ID
+/// (None for an unsigned build). A code-signing identifier matches a process signed with that
+/// identifier by the same team; an absolute path matches that executable, but only when the
+/// daemon itself is unsigned (dev builds and tests), since any user process can sit at a path.
+pub fn trusted_client(entries: &[String], exe: &str, pid: i32, token: Option<&[u8; 32]>, team: Option<&str>) -> Option<String> {
+    let team = team.filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric()));
+    entries.iter().map(|e| e.trim()).find(|e| {
+        if e.starts_with('/') {
+            return team.is_none() && canon(exe) == canon(e);
+        }
+        let Some(team) = team else { return false };
+        let valid = !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+        valid && codesign::satisfies(pid, token, &format!("identifier \"{e}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""))
+    }).map(str::to_string)
+}
+
 /// The unsigned-build convention: an executable named `midna-app`, or one inside `Midna.app`.
 pub fn is_gui_name(exe: &str) -> bool {
     let name = exe.rsplit('/').next().unwrap_or("");

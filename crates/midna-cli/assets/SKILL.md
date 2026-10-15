@@ -88,6 +88,10 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   first 8+ characters do) or a `midna://session/<id>` link brings that terminal to the front.
 - Prefer opening your own terminal over typing into one someone else is using. Never answer
   another agent's permission prompt unless `midna read --screen` shows that prompt.
+- Claude's question picker (AskUserQuestion) is the human's to answer. `session.answer_question`
+  answers it for the midna app and for clients the human listed in `agents.trusted_clients`
+  (e.g. Taskboard, outside midna terminals); agents get error 2. If you are blocked on another
+  terminal's question, use `midna attention`.
 
 ## Attention etiquette
 

@@ -200,7 +200,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Limits,
         "Without asking, agents may",
-        &["agents.may_move_windows", "agents.may_close_idle", "agents.may_force_close", "agents.may_install_updates", "approve.from_cli", "agents.trust_folders"],
+        &["agents.may_move_windows", "agents.may_close_idle", "agents.may_force_close", "agents.may_install_updates", "approve.from_cli", "agents.trust_folders", "agents.trusted_clients"],
     ),
     (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
     (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
@@ -1044,6 +1044,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "agents.may_install_updates" => "Agents may install updates",
         "approve.from_cli" => "Agents may approve their own requests",
         "agents.trust_folders" => "Trusted folders",
+        "agents.trusted_clients" => "Clients that may answer Claude's questions",
         "agents.claude.statusline" => "Claude status line (cost)",
         "agents.mcp" => "Give agents the midna MCP tools",
         "keep_awake.enabled" => "Keep the Mac awake for agents",

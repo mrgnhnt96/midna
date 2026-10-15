@@ -31,6 +31,7 @@ pub mod policy;
 pub mod procs;
 pub mod prompts;
 pub mod pty;
+pub mod question;
 pub mod restart;
 pub mod resume;
 pub mod rpc;

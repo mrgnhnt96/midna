@@ -92,6 +92,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "agents.may_install_updates" => "Install a downloaded update; its signature is still checked.",
         "approve.from_cli" => "Approve their own session's requests from the CLI.",
         "agents.trust_folders" => "Agents starting here skip the “trust this folder?” question.",
+        "agents.trusted_clients" => "Apps outside Midna that may answer Claude’s questions for you.",
         "policy.default" => "Auto asks before destructive commands and allows the rest.",
         "policy.request_timeout_secs" => "How long an approval waits for your answer.",
         // Notifications
