@@ -155,8 +155,12 @@ fn meta(t: &Theme, n: &NeedsYou) -> Meta {
     Meta { label, color, approve: approves(n) }
 }
 
-/// Answered with approve / deny.
+/// Answered with approve / deny. A question dialog comes in as a permission prompt but is
+/// answered with one of its options, in its terminal.
 fn approves(n: &NeedsYou) -> bool {
+    if n.question.is_some() && n.approval.is_none() {
+        return false;
+    }
     matches!(n.kind, NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt | NeedsYouKind::TriggerWaiting) || (n.approval.is_some() && n.kind == NeedsYouKind::Other)
 }
 
@@ -1045,5 +1049,15 @@ mod tests {
         assert!(super::too_long(&NeedsYou { screen_excerpt: Some(vec!["a".into(); 9]), ..Default::default() }));
         assert!(super::too_long(&NeedsYou { detail: "x".repeat(281), ..Default::default() }));
         assert!(super::too_long(&NeedsYou { detail: "1\n2\n3\n4\n5".into(), ..Default::default() }));
+    }
+
+    #[test]
+    fn a_question_is_not_approved() {
+        use crate::model::{NeedsYou, NeedsYouKind, NeedsYouQuestion};
+        let prompt = NeedsYou { kind: NeedsYouKind::PermissionPrompt, ..Default::default() };
+        assert!(super::approves(&prompt));
+        let question = NeedsYou { question: Some(NeedsYouQuestion { text: "Which?".into(), ..Default::default() }), ..prompt };
+        assert!(!super::approves(&question));
+        assert!(matches!(super::filter_of(&question), super::Filter::Other));
     }
 }
