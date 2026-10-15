@@ -705,7 +705,7 @@ fn system_allowed(d: &Daemon) -> bool {
 /// image) and play the sound with `afplay` at its volume.
 fn show_system(p: &Posted) {
     let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!("display notification \"{}\" with title \"{}\"", q(&p.body), q(&p.title));
+    let script = format!("display notification \"{}\" with title \"{}\"", q(&midna_proto::notify::plain_body(&p.body)), q(&p.title));
     let sound = p.sound_file.clone().map(|f| (f, p.volume.unwrap_or(100)));
     let _ = std::thread::Builder::new().name("notify-osascript".into()).spawn(move || {
         let _ = std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).stdin(std::process::Stdio::null()).output();

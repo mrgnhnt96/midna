@@ -460,6 +460,74 @@ fn yes() -> bool {
     true
 }
 
+/// A notification body's links: `[text](https://…)` shows as `text`, and a bare http(s) URL
+/// shows as typed. Returns the text to show and, for each link, its byte range in that text and
+/// the URL it opens. Anything else (an unclosed bracket, `[x](not-a-url)`) shows as typed.
+pub fn body_links(body: &str) -> (String, Vec<(std::ops::Range<usize>, String)>) {
+    let mut out = String::with_capacity(body.len());
+    let mut links = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        let rest = &body[i..];
+        if let Some((text, url, used)) = md_link(rest) {
+            let start = out.len();
+            out.push_str(text);
+            links.push((start..out.len(), url.to_string()));
+            i += used;
+            continue;
+        }
+        let word_start = body[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        if word_start && (rest.starts_with("https://") || rest.starts_with("http://")) {
+            let url = bare_url(rest);
+            if url.len() > rest.find("://").unwrap_or(0) + 3 {
+                let start = out.len();
+                out.push_str(url);
+                links.push((start..out.len(), url.to_string()));
+                i += url.len();
+                continue;
+            }
+        }
+        let c = rest.chars().next().unwrap_or_default();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    (out, links)
+}
+
+/// A body as plain text, `[text](url)` shown as `text`: what banners and one-line previews show.
+pub fn plain_body(body: &str) -> String {
+    body_links(body).0
+}
+
+/// `[text](http…)` at the start of `s`: its text, URL and length.
+fn md_link(s: &str) -> Option<(&str, &str, usize)> {
+    let inner = s.strip_prefix('[')?;
+    let close = inner.find(']')?;
+    let text = &inner[..close];
+    if text.trim().is_empty() || text.contains(['[', '\n']) {
+        return None;
+    }
+    let after = inner[close + 1..].strip_prefix('(')?;
+    let end = after.find(')')?;
+    let url = &after[..end];
+    let web = url.starts_with("https://") || url.starts_with("http://");
+    (web && valid_open_url(url)).then_some((text, url, 1 + close + 2 + end + 1))
+}
+
+/// The URL at the start of `s`, up to whitespace or a quote, without trailing punctuation or a
+/// closing bracket it doesn't open (`(see https://x.com/a).` → `https://x.com/a`).
+fn bare_url(s: &str) -> &str {
+    let mut url = &s[..s.find(|c: char| c.is_whitespace() || c.is_control() || "<>\"'`".contains(c)).unwrap_or(s.len())];
+    loop {
+        let unopened = |open: char, close: char| url.ends_with(close) && url.matches(close).count() > url.matches(open).count();
+        if url.ends_with(['.', ',', ';', ':', '!', '?']) || unopened('(', ')') || unopened('[', ']') {
+            url = &url[..url.len() - 1];
+        } else {
+            return url;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +556,29 @@ mod tests {
         assert!(!valid_id("") && !valid_id("has space") && !valid_id(&"x".repeat(65)));
         assert!(valid_open_url("http://morgan.harman/reviews/#v=needs") && valid_open_url("file:///tmp/x.html") && valid_open_url("slack://open"));
         assert!(!valid_open_url("morgan.harman/reviews") && !valid_open_url("https:") && !valid_open_url("1http://x") && !valid_open_url("https://a b"));
+    }
+
+    #[test]
+    fn body_links_show_their_text_and_bare_urls_as_typed() {
+        let body = "[roon #16793](https://github.com/o/roon/pull/16793): approved\n[RRD-4847](https://x.atlassian.net/browse/RRD-4847) Add it";
+        let (text, links) = body_links(body);
+        assert_eq!(text, "roon #16793: approved\nRRD-4847 Add it");
+        let shown: Vec<(&str, &str)> = links.iter().map(|(r, u)| (&text[r.clone()], u.as_str())).collect();
+        assert_eq!(shown, [("roon #16793", "https://github.com/o/roon/pull/16793"), ("RRD-4847", "https://x.atlassian.net/browse/RRD-4847")]);
+
+        let (text, links) = body_links("CI failed (see https://ci.dev/run/1). Or https://a.dev/x_(y), café https://é.dev");
+        let urls: Vec<&str> = links.iter().map(|(r, _)| &text[r.clone()]).collect();
+        assert_eq!(urls, ["https://ci.dev/run/1", "https://a.dev/x_(y)", "https://é.dev"]);
+        assert!(links.iter().all(|(r, u)| &text[r.clone()] == u));
+    }
+
+    #[test]
+    fn body_links_leave_everything_else_as_typed() {
+        for body in ["[x](not a url)", "[x](javascript:alert(1))", "[open", "a[1] = b", "xhttps://nope.dev", "https://", "plain"] {
+            let (text, links) = body_links(body);
+            assert!(links.is_empty(), "{body}");
+            assert_eq!(text, body);
+        }
+        assert_eq!(plain_body("see [the PR](https://a.dev/1)!"), "see the PR!");
     }
 }

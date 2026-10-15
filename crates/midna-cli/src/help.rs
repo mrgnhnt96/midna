@@ -281,11 +281,12 @@ pub static VERBS: &[Verb] = &[
                   when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
                   a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
                   turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
-                  It works from outside midna terminals too (a background server, a cron job). --open <url> makes a\n\
-                  click open that URL instead of selecting the terminal. --id <id> names it: sending again with the\n\
-                  same id replaces the one still showing (a repeating alert), and `withdraw <id>` takes it away once\n\
-                  it no longer applies. --action <label> (up to 6, 24 characters each) adds buttons;\n\
-                  ones sharing a first word, or the text before \": \" (\"Later: 1 hour\"), fold into one split button\n\
+                  It works from outside midna terminals too (a background server, a cron job). In --detail, URLs and\n\
+                  [text](https://…) links can be clicked on the Notifications screen (banners show just the text).\n\
+                  --open <url> makes a click open that URL instead of selecting the terminal. --id <id> names it:\n\
+                  sending again with the same id replaces the one still showing (a repeating alert), and\n\
+                  `withdraw <id>` takes it away once it no longer applies. --action <label> (up to 6, 24 characters\n\
+                  each) adds buttons; ones sharing a first word, or the text before \": \" (\"Later: 1 hour\"), fold into one split button\n\
                   whose face is the first of them, so put the usual pick first: --wait 10m blocks until the human\n\
                   picks one, clicks or dismisses it and prints the label, `clicked`, `dismissed` or `no response`;\n\
                   without --wait, `response <id>` asks later, and every response is a `notify.responded` event\n\

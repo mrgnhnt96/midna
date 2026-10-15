@@ -316,6 +316,8 @@ pub struct NotifySetParams {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NotifySendParams {
     pub title: String,
+    /// Its text. URLs and `[text](https://…)` links in it can be clicked on the Notifications
+    /// screen; banners show a link as its text.
     #[serde(default)]
     pub body: String,
     /// The terminal it is about (clicking the notification selects it). Defaults to the

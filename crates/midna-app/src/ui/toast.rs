@@ -468,7 +468,8 @@ fn texts(c: &Card, need: Option<&NeedsYou>) -> (String, Option<String>, Option<S
         let detail = Some(n.detail.clone()).filter(|d| !d.trim().is_empty() && Some(d) != command.as_ref());
         return (capitalize(n.title.trim()), detail, command);
     }
-    let mut lines = c.posted.body.lines().filter(|l| !l.trim().is_empty());
+    let body = midna_proto::notify::plain_body(&c.posted.body);
+    let mut lines = body.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next().unwrap_or("").to_string();
     let rest: Vec<&str> = lines.collect();
     (first, Some(rest.join("\n")).filter(|r| !r.is_empty()), None)

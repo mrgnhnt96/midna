@@ -181,7 +181,7 @@ pub fn post(p: &Posted, session: Option<&str>) {
     }
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(&p.title));
-    content.setBody(&NSString::from_str(&p.body));
+    content.setBody(&NSString::from_str(&midna_proto::notify::plain_body(&p.body)));
     // A daemon from before custom sounds sends no file: the system's default sound.
     let named = p.notification_sound.as_deref().filter(|_| p.sound);
     if let Some(file) = named {
@@ -354,7 +354,7 @@ fn attachment(image: &str) -> Option<Retained<UNNotificationAttachment>> {
 /// Dev builds: osascript shows no image; the sound plays here, at its volume.
 fn post_osascript(p: &Posted) {
     let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let mut script = format!("display notification \"{}\" with title \"{}\"", q(&p.body), q(&p.title));
+    let mut script = format!("display notification \"{}\" with title \"{}\"", q(&midna_proto::notify::plain_body(&p.body)), q(&p.title));
     if p.sound && p.sound_file.is_none() {
         script.push_str(" sound name \"Glass\"");
     }

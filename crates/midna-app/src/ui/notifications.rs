@@ -310,7 +310,7 @@ fn rows(m: &MainWindow, t: &Theme, list: &[&NotifyHistoryItem], cur: Option<u64>
         let (label, color) = kind(t, &i.notification);
         let seq = i.seq;
         let on = cur == Some(seq);
-        let body = i.notification.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
+        let body = midna_proto::notify::plain_body(&i.notification.body).lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
         let waits = waiting(m, i).is_some();
         col = col.child(
             div()
@@ -353,6 +353,21 @@ fn rows(m: &MainWindow, t: &Theme, list: &[&NotifyHistoryItem], cur: Option<u64>
         );
     }
     col
+}
+
+/// The body with its links (`[text](url)` and bare URLs) in the accent, underlined; a click on
+/// one opens it.
+fn body_text(t: &Theme, body: &str) -> InteractiveText {
+    let (text, links) = midna_proto::notify::body_links(body);
+    let style = HighlightStyle {
+        color: Some(t.accent),
+        underline: Some(UnderlineStyle { thickness: px(1.), color: Some(t.accent.opacity(0.5)), wavy: false }),
+        ..Default::default()
+    };
+    let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
+    let styled = StyledText::new(SharedString::from(text)).with_highlights(ranges.iter().map(|r| (r.clone(), style)));
+    let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
+    InteractiveText::new("nt-body", styled).on_click(ranges, move |ix, _, _| crate::notify::open_url(&urls[ix]))
 }
 
 fn badge(_t: &Theme, text: &'static str, bg: Hsla, fg: Hsla) -> Div {
@@ -479,7 +494,7 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
                                 .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(name))
                                 .children(project.map(|p| div().text_color(t.dim).child(format!("in {p}")))),
                         )
-                        .when(!i.notification.body.is_empty(), |d| d.child(div().text_size(px(13.5)).line_height(px(21.)).child(i.notification.body.clone()))),
+                        .when(!i.notification.body.is_empty(), |d| d.child(div().text_size(px(13.5)).line_height(px(21.)).child(body_text(t, &i.notification.body)))),
                 )
                 .children(i.notification.image.clone().map(|path| super::badge::thumb(path.into(), 160., 12.))),
         )
