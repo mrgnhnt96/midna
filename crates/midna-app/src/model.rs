@@ -257,9 +257,10 @@ pub struct NeedsYou {
 }
 
 impl NeedsYou {
-    /// Items the approval banner can answer with approve/deny.
+    /// Items the approval banner can answer with approve/deny. A question dialog comes in as a
+    /// permission prompt but is answered with one of its options, never approve/deny.
     pub fn is_approval(&self) -> bool {
-        matches!(self.kind, NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt) || self.approval.is_some()
+        self.approval.is_some() || (matches!(self.kind, NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt) && self.question.is_none())
     }
 }
 
@@ -469,6 +470,14 @@ mod tests {
     fn resolution_wire_shape() {
         let r = Resolution::Approve { scope: ApprovalScope::Minutes { minutes: 15 } };
         assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"kind":"approve","scope":{"kind":"minutes","minutes":15}}"#);
+    }
+
+    #[test]
+    fn a_question_is_not_an_approval() {
+        let prompt = NeedsYou { kind: NeedsYouKind::PermissionPrompt, ..Default::default() };
+        assert!(prompt.is_approval());
+        let question = NeedsYou { question: Some(NeedsYouQuestion { text: "Which?".into(), ..Default::default() }), ..prompt };
+        assert!(!question.is_approval());
     }
 
     /// The daemon serializes proto's strict types; the GUI's lenient copies must read them.
