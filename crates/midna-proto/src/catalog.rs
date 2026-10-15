@@ -163,6 +163,14 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionKeyParams, OkResult>("session.key").mutating().d(
             "Press a key in a terminal (`ctrl-c`, `escape`, `shift-tab`, `up`, `enter`, ...), encoded for the app's keyboard \
              mode (legacy, modifyOtherKeys or the kitty protocol) like a real keypress. Use session.input for text."),
+        m::<SessionAnswerQuestionParams, SessionAnswerQuestionResult>("session.answer_question").mutating().d(
+            "Answer Claude Code's AskUserQuestion picker in a terminal for the human: `answers` holds one entry per question \
+             (0-based `options`, optional free text `other`, optional `question` text to match). midna first checks the screen \
+             shows the picker (numbered options, \"Type something\", \"Chat about this\", \"Enter to select\"), that it is not \
+             answered yet and that every answer fits its question, then presses the keys itself, submits (review screen \
+             included) and waits for the picker to close. On any mismatch it stops and leaves the picker to the human. \
+             Only the human's clients may call it: the GUI, or a program listed in agents.trusted_clients running outside \
+             midna's terminals. Agents are refused; use needs_you.raise when blocked on a question."),
         m::<SessionScrollParams, OkResult>("session.scroll").mutating().d(
             "Scroll a terminal's viewport through its scrollback: `to: top|bottom`, or by `lines` / `pages` (negative = up). \
              All attached windows follow; typing snaps back to the bottom."),

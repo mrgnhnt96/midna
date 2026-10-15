@@ -50,6 +50,9 @@ pub struct Ctx {
     /// Set on the detached copy of a `caller.no_wait` call: approvals it raises are reported
     /// here instead of blocking the caller.
     pub detached: Option<Arc<NoWait>>,
+    /// A trusted client (`agents.trusted_clients`) acting for the human: the entry it matched.
+    /// Set only for the methods that honor it (see [`crate::conn`]).
+    pub client: Option<String>,
 }
 
 /// What a detached `caller.no_wait` call reports back to the connection that made it.
@@ -98,6 +101,7 @@ fn call_no_wait(d: &Arc<Daemon>, ctx: &Ctx, method: &str, params: Value) -> R {
         as_actor: ctx.as_actor.clone(),
         no_wait: true,
         detached: Some(nw.clone()),
+        client: ctx.client.clone(),
     };
     let (d2, m) = (d.clone(), method.to_string());
     let spawned = std::thread::Builder::new().name("no-wait".into()).spawn(move || {
@@ -134,22 +138,22 @@ impl Ctx {
         let caller: Caller = params.get("caller").cloned().and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
         let downgrade = caller.session.is_some() || caller.role.as_deref() == Some("agent");
         let role = if downgrade { Role::Agent } else { base };
-        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None }
+        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None, client: None }
     }
 
     /// A human context for executing approved deferred actions (no connection).
     pub fn internal_human() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None, client: None }
     }
 
     /// midnad acting on its own (actor kind `system`), e.g. closing a `close_on_exit` terminal.
     pub fn internal_system() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None }
     }
 
     /// A webhook trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
-        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None }
+        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None }
     }
 
     pub fn is_human(&self) -> bool {
@@ -265,6 +269,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.read" => session::read(d, parse(p)?),
         "session.resize" => session::resize(d, parse(p)?),
         "session.key" => session::key(d, ctx, parse(p)?),
+        "session.answer_question" => session::answer_question(d, ctx, parse(p)?),
         "session.scroll" => session::scroll(d, parse(p)?),
         "session.selection" => session::selection(d, parse(p)?),
         "session.select_all" => session::select_all(d, parse(p)?),
@@ -420,6 +425,9 @@ fn audit(d: &Daemon, ctx: &Ctx, method: &str, params: &Value, res: &R) {
     let mut data = json!({ "method": method, "params_summary": summarize(method, params), "outcome": outcome });
     if let Err(e) = res {
         data["error"] = json!(e.message);
+    }
+    if let Some(c) = &ctx.client {
+        data["client"] = json!(c);
     }
     let session = params.get("id").or(params.get("session_id")).and_then(Value::as_str).map(str::to_string);
     let session = session.filter(|s| d.core().state.session(s).is_some());

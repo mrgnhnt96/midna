@@ -33,6 +33,13 @@ Things that would make this real authentication are out of scope today: a separa
 3. **Everything else is an agent.**
 4. **`caller.role: "agent"` downgrades a connection.** Nothing upgrades one.
 
+**Trusted clients** (`conn.rs::trusted_client`, `peer::trusted_client`). One method, `session.answer_question`, may also be called by a client the human listed in the human-only setting `agents.trusted_clients`, e.g. the Taskboard daemon acting on the owner's click in Taskboard.app. The connection keeps its agent role; the call just isn't refused. The caller qualifies only if all of these hold:
+- It is an agent-role connection with no `caller.session` claim (even one `bind_caller` dropped).
+- Its process does not run inside a midnad terminal (same ancestry and session-id check as rule 2).
+- It matches an entry. A code-signing identifier matches only a process signed with that identifier by **midnad's own Team ID** (checked by audit token, like the GUI). An absolute executable path matches only when midnad itself is unsigned (dev builds and tests), since any process can be copied to a path.
+
+The audit entry and the `session.input_by_agent` event carry the matched entry as `client`.
+
 **Findings and fixes:**
 
 | # | Finding | Severity | Fix | Test |

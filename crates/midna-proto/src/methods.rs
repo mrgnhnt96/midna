@@ -860,6 +860,44 @@ pub struct SessionKeyParams {
     pub action: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionAnswerQuestionParams {
+    pub id: Id,
+    /// One answer per question, in the picker's order (the AskUserQuestion `questions` order).
+    pub answers: Vec<QuestionAnswer>,
+}
+
+/// The answer to one question of Claude Code's AskUserQuestion picker.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct QuestionAnswer {
+    /// 0-based indexes into the question's options (AskUserQuestion order, without "Type
+    /// something"). Single-select questions take exactly one, unless `other` answers instead.
+    #[serde(default)]
+    pub options: Vec<u32>,
+    /// Free text typed into the picker's "Type something" row. On a single-select question it
+    /// is the answer (leave `options` empty); on a multi-select one it is added to the options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
+    /// The question's text, if known. When given, the picker must show exactly this question
+    /// (whitespace aside), or nothing is pressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionAnswerQuestionResult {
+    pub ok: bool,
+    /// What was answered, per question, as the picker showed it.
+    pub answers: Vec<AnsweredQuestion>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AnsweredQuestion {
+    pub question: String,
+    /// The picked options' labels, then the free text if any.
+    pub labels: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SessionScrollParams {
     pub id: Id,

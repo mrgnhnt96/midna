@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.301
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   ~/Development/rust/midna
+
+
+❯ Call the AskUserQuestion tool once with exactly two questions. Q1 header 'Color', question 'Pick
+  a color?', single-select, options Red, Green, Blue (short descriptions). Q2 header 'Pets',
+  question 'Which pets?', multiSelect true, options Cat, Dog, Fish. After I answer, reply with just
+  the answers verbatim and stop.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Color  ☒ Pets  ✔ Submit  →
+
+Review your answers
+
+ ● Pick a color?
+   → Green
+ ● Which pets?
+   → Cat, Fish
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+
+
+

@@ -1,0 +1,30 @@
+
+❯ Now call AskUserQuestion with one multiSelect question: header 'Tags', question 'Which tags?',
+  options Alpha, Beta. Then reply with the answer verbatim.
+
+⏺ User answered Claude's questions:
+  ⎿  · Which tags? → Alpha, Zed
+
+⏺ Alpha, Zed
+
+✻ Worked for 11s · done 2:55 PM
+
+❯ Call AskUserQuestion again exactly like the very first time (Color and Pets questions). Then
+  reply with the answers verbatim.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Color  ☐ Pets  ✔ Submit  →
+
+Pick a color?
+
+❯ 1. Red
+     Warm, bold red
+  2. Green
+     Cool, natural green
+  3. Blue
+     Calm, deep blue
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+

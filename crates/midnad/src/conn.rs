@@ -192,7 +192,28 @@ fn base_role(d: &Daemon, fd: i32, pid: Option<i32>) -> Role {
     Role::Human
 }
 
+/// Methods a trusted client (`agents.trusted_clients`) may call for the human.
+const TRUSTED_CLIENT_METHODS: &[&str] = &["session.answer_question"];
+
+/// The `agents.trusted_clients` entry this caller matches, for a method that honors it. Only an
+/// agent-role process outside every midna terminal that claimed no terminal qualifies, so an
+/// agent (or anything it starts) can never pass as the human's client.
+fn trusted_client(d: &Daemon, method: &str, ctx: &Ctx, fd: i32) -> Option<String> {
+    if !TRUSTED_CLIENT_METHODS.contains(&method) || ctx.role != Role::Agent || ctx.session.is_some() || ctx.as_actor.is_some() {
+        return None;
+    }
+    let pid = ctx.pid?;
+    let entries: Vec<String> = d.core().state.setting("agents.trusted_clients").as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    if entries.is_empty() || peer::terminal_of(pid, &d.terminal_pids()).is_some() {
+        return None;
+    }
+    let exe = peer::pid_path(pid)?;
+    let team = peer::codesign::own_identity().and_then(|(_, t)| t);
+    peer::trusted_client(&entries, &exe, pid, peer::peer_token(fd).as_ref(), team.as_deref())
+}
+
 pub fn serve(d: Arc<Daemon>, s: UnixStream, conn_id: u64) {
+    let fd = s.as_raw_fd();
     let pid = peer::peer_pid(s.as_raw_fd());
     let role = base_role(&d, s.as_raw_fd(), pid);
     let (Ok(ws), Ok(ctl)) = (s.try_clone(), s.try_clone()) else { return };
@@ -250,13 +271,19 @@ pub fn serve(d: Arc<Daemon>, s: UnixStream, conn_id: u64) {
                 }
             }
         }
+        let claimed = ctx.session.is_some();
         let result = match rpc::bind_caller(&d, &mut ctx) {
             Err(e) => Err(e),
-            Ok(()) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rpc::call(&d, &ctx, &method, params))).unwrap_or_else(|p| {
+            Ok(()) => {
+                if !claimed {
+                    ctx.client = trusted_client(&d, &method, &ctx, fd);
+                }
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rpc::call(&d, &ctx, &method, params))).unwrap_or_else(|p| {
                 let what = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
                 eprintln!("midnad: handler for {method} panicked: {what}");
                 Err(midna_proto::RpcError::internal(format!("internal error in {method}")))
-            }),
+                })
+            }
         };
         // Notifications (no id) get no response.
         if let Some(id) = id {
