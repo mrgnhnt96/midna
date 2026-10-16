@@ -24,7 +24,8 @@
 //! midna window) closes the list, as does leaving it alone for a few seconds: only the pointer on
 //! a row (or just off one), the badge or Clear holds it open. The capsule beside the badge works like a row: hovering holds
 //! it and grows in its × and arrow (and Approve / Deny for an approval), and a click opens its
-//! card in the list. Right-click: Hide badge,
+//! card in the list. While it's held (or its card is open), a new notification doesn't replace
+//! it: it goes into the list as if the list were open. Right-click: Hide badge,
 //! Notification settings…, Open midna. Drag it anywhere; let go and it slings to the nearest
 //! corner of that screen on a spring, carrying your throw (`notify.badge.corner`, `inset_x` /
 //! `inset_y` from its edges); `notify.badge.snap` `free`: it stays where it lands.
@@ -1547,8 +1548,15 @@ impl Badge {
         let detail = Some(body.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty());
         let label = p.label.clone().or_else(|| midna_proto::notify::category(&p.category).map(|c| c.label.to_string())).unwrap_or_default();
         let now = Instant::now();
-        // The list is open: it goes straight in (a passing one for `BUMPED` times its time).
-        if self.list && self.list_closing.is_none() {
+        // The list is open, or the pointer's on the capsule beside the badge (or its card is
+        // open): it goes straight in (a passing one for `BUMPED` times its time), and what you're
+        // looking at stays. A `notify.send` update to the capsule's own id still replaces it.
+        let held_line = self.lines.front().is_some_and(|l| {
+            l.leaving.is_none()
+                && (self.hover == Some("line") || self.expanded.as_ref().is_some_and(|(e, _)| *e == self.line_waiting(l).id))
+                && !l.sent.as_ref().is_some_and(|s| p.id.as_ref() == Some(&s.id))
+        });
+        if (self.list && self.list_closing.is_none()) || held_line {
             if let Some(stay) = stay.filter(|_| waiting.is_none()) {
                 let mut lines = p.body.lines().map(str::trim).filter(|l| !l.is_empty());
                 self.held.push(Waiting {
