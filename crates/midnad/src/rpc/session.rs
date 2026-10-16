@@ -657,10 +657,11 @@ pub fn select_all(d: &Daemon, p: IdParams) -> R {
 pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
     use crate::engine::Link;
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    let (cwd, tabs, patterns) = {
+    let (cwd, work, tabs, mut patterns) = {
         let core = d.core();
         let session = core.state.session(&p.id);
         let cwd = session.map(|s| s.cwd.clone()).unwrap_or_default();
+        let work = session.map(|s| crate::git::work_cwd(s, core.rt.get(&p.id).map(|r| r.pid))).unwrap_or_default();
         // The link patterns that apply here: by project (name, id or folder) and terminal kind.
         let project = session.and_then(|s| core.state.projects.iter().find(|p| p.id == s.project_id));
         let names: Vec<&str> = project.map(|p| vec![p.name.as_str(), p.id.as_str(), p.path.as_str()]).unwrap_or_default();
@@ -674,8 +675,10 @@ pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
                 tabs.push((c, s.id.clone()));
             }
         }
-        (cwd, tabs, patterns)
+        (cwd, work, tabs, patterns)
     };
+    // Built in, after the human's and apps' rules: `PR #61` is a pull request in this repo.
+    patterns.extend(crate::git::github_repo(&work).and_then(|r| crate::git::pr_ref_pattern(&r)));
     let (col, row) = (p.col, p.row);
     let link = rt.with(move |e| e.link_at(col, row, &cwd, &tabs, &patterns)).ok_or_else(|| RpcError::internal("engine did not answer"))?;
     ok(match link {
