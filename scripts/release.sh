@@ -1,8 +1,12 @@
 #!/bin/bash
 # Cut a release: set the version, commit, tag and push.
 #
-#   ./scripts/release.sh 0.2.0          a public release, from main
-#   ./scripts/release.sh 0.3.0-beta.1   a beta, from any branch
+#   tb release cut v0.2.0          a public release, from main
+#   tb release cut v0.3.0-beta.1   a beta, from any branch
+#
+# Releases go through the task board: tb release cut runs this script with
+# TB_RELEASE set and records the release on the board when it succeeds. Run on
+# its own, the script refuses unless you pass --force. A leading v is optional.
 #
 # Pushing the v0.2.0 tag runs .github/workflows/release.yml, which builds,
 # signs and notarizes Midna.app and publishes the GitHub release with the DMG
@@ -14,9 +18,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-version="${1:-}"
+force=
+args=()
+for arg in "$@"; do
+  if [ "$arg" = --force ]; then force=1; else args+=("$arg"); fi
+done
+version="${args[0]:-}"
+version="${version#v}"
+if [ -z "${TB_RELEASE:-}" ] && [ -z "$force" ]; then
+  echo "Run tb release cut v${version:-<version>} instead; it runs this script and records the release. (--force to run it without the board.)" >&2
+  exit 1
+fi
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
-  echo "Usage: $0 <major.minor.patch[-beta.N]>" >&2
+  echo "Usage: $0 [v]<major.minor.patch[-beta.N]> [--force]" >&2
   exit 1
 fi
 tag="v$version"
@@ -51,7 +65,7 @@ fi
 if [ -n "$latest" ] && ! gh release view "$latest" >/dev/null 2>&1; then
   echo "$latest has no GitHub release: its workflow failed, was cancelled or is still running." >&2
   echo "Don't skip it. Once no run is going, delete its tag and cut it again:" >&2
-  echo "  git push origin :refs/tags/$latest && git tag -d $latest && ./scripts/release.sh ${latest#v}" >&2
+  echo "  git push origin :refs/tags/$latest && git tag -d $latest && tb release cut $latest" >&2
   exit 1
 fi
 

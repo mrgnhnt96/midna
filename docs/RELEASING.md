@@ -8,10 +8,12 @@ install and auto-update").
 ## TL;DR: cut a release
 
 ```sh
-./scripts/release.sh 0.2.0          # public release, from main
-./scripts/release.sh 0.3.0-beta.1   # beta (prerelease), from any branch
+tb release cut v0.2.0          # public release, from main
+tb release cut v0.3.0-beta.1   # beta (prerelease), from any branch
 ```
 
+`tb release cut` runs `scripts/release.sh` with `TB_RELEASE` set and records the release on the
+task board when it succeeds. Run on its own, `release.sh` refuses unless you pass `--force`.
 `release.sh` checks the version is newer than the last one (`scripts/newest-version.py`), writes it
 into `Cargo.toml`/`Cargo.lock` (`scripts/set-version.sh`), commits, tags `vX.Y.Z` and pushes.
 The tag runs `.github/workflows/release.yml`, in three jobs that hand their files on as
@@ -45,7 +47,7 @@ published, nobody has that version, so cut the same number again:
 1. A flaky step (Apple's network, a runner hiccup): **Re-run failed jobs**. Stop there.
 2. Something to fix in the code: cancel any run still going (`gh run cancel <id>`), merge
    the fix to `main`, then delete the tag and cut it again:
-   `git push origin :refs/tags/vX && git tag -d vX && ./scripts/release.sh X`.
+   `git push origin :refs/tags/vX && git tag -d vX && tb release cut vX`.
    `main` already has version X, so `release.sh` has nothing to commit and tags the new head.
 
 `release.sh` refuses to cut a newer version while the newest tag has no GitHub release, and
@@ -248,6 +250,6 @@ reuses them, `--keep` skips deleting the installs):
 ## Checklist
 
 - [ ] `CHANGELOG.md`: `## Unreleased` renamed to the version; `cargo test` green
-- [ ] `./scripts/release.sh <version>` (a beta first for anything risky)
+- [ ] `tb release cut v<version>` (a beta first for anything risky)
 - [ ] the Release workflow is green; the DMG opens without a Gatekeeper warning on another Mac
 - [ ] an installed copy on that channel picks the update up (Settings › Updates › Check now)

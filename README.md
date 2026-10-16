@@ -161,7 +161,7 @@ spikes/          proven prototypes the crates grew from
 
 These need you (credentials, your screen, or your accounts). Nothing in this list was done automatically.
 
-1. **Releases** are cut with `./scripts/release.sh <version>`; CI signs, notarizes and publishes them (`docs/RELEASING.md`). The release update key lives in `~/.config/midna-release` and the repo's `MIDNA_UPDATE_KEY` secret.
+1. **Releases** are cut with `tb release cut v<version>` (it runs `scripts/release.sh`); CI signs, notarizes and publishes them (`docs/RELEASING.md`). The release update key lives in `~/.config/midna-release` and the repo's `MIDNA_UPDATE_KEY` secret.
 2. **Notarize by hand** only outside CI: `packaging/notarize.sh dist/<v>/Midna.app` needs a notarytool keychain profile.
 3. **Run the Kass AX check with midna-app frontmost.** The screen was locked in every session. Steps are in `docs/STATUS-app.md` ("Kass composer"):
    1. Run `kass-probe … kass-sim 2`.

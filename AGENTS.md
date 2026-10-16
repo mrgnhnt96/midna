@@ -43,7 +43,7 @@ Each checkout builds into its own `target/`. Never point a worktree's `CARGO_TAR
 
 ## Releases never skip a version
 
-If a release's workflow fails or is cancelled before its GitHub release is published, cut that **same** version again. Never move on to the next number. Fix the cause, delete the tag (`git push origin :refs/tags/vX && git tag -d vX`) and run `./scripts/release.sh X` again. Before you pick a number, check that the newest tag has a release (`gh release view v<newest>`). `release.sh` refuses to go past one that doesn't. Details are in `docs/RELEASING.md` ("A release failed").
+If a release's workflow fails or is cancelled before its GitHub release is published, cut that **same** version again. Never move on to the next number. Fix the cause, delete the tag (`git push origin :refs/tags/vX && git tag -d vX`) and run `tb release cut vX` again. Before you pick a number, check that the newest tag has a release (`gh release view v<newest>`). `release.sh` refuses to go past one that doesn't. Details are in `docs/RELEASING.md` ("A release failed").
 
 ## Style
 
