@@ -96,6 +96,9 @@ mod tests {
         assert_eq!(toggled(&v(&["daemon", "spacer", "keys"]), "script", "ui.status.items"), v(&["daemon", "spacer", "script", "keys"]));
         assert_eq!(toggled(&v(&["keys", "daemon"]), "webhooks", "ui.status.items"), v(&["keys", "daemon", "webhooks"]));
         assert_eq!(toggled(&v(&[]), "daemon", "ui.status.items"), v(&["daemon"]));
+        // off by default: back after the item it follows in the options
+        assert_eq!(toggled(&v(&["daemon", "cache", "keys"]), "usage", "ui.status.items"), v(&["daemon", "usage", "cache", "keys"]));
+        assert_eq!(toggled(&v(&["daemon", "cache", "webhooks"]), "policy", "ui.status.items"), v(&["daemon", "cache", "policy", "webhooks"]));
     }
 
     #[test]
@@ -200,13 +203,24 @@ fn item_label(item: &str) -> &str {
 }
 
 /// `items` (the list setting `key`) with `item` toggled. A re-shown item goes back to its place
-/// in the default order.
+/// in the default order; one that's off by default goes after the item it follows in the
+/// setting's options (usage after daemon).
 pub fn toggled(items: &[String], item: &str, key: &str) -> Vec<String> {
     if items.iter().any(|i| i == item) {
         return items.iter().filter(|i| *i != item).cloned().collect();
     }
-    let default: Vec<String> = midna_proto::settings::setting(key).and_then(|s| serde_json::from_value(s.default.to_json()).ok()).unwrap_or_default();
-    let rank = |i: &str| default.iter().position(|d| d == i).unwrap_or(usize::MAX);
+    let setting = midna_proto::settings::setting(key);
+    let mut order: Vec<String> = setting.and_then(|s| serde_json::from_value(s.default.to_json()).ok()).unwrap_or_default();
+    if let Some(midna_proto::settings::SettingKind::ItemList { options, .. }) = setting.map(|s| s.ty) {
+        for (n, o) in options.iter().enumerate() {
+            if order.iter().any(|d| d == o) {
+                continue;
+            }
+            let at = options[..n].iter().rev().find_map(|p| order.iter().position(|d| d == p)).map_or(0, |p| p + 1);
+            order.insert(at, o.to_string());
+        }
+    }
+    let rank = |i: &str| order.iter().position(|d| d == i).unwrap_or(usize::MAX);
     // after the last item that comes before it by default, so a reordered bar keeps its order
     let at = items.iter().rposition(|i| rank(i) < rank(item)).map_or(0, |p| p + 1);
     let mut out = items.to_vec();
@@ -323,15 +337,17 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
     )
 }
 
-/// Claude's plan limits as the taskboard draws them: per window a label, a 34×5 bar and the
-/// percentage, amber from 75% and red from 90%. A window Claude doesn't report (the 5-hour one
+/// Claude's plan limits in the taskboard's usage pill: a rounded pill with, per window, a label,
+/// a 34×5 bar and the percentage, a hairline between windows, amber from 75% and red (bold)
+/// from 90%. A window Claude doesn't report (the 5-hour one
 /// on some plans) is left out; nothing shows until a Claude terminal has reported any.
 fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
     let u = m.usage.claude.as_ref()?;
     let now = midna_proto::time::now_unix();
     let stale = midna_proto::time::parse_rfc3339(&u.observed_at).is_some_and(|s| now - s > 3600);
-    let mut row = div().id("usage").flex().items_center().gap(px(10.)).when(stale, |d| d.opacity(0.6));
+    let mut row = div().id("usage").flex().flex_none().items_center().py(px(2.)).px(px(4.)).rounded_full().bg(t.raised).when(stale, |d| d.opacity(0.6));
     let mut tips = Vec::new();
+    let mut shown = 0;
     for (label, name, len, w) in [("5h", "5-hour", 5 * 3600, &u.five_hour), ("7d", "Weekly", 7 * 86400, &u.seven_day)] {
         let Some(w) = w else { continue };
         let pct = if w.expired { 0. } else { w.used_percentage.clamp(0., 100.) };
@@ -340,7 +356,7 @@ fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
         } else if pct >= 75. {
             (t.need, t.need)
         } else {
-            (t.ok, t.dim)
+            (t.ok, t.fg.opacity(0.85))
         };
         let value = if w.expired { "—".to_string() } else { format!("{}%", pct.round()) };
         let resets_at = w.resets_at.as_deref().and_then(midna_proto::time::parse_rfc3339);
@@ -359,11 +375,14 @@ fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.))
-                .child(label)
+                .gap(px(6.))
+                .px(px(7.))
+                .when(shown > 0, |d| d.border_l_1().border_color(t.line))
+                .child(div().font_weight(FontWeight::MEDIUM).text_color(t.dim.opacity(0.75)).child(label))
                 .child(div().w(px(34.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.line).child(div().h_full().rounded_full().bg(bar_c).w(relative((pct / 100.) as f32))))
-                .child(div().min_w(px(24.)).flex().justify_end().text_color(val_c).child(value)),
+                .child(div().min_w(px(22.)).flex().justify_end().text_color(val_c).when(pct >= 90., |d| d.font_weight(FontWeight::SEMIBOLD)).child(value)),
         );
+        shown += 1;
     }
     if tips.is_empty() {
         return None;
