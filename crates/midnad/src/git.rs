@@ -146,6 +146,49 @@ pub fn pr_info(cwd: &str, branch: &str) -> Option<PrInfo> {
     pr
 }
 
+// ------------------------------------------------------------------ GitHub repo
+
+type RepoCache = HashMap<String, (Instant, Option<String>)>;
+static REPO_CACHE: Mutex<Option<RepoCache>> = Mutex::new(None);
+const REPO_TTL: Duration = Duration::from_secs(60);
+
+/// `owner/repo` of the GitHub repo `cwd` is in, from its `origin` remote, cached ~60s. None
+/// outside a repo or when origin isn't on github.com.
+pub fn github_repo(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    if let Some((at, v)) = REPO_CACHE.lock().ok()?.get_or_insert_with(HashMap::new).get(cwd)
+        && at.elapsed() < REPO_TTL {
+            return v.clone();
+        }
+    let repo = git(cwd, &["remote", "get-url", "origin"]).and_then(|u| parse_github_remote(&u));
+    REPO_CACHE.lock().ok()?.get_or_insert_with(HashMap::new).insert(cwd.to_string(), (Instant::now(), repo.clone()));
+    repo
+}
+
+/// `owner/repo` from a github.com remote URL: `git@github.com:o/r.git`,
+/// `https://github.com/o/r(.git)`, `ssh://git@github.com/o/r.git`.
+pub fn parse_github_remote(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = url.strip_prefix("git@github.com:").or_else(|| {
+        let (_, after) = url.split_once("://")?;
+        let after = after.rsplit_once('@').map_or(after, |(_, h)| h);
+        after.strip_prefix("github.com/").or_else(|| after.strip_prefix("github.com:443/"))
+    })?;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let (owner, repo) = rest.split_once('/')?;
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (ok(owner) && ok(repo)).then(|| format!("{owner}/{repo}"))
+}
+
+/// The built-in link rule for `PR #61` / `pull request #61` in a terminal whose folder is in
+/// GitHub repo `repo` (`owner/repo`): it links to that pull request, so hovering previews it.
+pub fn pr_ref_pattern(repo: &str) -> Option<midna_proto::link_patterns::LinkPattern> {
+    midna_proto::link_patterns::LinkPattern::parse(&format!(r"(?i)\b(?:PR|pull request) ?#(\d+)\b = https://github.com/{repo}/pull/$1")).ok()
+}
+
 // ------------------------------------------------------------------ refresh
 
 /// The folder a terminal works in now: where its agent's hooks say it is (a worktree it moved
@@ -238,6 +281,31 @@ mod tests {
         assert_eq!(work_cwd(&s, None), "/repo", "a removed worktree falls back");
         let here = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         assert_eq!(work_cwd(&s, Some(std::process::id() as i32)), here, "else the shell's folder");
+    }
+
+    #[test]
+    fn github_remotes() {
+        for u in ["git@github.com:mrgnhnt96/midna.git", "https://github.com/mrgnhnt96/midna", "https://github.com/mrgnhnt96/midna.git\n", "ssh://git@github.com/mrgnhnt96/midna.git", "https://tok@github.com/mrgnhnt96/midna/"] {
+            assert_eq!(parse_github_remote(u).as_deref(), Some("mrgnhnt96/midna"), "{u}");
+        }
+        for u in ["git@gitlab.com:o/r.git", "https://example.com/o/r", "https://github.com/o", "/local/repo", ""] {
+            assert_eq!(parse_github_remote(u), None, "{u}");
+        }
+    }
+
+    #[test]
+    fn pr_refs_link_to_the_repo() {
+        let p = pr_ref_pattern("o/r").unwrap();
+        let at = |line: &str, i: usize| p.link_at(line, i).map(|(_, u)| u);
+        let pr = Some("https://github.com/o/r/pull/61".to_string());
+        assert_eq!(at("Taskboard opened PR #61. The sub", 19), pr);
+        assert_eq!(at("(PR #61)", 1), pr);
+        assert_eq!(at("see pr#61", 4), pr);
+        assert_eq!(at("pull request #61 merged", 2), pr);
+        assert_eq!(p.link_at("PR #61", 0).map(|(s, _)| s), Some((0, 6)), "the whole ref is the link");
+        assert_eq!(at("#61 alone", 1), None);
+        assert_eq!(at("SPR #61", 1), None);
+        assert_eq!(at("PR #61x", 4), None);
     }
 
     #[test]

@@ -872,6 +872,28 @@ fn another_terminals_id_is_a_link_to_it() {
 }
 
 #[test]
+fn pr_refs_link_to_the_terminals_github_repo() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let repo = d.home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [&["init", "-q"][..], &["remote", "add", "origin", "git@github.com:o/r.git"]] {
+        assert!(std::process::Command::new("git").args(args).current_dir(&repo).env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap().success());
+    }
+    let open = |c: &mut Client, cwd: &std::path::Path| call(c, "session.open", json!({ "kind": "shell", "cwd": cwd, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let link = |c: &mut Client, id: &str| (0..24).map(|row| call(c, "session.link_at", json!({ "id": id, "col": 19, "row": row }))).find(|l| l["kind"] != "none");
+    let id = open(&mut c, &repo);
+    call(&mut c, "session.input", json!({ "id": id, "text": "clear; echo 'the bot opened PR #61. The sub'", "enter": true }));
+    let l = wait_for(5, "PR link", || link(&mut c, &id));
+    assert_eq!((l["kind"].as_str(), l["target"].as_str()), (Some("url"), Some("https://github.com/o/r/pull/61")), "{l}");
+    // Outside a GitHub repo it stays text.
+    let id = open(&mut c, &d.home);
+    call(&mut c, "session.input", json!({ "id": id, "text": "clear; echo 'the bot opened PR #61. The sub'", "enter": true }));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(link(&mut c, &id).is_none());
+}
+
+#[test]
 fn apps_register_their_own_link_patterns() {
     let mut d = TestDaemon::start();
     let mut c = d.human();
