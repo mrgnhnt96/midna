@@ -1333,7 +1333,7 @@ impl MainWindow {
         if self.selected.as_deref() != Some(&id) {
             crate::windows::save_soon(cx);
             if let Some(old) = self.selected.take().filter(|_| !self.navigating) {
-                self.history.left(old);
+                self.history.left(old, &id);
             }
             self.selected = Some(id.clone());
             self.menu = Menu::None;
