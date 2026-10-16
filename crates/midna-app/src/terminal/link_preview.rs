@@ -45,6 +45,8 @@ const DIR_ROWS: usize = 8;
 const CHECKS: usize = 8;
 /// Fetched pages and pull requests are reused for this long.
 const URL_TTL: Duration = Duration::from_secs(90);
+/// A workflow run still going is fetched again sooner, so its status keeps up.
+const RUN_TTL: Duration = Duration::from_secs(10);
 
 /// The card's opacity `x` of the way through the grace period: `cubic-bezier(.7, 0, .84, 0)`, so
 /// it's still 97% at the halfway mark and does most of its fading in the last quarter.
@@ -156,6 +158,32 @@ struct Pr {
     checks: Vec<(String, Check)>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum RunState {
+    Queued,
+    Running,
+    Passed,
+    Failed,
+    Cancelled,
+    Skipped,
+    /// Waiting on a reviewer to approve a deployment, or a first-time contributor's run.
+    Approval,
+}
+
+/// A GitHub Actions workflow run.
+#[derive(Clone, Debug)]
+struct Run {
+    title: String,
+    workflow: String,
+    branch: String,
+    state: RunState,
+    /// Seconds from start to finish, or so far.
+    secs: Option<u64>,
+    jobs: Vec<(String, Check)>,
+    /// A one-job run's running or failed step: `Step 8 of 14 · Build`.
+    step: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 enum Body {
     Loading,
@@ -167,6 +195,7 @@ enum Body {
     /// (name, is a folder, size), the first `DIR_ROWS`, and the count of all entries.
     Dir { rows: Vec<(String, bool, Option<u64>)>, total: usize },
     Pr(Pr),
+    Run(Run),
     Web { title: Option<String>, desc: Option<String> },
     /// What the link's app says about it (`MidnaLinkPreview`).
     App(AppPreview),
@@ -826,18 +855,6 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
                 _ => ("Open", t.ok),
             };
             let mono = |s: String| div().font_family(t.mono_font.clone()).child(s);
-            let mut checks = div().flex().flex_wrap().gap_x(px(14.)).gap_y(px(4.)).font_family(t.mono_font.clone()).text_size(px(11.5));
-            for (name, st) in pr.checks.iter().take(CHECKS) {
-                let (mark, color) = match st {
-                    Check::Pass => ("✓", t.ok),
-                    Check::Fail => ("✗", t.err),
-                    Check::Pending => ("●", t.need),
-                };
-                checks = checks.child(div().flex().gap(px(5.)).child(div().text_color(color).child(mark)).child(name.clone()));
-            }
-            if pr.checks.len() > CHECKS {
-                checks = checks.child(div().text_color(t.dim).child(format!("+{} more", pr.checks.len() - CHECKS)));
-            }
             div()
                 .flex()
                 .flex_col()
@@ -857,7 +874,41 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
                         .child(mono(format!("{} → {}", pr.head, pr.base)))
                         .child(div().flex().gap(px(6.)).font_family(t.mono_font.clone()).child(div().text_color(t.ok).child(format!("+{}", pr.additions))).child(div().text_color(t.err).child(format!("−{}", pr.deletions)))),
                 )
-                .when(!pr.checks.is_empty(), |d| d.child(checks))
+                .when(!pr.checks.is_empty(), |d| d.child(render_checks(&pr.checks, t)))
+                .into_any_element()
+        }
+        Body::Run(run) => {
+            let (label, bg) = match run.state {
+                RunState::Queued => ("Queued", t.dim),
+                RunState::Running => ("Running", t.work),
+                RunState::Passed => ("Passed", t.ok),
+                RunState::Failed => ("Failed", t.err),
+                RunState::Cancelled => ("Cancelled", t.dim),
+                RunState::Skipped => ("Skipped", t.dim),
+                RunState::Approval => ("Needs approval", t.need),
+            };
+            let meta = [run.workflow.clone(), run.branch.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .px(px(14.))
+                .py(px(12.))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).line_height(px(20.)).child(run.title.clone()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(10.))
+                        .text_size(px(12.))
+                        .text_color(t.dim)
+                        .child(div().px(px(8.)).rounded_full().bg(bg).text_color(t.term).font_weight(FontWeight::BOLD).child(label))
+                        .when(!meta.is_empty(), |d| d.child(div().font_family(t.mono_font.clone()).child(meta)))
+                        .when_some(run.secs, |d, s| d.child(div().font_family(t.mono_font.clone()).child(duration(s)))),
+                )
+                .when_some(run.step.clone(), |d, s| d.child(div().text_size(px(12.)).text_color(t.dim).child(s)))
+                .when(!run.jobs.is_empty(), |d| d.child(render_checks(&run.jobs, t)))
                 .into_any_element()
         }
         Body::Web { title, desc } => div()
@@ -915,6 +966,32 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
     }
 }
 
+/// ✓ build  ✗ lint  ● smoke, the first `CHECKS` of them.
+fn render_checks(checks: &[(String, Check)], t: &Theme) -> Div {
+    let mut row = div().flex().flex_wrap().gap_x(px(14.)).gap_y(px(4.)).font_family(t.mono_font.clone()).text_size(px(11.5));
+    for (name, st) in checks.iter().take(CHECKS) {
+        let (mark, color) = match st {
+            Check::Pass => ("✓", t.ok),
+            Check::Fail => ("✗", t.err),
+            Check::Pending => ("●", t.need),
+        };
+        row = row.child(div().flex().gap(px(5.)).child(div().text_color(color).child(mark)).child(name.clone()));
+    }
+    if checks.len() > CHECKS {
+        row = row.child(div().text_color(t.dim).child(format!("+{} more", checks.len() - CHECKS)));
+    }
+    row
+}
+
+/// `45s`, `3m 12s`, `1h 4m`.
+fn duration(s: u64) -> String {
+    match s {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
+        s => format!("{}h {}m", s / 3600, s % 3600 / 60),
+    }
+}
+
 // ------------------------------------------------------------------ titles
 
 /// (name, where): `terminal.rs`, `crates/midna-app/src` (inside its project) or `~/notes`.
@@ -935,6 +1012,9 @@ fn url_title(url: &str) -> (String, String) {
     if let Some((owner, repo, n)) = github_pr(url) {
         return (format!("#{n}"), format!("{owner}/{repo}"));
     }
+    if let Some((owner, repo, _)) = github_run(url) {
+        return ("Actions run".into(), format!("{owner}/{repo}"));
+    }
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.rsplit('@').next().unwrap_or(host);
@@ -949,6 +1029,16 @@ fn github_pr(url: &str) -> Option<(String, String, u64)> {
     let (owner, repo, pull, n) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?);
     (pull == "pull" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
     Some((owner.to_string(), repo.to_string(), n.parse().ok()?))
+}
+
+/// `https://github.com/<owner>/<repo>/actions/runs/<id>…` (a job or an attempt in it too).
+fn github_run(url: &str) -> Option<(String, String, u64)> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
+    let (owner, repo, actions, runs, id) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?, seg.next()?);
+    (actions == "actions" && runs == "runs" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
+    Some((owner.to_string(), repo.to_string(), id.parse().ok()?))
 }
 
 pub(super) fn human_size(n: u64) -> String {
@@ -1052,16 +1142,27 @@ static URL_CACHE: LazyLock<Mutex<HashMap<String, (Instant, Body)>>> = LazyLock::
 
 fn load_url(url: &str) -> Body {
     if let Some((at, b)) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
-        && at.elapsed() < URL_TTL
+        && at.elapsed() < ttl(&b)
     {
         return b;
     }
-    let body = github_pr(url).and_then(|(o, r, n)| load_pr(&o, &r, n)).map(Body::Pr).unwrap_or_else(|| load_page(url));
+    let body = github_pr(url)
+        .and_then(|(o, r, n)| load_pr(&o, &r, n))
+        .map(Body::Pr)
+        .or_else(|| github_run(url).and_then(|(o, r, id)| load_run(&o, &r, id)).map(Body::Run))
+        .unwrap_or_else(|| load_page(url));
     if let Ok(mut c) = URL_CACHE.lock() {
-        c.retain(|_, (at, _)| at.elapsed() < URL_TTL);
+        c.retain(|_, (at, b)| at.elapsed() < ttl(b));
         c.insert(url.to_string(), (Instant::now(), body.clone()));
     }
     body
+}
+
+fn ttl(b: &Body) -> Duration {
+    match b {
+        Body::Run(r) if matches!(r.state, RunState::Queued | RunState::Running | RunState::Approval) => RUN_TTL,
+        _ => URL_TTL,
+    }
 }
 
 // ------------------------------------------------------------------ app links
@@ -1299,6 +1400,85 @@ fn parse_pr(v: &Value) -> Option<Pr> {
     Some(Pr { title: s("title"), state, head: s("headRefName"), base: s("baseRefName"), additions: num("additions"), deletions: num("deletions"), checks })
 }
 
+fn load_run(owner: &str, repo: &str, id: u64) -> Option<Run> {
+    let mut cmd = gh();
+    cmd.args(["run", "view", &id.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "displayTitle,workflowName,headBranch,status,conclusion,startedAt,updatedAt,jobs"]);
+    let (ok, out) = run_capped(cmd, 4 << 20, Duration::from_secs(8))?;
+    if !ok {
+        return None;
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    parse_run(&serde_json::from_slice(&out).ok()?, now)
+}
+
+/// `status` and `conclusion` as `gh` reports them for a run, a job or a step.
+fn run_state(status: &str, conclusion: &str) -> RunState {
+    match (status, conclusion) {
+        ("completed", "success") => RunState::Passed,
+        ("completed", "cancelled") => RunState::Cancelled,
+        ("completed", "skipped" | "neutral") => RunState::Skipped,
+        ("completed", "action_required") | ("waiting", _) => RunState::Approval,
+        ("completed", _) => RunState::Failed,
+        ("in_progress", _) => RunState::Running,
+        _ => RunState::Queued,
+    }
+}
+
+fn parse_run(v: &Value, now: u64) -> Option<Run> {
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let state = run_state(&s(v, "status"), &s(v, "conclusion"));
+    let start = unix_time(&s(v, "startedAt"));
+    let end = if matches!(state, RunState::Queued | RunState::Running | RunState::Approval) { Some(now) } else { unix_time(&s(v, "updatedAt")) };
+    let secs = start.zip(end).map(|(a, b)| b.saturating_sub(a));
+    let raw = v.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut jobs: Vec<(String, Check)> = raw
+        .iter()
+        .map(|j| {
+            let st = match run_state(&s(j, "status"), &s(j, "conclusion")) {
+                RunState::Passed | RunState::Skipped => Check::Pass,
+                RunState::Failed | RunState::Cancelled => Check::Fail,
+                _ => Check::Pending,
+            };
+            (s(j, "name"), st)
+        })
+        .collect();
+    jobs.sort_by_key(|(_, s)| match s {
+        Check::Fail => 0,
+        Check::Pending => 1,
+        Check::Pass => 2,
+    });
+    // One job: say which of its steps is running, or failed.
+    let step = match raw.as_slice() {
+        [j] => {
+            let steps = j.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+            steps
+                .iter()
+                .position(|st| matches!(run_state(&s(st, "status"), &s(st, "conclusion")), RunState::Running | RunState::Failed))
+                .map(|i| format!("Step {} of {} · {}", i + 1, steps.len(), s(&steps[i], "name")))
+        }
+        _ => None,
+    };
+    Some(Run { title: s(v, "displayTitle"), workflow: s(v, "workflowName"), branch: s(v, "headBranch"), state, secs, jobs, step })
+}
+
+/// Seconds since 1970 for `2026-10-16T01:44:09Z`; `None` for anything else (`gh`'s zero time too).
+fn unix_time(s: &str) -> Option<u64> {
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    (s.len() == 20 && s.ends_with('Z')).then_some(())?;
+    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    if y < 1970 {
+        return None;
+    }
+    // Days from civil (Howard Hinnant).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + hh * 3600 + mm * 60 + ss).ok()
+}
+
 /// Hosts never fetched: this Mac, the local network, and anything that isn't http(s).
 fn fetchable(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else { return false };
@@ -1424,7 +1604,7 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppPreview, Body, Check, FILE_LINES, Link, Tone, excerpt, fade, fetchable, github_pr, load, page_meta, parse_app_preview, parse_pr, parse_preview_command, path_title, preview_command, run_preview, url_title};
+    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_pr, github_run, load, page_meta, parse_app_preview, parse_pr, parse_preview_command, parse_run, path_title, preview_command, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
     use std::time::Duration;
@@ -1503,6 +1683,48 @@ mod tests {
         let pr = parse_pr(&v).unwrap();
         assert_eq!(pr.state, "DRAFT");
         assert_eq!(pr.checks, vec![("ci/lint".into(), Check::Fail), ("smoke".into(), Check::Pending), ("build".into(), Check::Pass)]);
+    }
+
+    #[test]
+    fn github_actions_runs() {
+        assert_eq!(github_run("https://github.com/mrgnhnt96/taskboard/actions/runs/38836710404"), Some(("mrgnhnt96".into(), "taskboard".into(), 38836710404)));
+        assert_eq!(github_run("https://github.com/a/b/actions/runs/9/job/12?pr=3"), Some(("a".into(), "b".into(), 9)));
+        assert_eq!(github_run("https://github.com/a/b/actions/workflows/ci.yml"), None);
+        assert_eq!(url_title("https://github.com/a/b/actions/runs/9"), ("Actions run".into(), "a/b".into()));
+        assert_eq!(unix_time("2026-10-16T01:44:09Z"), Some(1_792_115_049));
+        assert_eq!(unix_time("0001-01-01T00:00:00Z"), None);
+        assert_eq!(duration(192), "3m 12s");
+    }
+
+    #[test]
+    fn run_status_and_steps() {
+        let v = serde_json::json!({
+            "displayTitle": "chore: release", "workflowName": "Release", "headBranch": "v1", "status": "in_progress", "conclusion": "",
+            "startedAt": "2026-10-16T01:44:09Z", "updatedAt": "2026-10-16T01:45:00Z",
+            "jobs": [{"name": "release", "status": "in_progress", "conclusion": "", "steps": [
+                {"name": "Set up job", "status": "completed", "conclusion": "success"},
+                {"name": "Build", "status": "in_progress", "conclusion": ""},
+                {"name": "Upload", "status": "pending", "conclusion": ""}
+            ]}]
+        });
+        let r = parse_run(&v, 1_792_115_049 + 75).unwrap();
+        assert_eq!(r.state, RunState::Running);
+        assert_eq!(r.secs, Some(75));
+        assert_eq!(r.step.as_deref(), Some("Step 2 of 3 · Build"));
+        assert_eq!(r.jobs, vec![("release".into(), Check::Pending)]);
+
+        let v = serde_json::json!({
+            "status": "completed", "conclusion": "failure", "startedAt": "2026-10-16T01:44:09Z", "updatedAt": "2026-10-16T01:47:21Z",
+            "jobs": [
+                {"name": "test", "status": "completed", "conclusion": "success"},
+                {"name": "lint", "status": "completed", "conclusion": "failure"}
+            ]
+        });
+        let r = parse_run(&v, 0).unwrap();
+        assert_eq!(r.state, RunState::Failed);
+        assert_eq!(r.secs, Some(192));
+        assert_eq!(r.step, None);
+        assert_eq!(r.jobs, vec![("lint".into(), Check::Fail), ("test".into(), Check::Pass)]);
     }
 
     #[test]
