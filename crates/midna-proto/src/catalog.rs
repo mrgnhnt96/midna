@@ -152,6 +152,13 @@ fn build() -> Vec<MethodSpec> {
              agents.may_close_idle is on. An approval still pending when its terminal closes is withdrawn. Afterwards midna cleans up \
              what it left behind (cleanup.enabled); `cleanup: false` skips that once."),
         m::<SessionRenameParams, Session>("session.rename").mutating().d("Rename a terminal (the sidebar label the human sees). Give terminals you open a short, task-describing name."),
+        m::<SessionSetStatusParams, Session>("session.set_status").mutating().d(
+            "Put a custom status label on a terminal (the header chip and the sidebar row's line), like a local trigger's set_status \
+             but without one. `color` is a named color or #rrggbb (default blue), `base` the built-in state underneath (default the \
+             current one; needs_you also raises a needs-you item) and `clear_on` when it comes off by itself: prompt (default), turn, \
+             status or never. Replaces any custom status already there."),
+        m::<IdParams, Session>("session.clear_status").mutating().d(
+            "Take a terminal's custom status label off, whether session.set_status or a trigger put it there. A status it still holds goes back to idle."),
         m::<SessionInputParams, OkResult>("session.input").mutating().d(
             "Type text into a terminal, optionally followed by Enter; to an agent (Claude Code, Codex) this is a chat message. \
              `images` (absolute paths) are attached first, each pasted as a path the agent turns into [Image #N]. \

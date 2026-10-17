@@ -413,6 +413,46 @@ pub fn rename(d: &Daemon, ctx: &Ctx, p: SessionRenameParams) -> R {
     ok(out)
 }
 
+/// A custom status from a script or agent: what a trigger's set_status does, without the trigger.
+pub fn set_status(d: &Daemon, ctx: &Ctx, p: SessionSetStatusParams) -> R {
+    let label = p.label.trim();
+    if label.is_empty() {
+        return Err(RpcError::bad_params("set_status needs a label"));
+    }
+    let color = p.color.as_deref().map(str::trim).unwrap_or("blue");
+    if !valid_status_color(color) {
+        return Err(RpcError::bad_params(format!("color must be one of {} or #rrggbb", STATUS_COLORS.join(", "))));
+    }
+    let current = d.core().state.session(&p.id).ok_or_else(|| not_found(&p.id))?.status.state;
+    let base = match p.base {
+        Some(StatusState::Exited) => return Err(RpcError::bad_params("base must be idle, working, needs_you, done or failed")),
+        Some(b) => b,
+        None if current == StatusState::Exited => StatusState::Idle,
+        None => current,
+    };
+    let cs = CustomStatus {
+        label: label.to_string(),
+        color: color.to_string(),
+        icon: p.icon.filter(|i| !i.trim().is_empty()),
+        base,
+        clear_on: p.clear_on,
+        trigger_id: None,
+        detail: p.detail.filter(|x| !x.trim().is_empty()),
+        needs_you_id: None,
+        since: time::now_rfc3339(),
+    };
+    crate::local::set_custom(d, &p.id, cs, ctx.actor());
+    get(d, IdParams { id: p.id })
+}
+
+pub fn clear_status(d: &Daemon, ctx: &Ctx, p: IdParams) -> R {
+    if d.core().state.session(&p.id).is_none() {
+        return Err(not_found(&p.id));
+    }
+    crate::local::clear_custom(d, &p.id, ctx.actor(), "cleared", true);
+    get(d, p)
+}
+
 pub fn set_background(d: &Daemon, ctx: &Ctx, p: SessionSetBackgroundParams) -> R {
     let mut core = d.core();
     let s = core.state.session_mut(&p.id).ok_or_else(|| not_found(&p.id))?;

@@ -171,6 +171,20 @@ pub static VERBS: &[Verb] = &[
         methods: &["session.rename"],
     },
     Verb {
+        name: "status",
+        aliases: &[],
+        usage: "status [show] [--session ID]\n       \
+                status set <label...> [--color C] [--base B] [--clear-on prompt|turn|status|never] [--icon I] [--detail D] [--session ID]\n       \
+                status clear [--session ID]",
+        summary: "show, set or clear a terminal's custom status label",
+        details: "Puts a label on a terminal's header chip and sidebar row, like a trigger's set_status but from a\n\
+                  script. Acts on this terminal unless --session names another. --color is a named color or #rrggbb\n\
+                  (default blue); --base is the built-in state underneath (idle|working|needs_you|done|failed, default\n\
+                  the current one; needs_you also raises a needs-you item); --clear-on says when it comes off by itself\n\
+                  (default prompt: the agent's next prompt). --detail is the label's tooltip.",
+        methods: &["session.get", "session.set_status", "session.clear_status"],
+    },
+    Verb {
         name: "background",
         aliases: &["bg"],
         usage: "background <id> [--off]",

@@ -56,7 +56,11 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                 let tip = format!("Its processes are stopped ({}) until you resume it", c.detail.clone().unwrap_or_default());
                 return d.child(div().id("header-paused").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, &c, 11.5)));
             }
-            let by = if s.custom_status.is_some() { "Set by a trigger" } else { "Set in ui.status.looks" };
+            let by = match &s.custom_status {
+                Some(cs) if cs.trigger_id.is_some() => "Set by a trigger",
+                Some(_) => "Set with midna status",
+                None => "Set in ui.status.looks",
+            };
             let tip = c.detail.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| by.into());
             d.child(div().id("header-custom-status").tooltip(tip_fixed(tip, "")).child(custom_status_label(t, &c, 11.5)))
         })

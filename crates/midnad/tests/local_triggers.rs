@@ -473,3 +473,42 @@ fn run_command_in_background_or_with_no_terminal() {
     let ran = &del["command_runs"][0];
     assert_eq!((ran["timed_out"].as_bool(), ran["exit_code"].as_i64(), ran["output"].as_str()), (Some(true), None, Some("started")), "{ran}");
 }
+
+#[test]
+fn a_script_sets_and_clears_a_status_without_a_trigger() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+
+    // Defaults: blue, on top of the current state, clears on the next prompt.
+    let s = call(&mut a, "session.set_status", json!({ "id": sid, "label": "Deploying" }));
+    let cs = &s["custom_status"];
+    assert_eq!((cs["label"].as_str(), cs["color"].as_str(), cs["clear_on"].as_str()), (Some("Deploying"), Some("blue"), Some("prompt")), "{s}");
+    assert!(cs.get("trigger_id").is_none(), "{s}");
+
+    // A needs_you base raises a needs-you item; replacing the status closes it.
+    let s = call(&mut a, "session.set_status", json!({ "id": sid, "label": "Review me", "color": "#ff8800", "base": "needs_you", "clear_on": "never" }));
+    assert_eq!(s["status"]["state"].as_str(), Some("needs_you"), "{s}");
+    let item = s["custom_status"]["needs_you_id"].as_str().expect("needs-you item").to_string();
+    let s = call(&mut a, "session.set_status", json!({ "id": sid, "label": "Building", "base": "working" }));
+    assert_eq!((custom_label(&mut h, &sid).as_deref(), s["status"]["state"].as_str()), (Some("Building"), Some("working")));
+    let open: Vec<Value> = call(&mut h, "needs_you.list", json!({})).as_array().cloned().unwrap_or_default();
+    assert!(!open.iter().any(|n| n["id"] == item.as_str()), "the replaced status's item is closed");
+
+    // Clearing puts a status it still holds back to idle.
+    let s = call(&mut a, "session.clear_status", json!({ "id": sid }));
+    assert!(s["custom_status"].is_null(), "{s}");
+    assert_eq!(s["status"]["state"].as_str(), Some("idle"));
+    assert_eq!(events(&mut h, "session.custom_status").len(), 6, "three sets, two replaced, one clear");
+
+    for (p, want) in [
+        (json!({ "id": sid, "label": "  " }), "label"),
+        (json!({ "id": sid, "label": "x", "color": "mauve" }), "color"),
+        (json!({ "id": sid, "label": "x", "base": "exited" }), "base"),
+    ] {
+        let e = call_err(&mut a, "session.set_status", p);
+        assert!(e.message.contains(want), "{}", e.message);
+    }
+    call_err(&mut a, "session.clear_status", json!({ "id": "nope" }));
+}

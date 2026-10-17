@@ -379,6 +379,7 @@ fn run(a: &Args) -> Res {
             out(&v, &|_| println!("renamed {id} to {name}"));
             Ok(())
         }
+        "status" => status(a, &out),
         "background" | "bg" => {
             a.check(&["off"])?;
             let id = a.need(1, "terminal id")?;
@@ -969,6 +970,57 @@ fn system(a: &Args, out: OutFn) -> Res {
             })
         }
         other => return Err(Fail::Usage(format!("unknown system subcommand `{other}` (load|wait|pause|resume|stop)"))),
+    }
+    Ok(())
+}
+
+/// `midna status`: show, set or clear a terminal's custom status label (default: this terminal).
+fn status(a: &Args, out: OutFn) -> Res {
+    let id = match a.get("session") {
+        Some(s) => s.to_string(),
+        None => this_terminal(a, usize::MAX)?,
+    };
+    match a.pos.get(1).map(String::as_str).unwrap_or("show") {
+        "show" | "get" => {
+            a.check(&["session"])?;
+            let v = call("session.get", json!({ "id": id }))?;
+            out(&v, &|v| println!("{}", print::status_text(v)));
+        }
+        "set" => {
+            a.check(&["session", "color", "base", "clear-on", "icon", "detail"])?;
+            let label = a.text(2);
+            if label.trim().is_empty() {
+                return Err(Fail::Usage("missing label".into()));
+            }
+            let mut p = json!({ "id": id, "label": label });
+            if let Some(c) = a.get("color") {
+                if !midna_proto::valid_status_color(c) {
+                    return Err(Fail::Usage(format!("--color `{c}`: use one of {} or #rrggbb", midna_proto::STATUS_COLORS.join(", "))));
+                }
+                p["color"] = json!(c);
+            }
+            if let Some(b) = a.get("base") {
+                triggers::one_of("base", b, &["idle", "working", "needs_you", "done", "failed"])?;
+                p["base"] = json!(b);
+            }
+            if let Some(c) = a.get("clear-on") {
+                triggers::one_of("clear-on", c, &["prompt", "turn", "status", "never"])?;
+                p["clear_on"] = json!(c);
+            }
+            for (flag, key) in [("icon", "icon"), ("detail", "detail")] {
+                if let Some(x) = a.get(flag) {
+                    p[key] = json!(x);
+                }
+            }
+            let v = call("session.set_status", p)?;
+            out(&v, &|v| println!("{}", print::status_text(v)));
+        }
+        "clear" => {
+            a.check(&["session"])?;
+            let v = call("session.clear_status", json!({ "id": id }))?;
+            out(&v, &|_| println!("cleared the status on {id}"));
+        }
+        other => return Err(Fail::Usage(format!("unknown status subcommand `{other}` (show|set|clear)"))),
     }
     Ok(())
 }
