@@ -642,9 +642,10 @@ pub fn scroll(d: &Daemon, p: SessionScrollParams) -> R {
     ok(OkResult { ok: true })
 }
 
-pub fn selection(d: &Daemon, p: IdParams) -> R {
+pub fn selection(d: &Daemon, p: SessionSelectionParams) -> R {
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    let text = rt.with(|e| e.selection_text()).ok_or_else(|| RpcError::internal("engine did not answer"))?;
+    let agent = p.agent;
+    let text = rt.with(move |e| if agent { e.agent_selection_text() } else { e.selection_text() }).ok_or_else(|| RpcError::internal("engine did not answer"))?;
     ok(SessionSelectionResult { text })
 }
 

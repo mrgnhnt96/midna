@@ -11,7 +11,7 @@ use libghostty_vt::mouse::{self, Button, EncoderSize};
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::gesture::{AutoscrollTickEvent, DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent};
 use libghostty_vt::selection::{FormatOptions, Selection};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport, Terminal};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate, PointSpace, ScrollViewport, Terminal};
 use midna_proto::link_patterns::LinkPattern;
 use midna_proto::frame::{KeyAction, KeyMsg, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_SUPER, MouseAction, MouseMsg, ScrollKind, ScrollMsg};
 use std::time::{Duration, Instant};
@@ -204,6 +204,7 @@ impl Engine {
         if self.has_selection {
             let _ = self.term.set_selection(None);
             self.has_selection = false;
+            self.sel_col = None;
             self.meta_dirty = true;
         }
     }
@@ -377,9 +378,15 @@ impl Engine {
         Geometry { columns: cols as u32, cell_width: cw, padding_left: 0, screen_height: rows as u32 * ch }
     }
 
-    fn install(term: &Terminal<'static, 'static>, sel: Option<Selection<'_>>) -> bool {
+    /// Returns whether there's a selection now, and the column it starts at (reading order).
+    fn install(term: &Terminal<'static, 'static>, sel: Option<Selection<'_>>) -> (bool, Option<u16>) {
         let _ = term.set_selection(sel.as_ref());
-        sel.is_some()
+        let col = sel.as_ref().filter(|s| !s.is_rectangle()).and_then(|s| {
+            let at = |r| term.point_from_grid_ref(&r, PointSpace::Screen).ok().flatten();
+            let (a, b) = (at(s.start())?, at(s.end())?);
+            Some(if (a.y, a.x) <= (b.y, b.x) { a.x } else { b.x })
+        });
+        (sel.is_some(), col)
     }
 
     fn select_press(&mut self, m: &MouseMsg) {
@@ -392,7 +399,7 @@ impl Engine {
         let _ = input.press.set_repeat_distance(cw.max(ch) as f64);
         let _ = input.press.set_time(t);
         let sel = input.press.apply(&mut input.gesture, term, r).ok().flatten();
-        self.has_selection = Self::install(term, sel);
+        (self.has_selection, self.sel_col) = Self::install(term, sel);
         self.input.selecting = true;
         self.meta_dirty = true;
     }
@@ -413,7 +420,7 @@ impl Engine {
             let _ = input.tick.set_position((m.x * cw as f32) as f64, (m.y * ch as f32) as f64);
             let _ = input.tick.set_rectangle(m.mods & MOD_ALT != 0);
             if let Ok(Some(sel)) = input.tick.apply(&mut input.gesture, term, vp, geom) {
-                self.has_selection = Self::install(term, Some(sel));
+                (self.has_selection, self.sel_col) = Self::install(term, Some(sel));
                 self.meta_dirty = true;
                 return;
             }
@@ -423,7 +430,7 @@ impl Engine {
         let _ = input.drag.set_position((m.x * cw as f32) as f64, (m.y * ch as f32) as f64);
         let _ = input.drag.set_rectangle(m.mods & MOD_ALT != 0);
         if let Ok(Some(sel)) = input.drag.apply(&mut input.gesture, term, r, geom) {
-            self.has_selection = Self::install(term, Some(sel));
+            (self.has_selection, self.sel_col) = Self::install(term, Some(sel));
             self.meta_dirty = true;
         }
     }
@@ -498,6 +505,16 @@ impl Engine {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// The selection as copied from an agent's TUI: as [`Self::selection_text`], with the rows
+    /// Claude Code broke at the right edge joined again (see [`rejoin_wrapped`]).
+    pub fn agent_selection_text(&self) -> Option<String> {
+        let text = self.selection_text()?;
+        Some(match self.sel_col {
+            Some(col) => rejoin_wrapped(&text, col as usize, self.size().0 as usize),
+            None => text,
+        })
+    }
+
     /// Drop the scrollback (primary screen only). Returns false on the alternate screen or
     /// while a half-received escape sequence is pending (injecting bytes would corrupt it).
     pub fn clear_scrollback(&mut self) -> bool {
@@ -514,7 +531,7 @@ impl Engine {
     /// Select everything (scrollback + screen).
     pub fn select_all(&mut self) {
         let sel = self.term.select_all().ok().flatten();
-        self.has_selection = Self::install(&self.term, sel);
+        (self.has_selection, self.sel_col) = Self::install(&self.term, sel);
         self.meta_dirty = true;
     }
 
@@ -654,6 +671,7 @@ impl Engine {
             let sel = Selection::new(ra, rb, false);
             let _ = self.term.set_selection(Some(&sel));
             self.has_selection = true;
+            self.sel_col = Some(a.x);
             self.meta_dirty = true;
         }
         FindHit { total: hits.len(), index: idx + 1 }
@@ -799,6 +817,53 @@ fn trim_url(s: &str) -> &str {
         end -= last.len_utf8();
     }
     &s[..end]
+}
+
+/// Claude Code wraps its text itself, at words, `cols` cells wide: it ends the row with a line
+/// break and drops the space it broke at, then indents the rest under the text it continues.
+/// Copied as-is, a long command comes out in pieces. This joins `text` (one line per screen
+/// row, its first row starting at `first_col`) where a row ends in such a wrap: when the next
+/// row's first word wouldn't have fit after it. A word longer than a whole row (a path, a URL)
+/// is cut at the edge instead, so a full row joins the next with no space when the two halves
+/// of the word that meets there are longer than a row. Rows of box drawing (tables, rules) and
+/// rows starting a list item or a new message are never joined.
+pub fn rejoin_wrapped(text: &str, first_col: usize, cols: usize) -> String {
+    let width = |s: &str| s.chars().map(|c| libghostty_vt::unicode::codepoint_width(c) as usize).sum::<usize>();
+    let boxy = |s: &str| s.chars().any(|c| ('\u{2500}'..='\u{259F}').contains(&c));
+    let starts_item = |s: &str| {
+        let digits = s.chars().take_while(char::is_ascii_digit).count();
+        ["● ", "⏺ ", "⎿ ", "- ", "* ", "• ", "❯ ", "> "].iter().any(|m| s.starts_with(m)) || (digits > 0 && s[digits..].starts_with(". "))
+    };
+    let mut lines = text.split('\n');
+    let Some(first) = lines.next() else { return String::new() };
+    let mut out = first.to_string();
+    let (mut prev, mut end) = (first, first_col + width(first));
+    for line in lines {
+        let body = line.trim_start_matches(' ');
+        // A row of soft-wrapped rows (joined already) ends on its last row.
+        let row_end = if end > cols && cols > 0 { (end - 1) % cols + 1 } else { end };
+        let word = width(body.split(' ').next().unwrap_or(""));
+        let last = width(prev.rsplit(' ').next().unwrap_or(""));
+        let joins = cols > 0 && !body.is_empty() && !prev.trim().is_empty() && !boxy(prev) && !boxy(body) && !starts_item(body);
+        let sep = match () {
+            _ if !joins => None,
+            _ if row_end >= cols => Some(if last + word > cols { "" } else { " " }),
+            _ if row_end + 1 + word > cols => Some(" "),
+            _ => None,
+        };
+        match sep {
+            Some(sep) => {
+                out.push_str(sep);
+                out.push_str(body);
+            }
+            None => {
+                out.push('\n');
+                out.push_str(line);
+            }
+        }
+        (prev, end) = (line, width(line));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -986,6 +1051,49 @@ mod tests {
         let mut e = eng(b"\x1b[?1049h");
         let out = e.scroll(&ScrollMsg { kind: ScrollKind::Wheel, amount: 3, x: 0.0, y: 0.0, mods: 0 });
         assert_eq!(out, b"\x1b[B\x1b[B\x1b[B");
+    }
+
+    #[test]
+    fn rejoin_claudes_wrapped_rows() {
+        // 30 columns. Claude dropped the space at each wrap and indented the rest by 2.
+        let cols = 30;
+        let text = "● for s in d6d9537d 7da865c9\n  bf1c2198; do midna send $s\n  -- \"$MSG\"; done";
+        assert_eq!(rejoin_wrapped(text, 0, cols), "● for s in d6d9537d 7da865c9 bf1c2198; do midna send $s -- \"$MSG\"; done");
+        // A selection starting mid-row ends that row at its column, not at its length.
+        assert_eq!(rejoin_wrapped("7da865c9\n  bf1c2198; do", 20, cols), "7da865c9 bf1c2198; do");
+        assert_eq!(rejoin_wrapped("7da865c9\n  bf1c2198; do", 0, cols), "7da865c9\n  bf1c2198; do");
+        // Short lines are lines: the next word would have fit.
+        let code = "fn main() {\n    println!(\"hi\");\n}";
+        assert_eq!(rejoin_wrapped(code, 0, cols), code);
+        // A full row: a word longer than a row is cut mid-word; a word that ends at the edge isn't.
+        let url = "  see https://example.com/abcd\n  efgh/ijkl now";
+        assert_eq!(rejoin_wrapped(url, 0, cols), "  see https://example.com/abcdefgh/ijkl now");
+        assert_eq!(rejoin_wrapped("  the quick brown fox jumps ov\n  the dog", 0, cols), "  the quick brown fox jumps ov the dog");
+        // Wide characters take two cells.
+        assert_eq!(rejoin_wrapped("  世界世界世界世界世界世界 abc\n  defgh", 0, cols), "  世界世界世界世界世界世界 abc defgh");
+        // Blank rows, list items, new messages and tables stay apart.
+        for keep in [
+            "  a sentence that runs right up\n\n  next",
+            "  1. a step that runs right up to\n  2. the next step",
+            "  - a point that runs right up to\n  - the next point",
+            "  a reply that runs right up to t\n● the next message",
+            "┌────────────────────────────┐\n│ cell                        │",
+        ] {
+            assert_eq!(rejoin_wrapped(keep, 0, cols), keep);
+        }
+    }
+
+    #[test]
+    fn agent_selection_joins_claudes_wraps() {
+        let mut e = Engine::new(30, 6, None);
+        e.feed("● for s in d6d9537d 7da865c9\r\n  bf1c2198; do midna send $s\r\n\r\nafter".as_bytes(), 1);
+        let m = |action, x, y| MouseMsg { action, button: 1, mods: 0, x, y };
+        // Drag from "for" to the end of the second row.
+        e.mouse(&m(MouseAction::Press, 2.1, 0.5));
+        e.mouse(&m(MouseAction::Motion, 29.9, 1.5));
+        e.mouse(&m(MouseAction::Release, 29.9, 1.5));
+        assert_eq!(e.selection_text().as_deref(), Some("for s in d6d9537d 7da865c9\n  bf1c2198; do midna send $s"));
+        assert_eq!(e.agent_selection_text().as_deref(), Some("for s in d6d9537d 7da865c9 bf1c2198; do midna send $s"));
     }
 
     #[test]

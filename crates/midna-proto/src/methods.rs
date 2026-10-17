@@ -969,6 +969,15 @@ pub struct JumpPromptResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSelectionParams {
+    pub id: Id,
+    /// The terminal runs an agent (Claude Code, Codex), which wraps its own text: join the
+    /// rows it broke at the right edge, as they were before it wrapped them.
+    #[serde(default)]
+    pub agent: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSelectionResult {
     /// The selected text (soft-wrapped lines joined, trailing spaces trimmed), or null when
     /// nothing is selected.
