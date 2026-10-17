@@ -312,7 +312,7 @@ fn json_arg(a: &Args, flag: &str) -> Result<Option<Value>, Fail> {
     Ok(Some(v))
 }
 
-fn one_of(flag: &str, v: &str, ok: &[&str]) -> Result<(), Fail> {
+pub(crate) fn one_of(flag: &str, v: &str, ok: &[&str]) -> Result<(), Fail> {
     if ok.contains(&v) { Ok(()) } else { Err(Fail::Usage(format!("--{flag} `{v}`: use one of {}", ok.join(", ")))) }
 }
 

@@ -256,7 +256,9 @@ const TOPICS: &[(&str, &str)] = &[
         [{\"text\":\"CI\",\"tone\":\"ok\",\"icon\":\"check\",\"tooltip\":\"14 checks passed\"}]. An empty array hides it.\n\
         Statuses: ui.status.looks restyles built-in statuses, one rule per status, only the parts given: \
         `needs_you = pink icon:bell label:Your turn`, `claude.working = teal icon:bolt` (color = the dot, icon = in place \
-        of the agent icon, label = header chip and row line; agent rules add to the plain one). A trigger's set_status still wins.\n\
+        of the agent icon, label = header chip and row line; agent rules add to the plain one). A trigger's set_status still wins. \
+        To label a terminal yourself (no trigger), `midna status set <label> [--color C] [--base B] [--clear-on never]` \
+        (session.set_status; this terminal unless --session) and `midna status clear` (session.clear_status).\n\
         Agents may pick built-ins and hide, show or reorder items directly. Pointing a setting at a script path, or \
         adding a path to ui.status.items or ui.header.buttons, asks the human: write the script, make it executable, test it by running it, \
         then `midna settings set …`. `midna settings reset ui.status.items` restores the default bar."),

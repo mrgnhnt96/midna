@@ -803,6 +803,25 @@ pub struct SessionRenameParams {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSetStatusParams {
+    pub id: Id,
+    pub label: String,
+    /// One of `STATUS_COLORS` or `#rrggbb` (default `blue`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The built-in state underneath (default: the terminal's current one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<StatusState>,
+    #[serde(default)]
+    pub clear_on: StatusClear,
+    /// Shown as the label's tooltip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionInputParams {
     pub id: Id,
     /// Text to type. Use escape sequences for special keys (e.g. "\u0003" for ctrl-c).
