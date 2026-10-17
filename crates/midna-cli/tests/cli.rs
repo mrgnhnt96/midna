@@ -484,3 +484,41 @@ fn notify_history_lists_unread_and_read_marks_them() {
     assert!(text.contains("no unread notifications"), "{text}");
     assert_eq!(code(&midna(&s, &["notify", "read", "soon"], None, None)), 2);
 }
+
+#[test]
+fn status_sets_shows_and_clears_a_label() {
+    let d = D::start();
+    let s = d.sock();
+    let o = midna(&s, &["open", "--cwd", "/tmp", "--name", "lbl", "--", "/bin/sh"], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    let id = stdout(&o).trim().to_string();
+    let json = |o: &Output| -> Value { serde_json::from_str(&stdout(o)).unwrap_or_else(|_| panic!("{o:?}")) };
+
+    // This terminal by default; the label's words are joined and every flag reaches the RPC.
+    let args = ["status", "set", "Deploying", "to", "prod", "--color", "teal", "--base", "working", "--clear-on", "never", "--icon", "rocket", "--detail", "v2", "--json"];
+    let v = json(&midna(&s, &args, None, Some(&id)));
+    let cs = &v["custom_status"];
+    assert_eq!(
+        (cs["label"].as_str(), cs["color"].as_str(), cs["base"].as_str(), cs["clear_on"].as_str(), cs["icon"].as_str(), cs["detail"].as_str()),
+        (Some("Deploying to prod"), Some("teal"), Some("working"), Some("never"), Some("rocket"), Some("v2")),
+        "{v}"
+    );
+    let o = midna(&s, &["status", "get"], None, Some(&id));
+    assert_eq!(stdout(&o).trim(), "working · Deploying to prod");
+
+    // --session names a terminal from outside midna.
+    let o = midna(&s, &["status", "clear", "--session", &id], None, None);
+    assert_eq!(code(&o), 0, "{o:?}");
+    assert_eq!(stdout(&midna(&s, &["status", "--session", &id], None, None)).trim(), "idle");
+
+    for bad in [
+        vec!["status", "set", "x", "--color", "mauve"],
+        vec!["status", "set", "x", "--base", "exited"],
+        vec!["status", "set", "x", "--clear-on", "soon"],
+        vec!["status", "set"],
+        vec!["status", "frob"],
+    ] {
+        assert_eq!(code(&midna(&s, &bad, None, Some(&id))), 2, "{bad:?}");
+    }
+    assert_eq!(code(&midna(&s, &["status", "set", "x"], None, None)), 2, "no terminal outside midna");
+}
