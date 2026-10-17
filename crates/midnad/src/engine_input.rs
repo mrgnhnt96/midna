@@ -1094,6 +1094,27 @@ mod tests {
         e.mouse(&m(MouseAction::Release, 29.9, 1.5));
         assert_eq!(e.selection_text().as_deref(), Some("for s in d6d9537d 7da865c9\n  bf1c2198; do midna send $s"));
         assert_eq!(e.agent_selection_text().as_deref(), Some("for s in d6d9537d 7da865c9 bf1c2198; do midna send $s"));
+        assert_eq!(e.sel_col, Some(2));
+        // Dragged backwards, the selection still starts where its text does.
+        e.mouse(&m(MouseAction::Press, 29.9, 1.5));
+        e.mouse(&m(MouseAction::Motion, 2.1, 0.5));
+        e.mouse(&m(MouseAction::Release, 2.1, 0.5));
+        assert_eq!(e.sel_col, Some(2));
+        assert_eq!(e.agent_selection_text().as_deref(), Some("for s in d6d9537d 7da865c9 bf1c2198; do midna send $s"));
+        // A selection starting at column 21 ends its row at 29, where the next word wouldn't fit.
+        e.feed(b"\x1b[2J\x1b[Haaaaaaaaaaaaaaaaaaaa 7da865c9\r\n  bf1c2198; do", 2);
+        e.mouse(&m(MouseAction::Press, 21.1, 0.5));
+        e.mouse(&m(MouseAction::Motion, 13.9, 1.5));
+        e.mouse(&m(MouseAction::Release, 13.9, 1.5));
+        assert_eq!(e.sel_col, Some(21));
+        assert_eq!(e.agent_selection_text().as_deref(), Some("7da865c9 bf1c2198; do"));
+        // A rectangle (alt-drag) is copied as it is.
+        let alt = |action, x, y| MouseMsg { action, button: 1, mods: MOD_ALT, x, y };
+        e.mouse(&alt(MouseAction::Press, 0.1, 0.5));
+        e.mouse(&alt(MouseAction::Motion, 29.9, 1.5));
+        e.mouse(&alt(MouseAction::Release, 29.9, 1.5));
+        assert_eq!(e.sel_col, None);
+        assert_eq!(e.agent_selection_text(), e.selection_text());
     }
 
     #[test]
