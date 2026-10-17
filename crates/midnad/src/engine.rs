@@ -61,6 +61,8 @@ pub struct Engine {
     input: input::Input,
     /// The terminal has an installed selection.
     has_selection: bool,
+    /// The column the selection starts at (in reading order); None for a rectangle.
+    sel_col: Option<u16>,
     /// Selection or modes changed: send a frame even when no row is dirty.
     meta_dirty: bool,
     /// Cursor (position, style) in the last frame: an app that only moves the cursor (Claude
@@ -90,6 +92,7 @@ impl Engine {
             cell_h: 16,
             input: input::Input::new(),
             has_selection: false,
+            sel_col: None,
             meta_dirty: false,
             sent_cursor: None,
             colors_gen: 0,

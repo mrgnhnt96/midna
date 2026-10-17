@@ -174,9 +174,10 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionScrollParams, OkResult>("session.scroll").mutating().d(
             "Scroll a terminal's viewport through its scrollback: `to: top|bottom`, or by `lines` / `pages` (negative = up). \
              All attached windows follow; typing snaps back to the bottom."),
-        m::<IdParams, SessionSelectionResult>("session.selection").d(
+        m::<SessionSelectionParams, SessionSelectionResult>("session.selection").d(
             "The text currently selected in a terminal (by the human dragging or double/triple-clicking, or by session.find), \
-             with soft-wrapped lines joined and wide characters intact. Null when nothing is selected."),
+             with soft-wrapped lines joined and wide characters intact. Null when nothing is selected. `agent: true` also \
+             joins the rows an agent's TUI (Claude Code) broke at the right edge itself, so a long command copies as one line."),
         m::<IdParams, OkResult>("session.select_all").mutating().d(
             "Select everything in a terminal (scrollback and screen), as ⌘A does; read it with session.selection."),
         m::<IdParams, Value>("session.clear").mutating().result_any().d(

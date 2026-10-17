@@ -1296,7 +1296,7 @@ impl TerminalView {
             return;
         }
         // Erase once copied: the keys that erase drop the engine's selection.
-        self.call("session.selection", json!({ "id": self.session_id }), window, cx, |t, r, _, cx| {
+        self.call("session.selection", json!({ "id": self.session_id, "agent": self.is_agent() }), window, cx, |t, r, _, cx| {
             if let Some(text) = r.ok().and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string)) {
                 Self::to_clipboard(text, cx);
                 t.erase_selection(cx);
@@ -1315,7 +1315,7 @@ impl TerminalView {
             return;
         }
         // The engine formats the selection: wide chars, wrapped lines and scrolled-off rows.
-        self.call("session.selection", json!({ "id": self.session_id }), window, cx, |_, r, _, cx| {
+        self.call("session.selection", json!({ "id": self.session_id, "agent": self.is_agent() }), window, cx, |_, r, _, cx| {
             if let Some(text) = r.ok().and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string)) {
                 Self::to_clipboard(text, cx);
             }
