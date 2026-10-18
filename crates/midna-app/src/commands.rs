@@ -56,6 +56,9 @@ pub enum Run {
     OpenIde { ide: String, dir: String },
     /// Open a new GitHub issue with this Mac's details filled in (`report.rs`).
     ReportIssue,
+    /// Name and store a secret in the Keychain from the focused terminal's sheet
+    /// (`terminal/secret_paste.rs`).
+    AddSecret,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +614,12 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .kw("preferences config screen")
             .keys(key("keys.settings"))
             .cli("midna settings list"),
+    );
+    out.push(
+        Command::new("secret.add", CmdIcon::New, "Add a secret…", Run::AddSecret)
+            .sub("stored in your Keychain; agents use it as [secret:NAME] without seeing it")
+            .kw("secret new store keychain token api key password credential env")
+            .cli("<command> | midna secret save NAME"),
     );
     out.push(
         Command::new("notify.clear", CmdIcon::Deny, "Clear notifications", Run::Rpc { method: "notify.clear".into(), params: json!({}) })

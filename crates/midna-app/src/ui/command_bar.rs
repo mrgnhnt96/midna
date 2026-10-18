@@ -419,6 +419,14 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             }
         }
         Run::ReportIssue => report_issue(m, cx),
+        Run::AddSecret => {
+            // The focused pane: the split when it has focus, else the main terminal.
+            let split = m.split.as_ref().map(|s| s.view.clone()).filter(|v| v.read(cx).focus_handle().contains_focused(window, cx));
+            match split.or_else(|| m.terminal.clone()) {
+                Some(view) => view.update(cx, |t, cx| t.add_secret(window, cx)),
+                None => m.toast("Open a terminal first to add a secret", cx),
+            }
+        }
         Run::Resolve { need, resolution } => {
             m.resolve(need, resolution, cx);
             m.toast(format!("✓ {title}"), cx);
