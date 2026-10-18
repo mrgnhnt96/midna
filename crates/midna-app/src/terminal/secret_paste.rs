@@ -10,6 +10,9 @@
 //!
 //! ⌥⌘V (Paste as Secret, also in the right-click menu) opens the sheet in any terminal, even
 //! when nothing was detected: then the whole clipboard is the secret.
+//!
+//! "Add a secret…" (⌘K) opens it with a name and a hidden value to type or paste, and only
+//! stores it: nothing goes to the terminal.
 use super::TerminalView;
 use crate::frame::ClientMsg;
 use crate::theme::Theme;
@@ -31,6 +34,8 @@ pub struct Sheet {
     explicit: bool,
     /// From the Kass composer: send it as the composer would (with ↩), not as a paste.
     submit: bool,
+    /// "Add a secret…": the value field. Then `rows` holds just the name and nothing is pasted.
+    value: Option<LineInput>,
 }
 
 struct Row {
@@ -115,7 +120,21 @@ impl TerminalView {
             r.input.field.update(cx, |f, cx| f.select_all(cx));
             r.input.focus.focus(window, cx);
         }
-        self.secret_sheet = Some(Sheet { text, found, rows, project_only: self.project_for_secrets().is_some(), error: None, busy: false, explicit, submit: false });
+        self.secret_sheet = Some(Sheet { text, found, rows, project_only: self.project_for_secrets().is_some(), error: None, busy: false, explicit, submit: false, value: None });
+        cx.notify();
+    }
+
+    /// "Add a secret…" (⌘K): a name and a value, stored without pasting anything.
+    pub fn add_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secret_sheet.is_some() {
+            return self.refocus_secret_sheet(window, cx);
+        }
+        let name = LineInput::new(cx, false, "NAME");
+        name.focus.focus(window, cx);
+        let rows = vec![Row { input: name, store: true, label: "Name", shown: String::new() }];
+        let value = Some(LineInput::new(cx, true, "Type or paste the value"));
+        let project_only = self.project_for_secrets().is_some();
+        self.secret_sheet = Some(Sheet { text: String::new(), found: vec![], rows, project_only, error: None, busy: false, explicit: true, submit: false, value });
         cx.notify();
     }
 
@@ -162,6 +181,24 @@ impl TerminalView {
         if s.busy {
             return;
         }
+        if let Some(v) = s.value.as_ref() {
+            let name = secrets::normalize_name(&s.rows[0].input.text(cx));
+            let value = v.text(cx);
+            s.error = if !secrets::valid_name(&name) {
+                Some("The name needs a letter or _ first, then A–Z, 0–9 or _.".into())
+            } else if value.trim().is_empty() {
+                Some("Type or paste the secret's value.".into())
+            } else {
+                None
+            };
+            if s.error.is_some() {
+                cx.notify();
+                return;
+            }
+            let project_id = if s.project_only { project } else { None };
+            let call = json!({ "name": name, "value": value, "project_id": project_id, "label": "Secret" });
+            return self.store_calls(vec![call], None, window, cx);
+        }
         let mut names: Vec<Option<String>> = vec![];
         let mut calls = vec![];
         for (f, r) in s.found.iter().zip(&s.rows) {
@@ -189,6 +226,12 @@ impl TerminalView {
             // Nothing checked: that's "paste anyway".
             return self.paste_anyway(window, cx);
         }
+        self.store_calls(calls, Some(text), window, cx);
+    }
+
+    /// `secret.set` each call, then paste `text` (None: just close the sheet).
+    fn store_calls(&mut self, calls: Vec<serde_json::Value>, text: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.secret_sheet.as_mut() else { return };
         s.busy = true;
         s.error = None;
         cx.notify();
@@ -204,10 +247,13 @@ impl TerminalView {
                 })
                 .await;
             let _ = this.update_in(cx, |t, window, cx| match r {
-                Ok(()) => {
-                    let submit = t.secret_sheet.take().is_some_and(|s| s.submit);
-                    t.send_out(text, submit, window, cx);
-                }
+                Ok(()) => match text {
+                    Some(text) => {
+                        let submit = t.secret_sheet.take().is_some_and(|s| s.submit);
+                        t.send_out(text, submit, window, cx);
+                    }
+                    None => t.close_secret_sheet(window, cx),
+                },
                 Err(e) => {
                     if let Some(s) = t.secret_sheet.as_mut() {
                         s.busy = false;
@@ -223,15 +269,16 @@ impl TerminalView {
     fn sheet_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let Some(s) = self.secret_sheet.as_mut() else { return };
-        let focused = s.rows.iter().position(|r| r.input.focus.is_focused(window));
-        if ks.key == "tab" && !ks.modifiers.platform && !s.rows.is_empty() {
-            let n = s.rows.len();
+        let mut inputs: Vec<&mut LineInput> = s.rows.iter_mut().map(|r| &mut r.input).chain(s.value.as_mut()).collect();
+        let focused = inputs.iter().position(|i| i.focus.is_focused(window));
+        if ks.key == "tab" && !ks.modifiers.platform && !inputs.is_empty() {
+            let n = inputs.len();
             let i = match focused {
                 Some(i) if ks.modifiers.shift => (i + n - 1) % n,
                 Some(i) => (i + 1) % n,
                 None => 0,
             };
-            s.rows[i].input.focus.focus(window, cx);
+            inputs[i].focus.focus(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -241,7 +288,7 @@ impl TerminalView {
             return;
         }
         let outcome = match focused {
-            Some(i) => s.rows[i].input.on_key(ev, cx),
+            Some(i) => inputs[i].on_key(ev, cx),
             None => match ks.key.as_str() {
                 "enter" => KeyOutcome::Submit,
                 "escape" => KeyOutcome::Cancel,
@@ -251,16 +298,21 @@ impl TerminalView {
         match outcome {
             KeyOutcome::Submit => self.store_secrets(window, cx),
             KeyOutcome::Cancel => self.close_secret_sheet(window, cx),
+            // A key for a name field goes on: a stopped key counts as handled, and macOS then
+            // never sends its text to the field (only backspace would work). The terminal's own
+            // key handler ignores keys while the sheet is open.
+            KeyOutcome::Ignored if focused.is_some() => return,
             KeyOutcome::Ignored => {}
         }
-        // Nothing typed here reaches the terminal underneath.
         cx.stop_propagation();
     }
 
     pub(super) fn render_secret_sheet(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = self.secret_sheet.as_ref()?;
         let n = s.rows.len();
+        let adding = s.value.is_some();
         let title = match (s.explicit, n) {
+            _ if adding => "Add a secret".to_string(),
             (true, 1) => "Paste as a secret".to_string(),
             (_, 1) => format!("This looks like a {}", s.rows[0].label.to_lowercase().replace("api ", "API ").replace("jwt", "JWT").replace("github", "GitHub")),
             _ => format!("This paste has {n} secrets"),
@@ -270,7 +322,9 @@ impl TerminalView {
             Some(_) => "Claude",
             None => "this terminal",
         };
-        let body = if self.is_agent() {
+        let body = if adding {
+            "Stored in your Keychain. Agents use it with `midna secret exec NAME -- <command>` and never see the value.".to_string()
+        } else if self.is_agent() {
             format!("Anything pasted here is sent to {who}'s model. Store it in your Keychain and paste a reference instead; the agent uses it with `midna secret exec`.")
         } else {
             "Store it in your Keychain and paste a reference. Agents use it with `midna secret exec NAME -- <command>`.".to_string()
@@ -288,7 +342,33 @@ impl TerminalView {
                 .border_color(if on { t.accent } else { t.line })
                 .when(on, |d| d.bg(t.accent).text_color(t.accent_fg).text_size(px(10.)).child("✓"))
         };
-        let rows = s.rows.iter().enumerate().map(|(i, r)| {
+        let field = |id: ElementId, input: &LineInput| {
+            div()
+                .id(id)
+                .h(px(26.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if input.focus.is_focused(window) { t.accent } else { t.line })
+                .bg(t.bg)
+                .font_family(mono.clone())
+                .text_size(px(12.))
+                .overflow_hidden()
+                .cursor_text()
+                .child(input.field.clone())
+        };
+        let labeled = |label: &'static str, el: Stateful<Div>| div().flex().flex_col().gap(px(4.)).child(div().text_size(px(11.)).text_color(t.dim).child(label)).child(el);
+        let new_secret = s.value.as_ref().map(|v| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(labeled("Name", field("secret-new-name".into(), &s.rows[0].input)))
+                .child(labeled("Value", field("secret-new-value".into(), v)))
+        });
+        let rows = s.rows.iter().enumerate().filter(|_| !adding).map(|(i, r)| {
             let store = r.store;
             div()
                 .flex()
@@ -313,25 +393,7 @@ impl TerminalView {
                         .child(div().font_family(mono.clone()).text_size(px(12.)).text_color(if store { t.fg } else { t.dim }).truncate().child(r.shown.clone())),
                 )
                 .child(div().text_color(t.dim).child("→"))
-                .child(
-                    div()
-                        .id(("secret-name", i))
-                        .w(px(200.))
-                        .h(px(26.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(5.))
-                        .border_1()
-                        .border_color(if r.input.focus.is_focused(window) { t.accent } else { t.line })
-                        .bg(t.bg)
-                        .font_family(mono.clone())
-                        .text_size(px(12.))
-                        .overflow_hidden()
-                        .cursor_text()
-                        .when(!store, |d| d.opacity(0.5))
-                        .child(r.input.field.clone()),
-                )
+                .child(field(("secret-name", i).into(), &r.input).w(px(200.)).when(!store, |d| d.opacity(0.5)))
         });
         let scope = self.project_for_secrets().map(|_| {
             let on = s.project_only;
@@ -352,7 +414,7 @@ impl TerminalView {
                     cx.notify();
                 }))
         });
-        let store_label = if s.busy { "Storing…".to_string() } else if n == 1 { "Store and paste reference  ↩".into() } else { "Store checked and paste  ↩".into() };
+        let store_label = if s.busy { "Storing…".to_string() } else if adding { "Store  ↩".into() } else if n == 1 { "Store and paste reference  ↩".into() } else { "Store checked and paste  ↩".into() };
         let card = div()
             .id("secret-sheet-card")
             .occlude()
@@ -372,7 +434,8 @@ impl TerminalView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(title))
             .child(div().text_color(t.dim).child(body))
-            .child(div().flex().flex_col().gap(px(10.)).children(rows))
+            .children(new_secret)
+            .when(!adding, |d| d.child(div().flex().flex_col().gap(px(10.)).children(rows)))
             .children(scope)
             .when_some(s.error.clone(), |d, e| d.child(div().text_color(t.err).text_size(px(12.)).child(e)))
             .child(
@@ -381,7 +444,7 @@ impl TerminalView {
                     .justify_end()
                     .gap(px(8.))
                     .child(btn(t, "secret-cancel", "Cancel").on_click(cx.listener(|t, _, w, cx| t.close_secret_sheet(w, cx))))
-                    .child(btn(t, "secret-anyway", "Paste anyway").on_click(cx.listener(|t, _, w, cx| t.paste_anyway(w, cx))))
+                    .when(!adding, |d| d.child(btn(t, "secret-anyway", "Paste anyway").on_click(cx.listener(|t, _, w, cx| t.paste_anyway(w, cx)))))
                     .child(btn_primary(t, "secret-store", store_label).on_click(cx.listener(|t, _, w, cx| t.store_secrets(w, cx)))),
             );
         Some(
