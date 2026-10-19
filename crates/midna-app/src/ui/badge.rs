@@ -2781,11 +2781,14 @@ impl Badge {
             };
             div().absolute().top(px(6.)).w(px(LIST_W)).flex().justify_center().map(|d| if right { d.right_0() } else { d.left_0() }).child(pill)
         });
+        // As tall as its rows (up to `LIST_H`), so a short list sits against Clear and the badge
+        // in a bottom corner instead of at the top of an empty viewport.
+        let fit = tops.last().zip(heights.last()).map_or(LIST_H, |(t, h)| (LIST_TOP + t + h + LIST_TOP).min(LIST_H));
         let viewport = div()
             .id("badge-list")
             .relative()
             .w(px(LIST_W + LIST_BLEED))
-            .h(px(LIST_H))
+            .h(px(fit))
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|b, e: &ScrollWheelEvent, _, cx| b.wheel(f32::from(e.delta.pixel_delta(px(18.)).y), cx)))
             .child(measure(self.zones.viewport.clone()))
