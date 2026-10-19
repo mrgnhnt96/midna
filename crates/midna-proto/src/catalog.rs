@@ -237,7 +237,7 @@ fn build() -> Vec<MethodSpec> {
              it again doesn't bring it back, only links.add does. `restore: true` puts a removed link back as it was (undo). Returns the link. Defaults to \
              your own terminal."),
         m::<LinksAddParams, Link>("links.add").mutating().d(
-            "Add a link (http(s) URL or absolute file path) to a terminal's links on purpose, pinned by default, with an \
+            "Add a link (http(s) URL, app link such as taskboard://…, or absolute file path) to a terminal's links on purpose, pinned by default, with an \
              optional title and a note on why it matters. Use it for something important the transcript would not show as \
              a link, or to give one a better name. Adding a target that is already there updates its title/note and pins it. \
              Defaults to your own terminal."),

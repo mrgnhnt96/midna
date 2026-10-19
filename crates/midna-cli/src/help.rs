@@ -229,7 +229,7 @@ pub static VERBS: &[Verb] = &[
         usage: "links [--session <id>] [--kind pr|artifact|web|file] [--pinned] [--turn N|last]\n       \
                 links pin|unpin <link-id|url|path> [--session <id>]\n       \
                 links remove <link-id|url|path> [--session <id>]\n       \
-                links add <url|path> [--title T] [--why <note>] [--no-pin] [--session <id>]\n       \
+                links add <url|app-link|path> [--title T] [--why <note>] [--no-pin] [--session <id>]\n       \
                 links patterns [list]\n       \
                 links patterns set <owner> --rule '<regex> = <url template> [agents] [project:<name>]'…\n       \
                 links patterns clear <owner>",

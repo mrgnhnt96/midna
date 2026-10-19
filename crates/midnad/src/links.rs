@@ -384,8 +384,10 @@ pub fn add(d: &Daemon, sid: &str, p: &LinksAddParams, by: Actor) -> Result<Link,
     } else if target.starts_with('/') {
         let cwd = d.core().state.session(sid).map(|s| s.cwd.clone()).unwrap_or_default();
         (LinkKind::File, target.to_string(), file_title(target, &cwd))
+    } else if let Some(found) = added_app_link(target, &crate::schemes::app_for) {
+        found
     } else {
-        return Err(RpcError::bad_params("target must be an http(s) URL or an absolute path"));
+        return Err(RpcError::bad_params("target must be an http(s) URL, an app link (taskboard://…) or an absolute path"));
     };
     let now = time::now_rfc3339();
     let turn = turn_at(&prompt_times(d, sid), time::now_unix());
@@ -591,6 +593,13 @@ fn urls_in_with(text: &str, source: LinkSource, via: Option<String>, all: bool, 
     out.into_iter().map(|(_, f)| f).collect()
 }
 
+/// An added `<scheme>://…` target whose scheme an app opens, as the scanner records it.
+fn added_app_link(target: &str, app_for: &dyn Fn(&str) -> Option<String>) -> Option<(LinkKind, String, String)> {
+    let (scheme, rest) = target.split_once("://")?;
+    let app = app_for(scheme).filter(|_| !rest.is_empty())?;
+    Some((LinkKind::Web, target.to_string(), app_title(target, &app)))
+}
+
 /// An app link's title: the app, then what follows the scheme (`Taskboard · #/?task=T6`).
 fn app_title(url: &str, app: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -660,6 +669,18 @@ mod tests {
 
     fn kinds(f: &[Found]) -> Vec<(LinkKind, &str)> {
         f.iter().map(|f| (f.kind, f.target.as_str())).collect()
+    }
+
+    #[test]
+    fn adds_app_links() {
+        let taskboard = |scheme: &str| (scheme == "taskboard").then(|| "Taskboard".to_string());
+        assert_eq!(
+            added_app_link("taskboard://#/?task=T6", &taskboard),
+            Some((LinkKind::Web, "taskboard://#/?task=T6".to_string(), "Taskboard · #/?task=T6".to_string()))
+        );
+        assert_eq!(added_app_link("foo://bar", &taskboard), None);
+        assert_eq!(added_app_link("taskboard://", &taskboard), None);
+        assert_eq!(added_app_link("notes.md", &taskboard), None);
     }
 
     #[test]
