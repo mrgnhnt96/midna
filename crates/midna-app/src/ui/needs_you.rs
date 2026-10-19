@@ -10,7 +10,6 @@ use crate::model::*;
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use serde_json::json;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,8 +53,6 @@ pub struct Stack {
     scroll: ScrollHandle,
     /// Handled during this pass, for the "All clear" summary.
     log: Vec<(String, Outcome)>,
-    /// Live screen tails for items without a `screen_excerpt` (None while loading).
-    excerpts: HashMap<String, Option<Vec<String>>>,
     /// Resolved here but maybe still in a `needs_you.list` fetched before the resolve
     /// landed; hidden for a few seconds (the daemon's list catches up well within that).
     gone: HashMap<String, std::time::Instant>,
@@ -76,7 +73,6 @@ impl Stack {
             clicked: None,
             scroll: ScrollHandle::new(),
             log: vec![],
-            excerpts: HashMap::new(),
             gone: HashMap::new(),
             edits: HashMap::new(),
             current: None,
@@ -93,7 +89,6 @@ pub fn on_open(m: &mut MainWindow) {
     s.filter = Filter::All;
     s.clicked = None;
     s.log.clear();
-    s.excerpts.clear();
     s.gone.clear();
     // dev: screenshot the approve dropdown
     s.menu = crate::dev::var("MIDNA_DEBUG_APPROVE_MENU").is_ok();
@@ -392,41 +387,8 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
     cx.stop_propagation();
 }
 
-/// Fetch the live screen tail for the selected item when the item carries no excerpt.
-fn ensure_excerpt(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let Some(n) = current(m) else { return };
-    if n.screen_excerpt.as_ref().is_some_and(|e| !e.is_empty()) || m.stack.excerpts.contains_key(&n.id) {
-        return;
-    }
-    let Some(sid) = n.session_id.clone() else {
-        return;
-    };
-    m.stack.excerpts.insert(n.id.clone(), None);
-    let backend = m.backend.clone();
-    let nid = n.id.clone();
-    cx.spawn(async move |this, cx| {
-        let res = cx.background_executor().spawn(async move { backend.call("session.read", json!({"id": sid, "lines": 12})) }).await;
-        let lines = res.ok().and_then(|v| v.get("text").and_then(|t| t.as_str()).map(tail)).unwrap_or_default();
-        let _ = this.update(cx, |m, cx| {
-            m.stack.excerpts.insert(nid, Some(lines));
-            cx.notify();
-        });
-    })
-    .detach();
-}
-
 /// How many lines of screen a card shows.
 const TAIL: usize = 8;
-
-/// The last `TAIL` lines, without trailing blanks.
-fn tail(text: &str) -> Vec<String> {
-    let mut lines: Vec<String> = text.lines().map(|l| l.trim_end().to_string()).collect();
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-    let skip = lines.len().saturating_sub(TAIL);
-    lines.split_off(skip)
-}
 
 // ------------------------------------------------------------------ view
 
@@ -440,7 +402,6 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
     if m.stack.filter != Filter::All && ordered(m).is_empty() {
         m.stack.filter = Filter::All;
     }
-    ensure_excerpt(m, cx);
     let m = &*m;
     let order = ordered(m);
     let cur_i = current_index(m, &order);
@@ -654,7 +615,8 @@ fn hint(t: &Theme, key: &str, label: &str) -> Div {
     div().flex().gap(px(5.)).child(kbd(t, key.to_string()).text_color(t.fg)).child(label.to_string())
 }
 
-/// The selected item in full: kind, terminal, title, why, the request, its screen.
+/// The selected item in full: kind, terminal, title, why, the request, and a permission
+/// prompt's screen (the prompt is the question). Anything else is answered in its terminal.
 fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let mt = meta(t, n);
     let sess = session_of(m, n);
@@ -672,20 +634,12 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
     } else if let Some(r) = n.approval.as_ref().and_then(|a| a.matched_rule.clone()) {
         format!("Rule {r} asks for this")
     } else {
-        match n.kind {
-            NeedsYouKind::PermissionPrompt => "The agent's own permission prompt".into(),
-            NeedsYouKind::Approval => "No rule allows this yet".into(),
-            NeedsYouKind::Blocked => "Raised with midna attention".into(),
-            NeedsYouKind::Note => "Raised with midna attention --note".into(),
-            NeedsYouKind::Failed => sess.and_then(|s| s.status.exit_code).map(|c| format!("Exited with code {c}")).unwrap_or_else(|| "Non-zero exit".into()),
-            _ => String::new(),
-        }
+        String::new()
     };
     let mut grid = div().flex().flex_col().gap(px(6.)).text_size(px(13.));
     let grow = |label: &str, value: AnyElement| {
         div().flex().gap(px(12.)).child(div().w(px(74.)).flex_none().text_color(t.dim).child(label.to_string())).child(div().flex_1().min_w_0().child(value))
     };
-    grid = grid.child(grow("Asked by", div().child(who.clone()).into_any_element()));
     if !why.is_empty() {
         grid = grid.child(grow("Why", div().child(why).into_any_element()));
     }
@@ -693,16 +647,9 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
         grid = grid.child(grow("Request", div().truncate().font_family(t.mono_font.clone()).text_size(px(12.5)).child(r).into_any_element()));
     }
 
-    // screen excerpt: the item's own, else the live tail of its terminal
-    let excerpt: Option<Vec<String>> =
-        n.screen_excerpt.clone().filter(|e| !e.is_empty()).or_else(|| m.stack.excerpts.get(&n.id).cloned().flatten()).filter(|e| e.iter().any(|l| !l.trim().is_empty()));
-    let loading = excerpt.is_none() && m.stack.excerpts.get(&n.id).is_some_and(|e| e.is_none());
-    let peek = (excerpt.is_some() || loading).then(|| {
-        let lines = excerpt.clone().unwrap_or_default();
+    let excerpt = n.screen_excerpt.clone().filter(|e| n.kind == NeedsYouKind::PermissionPrompt && e.iter().any(|l| !l.trim().is_empty()));
+    let peek = excerpt.map(|lines| {
         let mut body = div().flex().flex_col().px(px(12.)).py(px(8.)).font_family(t.mono_font.clone()).text_size(px(12.)).line_height(px(12. * 1.6)).overflow_hidden();
-        if loading {
-            body = body.child(div().text_color(t.dim).child("Reading the terminal…"));
-        }
         for l in &lines {
             let color = if l.contains("error") || l.contains("panicked") || l.starts_with("exit ") {
                 t.err
@@ -777,26 +724,6 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
         div().flex().items_center().gap(px(8.)).text_size(px(12.)).text_color(t.dim).child(Icon::PopOut.el(12., t.dim)).child("This one's longer than fits here: answer it in its terminal (⌘O).")
     });
 
-    let open = sess.is_some().then(|| {
-        div()
-            .id("ny-open")
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(8.))
-            .h(px(32.))
-            .px(px(12.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(t.line)
-            .bg(t.raised)
-            .cursor_pointer()
-            .hover(|s| s.bg(t.line))
-            .on_click(cx.listener(|m, _, w, cx| open_terminal(m, w, cx)))
-            .child(Icon::PopOut.el(13., t.fg))
-            .child("Open terminal")
-            .child(kbd(t, "⌘O").text_color(t.dim))
-    });
     let clicked = m.stack.clicked.as_deref() == Some(n.id.as_str());
     div()
         .flex()
@@ -836,8 +763,6 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
                         )
                         .when(clicked, |d| d.child(div().text_size(px(11.)).text_color(t.dim.opacity(0.7)).child("from your notification"))),
                 )
-                .child(div().flex_1())
-                .children(open),
         )
         .map(|d| match n.setting.is_some() {
             true => d
@@ -994,6 +919,27 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
             );
         }
     }
+    if sess.is_some() {
+        actions = actions.child(
+            div()
+                .id("ny-open")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .h(px(38.))
+                .px(px(16.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(t.line)
+                .text_size(px(14.))
+                .cursor_pointer()
+                .hover(|s| s.bg(t.raised))
+                .on_click(cx.listener(|m, _, w, cx| open_terminal(m, w, cx)))
+                .child(Icon::PopOut.el(13., t.fg))
+                .child("Open terminal")
+                .child(kbd(t, "⌘O").text_color(t.dim)),
+        );
+    }
     actions
 }
 
@@ -1045,15 +991,6 @@ fn empty_state(m: &MainWindow, t: &Theme, back_name: &str, cx: &mut Context<Main
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn tail_keeps_last_eight_without_trailing_blanks() {
-        let text = (1..=12).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n") + "\n\n  \n";
-        let t = super::tail(&text);
-        assert_eq!(t.len(), 8);
-        assert_eq!(t.first().unwrap(), "l5");
-        assert_eq!(t.last().unwrap(), "l12");
-    }
-
     #[test]
     fn too_long_when_the_card_cant_show_the_question() {
         use crate::model::NeedsYou;
