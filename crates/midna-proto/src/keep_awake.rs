@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(parse_today(&json!("clear"), now), Ok(None));
         assert_eq!(parse_today(&Value::Null, now), Ok(None));
         assert!(parse_today(&json!("whenever"), now).is_err());
-        assert_eq!(parse_today(&json!(false), now).unwrap().unwrap().on, false);
+        assert!(!parse_today(&json!(false), now).unwrap().unwrap().on);
     }
 
     #[test]

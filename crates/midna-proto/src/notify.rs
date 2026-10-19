@@ -541,9 +541,9 @@ mod tests {
         }
         let settings = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map_or(String::new(), |(_, v)| v.to_string());
         let set = settings(&[("notify.image", "all.png"), ("notify.image.approval", "approval.jpg"), ("notify.image.failed", "none")]);
-        assert_eq!(kind_image(&home, "approval", &set), Some(home.join("notify/images/approval.jpg")));
-        assert_eq!(kind_image(&home, "done", &set), Some(home.join("notify/images/all.png")));
-        assert_eq!(kind_image(&home, "failed", &set), None);
+        assert_eq!(kind_image(&home, "approval", set), Some(home.join("notify/images/approval.jpg")));
+        assert_eq!(kind_image(&home, "done", set), Some(home.join("notify/images/all.png")));
+        assert_eq!(kind_image(&home, "failed", set), None);
         assert_eq!(kind_image(&home, "done", settings(&[])), None);
         assert_eq!(image_file(&home, "missing.png"), None);
         assert_eq!(image_file(&home, "../notify/images/all.png"), None);
