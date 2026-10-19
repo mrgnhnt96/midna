@@ -2,7 +2,7 @@
 //! spikes/gpui-terminal/src/engine.rs). Not used when talking to midnad.
 use crate::frame::*;
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::CellWide;
+use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Terminal};
 use std::os::fd::RawFd;
@@ -122,7 +122,10 @@ impl Engine {
                         cell.ch = gbuf[0];
                         rd.extras.push((x, gbuf.iter().collect()));
                     }
+                    let mut bg_only = false;
                     if let Ok(raw) = c.raw_cell() {
+                        // Erasing with a bg set leaves cells with no text or style, only a color.
+                        bg_only = matches!(raw.content_tag(), Ok(CellContentTag::BgColorRgb | CellContentTag::BgColorPalette));
                         match raw.wide() {
                             Ok(CellWide::Wide) => cell.flags |= F_WIDE,
                             Ok(CellWide::SpacerTail) | Ok(CellWide::SpacerHead) => cell.flags |= F_SPACER,
@@ -158,6 +161,8 @@ impl Engine {
                         }
                         cell.fg = fg;
                         cell.bg = bg;
+                    } else if bg_only {
+                        cell.bg = c.bg_color().ok().flatten().map(|c| [c.r, c.g, c.b]).unwrap_or(dbg);
                     }
                     rd.cells.push(cell);
                     x += 1;
