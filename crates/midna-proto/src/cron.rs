@@ -585,7 +585,7 @@ mod tests {
         assert!(runs.windows(2).all(|w| w[1] - w[0] >= 23 * 3600));
         let every = Cron::parse("*/5 * * * *").unwrap();
         let n = every.next_after(base).unwrap();
-        assert!(n > base && n - base <= 300 && time::local_parts(n).4 % 5 == 0);
+        assert!(n > base && n - base <= 300 && time::local_parts(n).4.is_multiple_of(5));
         // Feb 29 is found years out; Feb 30 never.
         assert!(Cron::parse("0 0 29 2 *").unwrap().next_after(base).is_some());
         assert_eq!(Cron::parse("0 0 30 2 *").unwrap().next_after(base), None);
