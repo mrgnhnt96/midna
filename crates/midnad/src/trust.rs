@@ -2,8 +2,8 @@
 //!
 //! In a folder it hasn't seen, Claude Code asks "do you trust the files in this folder?" before
 //! it starts (Codex has the same for a directory). No hook fires while that is up, so without
-//! this the terminal just sits at idle/started. Once a second, every agent terminal that hasn't
-//! reported a conversation yet (or has a trust item open) is read: a trust dialog on screen
+//! this the terminal just sits at idle/started. Once a second, every agent terminal whose process
+//! hasn't sent a hook yet (or has a trust item open) is read: a trust dialog on screen
 //! raises a `permission_prompt` item titled [`TITLE`] and sets the status to needs_you; the
 //! dialog gone (answered here, in the terminal, or the agent exited) closes it again.
 //! Approve/deny pick "Yes" / "No" in the dialog (`needs_you::resolve` → [`answer`]).
@@ -59,7 +59,9 @@ pub fn tick(d: &Daemon) {
             .filter_map(|s| {
                 s.agent?;
                 let open = core.state.needs_you.iter().find(|n| n.session_id.as_deref() == Some(&s.id) && is_trust_item(n)).map(|n| n.id.clone());
-                let fresh = s.agent_info.as_ref().is_none_or(|i| i.conversation_id.is_none());
+                // No hook from this process yet: a resumed or restarted agent asks again (Claude
+                // never remembers trusting ~), though its conversation is known.
+                let fresh = !core.agents.get(&s.id).is_some_and(|a| a.hooked);
                 let quiet = matches!(s.status.state, StatusState::Idle | StatusState::NeedsYou);
                 if open.is_none() && !(fresh && quiet && s.pid.is_some()) {
                     return None;

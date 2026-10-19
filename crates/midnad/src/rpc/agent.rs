@@ -28,6 +28,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     if let Some(pid) = ctx.pid.filter(|_| p.session.is_none()) {
         crate::guard::note_hook_caller(d, &sid, pid);
     }
+    d.core().agents.entry(sid.clone()).or_default().hooked = true;
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
         crate::links::after_hook(d, &sid, p.agent, ev, payload);
