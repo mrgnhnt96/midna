@@ -2,7 +2,7 @@
 //! must be created and used on one thread (see `term.rs`).
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::{CellSemanticContent, CellWide, RowSemanticPrompt, Screen};
+use libghostty_vt::screen::{CellContentTag, CellSemanticContent, CellWide, RowSemanticPrompt, Screen};
 use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Terminal};
 use midna_proto::frame::*;
@@ -289,7 +289,10 @@ impl Engine {
                         cell.ch = gbuf[0];
                         rd.extras.push((x, gbuf.iter().collect()));
                     }
+                    let mut bg_only = false;
                     if let Ok(raw) = c.raw_cell() {
+                        // Erasing with a bg set leaves cells with no text or style, only a color.
+                        bg_only = matches!(raw.content_tag(), Ok(CellContentTag::BgColorRgb | CellContentTag::BgColorPalette));
                         if matches!(raw.semantic_content(), Ok(CellSemanticContent::Input)) {
                             cell.flags |= F_INPUT;
                         }
@@ -328,6 +331,8 @@ impl Engine {
                         }
                         cell.fg = fg;
                         cell.bg = bg;
+                    } else if bg_only {
+                        cell.bg = c.bg_color().ok().flatten().map(|c| [c.r, c.g, c.b]).unwrap_or(dbg);
                     }
                     rd.cells.push(cell);
                     x += 1;
@@ -679,6 +684,19 @@ mod snapshot_tests {
         e.feed(b"\x1b[6D", 0);
         assert_eq!(e.frame().expect("cursor moved").cursor, Some((7, 0)));
         assert!(e.frame().is_none());
+    }
+
+    #[test]
+    fn erased_cells_keep_their_background() {
+        // TUIs fill a block by erasing with a bg set, then write words over it: the gaps
+        // are bg-only cells with no style, and they must keep the block's color.
+        let mut e = Engine::new(20, 3, None);
+        e.feed(b"\x1b[48;2;40;50;60m\x1b[Kab\x1b[3Ccd\x1b[0m", 0);
+        let f = e.frame().unwrap();
+        let row = &f.changed.iter().find(|(y, _)| *y == 0).unwrap().1;
+        for x in 0..10 {
+            assert_eq!(row.cells[x].bg, [40, 50, 60], "col {x}");
+        }
     }
 
     #[test]
