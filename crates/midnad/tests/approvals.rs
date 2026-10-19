@@ -276,6 +276,8 @@ fn trust_folders_answers_again_after_a_restart() {
     wait_for(10, "keys typed", || (fake.keys() == b"\x1b[B\r").then_some(()));
     call(&mut d.agent(Some(&sid)), "agent.hook", json!({ "agent": "claude", "event": "SessionStart", "payload": { "session_id": "conv-1" } }));
     call(&mut h, "session.restart", json!({ "id": sid }));
+    // The old process's last hook lands after the new one started: it doesn't count for it.
+    call(&mut d.agent(Some(&sid)), "agent.hook", json!({ "agent": "claude", "event": "SessionEnd", "payload": { "session_id": "conv-1" } }));
     wait_for(10, "keys typed again", || (fake.keys() == b"\x1b[B\r\x1b[B\r").then_some(()));
 }
 

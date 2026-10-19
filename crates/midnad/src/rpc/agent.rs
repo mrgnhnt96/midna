@@ -28,7 +28,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     if let Some(pid) = ctx.pid.filter(|_| p.session.is_none()) {
         crate::guard::note_hook_caller(d, &sid, pid);
     }
-    d.core().agents.entry(sid.clone()).or_default().hooked = true;
+    note_hooked(d, &sid, ctx.pid);
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
         track(d, &sid, &project, p.agent, ev, payload);
         crate::links::after_hook(d, &sid, p.agent, ev, payload);
@@ -104,6 +104,32 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         retitle_prompt(d, &sid, &crate::agent_state::prompt_label(payload), crate::agent_state::question(payload));
     }
     ok(AgentHookResult { ok: true, status: Some(status) })
+}
+
+/// Mark the terminal's agent as past its trust dialog (`AgentRt::hooked`). Only a hook from
+/// the terminal's current process tree counts: after a restart, the old agent's late hooks
+/// (its SessionEnd) arrive while the new one may still show its dialog.
+fn note_hooked(d: &Daemon, sid: &str, caller: Option<i32>) {
+    let Some(caller) = caller else { return };
+    let root = {
+        let core = d.core();
+        if core.agents.get(sid).is_some_and(|a| a.hooked) {
+            return;
+        }
+        let Some(rt) = core.rt.get(sid) else { return };
+        rt.pid
+    };
+    let mut p = caller;
+    for _ in 0..16 {
+        if p == root {
+            d.core().agents.entry(sid.to_string()).or_default().hooked = true;
+            return;
+        }
+        match crate::procs::parent(p) {
+            Some(up) if up > 1 => p = up,
+            _ => return,
+        }
+    }
 }
 
 /// `agent.session_ended`: why the agent's session ended. `end` is what midna did to the
