@@ -768,6 +768,13 @@ impl MainWindow {
             if let (true, true, Some(file)) = (banner, p.sound, p.sound_file.as_deref()) {
                 crate::sounds::play_file(file, p.volume.unwrap_or(100));
             }
+            let age = midna_proto::time::parse_rfc3339(&e.at).map_or(-1, |t| midna_proto::time::now_unix() - t);
+            crate::lifecycle::log(&format!(
+                "badge got notification {} ({}, terminal {}, posted {age}s ago, looking {looking})",
+                e.seq,
+                p.category,
+                e.session_id.as_deref().unwrap_or("-")
+            ));
             crate::ui::badge::push(self, e.seq, e.session_id.clone(), p, cx);
             return;
         }
