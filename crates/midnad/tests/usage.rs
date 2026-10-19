@@ -36,14 +36,20 @@ fn status_line_limits_reach_session_get_and_usage_get() {
     assert!(reached(&mut h).is_empty());
 
     // The 5-hour window runs out: one event, however many status lines repeat it.
-    statusline(&mut a, 100.0, 1800);
-    statusline(&mut a, 100.0, 1800);
+    statusline(&mut a, 100.0, 3600);
+    statusline(&mut a, 100.0, 3600);
     let ev = reached(&mut h);
     assert_eq!(ev.len(), 1, "{ev:?}");
     assert_eq!((ev[0]["data"]["window"].as_str(), ev[0]["session_id"].as_str()), (Some("five_hour"), Some(sid.as_str())));
     let c = call(&mut h, "usage.get", json!({}))["claude"].clone();
     assert_eq!(c["limited"], true);
     assert_eq!(c["limited_until"], c["five_hour"]["resets_at"]);
+
+    // Another terminal repeating older numbers from the same window run changes nothing.
+    let other = open_sh(&mut h);
+    statusline(&mut d.agent(Some(&other)), 40.0, 3600);
+    let c = call(&mut h, "usage.get", json!({}))["claude"].clone();
+    assert_eq!((c["five_hour"]["used_percentage"].as_f64(), c["session"].as_str()), (Some(100.0), Some(sid.as_str())));
 
     // The account's usage outlives the terminal that reported it.
     call(&mut h, "session.close", json!({ "id": sid, "force": true }));
