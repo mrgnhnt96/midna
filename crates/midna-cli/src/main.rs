@@ -1417,7 +1417,7 @@ fn links(a: &Args, out: OutFn) -> Res {
                 let owner = a.need(3, "owner (the app's name)")?;
                 let rules: &[String] = if verb == "set" { a.all("rule") } else { &[] };
                 if verb == "set" && rules.is_empty() {
-                    return Err(Fail::Usage("links patterns set needs --rule '<regex> = <url template> [agents] [project:<name>]' (one or more); `clear` removes them".into()));
+                    return Err(Fail::Usage("links patterns set needs --rule '<regex> = <url template> [agents] [project:<name>] [preview:\"<cmd> $1\"]' (one or more); `clear` removes them".into()));
                 }
                 let v = call("links.patterns.register", json!({ "owner": owner, "patterns": rules }))?;
                 out(&v, &|v| match v["patterns"].as_array().map_or(0, Vec::len) {

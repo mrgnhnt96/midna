@@ -1750,9 +1750,18 @@ impl SettingsWindow {
                 .flat_map(|a| a.patterns.iter().map(move |r| (a.owner.as_str(), r)))
                 .map(|(owner, rule)| {
                     let (m, v) = rule.split_once('=').map(|(m, v)| (m.trim(), v.trim())).unwrap_or((rule.as_str(), ""));
+                    // the hover card's command gets a line of its own, after the URL it fills
+                    let (v, preview) = match v.split_once(" preview:") {
+                        Some((v, _)) => (v.trim_end(), midna_proto::link_patterns::LinkPattern::parse(rule).ok().map(|p| p.preview.join(" "))),
+                        None => (v, None),
+                    };
+                    let note = match preview {
+                        Some(cmd) if !cmd.is_empty() => format!("Provided by {owner} · card from `{cmd}`"),
+                        _ => format!("Provided by {owner}"),
+                    };
                     RowSpec {
                         label: m.into(),
-                        note: Some((format!("Provided by {owner}"), t.dim)),
+                        note: Some((note, t.dim)),
                         control: Control::Text { dot: None, text: v.into(), color: t.fg, action: None },
                         cli: "midna links patterns".into(),
                         who: Who::ReadOnly,

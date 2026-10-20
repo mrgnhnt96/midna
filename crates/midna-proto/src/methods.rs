@@ -1027,6 +1027,10 @@ pub struct LinkAtResult {
     /// For a `url` whose scheme an app on this Mac opens (`taskboard://…`): that app's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// For a `url` from a link pattern with `preview:"<command> …"`: that command's argv,
+    /// filled from the match. It prints JSON (`{"title", "lines", …}`) for the hover card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
