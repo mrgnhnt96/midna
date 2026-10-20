@@ -2,8 +2,10 @@
 //! `<regex> = <url template> [agents] [project:<name>]…`: what the regex matches is ⌘-clickable
 //! and opens the template with `$1`, `${name}` … filled from its capture groups (`$0` is the
 //! whole match). `agents` limits a rule to agent terminals; `project:<name>` (repeatable) to
-//! terminals in those projects (by name, id or folder).
-use regex::Regex;
+//! terminals in those projects (by name, id or folder). `preview:"<command> $1 …"` names a
+//! command whose JSON (`{"title", "lines", …}`) fills the hover card; its words are filled from
+//! the captures one by one and it runs without a shell.
+use regex::{Captures, Regex};
 
 #[derive(Clone, Debug)]
 pub struct LinkPattern {
@@ -11,6 +13,8 @@ pub struct LinkPattern {
     pub template: String,
     pub agents_only: bool,
     pub projects: Vec<String>,
+    /// The preview command's argv template (empty: none). The program never holds a capture.
+    pub preview: Vec<String>,
 }
 
 impl LinkPattern {
@@ -18,20 +22,29 @@ impl LinkPattern {
     pub fn parse(rule: &str) -> Result<LinkPattern, String> {
         let (m, v) = rule.split_once('=').map(|(m, v)| (m.trim(), v.trim())).filter(|(m, v)| !m.is_empty() && !v.is_empty()).ok_or("must look like `<regex> = <url template>`")?;
         let re = Regex::new(m).map_err(|e| format!("bad regex: {}", e.to_string().lines().last().unwrap_or("")))?;
-        let mut parts = v.split_whitespace();
-        let template = parts.next().unwrap_or("").to_string();
+        let mut parts = words(v)?.into_iter();
+        let template = parts.next().unwrap_or_default();
         if !template.contains("://") {
             return Err(format!("`{template}` is not a URL (`<scheme>://…`)"));
         }
-        let (mut agents_only, mut projects) = (false, vec![]);
+        let (mut agents_only, mut projects, mut preview) = (false, vec![], vec![]);
         for p in parts {
+            if let Some(cmd) = p.strip_prefix("preview:") {
+                preview = cmd.split_whitespace().map(str::to_string).collect();
+                match preview.first() {
+                    None => return Err("`preview:` needs a command, like `preview:\"jira-card $1\"`".into()),
+                    Some(prog) if prog.contains('$') => return Err(format!("the preview program `{prog}` can't come from a capture")),
+                    _ => {}
+                }
+                continue;
+            }
             match p.strip_prefix("project:") {
                 Some(name) if !name.is_empty() => projects.push(name.to_string()),
                 _ if p == "agents" => agents_only = true,
-                _ => return Err(format!("unknown option `{p}` (agents, project:<name>)")),
+                _ => return Err(format!("unknown option `{p}` (agents, project:<name>, preview:\"<command>\")")),
             }
         }
-        Ok(LinkPattern { re, template, agents_only, projects })
+        Ok(LinkPattern { re, template, agents_only, projects, preview })
     }
 
     /// Whether the rule applies in a terminal: `agent` is an agent terminal, `project` its
@@ -43,6 +56,28 @@ impl LinkPattern {
     /// The link for the match around byte `at` of `line`: (byte span of the match, URL). A
     /// match glued to a word, or inside a URL or path, doesn't count (see `standalone`).
     pub fn link_at(&self, line: &str, at: usize) -> Option<((usize, usize), String)> {
+        let caps = self.captures_at(line, at)?;
+        let m = caps.get(0)?;
+        let mut url = String::new();
+        caps.expand(&self.template, &mut url);
+        Some(((m.start(), m.end()), url))
+    }
+
+    /// The preview command for the match around byte `at` of `line`, each word filled from the
+    /// captures (a capture with spaces stays one argument). None when the rule has no preview.
+    pub fn preview_at(&self, line: &str, at: usize) -> Option<Vec<String>> {
+        if self.preview.is_empty() {
+            return None;
+        }
+        let caps = self.captures_at(line, at)?;
+        Some(self.preview.iter().map(|w| {
+            let mut arg = String::new();
+            caps.expand(w, &mut arg);
+            arg
+        }).collect())
+    }
+
+    fn captures_at<'l>(&self, line: &'l str, at: usize) -> Option<Captures<'l>> {
         for caps in self.re.captures_iter(line) {
             let m = caps.get(0)?;
             if m.start() > at {
@@ -51,12 +86,45 @@ impl LinkPattern {
             if at >= m.end() || m.is_empty() || !standalone(line, m.start(), m.end()) {
                 continue;
             }
-            let mut url = String::new();
-            caps.expand(&self.template, &mut url);
-            return Some(((m.start(), m.end()), url));
+            return Some(caps);
         }
         None
     }
+}
+
+/// A rule's value split into words: whitespace separates them, except inside `"…"` or `'…'`
+/// (the quotes are dropped; `\"` inside double quotes is a quote).
+fn words(v: &str) -> Result<Vec<String>, String> {
+    let (mut out, mut cur, mut quote, mut started) = (vec![], String::new(), None, false);
+    let mut chars = v.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, '"' | '\'') => (quote, started) = (Some(c), true),
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                }
+                started = false;
+            }
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => match chars.next() {
+                Some(n @ ('"' | '\\')) => cur.push(n),
+                Some(n) => cur.extend(['\\', n]),
+                None => cur.push('\\'),
+            },
+            (_, c) => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if let Some(q) = quote {
+        return Err(format!("unclosed `{q}`"));
+    }
+    if started {
+        out.push(cur);
+    }
+    Ok(out)
 }
 
 /// Every valid rule of a `terminal.link_patterns` value, in order (bad ones are skipped: the
@@ -161,6 +229,28 @@ mod tests {
         assert!(LinkPattern::parse(r"T\d+ = task/$0").unwrap_err().contains("not a URL"));
         assert!(LinkPattern::parse(r"T\d+ = taskboard://task/$0 shells").unwrap_err().contains("unknown option"));
         assert!(LinkPattern::parse(r"T\d+").is_err());
+        assert!(p.preview.is_empty());
+    }
+
+    #[test]
+    fn preview_commands() {
+        let p = LinkPattern::parse(r#"\b(RRD-\d+)\b = https://x.atlassian.net/browse/$1 agents preview:"jira-card $1 --short" project:roon"#).unwrap();
+        assert_eq!(p.template, "https://x.atlassian.net/browse/$1");
+        assert_eq!(p.preview, ["jira-card", "$1", "--short"]);
+        assert!(p.agents_only);
+        assert_eq!(p.projects, ["roon"]);
+        assert_eq!(p.link_at("see RRD-12.", 5).map(|(_, u)| u), Some("https://x.atlassian.net/browse/RRD-12".into()));
+        assert_eq!(p.preview_at("see RRD-12.", 5), Some(vec!["jira-card".into(), "RRD-12".into(), "--short".into()]));
+        assert_eq!(p.preview_at("see RRD-12.", 1), None);
+        // A capture with spaces stays one argument; nothing goes through a shell.
+        let q = LinkPattern::parse(r"<([^>]+)> = https://x.com/q preview:'card --name=$1'").unwrap();
+        assert_eq!(q.preview_at("<a b; rm>", 2), Some(vec!["card".into(), "--name=a b; rm".into()]));
+        assert_eq!(LinkPattern::parse(r"(T\d+) = myapp://item/$1 preview:item-card").unwrap().preview_at("T4", 0), Some(vec!["item-card".into()]));
+        assert_eq!(LinkPattern::parse(T).unwrap().preview_at("T4", 0), None);
+        assert!(LinkPattern::parse(r"(T\d+) = myapp://item/$1 preview:").unwrap_err().contains("needs a command"));
+        assert!(LinkPattern::parse(r#"(T\d+) = myapp://item/$1 preview:"$1 x""#).unwrap_err().contains("can't come from a capture"));
+        assert!(LinkPattern::parse(r#"(T\d+) = myapp://item/$1 preview:"card $1"#).unwrap_err().contains("unclosed"));
+        assert_eq!(words(r#"a "b \"c\" d" e'f g'"#).unwrap(), ["a", "b \"c\" d", "ef g"]);
     }
 
     #[test]

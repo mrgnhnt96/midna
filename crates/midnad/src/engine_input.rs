@@ -72,6 +72,9 @@ pub enum Link {
     File { path: String, line: Option<u32>, column: Option<u32> },
     /// Another terminal, by id (see `tab_ref`).
     Session(String),
+    /// A link pattern's match whose rule names a preview command (already filled from the
+    /// captures): its URL, the app that opens it (None: http(s)), and the command.
+    Preview { url: String, app: Option<String>, preview: Vec<String> },
 }
 
 /// Scheme of an explicit terminal link: `midna://session/<id>`.
@@ -754,12 +757,18 @@ pub fn detect_link(chars: &[char], i: usize, dirs: &[&str], app_for: &dyn Fn(&st
         for p in patterns {
             let Some((_, url)) = p.link_at(&line, at) else { continue };
             let scheme = url.split_once("://").map_or("", |(s, _)| s).to_ascii_lowercase();
-            if matches!(scheme.as_str(), "http" | "https") {
-                return Some(Link::Url(url));
-            }
-            if let Some(app) = app_for(&scheme) {
-                return Some(Link::App { url, app });
-            }
+            let app = if matches!(scheme.as_str(), "http" | "https") {
+                None
+            } else if let Some(app) = app_for(&scheme) {
+                Some(app)
+            } else {
+                continue;
+            };
+            return Some(match (p.preview_at(&line, at), app) {
+                (Some(preview), app) => Link::Preview { url, app, preview },
+                (None, Some(app)) => Link::App { url, app },
+                (None, None) => Link::Url(url),
+            });
         }
     }
     // File paths, optionally with :line[:col].
@@ -1229,6 +1238,15 @@ mod tests {
         assert_eq!(at("src/T42.rs", 5, &taskboard), None);
         // No app opens the scheme: plain text.
         assert_eq!(at("Took T42.", 6, &no_apps), None);
+        // A rule with a preview command carries it, filled from the captures.
+        let rules: Vec<String> = [r#"\b(RRD-\d+)\b = https://x.atlassian.net/browse/$1 preview:"jira-card $1""#, r"\b(T\d+)\b = taskboard://t/$1 preview:tb-card"].iter().map(|s| s.to_string()).collect();
+        let pats = midna_proto::link_patterns::parse_all(&rules);
+        let at = |s: &str, i: usize, apps: &dyn Fn(&str) -> Option<String>| detect_link(&s.chars().collect::<Vec<_>>(), i, &[], apps, &[], &pats);
+        let jira = Link::Preview { url: "https://x.atlassian.net/browse/RRD-7".into(), app: None, preview: vec!["jira-card".into(), "RRD-7".into()] };
+        assert_eq!(at("on RRD-7 now", 4, &no_apps), Some(jira));
+        let task = Link::Preview { url: "taskboard://t/T4".into(), app: Some("Taskboard".into()), preview: vec!["tb-card".into()] };
+        assert_eq!(at("T4", 0, &taskboard), Some(task));
+        assert_eq!(at("T4", 0, &no_apps), None);
     }
 
     #[test]

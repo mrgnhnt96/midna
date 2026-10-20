@@ -34,6 +34,7 @@ WHAT YOU CAN DO
              save a token a command produced: <cmd> | midna secret save NAME (stdin only; never echo it)
   settings   midna settings list | get | set | reset   (human-only keys: setting one asks the human)
   windows    midna focus <id> · window open_screen <rules|triggers|insights|notifications|settings|needs_you>
+  links      midna links [pin|add] · links patterns set <app> --rule '<regex> = <url> [preview:\"<cmd> $1\"]' (cmd's JSON fills the hover card)
   projects   midna projects add <path> · update <id> --name/--icon · pin|unpin <id> · add-command <id> --name N -- <cmd>
   learn      midna help · midna <verb> --help · midna schema [method|--list] · midna skill · midna explain <topic>
 

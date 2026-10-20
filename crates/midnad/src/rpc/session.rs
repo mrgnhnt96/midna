@@ -726,8 +726,9 @@ pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
     ok(match link {
         Some(Link::Url(u)) => LinkAtResult { kind: "url".into(), target: Some(u), ..Default::default() },
         Some(Link::App { url, app }) => LinkAtResult { kind: "url".into(), target: Some(url), app: Some(app), ..Default::default() },
-        Some(Link::File { path, line, column }) => LinkAtResult { kind: "file".into(), target: Some(path), line, column, app: None },
+        Some(Link::File { path, line, column }) => LinkAtResult { kind: "file".into(), target: Some(path), line, column, ..Default::default() },
         Some(Link::Session(id)) => LinkAtResult { kind: "session".into(), target: Some(id), ..Default::default() },
+        Some(Link::Preview { url, app, preview }) => LinkAtResult { kind: "url".into(), target: Some(url), app, preview: Some(preview), ..Default::default() },
         None => LinkAtResult { kind: "none".into(), ..Default::default() },
     })
 }

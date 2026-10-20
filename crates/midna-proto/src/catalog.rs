@@ -246,7 +246,8 @@ fn build() -> Vec<MethodSpec> {
              terminal.link_patterns, in the same form."),
         m::<LinkPatternsRegisterParams, AppLinkPatterns>("links.patterns.register").mutating().d(
             "Register an app's own link patterns: text in terminal output that becomes a link, as rules in \
-             terminal.link_patterns form (`<regex> = <url template> [agents] [project:<name>]…`). They replace whatever \
+             terminal.link_patterns form (`<regex> = <url template> [agents] [project:<name>]… [preview:\"<command> $1\"]`; the \
+             preview command prints JSON `{\"title\", \"lines\": […]}` that fills the hover card). They replace whatever \
              that owner registered before, survive a daemon restart, apply alongside the user's terminal.link_patterns, and \
              show read-only in Settings ▸ Terminal ▸ Links and paths as provided by the owner. An app registers them each \
              time it starts; `patterns: []` removes them. A bad rule refuses the whole call."),

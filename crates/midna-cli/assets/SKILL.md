@@ -81,6 +81,13 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   (RPC `links.patterns.register {owner, patterns}`; each call replaces that app's set, `[]` or
   `clear` removes it). They persist, apply alongside `terminal.link_patterns`, and show read-only
   in Settings ▸ Terminal ▸ Links and paths.
+- A link pattern (yours in `terminal.link_patterns`, or an app's) can fill its hover card: end
+  the rule with `preview:"<command> $1"`, e.g.
+  `\b(RRD-\d+)\b = https://acme.atlassian.net/browse/$1 agents preview:"jira-card $1"`. The
+  command (no shell; `$1` … filled from the match) prints JSON
+  `{"title": "RRD-12 Fix login", "lines": ["In Progress", "Morgan Hunt"]}` and the card shows it
+  instead of only the URL. It runs on the login shell's PATH with a 5s limit and its answer is
+  kept for 15s; on failure or bad JSON the card falls back to the plain URL.
 - `midna usage` shows Claude's plan usage (5-hour and weekly windows, account-wide) and whether
   it is limited until a reset. Check it before starting long work for someone else.
 - When you tell the human about another terminal, name it by its id (`midna list`) or link it as

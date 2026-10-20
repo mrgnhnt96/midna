@@ -123,6 +123,8 @@ pub(super) struct Link {
     line: Option<u32>,
     /// The app a `taskboard://…` link opens in (`Taskboard`); never fetched.
     app: Option<String>,
+    /// A link pattern's `preview:"…"` command (argv, filled from the match) that fills the card.
+    preview: Option<Vec<String>>,
 }
 
 impl Link {
@@ -135,7 +137,9 @@ impl Link {
         };
         let line = v.get("line").and_then(Value::as_u64).map(|n| n as u32).filter(|n| *n > 0);
         let app = v.get("app").and_then(Value::as_str).filter(|a| url && !a.is_empty()).map(str::to_string);
-        Some(Link { url, target, line, app })
+        let preview = v.get("preview").and_then(Value::as_array).and_then(|a| a.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
+        let preview = preview.filter(|p| url && p.first().is_some_and(|prog| !prog.is_empty()));
+        Some(Link { url, target, line, app, preview })
     }
 }
 
@@ -245,7 +249,7 @@ impl TerminalView {
     /// for an app link), or (`None`) left it.
     pub fn preview_external(&mut self, target: Option<(String, bool, Option<String>)>, cx: &mut Context<Self>) {
         self.preview.external = target.is_some();
-        self.preview_set(target.map(|(target, url, app)| Link { url, target, line: None, app }), cx);
+        self.preview_set(target.map(|(target, url, app)| Link { url, target, line: None, app, preview: None }), cx);
     }
 
     /// The pointer is on `link` (`None`: on no link, or off the grid).
@@ -1053,6 +1057,10 @@ pub(super) fn human_size(n: u64) -> String {
 // ------------------------------------------------------------------ loading (off the main thread)
 
 fn load(link: &Link) -> Body {
+    // A link pattern's own preview command; when it fails, the card the link would have had.
+    if let Some(p) = link.preview.as_deref().and_then(load_pattern) {
+        return Body::App(p);
+    }
     if let Some(app) = &link.app {
         return load_app(&link.target).map(Body::App).unwrap_or_else(|| Body::Note(format!("Opens in {app}")));
     }
@@ -1275,6 +1283,62 @@ fn load_app(url: &str) -> Option<AppPreview> {
         c.insert(url.to_string(), (Instant::now(), preview.clone()));
     }
     preview
+}
+
+// ------------------------------------------------------------------ link pattern previews
+//
+// A `terminal.link_patterns` rule (or an app's registered one) can name a command,
+// `preview:"jira-card $1"`. midnad fills its words from the match; Midna runs it without a shell
+// or stdin, with the login shell's PATH, for at most `PATTERN_TIMEOUT`, and reads the same JSON
+// an app's `MidnaLinkPreview` prints. A failure falls back to the link's plain card.
+
+/// Pattern previews usually ask a web API (Jira), so they get longer than an app's local tool.
+const PATTERN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The preview a link pattern's command prints, None when it fails. Cached per argv like app
+/// previews (failures too), so moving back and forth over a link doesn't rerun it.
+fn load_pattern(argv: &[String]) -> Option<AppPreview> {
+    let key = format!("cmd\0{}", argv.join("\0"));
+    if let Some((at, p)) = APP_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
+        && at.elapsed() < APP_TTL
+    {
+        return p;
+    }
+    let preview = run_pattern_on(argv, user_path(), PATTERN_TIMEOUT);
+    if let Ok(mut c) = APP_CACHE.lock() {
+        c.retain(|_, (at, _)| at.elapsed() < APP_TTL);
+        c.insert(key, (Instant::now(), preview.clone()));
+    }
+    preview
+}
+
+/// The login shell's PATH (the app's own from launchd is minimal), read once.
+fn user_path() -> &'static str {
+    static PATH: LazyLock<String> = LazyLock::new(|| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let fallback = format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+        // Tests don't start the human's shell.
+        if cfg!(test) { None } else { crate::install::login_shell_path() }.filter(|p| !p.is_empty()).unwrap_or(fallback)
+    });
+    &PATH
+}
+
+/// `argv[0]` (a path, `~/…`, or a name looked up on `path`) run with `argv[1..]`.
+fn pattern_command(argv: &[String], path: &str) -> Option<std::process::Command> {
+    let prog = argv.first().filter(|p| !p.is_empty())?;
+    let bin = match prog.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var("HOME").ok()?).join(rest),
+        None if prog.contains('/') => PathBuf::from(prog),
+        None => std::env::split_paths(path).map(|d| d.join(prog)).find(|p| p.is_file())?,
+    };
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(&argv[1..]).env("PATH", path);
+    Some(cmd)
+}
+
+fn run_pattern_on(argv: &[String], path: &str, timeout: Duration) -> Option<AppPreview> {
+    let (ok, out) = run_capped(pattern_command(argv, path)?, 64 << 10, timeout)?;
+    ok.then(|| parse_app_preview(&out)).flatten()
 }
 
 /// `<path> <args…> <url>`, when it exits 0 in time with a preview on stdout.
@@ -1604,7 +1668,7 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_pr, github_run, load, page_meta, parse_app_preview, parse_pr, parse_preview_command, parse_run, path_title, preview_command, run_preview, unix_time, url_title};
+    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
     use std::time::Duration;
@@ -1813,6 +1877,51 @@ mod tests {
         for name in ["fails", "garbled", "hangs"] {
             assert_eq!(run_preview(&bin.join(name), &[], "fake://x", Duration::from_millis(300)), None, "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_patterns_fill_the_card() {
+        let dir = std::env::temp_dir().join(format!("midna-app-pattern-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bin = dir.join("bin");
+        script(&bin.join("jira-card"), r#"echo "{\"title\": \"$1\", \"lines\": [\"In Progress\", \"$#\"]}""#);
+        script(&bin.join("fails"), r#"echo '{"title": "x"}'; exit 1"#);
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // By name on the PATH, or by path; each word is one argument.
+        let got = run_pattern_on(&argv(&["jira-card", "RRD-1 x"]), &path, Duration::from_secs(5)).unwrap();
+        assert_eq!((got.title.as_str(), got.lines), ("RRD-1 x", vec!["In Progress".to_string(), "1".into()]));
+        let abs = bin.join("jira-card").display().to_string();
+        assert_eq!(run_pattern_on(&argv(&[&abs, "RRD-2"]), "/usr/bin", Duration::from_secs(5)).map(|p| p.title), Some("RRD-2".into()));
+        assert!(pattern_command(&argv(&["no-such-card"]), &path).is_none());
+        assert_eq!(run_pattern_on(&argv(&["fails"]), &path, Duration::from_secs(5)), None);
+
+        // `session.link_at` hands over the command; it fills the card.
+        let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/RRD-3", "app": "Jira", "preview": [abs, "RRD-3"] })).unwrap();
+        assert!(matches!(load(&l), Body::App(p) if p.title == "RRD-3"));
+        // A failing command falls back to the card the link would have had.
+        let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/1", "app": "Jira", "preview": [bin.join("fails").display().to_string()] })).unwrap();
+        assert!(matches!(load(&l), Body::Note(n) if n == "Opens in Jira"));
+        // Only URLs take a preview, and it needs a program.
+        assert_eq!(Link::from_link_at(&json!({ "kind": "file", "target": "/tmp", "preview": ["x"] })).unwrap().preview, None);
+        assert_eq!(Link::from_link_at(&json!({ "kind": "url", "target": "https://a.com", "preview": [""] })).unwrap().preview, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pattern_previews_are_cached() {
+        let dir = std::env::temp_dir().join(format!("midna-app-pattern-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let count = dir.join("count");
+        let card = dir.join("card");
+        script(&card, &format!(r#"echo x >> '{}'; echo '{{"title": "t"}}'"#, count.display()));
+        let argv = vec![card.display().to_string(), "k".into()];
+        for _ in 0..3 {
+            assert_eq!(load_pattern(&argv).map(|p| p.title), Some("t".into()));
+        }
+        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1, "ran once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
