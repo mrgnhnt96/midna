@@ -1570,8 +1570,9 @@ fn load_page(url: &str) -> Body {
         return Body::Web { title: None, desc: None };
     }
     let mut cmd = std::process::Command::new("/usr/bin/curl");
-    cmd.args(["-sL", "--max-time", "6", "--max-redirs", "4", "--proto", "=http,https", "--proto-redir", "=http,https", "-A", "Mozilla/5.0 (Macintosh) midna-link-preview", "-H", "Accept: text/html"]).arg(url);
-    let Some((_, out)) = run_capped(cmd, 512 << 10, Duration::from_secs(7)) else {
+    cmd.args(["-sfL", "--max-time", "6", "--max-redirs", "4", "--proto", "=http,https", "--proto-redir", "=http,https", "-A", "Mozilla/5.0 (Macintosh) midna-link-preview", "-H", "Accept: text/html"]).arg(url);
+    // -f fails on an HTTP error, so a 404 or login page never lends the card its title
+    let Some((true, out)) = run_capped(cmd, 512 << 10, Duration::from_secs(7)) else {
         return Body::Web { title: None, desc: None };
     };
     let (title, desc) = page_meta(&String::from_utf8_lossy(&out));
@@ -1650,6 +1651,18 @@ fn decode(s: &str) -> String {
             Some("quot") => Some('"'),
             Some("apos") => Some('\''),
             Some("nbsp") => Some(' '),
+            Some("mdash") => Some('—'),
+            Some("ndash") => Some('–'),
+            Some("hellip") => Some('…'),
+            Some("lsquo") => Some('‘'),
+            Some("rsquo") => Some('’'),
+            Some("ldquo") => Some('“'),
+            Some("rdquo") => Some('”'),
+            Some("middot") => Some('·'),
+            Some("bull") => Some('•'),
+            Some("copy") => Some('©'),
+            Some("reg") => Some('®'),
+            Some("trade") => Some('™'),
             Some(e) if e.starts_with("#x") || e.starts_with("#X") => u32::from_str_radix(&e[2..], 16).ok().and_then(char::from_u32),
             Some(e) if e.starts_with('#') => e[1..].parse().ok().and_then(char::from_u32),
             _ => None,
@@ -1735,6 +1748,7 @@ mod tests {
         assert_eq!(page_meta("<TITLE>Only\n title</TITLE>"), (Some("Only title".into()), None));
         // An empty Open Graph title doesn't hide the page's own.
         assert_eq!(page_meta(r#"<meta property="og:title" content=" "><title>Real</title>"#).0, Some("Real".into()));
+        assert_eq!(page_meta("<title>404 &mdash; Bitbucket &hellip;</title>").0, Some("404 — Bitbucket …".into()));
     }
 
     #[test]
