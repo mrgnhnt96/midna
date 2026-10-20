@@ -404,6 +404,29 @@ fn agent_hooks_drive_status_turns_cost_and_insights() {
 }
 
 #[test]
+fn compaction_keeps_a_running_turn_working() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let hook = |a: &mut Client, ev: &str, payload: Value| call(a, "agent.hook", json!({ "agent": "claude", "event": ev, "payload": payload }));
+    let state = |h: &mut Client| call(h, "session.get", json!({ "id": sid }))["status"]["state"].as_str().unwrap().to_string();
+    hook(&mut a, "SessionStart", json!({ "source": "startup" }));
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "write the page" }));
+    // Auto-compaction mid-turn (seen live): PreCompact, then a new session from "compact".
+    hook(&mut a, "PreCompact", json!({ "trigger": "auto" }));
+    hook(&mut a, "SessionStart", json!({ "source": "compact" }));
+    assert_eq!(state(&mut h), "working");
+    hook(&mut a, "Stop", json!({}));
+    assert_eq!(state(&mut h), "done");
+    // A /compact between turns sends no prompt hook: it ends idle.
+    hook(&mut a, "PreCompact", json!({ "trigger": "manual" }));
+    assert_eq!(state(&mut h), "working");
+    hook(&mut a, "SessionStart", json!({ "source": "compact" }));
+    assert_eq!(state(&mut h), "idle");
+}
+
+#[test]
 fn a_question_after_a_generic_notification_retitles_the_prompt() {
     let d = TestDaemon::start();
     let mut h = d.human();
