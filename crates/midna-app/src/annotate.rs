@@ -1112,8 +1112,38 @@ fn load(src: Source) -> anyhow::Result<Shot> {
             (ImageFormat::Png, path.clone(), std::fs::read(&path)?)
         }
     };
+    // A phone photo is often stored sideways with an EXIF orientation. gpui draws it turned,
+    // but the stage is sized from the stored pixels, so marks wouldn't line up (and an agent
+    // reading the file may not turn it). Turn the pixels themselves.
+    let (format, path, bytes) = match upright(&bytes) {
+        Some(png) => {
+            let up = dir.join(format!("{stem}-up.png"));
+            std::fs::write(&up, &png)?;
+            if up != path {
+                let _ = std::fs::remove_file(&path);
+            }
+            (ImageFormat::Png, up, png)
+        }
+        None => (format, path, bytes),
+    };
     let (w, h) = ::image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?.into_dimensions().map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
     Ok(Shot { name, path, image: Arc::new(Image::from_bytes(format, bytes)), w, h, notes: vec![] })
+}
+
+/// `bytes` re-encoded as a PNG with its EXIF orientation applied, or None when it has none
+/// (or can't be read, which the caller reports).
+fn upright(bytes: &[u8]) -> Option<Vec<u8>> {
+    use ::image::ImageDecoder;
+    let mut dec = ::image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
+    let o = dec.orientation().ok()?;
+    if o == ::image::metadata::Orientation::NoTransforms {
+        return None;
+    }
+    let mut img = ::image::DynamicImage::from_decoder(dec).ok()?;
+    img.apply_orientation(o);
+    let mut png = vec![];
+    img.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).ok()?;
+    Some(png)
 }
 
 /// Normalize an image into `$TMPDIR/midna-images/` and return the file to paste (⌘V inline).
@@ -1306,5 +1336,33 @@ mod tests {
         assert_eq!((s.w, s.h), (3, 2));
         assert!(s.path.exists() && s.path.extension().unwrap() == "png");
         assert!(load(Source::Bytes { name: "junk".into(), bytes: b"not an image".to_vec() }).is_err());
+    }
+
+    #[test]
+    fn turns_a_sideways_photo_upright() {
+        // 3x2 stored, EXIF orientation 6 (turn 90° clockwise to view): 2x3 upright, so the
+        // stage and the marks match what gpui draws.
+        let mut img = ::image::RgbImage::new(3, 2);
+        img.put_pixel(0, 0, ::image::Rgb([255, 0, 0]));
+        let mut raw = vec![];
+        img.write_to(&mut std::io::Cursor::new(&mut raw), ::image::ImageFormat::Png).unwrap();
+        // Big-endian TIFF with one IFD entry: Orientation (0x0112), SHORT, 1 value, 6.
+        let exif: &[u8] = b"MM\x00\x2a\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00";
+        let mut chunk = (exif.len() as u32).to_be_bytes().to_vec();
+        chunk.extend(b"eXIf");
+        chunk.extend(exif);
+        chunk.extend(crc32(&chunk[4..]).to_be_bytes());
+        // After the signature (8) and IHDR (25).
+        let png: Vec<u8> = [&raw[..33], &chunk, &raw[33..]].concat();
+        let s = load(Source::Bytes { name: "x".into(), bytes: png }).unwrap();
+        assert_eq!((s.w, s.h), (2, 3));
+        let up = ::image::open(&s.path).unwrap().to_rgb8();
+        assert_eq!(up.dimensions(), (2, 3));
+        // The stored top-left ends up top-right once turned clockwise.
+        assert_eq!(up.get_pixel(1, 0), &::image::Rgb([255, 0, 0]));
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        !data.iter().fold(!0u32, |c, &b| (0..8).fold(c ^ b as u32, |c, _| if c & 1 == 1 { (c >> 1) ^ 0xEDB88320 } else { c >> 1 }))
     }
 }
