@@ -44,7 +44,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "terminal.auto_name" => "Name terminals from what they're doing; a name you set stays.",
         "terminal.auto_name_updates" => "Keep renaming as the work changes, or name each one once.",
         "terminal.link_preview" => "A card that previews the path or link under the pointer.",
-        "terminal.pr_status" => "Color GitHub PR links by open, merged, closed or draft.",
+        "terminal.pr_status" => "Color GitHub PR and Actions run links by their state.",
         "terminal.link_patterns" => "Text that becomes a link, like PROJ-12: `regex = url`, plus a card preview.",
         "terminal.preview_path_click" => "Clicking the path at the top of a preview.",
         "terminal.image_paste" => "Add notes in the image sheet first, or paste the image's path.",
