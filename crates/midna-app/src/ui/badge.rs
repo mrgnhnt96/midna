@@ -152,6 +152,8 @@ const LINE_SHOW: Duration = Duration::from_secs(6);
 const LINE_LINGER: Duration = Duration::from_secs(2);
 const LINE_IN: Duration = Duration::from_millis(420);
 const LINE_OUT: Duration = Duration::from_millis(220);
+/// A capsule still out this long gets a line in `app.log`.
+const STALE_LINE: Duration = Duration::from_secs(60);
 /// A passing notification cut short by the next one goes into the list for `BUMPED` times its
 /// time (as does one that comes in while the list is open), its tint draining in its row; when
 /// it runs out the row slides away as one you take off does.
@@ -384,6 +386,23 @@ struct Line {
     stay: Option<Duration>,
     until: Instant,
     leaving: Option<Instant>,
+    /// The notification it came from, and whether `tick` has logged it as out too long.
+    seq: u64,
+    stale_logged: bool,
+}
+
+impl Line {
+    /// How it reads in `app.log`.
+    fn describe(&self, now: Instant) -> String {
+        format!(
+            "capsule {} (notification {}, {}, terminal {}, {:.1}s old)",
+            self.serial,
+            self.seq,
+            self.category,
+            self.session.as_deref().unwrap_or("-"),
+            now.duration_since(self.born).as_secs_f32()
+        )
+    }
 }
 
 /// The capsule beside the badge flying into its row as the list opens.
@@ -647,9 +666,16 @@ pub fn docked_room(cx: &App) -> f32 {
 pub fn seen(session: &str, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let _ = h.update(cx, |b, _, cx| {
+        let held = b.held.len();
         b.held.retain(|w| w.session.as_deref() != Some(session));
+        if b.held.len() != held {
+            crate::lifecycle::log(&format!("badge opened terminal {session}: {} held rows cleared", held - b.held.len()));
+        }
+        let now = Instant::now();
         for l in b.lines.iter_mut().filter(|l| l.session.as_deref() == Some(session) && l.need.is_none()) {
-            l.leaving.get_or_insert(Instant::now());
+            let state = if l.leaving.is_some() { "already leaving" } else if now >= l.until { "past its time" } else { "showing" };
+            crate::lifecycle::log(&format!("badge opened terminal {session}: {} {state}, leaves", l.describe(now)));
+            l.leaving.get_or_insert(now);
         }
         b.recount(cx);
     });
@@ -1557,6 +1583,12 @@ impl Badge {
                 && !l.sent.as_ref().is_some_and(|s| p.id.as_ref() == Some(&s.id))
         });
         if (self.list && self.list_closing.is_none()) || held_line {
+            crate::lifecycle::log(&format!(
+                "badge notification {seq} ({}, terminal {}) into the list: {}",
+                p.category,
+                session.as_deref().unwrap_or("-"),
+                if held_line { "capsule held" } else { "list open" }
+            ));
             if let Some(stay) = stay.filter(|_| waiting.is_none()) {
                 let mut lines = p.body.lines().map(str::trim).filter(|l| !l.is_empty());
                 self.held.push(Waiting {
@@ -1613,7 +1645,12 @@ impl Badge {
             stay,
             until: now + stay.unwrap_or(LINE_SHOW),
             leaving: None,
+            seq,
+            stale_logged: false,
         });
+        if let Some(l) = self.lines.back() {
+            crate::lifecycle::log(&format!("badge {} in (replaced one {replaced}, shown {}, within {})", l.describe(now), self.shown, self.within));
+        }
         self.recount(cx);
     }
 
@@ -1952,7 +1989,19 @@ impl Badge {
                 front.leaving = Some(now);
                 changed = true;
             }
+            // Logging a capsule out far longer than any kind's time (`app.log`).
+            if front.leaving.is_none() && !front.stale_logged && now.duration_since(front.born) >= STALE_LINE {
+                front.stale_logged = true;
+                crate::lifecycle::log(&format!(
+                    "badge {} still out (hover {:?}, carded {carded}, shown {}, within {})",
+                    front.describe(now),
+                    self.hover,
+                    self.shown,
+                    self.within
+                ));
+            }
             if front.leaving.is_some_and(|t| now.duration_since(t) >= LINE_OUT) {
+                crate::lifecycle::log(&format!("badge {} out", front.describe(now)));
                 self.lines.pop_front();
                 if let Some(next) = self.lines.front_mut() {
                     next.until = now + next.stay.unwrap_or(LINE_SHOW);
