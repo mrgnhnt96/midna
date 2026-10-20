@@ -192,7 +192,8 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
     let project = match (&p.project_id, &p.cwd) {
         (Some(id), _) if id == ROOT_PROJECT_ID => root(),
         (Some(id), _) => super::project::resolve(d, id)?,
-        (None, Some(cwd)) => match super::project::containing(d, cwd) {
+        // A linked worktree outside every project belongs to its main checkout's project.
+        (None, Some(cwd)) => match super::project::containing(d, cwd).or_else(|| crate::worktrees::main_checkout(cwd).and_then(|m| super::project::containing(d, &m))) {
             Some(pr) => pr,
             // `/` is never a project (it would cover every path): open there at root.
             None if cwd == "/" => root(),

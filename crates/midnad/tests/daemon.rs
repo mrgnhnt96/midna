@@ -580,6 +580,31 @@ fn script_parts_show_the_worktree_and_branch() {
 }
 
 #[test]
+fn a_worktree_outside_every_project_opens_in_its_repos_project() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let ok = std::process::Command::new("git").args(args).current_dir(cwd).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    let main = d.home.join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    git(&main, &["init", "-q", "-b", "main"]);
+    git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&main, &["worktree", "add", "-q", "../repo-wt-fix", "-b", "fix"]);
+    let repo = call(&mut h, "project.add", json!({ "path": main }))["id"].clone();
+    let mut a = d.agent(None);
+    let s = call(&mut a, "session.open", json!({ "kind": "shell", "cwd": d.home.join("repo-wt-fix"), "command": ["/bin/sh"] }));
+    assert_eq!(s["project_id"], repo, "{s}");
+    let projects = call(&mut h, "project.list", json!({}));
+    assert!(!projects.as_array().unwrap().iter().any(|p| p["name"] == "repo-wt-fix"), "{projects}");
+    // A plain folder outside every project still gets its own.
+    std::fs::create_dir_all(d.home.join("plain")).unwrap();
+    let s = call(&mut a, "session.open", json!({ "kind": "shell", "cwd": d.home.join("plain"), "command": ["/bin/sh"] }));
+    assert_ne!(s["project_id"], repo);
+}
+
+#[test]
 fn status_bar_script_items() {
     let d = TestDaemon::start();
     let mut h = d.human();
