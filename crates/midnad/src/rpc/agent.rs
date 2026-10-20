@@ -88,8 +88,13 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         }
         _ => {}
     }
+    // Auto-compaction starts a new Claude session in the middle of a turn, which goes on until
+    // its own Stop. Only a /compact between turns (no prompt hook opens one) leaves it idle.
+    let compacted_mid_turn = ev == "SessionStart"
+        && payload.get("source").and_then(Value::as_str) == Some("compact")
+        && d.core().agents.get(&sid).is_some_and(|a| a.in_turn);
     let mut status = cur;
-    if let Some((next, reason)) = transition(cur, ev, payload) {
+    if let Some((next, reason)) = transition(cur, ev, payload).filter(|_| !compacted_mid_turn) {
         if cur == StatusState::NeedsYou && next != StatusState::NeedsYou {
             d.clear_session_needs_you(&sid, NeedsYouKind::PermissionPrompt);
         }
