@@ -93,13 +93,14 @@ impl LinkPattern {
 }
 
 /// A rule's value split into words: whitespace separates them, except inside `"…"` or `'…'`
-/// (the quotes are dropped; `\"` inside double quotes is a quote).
+/// in a `preview:` option (the quotes are dropped; `\"` inside double quotes is a quote).
+/// Quotes anywhere else, like in the URL template, are kept as they are.
 fn words(v: &str) -> Result<Vec<String>, String> {
     let (mut out, mut cur, mut quote, mut started) = (vec![], String::new(), None, false);
     let mut chars = v.chars();
     while let Some(c) = chars.next() {
         match (quote, c) {
-            (None, '"' | '\'') => (quote, started) = (Some(c), true),
+            (None, '"' | '\'') if cur.starts_with("preview:") => (quote, started) = (Some(c), true),
             (None, c) if c.is_whitespace() => {
                 if started {
                     out.push(std::mem::take(&mut cur));
@@ -250,7 +251,11 @@ mod tests {
         assert!(LinkPattern::parse(r"(T\d+) = myapp://item/$1 preview:").unwrap_err().contains("needs a command"));
         assert!(LinkPattern::parse(r#"(T\d+) = myapp://item/$1 preview:"$1 x""#).unwrap_err().contains("can't come from a capture"));
         assert!(LinkPattern::parse(r#"(T\d+) = myapp://item/$1 preview:"card $1"#).unwrap_err().contains("unclosed"));
-        assert_eq!(words(r#"a "b \"c\" d" e'f g'"#).unwrap(), ["a", "b \"c\" d", "ef g"]);
+        assert_eq!(words(r#"a preview:"b \"c\" d" preview:'f g'"#).unwrap(), ["a", "preview:b \"c\" d", "preview:f g"]);
+        // Quotes outside preview: (a rule written before it existed) stay as they are.
+        let old = LinkPattern::parse(r#"(\w+) = https://x.com/search?q="$1"&t='a' agents"#).unwrap();
+        assert_eq!(old.template, r#"https://x.com/search?q="$1"&t='a'"#);
+        assert!(old.agents_only && old.preview.is_empty());
     }
 
     #[test]

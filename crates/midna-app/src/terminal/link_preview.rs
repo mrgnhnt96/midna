@@ -1407,17 +1407,20 @@ fn run_capped(mut cmd: std::process::Command, limit: usize, timeout: Duration) -
         buf // dropping the pipe here stops a writer that has more
     });
     let until = Instant::now() + timeout;
+    let group = -(child.id() as libc::pid_t);
     let ok = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st.success(),
             Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(40)),
             _ => {
-                unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+                unsafe { libc::kill(group, libc::SIGKILL) };
                 let _ = child.wait();
                 break false;
             }
         }
     };
+    // a background child it left behind would hold the pipe open and the read with it
+    unsafe { libc::kill(group, libc::SIGKILL) };
     Some((ok, reader.join().ok()?))
 }
 
@@ -1671,7 +1674,7 @@ mod tests {
     use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn app_links_name_their_app() {
@@ -1897,6 +1900,15 @@ mod tests {
         assert_eq!(run_pattern_on(&argv(&[&abs, "RRD-2"]), "/usr/bin", Duration::from_secs(5)).map(|p| p.title), Some("RRD-2".into()));
         assert!(pattern_command(&argv(&["no-such-card"]), &path).is_none());
         assert_eq!(run_pattern_on(&argv(&["fails"]), &path, Duration::from_secs(5)), None);
+        // Too slow, not JSON, or a child left holding the pipe: no card, and no hang.
+        script(&bin.join("slow"), "sleep 5; echo '{\"title\": \"x\"}'");
+        script(&bin.join("junk"), "echo not json");
+        script(&bin.join("leaves-child"), "(sleep 5; echo) & echo '{\"title\": \"left\"}'");
+        let t = Instant::now();
+        assert_eq!(run_pattern_on(&argv(&["slow"]), &path, Duration::from_millis(300)), None);
+        assert_eq!(run_pattern_on(&argv(&["junk"]), &path, Duration::from_secs(5)), None);
+        assert_eq!(run_pattern_on(&argv(&["leaves-child"]), &path, Duration::from_secs(5)).map(|p| p.title), Some("left".into()));
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
 
         // `session.link_at` hands over the command; it fills the card.
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/RRD-3", "app": "Jira", "preview": [abs, "RRD-3"] })).unwrap();
