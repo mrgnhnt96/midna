@@ -429,10 +429,12 @@ pub fn adopt_all(d: &Arc<Daemon>, r: &Resume) {
         let rt = term::adopt(d, &s.id, s.fd, s.pid, s.alive, &s.term);
         let mut core = d.core();
         core.rt.insert(s.id.clone(), rt);
-        if known.is_some_and(|k| k.agent.is_some()) {
+        if let Some(k) = known.filter(|k| k.agent.is_some()) {
             let a = core.agents.entry(s.id.clone()).or_default();
             a.in_turn = s.in_turn;
             a.last_cost = s.last_cost;
+            // Not handed over: an agent that reported a conversation is past its trust dialog.
+            a.hooked = k.agent_info.is_some_and(|i| i.conversation_id.is_some());
         }
         kept += 1;
     }

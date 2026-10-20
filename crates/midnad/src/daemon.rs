@@ -130,6 +130,9 @@ pub struct AgentRt {
     pub settle_pending: bool,
     /// A queued restart is running (see `restart::tick`).
     pub restarting: bool,
+    /// The agent process sent a hook since it started. Until then it may still be showing its
+    /// folder-trust dialog, which comes before any hook (see `trust::tick`).
+    pub hooked: bool,
 }
 
 /// What a caller blocked on an approval (`waiters`) is woken with.

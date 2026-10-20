@@ -262,6 +262,25 @@ fn trust_folders_answers_yes_without_asking() {
     assert!(audit.to_string().contains("folder_trusted"), "{audit}");
 }
 
+/// Claude never remembers trusting ~, so a restarted (resumed) agent asks again even though its
+/// conversation is known: that dialog is answered too.
+#[test]
+fn trust_folders_answers_again_after_a_restart() {
+    let fake = FakeTrust::new("restart");
+    let bin = fake.dir.join("claude").to_string_lossy().into_owned();
+    let cwd = fake.dir.to_string_lossy().into_owned();
+    let d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.trust_folders", "value": "/tmp/midna-trust-restart-*" }));
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": cwd }))["id"].as_str().unwrap().to_string();
+    wait_for(10, "keys typed", || (fake.keys() == b"\x1b[B\r").then_some(()));
+    call(&mut d.agent(Some(&sid)), "agent.hook", json!({ "agent": "claude", "event": "SessionStart", "payload": { "session_id": "conv-1" } }));
+    call(&mut h, "session.restart", json!({ "id": sid }));
+    // The old process's last hook lands after the new one started: it doesn't count for it.
+    call(&mut d.agent(Some(&sid)), "agent.hook", json!({ "agent": "claude", "event": "SessionEnd", "payload": { "session_id": "conv-1" } }));
+    wait_for(10, "keys typed again", || (fake.keys() == b"\x1b[B\r\x1b[B\r").then_some(()));
+}
+
 #[test]
 fn denying_trust_saves_nothing() {
     let fake = FakeTrust::new("deny");
