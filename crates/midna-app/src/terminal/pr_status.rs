@@ -1,7 +1,7 @@
 //! GitHub pull request links in the grid show their state (canvas "PR status in terminal links",
 //! A + B): the URL takes the state's color over a faint underline (struck through when closed,
 //! dashed when a draft), and GitHub's icon for the state sits one cell after it when those two
-//! cells are blank. The state comes from the link preview's `gh pr view`, which shares its cache;
+//! cells are blank, or as a smaller badge over the link's top-right corner when they aren't. The state comes from the link preview's `gh pr view`, which shares its cache;
 //! merged and closed pull requests are asked again less often, as they rarely change.
 //! `terminal.pr_status` turns it off.
 use super::link_preview;
@@ -64,8 +64,16 @@ pub(super) struct Found {
     pub url: String,
     /// The cells it covers, as (row, first col, last col): more than one when it wraps.
     pub spans: Vec<(u16, u16, u16)>,
-    /// Where its icon goes, when the cells after it are blank.
-    pub icon: Option<(u16, u16)>,
+    /// Where its icon goes.
+    pub icon: IconAt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum IconAt {
+    /// Full size in this cell, one past the link's end, when the two cells after it are blank.
+    After(u16, u16),
+    /// A smaller badge over the top-right corner of the link's last cell, when text follows it.
+    Corner(u16, u16),
 }
 
 fn url_char(c: char) -> bool {
@@ -116,7 +124,7 @@ pub(super) fn find(grid: &[RowData]) -> Vec<Found> {
                 }
                 let (_, r, x) = line[j - 1];
                 let row = &grid[r as usize];
-                let icon = (blank(row, x as usize + 1) && blank(row, x as usize + 2)).then_some((r, x + 2));
+                let icon = if blank(row, x as usize + 1) && blank(row, x as usize + 2) { IconAt::After(r, x + 2) } else { IconAt::Corner(r, x) };
                 out.push(Found { url: format!("https://github.com/{owner}/{repo}/pull/{n}"), spans, icon });
             }
             i = j.max(i + 1);
@@ -174,15 +182,17 @@ impl TerminalView {
         if !link_preview::pr_status_on(cx) {
             return vec![];
         }
-        self.prs.iter().filter_map(|f| known(&f.url).map(|s| Mark { spans: f.spans.clone(), icon: f.icon, state: s, color: s.color(t) })).collect()
+        self.prs.iter().filter_map(|f| known(&f.url).map(|s| Mark { spans: f.spans.clone(), icon: f.icon, state: s, color: s.color(t), bg: t.term })).collect()
     }
 }
 
 pub(super) struct Mark {
     pub spans: Vec<(u16, u16, u16)>,
-    icon: Option<(u16, u16)>,
+    icon: IconAt,
     state: State,
     pub color: Hsla,
+    /// The pane's background: the icon's color on a corner badge.
+    bg: Hsla,
 }
 
 /// The underline (or strike) under each link and the icon after it; the text itself is tinted
@@ -210,17 +220,33 @@ pub(super) fn paint(marks: &[Mark], bounds: Bounds<Pixels>, cw: f32, window: &mu
                 window.paint_quad(fill(Bounds::new(point(px(x0), px(py + LINE_H / 2.)), size(px(w), px(1.))), line));
             }
         }
-        if let Some((row, col)) = m.icon {
-            let s = 12.;
-            let o = point(px(ox + cw * col as f32 + (cw - s) / 2.), px(oy + LINE_H * row as f32 + (LINE_H - s) / 2.));
-            let _ = window.paint_svg(Bounds::new(o, size(px(s), px(s))), m.state.icon().path().into(), None, TransformationMatrix::unit(), m.color, cx);
-        }
+        let (o, s) = match m.icon {
+            IconAt::After(row, col) => {
+                let s = 12.;
+                (point(px(ox + cw * col as f32 + (cw - s) / 2.), px(oy + LINE_H * row as f32 + (LINE_H - s) / 2.)), s)
+            }
+            IconAt::Corner(row, col) => {
+                // a solid pill in the state's color, centered just past the cell's right edge in the
+                // leading above the glyphs, with the icon cut out of it in the pane's color; in a
+                // layer of its own, as glyphs in the grid's layer draw over its quads
+                let (s, w, h) = (9., 15., 12.);
+                let (cx_, cy) = (ox + cw * (col + 1) as f32 + 2., oy + LINE_H * row as f32 + 1.);
+                let pill = Bounds::new(point(px(cx_ - w / 2.), px(cy - h / 2.)), size(px(w), px(h)));
+                window.paint_layer(pill, |window| {
+                    window.paint_quad(fill(pill, m.color).corner_radii(px(4.)));
+                    let o = point(px(cx_ - s / 2.), px(cy - s / 2.));
+                    let _ = window.paint_svg(Bounds::new(o, size(px(s), px(s))), m.state.icon().path().into(), None, TransformationMatrix::unit(), m.bg, cx);
+                });
+                continue;
+            }
+        };
+        let _ = window.paint_svg(Bounds::new(o, size(px(s), px(s))), m.state.icon().path().into(), None, TransformationMatrix::unit(), m.color, cx);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::find;
+    use super::{IconAt, find};
     use crate::frame::{Cell, RowData};
 
     fn row(s: &str, cols: usize, wrapped: bool) -> RowData {
@@ -236,19 +262,19 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].url, "https://github.com/mrgnhnt96/taskboard/pull/550");
         assert_eq!(f[0].spans, vec![(0, 8, 54)]);
-        assert_eq!(f[0].icon, Some((0, 56)));
+        assert_eq!(f[0].icon, IconAt::After(0, 56));
     }
 
     #[test]
-    fn text_right_after_leaves_no_room_for_the_icon() {
+    fn text_right_after_puts_the_icon_on_the_corner() {
         let g = [row("see (https://github.com/a/b/pull/7/files). ok", 60, false)];
         let f = find(&g);
         assert_eq!(f[0].url, "https://github.com/a/b/pull/7");
         // the parens and full stop aren't part of it
         assert_eq!(f[0].spans, vec![(0, 5, 39)]);
-        assert_eq!(f[0].icon, None);
+        assert_eq!(f[0].icon, IconAt::Corner(0, 39));
         let g = [row("https://github.com/a/b/pull/7", 30, false)]; // ends one cell from the edge
-        assert_eq!(find(&g)[0].icon, None);
+        assert_eq!(find(&g)[0].icon, IconAt::Corner(0, 28));
     }
 
     #[test]
@@ -257,7 +283,7 @@ mod tests {
         let f = find(&g);
         assert_eq!(f[0].url, "https://github.com/a/b/pull/12");
         assert_eq!(f[0].spans, vec![(0, 2, 22), (1, 0, 8)]);
-        assert_eq!(f[0].icon, Some((1, 10)));
+        assert_eq!(f[0].icon, IconAt::After(1, 10));
         let g = [row("https://github.com/a/b/issues/3 https://github.com/a/b", 80, false)];
         assert!(find(&g).is_empty());
     }
