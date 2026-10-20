@@ -134,6 +134,38 @@ fn a_turn_lost_to_the_network_is_continued_once_it_is_back() {
 }
 
 #[test]
+fn a_turn_whose_connection_error_is_only_in_its_message_is_continued() {
+    // What Claude sent when DNS failed on a network change: no details, the error in the message.
+    let (d, bin, online) = daemon("net-msg");
+    let mut h = d.human();
+    online.store(false, Ordering::Relaxed);
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
+    let mut a = d.agent(Some(&sid));
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "long task" }));
+    let message = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)";
+    hook(&mut a, "StopFailure", json!({ "error": "server_error", "error_details": "", "last_assistant_message": message }));
+    assert_eq!(call(&mut h, "session.get", json!({ "id": sid }))["status"]["state"], "failed");
+    online.store(true, Ordering::Relaxed);
+    let item = wait_for(10, "continue queued", || queued(&mut h, &sid).first().cloned());
+    assert_eq!((item["text"].as_str(), item["by"]["name"].as_str()), (Some("continue"), Some("resume after network loss")), "{item}");
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
+fn a_failure_whose_message_only_mentions_the_network_is_left_alone() {
+    // The last message is the agent's own prose, not an API error: no resume.
+    let (d, bin, _) = daemon("net-prose");
+    let mut h = d.human();
+    let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
+    let mut a = d.agent(Some(&sid));
+    hook(&mut a, "UserPromptSubmit", json!({ "prompt": "long task" }));
+    hook(&mut a, "StopFailure", json!({ "error": "rate_limit", "error_details": "", "last_assistant_message": "I fixed the socket connection timeout." }));
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(queued(&mut h, &sid).is_empty());
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
 fn other_failures_and_the_setting_off_are_left_alone() {
     let (d, bin, _) = daemon("net-off");
     let mut h = d.human();
@@ -152,6 +184,7 @@ fn connection_errors_are_told_apart() {
     assert!(is_network_error("unknown", "Connection error."));
     assert!(is_network_error("unknown", "fetch failed: getaddrinfo ENOTFOUND api.anthropic.com"));
     assert!(is_network_error("server_error", "Request timed out."));
+    assert!(is_network_error("", "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"));
     assert!(is_network_error("unknown", "API Error: Your computer went to sleep mid-response. The response above may be incomplete."));
     assert!(!is_network_error("rate_limit", "Rate limit reached."));
     assert!(!is_network_error("authentication_failed", "Invalid API key"));
