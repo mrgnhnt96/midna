@@ -404,7 +404,6 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
         marks.push(div().absolute().left(px(x0 * dw)).top(px(y0 * dh)).w(px((x1 - x0) * dw)).h(px((y1 - y0) * dh)).border_2().border_dashed().border_color(t.accent).bg(t.accent.opacity(0.12)).into_any_element());
     }
     let stage_cell = a.stage.clone();
-    let dragging = a.drag.is_some();
     let panning = a.pan.is_some();
     let entity = cx.entity();
     let image = div()
@@ -430,10 +429,10 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                 move |b, _, _| stage_cell.set(Some(b)),
                 move |_, _, window, _| {
                     // A drag follows moves and releases anywhere in the window, so letting go
-                    // past the image's edge still ends the box (clamped to the edge).
-                    if !dragging {
-                        return;
-                    }
+                    // past the image's edge still ends the box (clamped to the edge). Listened
+                    // for on every frame, not just once a drag has painted: a click released
+                    // before the next frame (a big image draws slowly) was lost otherwise.
+                    // Without a drag, `pointer_move` and `pointer_up` do nothing.
                     let e = entity.clone();
                     window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble && ev.pressed_button == Some(MouseButton::Left) {
@@ -502,10 +501,8 @@ fn stage(a: &AnnotateView, t: &Theme, cx: &mut Context<AnnotateView>) -> impl In
                     }
                 },
                 move |_, _, window, _| {
-                    if !panning {
-                        return;
-                    }
-                    // Like a drag, a pan follows the pointer anywhere in the window.
+                    // Like a drag, a pan follows the pointer anywhere in the window, and is
+                    // listened for on every frame (`pan_move` / `pan_end` do nothing without one).
                     let e = entity.clone();
                     window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {
