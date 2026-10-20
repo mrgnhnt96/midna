@@ -982,7 +982,21 @@ pub enum StatusClear {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TriggerAction {
-    StartAgent { project_id: Id, agent: AgentKind, prompt_template: String },
+    StartAgent {
+        project_id: Id,
+        agent: AgentKind,
+        prompt_template: String,
+        /// Claude only, human only: the agent's `--permission-mode` (`default`, `manual`,
+        /// `auto`, `acceptEdits`, `plan`, `dontAsk`, `bypassPermissions`). It wins over
+        /// `triggers.agent_mode` for this trigger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        /// Claude only, human only: tools the agents this trigger starts may use without asking,
+        /// passed as `--allowedTools` (e.g. `mcp__claude_ai_Slack__slack_send_message`,
+        /// `Bash(git status)`). Nothing else gets them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_tools: Vec<String>,
+    },
     /// Run `command` (through the login shell) in a monitor terminal in the project. With
     /// `background` the terminal opens in the sidebar's folded Background group instead of as a
     /// tab. With `headless` there's no terminal at all: it runs in the project's folder, and its
@@ -1053,7 +1067,35 @@ impl TriggerAction {
     pub fn needs_session(&self) -> bool {
         matches!(self, TriggerAction::SendToSession { .. } | TriggerAction::SetStatus { .. } | TriggerAction::ClearStatus {})
     }
+
+    /// A `start_agent`'s `permission_mode` and `allowed_tools` (human only), if it sets either.
+    pub fn agent_access(&self) -> Option<(Option<&str>, &[String])> {
+        match self {
+            TriggerAction::StartAgent { permission_mode, allowed_tools, .. } if permission_mode.is_some() || !allowed_tools.is_empty() => {
+                Some((permission_mode.as_deref(), allowed_tools))
+            }
+            _ => None,
+        }
+    }
+
+    /// The agent arguments `agent_access` turns into: `--permission-mode <mode>`, then
+    /// `--allowedTools <tool>` for each tool.
+    pub fn agent_access_args(&self) -> Vec<String> {
+        let Some((mode, tools)) = self.agent_access() else { return vec![] };
+        let mut v = vec![];
+        if let Some(m) = mode {
+            v.extend(["--permission-mode".to_string(), m.to_string()]);
+        }
+        for t in tools {
+            v.extend(["--allowedTools".to_string(), t.clone()]);
+        }
+        v
+    }
 }
+
+/// The `--permission-mode` values a `start_agent` trigger may set (`default` is Claude's older
+/// name for `manual`).
+pub const PERMISSION_MODES: &[&str] = &["default", "manual", "auto", "acceptEdits", "plan", "dontAsk", "bypassPermissions"];
 
 /// Named colors a custom status may use (or `#rrggbb`).
 pub const STATUS_COLORS: &[&str] = &["red", "orange", "amber", "yellow", "green", "teal", "blue", "purple", "pink", "gray"];

@@ -437,6 +437,11 @@ fn run_callback(d: &Arc<Daemon>, s: &Sent, r: &notify::Response, action: &Trigge
     notify::CallbackRun { on, delivery_id, outcome }
 }
 
+/// A notification button's action, run as a one-off trigger (see `callback_trigger`).
+pub fn is_callback(t: &Trigger) -> bool {
+    t.id.starts_with("notify:")
+}
+
 /// The one-off trigger notification `id`'s `on` action runs as (never stored with the
 /// triggers).
 pub fn callback_trigger(id: &str, title: &str, on: &str, action: TriggerAction, sent_by: Option<Actor>) -> Trigger {

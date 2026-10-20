@@ -564,7 +564,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     SettingSpec { range: Some((1024, 65535)), ..s!("webhooks.port", SettingKind::Int, I(7787), "webhooks", false, "Local port the webhook receiver listens on.") },
     s!("webhooks.relay_url", SettingKind::String, S(""), "webhooks", true, "URL of the self-hosted relay when webhooks.path is self_relay."),
     s!("triggers.agent_mode", en(&["supervised", "inherit"]), S("supervised"), "webhooks", true,
-        "How agents started by a webhook trigger run. Their prompt contains text from the webhook (untrusted). supervised: Claude gets --permission-mode default and Codex approval_policy=on-request + sandbox_mode=workspace-write, so tool calls still ask (as needs-you items) even if your own config bypasses permissions. inherit: your normal agent config applies. Human only."),
+        "How agents started by a webhook trigger (or a notification's button) run. Their prompt contains text from the webhook or the notification's sender (untrusted); a local trigger's agents always use your normal config. A trigger's own permission_mode wins over this. supervised: Claude gets --permission-mode default and Codex approval_policy=on-request + sandbox_mode=workspace-write, so tool calls still ask (as needs-you items) even if your own config bypasses permissions. inherit: your normal agent config applies. Human only."),
     s!("agents.may_move_windows", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to move, pop out, snap, keep-on-top or close windows via window.command. Human only."),
     s!("agents.may_close_idle", SettingKind::Bool, B(true), "agents", true,

@@ -210,10 +210,11 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
     let (command, agent) = match p.kind {
         SessionKind::Agent => {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;
-            let by_trigger = ctx.as_actor.as_ref().is_some_and(|a| a.kind == ActorKind::Trigger);
-            let supervised = by_trigger && d.core().state.setting_str("triggers.agent_mode") != "inherit";
-            // A supervised agent's permission prompts are forced on; its own arguments could undo that.
-            if supervised && !p.agent_args.is_empty() {
+            let supervised = ctx.supervised && d.core().state.setting_str("triggers.agent_mode") != "inherit";
+            // A supervised agent's permission prompts are forced on; its own arguments could undo
+            // that. Tools the human allowed on the trigger (`--allowedTools`) are all it may take.
+            let allowed_only = p.agent_args.chunks(2).all(|c| c.len() == 2 && c[0] == "--allowedTools");
+            if supervised && !allowed_only {
                 return Err(RpcError::bad_params("agent_args can't be passed to an agent a trigger starts in supervised mode"));
             }
             (launch_command(d, a, &p.agent_args, p.resume.as_deref(), p.prompt.as_deref(), &env, supervised, &cwd), Some(a))

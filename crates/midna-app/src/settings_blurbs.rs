@@ -134,7 +134,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "webhooks.path" => "How GitHub and Bitbucket webhooks reach this Mac.",
         "webhooks.port" => "The local port the webhook receiver listens on.",
         "webhooks.relay_url" => "Needed when the delivery path is Self-hosted.",
-        "triggers.agent_mode" => "Supervised agents still ask before running tools.",
+        "triggers.agent_mode" => "Supervised webhook agents still ask before running tools.",
         _ => return None,
     })
 }

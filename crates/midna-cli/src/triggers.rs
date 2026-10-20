@@ -362,6 +362,15 @@ pub fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Re
         run_mods(a, &mut act)?;
         return Ok(Some(act));
     }
+    // --permission-mode / --allow-tool alone edit the current start_agent (update).
+    if !a.has("agent") && AGENT_MODS.iter().any(|f| a.has(f)) {
+        let Some(cur) = cur.filter(|c| c["kind"] == "start_agent" && picked.is_empty()) else {
+            return Err(Fail::Usage("--permission-mode and --allow-tool go with --agent claude".into()));
+        };
+        let mut act = cur.clone();
+        agent_mods(a, &mut act)?;
+        return Ok(Some(act));
+    }
     let need_project = || project.clone().ok_or_else(|| Fail::Usage("--project is required for this action".into()));
     if let Some(v) = json_arg(a, "action-json")? {
         if !v["kind"].is_string() {
@@ -371,7 +380,9 @@ pub fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Re
     }
     if let Some(agent) = a.get("agent") {
         let prompt = a.get("prompt").ok_or_else(|| Fail::Usage("--agent needs --prompt TEMPLATE (to only fire for one agent's terminals, use --for-agent)".into()))?;
-        return Ok(Some(json!({ "kind": "start_agent", "project_id": need_project()?, "agent": agent, "prompt_template": prompt })));
+        let mut act = json!({ "kind": "start_agent", "project_id": need_project()?, "agent": agent, "prompt_template": prompt });
+        agent_mods(a, &mut act)?;
+        return Ok(Some(act));
     }
     if let Some(cmd) = a.get("run") {
         let mut act = json!({ "kind": "run_command", "project_id": need_project()?, "command": cmd });
@@ -552,6 +563,28 @@ fn run_mods(a: &Args, act: &mut Value) -> Result<(), Fail> {
     Ok(())
 }
 
+/// Flags that set what a started agent may do without asking (human only).
+const AGENT_MODS: &[&str] = &["permission-mode", "allow-tool"];
+
+/// Apply --permission-mode (empty: the default again) and --allow-tool (repeatable; replaces
+/// the list, an empty one clears it) to a start_agent action.
+fn agent_mods(a: &Args, act: &mut Value) -> Result<(), Fail> {
+    let m = act.as_object_mut().expect("an action object");
+    if let Some(mode) = a.get("permission-mode") {
+        if mode.is_empty() {
+            m.remove("permission_mode");
+        } else {
+            one_of("permission-mode", mode, midna_proto::PERMISSION_MODES)?;
+            m.insert("permission_mode".into(), json!(mode));
+        }
+    }
+    if a.has("allow-tool") {
+        let tools: Vec<&String> = a.all("allow-tool").iter().filter(|t| !t.is_empty()).collect();
+        m.insert("allowed_tools".into(), json!(tools));
+    }
+    Ok(())
+}
+
 fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
     a.get("cooldown").map(|v| parse_duration(v, 1).map_err(|e| Fail::Usage(format!("--cooldown {e}")))).transpose()
 }
@@ -560,7 +593,7 @@ const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
     "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter",
     "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
-    "background", "headless", "timeout",
+    "background", "headless", "timeout", "permission-mode", "allow-tool",
 ];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).
@@ -879,6 +912,21 @@ mod tests {
         assert_eq!(raw, Some(json!({ "kind": "clear_status" })));
         assert!(action_from(&args(&["t", "--action-json", r#"{"steps":[]}"#]), None, None).is_err());
         assert!(action_from(&args(&["t", "--agent", "claude"]), Some("p".into()), None).is_err(), "start_agent needs --prompt");
+    }
+
+    #[test]
+    fn agent_mode_and_tools() {
+        let slack = "mcp__claude_ai_Slack__slack_send_message";
+        let a = args(&["t", "--agent", "claude", "--prompt", "Stand-up", "--permission-mode", "auto", "--allow-tool", slack, "--allow-tool", "Bash(git status)"]);
+        let act = ok(action_from(&a, Some("p".into()), None)).unwrap();
+        assert_eq!(act, json!({ "kind": "start_agent", "project_id": "p", "agent": "claude", "prompt_template": "Stand-up", "permission_mode": "auto", "allowed_tools": [slack, "Bash(git status)"] }));
+        assert!(action_from(&args(&["t", "--agent", "claude", "--prompt", "x", "--permission-mode", "yolo"]), Some("p".into()), None).is_err());
+        // update: alone they edit the current agent; an empty value clears one
+        let edited = ok(action_from(&args(&["t", "--permission-mode", "", "--allow-tool", ""]), None, Some(&act))).unwrap();
+        assert!(edited.get("permission_mode").is_none(), "{edited}");
+        assert_eq!(edited["allowed_tools"], json!([]));
+        assert_eq!(edited["prompt_template"], "Stand-up");
+        assert!(action_from(&args(&["t", "--allow-tool", slack]), None, Some(&json!({ "kind": "attention", "message": "x" }))).is_err());
     }
 
     #[test]

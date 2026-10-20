@@ -410,7 +410,9 @@ fn agent_label(a: AgentKind) -> &'static str {
 /// Run one trigger's action for delivery `del_id`. Returns (session started, one-line outcome);
 /// a headless command's run goes in `runs`. A `run_command` gets the delivery's `body`.
 pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_id: &str, body: Option<&crate::headless::Body>, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
-    let ctx = Ctx::internal_trigger(trigger_actor(t));
+    let mut ctx = Ctx::internal_trigger(trigger_actor(t));
+    // The prompt carries webhook text: supervised, unless the human gave the trigger its own mode.
+    ctx.supervised = !matches!(t.action.agent_access(), Some((Some(_), _)));
     let name = || {
         let tpl = t.session_name_template.clone().unwrap_or_else(|| match &f.pr_number {
             Some(_) => format!("{} #{{{{pr.number}}}}", t.name),
@@ -425,10 +427,10 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
         Ok(v["id"].as_str().unwrap_or_default().to_string())
     };
     match &t.action {
-        TriggerAction::StartAgent { project_id, agent, prompt_template } => {
+        TriggerAction::StartAgent { project_id, agent, prompt_template, .. } => {
             let prompt = payload::render_prompt(prompt_template, f, payload);
             let n = name();
-            match open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": prompt })) {
+            match open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": prompt, "agent_args": t.action.agent_access_args() })) {
                 Ok(id) => (Some(id), format!("Started {} › {n}", agent_label(*agent))),
                 Err(e) => (None, format!("Could not start {}: {e}", agent_label(*agent))),
             }

@@ -144,6 +144,10 @@ pub fn callbacks(d: &Daemon, sid: Option<&str>, title: &str, actions: &[String],
             return Err(RpcError::bad_params(format!("on {key:?}: {} acts on the notification's terminal; give it one (session)", crate::local::action_name(&action))));
         }
         let what = crate::local::action_name(&action);
+        // The sender would decide how much an agent the human's click starts may do unasked.
+        if action.agent_access().is_some() {
+            return Err(RpcError::bad_params(format!("on {key:?}: permission_mode and allowed_tools are for triggers the human sets up, not notification buttons")));
+        }
         if let TriggerAction::StartAgent { project_id, .. } | TriggerAction::RunCommand { project_id, .. } = &mut action {
             *project_id = if project_id.trim().is_empty() {
                 let project = sid.and_then(|s| d.core().state.session(s).map(|s| s.project_id.clone()));

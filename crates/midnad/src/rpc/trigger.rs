@@ -67,9 +67,18 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
         (None, false) => {}
     }
     match action {
-        TriggerAction::StartAgent { project_id, prompt_template, .. } => {
+        TriggerAction::StartAgent { project_id, agent, prompt_template, permission_mode, allowed_tools } => {
             if prompt_template.trim().is_empty() {
                 return Err(RpcError::bad_params("start_agent needs a prompt_template"));
+            }
+            if *agent != AgentKind::Claude && (permission_mode.is_some() || !allowed_tools.is_empty()) {
+                return Err(RpcError::bad_params("start_agent: permission_mode and allowed_tools are for Claude"));
+            }
+            if let Some(m) = permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
+                return Err(RpcError::bad_params(format!("start_agent: permission_mode `{m}` must be one of {}", PERMISSION_MODES.join(", "))));
+            }
+            if allowed_tools.iter().any(|t| t.trim().is_empty() || t.trim().starts_with('-')) {
+                return Err(RpcError::bad_params("start_agent: each allowed_tools entry is a tool name, e.g. mcp__claude_ai_Slack__slack_send_message or Bash(git status)"));
             }
             d.core().state.project(project_id).ok_or_else(|| RpcError::not_found(format!("no project {project_id}")))?;
         }
@@ -186,8 +195,21 @@ fn close_secret_needed(d: &Daemon, ctx: &Ctx, id: &str) {
     }
 }
 
+/// What an agent asking for a trigger with `permission_mode` or `allowed_tools` is told: the
+/// human approves it (a needs-you item that runs `method` with `params`) or nothing changes.
+fn defer_access(d: &Daemon, ctx: &Ctx, name: &str, method: &str, params: Value) -> RpcError {
+    let cli = if method == "trigger.add" { "triggers add".to_string() } else { format!("triggers update {}", params["id"].as_str().unwrap_or("")) };
+    let title = format!("Agent asks to set the permission mode or allowed tools of trigger “{name}”");
+    super::defer_to_human(d, ctx, &title, &cli, method, &params)
+}
+
 pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
     let local = p.source == TriggerSource::Local;
+    // How much the agents it starts may do without asking is the human's call.
+    if !ctx.is_human() && p.action.agent_access().is_some() {
+        let params = serde_json::to_value(&p).unwrap_or_default();
+        return Err(defer_access(d, ctx, p.name.trim(), "trigger.add", params));
+    }
     if p.enabled && !local {
         return Err(RpcError::bad_params("only local triggers can be enabled on add; webhook triggers need their secret first"));
     }
@@ -232,6 +254,10 @@ pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
 
 pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
     let mut t = get(d, &p.id)?;
+    if !ctx.is_human() && p.action.as_ref().is_some_and(|a| a.agent_access() != t.action.agent_access()) {
+        let params = serde_json::to_value(&p).unwrap_or_default();
+        return Err(defer_access(d, ctx, &t.name, "trigger.update", params));
+    }
     let mut changed = vec![];
     let mut sensitive = false;
     if let Some(n) = p.name {

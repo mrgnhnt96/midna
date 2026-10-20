@@ -169,7 +169,7 @@ These need you (credentials, your screen, or your accounts). Nothing in this lis
    3. Better still, dictate with the real Kass.
 4. **Live-test Codex approvals.** Your `~/.codex/config.toml` sets `approval_policy="never"`. Use a temp `CODEX_HOME` with `on-request` (or a webhook-started Codex, which now runs `on-request`), and check that the prompt patterns and approve/deny from midna work.
 5. **Enable Tailscale Funnel** for your tailnet. Then run `midna webhooks configure tailscale_funnel` from the GUI (human only), and point a GitHub webhook at the public URL that `midna webhooks status` shows.
-6. **Decide on `triggers.agent_mode`.** The default is `supervised`, which forces permission prompts on webhook-started agents even though your global Claude config bypasses them. Switch to `inherit` only if you accept that risk.
+6. **Decide on `triggers.agent_mode`.** The default is `supervised`, which forces permission prompts on webhook-started agents even though your global Claude config bypasses them. Switch to `inherit` only if you accept that risk. Local triggers (schedules, hooks) use your normal config; to give one trigger's agents their own mode or tools, use `midna triggers update <id> --permission-mode auto --allow-tool <tool>`.
 7. **Grant Accessibility to Midna.app only after reading `docs/SECURITY.md` → "TCC responsibility".** Agents in midna terminals may inherit that grant.
 8. **Replace the placeholder icon.**
 9. **Review and commit.** Nothing here was committed.
