@@ -2,9 +2,15 @@
 //!
 //! Claude Code's status line carries `rate_limits` (5-hour and weekly windows) on subscription
 //! plans. Each terminal keeps its own last report in `AgentInfo.rate_limits`; the limits are the
-//! account's, so the latest report from any terminal is kept here too (in `state.json`), and
-//! outlives the terminal that reported it. Different Claude accounts in different terminals
-//! would overwrite each other: the latest report wins.
+//! account's, so every terminal's reports are merged here too (in `state.json`), and outlive the
+//! terminal that reported them.
+//!
+//! A terminal's status line repeats the numbers from its own last API response, so an idle (or
+//! just resumed) terminal keeps reporting old ones, and a window that has reset since may be left
+//! out. Reports are merged per window, so the freshest numbers stick: a later reset is a new
+//! window run and wins; in the same run, usage only goes up, so the higher number wins; an older
+//! run, or a window left out, keeps what is stored. Different Claude accounts in different
+//! terminals would mix: the higher numbers stick until their window resets.
 use crate::daemon::Daemon;
 use midna_proto::*;
 use serde::{Deserialize, Serialize};
@@ -31,10 +37,12 @@ pub fn observe(d: &Daemon, sid: &str, project: &str, payload: &Value) {
     let (changed, reached) = {
         let mut core = d.core();
         let u = core.state.usage.get_or_insert_with(Default::default);
-        let changed = u.claude.as_ref().is_none_or(|c| !c.same_as(&limits)) || u.session.as_deref() != Some(sid);
-        let reached = newly_reached(u, &limits, time::now_unix());
-        u.claude = Some(limits);
-        u.session = Some(sid.to_string());
+        let (merged, fresh) = merge(u.claude.as_ref(), limits);
+        let session = if fresh { Some(sid.to_string()) } else { u.session.clone() };
+        let changed = u.claude.as_ref().is_none_or(|c| !c.same_as(&merged)) || u.session != session;
+        let reached = newly_reached(u, &merged, time::now_unix());
+        u.claude = Some(merged);
+        u.session = session;
         (changed, reached)
     };
     if changed {
@@ -44,6 +52,40 @@ pub fn observe(d: &Daemon, sid: &str, project: &str, payload: &Value) {
         let data = json!({ "agent": "claude", "window": window, "used_percentage": w.used_percentage, "resets_at": w.resets_at });
         d.emit(kinds::USAGE_LIMIT_REACHED, Actor::system(), Some(project.to_string()), Some(sid.to_string()), data);
     }
+}
+
+/// Two reports this close apart in `resets_at` are the same window run.
+const SAME_RUN_SECS: i64 = 600;
+
+/// `new` folded into `old` window by window (see the module docs), and whether `new` was current
+/// (no window of it older than what is stored): only a current report moves `observed_at` and
+/// `session`, so an idle terminal repeating old numbers doesn't keep them looking fresh.
+fn merge(old: Option<&RateLimits>, new: RateLimits) -> (RateLimits, bool) {
+    let Some(old) = old else { return (new, true) };
+    let mut current = true;
+    let mut pick = |o: &Option<RateLimitWindow>, n: Option<RateLimitWindow>| match (o, n) {
+        (o, None) => o.clone(),
+        (None, n) => n,
+        (Some(o), Some(n)) => {
+            let reset = |w: &RateLimitWindow| w.resets_at.as_deref().and_then(time::parse_rfc3339);
+            match (reset(o), reset(&n)) {
+                (Some(ro), Some(rn)) if rn - ro > SAME_RUN_SECS => Some(n),
+                (Some(ro), Some(rn)) if ro - rn > SAME_RUN_SECS => {
+                    current = false;
+                    Some(o.clone())
+                }
+                (Some(_), Some(_)) if o.used_percentage > n.used_percentage => {
+                    current = false;
+                    Some(o.clone())
+                }
+                _ => Some(n),
+            }
+        }
+    };
+    let five_hour = pick(&old.five_hour, new.five_hour);
+    let seven_day = pick(&old.seven_day, new.seven_day);
+    let observed_at = if current { new.observed_at } else { old.observed_at.clone() };
+    (RateLimits { five_hour, seven_day, observed_at }, current)
 }
 
 /// Windows of `limits` at their limit that `u` has not announced yet (and remembers them).
@@ -100,6 +142,32 @@ mod tests {
         let next = RateLimits { five_hour: win(100.0, now + 18_600), ..l.clone() };
         assert_eq!(newly_reached(&mut u, &next, now).len(), 1, "the next window run announces again");
         assert!(newly_reached(&mut u, &l, now + 700).is_empty(), "a full window that has reset is not limited");
+    }
+
+    #[test]
+    fn stale_reports_never_replace_fresher_numbers() {
+        let now = 1_000_000;
+        let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
+        let fresh = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
+        let pct = |w: &Option<RateLimitWindow>| w.as_ref().map(|w| w.used_percentage);
+
+        // An idle terminal repeating its last numbers: same run, lower usage.
+        let (m, current) = merge(Some(&fresh), l(win(92.0, now + 600), win(28.0, now + 9000), "t3"));
+        assert_eq!((pct(&m.five_hour), pct(&m.seven_day), m.observed_at.as_str(), current), (Some(97.0), Some(29.0), "t2", false));
+
+        // A resumed terminal from days ago: its 5-hour window is gone, its weekly is far behind.
+        let (m, current) = merge(Some(&fresh), l(None, win(8.0, now + 9000), "t3"));
+        assert_eq!((pct(&m.five_hour), pct(&m.seven_day), current), (Some(97.0), Some(29.0), false));
+
+        // A report from an older window run.
+        let (m, _) = merge(Some(&fresh), l(win(99.0, now - 18_000), None, "t3"));
+        assert_eq!(pct(&m.five_hour), Some(97.0));
+
+        // Fresher numbers win, and a new window run wins however low it starts.
+        let (m, current) = merge(Some(&fresh), l(win(98.0, now + 630), win(29.0, now + 9000), "t3"));
+        assert_eq!((pct(&m.five_hour), m.observed_at.as_str(), current), (Some(98.0), "t3", true));
+        let (m, current) = merge(Some(&fresh), l(win(2.0, now + 18_600), win(29.0, now + 9000), "t3"));
+        assert_eq!((pct(&m.five_hour), current), (Some(2.0), true));
     }
 
     #[test]
