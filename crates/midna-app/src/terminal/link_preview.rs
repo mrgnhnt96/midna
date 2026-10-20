@@ -181,6 +181,20 @@ enum RunState {
     Approval,
 }
 
+impl RunState {
+    fn key(&self) -> &'static str {
+        match self {
+            RunState::Queued => "QUEUED",
+            RunState::Running => "RUNNING",
+            RunState::Passed => "PASSED",
+            RunState::Failed => "FAILED",
+            RunState::Cancelled => "CANCELLED",
+            RunState::Skipped => "SKIPPED",
+            RunState::Approval => "APPROVAL",
+        }
+    }
+}
+
 /// A GitHub Actions workflow run.
 #[derive(Clone, Debug)]
 struct Run {
@@ -1043,7 +1057,7 @@ pub(super) fn github_pr(url: &str) -> Option<(String, String, u64)> {
 }
 
 /// `https://github.com/<owner>/<repo>/actions/runs/<id>…` (a job or an attempt in it too).
-fn github_run(url: &str) -> Option<(String, String, u64)> {
+pub(super) fn github_run(url: &str) -> Option<(String, String, u64)> {
     let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
     let rest = rest.strip_prefix("www.").unwrap_or(rest);
     let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
@@ -1187,6 +1201,24 @@ pub(super) fn pr_state(url: &str) -> Option<String> {
         c.insert(url.to_string(), (Instant::now(), Body::Pr(pr.clone())));
     }
     Some(pr.state)
+}
+
+/// A workflow run's state for its link in the grid (`pr_status.rs`): QUEUED, RUNNING, PASSED,
+/// FAILED, CANCELLED, SKIPPED or APPROVAL. Like `pr_state`, `gh` only, sharing the card's cache.
+pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
+    if let Some((at, b @ Body::Run(_))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+        && at.elapsed() < ttl(&b)
+        && let Body::Run(r) = b
+    {
+        return Some(r.state.key());
+    }
+    let (o, r, id) = github_run(url)?;
+    let run = load_run(&o, &r, id)?;
+    let state = run.state.key();
+    if let Ok(mut c) = URL_CACHE.lock() {
+        c.insert(url.to_string(), (Instant::now(), Body::Run(run)));
+    }
+    Some(state)
 }
 
 fn ttl(b: &Body) -> Duration {

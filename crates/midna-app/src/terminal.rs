@@ -2357,7 +2357,7 @@ fn paint_grid(
                 continue;
             }
             let alpha = if c.flags & F_FAINT != 0 { 0.6 } else { 1.0 };
-            // a pull request link takes its state's color (`terminal/pr_status.rs`)
+            // a pull request or Actions run link takes its state's color (`terminal/pr_status.rs`)
             let tint = prs.iter().flat_map(|m| m.spans.iter().map(move |s| (s, m.color))).find(|((r, a, b), _)| *r as usize == y && (*a as usize..=*b as usize).contains(&x));
             let color = tint.map_or_else(|| fg_of(c.fg, alpha), |(_, c)| c.opacity(alpha));
             if c.flags & (F_UNDER | F_STRIKE) != 0 {

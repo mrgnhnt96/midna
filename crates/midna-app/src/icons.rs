@@ -19,6 +19,15 @@ pub enum Icon {
     PrMerged,
     PrClosed,
     PrDraft,
+    /// A workflow run's states (the terminal's Actions run links, `terminal/pr_status.rs`).
+    RunQueued,
+    RunRunning,
+    RunPassed,
+    RunFailed,
+    /// Cancelled or skipped.
+    RunStopped,
+    /// Waiting on an approval.
+    RunWaiting,
     Split,
     PopOut,
     /// Opposite of `PopOut`: put a popped-out terminal back in the main window.
@@ -102,6 +111,12 @@ impl Icon {
             Icon::PrMerged => "icons/pr-merged.svg",
             Icon::PrClosed => "icons/pr-closed.svg",
             Icon::PrDraft => "icons/pr-draft.svg",
+            Icon::RunQueued => "icons/run-queued.svg",
+            Icon::RunRunning => "icons/run-running.svg",
+            Icon::RunPassed => "icons/run-passed.svg",
+            Icon::RunFailed => "icons/run-failed.svg",
+            Icon::RunStopped => "icons/run-stopped.svg",
+            Icon::RunWaiting => "icons/run-waiting.svg",
             Icon::Split => "icons/split.svg",
             Icon::PopOut => "icons/popout.svg",
             Icon::DockIn => "icons/dockin.svg",
@@ -235,6 +250,24 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/pr-draft.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M4 5.3v5.4M12 4.5v.1M12 7.8v.1"/></svg>"##
+        }
+        "icons/run-queued.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.2 1.4"/></svg>"##
+        }
+        "icons/run-running.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><circle cx="8" cy="8" r="2.4" fill="#000" stroke="none"/></svg>"##
+        }
+        "icons/run-passed.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M5.3 8.2 7.2 10l3.5-3.9"/></svg>"##
+        }
+        "icons/run-failed.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2"/></svg>"##
+        }
+        "icons/run-stopped.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M3.6 12.4l8.8-8.8"/></svg>"##
+        }
+        "icons/run-waiting.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6M8 10.9v.1"/></svg>"##
         }
         "icons/split.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M8 2.5v11"/></svg>"##

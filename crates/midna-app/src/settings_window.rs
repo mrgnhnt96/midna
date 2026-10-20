@@ -1111,7 +1111,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "terminal.link_preview" => "Link previews",
         "terminal.prompt_bar" => "Prompt bar",
         "terminal.preview_path_click" => "Clicking a preview's path",
-        "terminal.pr_status" => "Pull request status",
+        "terminal.pr_status" => "PR and Actions run status",
         "terminal.image_paste" => "⌘V of an image",
         "terminal.link_patterns" => "Link patterns",
         "notify.enabled" => "Show notifications",
