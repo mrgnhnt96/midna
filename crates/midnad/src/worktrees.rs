@@ -136,7 +136,7 @@ pub fn parse_list(out: &str) -> Vec<Entry> {
 }
 
 /// The main checkout of the repo `cwd` is in (None outside git or in a bare repo).
-fn main_checkout(cwd: &str) -> Option<String> {
+pub fn main_checkout(cwd: &str) -> Option<String> {
     let out = git(cwd, &["worktree", "list", "--porcelain"])?;
     parse_list(&out).into_iter().next().filter(|e| !e.bare).map(|e| e.path)
 }
