@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 mod link_preview;
+mod pr_status;
 mod prompt_nav;
 mod queue_pill;
 mod secret_paste;
@@ -113,6 +114,8 @@ pub struct TerminalView {
     find: Option<FindBar>,
     /// ⌘-hover: the link under the pointer, as (row, first col, last col) on screen.
     hover_link: Option<(u16, u16, u16)>,
+    /// The pull request links on screen (`terminal/pr_status.rs`).
+    prs: Vec<pr_status::Found>,
     /// The cell the last ⌘-hover probe was sent for.
     hover_probe: Option<(i32, i32)>,
     /// ⌘ is held over the link (the pointing hand: ⌘-click opens it).
@@ -405,6 +408,7 @@ impl TerminalView {
             reported_focus: None,
             find: None,
             hover_link: None,
+            prs: vec![],
             hover_probe: None,
             hover_cmd: false,
             preview: Default::default(),
@@ -623,6 +627,7 @@ impl TerminalView {
             m.frames += 1;
             m.rows += f.changed.len() as u64;
         }
+        let rows_changed = f.full || !f.changed.is_empty();
         let g = Arc::make_mut(&mut self.grid);
         if f.full || f.cols != self.cols || f.rows != self.rows {
             g.clear();
@@ -635,6 +640,9 @@ impl TerminalView {
         }
         self.cols = f.cols;
         self.rows = f.rows;
+        if rows_changed {
+            self.scan_prs(cx);
+        }
         let moved = self.cursor != f.cursor;
         self.cursor = f.cursor;
         self.cursor_style = f.cursor_style;
@@ -1986,6 +1994,7 @@ impl Render for TerminalView {
         }
         let hover_link = self.hover_link;
         let link_color = theme.accent;
+        let prs = self.pr_marks(&theme, cx);
         let menu = self.render_menu(&theme, cx);
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
         self.update_nav(window, cx);
@@ -2115,7 +2124,8 @@ impl Render for TerminalView {
                             }
                         });
                         window.paint_layer(bounds, |window| {
-                            paint_grid(&grid, bounds, cw, &family, dfg, dbg, pal, cursor, cstyle, &selection, window, cx);
+                            paint_grid(&grid, bounds, cw, &family, dfg, dbg, pal, cursor, cstyle, &selection, &prs, window, cx);
+                            pr_status::paint(&prs, bounds, cw, window, cx);
                             if let (Some(m), Some((x, y))) = (&marked, cursor.or(Some((0, 0)))) {
                                 paint_marked(m, bounds, cw, &family, pal, x, y, window, cx);
                             }
@@ -2290,6 +2300,7 @@ fn paint_grid(
     cursor: Option<(u16, u16)>,
     cstyle: u8,
     selection: &[(u16, u16, u16)],
+    prs: &[pr_status::Mark],
     window: &mut Window,
     _cx: &mut App,
 ) {
@@ -2346,7 +2357,9 @@ fn paint_grid(
                 continue;
             }
             let alpha = if c.flags & F_FAINT != 0 { 0.6 } else { 1.0 };
-            let color = fg_of(c.fg, alpha);
+            // a pull request link takes its state's color (`terminal/pr_status.rs`)
+            let tint = prs.iter().flat_map(|m| m.spans.iter().map(move |s| (s, m.color))).find(|((r, a, b), _)| *r as usize == y && (*a as usize..=*b as usize).contains(&x));
+            let color = tint.map_or_else(|| fg_of(c.fg, alpha), |(_, c)| c.opacity(alpha));
             if c.flags & (F_UNDER | F_STRIKE) != 0 {
                 let yy = if c.flags & F_UNDER != 0 { py + lh - 3. } else { py + lh / 2. };
                 window.paint_quad(fill(Bounds::new(point(px(ox + cw * x as f32), px(yy)), size(px(cw), px(1.))), color));

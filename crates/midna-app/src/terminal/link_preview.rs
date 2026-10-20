@@ -82,6 +82,8 @@ pub struct PreviewEnv {
     pub projects: Vec<String>,
     pub mode: Mode,
     pub path_click: PathClick,
+    /// `terminal.pr_status`: PR links show their state (`pr_status.rs`).
+    pub pr_status: bool,
 }
 
 impl Global for PreviewEnv {}
@@ -104,11 +106,16 @@ pub fn share(m: &MainWindow, cx: &mut App) {
             Some("copy") => PathClick::Copy,
             _ => PathClick::Reveal,
         },
+        pr_status: m.settings.get("terminal.pr_status").and_then(Value::as_bool).unwrap_or(true),
     });
 }
 
 pub(super) fn mode(cx: &App) -> Mode {
     cx.try_global::<PreviewEnv>().map(|e| e.mode).unwrap_or_default()
+}
+
+pub(super) fn pr_status_on(cx: &App) -> bool {
+    cx.try_global::<PreviewEnv>().is_none_or(|e| e.pr_status)
 }
 
 fn env(cx: &App) -> PreviewEnv {
@@ -1026,7 +1033,7 @@ fn url_title(url: &str) -> (String, String) {
 }
 
 /// `https://github.com/<owner>/<repo>/pull/<n>…`.
-fn github_pr(url: &str) -> Option<(String, String, u64)> {
+pub(super) fn github_pr(url: &str) -> Option<(String, String, u64)> {
     let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
     let rest = rest.strip_prefix("www.").unwrap_or(rest);
     let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
@@ -1164,6 +1171,22 @@ fn load_url(url: &str) -> Body {
         c.insert(url.to_string(), (Instant::now(), body.clone()));
     }
     body
+}
+
+/// A pull request's state for its link in the grid (`pr_status.rs`): OPEN, DRAFT, MERGED or
+/// CLOSED. Asks `gh` only, never the web page, and shares the card's cache.
+pub(super) fn pr_state(url: &str) -> Option<String> {
+    if let Some((at, Body::Pr(pr))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+        && at.elapsed() < URL_TTL
+    {
+        return Some(pr.state);
+    }
+    let (o, r, n) = github_pr(url)?;
+    let pr = load_pr(&o, &r, n)?;
+    if let Ok(mut c) = URL_CACHE.lock() {
+        c.insert(url.to_string(), (Instant::now(), Body::Pr(pr.clone())));
+    }
+    Some(pr.state)
 }
 
 fn ttl(b: &Body) -> Duration {

@@ -15,6 +15,10 @@ pub enum Icon {
     /// A linked git worktree (a folder with a branch in it).
     Worktree,
     Pr,
+    /// A pull request's other states (the terminal's PR links, `terminal/pr_status.rs`).
+    PrMerged,
+    PrClosed,
+    PrDraft,
     Split,
     PopOut,
     /// Opposite of `PopOut`: put a popped-out terminal back in the main window.
@@ -95,6 +99,9 @@ impl Icon {
             Icon::Branch => "icons/branch.svg",
             Icon::Worktree => "icons/worktree.svg",
             Icon::Pr => "icons/pr.svg",
+            Icon::PrMerged => "icons/pr-merged.svg",
+            Icon::PrClosed => "icons/pr-closed.svg",
+            Icon::PrDraft => "icons/pr-draft.svg",
             Icon::Split => "icons/split.svg",
             Icon::PopOut => "icons/popout.svg",
             Icon::DockIn => "icons/dockin.svg",
@@ -219,6 +226,15 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/pr.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M4 5.3v5.4M12 10.7V6.5a2 2 0 0 0-2-2H7.5M9 3 7.5 4.5 9 6"/></svg>"##
+        }
+        "icons/pr-merged.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="8" r="1.8"/><path d="M4 5.3v5.4M4 5.3c0 2 1.6 2.7 3.5 2.7h2.7"/></svg>"##
+        }
+        "icons/pr-closed.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M4 5.3v5.4M10.2 2.5l3.6 3.6M13.8 2.5l-3.6 3.6"/></svg>"##
+        }
+        "icons/pr-draft.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.8"/><circle cx="4" cy="12.5" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M4 5.3v5.4M12 4.5v.1M12 7.8v.1"/></svg>"##
         }
         "icons/split.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M8 2.5v11"/></svg>"##
