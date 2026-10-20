@@ -196,6 +196,11 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
+/// The agent's background tasks still running (what the sidebar's background ring shows).
+fn running(info: &AgentInfo) -> impl Iterator<Item = &BackgroundTask> {
+    info.background.iter().filter(|b| b.status.is_empty() || b.status == "running")
+}
+
 /// Map one event to a notification draft (and keep the notifier's book-keeping).
 fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
     let sid = e.session_id.clone();
@@ -236,6 +241,11 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             if secs < min {
                 return None;
             }
+            // Background shells or agents still running: the terminal's row still shows it
+            // working, and the agent comes back when they end.
+            if d.core().state.session(&sid).and_then(|s| s.agent_info.as_ref()).is_some_and(|i| running(i).next().is_some()) {
+                return None;
+            }
             let reply = first_line(s(&e.data, "message"));
             let took = if secs > 0 { format!("Finished in {}", duration(secs)) } else { "Finished".into() };
             let text = if reply.is_empty() { took } else { format!("{took}: {reply}") };
@@ -257,7 +267,7 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
         kinds::SESSION_AGENT => {
             let sid = sid?;
             let info: AgentInfo = serde_json::from_value(e.data.clone()).ok()?;
-            let now: HashSet<String> = info.background.iter().filter(|b| b.status.is_empty() || b.status == "running").map(|b| b.id.clone()).collect();
+            let now: HashSet<String> = running(&info).map(|b| b.id.clone()).collect();
             let before = d.notify().background.insert(sid.clone(), now.clone()).unwrap_or_default();
             let finished: Vec<&String> = before.difference(&now).collect();
             // An exit or restart drops the list without the tasks finishing.

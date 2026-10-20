@@ -79,6 +79,25 @@ fn short_turns_and_interrupts_stay_quiet() {
 }
 
 #[test]
+fn turns_that_leave_background_work_running_stay_quiet() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "notify.turn_done_min_secs", "value": 0 }));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    // The turn ends with a shell still running: the row still shows it working.
+    hook(&mut a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": "run the suite" }));
+    let shell = json!([{ "id": "b1", "type": "shell", "status": "running", "command": "cargo test" }]);
+    hook(&mut a, "Stop", json!({ "session_id": "c1", "last_assistant_message": "Started the tests.", "background_tasks": shell }));
+    assert!(settle(&mut h).is_empty());
+    // The agent comes back when the shell ends, and that turn is the one that finished.
+    hook(&mut a, "UserPromptSubmit", json!({ "session_id": "c1", "prompt": "<task-notification>b1 completed</task-notification>" }));
+    hook(&mut a, "Stop", json!({ "session_id": "c1", "last_assistant_message": "All tests pass.", "background_tasks": [] }));
+    let p = wait_posted(&mut h, 1);
+    assert_eq!((p[0]["data"]["category"].as_str(), p[0]["data"]["body"].as_str()), (Some("turn_done"), Some("Finished: All tests pass.")), "{}", p[0]);
+}
+
+#[test]
 fn terminal_overrides_beat_global_settings() {
     let d = TestDaemon::start();
     let mut h = d.human();
