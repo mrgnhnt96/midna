@@ -1767,6 +1767,10 @@ impl MainWindow {
     }
 
     fn select_project(&mut self, a: &SelectProject, window: &mut Window, cx: &mut Context<Self>) {
+        // The image sheet belongs to one terminal: no switching away under it.
+        if self.overlay == Overlay::Annotate {
+            return;
+        }
         // ⌘1–9 count projects only; root terminals have no number.
         let groups: Vec<Group> = self.groups().into_iter().filter(|g| g.project.is_some()).collect();
         let Some(g) = groups.get(a.0) else { return };
@@ -2067,6 +2071,9 @@ impl MainWindow {
 
     /// Select the terminal `step` rows away in sidebar order (wrapping), skipping popped-out ones.
     fn select_step(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay == Overlay::Annotate {
+            return;
+        }
         let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
         if order.is_empty() {
             return;
@@ -2086,6 +2093,9 @@ impl MainWindow {
 
     /// ⌥⌘← / ⌥⌘→: the terminal shown before (or, after going back, after) this one.
     fn history_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay == Overlay::Annotate {
+            return;
+        }
         let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
         let alive = |id: &str| order.iter().any(|x| x == id);
         let current = self.selected.clone();
