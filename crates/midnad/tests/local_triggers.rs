@@ -512,3 +512,74 @@ fn a_script_sets_and_clears_a_status_without_a_trigger() {
     }
     call_err(&mut a, "session.clear_status", json!({ "id": "nope" }));
 }
+
+/// The command of the terminal a trigger's latest delivery started.
+fn started_command(h: &mut Client, trigger: &Value) -> Vec<String> {
+    let sid = wait_for(10, "agent started", || {
+        let list = call(h, "trigger.deliveries", json!({ "trigger_id": trigger }));
+        list[0]["session_started"].as_str().map(str::to_string)
+    });
+    serde_json::from_value(session(h, &sid)["command"].clone()).unwrap()
+}
+
+#[test]
+fn local_agents_use_the_normal_config_and_a_triggers_own_mode_and_tools() {
+    let d = TestDaemon::start_with(|c| c.agent_bin = Some("/bin/echo".into()));
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
+    let pid = call(&mut h, "project.add", json!({ "path": "/tmp", "name": "tmp" }))["id"].clone();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let agent = |extra: Value| {
+        let mut act = json!({ "kind": "start_agent", "project_id": pid, "agent": "claude", "prompt_template": "Draft the stand-up" });
+        act.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({ "name": "Stand-up", "source": "local", "event": "schedule", "filter": { "cron": "@daily" }, "action": act, "enabled": true })
+    };
+    let mode = |cmd: &[String]| cmd.windows(2).find(|w| w[0] == "--permission-mode").map(|w| w[1].clone());
+
+    // A local trigger's prompt is the human's: no forced supervision.
+    let plain = call(&mut a, "trigger.add", agent(json!({})));
+    fire_daily(&d, &plain["id"]);
+    let cmd = started_command(&mut h, &plain["id"]);
+    assert_eq!(mode(&cmd), None, "{cmd:?}");
+
+    // Bad values are refused; Codex has neither option.
+    let e = call_err(&mut h, "trigger.add", agent(json!({ "permission_mode": "yolo" }))).message;
+    assert!(e.contains("permission_mode `yolo` must be one of"), "{e}");
+    let mut codex = agent(json!({ "allowed_tools": ["Edit"] }));
+    codex["action"]["agent"] = json!("codex");
+    assert!(call_err(&mut h, "trigger.add", codex).message.contains("are for Claude"));
+
+    // An agent can't set them: the human approves the trigger, or nothing is added.
+    let slack = "mcp__claude_ai_Slack__slack_send_message";
+    let access = json!({ "permission_mode": "auto", "allowed_tools": [slack] });
+    let n = call(&mut h, "trigger.list", json!({})).as_array().unwrap().len();
+    let e = call_err(&mut a, "trigger.add", agent(access.clone()));
+    assert_eq!(e.code, midna_proto::error::HUMAN_ONLY);
+    assert_eq!(call(&mut h, "trigger.list", json!({})).as_array().unwrap().len(), n);
+    let nid = e.data.unwrap()["needs_you_id"].clone();
+    call(&mut h, "needs_you.resolve", json!({ "id": nid, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    let list = call(&mut h, "trigger.list", json!({}));
+    let t = list.as_array().unwrap().iter().find(|t| t["action"]["permission_mode"] == "auto").cloned().unwrap_or_else(|| panic!("{list}"));
+    fire_daily(&d, &t["id"]);
+    let cmd = started_command(&mut h, &t["id"]);
+    assert_eq!(mode(&cmd).as_deref(), Some("auto"), "{cmd:?}");
+    assert!(cmd.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == slack), "{cmd:?}");
+
+    // An agent may change the rest, but changing them asks again.
+    let mut act = t["action"].clone();
+    act["prompt_template"] = json!("Draft today's stand-up");
+    call(&mut a, "trigger.update", json!({ "id": t["id"], "action": act }));
+    act["allowed_tools"] = json!([slack, "Bash"]);
+    assert_eq!(call_err(&mut a, "trigger.update", json!({ "id": t["id"], "action": act })).code, midna_proto::error::HUMAN_ONLY);
+    let now = call(&mut h, "trigger.list", json!({}));
+    let now = now.as_array().unwrap().iter().find(|x| x["id"] == t["id"]).unwrap().clone();
+    assert_eq!(now["action"]["allowed_tools"], json!([slack]));
+    assert_eq!(now["action"]["prompt_template"], "Draft today's stand-up");
+
+    // A notification's sender can't hand them to the agent a click starts.
+    let mut on = agent(access)["action"].clone();
+    on["project_id"] = json!("");
+    let e = call_err(&mut a, "notify.send", json!({ "title": "Stand-up?", "actions": ["Go"], "on": { "Go": on } })).message;
+    assert!(e.contains("not notification buttons"), "{e}");
+}

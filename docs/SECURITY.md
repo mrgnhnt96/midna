@@ -151,6 +151,10 @@ Webhook content is attacker-controlled: anyone who can open a PR or push a branc
    - Codex gets `approval_policy="on-request"` and `sandbox_mode="workspace-write"`.
 
    Their tool calls still ask, as needs-you items, even when the user's global config bypasses permissions. That matters for this user, whose global Claude `defaultMode` is `bypassPermissions`.
+
+   Agents a notification's button starts are supervised the same way: the notification's sender wrote their prompt. Agents a local trigger starts (schedule, hook, event, idle) are not, because the human wrote their prompt; they use the human's normal config.
+
+   A Claude `start_agent` trigger may carry its own `permission_mode` (wins over `triggers.agent_mode`) and `allowed_tools` (`--allowedTools`, only in the terminals that trigger opens). Both are human only: an agent adding a trigger with them, or changing them, raises an approval, and nothing happens unless the human approves. Notification buttons can't carry them at all.
 3. **Scope.** They run in the trigger's project, so project and global rules apply, under the default policy.
 4. **Who controls the template.** Templates are written by whoever drafted the trigger. Agents can draft one, but only the human sets the secret and enables it. Changing an enabled trigger's action sends it back to draft, and H4 covers changes between ask and approve.
 

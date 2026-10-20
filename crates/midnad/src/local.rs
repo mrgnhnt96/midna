@@ -599,7 +599,10 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
     let target = || s.ok_or_else(|| format!("{}: event {event} isn't about a terminal", action_name(&t.action)));
     let open = |params: Value| -> Result<Id, String> {
         let p: SessionOpenParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let v = crate::rpc::session::open(d, &Ctx::internal_trigger(actor.clone()), p).map_err(|e| e.message)?;
+        let mut ctx = Ctx::internal_trigger(actor.clone());
+        // The human wrote a local trigger's prompt; a notification button's came from its sender.
+        ctx.supervised = crate::notify::is_callback(t);
+        let v = crate::rpc::session::open(d, &ctx, p).map_err(|e| e.message)?;
         Ok(v["id"].as_str().unwrap_or_default().to_string())
     };
     let name = || {
@@ -607,9 +610,9 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
         if n.trim().is_empty() { t.name.clone() } else { n }
     };
     let result: Result<(Option<Id>, String), String> = match &t.action {
-        TriggerAction::StartAgent { project_id, agent, prompt_template } => {
+        TriggerAction::StartAgent { project_id, agent, prompt_template, .. } => {
             let n = name();
-            open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": r(prompt_template, false) })).map(|id| (Some(id), format!("Started {} › {n}", agent.as_str())))
+            open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": r(prompt_template, false), "agent_args": t.action.agent_access_args() })).map(|id| (Some(id), format!("Started {} › {n}", agent.as_str())))
         }
         TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let n = name();

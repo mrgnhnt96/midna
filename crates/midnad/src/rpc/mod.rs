@@ -53,6 +53,9 @@ pub struct Ctx {
     /// A trusted client (`agents.trusted_clients`) acting for the human: the entry it matched.
     /// Set only for the methods that honor it (see [`crate::conn`]).
     pub client: Option<String>,
+    /// Agents this call starts run supervised (`triggers.agent_mode`): set for webhook triggers
+    /// and notification buttons, whose prompts carry text the human didn't write.
+    pub supervised: bool,
 }
 
 /// What a detached `caller.no_wait` call reports back to the connection that made it.
@@ -102,6 +105,7 @@ fn call_no_wait(d: &Arc<Daemon>, ctx: &Ctx, method: &str, params: Value) -> R {
         no_wait: true,
         detached: Some(nw.clone()),
         client: ctx.client.clone(),
+        supervised: ctx.supervised,
     };
     let (d2, m) = (d.clone(), method.to_string());
     let spawned = std::thread::Builder::new().name("no-wait".into()).spawn(move || {
@@ -138,22 +142,22 @@ impl Ctx {
         let caller: Caller = params.get("caller").cloned().and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
         let downgrade = caller.session.is_some() || caller.role.as_deref() == Some("agent");
         let role = if downgrade { Role::Agent } else { base };
-        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None, client: None }
+        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None, client: None, supervised: false }
     }
 
     /// A human context for executing approved deferred actions (no connection).
     pub fn internal_human() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None, client: None }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None, client: None, supervised: false }
     }
 
     /// midnad acting on its own (actor kind `system`), e.g. closing a `close_on_exit` terminal.
     pub fn internal_system() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None, supervised: false }
     }
 
     /// A webhook trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
-        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None }
+        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None, supervised: false }
     }
 
     pub fn is_human(&self) -> bool {

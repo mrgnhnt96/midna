@@ -157,6 +157,7 @@ fn signed_github_delivery_starts_agent_with_rendered_prompt() {
     );
     // A webhook-started agent runs supervised (its own permission prompts on) by default.
     assert!(cmd.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "default"), "{cmd:?}");
+    assert!(!cmd.iter().any(|a| a == "--allowedTools"), "{cmd:?}");
     // The stand-in agent echoes the prompt into the terminal.
     wait_for(5, "prompt on screen", || {
         let t = call(&mut h, "session.read", json!({ "id": sid, "lines": 50 }))["text"].as_str().unwrap_or("").to_string();
@@ -605,4 +606,36 @@ fn headless_run_command_gets_the_delivery_body() {
     let rec = midnad::webhooks::process::recover(&daemon, "pull_request", "guid-body-2", pr("synchronize", 10)).expect("recovered");
     assert_eq!(read(2, "stdin"), pr("synchronize", 10).to_string());
     assert_eq!(read(2, "env"), format!("pull_request synchronize guid-body-2 {}", rec.id));
+}
+
+#[test]
+fn a_webhook_triggers_own_mode_and_tools() {
+    let d = D::start();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
+    let pid = project(&mut h);
+    let tid = active_review_trigger(&mut h, &pid);
+    let t = webhook_triggers(&mut h)[0].clone();
+    let fire = |h: &mut Client, act: Value, n: u64| -> Vec<String> {
+        call(h, "trigger.update", json!({ "id": tid, "action": act }));
+        let (status, body) = github(d.port(), "pull_request", &format!("guid-{n}"), SECRET, &pr("opened", n));
+        assert_eq!(status, 202, "{body}");
+        let guid = format!("guid-{n}");
+        let del = wait_deliveries(h, n as usize).into_iter().find(|x| x["delivery_guid"] == guid.as_str()).unwrap();
+        let s = call(h, "session.get", json!({ "id": del["session_started"] }));
+        serde_json::from_value(s["command"].clone()).unwrap()
+    };
+    let mode = |cmd: &[String]| cmd.windows(2).filter(|w| w[0] == "--permission-mode").map(|w| w[1].clone()).collect::<Vec<_>>();
+
+    // Allowed tools alone: still supervised, with just those tools allowed.
+    let mut act = t["action"].clone();
+    act["allowed_tools"] = json!(["Bash(gh pr view *)"]);
+    let cmd = fire(&mut h, act.clone(), 1);
+    assert_eq!(mode(&cmd), ["default"], "{cmd:?}");
+    assert!(cmd.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == "Bash(gh pr view *)"), "{cmd:?}");
+
+    // Its own mode wins over triggers.agent_mode.
+    act["permission_mode"] = json!("acceptEdits");
+    let cmd = fire(&mut h, act, 2);
+    assert_eq!(mode(&cmd), ["acceptEdits"], "{cmd:?}");
 }

@@ -1832,7 +1832,7 @@ mod tests {
             source: p::TriggerSource::Github,
             event: "pull_request.opened".into(),
             filter: p::TriggerFilter { repo: Some("mrgnhnt96/midna".into()), branch: Some("main".into()), ..Default::default() },
-            action: p::TriggerAction::StartAgent { project_id: "p_aaaaaa".into(), agent: p::AgentKind::Codex, prompt_template: "Review {{pr.number}}".into() },
+            action: p::TriggerAction::StartAgent { project_id: "p_aaaaaa".into(), agent: p::AgentKind::Codex, prompt_template: "Review {{pr.number}}".into(), permission_mode: None, allowed_tools: vec![] },
             enabled,
             state,
             secret_set: secret,
