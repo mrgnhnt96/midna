@@ -290,6 +290,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let n = m.needs_in_project(pid.as_deref());
         let menu_key = pid.clone().unwrap_or_else(|| "root".into());
         let menu_open = m.menu == Menu::Project(menu_key.clone());
+        let new_menu_open = m.menu == Menu::ProjectNew(menu_key.clone());
         // A pinned project with no terminals: the ghost row under its heading opens one, and the
         // heading folds it away like any other.
         let pinned = g.project.is_some_and(|p| p.pinned);
@@ -358,6 +359,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                         .child(n.to_string()),
                 )
             })
+            .child(new_button(m, t, gi, pid.clone(), menu_key.clone(), new_menu_open, cx))
             .child(
                 div()
                     .id(SharedString::from(format!("group-menu-{gi}")))
@@ -1173,6 +1175,79 @@ fn ghost_row(t: &Theme, pid: String, agent: bool, cx: &mut Context<MainWindow>) 
         .on_click(cx.listener(move |m, _, _, cx| m.open_in_empty(pid.clone(), cx)))
         .child(div().w(px(12.)).flex().justify_center().child(Icon::Plus.el(10., t.dim)))
         .child(div().flex_1().child(if agent { "New agent" } else { "New terminal" }))
+}
+
+/// The `+` on a project heading: opens what `projects.empty_opens` asks for (an agent or a
+/// shell); right-click picks one.
+fn new_button(m: &MainWindow, t: &Theme, gi: usize, pid: Option<String>, menu_key: String, menu_open: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let agent = m.empty_opens_agent();
+    let open = pid.clone();
+    div()
+        .id(SharedString::from(format!("group-new-{gi}")))
+        .relative()
+        .size(px(26.))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(t.raised))
+        .when(menu_open, |d| d.bg(t.raised))
+        .tooltip(super::header::tip(if agent { "New agent (right-click for a terminal)" } else { "New terminal (right-click for an agent)" }))
+        .on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            m.menu = Menu::None;
+            let a = agent.then(|| m.last_agent(open.as_deref()));
+            m.open_session(open.clone(), a, cx);
+            cx.notify();
+        }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |m, _, _, cx| {
+                cx.stop_propagation();
+                let k = Menu::ProjectNew(menu_key.clone());
+                m.menu = if m.menu == k { Menu::None } else { k };
+                cx.notify();
+            }),
+        )
+        .child(Icon::Plus.el(12., t.dim))
+        .when(menu_open, |d| d.child(new_menu(t, pid, cx)))
+}
+
+/// Right-click menu on a project heading's `+`.
+fn new_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let p1 = pid.clone();
+    deferred(
+        anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
+            menu_box(t)
+                .occlude()
+                .mt(px(30.))
+                .child(menu_item(
+                    t,
+                    "new-agent",
+                    "Open new agent",
+                    "",
+                    cx.listener(move |m, _, _, cx| {
+                        m.menu = Menu::None;
+                        let a = m.last_agent(p1.as_deref());
+                        m.open_session(p1.clone(), Some(a), cx);
+                        cx.notify();
+                    }),
+                ))
+                .child(menu_item(
+                    t,
+                    "new-term",
+                    "Open new terminal",
+                    "",
+                    cx.listener(move |m, _, _, cx| {
+                        m.menu = Menu::None;
+                        m.open_session(pid.clone(), None, cx);
+                        cx.notify();
+                    }),
+                )),
+        ),
+    )
+    .with_priority(1)
 }
 
 fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {

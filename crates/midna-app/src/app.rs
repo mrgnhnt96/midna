@@ -44,6 +44,8 @@ pub enum Menu {
     None,
     Approve,
     Project(String),
+    /// Right-click menu on a project heading's `+` (`ui/sidebar.rs`): agent or terminal.
+    ProjectNew(String),
     More,
     /// The header's session links popover (`ui/links.rs`).
     Links,
