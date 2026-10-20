@@ -120,15 +120,18 @@ fn reachable(host: &str) -> bool {
 /// Claude's "Your computer went to sleep mid-response" counts: the connection died with the Mac.
 pub fn is_network_error(error: &str, details: &str) -> bool {
     let text = format!("{error} {details}").to_lowercase();
-    ["connection", "network", "offline", "socket", "fetch failed", "timed out", "timeout", "econnreset", "econnrefused", "enotfound", "etimedout", "eai_again", "enetunreach", "ehostunreach", "went to sleep"]
+    ["connection", "network", "offline", "socket", "fetch failed", "can't reach", "dns", "timed out", "timeout", "econnreset", "econnrefused", "enotfound", "etimedout", "eai_again", "enetunreach", "ehostunreach", "went to sleep"]
         .iter()
         .any(|w| text.contains(w))
 }
 
 /// An agent's turn died (`StopFailure`): if it was a lost connection, watch it so it is
-/// resumed once the network is back.
-pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str) {
-    if !is_network_error(error, details) || !d.core().state.setting_bool(Cause::Network.setting()) {
+/// resumed once the network is back. Claude sometimes sends only `server_error` with no details
+/// and puts what went wrong in the turn's last message ("API Error: Can't reach the API server
+/// … (ENOTFOUND)"), so that message counts too when it is an API error.
+pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str, message: &str) {
+    let in_message = message.trim_start().starts_with("API Error") && is_network_error("", message);
+    if !(is_network_error(error, details) || in_message) || !d.core().state.setting_bool(Cause::Network.setting()) {
         return;
     }
     d.resume.watch().entry(sid.clone()).or_insert_with(|| Watch::new(Cause::Network, NETWORK_WATCH_FOR));
