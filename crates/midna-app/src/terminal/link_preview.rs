@@ -985,7 +985,6 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
                 .when(!p.fields.is_empty(), |d| d.child(fields))
                 .when(!p.lines.is_empty(), |d| d.child(lines))
                 .children(bar)
-                .child(div().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child(link.target.clone()))
                 .into_any_element()
         }
     }
