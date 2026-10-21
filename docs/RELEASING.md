@@ -226,6 +226,11 @@ applies as soon as an update is ready. The app logs to `MIDNA_HOME/app.log`, the
   are not interchangeable. An app built with the dev key only accepts dev-signed updates.
 - `*.key` is in `.gitignore`. `packaging/release-tool` (`midna-release keygen|pubkey|feed|verify`)
   is the only code that touches secret keys.
+- **Push**: main only takes PRs (a GitHub ruleset; force-pushes and deletes are refused too).
+  `release.sh` pushes its version commit with a deploy key the ruleset lets past,
+  `~/.ssh/midna-release` (or `MIDNA_RELEASE_DEPLOY_KEY`). On a new machine, make one and add it
+  with write access: `ssh-keygen -t ed25519 -N "" -f ~/.ssh/midna-release`, then
+  `gh repo deploy-key add ~/.ssh/midna-release.pub --allow-write --title release`.
 
 ## End-to-end test
 
