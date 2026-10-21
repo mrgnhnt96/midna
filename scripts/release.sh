@@ -44,6 +44,17 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Commit or stash your changes first." >&2
   exit 1
 fi
+# main only takes PRs. The release commit is the one direct push, made with a deploy key
+# the repo's main-branch ruleset lets past. Set it up: docs/RELEASING.md, "Keys".
+deploy_key=${MIDNA_RELEASE_DEPLOY_KEY:-$HOME/.ssh/midna-release}
+if [ ! -f "$deploy_key" ]; then
+  echo "No release deploy key at $deploy_key (see docs/RELEASING.md, \"Keys\")." >&2
+  exit 1
+fi
+push() {
+  GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes" git push git@github.com:mrgnhnt96/midna.git "$@"
+  git fetch -q origin
+}
 git fetch --tags origin
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   echo "$tag already exists." >&2
@@ -74,7 +85,7 @@ git add Cargo.toml Cargo.lock
 # Re-cutting a version main already has (see above) has nothing to commit.
 git diff --cached --quiet || git commit -m "chore: release $tag"
 git tag -a "$tag" -m "Midna $version"
-git push origin "$branch" "$tag"
+push "$branch" "$tag"
 
 echo
 echo "Pushed $tag. The release workflow builds the app and publishes the release:"
