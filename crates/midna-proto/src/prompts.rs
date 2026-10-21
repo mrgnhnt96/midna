@@ -19,20 +19,24 @@
 pub const MARKERS: [char; 2] = ['❯', '›'];
 
 /// Where Claude Code's scrolled-back hint starts in a row, if the row has one: `Jump to
-/// bottom…`, or `N new message(s) (click) ↓` (the count must lead, and an arrow follow, so prose
-/// saying "new message" doesn't count).
+/// bottom…`, or `N new message(s) (click) ↓` / `N new message(s): fn+↓ to scroll` (a count must
+/// lead it and the rest of the hint follow, so prose saying "new message" doesn't count).
+/// Claude draws the hint over whatever the row holds, so it can start mid-row, with one space
+/// before it and text after it.
 fn scrolled_hint(line: &str) -> Option<usize> {
     if let Some(at) = line.find("Jump to bottom") {
         return Some(at);
     }
-    let at = line.find(" new message")?;
-    if !line[at..].contains('↓') {
-        return None;
-    }
-    let head = &line[..at];
-    let digits = head.len() - head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
-    let start = at - digits;
-    (digits > 0 && line[..start].ends_with("  ")).then_some(start)
+    line.match_indices(" new message").find_map(|(at, m)| {
+        let tail = &line[at + m.len()..];
+        let tail = tail.strip_prefix('s').unwrap_or(tail);
+        if !tail.starts_with(" (click) ↓") && !(tail.starts_with(": ") && tail.contains("↓ to scroll")) {
+            return None;
+        }
+        let head = &line[..at];
+        let start = head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        (start < at && (start == 0 || head[..start].ends_with(' '))).then_some(start)
+    })
 }
 
 /// What one screen shows of the prompts.
@@ -216,6 +220,18 @@ mod tests {
         // prose about new messages is not the hint
         let s = screen(&format!("⏺ The 1 new message ↓ hint, and 3 new messages here\n{RULE}\n❯\n{RULE}"));
         assert!(!scan(&s, Some(2)).scrolled);
+        let s = screen(&format!("⏺ The hint reads x2 new messages (click) ↓\n{RULE}\n❯\n{RULE}"));
+        assert!(!scan(&s, Some(2)).scrolled, "the count must stand alone");
+        // drawn over the middle of a list item, one space before it and text after it
+        let s = screen(&format!(
+            "  3. Results page: I'll update the G8 page with this install guide and the new res 2 new messages (click) ↓ done.\n{RULE}\n❯\n{RULE}"
+        ));
+        assert!(scan(&s, Some(2)).scrolled);
+        let s = screen(&format!("2 new messages (click) ↓\n{RULE}\n❯\n{RULE}"));
+        assert!(scan(&s, Some(2)).scrolled);
+        // Claude Code 2.1.307 in Midna Dev: no (click)
+        let s = screen(&format!("  line 4                                 1 new message: fn+↓ to scroll\n{RULE}\n❯\n{RULE}"));
+        assert!(scan(&s, Some(2)).scrolled);
     }
 
     #[test]
