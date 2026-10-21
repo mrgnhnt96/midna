@@ -168,6 +168,9 @@ const PULSE: Duration = Duration::from_millis(650);
 const ROLL: Duration = Duration::from_millis(420);
 /// How long a needs-you item counted from its notification outlives a list without it.
 const PENDING: Duration = Duration::from_secs(3);
+/// How long a question answered from its card stays hidden from lists that still have it (its
+/// terminal's hook resolves it a moment after the picker closes).
+const ANSWERED: Duration = Duration::from_secs(10);
 /// Within midna: the badge's distance from the front window's right and top edges.
 const DOCK: (f64, f64) = (12., 56.);
 /// Within midna: a band of the need color sweeps across the badge when something comes in
@@ -344,9 +347,11 @@ struct Waiting {
     command: Option<String>,
     approval: bool,
     /// A question's options (label, description), numbered as in the terminal, and whether
-    /// any number of them can be picked.
+    /// any number of them can be picked. Clicking one answers it (`session.answer_question`).
     options: Vec<(String, String)>,
     multi: bool,
+    /// The question's text: the picker must still show it for a click to answer.
+    question: Option<String>,
     /// Its kind's image (`notify.image[.<kind>]`): the list row's thumbnail and the card's.
     image: Option<PathBuf>,
     /// When it came in (RFC 3339): the list shows the newest first.
@@ -501,6 +506,10 @@ pub struct Badge {
     held: Vec<Waiting>,
     /// Needs-you items counted from their notification, before a refresh had them.
     pending: Vec<(String, Instant)>,
+    /// Questions answered from their card, and when.
+    answered: Vec<(String, Instant)>,
+    /// A multi-select question's options picked so far on its card, by needs-you id.
+    picks: HashMap<String, Vec<usize>>,
     lines: VecDeque<Line>,
     serial: u64,
     /// The count shown, the one it rolled from and the roll's id.
@@ -773,6 +782,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 approval: n.is_approval(),
                 options: options_of(n),
                 multi: n.question.as_ref().is_some_and(|q| q.multi_select),
+                question: n.question.as_ref().map(|q| q.text.clone()),
                 image,
                 at: n.created_at.clone(),
                 timer: None,
@@ -795,6 +805,8 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         b.pending.retain(|(_, at)| at.elapsed() < PENDING);
         b.needs = needs;
         b.needs.extend(fresh);
+        b.answered.retain(|(_, at)| at.elapsed() < ANSWERED);
+        b.needs.retain(|w| !b.answered.iter().any(|(id, _)| *id == w.id));
         b.recount(cx);
         if moved {
             b.snap(corner, (0., 0.), window, cx);
@@ -996,6 +1008,8 @@ impl Badge {
             needs: vec![],
             held: vec![],
             pending: vec![],
+            answered: vec![],
+            picks: HashMap::new(),
             lines: VecDeque::new(),
             serial: 0,
             count: 0,
@@ -1471,6 +1485,7 @@ impl Badge {
             self.roll_at = Instant::now();
         }
         self.failed.retain(|id, _| self.needs.iter().any(|w| w.id == *id));
+        self.picks.retain(|id, _| self.needs.iter().any(|w| w.id == *id));
         if let Some(id) = self.reopen.clone()
             && self.rows().iter().any(|w| w.id == id)
         {
@@ -1522,6 +1537,7 @@ impl Badge {
                     approval: need.as_ref().map_or(p.category == "approval", |n| n.is_approval()),
                     options: need.as_ref().map(options_of).unwrap_or_default(),
                     multi: need.as_ref().and_then(|n| n.question.as_ref()).is_some_and(|q| q.multi_select),
+                    question: need.as_ref().and_then(|n| n.question.as_ref()).map(|q| q.text.clone()),
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                     timer: None,
@@ -1552,6 +1568,7 @@ impl Badge {
                 approval: false,
                 options: vec![],
                 multi: false,
+                question: None,
                 image: p.image.clone().map(PathBuf::from),
                 at: midna_proto::time::now_rfc3339(),
                 timer: None,
@@ -1606,6 +1623,7 @@ impl Badge {
                     approval: false,
                     options: vec![],
                     multi: false,
+                    question: None,
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                     timer: Some((now + stay * BUMPED, stay * BUMPED)),
@@ -1697,6 +1715,7 @@ impl Badge {
             approval: false,
             options: vec![],
             multi: false,
+            question: None,
             image: l.image.clone(),
             at: String::new(),
             timer: None,
@@ -1774,6 +1793,44 @@ impl Badge {
             let _ = cx.update(|cx| crate::windows::with_active(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS | crate::app::refresh::RULES, cx)));
         })
         .detach();
+    }
+
+    /// Answer a question with these options (0-based), as if picked in its terminal. It goes at
+    /// once; if midnad can't answer (the picker changed, or it asks more than this question),
+    /// it comes back with the reason on its card, as a turned-down approval does.
+    fn answer(&mut self, w: &Waiting, options: Vec<usize>, cx: &mut Context<Self>) {
+        let (Some(need), Some(session)) = (w.need.clone(), w.session.clone()) else { return };
+        self.needs.retain(|x| x.id != need);
+        self.failed.remove(&need);
+        self.picks.remove(&need);
+        self.answered.push((need.clone(), Instant::now()));
+        self.recount(cx);
+        let params = json!({ "id": session, "answers": [{ "options": options, "question": w.question }] });
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.call("session.answer_question", params) }).await;
+            let _ = this.update(cx, |b, cx| {
+                if let Err(e) = r {
+                    b.answered.retain(|(id, _)| *id != need);
+                    b.failed.insert(need.clone(), format!("{e:#}"));
+                    b.reopen = Some(need);
+                    cx.notify();
+                }
+            });
+            let _ = cx.update(|cx| crate::windows::with_active(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS, cx)));
+        })
+        .detach();
+    }
+
+    /// Pick or unpick a multi-select question's option on its card.
+    fn toggle_pick(&mut self, id: &str, i: usize, cx: &mut Context<Self>) {
+        let picks = self.picks.entry(id.to_string()).or_default();
+        match picks.iter().position(|&p| p == i) {
+            Some(at) => _ = picks.remove(at),
+            None => picks.push(i),
+        }
+        picks.sort_unstable();
+        cx.notify();
     }
 
     /// Bring midna forward on the item's terminal (as a clicked notification does), or open a
@@ -2246,24 +2303,31 @@ fn measure_into(list: Rc<RefCell<Vec<Bounds<Pixels>>>>) -> impl IntoElement {
     canvas(move |b, _, _| list.borrow_mut().push(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
 }
 
-/// A question's options, numbered as in the terminal (where you pick one).
-fn options(t: &Theme, w: &Waiting) -> Div {
+/// A question's options, numbered as in the terminal. Clicking one answers the question; on a
+/// multi-select one it picks it, and the card's Submit answers.
+fn options(t: &Theme, w: &Waiting, picked: &[usize], cx: &mut Context<Badge>) -> Div {
     let mut col = div().flex().flex_col().gap(px(5.));
     if w.multi {
-        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child("Pick any number of these in the terminal"));
+        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child("Pick any number of these, then Submit"));
     }
     for (i, (label, description)) in w.options.iter().enumerate() {
+        let on = picked.contains(&i);
+        let w2 = w.clone();
         col = col.child(
             div()
+                .id(("card-option", i))
                 .flex()
                 .gap(px(8.))
                 .px(px(10.))
                 .py(px(6.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(t.line)
-                .bg(t.panel)
-                .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.dim).child((i + 1).to_string()))
+                .border_color(if on { t.accent } else { t.line })
+                .bg(if on { t.accent_soft } else { t.panel })
+                .cursor_pointer()
+                .hover(|s| s.border_color(t.accent))
+                .on_click(cx.listener(move |b, _, _, cx| if w2.multi { b.toggle_pick(&w2.id, i, cx) } else { b.answer(&w2, vec![i], cx) }))
+                .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(if on { t.accent } else { t.dim }).child(if on { "✓".to_string() } else { (i + 1).to_string() }))
                 .child(
                     div()
                         .flex_1()
@@ -3130,6 +3194,10 @@ impl Badge {
             buttons = buttons.child(div().flex_1());
             menu = open.and_then(|n| slots.get(n)).map(|slot| self.slot_menu(t, w, &sent, slot, cx));
         } else {
+            if let Some(picked) = self.picks.get(&w.id).filter(|p| w.multi && !p.is_empty()) {
+                let (w2, picked) = (w.clone(), picked.clone());
+                buttons = buttons.child(button(t, "card-submit", "Submit", true).on_click(cx.listener(move |b, _, _, cx| b.answer(&w2, picked.clone(), cx))));
+            }
             let id = w.id.clone();
             buttons = buttons.child(button(t, "card-dismiss", "Dismiss", false).on_click(cx.listener(move |b, _, _, cx| b.forget(&id, cx)))).child(div().flex_1());
         }
@@ -3176,7 +3244,7 @@ impl Badge {
             }))
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
             .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
-            .when(!w.options.is_empty(), |d| d.child(options(t, w)))
+            .when(!w.options.is_empty(), |d| d.child(options(t, w, self.picks.get(&w.id).map_or(&[][..], |p| &p[..]), cx)))
             .child(buttons)
             .children(menu);
         div()
