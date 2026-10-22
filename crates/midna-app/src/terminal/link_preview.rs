@@ -118,20 +118,20 @@ pub(super) fn pr_status_on(cx: &App) -> bool {
     cx.try_global::<PreviewEnv>().is_none_or(|e| e.pr_status)
 }
 
-fn env(cx: &App) -> PreviewEnv {
+pub(super) fn env(cx: &App) -> PreviewEnv {
     cx.try_global::<PreviewEnv>().cloned().unwrap_or_default()
 }
 
 /// A `session.link_at` result worth previewing.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Link {
-    url: bool,
-    target: String,
-    line: Option<u32>,
+    pub(super) url: bool,
+    pub(super) target: String,
+    pub(super) line: Option<u32>,
     /// The app a `taskboard://…` link opens in (`Taskboard`); never fetched.
-    app: Option<String>,
+    pub(super) app: Option<String>,
     /// A link pattern's `preview:"…"` command (argv, filled from the match) that fills the card.
-    preview: Option<Vec<String>>,
+    pub(super) preview: Option<Vec<String>>,
 }
 
 impl Link {
@@ -151,26 +151,26 @@ impl Link {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Check {
+pub(super) enum Check {
     Pass,
     Fail,
     Pending,
 }
 
 #[derive(Clone, Debug)]
-struct Pr {
-    title: String,
+pub(super) struct Pr {
+    pub(super) title: String,
     /// OPEN, DRAFT, MERGED or CLOSED.
-    state: String,
+    pub(super) state: String,
     head: String,
     base: String,
     additions: u64,
     deletions: u64,
-    checks: Vec<(String, Check)>,
+    pub(super) checks: Vec<(String, Check)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum RunState {
+pub(super) enum RunState {
     Queued,
     Running,
     Passed,
@@ -182,7 +182,7 @@ enum RunState {
 }
 
 impl RunState {
-    fn key(&self) -> &'static str {
+    pub(super) fn key(&self) -> &'static str {
         match self {
             RunState::Queued => "QUEUED",
             RunState::Running => "RUNNING",
@@ -197,11 +197,11 @@ impl RunState {
 
 /// A GitHub Actions workflow run.
 #[derive(Clone, Debug)]
-struct Run {
+pub(super) struct Run {
     title: String,
-    workflow: String,
-    branch: String,
-    state: RunState,
+    pub(super) workflow: String,
+    pub(super) branch: String,
+    pub(super) state: RunState,
     /// Seconds from start to finish, or so far.
     secs: Option<u64>,
     jobs: Vec<(String, Check)>,
@@ -210,7 +210,7 @@ struct Run {
 }
 
 #[derive(Clone, Debug)]
-enum Body {
+pub(super) enum Body {
     Loading,
     /// Numbered lines, and the one to highlight.
     Code { lines: Vec<(u32, String)>, focus: Option<u32> },
@@ -336,7 +336,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn preview_ide(&self, env: &PreviewEnv, path: &Path, is_dir: bool, project: Option<&str>) -> Option<(Ide, bool)> {
+    pub(super) fn preview_ide(&self, env: &PreviewEnv, path: &Path, is_dir: bool, project: Option<&str>) -> Option<(Ide, bool)> {
         let dir = if is_dir { path } else { path.parent()? };
         let dirs: Vec<&Path> = std::iter::once(dir).chain(project.map(Path::new).filter(|p| *p != dir)).collect();
         let (ide, source) = ide::choose_for(&env.ides, env.ide_app.as_deref(), &env.ide_rules, &dirs)?;
@@ -407,6 +407,12 @@ impl TerminalView {
     }
 
     // ------------------------------------------------------------------ actions
+
+    /// The open card's link and loaded body, kept by a click so the link menu's header doesn't
+    /// fetch again.
+    pub(super) fn preview_loaded(&self) -> Option<(Link, Body)> {
+        self.preview.card.as_ref().filter(|c| !matches!(c.body, Body::Loading)).map(|c| (c.link.clone(), c.body.clone()))
+    }
 
     fn card_link(&self) -> Option<Link> {
         self.preview.card.as_ref().map(|c| c.link.clone())
@@ -503,16 +509,21 @@ impl TerminalView {
     /// A folder: a new shell there, in this terminal's project.
     fn preview_new_terminal(&mut self, cx: &mut Context<Self>) {
         let Some(l) = self.card_link() else { return };
-        let (backend, session) = (self.backend.clone(), self.session_id.clone());
         self.preview_close(cx);
+        self.new_terminal_in(l.target, cx);
+    }
+
+    /// A new shell in `dir`, in this terminal's project, brought to the front.
+    pub(super) fn new_terminal_in(&self, dir: String, cx: &mut Context<Self>) {
+        let (backend, session) = (self.backend.clone(), self.session_id.clone());
         if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
-            eprintln!("midna-app debug-term: new terminal in {}", l.target);
+            eprintln!("midna-app debug-term: new terminal in {dir}");
             return;
         }
         cx.background_executor()
             .spawn(async move {
                 let s = backend.call("session.get", json!({ "id": session })).unwrap_or(Value::Null);
-                let mut p = json!({ "kind": "shell", "cwd": l.target });
+                let mut p = json!({ "kind": "shell", "cwd": dir });
                 if let Some(v) = s.get("project_id").filter(|v| v.is_string()) {
                     p["project_id"] = v.clone();
                 }
@@ -1019,7 +1030,7 @@ fn duration(s: u64) -> String {
 // ------------------------------------------------------------------ titles
 
 /// (name, where): `terminal.rs`, `crates/midna-app/src` (inside its project) or `~/notes`.
-fn path_title(path: &Path, is_dir: bool, project: Option<&str>) -> (String, String) {
+pub(super) fn path_title(path: &Path, is_dir: bool, project: Option<&str>) -> (String, String) {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned());
     let name = if is_dir { format!("{name}/") } else { name };
     let parent = path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1032,7 +1043,7 @@ fn path_title(path: &Path, is_dir: bool, project: Option<&str>) -> (String, Stri
 }
 
 /// (name, where): `#42`, `owner/repo` for a pull request, else the host and the rest.
-fn url_title(url: &str) -> (String, String) {
+pub(super) fn url_title(url: &str) -> (String, String) {
     if let Some((owner, repo, n)) = github_pr(url) {
         return (format!("#{n}"), format!("{owner}/{repo}"));
     }
@@ -1076,7 +1087,7 @@ pub(super) fn human_size(n: u64) -> String {
 
 // ------------------------------------------------------------------ loading (off the main thread)
 
-fn load(link: &Link) -> Body {
+pub(super) fn load(link: &Link) -> Body {
     // A link pattern's own preview command; when it fails, the card the link would have had.
     if let Some(p) = link.preview.as_deref().and_then(load_pattern) {
         return Body::App(p);
@@ -1247,7 +1258,7 @@ const APP_FIELDS: usize = 6;
 const APP_LINES: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Tone {
+pub(super) enum Tone {
     Ok,
     Warn,
     Err,
@@ -1256,10 +1267,10 @@ enum Tone {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct AppPreview {
-    title: String,
-    subtitle: Option<String>,
-    status: Option<(String, Tone)>,
+pub(super) struct AppPreview {
+    pub(super) title: String,
+    pub(super) subtitle: Option<String>,
+    pub(super) status: Option<(String, Tone)>,
     fields: Vec<(String, String)>,
     lines: Vec<String>,
     /// (done, total), total > 0.
@@ -1601,7 +1612,7 @@ fn unix_time(s: &str) -> Option<u64> {
 }
 
 /// Hosts never fetched: this Mac, the local network, and anything that isn't http(s).
-fn fetchable(url: &str) -> bool {
+pub(super) fn fetchable(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else { return false };
     let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = auth.rsplit('@').next().unwrap_or(auth);

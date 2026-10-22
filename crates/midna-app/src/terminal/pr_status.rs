@@ -38,7 +38,7 @@ pub(super) enum State {
 }
 
 impl State {
-    fn parse(s: &str) -> Option<State> {
+    pub(super) fn parse(s: &str) -> Option<State> {
         Some(match s {
             "OPEN" => State::Open,
             "DRAFT" => State::Draft,
@@ -56,7 +56,7 @@ impl State {
     }
 
     /// The colors of the preview card's state pill.
-    fn color(self, t: &Theme) -> Hsla {
+    pub(super) fn color(self, t: &Theme) -> Hsla {
         match self {
             State::Open | State::Passed => t.ok,
             State::Draft | State::Queued | State::Cancelled | State::Skipped => t.dim,
@@ -86,7 +86,7 @@ impl State {
         matches!(self, State::Closed | State::Cancelled)
     }
 
-    fn icon(self) -> Icon {
+    pub(super) fn icon(self) -> Icon {
         match self {
             State::Open => Icon::Pr,
             State::Draft => Icon::PrDraft,
