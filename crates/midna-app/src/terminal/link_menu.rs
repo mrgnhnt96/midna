@@ -31,8 +31,9 @@ pub(super) enum Kind {
     Pr(Gh),
     Issue(Gh),
     Run(Gh),
-    /// A local or private web server (never fetched).
-    Server,
+    /// A local or private web server (never fetched), with the terminal running it once
+    /// `links.served_by` finds one.
+    Server(Option<midna_proto::ServedBy>),
     /// A link pattern's match (`T711`, `PROJ-12`), opened in `app` when it names one.
     Pattern { app: Option<String>, text: String },
     File { line: Option<u32> },
@@ -186,7 +187,7 @@ pub(super) fn kind_of(v: &Value, text: &str, is_dir: bool) -> Option<Kind> {
                 return Some(Kind::Run(gh(g)));
             }
             let web = target.starts_with("http://") || target.starts_with("https://");
-            Some(if web && !link_preview::fetchable(target) { Kind::Server } else { Kind::Url })
+            Some(if web && !link_preview::fetchable(target) { Kind::Server(None) } else { Kind::Url })
         }
         _ => None,
     }
@@ -243,12 +244,14 @@ pub(super) fn entries(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<
             Entry::Sep,
             item(Act::AddLink, "Add to links", "⌘L"),
         ],
-        Kind::Server => vec![
-            item(Act::Browse, "Open in browser", "↩"),
-            item(Act::CopyLink, "Copy link", "⌘C"),
-            Entry::Sep,
-            item(Act::AddLink, "Add to links", "⌘L"),
-        ],
+        Kind::Server(served) => {
+            let mut list = vec![item(Act::Browse, "Open in browser", "↩"), item(Act::CopyLink, "Copy link", "⌘C"), Entry::Sep];
+            if served.is_some() {
+                list.extend([item(Act::GoToTerminal, "Go to the terminal serving it", ""), Entry::Sep]);
+            }
+            list.push(item(Act::AddLink, "Add to links", "⌘L"));
+            list
+        }
         Kind::Pattern { app, text } => vec![
             item(Act::Browse, &format!("Open in {}", app.as_deref().unwrap_or("browser")), "↩"),
             item(Act::CopyLink, "Copy link", "⌘C"),
@@ -306,9 +309,14 @@ pub(super) fn head(kind: &Kind, target: &str, project: Option<&str>, body: Optio
             };
             h(Icon::Folder, Tint::Folder, name, sub)
         }
-        Kind::Server => {
+        Kind::Server(served) => {
             let (host, path) = link_preview::url_title(target);
-            h(Icon::Server, Tint::Server, host, if path.is_empty() { "Local server".into() } else { format!("/{path}") })
+            let sub = match served {
+                Some(s) => format!("{} · served by terminal “{}”", s.command, s.name),
+                None if path.is_empty() => "Local server".into(),
+                None => format!("/{path}"),
+            };
+            h(Icon::Server, Tint::Server, host, sub)
         }
         Kind::Pattern { app, text } => match body {
             Some(Body::App(p)) => {
@@ -577,7 +585,8 @@ impl TerminalView {
         let seed = self.link_menu.seed.take().filter(|(l, _)| Some(l) == link.as_ref()).map(|(_, b)| b);
         let list = entries(&kind, ide.as_ref().map(|i| i.name.as_str()), agent, seed.as_ref());
         let wants = matches!(kind, Kind::Url | Kind::Pr(_) | Kind::Issue(_) | Kind::Run(_) | Kind::Pattern { .. } | Kind::Folder);
-        let load = link.filter(|_| seed.is_none() && wants).map(|l| {
+        let server = matches!(kind, Kind::Server(_)).then(|| self.link_menu_served_by(target.clone(), cx));
+        let load = server.or_else(|| link.filter(|_| seed.is_none() && wants).map(|l| {
             cx.spawn(async move |this, cx| {
                 let body = cx.background_executor().spawn(async move { link_preview::load(&l) }).await;
                 let _ = this.update(cx, |t, cx| {
@@ -589,7 +598,7 @@ impl TerminalView {
                     }
                 });
             })
-        });
+        }));
         let pos = point(bounds.origin.x + px(PAD_X + self.cell_w * a as f32 - 4.), bounds.origin.y + px(PAD_Y + LINE_H * (cell.1 + 1) as f32 + 2.));
         self.clear_hover(cx);
         self.preview_close(cx);
@@ -646,6 +655,24 @@ impl TerminalView {
         crate::sounds::play("copied");
     }
 
+    /// Ask midnad which terminal serves a local link, then add it to the open menu. The menu
+    /// shows at once; this fills in when lsof answers.
+    fn link_menu_served_by(&self, url: String, cx: &mut Context<Self>) -> Task<()> {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { backend.call("links.served_by", json!({ "url": url })) }).await;
+            let Some(served) = found.ok().and_then(|v| serde_json::from_value::<midna_proto::ServedBy>(v).ok()) else { return };
+            let _ = this.update(cx, |t, cx| {
+                if let Some(m) = t.link_menu.menu.as_mut().filter(|m| matches!(m.kind, Kind::Server(None))) {
+                    m.kind = Kind::Server(Some(served));
+                    m.entries = entries(&m.kind, None, m.agent, None);
+                    m.sel = m.sel.min(m.items().count().saturating_sub(1));
+                    cx.notify();
+                }
+            });
+        })
+    }
+
     fn link_menu_run(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.link_menu.menu.take() else { return };
         let Some(act) = m.items().nth(i).map(|it| it.act.clone()) else { return };
@@ -658,6 +685,10 @@ impl TerminalView {
             eprintln!("midna-app debug-term: linkmenu {act:?} {target}");
         }
         match act {
+            Act::GoToTerminal if let Kind::Server(Some(s)) = &m.kind => {
+                let (backend, id) = (self.backend.clone(), s.session.clone());
+                cx.background_executor().spawn(async move { backend.call("session.focus", json!({ "id": id })) }).detach();
+            }
             Act::Browse | Act::GoToTerminal => self.open_link(&m.v, cx),
             Act::CopyLink | Act::CopyPath => self.link_menu_copy(target, cx),
             Act::CopyText(t) => self.link_menu_copy(t, cx),
@@ -836,6 +867,10 @@ mod tests {
     use super::link_preview::{parse_issue, parse_pr, parse_run};
     use serde_json::json;
 
+    fn vite() -> midna_proto::ServedBy {
+        midna_proto::ServedBy { session: "s2".into(), name: "dev".into(), command: "vite".into(), pid: 4242, port: 5173 }
+    }
+
     fn labels(kind: &Kind, ide: Option<&str>, agent: bool) -> Vec<String> {
         labels_with(kind, ide, agent, None)
     }
@@ -856,7 +891,9 @@ mod tests {
     #[test]
     fn url_items() {
         assert_eq!(labels(&Kind::Url, None, false), ["Open in browser ↩", "Copy link ⌘C", "Copy as Markdown ⇧⌘C", "--", "Add to links ⌘L"]);
-        assert_eq!(labels(&Kind::Server, None, false), ["Open in browser ↩", "Copy link ⌘C", "--", "Add to links ⌘L"]);
+        assert_eq!(labels(&Kind::Server(None), None, false), ["Open in browser ↩", "Copy link ⌘C", "--", "Add to links ⌘L"]);
+        let served = labels(&Kind::Server(Some(vite())), None, false);
+        assert_eq!(served, ["Open in browser ↩", "Copy link ⌘C", "--", "Go to the terminal serving it", "--", "Add to links ⌘L"]);
     }
 
     #[test]
@@ -893,7 +930,7 @@ mod tests {
         assert_eq!(kind_of(&url("https://example.com/a"), "https://example.com/a", false), Some(Kind::Url));
         assert_eq!(kind_of(&url("https://example.com"), "example.com", false), Some(Kind::Url));
         assert_eq!(kind_of(&url("https://github.com/a/b"), "github.com/a/b", false), Some(Kind::Url));
-        assert_eq!(kind_of(&url("http://localhost:3000/x"), "http://localhost:3000/x", false), Some(Kind::Server));
+        assert_eq!(kind_of(&url("http://localhost:3000/x"), "http://localhost:3000/x", false), Some(Kind::Server(None)));
         assert_eq!(kind_of(&url("https://jira.example.com/browse/PROJ-12"), "PROJ-12", false), Some(Kind::Pattern { app: None, text: "PROJ-12".into() }));
         let app = json!({ "kind": "url", "target": "taskboard://task/T711", "app": "Taskboard" });
         assert_eq!(kind_of(&app, "T711", false), Some(Kind::Pattern { app: Some("Taskboard".into()), text: "T711".into() }));
@@ -911,8 +948,10 @@ mod tests {
         let body = Body::Dir { rows: vec![], total: 3 };
         let d = head(&Kind::Folder, "/p/proj/src", Some("/p/proj"), Some(&body));
         assert_eq!((d.icon, d.tint, d.title.as_str(), d.sub.as_str()), (Icon::Folder, Tint::Folder, "src/", "proj · 3 items"));
-        let s = head(&Kind::Server, "http://localhost:3000", None, None);
+        let s = head(&Kind::Server(None), "http://localhost:3000", None, None);
         assert_eq!((s.icon, s.tint, s.title.as_str(), s.sub.as_str()), (Icon::Server, Tint::Server, "localhost:3000", "Local server"));
+        let v = head(&Kind::Server(Some(vite())), "http://localhost:5173/decks", None, None);
+        assert_eq!((v.title.as_str(), v.sub.as_str()), ("localhost:5173", "vite · served by terminal “dev”"));
         let p = head(&Kind::Pattern { app: Some("Taskboard".into()), text: "T711".into() }, "taskboard://task/T711", None, None);
         assert_eq!((p.icon, p.tint, p.title.as_str(), p.sub.as_str()), (Icon::Tag, Tint::Accent, "T711", "Taskboard"));
         let w = head(&Kind::Url, "https://example.com/docs", None, Some(&Body::Web { title: Some("Docs".into()), desc: None }));

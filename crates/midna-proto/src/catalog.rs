@@ -247,6 +247,10 @@ fn build() -> Vec<MethodSpec> {
              optional title and a note on why it matters. Use it for something important the transcript would not show as \
              a link, or to give one a better name. Adding a target that is already there updates its title/note and pins it. \
              Defaults to your own terminal."),
+        m::<LinksServedByParams, Option<ServedBy>>("links.served_by").d(
+            "Which terminal runs the server behind a link to this Mac (http://localhost:5173, 127.0.0.1, [::1]): the one \
+             whose processes listen on that port, with what listens (`vite`). Null when no terminal's process does (another \
+             app, or nothing). Not a local link is bad params. Answers from a few seconds' cache."),
         m::<NoParams, LinkPatternsList>("links.patterns.list").d(
             "The link patterns apps registered (links.patterns.register), by owner. They apply alongside the user's own \
              terminal.link_patterns, in the same form."),

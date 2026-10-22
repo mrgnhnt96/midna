@@ -231,6 +231,41 @@ pub fn tag_tasks(procs: &mut [ProcessInfo], tasks: &[BackgroundTask]) {
     }
 }
 
+/// Pids with a TCP socket listening on `port`, any address. Empty when lsof can't say.
+pub fn listening_pids(port: u16) -> Vec<i32> {
+    let out = std::process::Command::new("/usr/sbin/lsof").args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fp"]).output();
+    out.map(|o| parse_lsof_pids(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+/// `lsof -Fp` output: one `p<pid>` line per process.
+fn parse_lsof_pids(out: &str) -> Vec<i32> {
+    let mut pids: Vec<i32> = out.lines().filter_map(|l| l.strip_prefix('p')?.trim().parse().ok()).collect();
+    pids.dedup();
+    pids
+}
+
+/// What a server is called: the script an interpreter runs (`node …/vite.js` is `vite`,
+/// `python3 -m http.server` is `http.server`), else the process name.
+pub fn server_name(name: &str, command: &str) -> String {
+    let interpreter = ["node", "bun", "deno", "ruby"].contains(&name) || name.starts_with("python");
+    if !interpreter {
+        return name.to_string();
+    }
+    let mut args = command.split_whitespace().skip(1);
+    while let Some(a) = args.next() {
+        if a == "-m" {
+            return args.next().unwrap_or(name).to_string();
+        }
+        if a.starts_with('-') || a == "run" {
+            continue;
+        }
+        let base = a.rsplit('/').next().unwrap_or(a);
+        let stem = base.strip_suffix(".js").or(base.strip_suffix(".mjs")).or(base.strip_suffix(".cjs")).or(base.strip_suffix(".ts")).or(base.strip_suffix(".py")).or(base.strip_suffix(".rb")).unwrap_or(base);
+        return if stem.is_empty() { name.to_string() } else { stem.to_string() };
+    }
+    name.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +304,29 @@ mod tests {
         tag_tasks(&mut procs, &tasks);
         let ids: Vec<Option<&str>> = procs.iter().map(|p| p.task_id.as_deref()).collect();
         assert_eq!(ids, vec![None, Some("b1"), Some("b1"), None]);
+    }
+
+    #[test]
+    fn lsof_pids() {
+        assert_eq!(parse_lsof_pids("p412\np412\np9001\n"), vec![412, 9001]);
+        assert_eq!(parse_lsof_pids(""), Vec::<i32>::new());
+        assert_eq!(parse_lsof_pids("f12\npx\n"), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn server_names() {
+        assert_eq!(server_name("node", "node /repo/node_modules/.bin/../vite/bin/vite.js --port 5173"), "vite");
+        assert_eq!(server_name("node", "node --inspect ./server.mjs"), "server");
+        assert_eq!(server_name("python3.12", "/usr/bin/python3 -m http.server 8000"), "http.server");
+        assert_eq!(server_name("bun", "bun run dev"), "dev");
+        assert_eq!(server_name("node", "node"), "node");
+        assert_eq!(server_name("cargo-watch", "cargo-watch -x run"), "cargo-watch");
+    }
+
+    #[test]
+    fn finds_own_listener() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(listening_pids(port).contains(&(std::process::id() as i32)));
     }
 }
