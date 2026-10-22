@@ -59,10 +59,12 @@ pub enum Icon {
     Artifact,
     Globe,
     File,
-    /// The link menu's headers (`terminal/link_menu.rs`): a folder, a local server, a link pattern.
+    /// The link menu's headers (`terminal/link_menu.rs`): a folder, a local server, a link pattern,
+    /// a GitHub issue.
     Folder,
     Server,
     Tag,
+    Issue,
     PushPin,
     PushPinFill,
     /// Settings ▸ Shortcuts: record keys to search by.
@@ -149,6 +151,7 @@ impl Icon {
             Icon::Folder => "icons/folder.svg",
             Icon::Server => "icons/server.svg",
             Icon::Tag => "icons/tag.svg",
+            Icon::Issue => "icons/issue.svg",
             Icon::PushPin => "icons/pushpin.svg",
             Icon::PushPinFill => "icons/pushpin-fill.svg",
             Icon::Keyboard => "icons/keyboard.svg",
@@ -379,6 +382,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/tag.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.5 8.5 2H14v5.5L7.5 14zM11 5h.01"/></svg>"##
+        }
+        "icons/issue.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.4v1.2"/></svg>"##
         }
         "icons/pushpin.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"><path d="M10.5 1.5 14.5 5.5 12 6.5 9.5 9l.5 3.5-1 1L6 10.5 2.5 14l-.5-.5L5.5 10 2.5 7l1-1L7 6.5 9.5 4z"/></svg>"##

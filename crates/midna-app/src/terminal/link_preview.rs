@@ -43,6 +43,8 @@ const FILE_LINES: usize = 12;
 const BEFORE: usize = 4;
 const DIR_ROWS: usize = 8;
 const CHECKS: usize = 8;
+/// How much of an issue's text is kept (for the card's excerpt and an agent's prompt).
+const ISSUE_BODY: usize = 4000;
 /// Fetched pages and pull requests are reused for this long.
 const URL_TTL: Duration = Duration::from_secs(90);
 /// A workflow run still going is fetched again sooner, so its status keeps up.
@@ -162,7 +164,7 @@ pub(super) struct Pr {
     pub(super) title: String,
     /// OPEN, DRAFT, MERGED or CLOSED.
     pub(super) state: String,
-    head: String,
+    pub(super) head: String,
     base: String,
     additions: u64,
     deletions: u64,
@@ -198,15 +200,25 @@ impl RunState {
 /// A GitHub Actions workflow run.
 #[derive(Clone, Debug)]
 pub(super) struct Run {
-    title: String,
+    pub(super) title: String,
     pub(super) workflow: String,
     pub(super) branch: String,
     pub(super) state: RunState,
     /// Seconds from start to finish, or so far.
     secs: Option<u64>,
-    jobs: Vec<(String, Check)>,
+    pub(super) jobs: Vec<(String, Check)>,
     /// A one-job run's running or failed step: `Step 8 of 14 · Build`.
     step: Option<String>,
+}
+
+/// A GitHub issue.
+#[derive(Clone, Debug)]
+pub(super) struct Issue {
+    pub(super) title: String,
+    /// OPEN or CLOSED.
+    pub(super) state: String,
+    /// The issue's text, cut at `ISSUE_BODY` characters.
+    pub(super) body: String,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +232,7 @@ pub(super) enum Body {
     /// (name, is a folder, size), the first `DIR_ROWS`, and the count of all entries.
     Dir { rows: Vec<(String, bool, Option<u64>)>, total: usize },
     Pr(Pr),
+    Issue(Issue),
     Run(Run),
     Web { title: Option<String>, desc: Option<String> },
     /// What the link's app says about it (`MidnaLinkPreview`).
@@ -582,7 +595,11 @@ impl TerminalView {
         let icon = if c.link.app.is_some() {
             Icon::Link.el(14., t.dim)
         } else if c.link.url {
-            if matches!(c.body, Body::Pr(_)) { Icon::Pr.el(14., t.ok) } else { Icon::Globe.el(14., t.dim) }
+            match c.body {
+                Body::Pr(_) => Icon::Pr.el(14., t.ok),
+                Body::Issue(_) => Icon::Issue.el(14., t.ok),
+                _ => Icon::Globe.el(14., t.dim),
+            }
         } else if c.is_dir {
             Icon::Project.el(14., t.dim)
         } else {
@@ -913,6 +930,22 @@ fn render_body(body: &Body, link: &Link, t: &Theme) -> AnyElement {
                 .when(!pr.checks.is_empty(), |d| d.child(render_checks(&pr.checks, t)))
                 .into_any_element()
         }
+        Body::Issue(issue) => {
+            let (label, bg) = if issue.state == "CLOSED" { ("Closed", t.accent) } else { ("Open", t.ok) };
+            let excerpt = issue.body.lines().map(str::trim).filter(|l| !l.is_empty()).take(4).collect::<Vec<_>>();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .px(px(14.))
+                .py(px(12.))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).line_height(px(20.)).child(issue.title.clone()))
+                .child(div().flex().items_center().text_size(px(12.)).child(div().px(px(8.)).rounded_full().bg(bg).text_color(t.term).font_weight(FontWeight::BOLD).child(label)))
+                .when(!excerpt.is_empty(), |d| {
+                    d.child(div().flex().flex_col().gap(px(2.)).text_size(px(12.)).text_color(t.dim).children(excerpt.into_iter().map(|l| div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(l.to_string()))))
+                })
+                .into_any_element()
+        }
         Body::Run(run) => {
             let (label, bg) = match run.state {
                 RunState::Queued => ("Queued", t.dim),
@@ -1042,9 +1075,9 @@ pub(super) fn path_title(path: &Path, is_dir: bool, project: Option<&str>) -> (S
     (name, sub)
 }
 
-/// (name, where): `#42`, `owner/repo` for a pull request, else the host and the rest.
+/// (name, where): `#42`, `owner/repo` for a pull request or an issue, else the host and the rest.
 pub(super) fn url_title(url: &str) -> (String, String) {
-    if let Some((owner, repo, n)) = github_pr(url) {
+    if let Some((owner, repo, n)) = github_pr(url).or_else(|| github_issue(url)) {
         return (format!("#{n}"), format!("{owner}/{repo}"));
     }
     if let Some((owner, repo, _)) = github_run(url) {
@@ -1063,6 +1096,16 @@ pub(super) fn github_pr(url: &str) -> Option<(String, String, u64)> {
     let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
     let (owner, repo, pull, n) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?);
     (pull == "pull" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
+    Some((owner.to_string(), repo.to_string(), n.parse().ok()?))
+}
+
+/// `https://github.com/<owner>/<repo>/issues/<n>…`.
+pub(super) fn github_issue(url: &str) -> Option<(String, String, u64)> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
+    let (owner, repo, issues, n) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?);
+    (issues == "issues" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
     Some((owner.to_string(), repo.to_string(), n.parse().ok()?))
 }
 
@@ -1188,6 +1231,7 @@ fn load_url(url: &str) -> Body {
     let body = github_pr(url)
         .and_then(|(o, r, n)| load_pr(&o, &r, n))
         .map(Body::Pr)
+        .or_else(|| github_issue(url).and_then(|(o, r, n)| load_issue(&o, &r, n)).map(Body::Issue))
         .or_else(|| github_run(url).and_then(|(o, r, id)| load_run(&o, &r, id)).map(Body::Run))
         .unwrap_or_else(|| load_page(url));
     if let Ok(mut c) = URL_CACHE.lock() {
@@ -1504,7 +1548,7 @@ fn load_pr(owner: &str, repo: &str, n: u64) -> Option<Pr> {
     parse_pr(&serde_json::from_slice(&out).ok()?)
 }
 
-fn parse_pr(v: &Value) -> Option<Pr> {
+pub(super) fn parse_pr(v: &Value) -> Option<Pr> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let state = if s("state") == "OPEN" && v.get("isDraft").and_then(Value::as_bool) == Some(true) { "DRAFT".into() } else { s("state") };
     let mut checks: Vec<(String, Check)> = vec![];
@@ -1532,6 +1576,28 @@ fn parse_pr(v: &Value) -> Option<Pr> {
     Some(Pr { title: s("title"), state, head: s("headRefName"), base: s("baseRefName"), additions: num("additions"), deletions: num("deletions"), checks })
 }
 
+fn load_issue(owner: &str, repo: &str, n: u64) -> Option<Issue> {
+    let mut cmd = gh();
+    cmd.args(["issue", "view", &n.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "title,state,body"]);
+    let (ok, out) = run_capped(cmd, 1 << 20, Duration::from_secs(8))?;
+    if !ok {
+        return None;
+    }
+    parse_issue(&serde_json::from_slice(&out).ok()?)
+}
+
+pub(super) fn parse_issue(v: &Value) -> Option<Issue> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let title = v.get("title").and_then(Value::as_str)?.to_string();
+    let body = s("body").replace("\r\n", "\n");
+    let body = body.trim();
+    let body = match body.char_indices().nth(ISSUE_BODY) {
+        Some((i, _)) => format!("{}…", &body[..i]),
+        None => body.to_string(),
+    };
+    Some(Issue { title, state: s("state"), body })
+}
+
 fn load_run(owner: &str, repo: &str, id: u64) -> Option<Run> {
     let mut cmd = gh();
     cmd.args(["run", "view", &id.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "displayTitle,workflowName,headBranch,status,conclusion,startedAt,updatedAt,jobs"]);
@@ -1556,7 +1622,7 @@ fn run_state(status: &str, conclusion: &str) -> RunState {
     }
 }
 
-fn parse_run(v: &Value, now: u64) -> Option<Run> {
+pub(super) fn parse_run(v: &Value, now: u64) -> Option<Run> {
     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let state = run_state(&s(v, "status"), &s(v, "conclusion"));
     let start = unix_time(&s(v, "startedAt"));
@@ -1749,7 +1815,7 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
+    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_issue, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_issue, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -1792,6 +1858,11 @@ mod tests {
         assert_eq!(github_pr("https://github.com/mrgnhnt96/midna/pull/42"), Some(("mrgnhnt96".into(), "midna".into(), 42)));
         assert_eq!(github_pr("https://github.com/a/b/pull/7/files#diff"), Some(("a".into(), "b".into(), 7)));
         assert_eq!(github_pr("https://github.com/a/b/issues/7"), None);
+        assert_eq!(github_issue("https://github.com/a/b/issues/7"), Some(("a".into(), "b".into(), 7)));
+        assert_eq!(github_issue("https://github.com/a/b/issues/7#issuecomment-1"), Some(("a".into(), "b".into(), 7)));
+        assert_eq!(github_issue("https://github.com/a/b/pull/7"), None);
+        assert_eq!(github_issue("https://github.com/a/b/issues"), None);
+        assert_eq!(url_title("https://github.com/a/b/issues/42"), ("#42".into(), "a/b".into()));
         assert_eq!(url_title("https://www.docs.rs/gpui/latest/gpui/"), ("docs.rs".into(), "gpui/latest/gpui".into()));
         assert_eq!(url_title("https://github.com/a/b/pull/7"), ("#7".into(), "a/b".into()));
     }
@@ -1814,6 +1885,16 @@ mod tests {
         // An empty Open Graph title doesn't hide the page's own.
         assert_eq!(page_meta(r#"<meta property="og:title" content=" "><title>Real</title>"#).0, Some("Real".into()));
         assert_eq!(page_meta("<title>404 &mdash; Bitbucket &hellip;</title>").0, Some("404 — Bitbucket …".into()));
+    }
+
+    #[test]
+    fn issues_keep_title_state_and_trimmed_body() {
+        let i = parse_issue(&json!({ "title": "Decks lose order after sync", "state": "OPEN", "body": "  Steps:\r\n1. sync\r\n" })).unwrap();
+        assert_eq!((i.title.as_str(), i.state.as_str(), i.body.as_str()), ("Decks lose order after sync", "OPEN", "Steps:\n1. sync"));
+        let long = "x".repeat(5000);
+        let i = parse_issue(&json!({ "title": "t", "state": "CLOSED", "body": long })).unwrap();
+        assert_eq!(i.body.chars().count(), 4001);
+        assert!(parse_issue(&json!({ "state": "OPEN" })).is_none());
     }
 
     #[test]
