@@ -1675,7 +1675,16 @@ impl MainWindow {
     }
 
     pub fn open_session(&mut self, project: Option<String>, agent: Option<AgentKind>, cx: &mut Context<Self>) {
+        self.open_session_with(project, agent, false, cx);
+    }
+
+    /// [`Self::open_session`]; `on_default_branch` opens in the repo's checkout that has main or
+    /// master out (`session.open`'s `on_default_branch`).
+    fn open_session_with(&mut self, project: Option<String>, agent: Option<AgentKind>, on_default_branch: bool, cx: &mut Context<Self>) {
         let mut p = json!({"kind": if agent.is_some() { "agent" } else { "shell" }});
+        if on_default_branch {
+            p["on_default_branch"] = json!(true);
+        }
         if let Some(pid) = project {
             p["project_id"] = json!(pid);
         }
@@ -1724,14 +1733,21 @@ impl MainWindow {
         self.open_session(Some(pid), agent, cx);
     }
 
+    /// Whether ⌘T and the new-agent shortcut open on the repo's main/master checkout (`projects.new_terminal_in`).
+    fn new_terminal_on_main(&self) -> bool {
+        self.setting_str("projects.new_terminal_in").as_deref() == Some("main")
+    }
+
     fn new_terminal(&mut self, _: &NewTerminal, _w: &mut Window, cx: &mut Context<Self>) {
         let p = self.current_project_id();
-        self.open_session(p, None, cx);
+        let main = self.new_terminal_on_main();
+        self.open_session_with(p, None, main, cx);
     }
     fn new_agent(&mut self, _: &NewAgent, _w: &mut Window, cx: &mut Context<Self>) {
         let p = self.current_project_id();
         let a = self.last_agent(p.as_deref());
-        self.open_session(p, Some(a), cx);
+        let main = self.new_terminal_on_main();
+        self.open_session_with(p, Some(a), main, cx);
     }
     fn new_terminal_root(&mut self, _: &NewTerminalRoot, _w: &mut Window, cx: &mut Context<Self>) {
         self.open_session(Some(ROOT_PROJECT_ID.into()), None, cx);
