@@ -588,7 +588,8 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
         } else if n.text.trim().is_empty() {
             div().text_color(t.dim).child("No note yet").into_any_element()
         } else {
-            div().child(n.text.clone()).into_any_element()
+            // Wrapped as the field wraps it, so the words stay put when the field leaves.
+            div().child(crate::ui::text_input::wrap_text(n.text.clone())).into_any_element()
         };
         let num = if matches!(n.mark, Mark::Area { .. }) { area_badge(t, i + 1, 22.) } else { badge(t, i + 1, 22.) };
         list = list.child(

@@ -13,7 +13,8 @@
 //! field grows a line at a time instead of scrolling sideways. The [`Newline`] action
 //! (`keys.note_newline`, ⇧↩ by default) starts a new line there; ↩ stays the parent's. ↑/↓
 //! (⇧ to select) move a row there, to the start or end past the first or last row; ⌘↑/↓ still
-//! bubble.
+//! bubble. ⌘←/→ and ⌘⌫ stop at the drawn row's ends. Rows break after spaces, never before
+//! punctuation, and [`wrap_text`] draws text with the same rows when the field isn't on it.
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -39,6 +40,9 @@ pub struct TextField {
     /// Byte range into `content`.
     selected: Range<usize>,
     reversed: bool,
+    /// The cursor sits at the end of a wrapped row rather than the start of the next one (the
+    /// same offset): ⌘→, or a click past a row's end.
+    eol: bool,
     marked: Option<Range<usize>>,
     pub placeholder: SharedString,
     /// Draw bullets instead of the text (and never copy it out).
@@ -65,6 +69,7 @@ impl TextField {
             content: String::new(),
             selected: 0..0,
             reversed: false,
+            eol: false,
             marked: None,
             placeholder: placeholder.into(),
             secret,
@@ -92,6 +97,7 @@ impl TextField {
         self.wipe();
         self.content = text.to_string();
         self.selected = self.content.len()..self.content.len();
+        self.eol = false;
         self.marked = None;
         cx.emit(FieldChanged);
         cx.notify();
@@ -101,6 +107,7 @@ impl TextField {
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.selected = 0..self.content.len();
         self.reversed = false;
+        self.eol = false;
         cx.notify();
     }
 
@@ -112,6 +119,7 @@ impl TextField {
         }
         self.wipe();
         self.selected = 0..0;
+        self.eol = false;
         self.marked = None;
         cx.emit(FieldChanged);
         cx.notify();
@@ -131,10 +139,12 @@ impl TextField {
     fn move_to(&mut self, off: usize, cx: &mut Context<Self>) {
         self.selected = off..off;
         self.reversed = false;
+        self.eol = false;
         cx.notify();
     }
 
     fn select_to(&mut self, off: usize, cx: &mut Context<Self>) {
+        self.eol = false;
         if self.reversed {
             self.selected.start = off;
         } else {
@@ -166,20 +176,33 @@ impl TextField {
 
     /// The offset one drawn row above (`up`) or below `off` at the same x, from the last paint:
     /// the start of the text above the first row, its end below the last. `None` when not wrapping.
-    fn vertical(&self, off: usize, up: bool) -> Option<usize> {
+    /// With it, whether that's the end of a wrapped row (see `eol`).
+    fn vertical(&self, off: usize, up: bool) -> Option<(usize, bool)> {
         let line = self.last_layout.as_ref().filter(|_| self.wrap)?;
-        let Shaped::Wrapped(ps) = line else { return None };
+        let Shaped::Wrapped(rows) = line else { return None };
         let lh = self.last_line_h;
-        let at = line.pos(self.display_offset(off), lh);
+        let at = line.pos(self.display_offset(off), self.eol && off == self.cursor());
         let y = at.y + lh * 0.5 + if up { -lh } else { lh };
-        let rows: usize = ps.iter().map(Para::rows).sum();
         Some(if y < px(0.) {
-            0
-        } else if y >= lh * rows as f32 {
-            self.content.len()
+            (0, false)
+        } else if y >= lh * rows.len() as f32 {
+            (self.content.len(), false)
         } else {
-            self.content_offset(line.closest(point(at.x, y), lh))
+            let (i, eol) = line.closest(point(at.x, y), lh);
+            (self.content_offset(i), eol)
         })
+    }
+
+    /// The start and end of the drawn row the cursor is on, and whether the text wraps on past
+    /// that end. The whole text in a field that doesn't wrap.
+    fn row_edges(&self) -> (usize, usize, bool) {
+        let len = self.content.len();
+        let Some(Shaped::Wrapped(rows)) = self.last_layout.as_ref() else { return (0, len, false) };
+        if rows.is_empty() || self.content.is_empty() {
+            return (0, len, false);
+        }
+        let r = &rows[Shaped::row_of(rows, self.display_offset(self.cursor()), self.eol)];
+        (self.content_offset(r.start), self.content_offset(r.start + r.line.len()), r.soft)
     }
 
     fn replace(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
@@ -198,6 +221,7 @@ impl TextField {
         let end = range.start + text.len();
         self.selected = end..end;
         self.reversed = false;
+        self.eol = false;
         self.marked = None;
         cx.emit(FieldChanged);
         cx.notify();
@@ -210,6 +234,7 @@ impl TextField {
         self.content = s.text;
         self.selected = s.selected;
         self.reversed = false;
+        self.eol = false;
         self.marked = None;
         cx.emit(FieldChanged);
         cx.notify();
@@ -246,28 +271,32 @@ impl TextField {
         }
         let c = self.cursor();
         let len = self.content.len();
-        let target = |s: &Self, left: bool| -> usize {
+        // ⌘←/→ go to the ends of the drawn row (the whole text unless wrapping).
+        let (row_start, row_end, soft) = self.row_edges();
+        let target = |s: &Self, left: bool| -> (usize, bool) {
             match (left, m.platform, m.alt) {
-                (true, true, _) => 0,
-                (false, true, _) => len,
-                (true, _, true) => s.prev_word(c),
-                (false, _, true) => s.next_word(c),
-                (true, _, _) => s.prev_char(c),
-                (false, _, _) => s.next_char(c),
+                (true, true, _) => (row_start, false),
+                (false, true, _) => (row_end, soft),
+                (true, _, true) => (s.prev_word(c), false),
+                (false, _, true) => (s.next_word(c), false),
+                (true, _, _) => (s.prev_char(c), false),
+                (false, _, _) => (s.next_char(c), false),
             }
         };
         match ks.key.as_str() {
             "left" | "right" if !m.control => {
                 let left = ks.key == "left";
                 if m.shift {
-                    let t = target(self, left);
+                    let (t, eol) = target(self, left);
                     self.select_to(t, cx);
+                    self.eol = eol;
                 } else if !self.selected.is_empty() && !m.platform && !m.alt {
                     let edge = if left { self.selected.start } else { self.selected.end };
                     self.move_to(edge, cx);
                 } else {
-                    let t = target(self, left);
+                    let (t, eol) = target(self, left);
                     self.move_to(t, cx);
+                    self.eol = eol;
                 }
             }
             "up" | "down" if self.wrap && !m.platform && !m.control && !m.alt => {
@@ -280,8 +309,9 @@ impl TextField {
                 } else {
                     self.selected.end
                 };
-                let Some(t) = self.vertical(from, up) else { return };
+                let Some((t, eol)) = self.vertical(from, up) else { return };
                 if m.shift { self.select_to(t, cx) } else { self.move_to(t, cx) }
+                self.eol = eol;
             }
             "home" => self.move_to(0, cx),
             "end" => self.move_to(len, cx),
@@ -295,7 +325,7 @@ impl TextField {
             }
             "backspace" => {
                 let to = if m.platform {
-                    0
+                    row_start
                 } else if m.alt {
                     self.prev_word(c)
                 } else {
@@ -310,6 +340,7 @@ impl TextField {
             "a" if m.platform => {
                 self.selected = 0..len;
                 self.reversed = false;
+                self.eol = false;
                 cx.notify();
             }
             "c" | "x" if m.platform => {
@@ -381,68 +412,76 @@ impl TextField {
         self.content.char_indices().nth(n).map(|(i, _)| i).unwrap_or(self.content.len())
     }
 
-    fn index_for_point(&self, p: Point<Pixels>) -> usize {
+    /// The offset under `p`, and whether it's the end of a wrapped row (see `eol`).
+    fn index_for_point(&self, p: Point<Pixels>) -> (usize, bool) {
         let (Some(b), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref()) else {
-            return self.content.len();
+            return (self.content.len(), false);
         };
         if self.content.is_empty() {
-            return 0;
+            return (0, false);
         }
-        self.content_offset(line.closest(p - b.origin, self.last_line_h))
+        let (i, eol) = line.closest(p - b.origin, self.last_line_h);
+        (self.content_offset(i), eol)
     }
 }
 
-/// The shaped text from the last paint: one line, or paragraphs wrapped into rows.
+/// The shaped text from the last paint: one line, or rows wrapped at the field's width.
 enum Shaped {
     Line(ShapedLine),
-    Wrapped(Vec<Para>),
+    Wrapped(Vec<Row>),
 }
 
-/// One paragraph of wrapped text: where it starts in the text and on screen.
-struct Para {
+/// One drawn row of wrapped text: where it starts in the text and on screen.
+pub struct Row {
     start: usize,
     y: Pixels,
-    line: WrappedLine,
-}
-
-impl Para {
-    fn rows(&self) -> usize {
-        self.line.wrap_boundaries().len() + 1
-    }
+    line: ShapedLine,
+    /// The paragraph wraps on to the next row (no newline here), so the row's end offset is
+    /// also the next row's start.
+    soft: bool,
 }
 
 impl Shaped {
+    /// The row display offset `i` is drawn on: the later one at a wrap unless `eol`.
+    fn row_of(rows: &[Row], i: usize, eol: bool) -> usize {
+        let k = rows.iter().rposition(|r| r.start <= i).unwrap_or(0);
+        if eol && k > 0 && rows[k].start == i && rows[k - 1].soft { k - 1 } else { k }
+    }
+
     /// Top-left of the cursor slot before display offset `i`, relative to the text's origin.
-    fn pos(&self, i: usize, line_h: Pixels) -> Point<Pixels> {
+    fn pos(&self, i: usize, eol: bool) -> Point<Pixels> {
         match self {
             Shaped::Line(l) => point(l.x_for_index(i), px(0.)),
-            Shaped::Wrapped(ps) => {
-                let Some(p) = ps.iter().rev().find(|p| p.start <= i) else { return point(px(0.), px(0.)) };
-                let at = p.line.position_for_index(i - p.start, line_h).unwrap_or_else(|| point(p.line.width(), px(0.)));
-                point(at.x, p.y + at.y)
+            Shaped::Wrapped(rows) if rows.is_empty() => point(px(0.), px(0.)),
+            Shaped::Wrapped(rows) => {
+                let r = &rows[Self::row_of(rows, i, eol)];
+                point(r.line.x_for_index(i - r.start), r.y)
             }
         }
     }
 
-    /// The paragraph under `y` (the first or last one when above or below the text).
-    fn para_at(ps: &[Para], y: Pixels, line_h: Pixels) -> Option<&Para> {
-        ps.iter().find(|p| y < p.y + line_h * p.rows() as f32).or(ps.last())
+    /// The row under `y` (the first or last one when above or below the text).
+    fn row_at(rows: &[Row], y: Pixels, line_h: Pixels) -> Option<&Row> {
+        rows.iter().find(|r| y < r.y + line_h).or(rows.last())
     }
 
-    fn closest(&self, p: Point<Pixels>, line_h: Pixels) -> usize {
+    /// The offset nearest `p`, and whether it's the end of a wrapped row.
+    fn closest(&self, p: Point<Pixels>, line_h: Pixels) -> (usize, bool) {
         match self {
-            Shaped::Line(l) => l.closest_index_for_x(p.x),
-            Shaped::Wrapped(ps) => Self::para_at(ps, p.y, line_h)
-                .map_or(0, |q| q.start + q.line.closest_index_for_position(point(p.x, (p.y - q.y).max(px(0.))), line_h).unwrap_or_else(|i| i)),
+            Shaped::Line(l) => (l.closest_index_for_x(p.x), false),
+            Shaped::Wrapped(rows) => Self::row_at(rows, p.y, line_h).map_or((0, false), |r| {
+                let j = r.line.closest_index_for_x(p.x);
+                (r.start + j, r.soft && j == r.line.len())
+            }),
         }
     }
 
     fn index(&self, p: Point<Pixels>, line_h: Pixels) -> Option<usize> {
         match self {
             Shaped::Line(l) => l.index_for_x(p.x),
-            Shaped::Wrapped(ps) => {
-                let q = Self::para_at(ps, p.y, line_h)?;
-                q.line.index_for_position(point(p.x, p.y - q.y), line_h).ok().map(|i| q.start + i)
+            Shaped::Wrapped(rows) => {
+                let r = Self::row_at(rows, p.y, line_h)?;
+                r.line.index_for_x(p.x).map(|j| r.start + j)
             }
         }
     }
@@ -452,13 +491,82 @@ impl Shaped {
             Shaped::Line(l) => {
                 let _ = l.paint(origin, line_h, TextAlign::Left, None, window, cx);
             }
-            Shaped::Wrapped(ps) => {
-                for p in ps {
-                    let _ = p.line.paint(origin + point(px(0.), p.y), line_h, TextAlign::Left, None, window, cx);
-                }
-            }
+            Shaped::Wrapped(rows) => paint_rows(rows, origin, line_h, window, cx),
         }
     }
+}
+
+fn paint_rows(rows: &[Row], origin: Point<Pixels>, line_h: Pixels, window: &mut Window, cx: &mut App) {
+    for r in rows {
+        let _ = r.line.paint(origin + point(px(0.), r.y), line_h, TextAlign::Left, None, window, cx);
+    }
+}
+
+/// Where a paragraph's rows end, as byte offsets, when it wraps at `width` and `x` gives the
+/// pen position before each offset. Rows break after a run of spaces, so punctuation stays with
+/// its word (GPUI's own wrapper breaks before `?` and `/`); a word wider than a row breaks
+/// between characters. Spaces at a row's end hang past the edge.
+fn row_ends(text: &str, width: Pixels, x: impl Fn(usize) -> Pixels) -> Vec<usize> {
+    let ws = |c: char| c.is_whitespace();
+    let breaks: Vec<usize> = text.char_indices().filter(|&(i, c)| i > 0 && !ws(c) && text[..i].ends_with(ws)).map(|(i, _)| i).collect();
+    let mut ends = Vec::new();
+    let mut s = 0;
+    loop {
+        let x0 = x(s);
+        let fits = |e: usize| x(text[..e].trim_end_matches(ws).len().max(s)) - x0 <= width;
+        if fits(text.len()) {
+            ends.push(text.len());
+            return ends;
+        }
+        let e = breaks.iter().copied().filter(|&b| b > s).take_while(|&b| fits(b)).last().unwrap_or_else(|| {
+            // No space to break at: as many characters as fit, at least one.
+            let mut chars = text[s..].char_indices().map(|(i, c)| s + i + c.len_utf8());
+            let first = chars.next().unwrap_or(text.len());
+            chars.take_while(|&e| x(e) - x0 <= width).last().unwrap_or(first)
+        });
+        ends.push(e);
+        s = e;
+    }
+}
+
+/// The runs covering `r` of the text `runs` cover.
+fn slice_runs(runs: &[TextRun], r: Range<usize>) -> Vec<TextRun> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for run in runs {
+        let (a, b) = (at.max(r.start), (at + run.len).min(r.end));
+        if a < b {
+            out.push(TextRun { len: b - a, ..run.clone() });
+        }
+        at += run.len;
+    }
+    if out.is_empty()
+        && let Some(run) = runs.first()
+    {
+        out.push(TextRun { len: 0, ..run.clone() });
+    }
+    out
+}
+
+/// `text` split at its newlines, each paragraph wrapped at `width` (see [`row_ends`]), one row
+/// below the last.
+fn wrapped(window: &Window, text: &str, size: Pixels, runs: &[TextRun], width: Pixels, line_h: Pixels) -> Vec<Row> {
+    let (mut start, mut y) = (0, px(0.));
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let end = start + para.len();
+        let line = window.text_system().shape_line(SharedString::from(para.to_string()), size, &slice_runs(runs, start..end), None);
+        let ends = row_ends(para, width, |i| line.x_for_index(i));
+        let mut cur = line.cursor();
+        let mut s = 0;
+        for (k, &e) in ends.iter().enumerate() {
+            out.push(Row { start: start + s, y, line: cur.take_until(e), soft: k + 1 < ends.len() });
+            y += line_h;
+            s = e;
+        }
+        start = end + 1;
+    }
+    out
 }
 
 /// The double-clicked word at byte offset `off`: a run of word characters, of spaces, or the
@@ -608,6 +716,7 @@ impl EntityInputHandler for TextField {
                 range.start + to8(s.start)..range.start + to8(s.end)
             })
             .unwrap_or(range.start + text.len()..range.start + text.len());
+        self.eol = false;
         cx.emit(FieldChanged);
         cx.notify();
     }
@@ -616,8 +725,8 @@ impl EntityInputHandler for TextField {
         let line = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&r);
         let h = self.last_line_h;
-        let p0 = line.pos(self.display_offset(range.start), h);
-        let p1 = line.pos(self.display_offset(range.end), h);
+        let p0 = line.pos(self.display_offset(range.start), false);
+        let p1 = line.pos(self.display_offset(range.end), false);
         let x1 = if p1.y == p0.y { p1.x } else { p0.x };
         Some(Bounds::from_corners(point(b.left() + p0.x, b.top() + p0.y), point(b.left() + x1, b.top() + p0.y + h)))
     }
@@ -652,19 +761,23 @@ impl Render for TextField {
                 cx.listener(|f, ev: &MouseDownEvent, window, cx| {
                     f.focus.focus(window, cx);
                     f.selecting = true;
-                    let i = f.index_for_point(ev.position);
+                    let (i, eol) = f.index_for_point(ev.position);
                     if ev.modifiers.shift {
                         f.select_to(i, cx);
+                        f.eol = eol;
                     } else if ev.click_count == 2 && !f.secret {
                         f.selected = word_at(&f.content, i);
                         f.reversed = false;
+                        f.eol = false;
                         cx.notify();
                     } else if ev.click_count >= 2 {
                         f.selected = 0..f.content.len();
                         f.reversed = false;
+                        f.eol = false;
                         cx.notify();
                     } else {
                         f.move_to(i, cx);
+                        f.eol = eol;
                     }
                 }),
             )
@@ -672,8 +785,9 @@ impl Render for TextField {
             .on_mouse_up_out(MouseButton::Left, cx.listener(|f, _: &MouseUpEvent, _, _| f.selecting = false))
             .on_mouse_move(cx.listener(|f, ev: &MouseMoveEvent, _, cx| {
                 if f.selecting {
-                    let i = f.index_for_point(ev.position);
+                    let (i, eol) = f.index_for_point(ev.position);
                     f.select_to(i, cx);
+                    f.eol = eol;
                 }
             }))
             .child(TextLine { field: cx.entity() })
@@ -725,20 +839,6 @@ impl TextLine {
     }
 }
 
-/// `text` split at its newlines, each paragraph wrapped at `width` and placed below the last.
-fn wrapped(window: &Window, text: String, size: Pixels, runs: &[TextRun], width: Pixels, line_h: Pixels) -> Vec<Para> {
-    let lines = window.text_system().shape_text(SharedString::from(text), size, runs, Some(width), None).unwrap_or_default();
-    let (mut start, mut y) = (0, px(0.));
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        let p = Para { start, y, line };
-        start += p.line.len() + 1;
-        y += line_h * p.rows() as f32;
-        out.push(p);
-    }
-    out
-}
-
 impl Element for TextLine {
     type RequestLayoutState = ();
     type PrepaintState = LinePrepaint;
@@ -767,7 +867,7 @@ impl Element for TextLine {
                 AvailableSpace::Definite(w) => w,
                 _ => px(f32::MAX),
             });
-            let rows: usize = wrapped(window, text.clone(), size, &runs, width, lh).iter().map(Para::rows).sum();
+            let rows: usize = wrapped(window, &text, size, &runs, width, lh).len();
             gpui_kit::size(width, lh * rows.max(1) as f32)
         });
         (id, ())
@@ -781,13 +881,14 @@ impl Element for TextLine {
         let wrap = f.wrap;
         let line_h = if wrap { line_h(window) } else { bounds.size.height };
         let line = if wrap {
-            Shaped::Wrapped(wrapped(window, text, size, &runs, bounds.size.width, line_h))
+            Shaped::Wrapped(wrapped(window, &text, size, &runs, bounds.size.width, line_h))
         } else {
             Shaped::Line(window.text_system().shape_line(SharedString::from(text), size, &runs, None))
         };
         let empty = f.content.is_empty();
+        // `eol` places the cursor end, not the anchor.
         let pos_of = |off: usize| {
-            if empty { point(px(0.), px(0.)) } else { line.pos(f.display_offset(off), line_h) }
+            if empty { point(px(0.), px(0.)) } else { line.pos(f.display_offset(off), f.eol && off == f.cursor()) }
         };
         let cur = pos_of(f.cursor());
         // Keep the cursor visible in a narrow single-line field: scroll the line left.
@@ -852,6 +953,79 @@ impl Element for TextLine {
     }
 }
 
+/// Text wrapped exactly as a wrapping [`TextField`] wraps it, with the same row height: the
+/// image sheet shows a note this way when its field isn't on it, so the words don't move as the
+/// field comes and goes. Font, size and color are inherited.
+pub fn wrap_text(text: impl Into<SharedString>) -> WrapText {
+    WrapText { text: text.into() }
+}
+
+pub struct WrapText {
+    text: SharedString,
+}
+
+impl WrapText {
+    fn run(&self, window: &Window) -> (Pixels, Vec<TextRun>) {
+        let style = window.text_style();
+        let run = TextRun { len: self.text.len(), font: style.font(), color: style.color, background_color: None, underline: None, strikethrough: None };
+        (style.font_size.to_pixels(window.rem_size()), vec![run])
+    }
+}
+
+impl IntoElement for WrapText {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for WrapText {
+    type RequestLayoutState = ();
+    type PrepaintState = Vec<Row>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _i: Option<&InspectorElementId>, window: &mut Window, _cx: &mut App) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        let lh = line_h(window);
+        let (size, runs) = self.run(window);
+        let text = self.text.clone();
+        let id = window.request_measured_layout(style, move |known, avail, window, _cx| {
+            let width = known.width.unwrap_or(match avail.width {
+                AvailableSpace::Definite(w) => w,
+                _ => px(f32::MAX),
+            });
+            gpui_kit::size(width, lh * wrapped(window, &text, size, &runs, width, lh).len().max(1) as f32)
+        });
+        (id, ())
+    }
+
+    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _i: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _r: &mut (), window: &mut Window, _cx: &mut App) -> Vec<Row> {
+        let (size, runs) = self.run(window);
+        wrapped(window, &self.text, size, &runs, bounds.size.width, line_h(window))
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _i: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _r: &mut (),
+        rows: &mut Vec<Row>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        paint_rows(rows, bounds.origin, line_h(window), window, cx);
+    }
+}
+
 /// Tall enough for descenders whatever line height the parent set.
 fn line_h(window: &Window) -> Pixels {
     let fs = window.text_style().font_size.to_pixels(window.rem_size());
@@ -864,7 +1038,33 @@ fn size_of(w: Pixels, h: Pixels) -> Size<Pixels> {
 
 #[cfg(test)]
 mod tests {
-    use super::{History, Snap, word_at, word_left, word_right};
+    use super::{History, Snap, row_ends, word_at, word_left, word_right};
+    use gpui_kit::px;
+
+    /// Rows of `text` in a monospace font of 1px per byte.
+    fn rows(text: &str, width: usize) -> Vec<&str> {
+        let mut s = 0;
+        row_ends(text, px(width as f32), |i| px(i as f32))
+            .into_iter()
+            .map(|e| {
+                let r = &text[s..e];
+                s = e;
+                r
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rows_break_after_spaces_and_keep_punctuation() {
+        assert_eq!(rows("is this right?", 13), ["is this ", "right?"]);
+        assert_eq!(rows("see a/b/c", 7), ["see ", "a/b/c"]);
+        // Spaces hang past the edge rather than starting a row.
+        assert_eq!(rows("abc   def", 3), ["abc   ", "def"]);
+        assert_eq!(rows("fits", 4), ["fits"]);
+        assert_eq!(rows("", 4), [""]);
+        // A word wider than a row breaks between characters.
+        assert_eq!(rows("abcdefg hi", 3), ["abc", "def", "g ", "hi"]);
+    }
 
     #[test]
     fn word_moves() {
