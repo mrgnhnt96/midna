@@ -57,6 +57,8 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
 - `midna rename`, `midna restart` and `midna close <id>` manage a terminal (a rename also stops midna
   naming it automatically from the agent's summary, `terminal.auto_name`). Closing a busy
   terminal needs `--force` and may ask the human (unless they turned on `agents.may_force_close`).
+  If the human is looking at the terminal, `close` returns at once but the close waits on a
+  5-second countdown they can stop (`session.close_kept`) or put off until they look away.
   If you shouldn't sit waiting for the answer, add `--no-wait`: it prints the needs-you id and exits 4
   at once, the close happens if the human approves, and `midna needs get <id>` (or
   `midna needs wait <id>`) tells you how it went. An approval about a terminal that closes in the

@@ -294,4 +294,5 @@ pub fn serve(d: Arc<Daemon>, s: UnixStream, conn_id: u64) {
     drop(tx);
     let _ = writer.join();
     d.forget_conn(conn_id);
+    crate::close_hold::on_disconnect(&d);
 }

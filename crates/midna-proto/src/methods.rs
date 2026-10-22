@@ -796,6 +796,26 @@ pub struct SessionCloseParams {
     pub cleanup: Option<bool>,
 }
 
+/// The app's answer to a held close (the `session.closing` it was sent): an agent's
+/// `session.close` or `close_on_exit`, held while the human may be reading the terminal.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionCloseHoldParams {
+    pub id: Id,
+    pub action: CloseHold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseHold {
+    /// The human is looking at it: wait until the app says close or keep.
+    Hold,
+    /// Close it now (the human isn't looking, the countdown ran out, they left the terminal, or
+    /// they clicked Close now).
+    Close,
+    /// Don't close it (Stop).
+    Keep,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRenameParams {
     pub id: Id,

@@ -267,6 +267,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.get" => session::get(d, parse(p)?),
         "session.open" => session::open(d, ctx, parse(p)?),
         "session.close" => session::close(d, ctx, parse(p)?),
+        "session.close_hold" => session::close_hold(d, parse(p)?),
         "session.rename" => session::rename(d, ctx, parse(p)?),
         "session.set_status" => session::set_status(d, ctx, parse(p)?),
         "session.clear_status" => session::clear_status(d, ctx, parse(p)?),
@@ -454,6 +455,9 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     if method == "updates.report" {
         // Only the GUI reports updater state; a deferred approval would make no sense.
         return RpcError::human_only("updates.report is for the midna app; agents read updates.status");
+    }
+    if method == "session.close_hold" {
+        return RpcError::human_only("session.close_hold is the midna app's answer to a held close");
     }
     if method == "rule.remove" {
         return RpcError::human_only("rule.remove is human only; use rule.request_removal to ask the human");

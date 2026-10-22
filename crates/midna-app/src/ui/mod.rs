@@ -4,6 +4,7 @@ pub mod ax_prompt;
 pub mod badge;
 pub mod banner;
 pub mod button_slots;
+pub mod close_hold;
 pub mod update_banner;
 pub mod charts;
 pub mod close_anim;
@@ -357,6 +358,7 @@ impl Render for MainWindow {
                 // Cards over the terminal pane's top-right corner: Kass's Accessibility ask, then the setup step.
                 div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)).children(toast::render(self, &t, cx)),
             )
+            .children(close_hold::render(self, &t, cx))
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
             // Setup's Twilight Tiles screen covers the whole window while setup is open.
             .children(setup_screen::render(self, &t, window, cx))

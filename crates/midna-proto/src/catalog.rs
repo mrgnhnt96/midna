@@ -150,7 +150,13 @@ fn build() -> Vec<MethodSpec> {
             "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`): \
              it asks the human unless they turned on agents.may_force_close (or a rule allows it). Closing another idle terminal asks unless \
              agents.may_close_idle is on. An approval still pending when its terminal closes is withdrawn. Afterwards midna cleans up \
-             what it left behind (cleanup.enabled); `cleanup: false` skips that once."),
+             what it left behind (cleanup.enabled); `cleanup: false` skips that once. When the human is looking at the \
+             terminal, the close waits while the app counts down, and they can stop it (`session.close_kept`) or let it close \
+             once they leave; the call returns before that."),
+        m::<SessionCloseHoldParams, OkResult>("session.close_hold").mutating().human().d(
+            "The app's answer to a held close (`session.closing`, sent to the app when an agent's close or close_on_exit \
+             reaches a terminal while the app is connected): hold (the human is looking; a countdown shows), close, or keep \
+             (the human stopped it). ok=false when no close was waiting."),
         m::<SessionRenameParams, Session>("session.rename").mutating().d("Rename a terminal (the sidebar label the human sees). Give terminals you open a short, task-describing name."),
         m::<SessionSetStatusParams, Session>("session.set_status").mutating().d(
             "Put a custom status label on a terminal (the header chip and the sidebar row's line), like a local trigger's set_status \

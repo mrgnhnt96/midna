@@ -296,6 +296,9 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
         // terminal without agents.may_close_idle is treated as an ask.
         let default = if may_force_close { Some(Effect::Allow) } else { (!own && !may_close_idle).then_some(Effect::Ask) };
         super::policy::gate_with(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), default)?;
+        // The human may be reading it: the app gets a say first (`close_hold.rs`).
+        crate::close_hold::close(d, &p.id, p.force, p.cleanup, if p.force { "force_close" } else { "close" }, ctx.actor());
+        return ok(OkResult { ok: true });
     }
     let closing = crate::cleanup::capture(d, &p.id, p.cleanup);
     close_inner(d, ctx, &p.id, p.force, if p.force { "force_close" } else { "close" });
@@ -303,6 +306,11 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
         crate::cleanup::after_close(d, c);
     }
     ok(OkResult { ok: true })
+}
+
+/// `session.close_hold`: the app's answer to a held close (`close_hold.rs`).
+pub fn close_hold(d: &Arc<Daemon>, p: SessionCloseHoldParams) -> R {
+    ok(OkResult { ok: crate::close_hold::answer(d, &p.id, p.action) })
 }
 
 /// `session.replace`: ⌘T then ⌘W in one step. A fresh terminal of the same kind opens in the
@@ -1065,11 +1073,7 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
     d.set_status(sid, state, Some(reason.clone()), code, Actor::system());
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
     if close_on_exit && state == StatusState::Exited {
-        let closing = crate::cleanup::capture(d, sid, None);
-        close_inner(d, &Ctx::internal_system(), sid, false, "exited");
-        if let Some(c) = closing {
-            crate::cleanup::after_close(d, c);
-        }
+        crate::close_hold::close(d, sid, false, None, "exited", Actor::system());
         return;
     }
     if state == StatusState::Failed && kind != SessionKind::Shell {

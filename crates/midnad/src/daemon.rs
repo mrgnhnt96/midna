@@ -167,6 +167,8 @@ pub struct Daemon {
     pub ends: crate::ended::Ends,
     /// Folder-trust dialogs being answered (`trust.rs`). Not persisted.
     pub trust: Mutex<crate::trust::Memory>,
+    /// Closes waiting on the app's countdown (`close_hold.rs`). Not persisted.
+    pub holds: crate::close_hold::Holds,
     next_conn: AtomicU64,
     pub next_gen: AtomicU64,
     /// Webhook receiver, secrets and delivery-path runtime state.
@@ -243,6 +245,7 @@ impl Daemon {
             answered: Default::default(),
             ends: Default::default(),
             trust: Default::default(),
+            holds: Default::default(),
             next_conn: AtomicU64::new(1),
             next_gen: AtomicU64::new(1),
             webhooks: crate::webhooks::Runtime::new(&cfg),

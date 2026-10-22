@@ -494,6 +494,50 @@ fn agent_close_policy() {
 }
 
 #[test]
+fn agent_close_waits_for_the_app() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut gui = d.human().subscribe(None).unwrap();
+    let mut a = d.agent(Some(&sid));
+    let mut closing = || loop {
+        if let midna_proto::client::Notification::Other { method, params } = gui.next_notification().unwrap()
+            && method == "session.closing"
+        {
+            break params;
+        }
+    };
+    let gone = |h: &mut Client| h.call_value("session.get", json!({ "id": sid })).is_err();
+    // The app holds it (the human is looking): it outlasts the ask's timeout, until kept.
+    call(&mut a, "session.close", json!({ "id": sid }));
+    let ask = closing();
+    assert_eq!((ask["id"].as_str(), ask["how"].as_str(), ask["by"]["kind"].as_str()), (Some(sid.as_str()), Some("close"), Some("agent")));
+    assert!(!gone(&mut h), "waits for the app");
+    assert_eq!(call(&mut h, "session.close_hold", json!({ "id": sid, "action": "hold" }))["ok"], true);
+    std::thread::sleep(std::time::Duration::from_millis(1800));
+    assert!(!gone(&mut h), "a held close waits");
+    assert_eq!(call(&mut h, "session.close_hold", json!({ "id": sid, "action": "keep" }))["ok"], true);
+    assert_eq!(call(&mut h, "session.close_hold", json!({ "id": sid, "action": "close" }))["ok"], false, "nothing waits after keep");
+    assert!(!gone(&mut h), "kept");
+    let kept = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.close_held", "session.close_kept"] } }));
+    assert!(kept.to_string().contains("session.close_kept"), "{kept}");
+    // Agents can't answer for the app.
+    assert_eq!(call_err(&mut a, "session.close_hold", json!({ "id": sid, "action": "keep" })).code, HUMAN_ONLY);
+    // Not looking: the app says close.
+    call(&mut a, "session.close", json!({ "id": sid }));
+    closing();
+    assert_eq!(call(&mut h, "session.close_hold", json!({ "id": sid, "action": "close" }))["ok"], true);
+    assert!(gone(&mut h), "closed on the app's word");
+    // No answer: it closes once the ask times out.
+    let sid2 = open_sh(&mut h);
+    let mut a2 = d.agent(Some(&sid2));
+    call(&mut a2, "session.close", json!({ "id": sid2 }));
+    closing();
+    assert!(h.call_value("session.get", json!({ "id": sid2 })).is_ok());
+    wait_for(10, "unanswered close to go ahead", || h.call_value("session.get", json!({ "id": sid2 })).is_err().then_some(()));
+}
+
+#[test]
 fn needs_you_raise_and_agent_resolve_own() {
     let d = TestDaemon::start();
     let mut h = d.human();
