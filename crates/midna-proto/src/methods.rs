@@ -156,6 +156,25 @@ pub struct LinksAddParams {
     pub pin: bool,
 }
 
+/// `links.served_by`: which terminal runs the server behind a link to this Mac.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksServedByParams {
+    /// An http(s) link to this Mac (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`), with or without a port.
+    pub url: String,
+}
+
+/// The terminal whose processes listen on a local link's port.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ServedBy {
+    pub session: Id,
+    /// The terminal's name (its title when it has none).
+    pub name: String,
+    /// What listens, e.g. `vite` or `python3`.
+    pub command: String,
+    pub pid: i32,
+    pub port: u16,
+}
+
 /// `links.patterns.register`: an app's own `terminal.link_patterns` rules, replacing what it
 /// registered before.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

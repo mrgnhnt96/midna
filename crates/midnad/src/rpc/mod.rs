@@ -309,6 +309,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "links.pin" => links::pin(d, ctx, parse(p)?),
         "links.add" => links::add(d, ctx, parse(p)?),
         "links.remove" => links::remove(d, ctx, parse(p)?),
+        "links.served_by" => links::served_by(d, parse(p)?),
         "links.patterns.list" => links::patterns_list(d),
         "links.patterns.register" => links::patterns_register(d, ctx, parse(p)?),
         "queue.list" => queue::list(d, ctx, parse(p)?),
@@ -401,7 +402,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
 fn skip_audit(method: &str, params: &Value) -> bool {
     match method {
         "agent.hook" => params.get("event").and_then(Value::as_str) == Some("statusline"),
-        "session.resize" | "session.scroll" | "session.selection" | "session.select_all" | "session.link_at" | "session.find" | "session.jump_prompt" => true,
+        "session.resize" | "session.scroll" | "session.selection" | "session.select_all" | "session.link_at" | "links.served_by" | "session.find" | "session.jump_prompt" => true,
         _ => false,
     }
 }
