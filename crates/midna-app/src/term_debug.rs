@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `switch:ROUNDS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `switch:ROUNDS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -214,6 +214,13 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
                 return;
             };
             window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: mods(&words) }), cx);
+        }
+        // Opens the link menu for the link at a cell, as a plain click on it would.
+        "linkmenu" if nums.len() >= 2 => {
+            if let Some(t) = pane {
+                let cell = (nums[0] as i32, nums[1] as i32);
+                t.update(cx, |t, cx| t.open_link_menu_at(cell, cx));
+            }
         }
         "split" => main.update(cx, |m, cx| crate::ui::split::toggle(m, window, cx)),
         "stack" => main.update(cx, |m, cx| crate::ui::split::flip(m, cx)),

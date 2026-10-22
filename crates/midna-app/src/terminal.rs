@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+mod link_menu;
 mod link_preview;
 mod pr_status;
 mod prompt_nav;
@@ -124,6 +125,8 @@ pub struct TerminalView {
     preview: link_preview::Preview,
     /// Right-click menu: where it opened, and the link under that cell (if any).
     menu: Option<(Point<Pixels>, Option<Value>)>,
+    /// The menu a plain click on a link opens (`link_menu.rs`).
+    link_menu: link_menu::LinkMenus,
     marked: Option<String>,
     /// ⇧-arrow selection in the input line (`term_edit`).
     kbd_sel: Option<KbdSel>,
@@ -424,6 +427,7 @@ impl TerminalView {
             erase_gen: 0,
             redo: Vec::new(),
             menu: None,
+            link_menu: Default::default(),
             marked: None,
             font_family,
             nav: Default::default(),
@@ -716,6 +720,10 @@ impl TerminalView {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
         if self.secret_sheet.is_some() {
+            return;
+        }
+        if self.link_menu_key(ks, window, cx) {
+            cx.stop_propagation();
             return;
         }
         self.preview_close(cx);
@@ -1397,6 +1405,9 @@ impl TerminalView {
     fn on_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
         self.kbd_sel = None;
+        self.link_menu.click += 1;
+        self.link_menu.seed = self.preview_loaded();
+        self.link_menu_close(cx);
         self.preview_close(cx);
         let Some((x, y)) = self.cell_pos(ev.position) else {
             return;
@@ -1437,7 +1448,7 @@ impl TerminalView {
             return;
         };
         let cmd = ev.modifiers.platform;
-        if (cmd || link_preview::mode(cx) == link_preview::Mode::Hover) && inside && over_grid && self.pressed == 0 {
+        if (cmd || link_preview::mode(cx) == link_preview::Mode::Hover) && inside && over_grid && self.pressed == 0 && self.link_menu.menu.is_none() {
             if self.hover_cmd != cmd {
                 self.hover_cmd = cmd;
                 cx.notify();
@@ -1482,6 +1493,10 @@ impl TerminalView {
             crate::ui::update_banner::ask(&self.session_id, cx);
         }
         let mods = mods_of(&ev.modifiers);
+        let agent_click = self.agent_press.is_some_and(|(_, moved)| !moved);
+        if clicked && button == 1 && self.link_menu_click(mods, agent_click) {
+            self.open_link_menu_at(cell, cx);
+        }
         match self.agent_press.take() {
             Some((_, moved)) => {
                 self.send_msg(ClientMsg::Mouse(MouseMsg { action: MouseAction::Release, button, mods: mods | MOD_SHIFT, x, y }));
@@ -1632,6 +1647,7 @@ impl TerminalView {
     // ------------------------------------------------------------------ context menu
 
     fn open_menu(&mut self, pos: Point<Pixels>, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_menu.menu = None;
         self.menu = Some((pos, None));
         cx.notify();
         if x < 0. || y < 0. {
@@ -2004,6 +2020,7 @@ impl Render for TerminalView {
         let link_color = theme.accent;
         let prs = self.pr_marks(&theme, cx);
         let menu = self.render_menu(&theme, cx);
+        let link_menu = self.render_link_menu(&theme, cx);
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
         self.update_nav(window, cx);
         let nav = self.render_nav(&theme, cx);
@@ -2183,6 +2200,7 @@ impl Render for TerminalView {
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
             .children(nav)
             .children(menu)
+            .children(link_menu)
             .children(secret_sheet)
     }
 }
