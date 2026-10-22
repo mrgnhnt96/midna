@@ -13,7 +13,8 @@
 //!
 //! Keys: ↩ sends the text to the target terminal with `session.input{enter:true}` (multi-line
 //! text goes as one bracketed paste when the terminal asked for it) and closes; ⇧↩ / ⌥↩ insert
-//! a newline; Esc cancels (clears and hides). The target is the terminal selected when the
+//! a newline; Esc cancels (clears and hides). Esc in the terminal also closes the composer when
+//! it's empty ([`escape_in_terminal`]). The target is the terminal selected when the
 //! composer opened. Images attached to it (`annotate.rs`) go with the text.
 //!
 //! The composer belongs to its target: select another terminal and it's put away with its
@@ -247,6 +248,21 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
     });
     m.focus_terminal(window, cx);
     cx.notify();
+}
+
+/// Esc in the terminal while an empty composer is open over it closes the composer instead of
+/// going to the terminal. With text in it, Esc goes to the terminal as usual (only Esc in the
+/// field throws text away). True = handled.
+pub fn escape_in_terminal(m: &mut MainWindow, ks: &Keystroke, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    if ks.key != "escape" || ks.modifiers.modified() || !m.composer.open || !on_target(m) || !can_show(m) {
+        return false;
+    }
+    let in_terminal = m.terminal.as_ref().is_some_and(|t| t.read(cx).focus_handle().contains_focused(window, cx));
+    if !in_terminal || !text(m).trim().is_empty() {
+        return false;
+    }
+    close(m, window, cx);
+    true
 }
 
 /// Give focus back to the composer if it's open over the selected terminal (the image sheet

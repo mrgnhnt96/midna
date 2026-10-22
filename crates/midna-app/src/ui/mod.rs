@@ -336,7 +336,7 @@ impl Render for MainWindow {
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
             // Setup's theme step browses with ← and → wherever focus is.
             .capture_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
-                if setup_screen::on_key(m, ev, w, cx) {
+                if setup_screen::on_key(m, ev, w, cx) || crate::composer::escape_in_terminal(m, &ev.keystroke, w, cx) {
                     cx.stop_propagation();
                 }
             }))
