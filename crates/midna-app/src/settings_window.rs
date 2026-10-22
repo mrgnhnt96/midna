@@ -179,7 +179,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Terminal, "Agents", &["terminal.prompt_bar"]),
     (Sec::Shortcuts, "", &["@shortcuts"]),
     (Sec::Shortcuts, "Built in", &["@built_in"]),
-    (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.system_hint"]),
+    (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.claude.crons_to_midna", "agents.system_hint"]),
     (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.shell_on_exit", "agents.resume_after_sleep", "agents.resume_after_network", "agents.resume_after_sleep_prompt"]),
     (
         Sec::Agents,
@@ -1052,6 +1052,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "agents.trust_folders" => "Trusted folders",
         "agents.trusted_clients" => "Clients that may answer Claude's questions",
         "agents.claude.statusline" => "Claude status line (cost)",
+        "agents.claude.crons_to_midna" => "Claude's crons become Midna schedules",
         "agents.mcp" => "Give agents the midna MCP tools",
         "keep_awake.enabled" => "Keep the Mac awake for agents",
         "keep_awake.mode" => "When",

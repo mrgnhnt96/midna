@@ -583,3 +583,83 @@ fn local_agents_use_the_normal_config_and_a_triggers_own_mode_and_tools() {
     let e = call_err(&mut a, "notify.send", json!({ "title": "Stand-up?", "actions": ["Go"], "on": { "Go": on } })).message;
     assert!(e.contains("not notification buttons"), "{e}");
 }
+
+/// `midna hook claude` for a PreToolUse: `agent.hook`, then `policy.request` to decide.
+fn pre_tool(a: &mut Client, tool: &str, input: Value) -> Value {
+    hook(a, "PreToolUse", json!({ "session_id": "c1", "tool_name": tool, "tool_input": input }));
+    call(a, "policy.request", json!({ "action": { "kind": "tool", "value": tool } }))
+}
+
+fn cron_trigger(h: &mut Client) -> Option<Value> {
+    call(h, "trigger.list", json!({})).as_array().unwrap().iter().find(|t| t["name"].as_str().is_some_and(|n| n.starts_with("Claude cron:"))).cloned()
+}
+
+#[test]
+fn claude_crons_become_schedules_that_follow_the_terminal() {
+    let d = TestDaemon::start_with(|c| c.agent_bin = Some("/bin/echo".into()));
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+
+    // Claude's cron is denied, and midna has it instead.
+    let r = pre_tool(&mut a, "CronCreate", json!({ "cron": "*/5 * * * *", "prompt": "echo cron-tick", "recurring": true }));
+    assert_eq!(r["decision"], "deny", "{r}");
+    let t = cron_trigger(&mut h).expect("trigger");
+    assert!(r["reason"].as_str().unwrap().contains(&format!("trigger {}", t["id"].as_str().unwrap())), "{r}");
+    assert_eq!((t["enabled"].as_bool(), t["filter"]["cron"].as_str(), t["filter"]["max_runs"].as_u64()), (Some(true), Some("*/5 * * * *"), None), "{t}");
+    assert_eq!((t["action"]["kind"].as_str(), t["action"]["session"].as_str()), (Some("start_agent"), Some(sid.as_str())), "{t}");
+
+    // While the terminal runs, the prompt is typed into it.
+    let fire = |t: &Value| {
+        let at = midna_proto::cron::Cron::parse("*/5 * * * *").unwrap().next_after(midna_proto::time::now_unix()).unwrap();
+        midnad::local::fire_schedule_now(&d.daemon(), t["id"].as_str().unwrap(), at);
+    };
+    // Its turn ends: the queue waits for that, as Claude's own cron would.
+    hook(&mut a, "Stop", json!({ "session_id": "c1" }));
+    fire(&t);
+    let del = call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] }));
+    assert_eq!(del[0]["summary"], "Queued the prompt for sh", "{del}");
+    wait_for(10, "cron prompt typed", || Some(read(&mut h, &sid)).filter(|s| s.contains("cron-tick")));
+
+    // Once it's gone, a new Claude agent gets it, and the trigger follows that one.
+    call(&mut h, "session.close", json!({ "id": sid, "force": true }));
+    fire(&t);
+    // Deliveries come oldest first.
+    let del = call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] }));
+    let last = del.as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["summary"], "Started claude › sh", "{del}");
+    let cmd: Vec<String> = serde_json::from_value(session(&mut h, last["session_started"].as_str().unwrap())["command"].clone()).unwrap();
+    assert!(cmd.iter().any(|x| x == "echo cron-tick"), "{cmd:?}");
+    let now = cron_trigger(&mut h).unwrap();
+    let new_sid = now["action"]["session"].as_str().unwrap().to_string();
+    assert_ne!(new_sid, sid);
+    assert_eq!(session(&mut h, &new_sid)["agent"], "claude");
+
+    // CronDelete of it from the terminal it follows removes it; another terminal's is Claude's.
+    let other = open_sh(&mut h);
+    let r = pre_tool(&mut d.agent(Some(&other)), "CronDelete", json!({ "id": now["id"] }));
+    assert_eq!(r["source"], "default", "{r}");
+    let r = pre_tool(&mut d.agent(Some(&new_sid)), "CronDelete", json!({ "id": now["id"] }));
+    assert_eq!(r["decision"], "deny", "{r}");
+    assert!(cron_trigger(&mut h).is_none());
+
+    // A one-shot runs once; a rule denying CronCreate, or the setting off, leaves it to Claude.
+    let mut a = d.agent(Some(&other));
+    pre_tool(&mut a, "CronCreate", json!({ "cron": "30 14 22 10 *", "prompt": "echo once", "recurring": false }));
+    let once = cron_trigger(&mut h).unwrap();
+    assert_eq!(once["filter"]["max_runs"], 1, "{once}");
+    call(&mut h, "trigger.remove", json!({ "id": once["id"] }));
+    call(&mut h, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "tool", "pattern": "CronCreate" }, "scope": { "kind": "global" } }));
+    let r = pre_tool(&mut a, "CronCreate", json!({ "cron": "@hourly", "prompt": "echo denied" }));
+    assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("deny"), Some("rule")), "{r}");
+    assert!(cron_trigger(&mut h).is_none());
+    let rules = call(&mut h, "rule.list", json!({}));
+    for r in rules.as_array().unwrap().iter().filter(|r| r["matcher"]["pattern"] == "CronCreate") {
+        call(&mut h, "rule.remove", json!({ "id": r["id"] }));
+    }
+    call(&mut h, "settings.set", json!({ "key": "agents.claude.crons_to_midna", "value": false }));
+    let r = pre_tool(&mut a, "CronCreate", json!({ "cron": "@hourly", "prompt": "echo claudes" }));
+    assert_eq!(r["source"], "default", "{r}");
+    assert!(cron_trigger(&mut h).is_none());
+}

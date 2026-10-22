@@ -72,6 +72,10 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
         needs_you_id: None,
         reason: r.rule.as_ref().map(|x| format!("rule {} ({} `{}`)", x.id, x.effect.as_str(), x.matcher.pattern)),
     };
+    // Claude's crons become midna schedules (unless a rule denies them).
+    if let Some(reason) = crate::crons::decide(d, ctx, &a, res.decision != Effect::Deny) {
+        return ok(PolicyRequestResult { decision: Effect::Deny, source: DecisionSource::Guard, rule: None, needs_you_id: None, reason: Some(reason) });
+    }
     // A rule's allow is about permission, not load: the guard still holds heavy work back.
     if res.decision != Effect::Deny
         && let Some(reason) = crate::guard::hold(d, &a, &|| ctx.detached.is_none() && ctx.out.peer_gone())

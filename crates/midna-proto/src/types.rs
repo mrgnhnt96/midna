@@ -996,6 +996,11 @@ pub enum TriggerAction {
         /// `Bash(git status)`). Nothing else gets them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_tools: Vec<String>,
+        /// Local schedules: type the prompt into this terminal while it runs (once its agent is
+        /// ready) instead of starting an agent. Once it's gone the next firing starts one, and the
+        /// trigger follows that terminal from then on (Claude crons midna took over).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<Id>,
     },
     /// Run `command` (through the login shell) in a monitor terminal in the project. With
     /// `background` the terminal opens in the sidebar's folded Background group instead of as a

@@ -610,9 +610,20 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
         if n.trim().is_empty() { t.name.clone() } else { n }
     };
     let result: Result<(Option<Id>, String), String> = match &t.action {
-        TriggerAction::StartAgent { project_id, agent, prompt_template, .. } => {
-            let n = name();
-            open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": r(prompt_template, false), "agent_args": t.action.agent_access_args() })).map(|id| (Some(id), format!("Started {} › {n}", agent.as_str())))
+        TriggerAction::StartAgent { project_id, agent, prompt_template, session, .. } => {
+            // A followed terminal still running gets the prompt; once it's gone, a new agent
+            // does, and the trigger follows that one.
+            let running = session.as_deref().filter(|sid| d.core().rt.contains_key(*sid)).and_then(|sid| SessionFacts::lookup(d, sid));
+            if let Some(s) = running {
+                crate::queue::add_steps(d, &s.id, t, actor.clone(), vec![(r(prompt_template, false), true)], None).map(|_| (None, format!("Queued the prompt for {}", s.name)))
+            } else {
+                let n = name();
+                let started = open(json!({ "project_id": project_id, "kind": "agent", "agent": agent, "name": n, "prompt": r(prompt_template, false), "agent_args": t.action.agent_access_args() }));
+                if let (Ok(id), Some(_)) = (&started, session) {
+                    follow(d, &t.id, id);
+                }
+                started.map(|id| (Some(id), format!("Started {} › {n}", agent.as_str())))
+            }
         }
         TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let n = name();
@@ -673,6 +684,16 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
         }),
     };
     result.unwrap_or_else(|e| (None, format!("Could not {}: {e}", action_name(&t.action).replace('_', " "))))
+}
+
+/// Point a `start_agent` that follows a terminal at `sid`, the agent it just started.
+fn follow(d: &Daemon, id: &str, sid: &str) {
+    let mut core = d.core();
+    if let Some(TriggerAction::StartAgent { session, .. }) = core.state.triggers.iter_mut().find(|x| x.id == id).map(|x| &mut x.action) {
+        *session = Some(sid.to_string());
+    }
+    drop(core);
+    d.mark_dirty();
 }
 
 /// A trigger's `notify` action (local and webhook): one line saying what happened.

@@ -583,6 +583,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Allow agents to approve approval requests of their own session from the CLI. Human only."),
     s!("agents.claude.statusline", SettingKind::Bool, B(true), "agents", false,
         "Register midna's status line in Claude sessions midna launches; it reports real cost to insights (prints model and cost)."),
+    s!("agents.claude.crons_to_midna", SettingKind::Bool, B(true), "agents", false,
+        "When Claude schedules a prompt in a midna terminal (its CronCreate tool, e.g. /loop 5m), midna makes it a local schedule trigger instead of a session cron, so it outlives the session and Claude's 7-day limit: it types the prompt into that terminal while it runs, and once the terminal is gone opens a new Claude agent in its project (and follows that one). Claude is told the trigger's id. Off: Claude keeps its own crons."),
     s!("agents.mcp", SettingKind::Bool, B(true), "agents", false,
         "Give agents midna launches the `midna` MCP server (Claude: --mcp-config MIDNA_HOME/hooks/mcp.json; Codex: -c mcp_servers.midna.*), so they can drive midna as tools. No global config is touched. Applies to agents launched afterwards."),
     s!("agents.system_hint", SettingKind::Bool, B(true), "agents", false,
