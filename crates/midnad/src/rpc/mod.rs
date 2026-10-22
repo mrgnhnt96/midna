@@ -312,6 +312,9 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "links.served_by" => links::served_by(d, parse(p)?),
         "links.patterns.list" => links::patterns_list(d),
         "links.patterns.register" => links::patterns_register(d, ctx, parse(p)?),
+        "links.actions.list" => links::actions_list(d),
+        "links.actions.register" => links::actions_register(d, ctx, parse(p)?),
+        "links.actions.approve" => links::actions_approve(d, ctx, parse(p)?),
         "queue.list" => queue::list(d, ctx, parse(p)?),
         "queue.add" => queue::add(d, ctx, parse(p)?),
         "queue.update" => queue::update(d, ctx, parse(p)?),
@@ -460,6 +463,9 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     if method == "session.close_hold" {
         return RpcError::human_only("session.close_hold is the midna app's answer to a held close");
     }
+    if method == "links.actions.approve" {
+        return RpcError::human_only("links.actions.approve is the human's answer to the approval links.actions.register raised");
+    }
     if method == "rule.remove" {
         return RpcError::human_only("rule.remove is human only; use rule.request_removal to ask the human");
     }
@@ -552,6 +558,14 @@ pub fn deferred_guard(d: &Daemon, method: &str, params: &Value) -> (Option<Strin
                     let shown = format!("Secret {name} ({}), stored {when}. The value isn't shown; nothing changes unless you approve.", s.label.as_deref().unwrap_or("secret"));
                     (Some(hex(format!("{}|{when}", s.id).as_bytes())), Some(shown))
                 }
+                None => (Some("missing".into()), None),
+            }
+        }
+        "links.actions.approve" => {
+            let owner = params.get("owner").and_then(Value::as_str).unwrap_or("");
+            let menus = d.core().state.app_link_actions.get(owner).map(|a| a.menus.clone()).unwrap_or_default();
+            match links::fingerprint(owner, &menus) {
+                Some(fp) => (Some(fp), Some(midna_proto::link_actions::commands(&menus).join("\n"))),
                 None => (Some("missing".into()), None),
             }
         }

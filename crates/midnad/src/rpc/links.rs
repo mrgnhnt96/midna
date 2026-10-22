@@ -59,10 +59,7 @@ pub fn patterns_list(d: &Daemon) -> R {
 
 /// Replace an app's link patterns wholesale; an empty list removes them.
 pub fn patterns_register(d: &Daemon, ctx: &Ctx, p: LinkPatternsRegisterParams) -> R {
-    let owner = p.owner.trim().to_string();
-    if owner.is_empty() || owner.chars().count() > 64 || owner.chars().any(char::is_control) {
-        return Err(RpcError::bad_params("owner must be 1–64 characters, the app's name (e.g. \"Taskboard\")"));
-    }
+    let owner = owner_name(&p.owner)?;
     if p.patterns.len() > MAX_APP_PATTERNS {
         return Err(RpcError::bad_params(format!("at most {MAX_APP_PATTERNS} patterns per app")));
     }
@@ -189,4 +186,118 @@ mod tests {
         assert_eq!(local_port("http://localhost:99999"), None);
         assert_eq!(local_port("localhost:3000"), None);
     }
+}
+
+fn owner_name(owner: &str) -> Result<String, RpcError> {
+    let owner = owner.trim().to_string();
+    if owner.is_empty() || owner.chars().count() > 64 || owner.chars().any(char::is_control) {
+        return Err(RpcError::bad_params("owner must be 1–64 characters, the app's name (e.g. \"Taskboard\")"));
+    }
+    Ok(owner)
+}
+
+/// What the human approves of an app's link menus: its name and the commands they run. None
+/// when they run none, so there's nothing to approve.
+pub fn fingerprint(owner: &str, menus: &[AppLinkMenu]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let commands = midna_proto::link_actions::commands(menus);
+    if commands.is_empty() {
+        return None;
+    }
+    let text = format!("{owner}\n{}", commands.join("\n"));
+    Some(crate::webhooks::sig::hex_encode(&Sha256::digest(text.as_bytes())))
+}
+
+fn app_actions(state: &crate::state::State, owner: &str, a: &crate::state::AppActions) -> AppLinkActions {
+    let fp = fingerprint(owner, &a.menus);
+    let approved = fp.is_none() || a.approved == fp;
+    let open = |id: &Id| state.needs_you.iter().any(|n| n.id == *id);
+    let approval = a.asked.as_ref().filter(|(f, id)| !approved && Some(f) == fp.as_ref() && open(id)).map(|(_, id)| id.clone());
+    AppLinkActions { owner: owner.to_string(), menus: a.menus.clone(), approved, approval }
+}
+
+pub fn actions_list(d: &Daemon) -> R {
+    let core = d.core();
+    let apps = core.state.app_link_actions.iter().map(|(owner, a)| app_actions(&core.state, owner, a)).collect();
+    ok(LinkActionsList { apps })
+}
+
+/// Replace an app's link menus wholesale; an empty list removes them and forgets the approval.
+/// Commands not yet approved ask the human once per set: the same commands again keep the
+/// approval (or the open ask), changed ones take back the old ask and raise a new one.
+pub fn actions_register(d: &Daemon, ctx: &Ctx, p: LinkActionsRegisterParams) -> R {
+    let owner = owner_name(&p.owner)?;
+    midna_proto::link_actions::validate(&p.menus).map_err(RpcError::bad_params)?;
+    let fp = fingerprint(&owner, &p.menus);
+    let (stale, ask) = {
+        let mut core = d.core();
+        let apps = &mut core.state.app_link_actions;
+        if p.menus.is_empty() {
+            (apps.remove(&owner).and_then(|a| a.asked).map(|(_, id)| id), false)
+        } else {
+            if !apps.contains_key(&owner) && apps.len() >= MAX_OWNERS {
+                return Err(RpcError::bad_params(format!("at most {MAX_OWNERS} apps can register link menus")));
+            }
+            let a = apps.entry(owner.clone()).or_default();
+            a.menus = p.menus.clone();
+            let asked_now = a.asked.as_ref().is_some_and(|(f, _)| Some(f) == fp.as_ref());
+            let stale = if asked_now { None } else { a.asked.take().map(|(_, id)| id) };
+            (stale, fp.is_some() && a.approved != fp && !asked_now)
+        }
+    };
+    if let Some(id) = stale {
+        let why = if p.menus.is_empty() { "the app removed its link menus" } else { "the app changed its link menus' commands" };
+        d.withdraw_needs_you(&id, why);
+    }
+    if let (true, Some(fp)) = (ask, &fp) {
+        let id = ask_approval(d, ctx, &owner, &p.menus, fp);
+        if let Some(a) = d.core().state.app_link_actions.get_mut(&owner) {
+            a.asked = Some((fp.clone(), id));
+        }
+    }
+    d.mark_dirty();
+    let view = {
+        let core = d.core();
+        core.state.app_link_actions.get(&owner).map(|a| app_actions(&core.state, &owner, a))
+    };
+    let view = view.unwrap_or(AppLinkActions { owner: owner.clone(), menus: vec![], approved: true, approval: None });
+    d.emit(kinds::LINK_ACTIONS_CHANGED, ctx.actor(), None, None, json!({ "owner": owner, "count": view.menus.len(), "approved": view.approved }));
+    ok(view)
+}
+
+/// The needs-you that asks the human to approve an app's link menu commands; approving it runs
+/// `links.actions.approve` for exactly these.
+fn ask_approval(d: &Daemon, ctx: &Ctx, owner: &str, menus: &[AppLinkMenu], fp: &str) -> Id {
+    let mut item = d.new_needs_you(NeedsYouKind::Approval, format!("{owner} wants to add commands to the link menu"), ctx.actor(), ctx.session.clone());
+    let commands: Vec<String> = midna_proto::link_actions::commands(menus).iter().map(|c| format!("  {c}")).collect();
+    item.detail = format!(
+        "Approving lets {owner}'s link menu items run these, with the clicked link's text in place of $1 and the like:\n{}\n\
+         Until then they stay hidden; its open and copy items work already. It asks again whenever these change.",
+        commands.join("\n")
+    );
+    let cli = format!("links.actions.approve {owner}");
+    item.approval = Some(ApprovalRequest {
+        action: PolicyAction { kind: ActionKind::Cli, value: cli, session: ctx.session.clone(), project: item.project_id.clone() },
+        matched_rule: None,
+        target_session: None,
+    });
+    let params = json!({ "owner": owner, "fingerprint": fp });
+    d.core().state.deferred.insert(item.id.clone(), crate::state::Deferred { method: "links.actions.approve".into(), params, guard: Some(fp.to_string()) });
+    d.raise_needs_you(item).id
+}
+
+pub fn actions_approve(d: &Daemon, ctx: &Ctx, p: LinkActionsApproveParams) -> R {
+    let view = {
+        let mut core = d.core();
+        let a = core.state.app_link_actions.get_mut(&p.owner).ok_or_else(|| RpcError::not_found(format!("{} has no link menus", p.owner)))?;
+        if fingerprint(&p.owner, &a.menus).as_deref() != Some(p.fingerprint.as_str()) {
+            return Err(RpcError::conflict(format!("{}'s link menu commands changed since this was asked; it asks again", p.owner)));
+        }
+        a.approved = Some(p.fingerprint.clone());
+        let a = a.clone();
+        app_actions(&core.state, &p.owner, &a)
+    };
+    d.mark_dirty();
+    d.emit(kinds::LINK_ACTIONS_CHANGED, ctx.actor(), None, None, json!({ "owner": p.owner, "count": view.menus.len(), "approved": true }));
+    ok(view)
 }

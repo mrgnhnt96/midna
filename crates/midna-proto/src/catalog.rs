@@ -261,6 +261,27 @@ fn build() -> Vec<MethodSpec> {
              that owner registered before, survive a daemon restart, apply alongside the user's terminal.link_patterns, and \
              show read-only in Settings ▸ Terminal ▸ Links and paths as provided by the owner. An app registers them each \
              time it starts; `patterns: []` removes them. A bad rule refuses the whole call."),
+        m::<NoParams, LinkActionsList>("links.actions.list").d(
+            "The link menus apps registered (links.actions.register), by owner, with whether the human approved their \
+             commands (`approved`) and the needs-you that asks them (`approval`)."),
+        m::<LinkActionsRegisterParams, AppLinkActions>("links.actions.register").mutating().d(
+            "Register an app's own actions for the link menu (the menu a click on a link opens). Each menu's `links` is a \
+             regex over the link's URL, or over the text a link pattern matched; its captures ($0, $1, ${name}) fill the \
+             items. `own: true` makes it the whole menu for those links (icon: a built-in name such as checklist, tag, bug, \
+             or an absolute .svg/.png path; title; subtitle; items), with midna's Open, Copy link and Add to links kept; \
+             `section: \"<label>\"` adds the items to midna's own menu under that label. An item is {label, keys?, detail?} \
+             with exactly one of `open` (a URL), `copy` (text), `run` (argv, no shell), `terminal` (argv run in a new \
+             terminal in the link's project) or `prompt` (text for a new agent terminal), or {divider: true}; `style: \
+             danger` shows it red, `confirm` asks first. A command's program can't come from a capture. run, terminal and \
+             prompt items stay hidden until the human approves them (a needs-you raised here, again whenever they \
+             change); open and copy items work at once. A preview command (links.patterns.register) may return \
+             `actions` for one link, in the same form, to replace an own menu's items. The menus replace whatever that \
+             owner registered before and survive a daemon restart; `menus: []` removes them and forgets the approval. \
+             A bad menu refuses the whole call."),
+        m::<LinkActionsApproveParams, AppLinkActions>("links.actions.approve").mutating().human().d(
+            "Approve the commands an app's link menus run (links.actions.register), as they are now: `fingerprint` is \
+             the one its approval needs-you carries, so a change since then refuses. The human answers this from that \
+             needs-you."),
         m::<QueueListParams, QueueListResult>("queue.list").d(
             "A terminal's queued messages, in the order midnad will type them, and whether the queue is paused. The first \
              waiting one says what it is waiting for (`waiting_for`). Defaults to your own terminal."),

@@ -13,6 +13,8 @@ const VALUE_FLAGS: &[&str] = &[
     "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "permission-mode", "allow-tool",
     // notify send
     "open", "wait", "on",
+    // links actions register
+    "owner", "file",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).
@@ -183,6 +185,8 @@ mod tests {
         assert_eq!(a.get("scope"), Some("always"));
         assert_eq!(a.rest, ["x", "--y"]);
         assert!(Args::parse(["--lines".to_string()]).is_err());
+        let a = Args::parse(["links", "actions", "register", "--owner", "tb", "--file", "m.json"].map(String::from)).unwrap();
+        assert_eq!((a.get("owner"), a.get("file"), a.pos.len()), (Some("tb"), Some("m.json"), 3));
     }
 
     #[test]

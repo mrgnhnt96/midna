@@ -65,6 +65,9 @@ pub enum Icon {
     Server,
     Tag,
     Issue,
+    /// Icons an app's link menu names (`links.actions.register`): a task, a bug.
+    Checklist,
+    Bug,
     PushPin,
     PushPinFill,
     /// Settings ▸ Shortcuts: record keys to search by.
@@ -152,6 +155,8 @@ impl Icon {
             Icon::Server => "icons/server.svg",
             Icon::Tag => "icons/tag.svg",
             Icon::Issue => "icons/issue.svg",
+            Icon::Checklist => "icons/checklist.svg",
+            Icon::Bug => "icons/bug.svg",
             Icon::PushPin => "icons/pushpin.svg",
             Icon::PushPinFill => "icons/pushpin-fill.svg",
             Icon::Keyboard => "icons/keyboard.svg",
@@ -216,6 +221,12 @@ impl Icon {
             "keyboard" => Icon::Keyboard,
             "queue" => Icon::Queue,
             "orbit" | "subagent" | "subagents" => Icon::Orbit,
+            "checklist" | "task" => Icon::Checklist,
+            "bug" => Icon::Bug,
+            "tag" => Icon::Tag,
+            "issue" => Icon::Issue,
+            "folder" => Icon::Folder,
+            "server" => Icon::Server,
             _ => return None,
         })
     }
@@ -379,6 +390,12 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/server.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2.5h12v8.5H2zM5.5 14h5M8 11v3"/></svg>"##
+        }
+        "icons/checklist.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5h11v11h-11zM5 6l1.5 1.5L9 5M5 10.5h6"/></svg>"##
+        }
+        "icons/bug.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5a3 3 0 0 1 6 0M4.5 6.5h7v3a3.5 3.5 0 0 1-7 0zM8 6.5V13M2 8.5h2.5M11.5 8.5H14M2.5 5l2 1.5M13.5 5l-2 1.5M2.5 13l2-1.8M13.5 13l-2-1.8"/></svg>"##
         }
         "icons/tag.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.5 8.5 2H14v5.5L7.5 14zM11 5h.01"/></svg>"##

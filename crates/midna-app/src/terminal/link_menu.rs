@@ -20,6 +20,8 @@ use crate::ide::{self, Ide};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use midna_proto::link_actions;
+use midna_proto::{AppLinkActions, AppLinkMenu, LinkItemStyle, LinkMenuItem};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -78,24 +80,31 @@ pub(super) enum Act {
     WhyFailed,
     Rerun,
     WatchRun,
+    /// An item an app added (`links.actions.register`, or its preview's `actions`), filled in.
+    App(Box<LinkMenuItem>),
+    /// A confirm's "no": back to the menu.
+    Cancel,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Item {
     pub(super) act: Act,
     pub(super) label: String,
-    pub(super) keys: &'static str,
+    pub(super) keys: String,
     /// Shown dim in the keys' place: a pull request's branch.
     pub(super) detail: String,
+    /// Drawn in the error color (an app's `style: "danger"`).
+    pub(super) danger: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Entry {
     Item(Item),
     Sep,
-    /// A labelled group (an app's own actions, or GitHub's), which later menus add.
-    #[allow(dead_code)]
+    /// A labelled group: the actions an app adds to midna's menu.
     Section(String),
+    /// A line of text: what a confirm asks.
+    Note(String),
 }
 
 /// What the header's icon is tinted by.
@@ -116,6 +125,8 @@ pub(super) struct Head {
     pub(super) tint: Tint,
     pub(super) title: String,
     pub(super) sub: String,
+    /// An app's own icon file, drawn instead of `icon`.
+    pub(super) image: Option<PathBuf>,
 }
 
 /// The menu's state on its terminal: the open menu, the click it belongs to, and the hover
@@ -143,6 +154,9 @@ pub(super) struct LinkMenu {
     /// Index into the items (not the entries).
     sel: usize,
     body: Option<Body>,
+    apps: Apps,
+    /// The entries a confirm replaced, put back when it's cancelled.
+    asking: Option<Vec<Entry>>,
     _load: Option<Task<()>>,
 }
 
@@ -155,8 +169,146 @@ impl LinkMenu {
     }
 
     fn head(&self) -> Head {
-        head(&self.kind, &self.target, self.project.as_deref(), self.body.as_ref())
+        let base = head(&self.kind, &self.target, self.project.as_deref(), self.body.as_ref());
+        match &self.apps.own {
+            Some((_, own)) => own_head(own, base, self.body.as_ref()),
+            None => base,
+        }
     }
+
+    /// Build the entries again from what the menu knows now.
+    fn rebuild(&mut self) {
+        let list = entries(&self.kind, self.ide.as_ref().map(|i| i.name.as_str()), self.agent, self.body.as_ref());
+        self.entries = with_apps(list, &self.apps, self.body.as_ref());
+        self.sel = self.sel.min(self.items().count().saturating_sub(1));
+    }
+}
+
+/// The menus apps registered that match a link (`links.actions.list`, filled from its captures).
+#[derive(Default)]
+pub(super) struct Apps {
+    pub(super) list: Vec<AppLinkActions>,
+    pub(super) own: Option<(String, AppLinkMenu)>,
+    pub(super) sections: Vec<(String, AppLinkMenu)>,
+}
+
+impl Apps {
+    /// The menus matching a link: its URL, or the text a link pattern matched.
+    pub(super) fn new(list: Vec<AppLinkActions>, kind: &Kind, target: &str) -> Apps {
+        let text = match kind {
+            Kind::Pattern { text, .. } => Some(text.as_str()),
+            _ => None,
+        };
+        let m = link_actions::menus_for(&list, target, text);
+        Apps { list, own: m.own, sections: m.sections }
+    }
+
+    fn app(&self, owner: &str) -> Option<&AppLinkActions> {
+        self.list.iter().find(|a| a.owner == owner)
+    }
+
+    /// An app's items as menu entries: dividers become lines, and the commands the human hasn't
+    /// approved yet are left out.
+    fn items(&self, owner: &str, items: &[LinkMenuItem]) -> Vec<Entry> {
+        let approved = self.app(owner).is_some_and(|a| a.approved);
+        items
+            .iter()
+            .filter(|i| approved || !link_actions::needs_approval(i))
+            .map(|i| match i.divider {
+                true => Entry::Sep,
+                false => Entry::Item(Item {
+                    act: Act::App(Box::new(i.clone())),
+                    label: i.label.clone(),
+                    keys: i.keys.clone().unwrap_or_default(),
+                    detail: i.detail.clone().unwrap_or_default(),
+                    danger: i.style == Some(LinkItemStyle::Danger),
+                }),
+            })
+            .collect()
+    }
+}
+
+/// midna's entries with the apps' added: an own menu keeps midna's open and copy items (not Copy
+/// as Markdown), then the app's items (or its preview's `actions` for this link, where the app
+/// may run them), then Add to links; a section goes after midna's actions, before Add to links.
+pub(super) fn with_apps(list: Vec<Entry>, apps: &Apps, body: Option<&Body>) -> Vec<Entry> {
+    let add = list.iter().rposition(|e| matches!(e, Entry::Item(i) if i.act == Act::AddLink));
+    let (mut out, tail) = match add {
+        Some(at) => (list[..at].to_vec(), list[at..].to_vec()),
+        None => (list.clone(), vec![]),
+    };
+    if let Some((owner, own)) = &apps.own {
+        let top = out.iter().position(|e| *e == Entry::Sep).unwrap_or(out.len());
+        out.truncate(top);
+        out.retain(|e| !matches!(e, Entry::Item(i) if i.act == Act::CopyMarkdown));
+        out.push(Entry::Sep);
+        let preview = match body {
+            Some(Body::App(p)) if !p.actions.is_empty() => Some(&p.actions),
+            _ => None,
+        };
+        match (preview, apps.app(owner)) {
+            (Some(actions), Some(app)) => {
+                let allowed: Vec<LinkMenuItem> = actions.iter().filter(|i| link_actions::preview_item_allowed(app, i)).cloned().collect();
+                out.extend(apps.items(owner, &allowed));
+            }
+            _ => out.extend(apps.items(owner, &own.items)),
+        }
+        out.push(Entry::Sep);
+    } else {
+        for (owner, m) in &apps.sections {
+            let items = apps.items(owner, &m.items);
+            if items.iter().any(|e| matches!(e, Entry::Item(_))) {
+                out.push(Entry::Section(m.section.clone().unwrap_or_else(|| owner.clone())));
+                out.extend(items);
+            }
+        }
+        if !apps.sections.is_empty() && !tail.is_empty() && out.last() != Some(&Entry::Sep) {
+            out.push(Entry::Sep);
+        }
+    }
+    out.extend(tail);
+    tidy(out)
+}
+
+/// No line first, last, twice in a row, or right before a section (which draws its own).
+fn tidy(list: Vec<Entry>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = vec![];
+    for e in list {
+        if e == Entry::Sep && matches!(out.last(), None | Some(Entry::Sep) | Some(Entry::Section(_))) {
+            continue;
+        }
+        if matches!(e, Entry::Section(_)) && out.last() == Some(&Entry::Sep) {
+            out.pop();
+        }
+        out.push(e);
+    }
+    if out.last() == Some(&Entry::Sep) {
+        out.pop();
+    }
+    out
+}
+
+/// An own menu's header: the app's icon and text, with what its preview loaded (title, status)
+/// over what it registered.
+pub(super) fn own_head(own: &AppLinkMenu, base: Head, body: Option<&Body>) -> Head {
+    let preview = match body {
+        Some(Body::App(p)) => Some(p),
+        _ => None,
+    };
+    let (icon, image) = match own.icon.as_deref() {
+        Some(path) if path.starts_with('/') => (base.icon, Path::new(path).is_file().then(|| PathBuf::from(path))),
+        Some(name) => (Icon::from_name(name).unwrap_or(base.icon), None),
+        None => (base.icon, None),
+    };
+    let title = match (preview, &own.title) {
+        (Some(_), _) | (None, None) => base.title,
+        (None, Some(t)) => t.clone(),
+    };
+    let sub = match (preview, &own.subtitle) {
+        (Some(_), _) | (None, None) => base.sub,
+        (None, Some(s)) => s.clone(),
+    };
+    Head { icon, tint: base.tint, title, sub, image }
 }
 
 /// What a `session.link_at` hit is. `text` is the link as drawn on screen; `is_dir` whether a
@@ -197,7 +349,7 @@ pub(super) fn kind_of(v: &Value, text: &str, is_dir: bool) -> Option<Kind> {
 /// terminal runs an agent, whose prompt a path can be mentioned in; `body`: what the preview
 /// loaded (a pull request's branch, whether a run failed), when it has.
 pub(super) fn entries(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<&Body>) -> Vec<Entry> {
-    let item = |act: Act, label: &str, keys: &'static str| Entry::Item(Item { act, label: label.to_string(), keys, detail: String::new() });
+    let item = |act: Act, label: &str, keys: &str| Entry::Item(Item { act, label: label.to_string(), keys: keys.to_string(), detail: String::new(), danger: false });
     let open_in = format!("Open in {}", ide.unwrap_or("editor"));
     match kind {
         Kind::Pr(_) => {
@@ -209,7 +361,7 @@ pub(super) fn entries(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<
                 item(Act::Browse, "Open in browser", "↩"),
                 item(Act::CopyLink, "Copy link", "⌘C"),
                 item(Act::CopyMarkdown, "Copy as Markdown", "⇧⌘C"),
-                Entry::Item(Item { act: Act::CopyBranch, label: "Copy branch name".into(), keys: "", detail: branch }),
+                Entry::Item(Item { act: Act::CopyBranch, label: "Copy branch name".into(), keys: String::new(), detail: branch, danger: false }),
                 Entry::Sep,
                 item(Act::Checkout, "Check out in a new terminal", ""),
                 item(Act::Review, "Ask an agent to review", ""),
@@ -290,7 +442,7 @@ pub(super) fn entries(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<
 
 /// The header for a link, from what the preview loaded (`body`) when it has.
 pub(super) fn head(kind: &Kind, target: &str, project: Option<&str>, body: Option<&Body>) -> Head {
-    let h = |icon, tint, title: String, sub: String| Head { icon, tint, title, sub };
+    let h = |icon, tint, title: String, sub: String| Head { icon, tint, title, sub, image: None };
     match kind {
         Kind::Session => h(Icon::Shell, Tint::Accent, target.to_string(), "Another terminal".into()),
         Kind::File { line } => {
@@ -520,6 +672,22 @@ pub(super) fn relative(path: &str, base: Option<&str>) -> String {
     }
 }
 
+/// A shortcut as menus show it (`⌘C`, `⇧⌘C`, `⌥⌘D`), for keys with ⌘, ⌃ or ⌥ held.
+pub(super) fn key_glyphs(ks: &Keystroke) -> Option<String> {
+    let m = &ks.modifiers;
+    if !(m.platform || m.control || m.alt) || ks.key.chars().count() != 1 {
+        return None;
+    }
+    let mut out = String::new();
+    for (on, glyph) in [(m.control, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.platform, "⌘")] {
+        if on {
+            out.push_str(glyph);
+        }
+    }
+    out.push_str(&ks.key.to_uppercase());
+    Some(out)
+}
+
 fn debug() -> bool {
     crate::dev::var_os("MIDNA_DEBUG_TERM").is_some()
 }
@@ -553,21 +721,26 @@ impl TerminalView {
                     let is_dir = file && Path::new(&target).is_dir();
                     let cwd = file.then(|| backend.call("session.get", json!({ "id": id })).ok()).flatten();
                     let cwd = cwd.and_then(|s| s.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map(str::to_string));
-                    Some((v, is_dir, cwd))
+                    // Apps' menus match URLs and link patterns' text, never paths.
+                    let apps = match v.get("kind").and_then(Value::as_str) {
+                        Some("url") => backend.call("links.actions.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::LinkActionsList>(v).ok()),
+                        _ => None,
+                    };
+                    Some((v, is_dir, cwd, apps.map(|a| a.apps).unwrap_or_default()))
                 })
                 .await;
             let _ = this.update(cx, |t, cx| {
-                if let Some((v, is_dir, cwd)) = found
+                if let Some((v, is_dir, cwd, apps)) = found
                     && t.link_menu.click == click
                 {
-                    t.link_menu_show(cell, v, is_dir, cwd, cx);
+                    t.link_menu_show(cell, v, is_dir, cwd, apps, cx);
                 }
             });
         })
         .detach();
     }
 
-    fn link_menu_show(&mut self, cell: (i32, i32), v: Value, is_dir: bool, cwd: Option<String>, cx: &mut Context<Self>) {
+    fn link_menu_show(&mut self, cell: (i32, i32), v: Value, is_dir: bool, cwd: Option<String>, apps: Vec<AppLinkActions>, cx: &mut Context<Self>) {
         let Some(row) = self.grid.get(cell.1 as usize) else { return };
         let chars: Vec<char> = row.cells.iter().map(|c| c.ch).collect();
         let url = v.get("target").and_then(Value::as_str).filter(|_| v.get("kind").and_then(Value::as_str) == Some("url"));
@@ -583,7 +756,7 @@ impl TerminalView {
         let agent = self.is_agent();
         let link = Link::from_link_at(&v);
         let seed = self.link_menu.seed.take().filter(|(l, _)| Some(l) == link.as_ref()).map(|(_, b)| b);
-        let list = entries(&kind, ide.as_ref().map(|i| i.name.as_str()), agent, seed.as_ref());
+        let apps = Apps::new(apps, &kind, &target);
         let wants = matches!(kind, Kind::Url | Kind::Pr(_) | Kind::Issue(_) | Kind::Run(_) | Kind::Pattern { .. } | Kind::Folder);
         let server = matches!(kind, Kind::Server(_)).then(|| self.link_menu_served_by(target.clone(), cx));
         let load = server.or_else(|| link.filter(|_| seed.is_none() && wants).map(|l| {
@@ -591,9 +764,10 @@ impl TerminalView {
                 let body = cx.background_executor().spawn(async move { link_preview::load(&l) }).await;
                 let _ = this.update(cx, |t, cx| {
                     if let Some(m) = t.link_menu.menu.as_mut() {
-                        m.entries = entries(&m.kind, m.ide.as_ref().map(|i| i.name.as_str()), m.agent, Some(&body));
-                        m.sel = m.sel.min(m.items().count().saturating_sub(1));
                         m.body = Some(body);
+                        if m.asking.is_none() {
+                            m.rebuild();
+                        }
                         cx.notify();
                     }
                 });
@@ -603,7 +777,9 @@ impl TerminalView {
         self.clear_hover(cx);
         self.preview_close(cx);
         self.menu = None;
-        self.link_menu.menu = Some(LinkMenu { pos, v, kind, target, project, cwd, ide, agent, entries: list, sel: 0, body: seed, _load: load });
+        let mut m = LinkMenu { pos, v, kind, target, project, cwd, ide, agent, entries: vec![], sel: 0, body: seed, apps, asking: None, _load: load };
+        m.rebuild();
+        self.link_menu.menu = Some(m);
         cx.notify();
     }
 
@@ -620,18 +796,17 @@ impl TerminalView {
         let n = m.items().count();
         let mods = &ks.modifiers;
         let plain = !mods.platform && !mods.control && !mods.alt && !mods.shift;
-        let keys = match (mods.platform && !mods.control && !mods.alt, mods.shift, ks.key.as_str()) {
-            (true, false, "c") => Some("⌘C"),
-            (true, true, "c") => Some("⇧⌘C"),
-            (true, false, "l") => Some("⌘L"),
-            _ => None,
-        };
+        let keys = key_glyphs(ks);
         match ks.key.as_str() {
             "up" if plain => m.sel = (m.sel + n - 1) % n.max(1),
             "down" if plain => m.sel = (m.sel + 1) % n.max(1),
             "enter" if plain => {
                 let i = m.sel;
                 self.link_menu_run(i, window, cx);
+            }
+            "escape" if m.asking.is_some() => {
+                m.entries = m.asking.take().unwrap_or_default();
+                m.sel = 0;
             }
             "escape" => self.link_menu_close(cx),
             _ => match keys.and_then(|k| m.items().position(|i| i.keys == k)) {
@@ -665,8 +840,9 @@ impl TerminalView {
             let _ = this.update(cx, |t, cx| {
                 if let Some(m) = t.link_menu.menu.as_mut().filter(|m| matches!(m.kind, Kind::Server(None))) {
                     m.kind = Kind::Server(Some(served));
-                    m.entries = entries(&m.kind, None, m.agent, None);
-                    m.sel = m.sel.min(m.items().count().saturating_sub(1));
+                    if m.asking.is_none() {
+                        m.rebuild();
+                    }
                     cx.notify();
                 }
             });
@@ -674,8 +850,32 @@ impl TerminalView {
     }
 
     fn link_menu_run(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(m) = self.link_menu.menu.take() else { return };
+        let Some(mut m) = self.link_menu.menu.take() else { return };
         let Some(act) = m.items().nth(i).map(|it| it.act.clone()) else { return };
+        // An app's item that asks first: the menu turns into the question, on "Cancel".
+        if let Act::App(item) = &act
+            && let Some(question) = item.confirm.clone()
+        {
+            let yes = LinkMenuItem { confirm: None, ..(**item).clone() };
+            let danger = item.style == Some(LinkItemStyle::Danger);
+            let entries = vec![
+                Entry::Note(question),
+                Entry::Item(Item { act: Act::App(Box::new(yes)), label: item.label.clone(), keys: String::new(), detail: String::new(), danger }),
+                Entry::Item(Item { act: Act::Cancel, label: "Cancel".into(), keys: "esc".into(), detail: String::new(), danger: false }),
+            ];
+            m.asking = Some(std::mem::replace(&mut m.entries, entries));
+            m.sel = 1;
+            self.link_menu.menu = Some(m);
+            cx.notify();
+            return;
+        }
+        if act == Act::Cancel {
+            m.entries = m.asking.take().unwrap_or_default();
+            m.sel = 0;
+            self.link_menu.menu = Some(m);
+            cx.notify();
+            return;
+        }
         let target = m.target.clone();
         let line = match m.kind {
             Kind::File { line } => line,
@@ -730,6 +930,8 @@ impl TerminalView {
                 }
             },
             Act::Checkout | Act::Review | Act::WatchChecks | Act::StartAgent | Act::WhyFailed | Act::Rerun | Act::WatchRun => self.link_menu_open(&act, m, cx),
+            Act::App(item) => self.link_menu_app(*item, cx),
+            Act::Cancel => {}
             Act::OpenIde => match m.ide {
                 Some(ide) if !debug() => {
                     cx.background_executor()
@@ -781,6 +983,51 @@ impl TerminalView {
             .detach();
     }
 
+    /// Run an app's item: open a URL, copy text, run a command (no shell) in this terminal's
+    /// folder, or open a terminal or an agent in this terminal's project.
+    fn link_menu_app(&self, item: LinkMenuItem, cx: &mut Context<Self>) {
+        if let Some(text) = item.copy {
+            return self.link_menu_copy(text, cx);
+        }
+        if debug() {
+            eprintln!("midna-app debug-term: linkmenu app {}", serde_json::to_string(&item).unwrap_or_default());
+            return;
+        }
+        if let Some(url) = item.open {
+            return cx.open_url(&url);
+        }
+        let (backend, session) = (self.backend.clone(), self.session_id.clone());
+        cx.background_executor()
+            .spawn(async move {
+                let s = backend.call("session.get", json!({ "id": session })).unwrap_or(Value::Null);
+                if let Some(argv) = item.run {
+                    let mut cmd = std::process::Command::new(&argv[0]);
+                    cmd.args(&argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                    if let Some(cwd) = s.get("cwd").and_then(Value::as_str).filter(|c| Path::new(c).is_dir()) {
+                        cmd.current_dir(cwd);
+                    }
+                    if let Err(e) = cmd.status() {
+                        eprintln!("midna-app: link menu: couldn't run {}: {e}", argv[0]);
+                    }
+                    return;
+                }
+                let mut p = match (item.terminal, item.prompt) {
+                    (Some(argv), _) => json!({ "kind": "shell", "name": item.label, "command": argv }),
+                    (None, Some(prompt)) => json!({ "kind": "agent", "agent": "claude", "name": item.label, "prompt": prompt }),
+                    _ => return,
+                };
+                if let Some(v) = s.get("project_id").filter(|v| v.is_string()) {
+                    p["project_id"] = v.clone();
+                }
+                if let Ok(opened) = backend.call("session.open", p)
+                    && let Some(id) = opened.get("id").and_then(Value::as_str)
+                {
+                    let _ = backend.call("session.focus", json!({ "id": id }));
+                }
+            })
+            .detach();
+    }
+
     pub(super) fn render_link_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.link_menu.menu.as_ref()?;
         let head = m.head();
@@ -790,7 +1037,10 @@ impl TerminalView {
             .pt(px(8.))
             .px(px(10.))
             .pb(px(9.))
-            .child(div().mt(px(1.)).child(head.icon.el(15., tint_color(head.tint, theme))))
+            .child(div().mt(px(1.)).child(match head.image {
+                Some(p) => img(p).size(px(15.)).flex_none().into_any_element(),
+                None => head.icon.el(15., tint_color(head.tint, theme)).into_any_element(),
+            }))
             .child(
                 div()
                     .flex_1()
@@ -817,7 +1067,23 @@ impl TerminalView {
         for e in &m.entries {
             menu = match e {
                 Entry::Sep => menu.child(div().h(px(1.)).my(px(4.)).mx(px(6.)).bg(theme.line)),
-                Entry::Section(label) => menu.child(div().px(px(10.)).pt(px(4.)).pb(px(2.)).text_size(px(10.5)).text_color(theme.dim).child(label.clone())),
+                Entry::Section(label) => menu.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(16.))
+                        .mt(px(6.))
+                        .mx(px(6.))
+                        .mb(px(2.))
+                        .px(px(4.))
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.dim)
+                        .child(label.to_uppercase())
+                        .child(div().flex_1().h(px(1.)).bg(theme.line)),
+                ),
+                Entry::Note(text) => menu.child(div().px(px(10.)).pt(px(2.)).pb(px(6.)).text_size(px(12.5)).text_color(theme.fg).child(text.clone())),
                 Entry::Item(it) => {
                     let i = n;
                     n += 1;
@@ -833,8 +1099,12 @@ impl TerminalView {
                             .rounded(px(5.))
                             .text_size(px(12.5))
                             .cursor_pointer()
-                            .text_color(if on { theme.accent_fg } else { theme.fg })
-                            .when(on, |d| d.bg(theme.accent))
+                            .text_color(match (on, it.danger) {
+                                (true, _) => theme.accent_fg,
+                                (false, true) => theme.err,
+                                (false, false) => theme.fg,
+                            })
+                            .when(on, |d| d.bg(if it.danger { theme.err } else { theme.accent }))
                             .on_mouse_move(cx.listener(move |t, _, _, cx| {
                                 if let Some(m) = t.link_menu.menu.as_mut()
                                     && m.sel != i
@@ -850,7 +1120,7 @@ impl TerminalView {
                                     .text_color(if on { theme.accent_fg.opacity(0.75) } else { theme.dim })
                                     .text_size(px(11.5))
                                     .when(!it.detail.is_empty(), |d| d.max_w(px(130.)).overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font.clone()))
-                                    .child(if it.detail.is_empty() { SharedString::from(it.keys) } else { SharedString::from(it.detail.clone()) }),
+                                    .child(SharedString::from(if it.detail.is_empty() { it.keys.clone() } else { it.detail.clone() })),
                             ),
                     )
                 }
@@ -862,9 +1132,11 @@ impl TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Act, Body, Entry, Gh, Icon, Kind, Tint, config_remotes, entries, head, kind_of, open_params, relative, remote_repo};
+    use super::{Act, Apps, Body, Entry, Gh, Icon, Kind, Tint, config_remotes, entries, head, key_glyphs, kind_of, open_params, own_head, relative, remote_repo, with_apps};
     use super::State;
-    use super::link_preview::{parse_issue, parse_pr, parse_run};
+    use super::link_preview::{parse_app_preview, parse_issue, parse_pr, parse_run};
+    use gpui_kit::{Keystroke, Modifiers};
+    use midna_proto::AppLinkActions;
     use serde_json::json;
 
     fn vite() -> midna_proto::ServedBy {
@@ -876,14 +1148,20 @@ mod tests {
     }
 
     fn labels_with(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<&Body>) -> Vec<String> {
-        entries(kind, ide, agent, body)
-            .into_iter()
+        shown(entries(kind, ide, agent, body))
+    }
+
+    /// The entries as text: an item's label and keys (or detail), `!` before a danger one.
+    fn shown(list: Vec<Entry>) -> Vec<String> {
+        list.into_iter()
             .map(|e| match e {
+                Entry::Item(i) if i.danger => format!("!{}", i.label),
                 Entry::Item(i) if !i.detail.is_empty() => format!("{} {}", i.label, i.detail),
                 Entry::Item(i) if i.keys.is_empty() => i.label,
                 Entry::Item(i) => format!("{} {}", i.label, i.keys),
                 Entry::Sep => "--".into(),
                 Entry::Section(s) => format!("[{s}]"),
+                Entry::Note(s) => format!("? {s}"),
             })
             .collect()
     }
@@ -1082,6 +1360,94 @@ mod tests {
         assert_eq!(remote_repo("https://github.com/mrgnhnt"), None);
         let config = "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = git@github.com:mrgnhnt/work-deck.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
         assert_eq!(config_remotes(config), ["git@github.com:mrgnhnt/work-deck.git"]);
+    }
+
+    /// Taskboard's menus: an own menu for its task ids, a section on GitHub pull requests.
+    fn taskboard(approved: bool) -> Vec<AppLinkActions> {
+        let menus = json!([
+            { "links": "^T(\\d+)$", "own": true, "icon": "checklist", "title": "Task T$1", "subtitle": "Taskboard", "items": [
+                { "label": "Go to its terminal", "run": ["tb", "focus", "T$1"] },
+                { "label": "Open its PR", "open": "https://github.com/o/r/pull/$1", "detail": "#$1" },
+                { "divider": true },
+                { "label": "Mark done", "run": ["tb", "done", "T$1"] },
+                { "label": "Cancel task…", "run": ["tb", "cancel", "T$1"], "style": "danger", "confirm": "Cancel T$1?" },
+            ] },
+            { "links": "github\\.com/[^/]+/[^/]+/pull/(?<n>\\d+)", "section": "Taskboard", "items": [
+                { "label": "Open T42", "open": "taskboard://task/T42", "detail": "Deck export" },
+                { "label": "Add to board as a task", "prompt": "Add PR ${n} to the board" },
+            ] },
+        ]);
+        vec![AppLinkActions { owner: "taskboard".into(), menus: serde_json::from_value(menus).unwrap(), approved, approval: None }]
+    }
+
+    fn with(kind: &Kind, target: &str, approved: bool, body: Option<&Body>) -> Vec<String> {
+        let apps = Apps::new(taskboard(approved), kind, target);
+        shown(with_apps(entries(kind, None, false, body), &apps, body))
+    }
+
+    #[test]
+    fn app_menus() {
+        let t42 = Kind::Pattern { app: Some("Taskboard".into()), text: "T42".into() };
+        // An own menu keeps midna's open and copy items, then the app's, then Add to links.
+        assert_eq!(
+            with(&t42, "taskboard://task/T42", true, None),
+            ["Open in Taskboard ↩", "Copy link ⌘C", "Copy T42", "--", "Go to its terminal", "Open its PR #42", "--", "Mark done", "!Cancel task…", "--", "Add to links ⌘L"]
+        );
+        // Until the human approves its commands, only its open and copy items show.
+        assert_eq!(with(&t42, "taskboard://task/T42", false, None), ["Open in Taskboard ↩", "Copy link ⌘C", "Copy T42", "--", "Open its PR #42", "--", "Add to links ⌘L"]);
+        // A section goes after midna's actions, before Add to links, under its label.
+        let pr = with(&Kind::Pr(gh(42)), "https://github.com/mrgnhnt/work-deck/pull/42", true, None);
+        assert_eq!(pr[pr.len() - 5..], ["[Taskboard]", "Open T42 Deck export", "Add to board as a task", "--", "Add to links ⌘L"]);
+        assert_eq!(pr[pr.len() - 6], "Watch checks");
+        let unapproved = with(&Kind::Pr(gh(42)), "https://github.com/mrgnhnt/work-deck/pull/42", false, None);
+        assert_eq!(unapproved[unapproved.len() - 4..], ["[Taskboard]", "Open T42 Deck export", "--", "Add to links ⌘L"]);
+        // Links no app's menus match are left as they are.
+        assert_eq!(with(&Kind::Url, "https://example.com", true, None), labels(&Kind::Url, None, false));
+    }
+
+    #[test]
+    fn preview_actions_replace_an_own_menus_items() {
+        let t42 = Kind::Pattern { app: Some("Taskboard".into()), text: "T42".into() };
+        let out = br#"{"title": "Deck export to PDF", "subtitle": "Taskboard", "status": {"label": "In review", "tone": "warn"}, "actions": [
+            {"label": "Approve", "run": ["tb", "approve", "T42"]},
+            {"label": "Delete everything", "run": ["rm", "-rf", "/"]},
+            {"label": "Copy title", "copy": "Deck export to PDF"}
+        ]}"#;
+        let body = Body::App(parse_app_preview(out).unwrap());
+        // Only the programs its registered items run (tb), so not rm.
+        assert_eq!(with(&t42, "taskboard://task/T42", true, Some(&body)), ["Open in Taskboard ↩", "Copy link ⌘C", "Copy T42", "--", "Approve", "Copy title", "--", "Add to links ⌘L"]);
+        assert_eq!(with(&t42, "taskboard://task/T42", false, Some(&body)), ["Open in Taskboard ↩", "Copy link ⌘C", "Copy T42", "--", "Copy title", "--", "Add to links ⌘L"]);
+        // The header: the app's icon, the preview's title and status over what it registered.
+        let apps = Apps::new(taskboard(true), &t42, "taskboard://task/T42");
+        let own = &apps.own.as_ref().unwrap().1;
+        let h = own_head(own, head(&t42, "taskboard://task/T42", None, Some(&body)), Some(&body));
+        assert_eq!((h.icon, h.title.as_str(), h.sub.as_str()), (Icon::Checklist, "Deck export to PDF", "Taskboard · In review"));
+        let h = own_head(own, head(&t42, "taskboard://task/T42", None, None), None);
+        assert_eq!((h.icon, h.tint, h.title.as_str(), h.sub.as_str()), (Icon::Checklist, Tint::Accent, "Task T42", "Taskboard"));
+    }
+
+    #[test]
+    fn app_item_acts() {
+        let t42 = Kind::Pattern { app: None, text: "T42".into() };
+        let apps = Apps::new(taskboard(true), &t42, "taskboard://task/T42");
+        let list = with_apps(entries(&t42, None, false, None), &apps, None);
+        let cancel = list.iter().find_map(|e| match e {
+            Entry::Item(i) if i.label == "Cancel task…" => Some(i.clone()),
+            _ => None,
+        });
+        let Some(Act::App(item)) = cancel.map(|i| i.act) else { panic!("no cancel item") };
+        assert_eq!(item.run.as_deref(), Some(&["tb".to_string(), "cancel".into(), "T42".into()][..]));
+        assert_eq!(item.confirm.as_deref(), Some("Cancel T42?"));
+    }
+
+    #[test]
+    fn shortcuts() {
+        let ks = |key: &str, platform, shift, alt| Keystroke { key: key.into(), modifiers: Modifiers { platform, shift, alt, ..Default::default() }, ..Default::default() };
+        assert_eq!(key_glyphs(&ks("c", true, false, false)).as_deref(), Some("⌘C"));
+        assert_eq!(key_glyphs(&ks("c", true, true, false)).as_deref(), Some("⇧⌘C"));
+        assert_eq!(key_glyphs(&ks("d", true, false, true)).as_deref(), Some("⌥⌘D"));
+        assert_eq!(key_glyphs(&ks("d", false, false, false)), None);
+        assert_eq!(key_glyphs(&ks("enter", true, false, false)), None);
     }
 
     #[test]

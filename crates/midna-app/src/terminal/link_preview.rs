@@ -1291,8 +1291,10 @@ fn ttl(b: &Body) -> Duration {
 //
 //   {"title": "…", "subtitle": "…", "status": {"label": "Working", "tone": "ok|warn|err|busy|idle"},
 //    "fields": [["Goal", "G6"], …], "lines": ["…", …], "progress": {"done": 1, "total": 2},
-//    "open_label": "Open task"}
+//    "open_label": "Open task", "actions": [{"label": "Mark done", "run": ["tb", "done", "T42"]}, …]}
 //
+// `actions` replace the items of the link's own menu (`links.actions.register`), for this link
+// only; the link menu drops any it isn't allowed (`link_actions::preview_item_allowed`).
 // Only `title` is required. A non-zero exit, a timeout or bad JSON falls back to "Opens in <App>".
 
 const APP_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -1320,6 +1322,8 @@ pub(super) struct AppPreview {
     /// (done, total), total > 0.
     progress: Option<(u64, u64)>,
     open_label: Option<String>,
+    /// The valid ones of `actions`, at most `link_actions::MAX_ITEMS`.
+    pub(super) actions: Vec<midna_proto::LinkMenuItem>,
 }
 
 /// One line of text from the app, trimmed and cut to `max` characters (None when empty).
@@ -1329,7 +1333,7 @@ fn app_text(v: Option<&Value>, max: usize) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-fn parse_app_preview(out: &[u8]) -> Option<AppPreview> {
+pub(super) fn parse_app_preview(out: &[u8]) -> Option<AppPreview> {
     let v: Value = serde_json::from_slice(out).ok()?;
     let title = app_text(v.get("title"), 200)?;
     let status = v.get("status").and_then(|s| {
@@ -1349,7 +1353,13 @@ fn parse_app_preview(out: &[u8]) -> Option<AppPreview> {
         let (done, total) = (p.get("done")?.as_u64()?, p.get("total")?.as_u64()?);
         (total > 0).then_some((done.min(total), total))
     });
-    Some(AppPreview { title, subtitle: app_text(v.get("subtitle"), 300), status, fields, lines, progress, open_label: app_text(v.get("open_label"), 40) })
+    let actions = v.get("actions").and_then(Value::as_array).into_iter().flatten();
+    let actions = actions
+        .filter_map(|a| serde_json::from_value::<midna_proto::LinkMenuItem>(a.clone()).ok())
+        .filter(|i| midna_proto::link_actions::validate_item(i).is_ok())
+        .take(midna_proto::link_actions::MAX_ITEMS)
+        .collect();
+    Some(AppPreview { title, subtitle: app_text(v.get("subtitle"), 300), status, fields, lines, progress, open_label: app_text(v.get("open_label"), 40), actions })
 }
 
 /// `MidnaLinkPreview` (as `plutil` prints it in JSON) -> (path inside the bundle, args).
@@ -1976,6 +1986,7 @@ mod tests {
                 lines: vec!["one".into(), "two".into()],
                 progress: Some((2, 2)),
                 open_label: Some("Open task".into()),
+                actions: vec![],
             })
         );
         // Only the title is needed; an unknown tone is idle; an empty total is no progress.

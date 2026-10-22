@@ -232,7 +232,10 @@ pub static VERBS: &[Verb] = &[
                 links add <url|app-link|path> [--title T] [--why <note>] [--no-pin] [--session <id>]\n       \
                 links patterns [list]\n       \
                 links patterns set <owner> --rule '<regex> = <url template> [agents] [project:<name>] [preview:\"<cmd> $1\"]'…\n       \
-                links patterns clear <owner>",
+                links patterns clear <owner>\n       \
+                links actions [list]\n       \
+                links actions register --owner <app> --file <menus.json|->\n       \
+                links actions clear <owner>",
         summary: "the links, PRs, artifacts and files that came up in an agent terminal's conversation",
         details: "midna collects them from the agent's transcript as it works: URLs the human pasted or you wrote or\n\
                   fetched, PRs and artifacts your tools printed, files you created or edited. The human sees them\n\
@@ -247,8 +250,19 @@ pub static VERBS: &[Verb] = &[
                   format. `set` replaces that owner's patterns wholesale and they survive a restart; `clear` removes\n\
                   them. Settings shows them read-only under Links and paths. A rule ending in preview:\"<cmd> $1\" fills the\n\
                   hover card: the command prints JSON {\"title\": \"…\", \"lines\": [\"In Progress\", …]} and the card\n\
-                  shows it (5s limit, kept 15s; on failure the card shows the plain URL).",
-        methods: &["links.list", "links.pin", "links.remove", "links.add", "links.patterns.list", "links.patterns.register"],
+                  shows it (5s limit, kept 15s; on failure the card shows the plain URL).\n\
+                  `actions` is for apps too: one adds its own items to the menu a click on a link opens. The file\n\
+                  holds {\"menus\": [{\"links\": \"^myapp://task/(T\\\\d+)$\", \"own\": true, \"title\": \"$1\", \"items\": [\n\
+                  {\"label\": \"Go to its terminal\", \"run\": [\"myapp\", \"focus\", \"$1\"]}]}]}: `links` is a regex over the\n\
+                  link's URL (or a pattern's matched text) whose captures ($0 $1 ${name}) fill the fields; `own`\n\
+                  makes the app's menu the whole menu (midna keeps Open, Copy link and Add to links), `section`:\n\
+                  \"<label>\" adds a labelled group to midna's own menu instead. An item is {label, keys?, detail?,\n\
+                  style?: \"danger\", confirm?} with one of open (URL), copy (text), run (argv, no shell), terminal\n\
+                  (argv in a new terminal in the link's project) or prompt (text for a new agent terminal), or\n\
+                  {\"divider\": true}. Open and copy items work at once; run, terminal and prompt items stay hidden\n\
+                  until the human approves them, and again whenever those commands change. `register` replaces the\n\
+                  owner's menus; `clear` removes them and forgets the approval.",
+        methods: &["links.list", "links.pin", "links.remove", "links.add", "links.patterns.list", "links.patterns.register", "links.actions.list", "links.actions.register"],
     },
     Verb {
         name: "queue",
@@ -862,7 +876,7 @@ mod tests {
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
             "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report", "notify.respond",
-            "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by",
+            "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by", "links.actions.approve",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

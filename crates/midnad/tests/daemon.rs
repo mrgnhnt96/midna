@@ -1053,3 +1053,49 @@ fn apps_register_their_own_link_patterns() {
     call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [] }));
     assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"], json!([]));
 }
+
+#[test]
+fn app_link_menu_commands_wait_for_the_humans_approval() {
+    let mut d = TestDaemon::start();
+    let mut agent = d.agent(None);
+    let mut c = d.human();
+    let open_only = json!([{ "links": r"tracker://(ZQ\d+)", "own": true, "icon": "checklist", "items": [{ "label": "Copy $1", "copy": "$1" }] }]);
+    let run = |cmd: &str| json!([{ "links": r"tracker://(ZQ\d+)", "own": true, "items": [{ "label": "Close", "run": ["tr", cmd, "$1"], "style": "danger", "confirm": "Close $1?" }] }]);
+    let approvals = |c: &mut Client| call(c, "needs_you.list", json!({})).as_array().unwrap().iter().filter(|n| n["title"].as_str().is_some_and(|t| t.contains("link menu"))).cloned().collect::<Vec<_>>();
+    // A bad menu refuses the whole call; a program can't come from a capture.
+    let e = call_err(&mut agent, "links.actions.register", json!({ "owner": "Tracker", "menus": [{ "links": "x", "own": true, "items": [{ "label": "x", "run": ["$1"] }] }] }));
+    assert!(e.message.contains("can't come from a capture"), "{}", e.message);
+    // Open and copy items need nothing approved.
+    let r = call(&mut agent, "links.actions.register", json!({ "owner": "Tracker", "menus": open_only }));
+    assert_eq!((r["approved"].as_bool(), r.get("approval")), (Some(true), None), "{r}");
+    assert!(approvals(&mut c).is_empty());
+    // Commands ask the human once; the same commands again don't ask twice.
+    let r = call(&mut agent, "links.actions.register", json!({ "owner": "Tracker", "menus": run("close") }));
+    assert_eq!(r["approved"], false, "{r}");
+    let first = r["approval"].as_str().unwrap().to_string();
+    call(&mut agent, "links.actions.register", json!({ "owner": "Tracker", "menus": run("close") }));
+    let asks = approvals(&mut c);
+    assert_eq!(asks.len(), 1);
+    assert!(asks[0]["detail"].as_str().unwrap().contains("run tr close $1"), "{}", asks[0]);
+    // Changed commands take the old ask back and raise a new one.
+    let r = call(&mut agent, "links.actions.register", json!({ "owner": "Tracker", "menus": run("shut") }));
+    let ask = r["approval"].as_str().unwrap().to_string();
+    assert_ne!(ask, first);
+    assert_eq!(approvals(&mut c).len(), 1);
+    // Only the human can approve, and only from the needs-you.
+    assert_eq!(call_err(&mut agent, "needs_you.resolve", json!({ "id": ask, "resolution": { "kind": "approve", "scope": { "kind": "once" } } })).code, HUMAN_ONLY);
+    assert_eq!(call_err(&mut agent, "links.actions.approve", json!({ "owner": "Tracker", "fingerprint": "x" })).code, HUMAN_ONLY);
+    call(&mut c, "needs_you.resolve", json!({ "id": ask, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    let list = call(&mut c, "links.actions.list", json!({}));
+    assert_eq!((list["apps"][0]["owner"].as_str(), list["apps"][0]["approved"].as_bool()), (Some("Tracker"), Some(true)), "{list}");
+    // Approval survives a restart and a register of the same commands.
+    drop((c, agent));
+    d.restart();
+    let mut c = d.human();
+    assert_eq!(call(&mut c, "links.actions.register", json!({ "owner": "Tracker", "menus": run("shut") }))["approved"], true);
+    // Removing the menus forgets it.
+    assert_eq!(call(&mut c, "links.actions.register", json!({ "owner": "Tracker", "menus": [] }))["menus"], json!([]));
+    assert_eq!(call(&mut c, "links.actions.list", json!({}))["apps"], json!([]));
+    assert_eq!(call(&mut c, "links.actions.register", json!({ "owner": "Tracker", "menus": run("shut") }))["approved"], false);
+    assert_eq!(approvals(&mut c).len(), 1);
+}

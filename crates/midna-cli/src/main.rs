@@ -1427,6 +1427,68 @@ fn links(a: &Args, out: OutFn) -> Res {
             }
             other => return Err(Fail::Usage(format!("unknown `links patterns {other}`; see midna links --help"))),
         },
+        "actions" => match a.pos.get(2).map(String::as_str).unwrap_or("list") {
+            "list" | "ls" => {
+                a.check(&[])?;
+                let v = call("links.actions.list", json!({}))?;
+                out(&v, &|v| {
+                    let apps = v["apps"].as_array().cloned().unwrap_or_default();
+                    if apps.is_empty() {
+                        println!("no app has registered link menus");
+                    }
+                    for app in apps {
+                        let state = match (app["approved"] == true, app["approval"].as_str()) {
+                            (true, _) => String::new(),
+                            (false, Some(id)) => format!("  (commands wait for your approval: {id})"),
+                            (false, None) => "  (commands not approved; hidden)".into(),
+                        };
+                        println!("{}{state}", s_(&app, "owner"));
+                        for m in app["menus"].as_array().into_iter().flatten() {
+                            let kind = if m["own"] == true { "own".to_string() } else { format!("section {}", m["section"].as_str().unwrap_or("?")) };
+                            let n = m["items"].as_array().map_or(0, |i| i.iter().filter(|i| i["divider"] != true).count());
+                            println!("    {}  {kind}, {n} item{}", m["links"].as_str().unwrap_or(""), if n == 1 { "" } else { "s" });
+                        }
+                    }
+                });
+            }
+            verb @ ("register" | "clear") => {
+                a.check(&["owner", "file"])?;
+                let owner = match a.get("owner") {
+                    Some(o) => o.to_string(),
+                    None => a.need(3, "--owner (the app's name)")?.to_string(),
+                };
+                let menus = if verb == "clear" {
+                    Value::Array(vec![])
+                } else {
+                    let file = a.get("file").ok_or_else(|| Fail::Usage("links actions register needs --file menus.json (`{\"menus\":[…]}` or a bare array; `-` reads stdin); `clear` removes them".into()))?;
+                    let text = if file == "-" {
+                        let mut s = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| Fail::Usage(format!("reading stdin: {e}")))?;
+                        s
+                    } else {
+                        std::fs::read_to_string(file).map_err(|e| Fail::Usage(format!("reading {file}: {e}")))?
+                    };
+                    let v: Value = serde_json::from_str(&text).map_err(|e| Fail::Usage(format!("{file} isn't JSON: {e}")))?;
+                    match v {
+                        Value::Object(mut o) if o.contains_key("menus") => o.remove("menus").unwrap_or_default(),
+                        v @ Value::Array(_) => v,
+                        _ => return Err(Fail::Usage(format!("{file} should hold {{\"menus\":[…]}} or an array of menus"))),
+                    }
+                };
+                let v = call("links.actions.register", json!({ "owner": owner, "menus": menus }))?;
+                out(&v, &|v| match v["menus"].as_array().map_or(0, Vec::len) {
+                    0 => println!("cleared {}'s link menus", s_(v, "owner")),
+                    n => {
+                        let wait = match v["approval"].as_str() {
+                            Some(id) if v["approved"] != true => format!("; its commands wait for your approval ({id})"),
+                            _ => String::new(),
+                        };
+                        println!("{} now has {n} link menu{}{wait}", s_(v, "owner"), if n == 1 { "" } else { "s" });
+                    }
+                });
+            }
+            other => return Err(Fail::Usage(format!("unknown `links actions {other}`; see midna links --help"))),
+        },
         other => return Err(Fail::Usage(format!("unknown `links {other}`; see midna links --help"))),
     }
     Ok(())
