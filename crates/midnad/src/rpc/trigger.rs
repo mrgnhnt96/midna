@@ -67,9 +67,12 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
         (None, false) => {}
     }
     match action {
-        TriggerAction::StartAgent { project_id, agent, prompt_template, permission_mode, allowed_tools } => {
+        TriggerAction::StartAgent { project_id, agent, prompt_template, permission_mode, allowed_tools, session } => {
             if prompt_template.trim().is_empty() {
                 return Err(RpcError::bad_params("start_agent needs a prompt_template"));
+            }
+            if session.is_some() && !schedule {
+                return Err(RpcError::bad_params("start_agent: session is for local triggers with event schedule"));
             }
             if *agent != AgentKind::Claude && (permission_mode.is_some() || !allowed_tools.is_empty()) {
                 return Err(RpcError::bad_params("start_agent: permission_mode and allowed_tools are for Claude"));

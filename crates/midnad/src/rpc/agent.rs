@@ -35,6 +35,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         crate::local::hook(d, &sid, p.agent, ev, payload);
     }
     crate::guard::after_tool(d, &sid, ev, payload);
+    if ev == "PreToolUse" {
+        crate::crons::on_pre_tool(d, &sid, p.agent, payload);
+    }
     match ev {
         "statusline" => {
             record_cost(d, &sid, &project, &actor, payload);

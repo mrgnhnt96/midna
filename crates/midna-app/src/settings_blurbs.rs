@@ -54,6 +54,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         // Agents
         "agents.mcp" => "Agents midna starts can drive midna as tools.",
         "agents.claude.statusline" => "Reports each Claude session's real cost to Insights.",
+        "agents.claude.crons_to_midna" => "They outlive the session; a new agent picks them up once it's gone.",
         "agents.system_hint" => "Two lines of system prompt for the agents midna starts.",
         "agents.restart_on_update" => "Restart the terminal into the same conversation.",
         "agents.restart_idle_secs" => "How long an agent must be quiet before it restarts.",

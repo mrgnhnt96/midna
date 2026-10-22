@@ -133,6 +133,8 @@ pub struct AgentRt {
     /// The agent process sent a hook since it started. Until then it may still be showing its
     /// folder-trust dialog, which comes before any hook (see `trust::tick`).
     pub hooked: bool,
+    /// Cron calls between their `agent.hook` and `policy.request` (`crons.rs`).
+    pub crons: Vec<crate::crons::Parked>,
 }
 
 /// What a caller blocked on an approval (`waiters`) is woken with.

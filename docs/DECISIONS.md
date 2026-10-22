@@ -1285,3 +1285,13 @@ The user asked for this because a terminal they were reading would close under t
 - **When the close happens.** Before closing, midnad checks the terminal again. It doesn't close one that's gone, one whose process came back after `close_on_exit`, or one that is working or needs you again after an unforced close.
 - **Dev**: `MIDNA_DEBUG_SCREEN=close-hold|close-hold-wait`.
 - **Not done**: the 5 s isn't a setting, and the card has no keyboard shortcut.
+
+## Claude's crons become midna schedules (`midnad/src/crons.rs`, setting `agents.claude.crons_to_midna`; 2026-10-22)
+
+Why: a cron Claude makes (`CronCreate`, e.g. `/loop 5m …`) lives in its process. It's gone when the session ends, and a recurring one expires after 7 days. The human wanted it to live in midna instead, where it outlives the session and midna can open an agent for it.
+
+- **How.** midna's PreToolUse hook reaches midnad twice: `agent.hook` with the tool's input, then `policy.request` with only `CronCreate`. The first parks the input on the terminal's `AgentRt.crons`. The second adds a local `schedule` trigger and denies Claude's own cron (source `guard`), telling Claude the trigger's id and not to schedule it some other way. A rule denying `CronCreate` still wins, and then nothing is made. If the trigger can't be made (a cron midna can't read), the call is left to Claude. `recurring: false` becomes `max_runs: 1`.
+- **What fires.** A `start_agent` with the new `session` field, which only local schedules may set. While that terminal runs, the prompt is queued into it, typed once the agent is ready, and never queued twice. Once the terminal is gone, the next firing starts a new Claude agent in the terminal's project, named after the terminal, and `session` is set to that agent's terminal. Picked by the human over "always a new agent" and "only the same terminal".
+- **CronDelete** of that trigger's id, from the terminal it follows, removes the trigger (no human needed, since it's that terminal's own cron) and is denied the same way. Any other `CronDelete` stays Claude's. `CronList` doesn't show midna's.
+- **Setting.** `agents.claude.crons_to_midna`, on by default, not human only. Off: Claude keeps its crons, and the Crons tab shows them as before.
+- **Not done:** the trigger editor has no control for `session` (`--action-json` sets it). An agent started for a gone terminal starts fresh rather than resuming its conversation.
