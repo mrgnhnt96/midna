@@ -124,6 +124,41 @@ impl Draft {
     }
 }
 
+/// A note or image the sheet removed, kept so ⌘Z can put it back.
+#[derive(Clone)]
+pub enum Removed {
+    /// A note, and the image it was on (by path, so removing other images doesn't lose it).
+    Note { session: String, shot: PathBuf, at: usize, note: Note },
+    Image { session: String, at: usize, shot: Shot },
+}
+
+impl Removed {
+    fn session(&self) -> &str {
+        match self {
+            Removed::Note { session, .. } | Removed::Image { session, .. } => session,
+        }
+    }
+
+    /// Put it back where it was (or at the end, if that's gone). Returns the image to show
+    /// and the note to select, or None when its image is gone too.
+    pub fn restore(self, d: &mut Draft) -> Option<(usize, Option<usize>)> {
+        match self {
+            Removed::Note { shot, at, note, .. } => {
+                let cur = d.shots.iter().position(|s| s.path == shot)?;
+                let notes = &mut d.shots[cur].notes;
+                let at = at.min(notes.len());
+                notes.insert(at, note);
+                Some((cur, Some(at)))
+            }
+            Removed::Image { at, shot, .. } => {
+                let at = at.min(d.shots.len());
+                d.shots.insert(at, shot);
+                Some((at, None))
+            }
+        }
+    }
+}
+
 /// The notes as they are sent. Notes without text are left out; no written notes, no text.
 /// One image uses Saggar's wording; several are numbered in the order their paths are pasted.
 pub fn notes_text(shots: &[(&str, &[Note])]) -> String {
@@ -249,7 +284,12 @@ pub struct AnnotateView {
     /// The image's bounds and the viewport's, from the last paint.
     pub stage: Rc<Cell<Option<Bounds<Pixels>>>>,
     pub viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// What ⌘Z puts back, newest last.
+    removed: Vec<Removed>,
 }
+
+/// How many removals ⌘Z can walk back.
+const UNDO_MAX: usize = 50;
 
 impl EventEmitter<AnnotateEvent> for AnnotateView {}
 
@@ -279,6 +319,7 @@ impl AnnotateView {
             loading: 0,
             stage: Rc::new(Cell::new(None)),
             viewport: Rc::new(Cell::new(None)),
+            removed: Vec::new(),
         }
     }
 
@@ -398,7 +439,8 @@ impl AnnotateView {
         let i = self.editing.take()?;
         let empty = self.shot(cx).and_then(|s| s.notes.get(i)).is_some_and(|n| n.text.trim().is_empty());
         if empty {
-            self.remove_note(i, cx);
+            // A note left empty isn't worth an undo step.
+            self.take_note(i, cx);
         }
         self.focus.focus(window, cx);
         cx.notify();
@@ -427,19 +469,54 @@ impl AnnotateView {
         cx.notify();
     }
 
+    /// ⌫ and the trash buttons: remove note `i`, which ⌘Z can put back.
     pub fn remove_note(&mut self, i: usize, cx: &mut Context<Self>) {
-        let removed = self.update_shot(cx, |s| {
-            if i < s.notes.len() {
-                s.notes.remove(i);
-            }
-        });
-        if removed.is_none() {
+        let (Some(session), Some(shot)) = (self.target.clone(), self.shot(cx).map(|s| s.path.clone())) else {
             return;
+        };
+        if let Some(note) = self.take_note(i, cx) {
+            self.push_removed(Removed::Note { session, shot, at: i, note });
         }
+    }
+
+    fn take_note(&mut self, i: usize, cx: &mut Context<Self>) -> Option<Note> {
+        let note = self.update_shot(cx, |s| (i < s.notes.len()).then(|| s.notes.remove(i))).flatten()?;
         self.sel = self.sel.filter(|&s| s != i).map(|s| if s > i { s - 1 } else { s });
         self.editing = self.editing.filter(|&e| e != i).map(|e| if e > i { e - 1 } else { e });
         self.sync(cx);
         cx.notify();
+        Some(note)
+    }
+
+    fn push_removed(&mut self, r: Removed) {
+        self.removed.push(r);
+        if self.removed.len() > UNDO_MAX {
+            self.removed.remove(0);
+        }
+    }
+
+    /// ⌘Z: put back the last note or image removed from this terminal's draft. Returns
+    /// whether there was one.
+    pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.target.clone() else {
+            return false;
+        };
+        self.commit(window, cx);
+        // Newest first; one whose image (or draft) is gone since is dropped.
+        while let Some(pos) = self.removed.iter().rposition(|r| r.session() == id) {
+            let r = self.removed.remove(pos);
+            let Some((cur, note)) = self.update_draft(cx, |d| r.restore(d)).flatten() else {
+                continue;
+            };
+            if cur != self.cur {
+                self.select_image(cur, window, cx);
+            }
+            self.sel = note;
+            self.sync(cx);
+            cx.notify();
+            return true;
+        }
+        false
     }
 
     fn add_note(&mut self, mark: Mark, window: &mut Window, cx: &mut Context<Self>) {
@@ -521,14 +598,12 @@ impl AnnotateView {
 
     pub fn remove_image(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.commit(window, cx);
-        let Some(n) = self.update_draft(cx, |d| {
-            if i < d.shots.len() {
-                d.shots.remove(i);
-            }
-            d.shots.len()
-        }) else {
+        let Some((shot, n)) = self.update_draft(cx, |d| ((i < d.shots.len()).then(|| d.shots.remove(i)), d.shots.len())) else {
             return;
         };
+        if let (Some(shot), Some(session)) = (shot, self.target.clone()) {
+            self.push_removed(Removed::Image { session, at: i, shot });
+        }
         // Removing one before the shown image keeps showing the same image.
         if i < self.cur {
             self.cur -= 1;
@@ -767,6 +842,8 @@ impl AnnotateView {
                     self.paste(window, cx);
                     true
                 }
+                // In the field, ⌘Z undoes typing (the field takes it first).
+                "z" if !in_field && !md.shift => self.undo(window, cx),
                 _ => false,
             }
         } else if in_field {
@@ -1214,9 +1291,46 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMsg, Mark, Note, OVERSCROLL, Outgoing, STAGE_PAD, Source, anchored, fit_scale, lead, load, notes_text, pan_limit, pasted_image_paths};
+    use super::{ClientMsg, Draft, Mark, Note, OVERSCROLL, Outgoing, Removed, STAGE_PAD, Shot, Source, anchored, fit_scale, lead, load, notes_text, pan_limit, pasted_image_paths};
     use ::core::prelude::v1::test;
+    use gpui_kit::{Image, ImageFormat};
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn shot(name: &str, notes: &[&str]) -> Shot {
+        let notes = notes.iter().map(|t| note(Mark::Pin { x: 0.5, y: 0.5 }, t)).collect();
+        Shot { name: name.into(), path: PathBuf::from(format!("/tmp/{name}")), image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![])), w: 1, h: 1, notes }
+    }
+
+    fn texts(d: &Draft, i: usize) -> Vec<String> {
+        d.shots[i].notes.iter().map(|n| n.text.clone()).collect()
+    }
+
+    #[test]
+    fn undo_puts_a_removed_note_back_on_its_image_even_after_images_move() {
+        let mut d = Draft { shots: vec![shot("a.png", &[]), shot("b.png", &["one", "three"])], attached: false };
+        let r = Removed::Note { session: "s".into(), shot: PathBuf::from("/tmp/b.png"), at: 1, note: note(Mark::Pin { x: 0.1, y: 0.2 }, "two") };
+        d.shots.remove(0);
+        assert_eq!(r.restore(&mut d), Some((0, Some(1))));
+        assert_eq!(texts(&d, 0), ["one", "two", "three"]);
+
+        // Notes removed since: it goes at the end.
+        let r = Removed::Note { session: "s".into(), shot: PathBuf::from("/tmp/b.png"), at: 9, note: note(Mark::Pin { x: 0., y: 0. }, "four") };
+        assert_eq!(r.restore(&mut d), Some((0, Some(3))));
+
+        // Its image is gone: nothing to put it on.
+        let r = Removed::Note { session: "s".into(), shot: PathBuf::from("/tmp/gone.png"), at: 0, note: note(Mark::Pin { x: 0., y: 0. }, "x") };
+        assert_eq!(r.restore(&mut d), None);
+    }
+
+    #[test]
+    fn undo_puts_a_removed_image_back_with_its_notes() {
+        let mut d = Draft { shots: vec![shot("a.png", &[]), shot("c.png", &[])], attached: false };
+        let r = Removed::Image { session: "s".into(), at: 1, shot: shot("b.png", &["kept"]) };
+        assert_eq!(r.restore(&mut d), Some((1, None)));
+        assert_eq!(d.shots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a.png", "b.png", "c.png"]);
+        assert_eq!(texts(&d, 1), ["kept"]);
+    }
 
     fn note(mark: Mark, text: &str) -> Note {
         Note { mark, text: text.into() }
