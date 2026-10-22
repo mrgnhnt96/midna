@@ -135,6 +135,9 @@ pub struct MainWindow {
     close_armed: Option<(String, Instant)>,
     /// ⌘Q is being held since then (see `ui::quit_hold`).
     pub quit_hold: Option<Instant>,
+    /// Closes you didn't ask for, counting down on the terminal you're looking at (`ui/close_hold.rs`).
+    pub closing: Vec<crate::ui::close_hold::Closing>,
+    pub closing_ticking: bool,
     /// Status bar items the user has clicked at least once (`$MIDNA_HOME/app-state.json`).
     pub seen: std::collections::HashSet<String>,
     /// Sidebar project groups folded to their heading (project ids; same file as `seen`).
@@ -362,6 +365,8 @@ impl MainWindow {
             renaming: None,
             close_armed: None,
             quit_hold: None,
+            closing: vec![],
+            closing_ticking: false,
             seen,
             collapsed,
             sidebar_collapsed,
@@ -732,6 +737,9 @@ impl MainWindow {
                     if let Some(msg) = crate::lifecycle::on_daemon_command(&action, cx) {
                         self.toast(msg, cx);
                     }
+                }
+                if method == "session.closing" && self.is_home() {
+                    crate::ui::close_hold::on_closing(self, &params, window, cx);
                 }
             }
         }
@@ -1172,6 +1180,7 @@ impl MainWindow {
                     // dev: a needs-you item by id (`needs:n_settng`)
                     s if s.starts_with("needs:") => crate::ui::needs_you::show(self, s["needs:".len()..].to_string(), window, cx),
                     "toast" | "toast-long" => crate::ui::toast::debug(self, &s, cx),
+                    "close-hold" | "close-hold-wait" => crate::ui::close_hold::debug(self, &s, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
                     "background-menu" => self.menu = Menu::Background,

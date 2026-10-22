@@ -1262,3 +1262,14 @@ The runaway-work entry above only reacts once the Mac is overloaded. These two k
 - **Model**: the menu is a list of `Entry` (item, divider, labelled section) so GitHub's items (T712) and an app's own section can be added without changing the renderer.
 - **Debug**: `MIDNA_DEBUG_TERM` step `linkmenu:C,R` opens it for the link at a cell; each action prints `linkmenu <action> <target>`, and copies print instead of touching the pasteboard.
 - **Not done**: a link pattern shows the tag icon, not its app's icon; a localhost link has no "Go to the terminal serving it"; GitHub issues get the web header until T712.
+
+## A close you didn't ask for counts down (midnad `close_hold.rs`; midna-app `ui/close_hold.rs`; 2026-10-22)
+
+The user asked for this because a terminal they were reading would close under them. That happened when an agent closed it or it ended with `close_on_exit`.
+
+- **Which closes.** An agent's `session.close` (after its policy check) and `close_on_exit` go through `close_hold::close`. The human's own closes and `session.replace` don't.
+- **Who decides whether you're looking.** midnad doesn't know which terminal you're looking at, so it asks. With an app connected, it records the close and sends `session.closing{id, by, how}` to the app. The app answers with `session.close_hold{id, action}` (human only): `close` when you aren't looking, `hold` when you are. Looking means the terminal is selected in the frontmost main window, on the terminal screen. Pop-outs and splits don't count. If the app doesn't answer within 1.5 s, the close goes ahead. A held close also goes ahead when the last app disconnects. `session.close` returns at once either way.
+- **The card.** It sits at the bottom right of the window. It shows CLOSING, the terminal's name, who is closing it ("Its agent is closing it", "<other terminal> is closing it", "Its process exited"), a big seconds count and a bar that empties over 5 s. Under the pointer, the countdown holds, like the banner cards. It has three buttons. **Stop** sends `keep`, which emits `session.close_kept` with who asked. **Wait until I leave** turns the card into WAITING ("Closes when you leave this terminal"), and it closes once you select another terminal, change screens or leave midna. **Close now** closes at once.
+- **When the close happens.** Before closing, midnad checks the terminal again. It doesn't close one that's gone, one whose process came back after `close_on_exit`, or one that is working or needs you again after an unforced close.
+- **Dev**: `MIDNA_DEBUG_SCREEN=close-hold|close-hold-wait`.
+- **Not done**: the 5 s isn't a setting, and the card has no keyboard shortcut.

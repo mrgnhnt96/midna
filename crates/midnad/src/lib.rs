@@ -7,6 +7,7 @@ pub mod agent_work;
 pub mod auto_name;
 pub mod cleanup;
 pub mod clock;
+pub mod close_hold;
 pub mod conn;
 pub mod daemon;
 pub mod ended;

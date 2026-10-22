@@ -1339,6 +1339,11 @@ pub mod kinds {
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_BACKGROUND: &str = "session.background";
     pub const SESSION_CLOSED: &str = "session.closed";
+    /// A close nobody at the keyboard asked for (`by`, `how`) waits: the human is looking at the
+    /// terminal, and the app is counting down (`session.close_hold`).
+    pub const SESSION_CLOSE_HELD: &str = "session.close_held";
+    /// The human stopped a held close (`by` = who asked to close it); the terminal stays.
+    pub const SESSION_CLOSE_KEPT: &str = "session.close_kept";
     pub const SESSION_STATUS: &str = "session.status";
     pub const SESSION_TITLE: &str = "session.title";
     pub const SESSION_EXITED: &str = "session.exited";
