@@ -850,12 +850,18 @@ impl TerminalView {
             if m.shift && !self.line_editing() {
                 return false;
             }
+            // ⌘← ⌘→ on a wrapped row of Claude's input stop at the row's edge.
+            let row_edge = (cmd && !alt && self.agent_kind() == Some("claude"))
+                .then(|| term_edit::row_edge(key, &self.grid, self.live_cursor()?))
+                .flatten();
             if m.shift {
                 let Some(c) = self.live_cursor() else { return false };
                 if self.kbd_range().is_none() {
                     self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
                 }
-                self.send_move(mv);
+                for mv in row_edge.unwrap_or_else(|| vec![mv]) {
+                    self.send_move(mv);
+                }
                 return true;
             }
             // A plain ← → collapses a one-row selection to its edge, like a text field.
@@ -875,7 +881,9 @@ impl TerminalView {
             }
             self.kbd_sel = None;
             if cmd || alt {
-                self.send_move(mv);
+                for mv in row_edge.unwrap_or_else(|| vec![mv]) {
+                    self.send_move(mv);
+                }
                 return true;
             }
             return false;

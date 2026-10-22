@@ -5,7 +5,8 @@
 //!   word left, ⌥⌦ the word right, ⌘⌦ to line end. These send the readline bytes Ghostty and
 //!   Terminal.app send (ctrl-a, esc-b, ctrl-u, …), which zsh, bash, Claude Code and Codex all
 //!   understand. In a shell, ⌘⌫ jumps to the line start and erases what it passed over, since
-//!   zsh's ctrl-u clears the whole line.
+//!   zsh's ctrl-u clears the whole line. On a wrapped row of Claude Code's input, ⌘← ⌘→ stop
+//!   at the screen row's edge instead, as in a text field.
 //! - ⇧ with any of those moves (and plain ⇧← ⇧→ ⇧↑ ⇧↓) selects. The app moves its own cursor,
 //!   so word and line edges are the app's and the prompt can't be selected; the selection is
 //!   drawn from where the cursor started to where it is now. ⇧↑ on an input's first line (and
@@ -169,10 +170,7 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
     if !shown.is_empty() && shown.iter().all(|c| is_dim(c)) {
         return Some(String::new());
     }
-    let mut lines = vec![text_of(first, start, text_end(first))];
-    for r in &grid[top as usize + 1..=bottom as usize] {
-        lines.push(text_of(r, AGENT_INDENT, text_end(r).max(AGENT_INDENT)));
-    }
+    let lines: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
     let width = first.cells.len().saturating_sub(4);
     let mut text = lines[0].clone();
     for pair in lines.windows(2) {
@@ -180,6 +178,31 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
         text.push_str(&pair[1]);
     }
     Some(text)
+}
+
+/// Row `y` of the text in Claude Code's box whose prompt row is `top`: past the prompt glyph
+/// and its space on the prompt row, past the indent below it.
+fn box_row(grid: &[RowData], top: u16, y: u16) -> String {
+    let Some(r) = grid.get(y as usize) else { return String::new() };
+    let start = if y == top { r.cells.iter().position(|c| matches!(c.ch, '❯' | '>')).map_or(AGENT_INDENT, |g| g as u16 + 2) } else { AGENT_INDENT };
+    text_of(r, start, text_end(r).max(start))
+}
+
+/// ⌘← / ⌘→ in Claude Code's input on a row that wraps: arrows to that screen row's start or
+/// end, as in a text field (Claude's ctrl-a / ctrl-e go to the ends of the whole wrapped line).
+/// None where the row's edge is the line's own, so ctrl-a / ctrl-e do (and reach any trailing
+/// spaces), or when the cursor isn't in a box.
+pub fn row_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
+    let (top, bottom) = claude_box(grid, cursor)?;
+    let (y, row) = (cursor.1, grid.get(cursor.1 as usize)?);
+    let width = grid.get(top as usize)?.cells.len().saturating_sub(4);
+    let joined = |a: u16| row_break(&box_row(grid, top, a), &box_row(grid, top, a + 1), width) != "\n";
+    let n = match key {
+        "left" if y > top && joined(y - 1) => chars_between(row, AGENT_INDENT, cursor.0.max(AGENT_INDENT)),
+        "right" if y < bottom && joined(y) => chars_between(row, cursor.0.min(text_end(row)), text_end(row)),
+        _ => return None,
+    };
+    Some(vec![Send::Arrow(if key == "left" { "left" } else { "right" }); n])
 }
 
 /// What joins two rows of Claude's input text, `width` cells wide: nothing, the space it
@@ -757,7 +780,24 @@ mod tests {
         }
         assert_eq!(input_text(&empty, (2, 1)).as_deref(), Some(""), "the placeholder");
         let g = grid(&[&rule, "❯ one", "", "  two", &rule]);
+        assert_eq!(row_edge("left", &g, (3, 3)), None, "after a blank line: a line of its own");
         assert_eq!(input_end(&g, (0, 2)), Some(vec![Send::Arrow("down"), Send::Bytes(b"\x05")]), "from a blank line");
+    }
+
+    #[test]
+    fn line_keys_stop_at_a_wrapped_rows_edge() {
+        let rule = "─".repeat(30);
+        let g = grid(&[&rule, "❯ the quick brown fox jumps", "  over the lazy dog", "  next line", &rule]);
+        assert_eq!(row_edge("right", &g, (6, 1)), Some(vec![Send::Arrow("right"); 21]), "to the end of \"jumps\"");
+        assert_eq!(row_edge("right", &g, (27, 1)), Some(vec![]), "already there");
+        assert_eq!(row_edge("left", &g, (7, 2)), Some(vec![Send::Arrow("left"); 5]), "to the start of \"over\"");
+        assert_eq!(row_edge("left", &g, (6, 1)), None, "the prompt row starts the line");
+        assert_eq!(row_edge("right", &g, (7, 2)), None, "a line break ends the row");
+        assert_eq!(row_edge("left", &g, (4, 3)), None);
+        assert_eq!(row_edge("right", &g, (4, 3)), None, "the last row");
+        assert_eq!(row_edge("right", &g, (0, 0)), None, "not in the box");
+        let g = grid(&[&rule, "❯ abcdefghijklmnopqrstuvwxyz", "  0123", &rule]);
+        assert_eq!(row_edge("right", &g, (2, 1)), Some(vec![Send::Arrow("right"); 26]), "cut mid-word");
     }
 
     #[test]
