@@ -199,6 +199,108 @@ pub struct LinkPatternsList {
     pub apps: Vec<AppLinkPatterns>,
 }
 
+/// `links.actions.register`: an app's own link menus, replacing what it registered before.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinkActionsRegisterParams {
+    /// Who provides them, shown in Settings (`Taskboard`). 1–64 characters.
+    pub owner: String,
+    /// Empty removes the owner's menus (and forgets their approval).
+    #[serde(default)]
+    pub menus: Vec<AppLinkMenu>,
+}
+
+/// An app's menu for the links its regex matches: the whole menu (`own: true`) or a labelled
+/// section added to midna's own (`section`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AppLinkMenu {
+    /// Regex over the link's URL, or the text a registered link pattern matched. Its captures
+    /// (`$0`, `$1`, `${name}`) fill the items' fields.
+    pub links: String,
+    /// The app sets the whole menu; midna still adds Copy link and Add to links.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
+    /// The label of a section added to midna's menu, after its actions and before Add to links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// A built-in icon name (`checklist`, `tag`, `bug`) or an absolute .svg/.png path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Own menus: the header's title and subtitle when the link's preview gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    pub items: Vec<LinkMenuItem>,
+}
+
+/// One action: `label` plus exactly one of `open`, `copy`, `run`, `terminal`, `prompt`; or
+/// `divider: true` alone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LinkMenuItem {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// A shortcut shown on the right and pressed while the menu is open (`⌘D`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<String>,
+    /// Dim text after the label (`#10`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// A URL to open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<String>,
+    /// Text to copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<String>,
+    /// A command run in the background, without a shell. The program can't come from a capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Vec<String>>,
+    /// A command run in a new terminal in the link's project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<Vec<String>>,
+    /// A prompt sent to a new agent terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub divider: bool,
+    /// `danger` shows it in the error color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<LinkItemStyle>,
+    /// Asked before it runs (`Cancel $1?`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkItemStyle {
+    Danger,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct AppLinkActions {
+    pub owner: String,
+    pub menus: Vec<AppLinkMenu>,
+    /// The human approved its run, terminal and prompt items (true when it has none). Until
+    /// then midna hides them; open and copy items work at once.
+    pub approved: bool,
+    /// The needs-you asking the human to approve them, while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Id>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LinkActionsList {
+    pub apps: Vec<AppLinkActions>,
+}
+
+/// `links.actions.approve` (human only): approve an owner's commands as they are now.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinkActionsApproveParams {
+    pub owner: String,
+    /// The fingerprint of the commands being approved; refused once they changed.
+    pub fingerprint: String,
+}
+
 // ------------------------------------------------------------------ queued messages
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

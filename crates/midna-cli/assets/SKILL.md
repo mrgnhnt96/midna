@@ -90,6 +90,19 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   `{"title": "RRD-12 Fix login", "lines": ["In Progress", "Morgan Hunt"]}` and the card shows it
   instead of only the URL. It runs on the login shell's PATH with a 5s limit and its answer is
   kept for 15s; on failure or bad JSON the card falls back to the plain URL.
+- An app can also add its own items to the menu a click on a link opens:
+  `midna links actions register --owner <app> --file menus.json` (RPC `links.actions.register
+  {owner, menus}`; each call replaces that app's menus, `[]` or `clear` removes them). A menu is
+  `{"links": "<regex over the URL or a pattern's match>", "own": true | "section": "<label>",
+  "icon"?, "title"?, "subtitle"?, "items": [...]}`; captures `$0 $1 ${name}` fill its fields. `own`
+  makes it the link's whole menu (midna keeps Open, Copy link and Add to links); `section` adds a
+  labelled group to midna's menu. An item is `{label, keys?, detail?, style?: "danger", confirm?}`
+  plus one of `open` (URL), `copy` (text), `run` (argv, no shell, the program can't come from a
+  capture), `terminal` (argv in a new terminal in the link's project) or `prompt` (text for a new
+  agent terminal), or `{"divider": true}`. Open and copy items work at once; the first time an
+  app registers run/terminal/prompt items (and whenever those commands change) the human is asked
+  to approve them, and they stay hidden until then. A pattern's `preview` JSON may add `"actions":
+  [...]` (same item shape) to replace an own menu's items for that one link.
 - `midna usage` shows Claude's plan usage (5-hour and weekly windows, account-wide) and whether
   it is limited until a reset. Check it before starting long work for someone else.
 - When you tell the human about another terminal, name it by its id (`midna list`) or link it as

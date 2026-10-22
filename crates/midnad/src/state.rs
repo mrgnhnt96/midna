@@ -18,6 +18,19 @@ pub struct Deferred {
     pub guard: Option<String>,
 }
 
+/// An app's link menus and the approval of the commands they run (`rpc::links::fingerprint`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AppActions {
+    pub menus: Vec<AppLinkMenu>,
+    /// The fingerprint of the commands the human approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<String>,
+    /// The last approval asked for (fingerprint, needs-you). Denied or not, it isn't asked again
+    /// until the commands change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<(String, Id)>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
@@ -60,6 +73,10 @@ pub struct State {
     /// the human's `terminal.link_patterns`; each register replaces that owner's set.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub app_link_patterns: BTreeMap<String, Vec<String>>,
+    /// Link menus apps registered (`links.actions.register`), by owner, with what the human
+    /// approved of their commands.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub app_link_actions: BTreeMap<String, AppActions>,
     /// `notify.send` notifications midnad remembers, oldest first: what clicks and buttons are
     /// checked against and recorded on, and the `on` actions they run.
     #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]

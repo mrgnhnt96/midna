@@ -1452,6 +1452,9 @@ pub mod kinds {
     pub const LINKS_CHANGED: &str = "links.changed";
     /// An app registered or removed its link patterns (`{owner, count}`); see `links.patterns.list`.
     pub const LINK_PATTERNS_CHANGED: &str = "links.patterns_changed";
+    /// An app registered or removed its link menus, or the human approved their commands
+    /// (`{owner, count, approved}`); see `links.actions.list`.
+    pub const LINK_ACTIONS_CHANGED: &str = "links.actions_changed";
     /// A Claude plan usage window reached 100% (`{agent, window: five_hour|seven_day,
     /// used_percentage, resets_at}`), once per window and reset time; see `usage.get`.
     pub const USAGE_LIMIT_REACHED: &str = "usage.limit_reached";
