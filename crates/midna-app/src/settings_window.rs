@@ -173,7 +173,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Appearance, "Sidebar footer", &["sidebar.footer.stats", "sidebar.footer.range", "sidebar.footer.buttons", "sidebar.footer.compact"]),
     (Sec::Appearance, "Insights", &["insights.layout", "insights.layouts", "insights.colors.agents", "insights.colors.you", "insights.colors.waiting"]),
     (Sec::Terminal, "Names", &["terminal.auto_name", "terminal.auto_name_updates"]),
-    (Sec::Terminal, "Links and paths", &["terminal.link_preview", "terminal.preview_path_click", "terminal.pr_status", "terminal.link_patterns", "@app_link_patterns"]),
+    (Sec::Terminal, "Links and paths", &["terminal.link_preview", "terminal.preview_path_click", "terminal.pr_status", "terminal.link_patterns", "@app_link_patterns", "@app_link_actions"]),
     (Sec::Terminal, "Pasting", &["terminal.image_paste"]),
     (Sec::Terminal, "Keyboard", &["terminal.option_as_meta"]),
     (Sec::Terminal, "Agents", &["terminal.prompt_bar"]),
@@ -262,6 +262,8 @@ pub struct SettingsWindow {
     custom: Vec<midna_proto::NotifyKindInfo>,
     /// `links.patterns.list`: the link patterns apps registered.
     app_patterns: Vec<midna_proto::AppLinkPatterns>,
+    /// `links.actions.list`: the link menus apps registered.
+    app_actions: Vec<midna_proto::AppLinkActions>,
     /// The text fields of editable rows (a kind's title and text, a kind's name, a number), by
     /// row key, with the value each was last filled from (so a reload doesn't clobber typing).
     edits: std::collections::HashMap<String, (LineInput, String)>,
@@ -348,6 +350,7 @@ impl SettingsWindow {
             media: Value::Null,
             custom: vec![],
             app_patterns: vec![],
+            app_actions: vec![],
             edits: Default::default(),
             edit_subs: Default::default(),
             edit_saves: Default::default(),
@@ -411,7 +414,7 @@ impl SettingsWindow {
                 self.note_change(&e);
                 self.load(cx);
             }
-            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED => self.load(cx),
+            BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED || e.kind == midna_proto::kinds::LINK_ACTIONS_CHANGED => self.load(cx),
             BackendEvent::Event(e) if e.kind == "hooks.changed" => {
                 self.hooks = e.data.clone();
                 cx.notify();
@@ -477,7 +480,8 @@ impl SettingsWindow {
                     let keep_awake = backend.call("keep_awake.status", json!({})).unwrap_or(Value::Null);
                     let cleanups = cleanup::fetch_runs(&backend);
                     let patterns = backend.call("links.patterns.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::LinkPatternsList>(v).ok());
-                    (list, info, webhooks, media, hooks, kinds, keep_awake, cleanups, patterns)
+                    let actions = backend.call("links.actions.list", json!({})).ok().and_then(|v| serde_json::from_value::<midna_proto::LinkActionsList>(v).ok());
+                    (list, info, webhooks, media, hooks, kinds, keep_awake, cleanups, patterns, actions)
                 })
                 .await;
             let _ = this.update(cx, |s, cx| {
@@ -496,6 +500,7 @@ impl SettingsWindow {
                 s.keep_awake = r.6;
                 s.cleanup.runs = r.7;
                 s.app_patterns = r.8.map(|p| p.apps).unwrap_or_default();
+                s.app_actions = r.9.map(|a| a.apps).unwrap_or_default();
                 s.sync_edits(cx);
                 if let Ok(k) = crate::dev::var("MIDNA_SETTINGS_PICKER") {
                     // dev (screenshots): open this setting's sound/image picker
@@ -1769,6 +1774,33 @@ impl SettingsWindow {
                         note: Some((note, t.dim)),
                         control: Control::Text { dot: None, text: v.into(), color: t.fg, action: None },
                         cli: "midna links patterns".into(),
+                        who: Who::ReadOnly,
+                        warn: false,
+                    }
+                })
+                .collect(),
+            // Menus apps added to links: shown, not edited; whether their commands wait for approval.
+            "@app_link_actions" => self
+                .app_actions
+                .iter()
+                .flat_map(|a| a.menus.iter().map(move |m| (a, m)))
+                .map(|(a, m)| {
+                    let what = match &m.section {
+                        Some(label) if !m.own => format!("“{label}” section"),
+                        _ => "Own menu".into(),
+                    };
+                    let n = m.items.iter().filter(|i| !i.divider).count();
+                    let commands = m.items.iter().any(midna_proto::link_actions::needs_approval);
+                    let (state, color) = match (commands, a.approved) {
+                        (false, _) => (String::new(), t.dim),
+                        (true, true) => (" · commands approved".into(), t.dim),
+                        (true, false) => (" · commands wait for your approval".into(), t.need),
+                    };
+                    RowSpec {
+                        label: m.links.clone(),
+                        note: Some((format!("Menu by {} · {n} action{}{state}", a.owner, if n == 1 { "" } else { "s" }), color)),
+                        control: Control::Text { dot: None, text: what.into(), color: t.fg, action: None },
+                        cli: "midna links actions list".into(),
                         who: Who::ReadOnly,
                         warn: false,
                     }
@@ -3508,7 +3540,7 @@ mod tests {
         let known = [
             "@update", "@cli", "@login", "@keep_awake", "@hooks.claude", "@hooks.codex", "@kass", "@accessibility", "@notifications", "@version", "@daemon", "@reset_settings", "@reset_midna",
             "@kinds", "@banners", "@banners_focused", "@images", "@texts", "@sounds", "@effects", "@shortcuts", "@built_in", "@stay", "@colors",
-            "@custom_kinds", "@bell", "@cleanup_runs", "@app_link_patterns",
+            "@custom_kinds", "@bell", "@cleanup_runs", "@app_link_patterns", "@app_link_actions",
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {
