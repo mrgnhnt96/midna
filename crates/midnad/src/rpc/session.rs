@@ -205,7 +205,14 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
             None => root(),
         },
     };
-    let cwd = p.cwd.clone().unwrap_or_else(|| project.path.clone());
+    // on_default_branch: the repo's checkout that already has main/master out, in that
+    // checkout's project (a worktree project's tab moves to its main checkout's).
+    let target = (p.on_default_branch && p.cwd.is_none() && project.id != ROOT_PROJECT_ID)
+        .then(|| crate::worktrees::default_branch_checkout(&project.path))
+        .flatten()
+        .filter(|t| *t != project.path);
+    let cwd = target.clone().or_else(|| p.cwd.clone()).unwrap_or_else(|| project.path.clone());
+    let project = target.and_then(|t| super::project::containing(d, &t)).unwrap_or(project);
     let sid = hex_id(8);
     let mut env = session_env(d, &sid, &project.id);
     let (command, agent) = match p.kind {
@@ -350,6 +357,7 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
             rows: Some(rows),
             background: s.background,
             close_on_exit: s.close_on_exit,
+            on_default_branch: false,
         },
     )?;
     {

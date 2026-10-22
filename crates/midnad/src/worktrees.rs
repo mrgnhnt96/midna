@@ -141,6 +141,30 @@ pub fn main_checkout(cwd: &str) -> Option<String> {
     parse_list(&out).into_iter().next().filter(|e| !e.bare).map(|e| e.path)
 }
 
+/// Where the repo `path` is in has its default branch out: the checkout on origin's HEAD branch
+/// (else main, else master), or the main checkout when none is. Nothing is checked out. `path`'s
+/// folder inside its checkout carries over when the target has it too. None outside git or in a
+/// bare repo.
+pub fn default_branch_checkout(path: &str) -> Option<String> {
+    let list = parse_list(&git(path, &["worktree", "list", "--porcelain"])?);
+    let origin = git(path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+    let at = pick_default_branch(&list, origin.as_deref().map(str::trim))?;
+    let top = git(path, &["rev-parse", "--show-toplevel"]);
+    // git prints real paths (/private/tmp for /tmp).
+    let real = std::fs::canonicalize(path).ok()?;
+    let sub = top.and_then(|t| real.strip_prefix(t.trim()).ok().map(Path::to_path_buf)).filter(|r| !r.as_os_str().is_empty());
+    let nested = sub.map(|r| Path::new(&at.path).join(r)).filter(|p| p.is_dir());
+    Some(nested.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| at.path.clone()))
+}
+
+/// The entry of `list` on the default branch (`origin_head` is `origin/<branch>`, when known),
+/// else the main checkout.
+fn pick_default_branch<'a>(list: &'a [Entry], origin_head: Option<&str>) -> Option<&'a Entry> {
+    let main = list.first().filter(|e| !e.bare)?;
+    let wanted = origin_head.and_then(|o| o.strip_prefix("origin/")).into_iter().chain(["main", "master"]);
+    Some(wanted.into_iter().find_map(|b| list.iter().find(|e| !e.bare && e.branch == b)).unwrap_or(main))
+}
+
 /// Newest mtime (unix) of the worktree's own git files: HEAD moves on checkout/commit, the index
 /// on add/status, the reflog on every ref change.
 fn git_activity(path: &str) -> Option<i64> {
@@ -332,5 +356,21 @@ mod tests {
         assert_eq!(v[1].branch, "worktree-agent-a");
         assert_eq!(sys::lock_pid(v[1].locked.as_deref().unwrap()), Some(79735));
         assert_eq!(v[2].locked.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn default_branch_checkout_never_moves_a_branch() {
+        let e = |path: &str, branch: &str| Entry { path: path.into(), branch: branch.into(), ..Default::default() };
+        let pick = |list: &[Entry], origin: Option<&str>| pick_default_branch(list, origin).map(|e| e.path.clone());
+        // The main checkout on a feature branch, a worktree on main: the worktree.
+        let list = [e("/r", "feat/x"), e("/r-wt", "main")];
+        assert_eq!(pick(&list, None).as_deref(), Some("/r-wt"));
+        // origin's HEAD wins over main/master.
+        let list = [e("/r", "main"), e("/r-dev", "develop")];
+        assert_eq!(pick(&list, Some("origin/develop")).as_deref(), Some("/r-dev"));
+        assert_eq!(pick(&[e("/r", "feat"), e("/r-m", "master")], None).as_deref(), Some("/r-m"));
+        // Nothing on it: the main checkout, as it is.
+        assert_eq!(pick(&[e("/r", "feat"), e("/r-wt", "fix")], None).as_deref(), Some("/r"));
+        assert_eq!(pick(&[Entry { bare: true, ..e("/r.git", "") }], None), None);
     }
 }

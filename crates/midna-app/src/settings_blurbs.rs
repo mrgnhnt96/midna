@@ -12,6 +12,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "ui.ask.scope" => "Start it in the current project or in your home folder.",
         "projects.roots" => "Their subfolders show up in ⌘K, ready to open.",
         "projects.empty_opens" => "Clicking a pinned project with no terminals opens a shell or its agent.",
+        "projects.new_terminal_in" => "Main opens ⌘T where main or master is already checked out.",
         "ide.app" => "Used when no per-folder rule matches.",
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",
         "windows.close_with_terminals" => "When you close one main window while another is open.",

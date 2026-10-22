@@ -795,6 +795,12 @@ pub struct SessionOpenParams {
     /// open a terminal for one job.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub close_on_exit: bool,
+    /// Open in the project repo's checkout that already has its default branch (main or master)
+    /// out: the main checkout, or a linked worktree on it. Never checks a branch out, so another
+    /// agent's worktree keeps its branch. No checkout on it: the main checkout. Outside git, or
+    /// with `cwd`: ignored. The app's ⌘T sets this when `projects.new_terminal_in` is `main`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_default_branch: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

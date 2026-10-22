@@ -624,6 +624,47 @@ fn script_parts_show_the_worktree_and_branch() {
 }
 
 #[test]
+fn on_default_branch_opens_in_the_checkout_that_has_main_out() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(cwd).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+    let main = d.home.join("repo");
+    std::fs::create_dir_all(main.join("app")).unwrap();
+    git(&main, &["init", "-q", "-b", "main"]);
+    std::fs::write(main.join("app/x"), "").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
+    git(&main, &["worktree", "add", "-q", "../repo-wt-fix", "-b", "fix"]);
+    let repo = call(&mut h, "project.add", json!({ "path": main }))["id"].clone();
+    let wt = call(&mut h, "project.add", json!({ "path": d.home.join("repo-wt-fix") }))["id"].clone();
+    let open = |h: &mut Client, pid: &Value, on_main: bool| {
+        call(h, "session.open", json!({ "kind": "shell", "project_id": pid, "on_default_branch": on_main, "command": ["/bin/sh"] }))
+    };
+    // A worktree project's new tab goes to the main checkout, in its project.
+    let s = open(&mut h, &wt, true);
+    assert_eq!((real(s["cwd"].as_str().unwrap().as_ref()), &s["project_id"]), (real(&main), &repo), "{s}");
+    // Off, it stays in the worktree.
+    let s = open(&mut h, &wt, false);
+    assert_eq!(real(s["cwd"].as_str().unwrap().as_ref()), real(&d.home.join("repo-wt-fix")), "{s}");
+    // The main checkout on a feature branch and a worktree on main: the worktree, and nobody's
+    // branch moves.
+    git(&main, &["checkout", "-q", "-b", "feat"]);
+    git(&d.home.join("repo-wt-fix"), &["checkout", "-q", "main"]);
+    let s = open(&mut h, &repo, true);
+    assert_eq!(real(s["cwd"].as_str().unwrap().as_ref()), real(&d.home.join("repo-wt-fix")), "{s}");
+    assert_eq!(git(&main, &["branch", "--show-current"]), "feat");
+    // A project in a subfolder keeps its subfolder.
+    let sub = call(&mut h, "project.add", json!({ "path": main.join("app") }))["id"].clone();
+    let s = open(&mut h, &sub, true);
+    assert_eq!(real(s["cwd"].as_str().unwrap().as_ref()), real(&d.home.join("repo-wt-fix/app")), "{s}");
+}
+
+#[test]
 fn a_worktree_outside_every_project_opens_in_its_repos_project() {
     let d = TestDaemon::start();
     let mut h = d.human();
