@@ -71,7 +71,7 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             (agent.prompt_blocked data {hook, message, prompt}, agent.turn_ended, session.status, …), idle (with \
             filter.idle_minutes) or schedule (filter.cron: 5 fields in local time or @daily etc., or `@every 55m` for intervals cron can't say; without a session/project/agent \
             filter it fires once about no terminal; also filter.window {from, until} HH:MM local, until excluded, starts_at, \
-            ends_at (RFC 3339) and max_runs (1 = once)); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
+            ends_at (RFC 3339), max_runs (1 = once) and wake: true (wake the Mac for each run, even outside keep-awake hours; needs keep_awake.wake)); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
             (case-insensitive). action: {kind:send_to_session, steps:[{text, enter:true}]} (in order, each waits for the agent) | \
             {kind:set_status, label, color, icon?, base, clear_on: prompt|turn|status|never} | {kind:clear_status} | {kind:notify, title, body?, sound:true} | attention | \
             run_command {project_id, command, background?, headless?, timeout_secs?} (background: a terminal in the Background group; \

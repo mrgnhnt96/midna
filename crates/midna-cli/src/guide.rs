@@ -212,7 +212,9 @@ const TOPICS: &[(&str, &str)] = &[
         {cron, scheduled_for, local_time}; with no session/project/agent filter it fires once about no terminal, with \
         one it acts on every running terminal that matches; a missed run fires late only within 10 minutes; filter window \
         {from, until} (HH:MM local, until not included, may wrap midnight), starts_at / ends_at (RFC 3339) and max_runs \
-        (1 = once; a new value restarts the count) narrow it); globs ok. \
+        (1 = once; a new value restarts the count) narrow it; filter wake: true wakes a sleeping Mac for each run, even \
+        outside the keep-awake hours, and keeps it awake while the work goes on (needs keep_awake.enabled and \
+        keep_awake.wake)); globs ok. \
         Filters: session, project, agent (claude|codex), idle_minutes, cron, match {dotted.path: glob} (case-insensitive, all must match the \
         hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
         order, each waits until the agent is ready; on agent.prompt_blocked midna first clears the refused prompt Claude put \
@@ -295,7 +297,9 @@ const TOPICS: &[(&str, &str)] = &[
         Status says held, reason (work, always, disabled, outside_hours, day_off, today_off, battery_low, no_work, failed), \
         next_on / next_off and what work keeps it; event keep_awake.changed fires when that changes. keep_awake.wake \
         (`midna keep-awake wake on`) also wakes a sleeping Mac 2 minutes before the next work due inside the hours (a schedule \
-        trigger, a message queued for a time, an agent's wakeup) and holds it until that work runs; status.wake says what it \
+        trigger, a message queued for a time, an agent's wakeup) and holds it until that work runs; a schedule trigger with \
+        filter wake: true (`--wake`) is woken for at any hour, outside the hours too (a nightly 1 AM restart), and held \
+        while the work it started goes on plus keep_awake.linger_mins; status.wake says what it \
         wakes for and when. It needs a one-time admin grant (keep_awake.wake_setup, `midna keep-awake wake setup`, human \
         only): a root-owned helper that can only schedule or cancel this midna's own wakes, run through sudo without a \
         password. A closed lid still keeps a laptop asleep."),

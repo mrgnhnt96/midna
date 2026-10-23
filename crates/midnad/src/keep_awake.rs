@@ -39,6 +39,9 @@ struct Inner {
     battery_at: Option<Instant>,
     /// When there was work last (for `keep_awake.linger_mins`).
     last_work: Option<Instant>,
+    /// Outside the hours, the Mac woke for scheduled work (`keep_awake.wake`): held while that
+    /// work, and whatever it started, goes on.
+    woken: bool,
     /// macOS refused the assertion: its error, until it is taken.
     error: Option<i32>,
     /// What the last decision was (and the scheduled wake), so `keep_awake.changed` fires on a
@@ -231,8 +234,11 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
     // keep-awake holds even before the hours open, so it can run.
     let due = if s.enabled && s.wake { crate::wake::next_due(d, &p, today.as_ref(), now) } else { None };
     let woke = due.as_ref().map(|(t, _)| *t).filter(|t| t - now <= crate::wake::LEAD + 60);
+    // Once it ran, stay up while what it started works (and lingers), then let the Mac sleep.
+    let woken = s.enabled && s.wake && d.keep_awake.inner().woken;
     let (hold, horizon) = match (window, woke) {
         (Err(_), Some(t)) => (Ok(()), t + 60),
+        (Err(_), None) if woken => (Ok(()), now + 60),
         _ => (window, change.unwrap_or(now + FAR_SECS)),
     };
     let work = if s.enabled && hold.is_ok() { work(d, now, horizon) } else { vec![] };
@@ -253,6 +259,9 @@ fn tick_with(d: &Daemon, force: bool) -> KeepAwakeStatus {
     }
     let linger = Duration::from_secs(s.linger_mins.max(0) as u64 * 60);
     let lingering = i.last_work.is_some_and(|at| at.elapsed() < linger);
+    // Woken, the work done: outside the hours again.
+    let hold = if window.is_err() && woke.is_none() && work.is_empty() && !lingering { window } else { hold };
+    i.woken = window.is_err() && hold.is_ok();
     let inputs = Inputs { enabled: s.enabled, always: s.mode == "always", window: hold, battery_ok, working: !work.is_empty(), lingering };
     let (want, mut reason) = decide(inputs);
     // A handoff is about to exec: don't take it again in between (the new image will).

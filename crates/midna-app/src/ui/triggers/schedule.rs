@@ -133,6 +133,8 @@ pub struct ScheduleEditor {
     ends: Ends,
     ends_at: i64,
     runs: LineInput,
+    /// Wake the Mac for each run (`filter.wake`).
+    wake: bool,
     /// The date or time picker that's open.
     open: Option<Open>,
     /// New triggers: the terminal the prompt goes to.
@@ -176,6 +178,7 @@ impl ScheduleEditor {
             ends: Ends::Never,
             ends_at: time::local_day_start(time::local_day_start(now) + 7 * 86_400 + 43_200),
             runs: LineInput::digits(cx, "10"),
+            wake: false,
             open: None,
             session: None,
             prompt: field(cx, "The prompt to send"),
@@ -229,6 +232,7 @@ impl ScheduleEditor {
         e.name.set_text(&tr.name, cx);
         e.load_cron(tr.filter.cron.as_deref().unwrap_or("*/5 * * * *"), cx);
         let f = &tr.filter;
+        e.wake = f.wake;
         if let Some(w) = &f.window {
             e.window = true;
             e.from = cron::parse_hm(&w.from).unwrap_or(e.from);
@@ -305,6 +309,7 @@ impl ScheduleEditor {
             ends: self.ends,
             ends_at: time::format_local(self.ends_at),
             runs: text(&self.runs),
+            wake: self.wake,
             session: self.session.clone(),
             prompt: text(&self.prompt),
         }
@@ -398,6 +403,7 @@ struct Form {
     ends: Ends,
     ends_at: String,
     runs: String,
+    wake: bool,
     session: Option<String>,
     prompt: String,
 }
@@ -409,6 +415,7 @@ fn build(form: &Form, base: &TriggerFilter, fired: u64, now: i64) -> Result<Buil
     f.starts_at = None;
     f.ends_at = None;
     f.max_runs = None;
+    f.wake = form.wake;
     let dow = {
         let on: Vec<String> = (0..7).filter(|i| form.days[*i]).map(|i| DAY_CRON[i].to_string()).collect();
         match on.len() {
@@ -878,6 +885,17 @@ impl TriggersView {
                 form = form.children(self.pick_panel(t, e, &[Pick::EndsAt], cx));
             }
         }
+        let wake = e.wake;
+        form = form.child(
+            line("Wake")
+                .child(kit::switch(t, "sched-wake", wake).on_click(cx.listener(move |v, _, _, cx| {
+                    if let Some(e) = v.editor.as_mut() {
+                        e.wake = !wake;
+                    }
+                    cx.notify();
+                })))
+                .child(dim(if wake { "Wakes the Mac for each run, even outside keep-awake hours" } else { "Runs only while the Mac is awake" })),
+        );
         if e.trigger_id.is_none() {
             let terms = self.agent_terminals(cx);
             let name = e.session.as_ref().and_then(|s| terms.iter().find(|(id, _)| id == s)).map(|(_, n)| n.clone()).unwrap_or_else(|| "No agent terminal open".into());
@@ -966,6 +984,7 @@ mod schedule_tests {
             ends: Ends::Never,
             ends_at: String::new(),
             runs: String::new(),
+            wake: false,
             session: Some("s_1".into()),
             prompt: "poll the deploy".into(),
         }
@@ -1006,6 +1025,11 @@ mod schedule_tests {
         assert_eq!(b.filter.ends_at.as_deref().and_then(time::parse_rfc3339), Some(time::local_unix(2026, 10, 10, 0, 0)));
         assert_eq!((b.filter.session.as_deref(), b.name.as_str()), (Some("s_1"), "poll the deploy"));
         assert_eq!(b.schedule.upcoming(now, 1), vec![time::local_unix(2026, 10, 6, 13, 0)]);
+        assert!(!b.filter.wake);
+        // Wake follows the switch, and switching it off clears a trigger's.
+        let woken = TriggerFilter { wake: true, ..Default::default() };
+        assert!(!build(&f, &woken, 0, now).unwrap().filter.wake);
+        assert!(build(&Form { wake: true, ..f.clone() }, &TriggerFilter::default(), 0, now).unwrap().filter.wake);
         // Once: a pinned date that runs one time.
         let mut o = form();
         o.once = true;

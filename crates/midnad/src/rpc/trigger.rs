@@ -48,8 +48,8 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
     }
     let schedule = local && event.trim().eq_ignore_ascii_case("schedule");
     let f = &t.filter;
-    if !schedule && (f.window.is_some() || f.starts_at.is_some() || f.ends_at.is_some() || f.max_runs.is_some()) {
-        return Err(RpcError::bad_params("filter.window, starts_at, ends_at and max_runs only apply to local triggers with event schedule"));
+    if !schedule && (f.window.is_some() || f.starts_at.is_some() || f.ends_at.is_some() || f.max_runs.is_some() || f.wake) {
+        return Err(RpcError::bad_params("filter.window, starts_at, ends_at, max_runs and wake only apply to local triggers with event schedule"));
     }
     match (&t.filter.cron, schedule) {
         (None, true) => return Err(RpcError::bad_params("schedule triggers need filter.cron, e.g. \"0 9 * * mon-fri\" (local time)")),

@@ -475,7 +475,7 @@ pub static VERBS: &[Verb] = &[
                 [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
                 triggers add --name N --event hook.<Hook>|<midna event kind>|idle|schedule [--source local]\n            \
                 [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
-                [--between 13:00-17:00] [--starts '2026-10-06 13:00'] [--ends 2026-10-31] [--max-runs N]\n            \
+                [--between 13:00-17:00] [--starts '2026-10-06 13:00'] [--ends 2026-10-31] [--max-runs N] [--wake]\n            \
                 [--match path=glob]...\n            \
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
                 [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--notify-open URL] [--notify-id ID] [--silent]\n             \
@@ -512,6 +512,8 @@ pub static VERBS: &[Verb] = &[
                   with one it acts on each running match.\n\
                   Schedules also take --between HH:MM-HH:MM (local, end not included; may wrap midnight), --starts\n\
                   and --ends (local `2026-10-06 13:00` or a date), --max-runs N (1 = once; a new limit counts again).\n\
+                  --wake wakes a sleeping Mac for each run, even outside the keep-awake hours (a nightly restart),\n\
+                  and keeps it awake while the work goes on; needs `midna keep-awake wake on` (--no-wake on update).\n\
                   Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or {{<path>}}.\n\
                   Example: triggers add --name \"Auto-compact\" --event agent.prompt_blocked \\\n\
                   \x20 --match 'message=*Compact first*' --send /compact --send '{{last_prompt}}' --enable\n\

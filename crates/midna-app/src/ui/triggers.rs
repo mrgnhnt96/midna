@@ -46,6 +46,9 @@ pub struct FilterItem {
     pub ends_at: Option<String>,
     /// Local `schedule`: stop after this many firings.
     pub max_runs: Option<u64>,
+    /// Local `schedule`: wake the Mac for each run, even outside the keep-awake hours.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub wake: bool,
     /// Local: dotted path into the hook payload / event data -> glob.
     #[serde(rename = "match")]
     pub fields: std::collections::BTreeMap<String, String>,
@@ -312,6 +315,9 @@ impl TriggerItem {
         }
         if let Some(n) = f.max_runs {
             a.push(format!("--max-runs {n}"));
+        }
+        if f.wake {
+            a.push("--wake".into());
         }
         for (k, v) in &f.fields {
             a.push(format!("--match {}", sh_quote(&format!("{k}={v}"))));
