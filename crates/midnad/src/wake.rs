@@ -4,7 +4,8 @@
 //! to sleep at midnight. With `keep_awake.wake` on, midnad keeps one macOS wake scheduled
 //! `LEAD` before the next work due inside the keep-awake hours (a schedule trigger, a message
 //! queued for a time, an agent's cron wakeup); keep-awake then holds the Mac from that wake
-//! until the work has run (`soon`).
+//! until the work has run (`soon`). A schedule trigger with `filter.wake` is woken for at any
+//! hour (a nightly 1 AM restart), and keep-awake holds while the work it started goes on.
 //!
 //! Scheduling a wake needs root (`pmset schedule wake`). `keep_awake.wake_setup` (human only)
 //! asks for an administrator's password once and installs a root-owned helper,
@@ -97,7 +98,8 @@ pub fn fake_calls(d: &Daemon) -> Vec<String> {
 
 // ------------------------------------------------------------------ what to wake for
 
-/// The next work due inside the hours, within `HORIZON`: when (unix) and what, in words.
+/// The next work due inside the hours (or any time, for a schedule trigger with `filter.wake`),
+/// within `HORIZON`: when (unix) and what, in words.
 pub fn next_due(d: &Daemon, plan: &Plan, today: Option<&Today>, now: i64) -> Option<(i64, String)> {
     let open = |t: i64| ka::open_at(plan, today, t).is_ok();
     let reopen = |t: i64| ka::next_change(plan, today, t);
@@ -113,7 +115,9 @@ pub fn next_due(d: &Daemon, plan: &Plan, today: Option<&Today>, now: i64) -> Opt
     let core = d.core();
     for t in core.state.triggers.iter().filter(|t| crate::local::is_live(t) && t.event.trim().eq_ignore_ascii_case("schedule")) {
         let Ok(s) = cron::Schedule::of(&t.filter, t.fired) else { continue };
-        let at = first_open(|at| s.upcoming(at, 1).first().copied(), open, reopen, now, until);
+        let next = |at| s.upcoming(at, 1).first().copied();
+        // `filter.wake`: every run, inside the hours or not.
+        let at = if t.filter.wake { next(now).filter(|t| *t < until) } else { first_open(next, open, reopen, now, until) };
         consider(at, &|| t.name.clone());
     }
     for s in core.state.sessions.iter().filter(|s| s.pid.is_some()) {

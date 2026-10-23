@@ -934,6 +934,11 @@ pub struct TriggerFilter {
     /// it starts the count again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_runs: Option<u64>,
+    /// Local `schedule` triggers: wake the Mac for each run, even outside the keep-awake hours,
+    /// and keep it awake while the run's work goes on (a nightly 1 AM restart, a 6 AM agent).
+    /// Needs `keep_awake.enabled`, `keep_awake.wake` and its admin grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wake: bool,
     /// Local: dotted path into the hook payload or event data -> case-insensitive glob, e.g.
     /// `{"message": "*Compact first*"}`. Every entry must match.
     #[serde(default, rename = "match", skip_serializing_if = "std::collections::BTreeMap::is_empty")]

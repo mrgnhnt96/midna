@@ -100,6 +100,9 @@ pub fn filter_text(f: &Value) -> String {
     if let Some(n) = f["max_runs"].as_u64() {
         out.push(format!("max-runs={n}"));
     }
+    if f["wake"] == true {
+        out.push("wake".into());
+    }
     if let Some(m) = f["match"].as_object().filter(|m| !m.is_empty()) {
         // Sorted: map order depends on serde_json's preserve_order, which the workspace may turn on.
         let mut pairs: Vec<String> = m.iter().map(|(k, v)| format!("{k}={}", q(v.as_str().unwrap_or("")))).collect();
@@ -253,8 +256,8 @@ const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_yo
 
 /// Flags that only make sense on a local trigger; any of them makes `add` default to `--source local`.
 const LOCAL_FLAGS: &[&str] = &[
-    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter", "set-status",
-    "clear-status", "cooldown", "enable",
+    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
+    "set-status", "clear-status", "cooldown", "enable",
 ];
 
 fn is_local_event(e: &str) -> bool {
@@ -515,6 +518,17 @@ fn filter_from(a: &Args, base: Value) -> Result<(Value, bool), Fail> {
             }
         };
     }
+    if a.has("wake") || a.has("no-wake") {
+        if a.has("wake") && a.has("no-wake") {
+            return Err(Fail::Usage("--wake and --no-wake: pick one".into()));
+        }
+        touched = true;
+        // A bool, not an Option: off is no key (null wouldn't deserialize).
+        match a.has("wake") {
+            true => f["wake"] = json!(true),
+            false => _ = f.as_object_mut().map(|o| o.remove("wake")),
+        }
+    }
     if !a.all("match").is_empty() {
         touched = true;
         let mut m = f.get("match").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -591,7 +605,7 @@ fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
 
 const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
-    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter",
+    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
     "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
     "background", "headless", "timeout", "permission-mode", "allow-tool",
 ];
@@ -692,7 +706,7 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             });
         }
         "update" | "edit" => {
-            a.check(&ADD_FLAGS.iter().copied().filter(|f| *f != "enable").collect::<Vec<_>>())?;
+            a.check(&ADD_FLAGS.iter().copied().filter(|f| *f != "enable").chain(["no-wake"]).collect::<Vec<_>>())?;
             let id = a.need(2, "trigger id")?;
             let cur = find(id)?;
             let project = a.get("project").map(str::to_string).or_else(|| cur["action"]["project_id"].as_str().map(str::to_string));
@@ -962,6 +976,12 @@ mod tests {
         for bad in [["--between", "1pm-5pm"], ["--between", "13:00"], ["--starts", "tomorrow"], ["--max-runs", "0"]] {
             assert!(matches!(filter_from(&args(&["t", bad[0], bad[1]]), json!({})), Err(Fail::Usage(_))), "{bad:?}");
         }
+        let (fk, _) = ok(filter_from(&args(&["t", "--cron", "0 1 * * *", "--wake"]), json!({})));
+        assert_eq!(fk["wake"], true);
+        assert!(filter_text(&fk).ends_with(" wake"), "{}", filter_text(&fk));
+        let (fk, _) = ok(filter_from(&args(&["t", "--no-wake"]), fk));
+        assert!(fk["wake"].is_null() && !filter_text(&fk).contains("wake"));
+        assert!(matches!(filter_from(&args(&["t", "--wake", "--no-wake"]), json!({})), Err(Fail::Usage(_))));
         let (f6, _) = ok(filter_from(&args(&["t", "--cron", ""]), f5));
         assert!(f6["cron"].is_null());
         let (f4, touched) = ok(filter_from(&args(&["t"]), json!({ "repo": "a/b" })));

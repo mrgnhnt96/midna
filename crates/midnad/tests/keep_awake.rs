@@ -222,3 +222,63 @@ fn holds_from_the_wake_until_work_due_as_the_hours_open() {
     call(&mut h, "keep_awake.set", json!({ "wake": false }));
     assert_eq!(status(&mut h)["reason"], "outside_hours");
 }
+
+/// A schedule trigger with `filter.wake` (a nightly restart) is woken for outside the hours too,
+/// and once it ran keep-awake holds while there is work or it lingers, then lets the Mac sleep.
+#[test]
+fn a_wake_trigger_wakes_the_mac_outside_the_hours() {
+    let d = TestDaemon::start();
+    let dm = d.daemon();
+    midnad::wake::set_fake(&dm);
+    let mut h = d.human();
+    call(&mut h, "keep_awake.wake_setup", json!({}));
+    // Hours open 6 to 8 hours from now; the trigger is due 1-2 minutes from now, well outside them.
+    let now = time::now_unix();
+    let hm = |t: i64| {
+        let (.., h, m, _) = time::local_parts(t);
+        format!("{h:02}:{m:02}")
+    };
+    let opens = (now / 3600 + 6) * 3600;
+    call(&mut h, "keep_awake.set", json!({ "on": true, "start": hm(opens), "end": hm(opens + 2 * 3600), "days": "daily", "linger_mins": 5 }));
+    let due = (now / 60 + 2) * 60;
+    let (.., hr, mi, _) = time::local_parts(due);
+    let cron = format!("{mi} {hr} * * *");
+    let add = |h: &mut Client, wake: bool| {
+        call(h, "trigger.add", json!({ "name": "Nightly restart", "source": "local", "event": "schedule", "filter": { "cron": cron, "wake": wake, "max_runs": 1 }, "action": { "kind": "attention", "message": "restart" }, "enabled": true }))
+    };
+    // Without wake it waits for the hours.
+    let plain = add(&mut h, false);
+    assert!(plain["filter"].get("wake").is_none(), "{plain}");
+    let s = status(&mut h);
+    assert_eq!((s["held"].as_bool(), s["reason"].as_str()), (Some(false), Some("outside_hours")), "{s}");
+    call(&mut h, "trigger.remove", json!({ "id": plain["id"] }));
+
+    let t = add(&mut h, true);
+    assert_eq!(t["filter"]["wake"], true, "{t}");
+    let s = status(&mut h);
+    assert_eq!((s["held"].as_bool(), s["reason"].as_str(), s["window_open"].as_bool()), (Some(true), Some("work"), Some(false)), "{s}");
+    assert!(s["wake"]["line"].as_str().unwrap().starts_with("Awake for Nightly restart at "), "{s}");
+
+    // It ran (and won't again): still held while it lingers, until it's done.
+    midnad::local::fire_schedule_now(&dm, t["id"].as_str().unwrap(), due);
+    let fired = |h: &mut Client| call(h, "trigger.list", json!({})).as_array().unwrap().iter().find(|x| x["id"] == t["id"]).map(|x| x["fired"].clone());
+    wait_for(10, "the run", || fired(&mut h).filter(|f| *f == 1));
+    let s = status(&mut h);
+    assert_eq!((s["held"].as_bool(), s["reason"].as_str()), (Some(true), Some("work")), "{s}");
+    assert!(s["line"].as_str().unwrap().contains("after the last work"), "{s}");
+    call(&mut h, "keep_awake.set", json!({ "linger_mins": 0 }));
+    assert_eq!(status(&mut h)["reason"], "outside_hours");
+    call(&mut h, "keep_awake.set", json!({ "linger_mins": 5 }));
+    assert_eq!(status(&mut h)["reason"], "outside_hours", "the wake is over");
+
+    // A wake an hour out is scheduled even though the hours are closed then.
+    let later = due + 3600;
+    let (.., hr, mi, _) = time::local_parts(later);
+    call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": { "cron": format!("{mi} {hr} * * *"), "wake": true } }));
+    let s = status(&mut h);
+    assert_eq!(s["wake"]["next"].as_str().and_then(time::parse_rfc3339), Some(later - 120), "{s}");
+
+    // Only schedules can wake.
+    let e = call_err(&mut h, "trigger.add", json!({ "name": "x", "source": "local", "event": "idle", "filter": { "idle_minutes": 5, "wake": true }, "action": { "kind": "attention", "message": "x" } }));
+    assert!(e.message.contains("wake only apply"), "{}", e.message);
+}
