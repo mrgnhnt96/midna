@@ -1830,14 +1830,14 @@ impl MainWindow {
             return;
         };
         let (id, name) = (s.id.clone(), s.name.clone());
-        let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
+        let busy = busy_phrase(self.effective_state(s));
         let armed = format!("replace:{id}");
         let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| *a == armed && t.elapsed() < Duration::from_secs(2));
-        if busy && !confirmed {
+        if let Some(why) = busy.filter(|_| !confirmed) {
             self.close_armed = Some((armed, Instant::now()));
             let key = crate::actions::label(cx, "keys.replace");
             let again = if key.is_empty() { "Replace it again".to_string() } else { format!("Press {key} again") };
-            self.toast(format!("{name} is still running. {again} to replace it with a new session."), cx);
+            self.toast(format!("{name} {why}. {again} to replace it with a new session."), cx);
             return;
         }
         self.close_armed = None;
@@ -1904,7 +1904,7 @@ impl MainWindow {
             return;
         };
         let (id, name) = (s.id.clone(), s.name.clone());
-        let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
+        let busy = busy_phrase(self.effective_state(s));
         if !self.close_confirmed(&id, &name, busy, "Press ⌘W", cx) {
             return;
         }
@@ -1919,13 +1919,13 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// A busy terminal (working, needs you) closes on the second try within 2s; the first one
-    /// says so (`again`: "Press ⌘W", "Click ✕").
-    fn close_confirmed(&mut self, id: &str, name: &str, busy: bool, again: &str, cx: &mut Context<Self>) -> bool {
+    /// A busy terminal (`busy`: why, from `busy_phrase`) closes on the second try within 2s; the
+    /// first one says so (`again`: "Press ⌘W", "Click ✕").
+    fn close_confirmed(&mut self, id: &str, name: &str, busy: Option<&str>, again: &str, cx: &mut Context<Self>) -> bool {
         let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| a == id && t.elapsed() < Duration::from_secs(2));
-        if busy && !confirmed {
+        if let Some(why) = busy.filter(|_| !confirmed) {
             self.close_armed = Some((id.to_string(), Instant::now()));
-            self.toast(format!("{name} is still running. {again} again to close it."), cx);
+            self.toast(format!("{name} {why}. {again} again to close it."), cx);
             return false;
         }
         self.close_armed = None;
@@ -1939,7 +1939,7 @@ impl MainWindow {
         };
         if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
             let name = s.name.clone();
-            let busy = matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou);
+            let busy = busy_phrase(self.effective_state(s));
             if !self.close_confirmed(&id, &name, busy, again, cx) {
                 return;
             }
@@ -1962,13 +1962,12 @@ impl MainWindow {
     /// below (else above). If any is busy, a second ⌘W within 2 s is needed first.
     fn close_marked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self.marked_ids();
-        let busy = self.sessions.iter().filter(|s| ids.contains(&s.id) && matches!(self.effective_state(s), StatusState::Working | StatusState::NeedsYou)).count();
+        let states: Vec<StatusState> = self.sessions.iter().filter(|s| ids.contains(&s.id)).map(|s| self.effective_state(s)).collect();
         let key = ids.join(",");
         let confirmed = self.close_armed.as_ref().is_some_and(|(a, t)| *a == key && t.elapsed() < Duration::from_secs(2));
-        if busy > 0 && !confirmed {
+        if let Some(why) = busy_count_phrase(&states).filter(|_| !confirmed) {
             self.close_armed = Some((key, Instant::now()));
-            let still = if busy == 1 { "1 is still running".to_string() } else { format!("{busy} are still running") };
-            self.toast(format!("Closing {} terminals: {still}. Press ⌘W again to close them.", ids.len()), cx);
+            self.toast(format!("Closing {} terminals: {why}. Press ⌘W again to close them.", ids.len()), cx);
             return;
         }
         self.close_armed = None;
@@ -2324,6 +2323,35 @@ fn neighbour(rows: &[(String, RowGroup)], id: &str, alive: impl Fn(&str) -> bool
         .map(|(x, _)| x.clone())
 }
 
+/// Why closing or replacing a terminal in `state` needs a second press ("is still running",
+/// "needs you"); None when it doesn't.
+pub fn busy_phrase(state: StatusState) -> Option<&'static str> {
+    match state {
+        StatusState::Working => Some("is still running"),
+        StatusState::NeedsYou => Some("needs you"),
+        _ => None,
+    }
+}
+
+/// `busy_phrase` for several terminals at once ("1 is still running", "2 need you", "1 is
+/// still running and 2 need you"); None when none is busy.
+pub fn busy_count_phrase(states: &[StatusState]) -> Option<String> {
+    let working = states.iter().filter(|s| **s == StatusState::Working).count();
+    let needs = states.iter().filter(|s| **s == StatusState::NeedsYou).count();
+    let running = match working {
+        0 => None,
+        1 => Some("1 is still running".to_string()),
+        n => Some(format!("{n} are still running")),
+    };
+    let need = match needs {
+        0 => None,
+        1 => Some("1 needs you".to_string()),
+        n => Some(format!("{n} need you")),
+    };
+    let parts: Vec<String> = [running, need].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(" and "))
+}
+
 /// The agent's background work still running after its turn, as one line ("1 shell still
 /// running", "2 shells and 1 agent still running"); None when there is none.
 pub fn background_note(s: &Session) -> Option<String> {
@@ -2341,9 +2369,21 @@ pub fn background_note(s: &Session) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{background_note, neighbour, RowGroup};
-    use crate::model::Session;
+    use super::{background_note, busy_count_phrase, busy_phrase, neighbour, RowGroup};
+    use crate::model::{Session, StatusState};
     use midna_proto::{AgentInfo, BackgroundTask};
+
+    #[test]
+    fn closing_says_whether_a_terminal_runs_or_needs_you() {
+        assert_eq!(busy_phrase(StatusState::Working), Some("is still running"));
+        assert_eq!(busy_phrase(StatusState::NeedsYou), Some("needs you"));
+        assert_eq!(busy_phrase(StatusState::Done), None);
+        use StatusState::{Done, NeedsYou, Working};
+        assert_eq!(busy_count_phrase(&[Done, Done]), None);
+        assert_eq!(busy_count_phrase(&[Working, Done]).as_deref(), Some("1 is still running"));
+        assert_eq!(busy_count_phrase(&[NeedsYou, NeedsYou]).as_deref(), Some("2 need you"));
+        assert_eq!(busy_count_phrase(&[Working, Working, NeedsYou]).as_deref(), Some("2 are still running and 1 needs you"));
+    }
 
     #[test]
     fn background_note_counts_live_work_by_kind() {
