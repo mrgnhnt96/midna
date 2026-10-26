@@ -31,11 +31,20 @@
 //! terminal (`Session.paused`, so it outlives a daemon upgrade) and dropped once the terminal
 //! runs a new process (a restart).
 //!
-//! Dev: `MIDNA_DEBUG_LOAD=<load1>` reports that load average instead of the real one, and
-//! `MIDNA_DEBUG_CPU=<cpu>[:<midna>]` that CPU in use (and midna's terminals' share of it).
+//! Memory (#106): every TICK also reads macOS's memory pressure, compressor and swap, and each
+//! terminal's memory footprint. Pressure at or above `system.busy_memory` holds new heavy work
+//! back in `hold` (whoever uses the memory: there is nothing else to free it) and raises a
+//! needs-you naming the terminals using the most, closed once the pressure has dropped for
+//! CALM_TICKS. Local model runs (`system::model_program`) are heavy work too, and hold a model
+//! slot (`guard.model_slots`) in their own line, which an idle-looking run keeps: a model on the
+//! GPU uses next to no CPU.
+//!
+//! Dev: `MIDNA_DEBUG_LOAD=<load1>` reports that load average instead of the real one,
+//! `MIDNA_DEBUG_CPU=<cpu>[:<midna>]` that CPU in use (and midna's terminals' share of it), and
+//! `MIDNA_DEBUG_MEMORY=<normal|warning|critical>` that memory pressure.
 use crate::daemon::Daemon;
 use crate::procs;
-use midna_proto::system::{self as sys, BuildSlot, HeavyTerminal, OtherProcess, Paused, SystemLoad};
+use midna_proto::system::{self as sys, BuildSlot, HeavyTerminal, MemoryPressure, MemoryTerminal, OtherProcess, Paused, SystemLoad};
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -52,6 +61,9 @@ const TOP: usize = 5;
 /// An agent terminal using at least this much CPU (percent of one core) while the Mac is busy
 /// goes into background mode.
 const BACKGROUND_FROM: u32 = 100;
+/// Ticks in a row the memory pressure must stay under `system.busy_memory` before it counts as
+/// calm again (pressure flips between levels often).
+const CALM_TICKS: u8 = 3;
 /// Shells and launchers between an agent and the hook command it runs.
 const LAUNCHERS: [&str; 7] = ["sh", "bash", "zsh", "dash", "fish", "env", "midna"];
 
@@ -86,6 +98,21 @@ struct Inner {
     builds: Vec<Build>,
     line: Vec<Waiter>,
     tickets: u64,
+    /// macOS's memory at the last sample, and the terminals using the most.
+    memory: Memory,
+    memory_top: Vec<MemoryTerminal>,
+    /// The memory pressure reached `system.busy_memory`: the needs-you raised for this spell,
+    /// and ticks in a row it has been under it since.
+    memory_spell: Option<Option<Id>>,
+    memory_calm: u8,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Memory {
+    pressure: MemoryPressure,
+    total: u64,
+    compressed: u64,
+    swap: u64,
 }
 
 /// A heavy command holding a build slot.
@@ -101,6 +128,8 @@ struct Build {
     returned: bool,
     /// Ticks in a row its processes ran but used next to no CPU.
     idle: u8,
+    /// A local model run holding a model slot (`guard.model_slots`).
+    model: bool,
 }
 
 /// A heavy command waiting in line for a build slot.
@@ -111,6 +140,8 @@ struct Waiter {
     at: Instant,
     /// It waited SLOT_WAIT and the agent was told to retry: it keeps its place until PARKED.
     parked: Option<Instant>,
+    /// In the model runs' line, not the builds'.
+    model: bool,
 }
 
 fn log(msg: &str) {
@@ -174,6 +205,46 @@ fn busy_share(before: [u32; 4], now: [u32; 4]) -> f64 {
         return 0.;
     }
     (total - d[libc::CPU_STATE_IDLE as usize]) as f64 / total as f64 * 100.
+}
+
+/// A sysctl by name, as `T` (an int, a struct).
+fn sysctl<T: Copy>(name: &str) -> Option<T> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut v: T = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of::<T>();
+    let r = unsafe { libc::sysctlbyname(name.as_ptr(), &mut v as *mut T as *mut libc::c_void, &mut size, std::ptr::null_mut(), 0) };
+    (r == 0 && size == std::mem::size_of::<T>()).then_some(v)
+}
+
+/// macOS's memory pressure, physical memory, what the compressor holds and swap in use.
+#[allow(deprecated)] // libc's mach calls (the mach2 crate isn't worth adding for them)
+fn memory_now() -> Memory {
+    static HOST: std::sync::OnceLock<libc::mach_port_t> = std::sync::OnceLock::new();
+    let host = *HOST.get_or_init(|| unsafe { libc::mach_host_self() });
+    let mut vm: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    let kr = unsafe { libc::host_statistics64(host, libc::HOST_VM_INFO64, &mut vm as *mut _ as libc::host_info64_t, &mut count) };
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(0) as u64;
+    Memory {
+        pressure: MemoryPressure::from_level(sysctl::<i32>("kern.memorystatus_vm_pressure_level").unwrap_or(1)),
+        total: sysctl::<u64>("hw.memsize").unwrap_or(0),
+        compressed: if kr == libc::KERN_SUCCESS { vm.compressor_page_count as u64 * page } else { 0 },
+        swap: sysctl::<libc::xsw_usage>("vm.swapusage").map_or(0, |s| s.xsu_used),
+    }
+}
+
+/// The memory pressure now: the last sample's, or `MIDNA_DEBUG_MEMORY`.
+fn pressure_now(d: &Daemon) -> MemoryPressure {
+    match std::env::var("MIDNA_DEBUG_MEMORY").ok().as_deref().map(str::trim) {
+        Some("normal") => MemoryPressure::Normal,
+        Some("warning") => MemoryPressure::Warning,
+        Some("critical") => MemoryPressure::Critical,
+        _ => d.guard.inner().memory.pressure,
+    }
+}
+
+fn busy_memory_at(d: &Daemon) -> String {
+    d.setting("system.busy_memory").as_str().unwrap_or("warning").to_string()
 }
 
 /// `MIDNA_DEBUG_CPU=<cpu>[:<midna>]`.
@@ -248,20 +319,26 @@ pub fn load(d: &Daemon) -> SystemLoad {
     top.sort_by(|a, b| b.cpu_percent.cmp(&a.cpu_percent));
     let builds = {
         let g = d.guard.inner();
-        let held = g.builds.iter().map(|b| (b.session.clone(), b.command.clone(), false, b.at));
-        let waiting = g.line.iter().filter(|w| w.parked.is_none()).map(|w| (w.session.clone(), w.command.clone(), true, w.at));
+        let held = g.builds.iter().map(|b| (b.session.clone(), b.command.clone(), false, b.at, b.model));
+        let waiting = g.line.iter().filter(|w| w.parked.is_none()).map(|w| (w.session.clone(), w.command.clone(), true, w.at, w.model));
         held.chain(waiting).collect::<Vec<_>>()
     };
     let builds = {
         let core = d.core();
         builds
             .into_iter()
-            .map(|(sid, command, waiting, at)| {
+            .map(|(sid, command, waiting, at, model)| {
                 let name = core.state.session(&sid).map(|s| s.name.clone()).unwrap_or_default();
-                BuildSlot { session_id: sid, name, command: command.chars().take(200).collect(), waiting, for_secs: at.elapsed().as_secs() }
+                BuildSlot { session_id: sid, name, command: command.chars().take(200).collect(), waiting, for_secs: at.elapsed().as_secs(), model }
             })
             .collect()
     };
+    let (memory, memory_top) = {
+        let g = d.guard.inner();
+        (g.memory, g.memory_top.clone())
+    };
+    let pressure = pressure_now(d);
+    let busy_memory_at = busy_memory_at(d);
     SystemLoad {
         load1: round2(load1),
         load5: round2(load5),
@@ -282,6 +359,14 @@ pub fn load(d: &Daemon) -> SystemLoad {
         system_percent: system.round().clamp(0., 100.) as u32,
         build_slots: build_slots(d) as u32,
         builds,
+        model_slots: model_slots(d) as u32,
+        memory_total_bytes: memory.total,
+        memory_pressure: pressure,
+        compressed_bytes: memory.compressed,
+        swap_used_bytes: memory.swap,
+        memory_held: pressure.reaches(&busy_memory_at),
+        busy_memory_at,
+        memory_top,
     }
 }
 
@@ -304,6 +389,7 @@ fn tick(d: &Arc<Daemon>) {
     release_builds(d, &table, true);
     sample(d, &table);
     overload(d);
+    memory_alert(d);
     background(d, &table);
     stop_old_loops(d, &table);
     drop_stale_pauses(d);
@@ -440,19 +526,35 @@ pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<Str
         None => (a.value.as_str(), ""),
     };
     let subagent = matches!(tool, "Agent" | "Task");
+    let model = if tool == "Bash" { sys::model_program(arg) } else { None };
     let reason = subagent.then(|| too_many_subagents(d, sid)).flatten().or_else(|| {
-        let heavy = subagent || tool == "Bash" && sys::is_heavy_command(arg);
+        let heavy = subagent || model.is_some() || tool == "Bash" && sys::is_heavy_command(arg);
         if !heavy || !d.setting("guard.busy_gate").as_bool().unwrap_or(true) {
             return None;
         }
         let l = load(d);
-        if !l.held || runs_anyway(d, sid) {
+        if !(l.held || l.memory_held) || runs_anyway(d, sid) {
             return None;
         }
-        let what = if subagent { "more subagents" } else { "builds, tests or installs" };
+        let what = match () {
+            _ if subagent => "more subagents",
+            _ if model.is_some() => "model runs",
+            _ => "builds, tests or installs",
+        };
+        let why = if l.memory_held {
+            let biggest = l.memory_top.first().map(|t| format!("; `{}` ({}) uses the most, {}", t.name, t.session_id, sys::bytes_label(t.memory_bytes))).unwrap_or_default();
+            format!(
+                "the Mac is short of memory: macOS's memory pressure is {} ({} compressed, {} of swap in use; busy from {}, setting system.busy_memory){biggest}",
+                l.memory_pressure.as_str(),
+                sys::bytes_label(l.compressed_bytes),
+                sys::bytes_label(l.swap_used_bytes),
+                l.busy_memory_at
+            )
+        } else {
+            format!("the Mac is busy: {}% of its CPU is in use, {}% of it by midna's terminals (busy from {}%)", l.cpu_percent, l.midna_percent, l.busy_cpu_at)
+        };
         Some(format!(
-            "the Mac is busy: {}% of its CPU is in use, {}% of it by midna's terminals (busy from {}%). Don't start {what} now: tell the human you're waiting for the Mac to calm down, run `midna system wait` as a background command (it returns once it has) and try again when it finishes. Work already running carries on. If the human tells you to go ahead anyway, run `midna system run-anyway` first, then retry: it lets this terminal through until their next prompt.",
-            l.cpu_percent, l.midna_percent, l.busy_cpu_at
+            "{why}. Don't start {what} now: tell the human you're waiting for the Mac to calm down, run `midna system wait` as a background command (it returns once it has) and try again when it finishes. Work already running carries on. If the human tells you to go ahead anyway, run `midna system run-anyway` first, then retry: it lets this terminal through until their next prompt."
         ))
     });
     if reason.is_some() && subagent {
@@ -465,8 +567,10 @@ pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<Str
     if reason.is_some() || tool != "Bash" || runs_anyway(d, sid) {
         return reason;
     }
-    let program = sys::heavy_program(arg)?;
-    build_slot(d, sid, arg, program, gone)
+    match model {
+        Some(program) => build_slot(d, sid, arg, program, true, gone),
+        None => build_slot(d, sid, arg, sys::heavy_program(arg)?, false, gone),
+    }
 }
 
 // ------------------------------------------------------------------ build slots
@@ -490,9 +594,14 @@ fn build_slots(d: &Daemon) -> usize {
     d.setting("guard.build_slots").as_i64().unwrap_or(2).max(0) as usize
 }
 
-/// Wait in line for a build slot: None once it holds one, else why it didn't get one.
-fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn Fn() -> bool) -> Option<String> {
-    let slots = build_slots(d);
+fn model_slots(d: &Daemon) -> usize {
+    d.setting("guard.model_slots").as_i64().unwrap_or(1).max(0) as usize
+}
+
+/// Wait in line for a build slot (a model slot for a `model` run, in its own line): None once it
+/// holds one, else why it didn't get one.
+fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, model: bool, gone: &dyn Fn() -> bool) -> Option<String> {
+    let slots = if model { model_slots(d) } else { build_slots(d) };
     if slots == 0 {
         return None;
     }
@@ -509,7 +618,7 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn 
             None => {
                 g.tickets += 1;
                 let ticket = g.tickets;
-                g.line.push(Waiter { ticket, session: sid.into(), command: command.into(), at: started, parked: None });
+                g.line.push(Waiter { ticket, session: sid.into(), command: command.into(), at: started, parked: None, model });
                 ticket
             }
         }
@@ -518,17 +627,18 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn 
     loop {
         {
             let mut g = d.guard.inner();
-            if has_turn(&g.line, ticket, g.builds.len(), slots) {
+            let running = g.builds.iter().filter(|b| b.model == model).count();
+            if has_turn(g.line.iter().filter(|w| w.model == model), ticket, running, slots) {
                 g.line.retain(|w| w.ticket != ticket);
-                g.builds.push(Build { session: sid.into(), command: command.into(), program, started: time::now_unix(), at: Instant::now(), returned: false, idle: 0 });
+                g.builds.push(Build { session: sid.into(), command: command.into(), program, started: time::now_unix(), at: Instant::now(), returned: false, idle: 0, model });
                 if waited {
                     log(&format!("build slot: {sid} goes after {}s in line", started.elapsed().as_secs()));
                 }
                 return None;
             }
             if !waited {
-                let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none()).count();
-                log(&format!("build slot: {sid} waits in line ({} running, {ahead} ahead)", g.builds.len()));
+                let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none() && w.model == model).count();
+                log(&format!("{} slot: {sid} waits in line ({running} running, {ahead} ahead)", if model { "model" } else { "build" }));
                 waited = true;
             }
         }
@@ -541,10 +651,11 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn 
             if let Some(w) = g.line.iter_mut().find(|w| w.ticket == ticket) {
                 w.parked = Some(Instant::now());
             }
-            let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none()).count();
+            let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none() && w.model == model).count();
+            let running = g.builds.iter().filter(|b| b.model == model).count();
+            let what = if model { "local model runs already run across the Mac's terminals (guard.model_slots" } else { "builds and tests already run across the Mac's terminals (guard.build_slots" };
             return Some(format!(
-                "{} builds and tests already run across the Mac's terminals (guard.build_slots = {slots}) and {ahead} more are ahead of this one. Run the same command again now: it keeps its place in line and starts when a slot frees. Don't sleep or poll first.",
-                g.builds.len()
+                "{running} {what} = {slots}) and {ahead} more are ahead of this one. Run the same command again now: it keeps its place in line and starts when a slot frees. Don't sleep or poll first."
             ));
         }
         std::thread::sleep(SLOT_POLL);
@@ -553,8 +664,8 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, gone: &dyn 
 
 /// Whether the waiter holding `ticket` gets a slot: the ones ahead of it in line (not parked)
 /// and the builds running leave one free.
-fn has_turn(line: &[Waiter], ticket: u64, running: usize, slots: usize) -> bool {
-    line.iter().filter(|w| w.parked.is_none()).position(|w| w.ticket == ticket).is_some_and(|ahead| running + ahead < slots)
+fn has_turn<'a>(line: impl IntoIterator<Item = &'a Waiter>, ticket: u64, running: usize, slots: usize) -> bool {
+    line.into_iter().filter(|w| w.parked.is_none()).position(|w| w.ticket == ticket).is_some_and(|ahead| running + ahead < slots)
 }
 
 /// A Bash call returned: the build it ran gives its slot up once nothing it started runs.
@@ -588,10 +699,12 @@ fn build_processes(program: &str) -> Vec<&str> {
 /// since (the clock has 1s steps), with everything under them.
 fn build_pids(table: &HashMap<i32, procs::Row>, root: i32, b: &Build) -> Vec<i32> {
     let names = build_processes(&b.program);
+    // A model tool is often a Python script (its process is the interpreter), or talks to ollama.
+    let ours = |n: &str| names.contains(&n) || b.model && (n.starts_with("python") || n.starts_with("Python") || n == "ollama");
     let mut pids = vec![];
     for pid in procs::descendants(table, root) {
         let r = &table[&pid];
-        if pid != root && r.start >= b.started - 1 && names.contains(&r.name.as_str()) && !pids.contains(&pid) {
+        if pid != root && r.start >= b.started - 1 && ours(&r.name) && !pids.contains(&pid) {
             pids.extend(procs::descendants(table, pid));
         }
     }
@@ -603,7 +716,8 @@ fn build_pids(table: &HashMap<i32, procs::Row>, root: i32, b: &Build) -> Vec<i32
 /// Whether a build gives its slot up, from whether its processes run and how long it has held it.
 fn released(b: &Build, running: bool) -> bool {
     let held = b.at.elapsed();
-    (!running && (b.returned || held >= STARTING)) || b.idle >= IDLE_TICKS || held >= SLOT_MAX
+    // A model on the GPU uses next to no CPU: it isn't idle for that.
+    (!running && (b.returned || held >= STARTING)) || !b.model && b.idle >= IDLE_TICKS || held >= SLOT_MAX
 }
 
 /// Free the slots of builds that are over; `tick` also counts the ticks they sat idle (against
@@ -675,11 +789,13 @@ fn sample(d: &Daemon, table: &HashMap<i32, procs::Row>) {
     let used = |pid: &i32, r: &procs::Row| r.cpu_ns.saturating_sub(prev.get(pid).filter(|(_, start)| *start == r.start).map(|(c, _)| *c).unwrap_or(0));
     let share = |ns: u64| secs.map_or(0., |secs| ns as f64 / 1e9 / secs * 100. / cpus() as f64);
     let mut top = vec![];
+    let mut memory_top = vec![];
     let mut owned: HashSet<i32> = HashSet::new();
     let mut midna_ns = 0;
     for (id, name, cwd, root, _) in terminals(d) {
         let pids = procs::descendants(table, root);
         let (mut ns, mut busiest): (u64, HashMap<String, (u32, u64)>) = (0, HashMap::new());
+        let mut biggest: HashMap<String, (u32, u64)> = HashMap::new();
         for pid in &pids {
             let r = &table[pid];
             let used = used(pid, r);
@@ -687,9 +803,16 @@ fn sample(d: &Daemon, table: &HashMap<i32, procs::Row>) {
             let e = busiest.entry(r.name.clone()).or_default();
             e.0 += 1;
             e.1 += used;
+            let m = biggest.entry(r.name.clone()).or_default();
+            m.0 += 1;
+            m.1 += r.memory;
         }
         owned.extend(&pids);
         midna_ns += ns;
+        let memory_bytes: u64 = biggest.values().map(|(_, m)| m).sum();
+        if memory_bytes > 0 {
+            memory_top.push(MemoryTerminal { session_id: id.clone(), name: name.clone(), memory_bytes, processes: pids.len() as u32, biggest: biggest_by_memory(biggest) });
+        }
         let Some(secs) = secs else { continue };
         let cpu_percent = (ns as f64 / 1e9 / secs * 100.).round() as u32;
         if cpu_percent == 0 {
@@ -734,7 +857,12 @@ fn sample(d: &Daemon, table: &HashMap<i32, procs::Row>) {
         (Some(a), Some(b)) => Some(busy_share(a, b)),
         _ => None,
     };
+    memory_top.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+    memory_top.truncate(TOP);
+    let memory = memory_now();
     let mut g = d.guard.inner();
+    g.memory = memory;
+    g.memory_top = memory_top;
     g.last = table.iter().map(|(&pid, r)| (pid, (r.cpu_ns, r.start))).collect();
     g.last_at = Some(now);
     g.ticks = ticks;
@@ -755,6 +883,75 @@ fn busiest_names(procs: HashMap<String, (u32, u64)>) -> Vec<String> {
     let mut names: Vec<(String, (u32, u64))> = procs.into_iter().filter(|(_, (_, used))| *used > 0).collect();
     names.sort_by(|a, b| b.1.1.cmp(&a.1.1));
     names.into_iter().take(3).map(|(n, (count, _))| if count > 1 { format!("{n} ×{count}") } else { n }).collect()
+}
+
+/// The biggest process names by memory with their total: `python3.12 27.1 GB`, `node ×4 1.2 GB`.
+fn biggest_by_memory(procs: HashMap<String, (u32, u64)>) -> Vec<String> {
+    let mut names: Vec<(String, (u32, u64))> = procs.into_iter().filter(|(_, (_, m))| *m >= 1 << 20).collect();
+    names.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    names.into_iter().take(3).map(|(n, (count, m))| if count > 1 { format!("{n} ×{count} {}", sys::bytes_label(m)) } else { format!("{n} {}", sys::bytes_label(m)) }).collect()
+}
+
+/// Memory pressure reached `system.busy_memory`: raise a needs-you naming the terminals using the
+/// most (on the biggest one), once per spell; close it once the pressure has been under it for
+/// CALM_TICKS.
+fn memory_alert(d: &Daemon) {
+    let l = load(d);
+    let raise = {
+        let mut g = d.guard.inner();
+        if l.memory_held {
+            g.memory_calm = 0;
+            g.memory_spell.is_none()
+        } else {
+            if g.memory_spell.is_some() {
+                g.memory_calm += 1;
+                if g.memory_calm >= CALM_TICKS {
+                    let item = g.memory_spell.take().flatten();
+                    g.memory_calm = 0;
+                    drop(g);
+                    if let Some(id) = item {
+                        d.close_needs_you(&id, json!({ "kind": "done" }), Actor::system());
+                    }
+                    log(&format!("memory calm: pressure {}", l.memory_pressure.as_str()));
+                    d.emit(kinds::SYSTEM_MEMORY_CALM, Actor::system(), None, None, json!({ "memory_pressure": l.memory_pressure }));
+                }
+            }
+            false
+        }
+    };
+    if !raise {
+        return;
+    }
+    let biggest = l.memory_top.first();
+    let title = format!("The Mac is short of memory (pressure {})", l.memory_pressure.as_str());
+    let mut item = d.new_needs_you(NeedsYouKind::Note, title, Actor::system(), biggest.map(|t| t.session_id.clone()));
+    item.detail = memory_detail(&l);
+    item.bulk_safe = true;
+    let item = Some(d.raise_needs_you(item).id);
+    d.guard.inner().memory_spell = Some(item.clone());
+    log(&format!("memory pressure {}: {} compressed, {} swap", l.memory_pressure.as_str(), sys::bytes_label(l.compressed_bytes), sys::bytes_label(l.swap_used_bytes)));
+    let mut data = json!(l);
+    data["needs_you_id"] = json!(item);
+    d.emit(kinds::SYSTEM_MEMORY_PRESSURE, Actor::system(), None, biggest.map(|t| t.session_id.clone()), data);
+}
+
+/// What the memory needs-you says: how short the Mac is, and who uses the most.
+fn memory_detail(l: &SystemLoad) -> String {
+    let mut s = format!(
+        "macOS's memory pressure is {} ({} compressed, {} of swap in use, {} in all). New builds, tests, model runs and subagents wait until it drops (system.busy_memory). Past critical the Mac can hang and kernel-panic.",
+        l.memory_pressure.as_str(),
+        sys::bytes_label(l.compressed_bytes),
+        sys::bytes_label(l.swap_used_bytes),
+        sys::bytes_label(l.memory_total_bytes)
+    );
+    if !l.memory_top.is_empty() {
+        s.push_str("\n\nUsing the most:");
+        for t in &l.memory_top {
+            s.push_str(&format!("\n• {} ({}): {} ({})", t.name, t.session_id, sys::bytes_label(t.memory_bytes), t.biggest.join(", ")));
+        }
+        s.push_str(&format!("\n\nPause one with `midna system pause {}` (its memory stays taken until it ends), or end what it runs with `midna system stop {}`.", l.memory_top[0].session_id, l.memory_top[0].session_id));
+    }
+    s
 }
 
 fn overload(d: &Daemon) {
@@ -961,7 +1158,7 @@ mod tests {
     }
 
     fn waiter(ticket: u64, parked: bool) -> Waiter {
-        Waiter { ticket, session: "s".into(), command: "cargo build".into(), at: Instant::now(), parked: parked.then(Instant::now) }
+        Waiter { ticket, session: "s".into(), command: "cargo build".into(), at: Instant::now(), parked: parked.then(Instant::now), model: false }
     }
 
     #[test]
@@ -981,7 +1178,7 @@ mod tests {
     #[test]
     fn a_build_frees_its_slot_once_it_returned_and_stopped() {
         let ago = |s: u64| Instant::now() - Duration::from_secs(s);
-        let b = |returned: bool, at: Instant, idle: u8| Build { session: "s".into(), command: "cargo build".into(), program: "cargo".into(), started: 0, at, returned, idle };
+        let b = |returned: bool, at: Instant, idle: u8| Build { session: "s".into(), command: "cargo build".into(), program: "cargo".into(), started: 0, at, returned, idle, model: false };
         assert!(released(&b(true, ago(0), 0), false));
         // Sent to the background: holds it while cargo runs.
         assert!(!released(&b(true, ago(600), 0), true));

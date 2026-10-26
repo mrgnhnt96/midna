@@ -151,6 +151,8 @@ pub struct Row {
     pub start: i64,
     /// User + system CPU time, nanoseconds.
     pub cpu_ns: u64,
+    /// Memory footprint, bytes ([`footprint`]).
+    pub memory: u64,
 }
 
 /// Every process we may inspect (other users' are left out).
@@ -160,7 +162,7 @@ pub fn table() -> HashMap<i32, Row> {
         if pid > 0
             && let Some(b) = bsd_info(pid)
         {
-            out.insert(pid, Row { pid, ppid: b.ppid, name: b.name, start: b.start, cpu_ns: cpu_ns(pid).unwrap_or(0) });
+            out.insert(pid, Row { pid, ppid: b.ppid, name: b.name, start: b.start, cpu_ns: cpu_ns(pid).unwrap_or(0), memory: footprint(pid).unwrap_or(0) });
         }
     }
     out
@@ -188,6 +190,14 @@ pub fn descendants(table: &HashMap<i32, Row>, root: i32) -> Vec<i32> {
 /// When `pid` started (unix seconds), to tell it from a later process reusing the number.
 pub fn table_start(pid: i32) -> Option<i64> {
     bsd_info(pid).map(|b| b.start)
+}
+
+/// A process's memory footprint (what Activity Monitor calls Memory: resident, compressed and
+/// GPU memory it owns), in bytes.
+pub fn footprint(pid: i32) -> Option<u64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    let got = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, &mut info as *mut _ as *mut libc::rusage_info_t) };
+    (got == 0).then_some(info.ri_phys_footprint)
 }
 
 /// CPU time a process has used (user + system), in nanoseconds.

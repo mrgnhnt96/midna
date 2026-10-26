@@ -20,6 +20,16 @@
 //!   terminal, however calm the Mac is. Another one waits in line, in its PreToolUse hook, and
 //!   starts when a slot frees: once the command has returned and nothing it started (a build
 //!   sent to the background) still runs.
+//! - Memory: macOS's memory pressure (`kern.memorystatus_vm_pressure_level`) at or above
+//!   `system.busy_memory` holds new heavy work back like a busy CPU does, whoever uses the
+//!   memory: on Apple silicon a model run is mostly GPU and unified memory, so the CPU can look
+//!   calm while the Mac runs out (#106). midnad also raises a needs-you naming the terminal using
+//!   the most memory.
+//! - Model slots: at most `guard.model_slots` local model runs ([`model_program`]: MLX, mflux,
+//!   ollama, Hugging Face downloads, Python loading a model) run at once, in their own line.
+//! - After a kernel panic: when the Mac booted from one, agents don't start on their own
+//!   (triggers, other agents, the task board) until the human has seen what each terminal ran
+//!   (`guard.panic_hold`).
 //! - Runaway loops: background `while`/`until` shell loops an agent started (polling for a
 //!   build, a file, a process) that outlive `guard.loop_max_hours` are stopped.
 //! - Worktrees: linked git worktrees of repos midna's terminals use are removed after
@@ -78,9 +88,91 @@ pub struct SystemLoad {
     /// `guard.build_slots`: builds, tests and installs that run at once (0 = no limit).
     #[serde(default)]
     pub build_slots: u32,
-    /// The builds holding a slot, then the ones waiting for one in line order.
+    /// The builds holding a slot, then the ones waiting for one in line order (model runs too,
+    /// with `model` set).
     #[serde(default)]
     pub builds: Vec<BuildSlot>,
+    /// `guard.model_slots`: local model runs at once (0 = no limit).
+    #[serde(default)]
+    pub model_slots: u32,
+    /// Physical memory, bytes.
+    #[serde(default)]
+    pub memory_total_bytes: u64,
+    /// macOS's memory pressure.
+    #[serde(default)]
+    pub memory_pressure: MemoryPressure,
+    /// Memory the compressor holds, and swap in use, bytes.
+    #[serde(default)]
+    pub compressed_bytes: u64,
+    #[serde(default)]
+    pub swap_used_bytes: u64,
+    /// `system.busy_memory`: `warning`, `critical` or `off`.
+    #[serde(default)]
+    pub busy_memory_at: String,
+    /// The pressure is at or above `system.busy_memory`: the busy gate holds new heavy work back
+    /// (with `guard.busy_gate`), and `midna system wait` waits for it to drop.
+    #[serde(default)]
+    pub memory_held: bool,
+    /// Terminals by memory footprint (what Activity Monitor calls Memory), biggest first.
+    #[serde(default)]
+    pub memory_top: Vec<MemoryTerminal>,
+}
+
+/// How short of memory macOS is: its pressure level (Activity Monitor's green, yellow, red).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPressure {
+    #[default]
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl MemoryPressure {
+    /// From `kern.memorystatus_vm_pressure_level` (1 normal, 2 warning, 4 critical).
+    pub fn from_level(level: i32) -> MemoryPressure {
+        match level {
+            l if l >= 4 => MemoryPressure::Critical,
+            2 | 3 => MemoryPressure::Warning,
+            _ => MemoryPressure::Normal,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryPressure::Normal => "normal",
+            MemoryPressure::Warning => "warning",
+            MemoryPressure::Critical => "critical",
+        }
+    }
+
+    /// Whether this pressure reaches a `system.busy_memory` value (`off` never does).
+    pub fn reaches(self, busy_memory: &str) -> bool {
+        match busy_memory {
+            "warning" => self >= MemoryPressure::Warning,
+            "critical" => self >= MemoryPressure::Critical,
+            _ => false,
+        }
+    }
+}
+
+/// A terminal and the memory its processes use.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryTerminal {
+    pub session_id: Id,
+    pub name: String,
+    /// Footprint summed over the terminal's processes, bytes.
+    pub memory_bytes: u64,
+    pub processes: u32,
+    /// Its biggest processes: `python3.12 27.1 GB`.
+    #[serde(default)]
+    pub biggest: Vec<String>,
+}
+
+/// Bytes for people: `27.1 GB`, `512 MB`.
+pub fn bytes_label(bytes: u64) -> String {
+    let gb = bytes as f64 / (1u64 << 30) as f64;
+    if gb >= 1. { format!("{gb:.1} GB") } else { format!("{} MB", bytes >> 20) }
 }
 
 /// A build, test or install holding a build slot or waiting in line for one.
@@ -97,6 +189,9 @@ pub struct BuildSlot {
     /// Seconds since it got its slot, or since it started waiting.
     #[serde(default)]
     pub for_secs: u64,
+    /// A local model run holding a model slot (`guard.model_slots`), not a build.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model: bool,
 }
 
 /// An app (its processes grouped by the `.app` they run from) or a lone process outside midna's
@@ -330,11 +425,47 @@ pub fn is_heavy_command(command: &str) -> bool {
 /// The program of the first build, test or install in a shell command (`cargo` for
 /// `source env.sh && cargo test`): what holds a build slot (`guard.build_slots`).
 pub fn heavy_program(command: &str) -> Option<String> {
-    shell_commands(command).iter().find_map(|words| heavy_words(words))
+    shell_commands(command).iter().find_map(|words| program_words(words, Class::Build))
 }
 
-/// The program one simple command, as words, runs when it's a build, test or install.
-fn heavy_words(words: &[String]) -> Option<String> {
+/// The program of the first local model run in a shell command: what holds a model slot
+/// (`guard.model_slots`). MLX and mflux tools (`mflux-generate`, `mlx_lm.generate`,
+/// `python -m mlx_audio.tts.generate`), `ollama run|pull`, llama.cpp and whisper.cpp, Hugging
+/// Face downloads (`hf download`, `huggingface-cli download`), and Python whose command or
+/// heredoc loads a model (`from_pretrained`, `import mlx`, `diffusers`, `snapshot_download`).
+/// `python gen.py` can't be told from any other script; the memory gate covers what it loads.
+pub fn model_program(command: &str) -> Option<String> {
+    let cmds = shell_commands(command);
+    if let Some(p) = cmds.iter().find_map(|words| program_words(words, Class::Model)) {
+        return Some(p);
+    }
+    // A heredoc's body isn't in `cmds`: look for a model in the raw text of a Python command.
+    let python = cmds.iter().find_map(|words| program_words(words, Class::Python))?;
+    MODEL_CODE.iter().any(|m| command.contains(m)).then_some(python)
+}
+
+/// Text in Python code that loads or downloads a model.
+const MODEL_CODE: &[&str] = &["from_pretrained", "import mlx", "from mlx", "mflux", "diffusers", "snapshot_download", "hf_hub_download", "mlx_lm", "mlx_audio", "mlx_vlm", "mlx_whisper"];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Class {
+    Build,
+    Model,
+    /// Any Python interpreter (for [`MODEL_CODE`]).
+    Python,
+}
+
+fn is_python(prog: &str) -> bool {
+    prog == "python" || prog.strip_prefix("python3").is_some_and(|v| v.is_empty() || v.starts_with('.'))
+}
+
+/// A model tool by its program name alone.
+fn is_model_tool(prog: &str) -> bool {
+    ["mflux-", "mlx_", "mlx-", "llama-", "whisper-"].iter().any(|p| prog.starts_with(p)) || prog == "mflux" || prog == "whisper"
+}
+
+/// The program one simple command, as words, runs when it's of `class`.
+fn program_words(words: &[String], class: Class) -> Option<String> {
     let mut i = 0;
     // Look past assignments, shell keywords and wrappers to the program they run.
     loop {
@@ -367,15 +498,38 @@ fn heavy_words(words: &[String]) -> Option<String> {
                 // `bash -c '<script>'`: the script is the command. `bash x.sh` runs a file, never heavy.
                 let j = flags(i + 1, &[]);
                 let c = words[i + 1..j].iter().any(|f| !f.starts_with("--") && f.contains('c'));
-                return words.get(j).filter(|_| c).and_then(|s| heavy_program(s));
+                return words.get(j).filter(|_| c).and_then(|s| shell_commands(s).iter().find_map(|w| program_words(w, class)));
             }
-            "eval" => return heavy_program(&words[i + 1..].join(" ")),
+            "eval" => return shell_commands(&words[i + 1..].join(" ")).iter().find_map(|w| program_words(w, class)),
+            // `uv run mflux-generate …`, `uvx mlx_lm.generate`, `pipx run …`: the tool they run.
+            "uv" | "pipx" if words.get(i + 1).is_some_and(|w| w == "run") && class != Class::Build => flags(i + 2, &["--with", "--python", "-p", "--from"]),
+            "uvx" if class != Class::Build => flags(i + 1, &["--with", "--python", "-p", "--from"]),
             _ => break,
         };
     }
     let prog = words[i].rsplit('/').next().unwrap_or(&words[i]);
     // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
     let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).map_or("", |s| s.as_str());
+    match class {
+        Class::Python => return is_python(prog).then(|| prog.to_string()),
+        Class::Model => {
+            let model = match prog {
+                p if is_model_tool(p) => true,
+                "ollama" => matches!(sub, "run" | "pull"),
+                "hf" | "huggingface-cli" => sub == "download",
+                // `python -m mlx_lm.generate`, `python -c '…from_pretrained…'`.
+                p if is_python(p) => {
+                    let m = words[i + 1..].windows(2).find(|w| w[0] == "-m").map(|w| w[1].as_str());
+                    let c = words[i + 1..].windows(2).find(|w| w[0] == "-c").map(|w| w[1].as_str());
+                    m.is_some_and(|m| is_model_tool(m) || ["mflux", "mlx", "diffusers", "whisper"].iter().any(|x| m == *x || m.starts_with(&format!("{x}."))))
+                        || c.is_some_and(|c| MODEL_CODE.iter().any(|x| c.contains(x)))
+                }
+                _ => false,
+            };
+            return model.then(|| prog.to_string());
+        }
+        Class::Build => {}
+    }
     let heavy = match prog {
         "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
         "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
@@ -593,6 +747,30 @@ mod tests {
         assert_eq!(heavy_program("bash -lc 'cd app && flutter test'").as_deref(), Some("flutter"));
         assert_eq!(heavy_program("git status; npm ci && xcodebuild").as_deref(), Some("npm"));
         assert_eq!(heavy_program("cargo --version"), None);
+    }
+
+    #[test]
+    fn model_commands() {
+        let m = |c: &str| model_program(c);
+        assert_eq!(m("mflux-generate-z-image-turbo --prompt 'a cat' --steps 4").as_deref(), Some("mflux-generate-z-image-turbo"));
+        assert_eq!(m("source .venv/bin/activate && python3 -m mlx_audio.tts.generate --text hi").as_deref(), Some("python3"));
+        assert_eq!(m("uv run mlx_lm.generate --model x").as_deref(), Some("mlx_lm.generate"));
+        assert_eq!(m("uvx --from mflux mflux-generate -p x").as_deref(), Some("mflux-generate"));
+        assert_eq!(m("ollama run llama3").as_deref(), Some("ollama"));
+        assert_eq!(m("hf download black-forest-labs/FLUX.1").as_deref(), Some("hf"));
+        assert_eq!(m("python3.12 -c 'from transformers import AutoModel; AutoModel.from_pretrained(\"x\")'").as_deref(), Some("python3.12"));
+        assert_eq!(m("cd tts && python3 - <<'EOF'\nfrom mlx_audio.tts import load\nEOF").as_deref(), Some("python3"));
+        assert_eq!(m("llama-cli -m model.gguf").as_deref(), Some("llama-cli"));
+        assert_eq!(m("ollama list"), None);
+        assert_eq!(m("hf auth login"), None);
+        assert_eq!(m("python3 gen.py"), None);
+        assert_eq!(m("python3 - <<'EOF'\nprint(1)\nEOF"), None);
+        assert_eq!(m("tb note 'mflux-generate ran'"), None);
+        assert_eq!(m("cargo build"), None);
+        assert!(!is_heavy_command("uv run pytest"), "uv run is only looked through for model tools");
+        assert_eq!(MemoryPressure::from_level(4), MemoryPressure::Critical);
+        assert!(MemoryPressure::Warning.reaches("warning") && !MemoryPressure::Warning.reaches("critical") && !MemoryPressure::Critical.reaches("off"));
+        assert_eq!((bytes_label(27 << 30), bytes_label(512 << 20)), ("27.0 GB".into(), "512 MB".into()));
     }
 
     #[test]

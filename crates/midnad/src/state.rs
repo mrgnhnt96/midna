@@ -84,6 +84,13 @@ pub struct State {
     /// Today's keep-awake override (`keep_awake.set` today); dropped once its date is past.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_awake_today: Option<midna_proto::keep_awake::Today>,
+    /// The last kernel panic report midnad handled (its file name), so it's reported once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panic_seen: Option<String>,
+    /// After a kernel panic, the needs-you that holds agents back until the human closes it
+    /// (`guard.panic_hold`, `panic.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panic_hold: Option<Id>,
 }
 
 impl State {

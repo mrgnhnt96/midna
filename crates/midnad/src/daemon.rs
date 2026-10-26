@@ -40,6 +40,8 @@ pub struct Config {
     /// them inside their own home so they never touch the real ones.
     pub claude_dir: PathBuf,
     pub codex_dir: PathBuf,
+    /// Where macOS writes kernel panic reports (`panic.rs`). Tests point it inside their home.
+    pub panic_dirs: Vec<PathBuf>,
 }
 
 impl Config {
@@ -58,6 +60,7 @@ impl Config {
             owns_process: false,
             claude_dir: agent_dir("CLAUDE_CONFIG_DIR", ".claude"),
             codex_dir: agent_dir("CODEX_HOME", ".codex"),
+            panic_dirs: crate::panic::report_dirs(),
         }
     }
 
@@ -72,6 +75,7 @@ impl Config {
             owns_process: false,
             claude_dir: home.join("agent-config/claude"),
             codex_dir: home.join("agent-config/codex"),
+            panic_dirs: vec![home.join("diagnostic-reports")],
             home,
         }
     }

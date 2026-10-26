@@ -404,7 +404,10 @@ fn build() -> Vec<MethodSpec> {
              whether it counts as CPU busy (system.busy_cpu), held (busy because of midna's terminals: the busy gate \
              holds agents back) or overloaded (CPU busy for guard.overload_secs), the terminals and other apps using \
              the most CPU with their busiest processes (`rustc ×14`), and the load average (busy: at or above \
-             system.busy_load, which postpones daemon upgrades). `system.overloaded` fires once per busy spell."),
+             system.busy_load, which postpones daemon upgrades). `system.overloaded` fires once per busy spell. \
+             Memory: macOS's pressure (memory_pressure), compressed and swap bytes, memory_held (the pressure reaches \
+             system.busy_memory, so the busy gate holds heavy work back) and the terminals using the most (memory_top). \
+             Build and model slots in use (builds, guard.build_slots, guard.model_slots)."),
         m::<RunAnywayParams, RunAnywayResult>("system.run_anyway").mutating().d(
             "The human told the agent to go ahead though the Mac is busy: the busy gate (guard.busy_gate) lets the \
              terminal (session_id, default the caller's) start builds, tests, installs and subagents until the human's \

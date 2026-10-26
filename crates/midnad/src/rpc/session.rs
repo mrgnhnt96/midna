@@ -218,6 +218,7 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
     let (command, agent) = match p.kind {
         SessionKind::Agent => {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;
+            crate::panic::gate(d, ctx)?;
             let supervised = ctx.supervised && d.core().state.setting_str("triggers.agent_mode") != "inherit";
             // A supervised agent's permission prompts are forced on; its own arguments could undo
             // that. Tools the human allowed on the trigger (`--allowedTools`) are all it may take.
@@ -825,6 +826,10 @@ pub fn resize(d: &Daemon, p: SessionResizeParams) -> R {
 /// conversation unless `resume: false`.
 pub fn restart(d: &Arc<Daemon>, ctx: &Ctx, p: SessionRestartParams) -> R {
     let s = d.core().state.session(&p.id).cloned().ok_or_else(|| not_found(&p.id))?;
+    // Before the policy gate: a held restart is refused, not first asked about.
+    if s.agent.is_some() || s.adopted.is_some() {
+        crate::panic::gate(d, ctx)?;
+    }
     if !ctx.is_human() {
         super::policy::gate(d, ctx, ActionKind::Cli, &format!("restart {}", s.id), Some(&s), false)?;
     }

@@ -28,6 +28,7 @@ pub mod local;
 pub mod queue;
 pub mod notify;
 pub mod notify_media;
+pub mod panic;
 pub mod peer;
 pub mod policy;
 pub mod procs;

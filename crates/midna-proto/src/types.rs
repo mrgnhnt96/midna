@@ -1429,6 +1429,13 @@ pub mod kinds {
     pub const SYSTEM_OVERLOADED: &str = "system.overloaded";
     /// The CPU is back under 80% of `system.busy_cpu` after a `system.overloaded` (`{cpu_percent, cpus}`).
     pub const SYSTEM_CALM: &str = "system.calm";
+    /// macOS's memory pressure reached `system.busy_memory` (a `SystemLoad`, with `memory_top`
+    /// and `needs_you_id`). Once per spell.
+    pub const SYSTEM_MEMORY_PRESSURE: &str = "system.memory_pressure";
+    /// The memory pressure is back under `system.busy_memory` (`{memory_pressure}`).
+    pub const SYSTEM_MEMORY_CALM: &str = "system.memory_calm";
+    /// The Mac booted from a kernel panic (`{report, panic, terminals, needs_you_id, hold}`).
+    pub const SYSTEM_PANICKED: &str = "system.panicked";
     /// A terminal's processes were stopped (SIGSTOP) by session.pause, or continued
     /// (`{processes}`).
     pub const SESSION_PAUSED: &str = "session.paused";

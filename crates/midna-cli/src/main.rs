@@ -922,7 +922,9 @@ fn system(a: &Args, out: OutFn) -> Res {
             // as soon as the CPU drops under system.busy_cpu or other apps become the cause. A plain
             // process, not a shell loop, so midnad never stops it as an old poll loop. A daemon from
             // before `held` existed reports `busy` only.
-            let held = |v: &Value| v.get("held").or_else(|| v.get("busy")).and_then(Value::as_bool) == Some(true);
+            let held = |v: &Value| {
+                v.get("held").or_else(|| v.get("busy")).and_then(Value::as_bool) == Some(true) || v.get("memory_held").and_then(Value::as_bool) == Some(true)
+            };
             let deadline = a.num::<u64>("timeout")?.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
             let v = loop {
                 let v = call("system.load", json!({}))?;
