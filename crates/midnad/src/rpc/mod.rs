@@ -310,6 +310,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "links.add" => links::add(d, ctx, parse(p)?),
         "links.remove" => links::remove(d, ctx, parse(p)?),
         "links.served_by" => links::served_by(d, parse(p)?),
+        "links.refresh" => links::refresh(d, ctx, parse(p)?),
         "links.patterns.list" => links::patterns_list(d),
         "links.patterns.register" => links::patterns_register(d, ctx, parse(p)?),
         "links.actions.list" => links::actions_list(d),

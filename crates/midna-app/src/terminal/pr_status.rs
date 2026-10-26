@@ -160,10 +160,7 @@ pub(super) fn find(grid: &[RowData]) -> Vec<Found> {
                 j -= 1;
             }
             let url: String = line[i..j].iter().map(|c| c.0).collect();
-            let canon = link_preview::github_pr(&url)
-                .map(|(owner, repo, n)| format!("https://github.com/{owner}/{repo}/pull/{n}"))
-                .or_else(|| link_preview::github_run(&url).map(|(owner, repo, id)| format!("https://github.com/{owner}/{repo}/actions/runs/{id}")));
-            if let Some(url) = canon {
+            if let Some(url) = link_preview::github_canonical(&url) {
                 let mut spans: Vec<(u16, u16, u16)> = vec![];
                 for &(_, r, x) in &line[i..j] {
                     match spans.last_mut() {
@@ -190,6 +187,23 @@ fn known(url: &str) -> Option<State> {
     STATES.lock().ok()?.get(url)?.1
 }
 
+/// A link's state changed (`links.stale`): forget the card's copy and make its color due an ask,
+/// keeping the old one on screen until the answer comes. Terminals showing it ask on their next tick.
+pub(crate) fn stale(url: &str) {
+    link_preview::forget(url);
+    let key = link_preview::github_canonical(url).unwrap_or_else(|| url.to_string());
+    if let Ok(mut m) = STATES.lock()
+        && let Some(e) = m.get_mut(&key)
+    {
+        match Instant::now().checked_sub(DONE_TTL) {
+            Some(past) => e.0 = past,
+            None => {
+                m.remove(&key);
+            }
+        }
+    }
+}
+
 /// Marks the ones due an ask as asked, and returns them.
 fn due(urls: impl Iterator<Item = String>) -> Vec<String> {
     let Ok(mut m) = STATES.lock() else { return vec![] };
@@ -210,9 +224,12 @@ fn due(urls: impl Iterator<Item = String>) -> Vec<String> {
 }
 
 impl TerminalView {
-    /// After a frame: find the pull request and run links on screen and ask for states not known yet.
+    /// After a frame, and every few seconds while any are on screen: find the pull request and run
+    /// links on screen and ask for states not known yet or gone stale.
     pub(super) fn scan_prs(&mut self, cx: &mut Context<Self>) {
         self.prs = if link_preview::pr_status_on(cx) { find(&self.grid) } else { vec![] };
+        // before `due` stamps them, so only a `stale` mark lands earlier
+        let asked = Instant::now();
         for url in due(self.prs.iter().map(|f| f.url.clone())) {
             cx.spawn(async move |this, cx| {
                 let u = url.clone();
@@ -221,7 +238,9 @@ impl TerminalView {
                     .spawn(async move { if link_preview::github_pr(&u).is_some() { link_preview::pr_state(&u) } else { link_preview::run_link_state(&u).map(str::to_string) } })
                     .await;
                 if let Ok(mut m) = STATES.lock() {
-                    m.insert(url, (Instant::now(), state.as_deref().and_then(State::parse), false));
+                    // marked stale while out: the answer may be from before the change, so it's due again
+                    let at = m.get(&url).filter(|e| e.0 < asked).map_or_else(Instant::now, |e| e.0);
+                    m.insert(url, (at, state.as_deref().and_then(State::parse), false));
                 }
                 let _ = this.update(cx, |_, cx| cx.notify());
             })
@@ -298,7 +317,7 @@ pub(super) fn paint(marks: &[Mark], bounds: Bounds<Pixels>, cw: f32, window: &mu
 
 #[cfg(test)]
 mod tests {
-    use super::{IconAt, find};
+    use super::{IconAt, State, due, find, known, stale};
     use crate::frame::{Cell, RowData};
 
     fn row(s: &str, cols: usize, wrapped: bool) -> RowData {
@@ -338,6 +357,18 @@ mod tests {
         assert_eq!(f[0].icon, IconAt::After(1, 10));
         let g = [row("https://github.com/a/b/issues/3 https://github.com/a/b", 80, false)];
         assert!(find(&g).is_empty());
+    }
+
+    #[test]
+    fn a_stale_link_is_due_again_and_keeps_its_state() {
+        let url = "https://github.com/stale-test/b/pull/41";
+        assert_eq!(due([url.to_string()].into_iter()), vec![url.to_string()]);
+        super::STATES.lock().unwrap().insert(url.into(), (std::time::Instant::now(), Some(State::Open), false));
+        assert!(due([url.to_string()].into_iter()).is_empty());
+        // any page of it counts
+        stale("https://github.com/stale-test/b/pull/41/files");
+        assert_eq!(known(url), Some(State::Open));
+        assert_eq!(due([url.to_string()].into_iter()), vec![url.to_string()]);
     }
 
     #[test]

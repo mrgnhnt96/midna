@@ -1397,6 +1397,18 @@ fn links(a: &Args, out: OutFn) -> Res {
             let v = call("links.add", json!({ "session": session, "target": target, "title": a.get("title"), "note": a.get("why"), "pin": !a.has("no-pin") }))?;
             out(&v, &|v| println!("added {}  {}{}", s_(v, "id"), s_(v, "title"), if v["pinned"] == true { " (pinned)" } else { "" }));
         }
+        "refresh" => {
+            a.check(&[])?;
+            let url = a.need(2, "URL")?;
+            let v = call("links.refresh", json!({ "url": url }))?;
+            out(&v, &|v| {
+                if v["delivered"] == true {
+                    println!("refreshing {}", s_(v, "url"));
+                } else {
+                    println!("no app connected; nothing cached for {}", s_(v, "url"));
+                }
+            });
+        }
         "patterns" => match a.pos.get(2).map(String::as_str).unwrap_or("list") {
             "list" | "ls" => {
                 a.check(&[])?;

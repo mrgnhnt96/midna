@@ -251,6 +251,11 @@ fn build() -> Vec<MethodSpec> {
             "Which terminal runs the server behind a link to this Mac (http://localhost:5173, 127.0.0.1, [::1]): the one \
              whose processes listen on that port, with what listens (`vite`). Null when no terminal's process does (another \
              app, or nothing). Not a local link is bad params. Answers from a few seconds' cache."),
+        m::<LinksRefreshParams, LinksRefreshResult>("links.refresh").mutating().d(
+            "Tell the app a link's state changed so it asks again now instead of when its cache runs out: a pull \
+             request you merged, closed or marked ready, a workflow run you re-ran. Its color and icon in the grid and \
+             its hover card update within a couple of seconds. Call it right after the change (`gh pr merge` …). With \
+             GitHub webhook triggers set up, pull request and run events do this on their own."),
         m::<NoParams, LinkPatternsList>("links.patterns.list").d(
             "The link patterns apps registered (links.patterns.register), by owner. They apply alongside the user's own \
              terminal.link_patterns, in the same form."),

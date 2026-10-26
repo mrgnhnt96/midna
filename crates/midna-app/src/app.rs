@@ -674,6 +674,11 @@ impl MainWindow {
                         crate::ui::badge::withdraw(id, cx);
                     }
                 }
+                if k == midna_proto::kinds::LINK_STALE
+                    && let Some(url) = e.data["url"].as_str()
+                {
+                    crate::terminal::link_stale(url);
+                }
                 if k == midna_proto::kinds::NOTIFY_CLEARED && self.is_home() {
                     match e.session_id.as_deref() {
                         Some(s) => crate::notify::clear(s),

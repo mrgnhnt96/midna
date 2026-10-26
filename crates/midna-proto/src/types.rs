@@ -1477,6 +1477,9 @@ pub mod kinds {
     pub const DAEMON_RESET: &str = "daemon.reset";
     /// A terminal's session links changed (`{count, added, pinned}`); read them with `links.list`.
     pub const LINKS_CHANGED: &str = "links.changed";
+    /// A link's state changed (`{url}`, from `links.refresh` or a GitHub webhook): the app drops what
+    /// it cached for the link (its hover card, a pull request's or run's color) and asks again.
+    pub const LINK_STALE: &str = "links.stale";
     /// An app registered or removed its link patterns (`{owner, count}`); see `links.patterns.list`.
     pub const LINK_PATTERNS_CHANGED: &str = "links.patterns_changed";
     /// An app registered or removed its link menus, or the human approved their commands

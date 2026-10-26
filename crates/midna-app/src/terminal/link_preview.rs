@@ -47,6 +47,9 @@ const CHECKS: usize = 8;
 const ISSUE_BODY: usize = 4000;
 /// Fetched pages and pull requests are reused for this long.
 const URL_TTL: Duration = Duration::from_secs(90);
+/// A link's color (`pr_status.rs`) reuses a card fetched this recently; older, it asks `gh` again,
+/// so its own wait isn't added to the card's.
+const SHARE_TTL: Duration = Duration::from_secs(10);
 /// A workflow run still going is fetched again sooner, so its status keeps up.
 const RUN_TTL: Duration = Duration::from_secs(10);
 
@@ -1242,10 +1245,11 @@ fn load_url(url: &str) -> Body {
 }
 
 /// A pull request's state for its link in the grid (`pr_status.rs`): OPEN, DRAFT, MERGED or
-/// CLOSED. Asks `gh` only, never the web page, and shares the card's cache.
+/// CLOSED. Asks `gh` only, never the web page, and shares the card's cache
+/// while it's fresh.
 pub(super) fn pr_state(url: &str) -> Option<String> {
     if let Some((at, Body::Pr(pr))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
-        && at.elapsed() < URL_TTL
+        && at.elapsed() < SHARE_TTL
     {
         return Some(pr.state);
     }
@@ -1261,7 +1265,7 @@ pub(super) fn pr_state(url: &str) -> Option<String> {
 /// FAILED, CANCELLED, SKIPPED or APPROVAL. Like `pr_state`, `gh` only, sharing the card's cache.
 pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
     if let Some((at, b @ Body::Run(_))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
-        && at.elapsed() < ttl(&b)
+        && at.elapsed() < ttl(&b).min(SHARE_TTL)
         && let Body::Run(r) = b
     {
         return Some(r.state.key());
@@ -1273,6 +1277,23 @@ pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
         c.insert(url.to_string(), (Instant::now(), Body::Run(run)));
     }
     Some(state)
+}
+
+/// `https://github.com/<owner>/<repo>/pull/<n>` or `…/actions/runs/<id>` for any page of a pull
+/// request or workflow run.
+pub(super) fn github_canonical(url: &str) -> Option<String> {
+    github_pr(url)
+        .map(|(owner, repo, n)| format!("https://github.com/{owner}/{repo}/pull/{n}"))
+        .or_else(|| github_run(url).map(|(owner, repo, id)| format!("https://github.com/{owner}/{repo}/actions/runs/{id}")))
+}
+
+/// Drop the cached card for a link (`links.stale`), and for every other page of the same pull
+/// request or run.
+pub(super) fn forget(url: &str) {
+    let key = github_canonical(url).unwrap_or_else(|| url.to_string());
+    if let Ok(mut c) = URL_CACHE.lock() {
+        c.retain(|k, _| k != url && github_canonical(k).as_deref().unwrap_or(k) != key);
+    }
 }
 
 fn ttl(b: &Body) -> Duration {
