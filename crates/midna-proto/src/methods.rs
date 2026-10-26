@@ -163,6 +163,22 @@ pub struct LinksServedByParams {
     pub url: String,
 }
 
+/// `links.refresh`: a link's state changed (a pull request merged, a run finished); the app drops
+/// what it cached for it and asks again.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksRefreshParams {
+    /// An http(s) URL, e.g. `https://github.com/<owner>/<repo>/pull/<n>`; any page of a pull
+    /// request or run counts as the pull request or run.
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksRefreshResult {
+    pub url: String,
+    /// The app got the request (false: no app connected, so nothing was cached).
+    pub delivered: bool,
+}
+
 /// The terminal whose processes listen on a local link's port.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ServedBy {

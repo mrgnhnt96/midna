@@ -85,6 +85,17 @@ pub fn patterns_register(d: &Daemon, ctx: &Ctx, p: LinkPatternsRegisterParams) -
     ok(AppLinkPatterns { owner, patterns })
 }
 
+/// Ask the app to drop what it cached for a link and fetch it again (a pull request merged, a run re-ran).
+pub fn refresh(d: &Daemon, ctx: &Ctx, p: LinksRefreshParams) -> R {
+    let url = p.url.trim().to_string();
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(char::is_whitespace) {
+        return Err(RpcError::bad_params(format!("not an http(s) URL: {url}")));
+    }
+    let delivered = d.gui_connected();
+    d.emit(kinds::LINK_STALE, ctx.actor(), None, None, json!({ "url": url }));
+    ok(LinksRefreshResult { url, delivered })
+}
+
 /// How long a port's answer is reused: a menu opens it on every click of the same link.
 const SERVED_BY_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 

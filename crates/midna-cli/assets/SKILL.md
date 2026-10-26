@@ -78,6 +78,8 @@ midna explain <id>         # why a terminal/rule/trigger/needs-you item is the w
   showed up as a link. Don't pin everything: a few pins are useful, twenty aren't.
   Links remember the prompts they came up in: `midna links --kind file --turn last` lists the
   files edited since the human's last prompt (`--turn N` for prompt N of `midna prompts`).
+  After you merge, close or mark ready a PR, or re-run a workflow, `midna links refresh <url>` so
+  its link's color and hover card update now instead of in a minute or two.
 - An app that owns refs (like `T42`) makes them clickable in terminal text by registering its
   own link patterns: `midna links patterns set <app> --rule '<regex> = <url template> [agents]'`
   (RPC `links.patterns.register {owner, patterns}`; each call replaces that app's set, `[]` or

@@ -391,9 +391,29 @@ pub fn complete(d: &Arc<Daemon>, w: Work) -> Delivery {
     } else if delivery.replay_of.is_some() && !delivery.summary.starts_with("Replayed") {
         delivery.summary = format!("Replayed · {}", delivery.summary);
     }
+    if delivery.replay_of.is_none()
+        && let Some(url) = stale_link(delivery.source, &delivery.event, &payload)
+    {
+        d.emit(kinds::LINK_STALE, Actor::system(), None, None, json!({ "url": url }));
+    }
     record(d, &delivery, store.then_some(&payload));
     release(d, &delivery.delivery_guid, delivery.body_sha256.as_deref());
     delivery
+}
+
+/// The pull request or workflow run whose state a GitHub event changed, so the app stops
+/// showing what it cached for its link (`links.stale`).
+fn stale_link(source: TriggerSource, event: &str, payload: &Value) -> Option<String> {
+    if source != TriggerSource::Github {
+        return None;
+    }
+    let action = payload["action"].as_str()?;
+    let at = match (event, action) {
+        ("pull_request", "closed" | "reopened" | "ready_for_review" | "converted_to_draft") => "/pull_request/html_url",
+        ("workflow_run", "requested" | "in_progress" | "completed") => "/workflow_run/html_url",
+        _ => return None,
+    };
+    payload.pointer(at)?.as_str().map(str::to_string)
 }
 
 pub fn trigger_actor(t: &Trigger) -> Actor {
@@ -580,6 +600,17 @@ mod tests {
         assert_eq!(v["action"], "opened");
         assert_eq!(v["n"], "a b");
         assert!(parse_body(b"nope").is_none());
+    }
+    #[test]
+    fn stale_links_from_github_events() {
+        let pr = json!({ "action": "closed", "pull_request": { "html_url": "https://github.com/a/b/pull/7", "merged": true } });
+        assert_eq!(stale_link(TriggerSource::Github, "pull_request", &pr).as_deref(), Some("https://github.com/a/b/pull/7"));
+        let opened = json!({ "action": "opened", "pull_request": { "html_url": "https://github.com/a/b/pull/7" } });
+        assert_eq!(stale_link(TriggerSource::Github, "pull_request", &opened), None);
+        let run = json!({ "action": "completed", "workflow_run": { "html_url": "https://github.com/a/b/actions/runs/9" } });
+        assert_eq!(stale_link(TriggerSource::Github, "workflow_run", &run).as_deref(), Some("https://github.com/a/b/actions/runs/9"));
+        assert_eq!(stale_link(TriggerSource::Github, "push", &pr), None);
+        assert_eq!(stale_link(TriggerSource::Bitbucket, "pull_request", &pr), None);
     }
     #[test]
     fn header_names() {

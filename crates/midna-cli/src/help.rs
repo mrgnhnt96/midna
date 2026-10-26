@@ -230,6 +230,7 @@ pub static VERBS: &[Verb] = &[
                 links pin|unpin <link-id|url|path> [--session <id>]\n       \
                 links remove <link-id|url|path> [--session <id>]\n       \
                 links add <url|app-link|path> [--title T] [--why <note>] [--no-pin] [--session <id>]\n       \
+                links refresh <url>\n       \
                 links patterns [list]\n       \
                 links patterns set <owner> --rule '<regex> = <url template> [agents] [project:<name>] [preview:\"<cmd> $1\"]'…\n       \
                 links patterns clear <owner>\n       \
@@ -245,6 +246,8 @@ pub static VERBS: &[Verb] = &[
                   for good (only `add` brings it back). Each link knows the prompts it came up in (numbered as in\n\
                   `midna prompts`); --turn keeps one, e.g.\n\
                   `midna links --kind file --turn last` = the files edited since the last prompt. Defaults to your own terminal.\n\
+                  `refresh` tells the app a pull request or run changed (you merged it, re-ran it), so its color and\n\
+                  hover card update now instead of in a minute or two.\n\
                   `patterns` is for apps: one registers the refs it owns (e.g. T42 -> myapp://task/T42) so they turn\n\
                   into links in terminal text, alongside the human's terminal.link_patterns and in the same rule\n\
                   format. `set` replaces that owner's patterns wholesale and they survive a restart; `clear` removes\n\
@@ -262,7 +265,7 @@ pub static VERBS: &[Verb] = &[
                   {\"divider\": true}. Open and copy items work at once; run, terminal and prompt items stay hidden\n\
                   until the human approves them, and again whenever those commands change. `register` replaces the\n\
                   owner's menus; `clear` removes them and forgets the approval.",
-        methods: &["links.list", "links.pin", "links.remove", "links.add", "links.patterns.list", "links.patterns.register", "links.actions.list", "links.actions.register"],
+        methods: &["links.list", "links.pin", "links.remove", "links.add", "links.refresh", "links.patterns.list", "links.patterns.register", "links.actions.list", "links.actions.register"],
     },
     Verb {
         name: "queue",

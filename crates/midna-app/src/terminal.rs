@@ -31,6 +31,7 @@ mod queue_pill;
 mod secret_paste;
 
 pub use link_preview::share as share_preview_env;
+pub(crate) use pr_status::stale as link_stale;
 pub use prompt_nav::share as share_prompt_bar;
 
 pub const FONT_SIZE: f32 = 12.5;
@@ -323,6 +324,20 @@ impl TerminalView {
                         if t.cursor.is_some() || fading {
                             cx.notify();
                         }
+                    }
+                });
+                if r.is_err() {
+                    break;
+                }
+            }
+        }));
+        // pull request and run links: ask again once their state is due, even when nothing new is drawn
+        tasks.push(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                let r = this.update(cx, |t, cx| {
+                    if !t.prs.is_empty() {
+                        t.scan_prs(cx);
                     }
                 });
                 if r.is_err() {
