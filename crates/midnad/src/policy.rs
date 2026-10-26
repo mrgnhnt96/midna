@@ -62,6 +62,60 @@ pub fn escape_glob(value: &str) -> String {
     s
 }
 
+/// The tools in an agent's `--allowedTools` / `--allowed-tools` arguments: each value after the
+/// option up to the next option, or `--allowedTools=…`, split on commas and spaces outside
+/// parentheses (`"Read,Bash(git status:*)"`).
+pub fn launch_allowed_tools(args: &[String]) -> Vec<String> {
+    let mut values: Vec<&str> = vec![];
+    let mut taking = false;
+    for a in args {
+        if let Some(v) = a.strip_prefix("--allowedTools=").or_else(|| a.strip_prefix("--allowed-tools=")) {
+            values.push(v);
+            taking = false;
+        } else if a == "--allowedTools" || a == "--allowed-tools" {
+            taking = true;
+        } else if a.starts_with('-') {
+            taking = false;
+        } else if taking {
+            values.push(a);
+        }
+    }
+    let mut tools = vec![];
+    for v in values {
+        let (mut depth, mut start) = (0usize, 0);
+        for (i, c) in v.char_indices().chain([(v.len(), ',')]) {
+            match c {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' | ' ' if depth == 0 => {
+                    let t = v[start..i].trim();
+                    if !t.is_empty() {
+                        tools.push(t.to_string());
+                    }
+                    start = i + c.len_utf8();
+                }
+                _ => {}
+            }
+        }
+    }
+    tools
+}
+
+/// `allowed` (a terminal's `Session.allowed_tools`) lets the tool call `value` (`name` or
+/// `name(arg)`) through as a whole tool: its exact name, its MCP server (`mcp__server`), or
+/// `mcp__server__*`. An entry narrowed to some calls (`Bash(git status:*)`) doesn't: midna
+/// can't tell which calls Claude's own matching lets through, so the ask still asks.
+pub fn launch_allows(allowed: &[String], value: &str) -> bool {
+    let name = value.split('(').next().unwrap_or(value);
+    allowed.iter().any(|t| {
+        if t.contains('(') {
+            return false;
+        }
+        let server = t.strip_suffix("__*").unwrap_or(t);
+        t == name || (server.starts_with("mcp__") && !server[5..].contains("__") && name.strip_prefix(server).is_some_and(|r| r.starts_with("__")))
+    })
+}
+
 pub fn is_expired(r: &Rule, now: i64) -> bool {
     r.expires_at.as_deref().and_then(time::parse_rfc3339).is_some_and(|t| t <= now)
 }
@@ -205,6 +259,22 @@ mod tests {
         let r = evaluate(&rules, &c, time::now_unix(), "auto");
         assert_eq!((r.decision, r.source), (Effect::Allow, DecisionSource::Default));
         assert_eq!(r.trace.len(), 3);
+    }
+
+    #[test]
+    fn launch_tools() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let t = launch_allowed_tools(&args(&["--model", "opus", "--allowedTools", "Read,Bash(git status:*)", "Edit", "--print", "x", "--allowed-tools=mcp__s"]));
+        assert_eq!(t, ["Read", "Bash(git status:*)", "Edit", "mcp__s"]);
+        let slack = "mcp__claude_ai_Slack__slack_send_message";
+        assert!(launch_allows(&args(&[slack]), slack));
+        assert!(launch_allows(&args(&["mcp__claude_ai_Slack"]), slack));
+        assert!(launch_allows(&args(&["mcp__claude_ai_Slack__*"]), slack));
+        assert!(launch_allows(&args(&["Read"]), "Read(/tmp/x)"));
+        assert!(!launch_allows(&args(&["mcp__claude_ai_Sla"]), slack));
+        assert!(!launch_allows(&args(&["mcp__claude_ai_Slack__slack_send"]), slack));
+        assert!(!launch_allows(&args(&["Bash(git status:*)"]), "Bash(git status)"));
+        assert!(!launch_allows(&args(&["Bash"]), slack));
     }
 
     #[test]

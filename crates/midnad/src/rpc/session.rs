@@ -265,6 +265,12 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
         adopted: None,
         close_on_exit: p.close_on_exit,
         auto_name: None,
+        // Only tools the human gave count: an agent could launch one with any arguments.
+        allowed_tools: if agent.is_some() && (ctx.is_human() || ctx.actor().kind == ActorKind::Trigger) {
+            crate::policy::launch_allowed_tools(&p.agent_args)
+        } else {
+            vec![]
+        },
     };
     {
         let mut core = d.core();
@@ -369,6 +375,7 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
             let mut x = sessions.remove(new);
             x.keep_on_top = s.keep_on_top;
             x.notify = s.notify.clone();
+            x.allowed_tools = s.allowed_tools.clone();
             let at = sessions.iter().position(|o| o.id == s.id).unwrap_or(sessions.len());
             sessions.insert(at, x);
         }

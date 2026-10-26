@@ -273,6 +273,12 @@ pub struct Session {
     /// anyone else clears it, and the name stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_name: Option<AutoName>,
+    /// The `--allowedTools` its agent was launched with, when the human gave them: the human
+    /// opened it, or a `start_agent` trigger's `allowed_tools` did. A global or project `ask`
+    /// rule on one of these tools steps aside (`DecisionSource::Launch`). Empty when an agent
+    /// opened it, whatever its arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
 }
 
 /// A name midna gave a terminal by itself (see `Session.auto_name`).
@@ -767,6 +773,10 @@ pub enum DecisionSource {
     /// midna's load guard held it back: the Mac is busy (`guard.busy_gate`) or the agent
     /// already runs `guard.max_subagents` subagents.
     Guard,
+    /// An `ask` rule matched, but the terminal's agent was launched with this tool in the
+    /// human's `--allowedTools` (`Session.allowed_tools`): midna steps aside and the agent's
+    /// own allow list decides.
+    Launch,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

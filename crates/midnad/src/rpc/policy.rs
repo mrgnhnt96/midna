@@ -20,7 +20,17 @@ fn complete(d: &Daemon, ctx: &Ctx, mut a: PolicyAction) -> PolicyAction {
 
 fn check_now(d: &Daemon, a: &PolicyAction) -> CheckResult {
     let core = d.core();
-    evaluate(&core.state.rules, a, time::now_unix(), &core.state.setting_str("policy.default"))
+    let mut res = evaluate(&core.state.rules, a, time::now_unix(), &core.state.setting_str("policy.default"));
+    // A global or project ask is a safety net for agents in general; a terminal the human
+    // launched with this tool in --allowedTools already has their OK. A session ask or any
+    // deny still stands.
+    let launched = a.session.as_deref().and_then(|sid| core.state.session(sid)).is_some_and(|s| crate::policy::launch_allows(&s.allowed_tools, &a.value));
+    if a.kind == ActionKind::Tool && res.decision == Effect::Ask && launched && res.rule.as_ref().is_some_and(|r| !matches!(r.scope, RuleScope::Session(_))) {
+        res.decision = Effect::Allow;
+        res.source = DecisionSource::Launch;
+        res.rule = None;
+    }
+    res
 }
 
 /// Evaluate and, when a rule decided, count it as fired. Decisions of the defaults table
@@ -36,7 +46,7 @@ fn evaluate_and_fire(d: &Daemon, a: &PolicyAction, actor: &Actor) -> CheckResult
             actor.clone(),
             a.project.clone(),
             a.session.clone(),
-            json!({ "decision": res.decision, "source": "default", "default": setting, "passthrough": passthrough, "action": a }),
+            json!({ "decision": res.decision, "source": res.source, "default": setting, "passthrough": passthrough, "action": a }),
         );
     }
     if let Some(r) = &res.rule {
@@ -70,7 +80,11 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
         source: r.source,
         rule: r.rule.clone(),
         needs_you_id: None,
-        reason: r.rule.as_ref().map(|x| format!("rule {} ({} `{}`)", x.id, x.effect.as_str(), x.matcher.pattern)),
+        reason: match &r.rule {
+            Some(x) => Some(format!("rule {} ({} `{}`)", x.id, x.effect.as_str(), x.matcher.pattern)),
+            None if r.source == DecisionSource::Launch => Some("launched with it in --allowedTools".into()),
+            None => None,
+        },
     };
     // Claude's crons become midna schedules (unless a rule denies them).
     if let Some(reason) = crate::crons::decide(d, ctx, &a, res.decision != Effect::Deny) {

@@ -397,3 +397,34 @@ fn a_setting_change_shows_both_values_and_saves_the_humans_edit() {
     let n = wait_approval(&mut h);
     assert_eq!(n["setting"], json!({ "key": "agents.may_force_close", "from": true, "to": false }), "{n}");
 }
+
+#[test]
+fn a_global_ask_steps_aside_for_tools_the_human_launched_the_agent_with() {
+    let d = TestDaemon::start_with(|c| c.agent_bin = Some("/bin/cat".into()));
+    let mut h = d.human();
+    let slack = "mcp__claude_ai_Slack__slack_send_message";
+    let open = |c: &mut Client| call(c, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp", "agent_args": ["--allowedTools", slack] }))["id"].clone();
+    let mine = open(&mut h);
+    call(&mut h, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "tool", "pattern": "mcp__claude_ai_Slack__*" } }));
+    let check = |c: &mut Client, sid: &Value, tool: &str| {
+        let r = call(c, "policy.check", json!({ "action": { "kind": "tool", "value": tool, "session": sid } }));
+        (r["decision"].as_str().unwrap().to_string(), r["source"].as_str().unwrap().to_string())
+    };
+    assert_eq!(check(&mut h, &mine, slack), ("allow".into(), "launch".into()));
+    // What its PreToolUse hook gets: no approval, so Claude's own --allowedTools decides.
+    let r = call(&mut d.agent(Some(mine.as_str().unwrap())), "policy.request", json!({ "action": { "kind": "tool", "value": slack } }));
+    assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("allow"), Some("launch")), "{r}");
+    assert!(approvals(&mut h).is_empty());
+    // Not another Slack tool it wasn't launched with.
+    assert_eq!(check(&mut h, &mine, "mcp__claude_ai_Slack__slack_read_channel"), ("ask".into(), "rule".into()));
+    // An agent's own arguments grant nothing: it could have written anything there.
+    let theirs = open(&mut d.agent(Some(mine.as_str().unwrap())));
+    assert_eq!(call(&mut h, "session.get", json!({ "id": theirs }))["allowed_tools"], Value::Null);
+    assert_eq!(check(&mut h, &theirs, slack), ("ask".into(), "rule".into()));
+    // A session ask on that terminal still asks; a deny anywhere still denies.
+    let ask = call(&mut h, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "tool", "pattern": slack }, "scope": { "kind": "session", "id": mine } }));
+    assert_eq!(check(&mut h, &mine, slack), ("ask".into(), "rule".into()));
+    call(&mut h, "rule.remove", json!({ "id": ask["id"] }));
+    call(&mut h, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "tool", "pattern": slack } }));
+    assert_eq!(check(&mut h, &mine, slack).0, "deny");
+}

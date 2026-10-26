@@ -537,6 +537,7 @@ mod tests {
             adopted: None,
             close_on_exit: false,
             auto_name: None,
+            allowed_tools: vec![],
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);
