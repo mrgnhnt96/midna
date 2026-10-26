@@ -556,7 +556,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
         "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
     s!("projects.empty_opens", en(&["terminal", "agent"]), S("agent"), "general", false,
-        "What clicking a pinned project with no terminals opens (its heading, its New row, or its ⌘1–9): terminal, a shell; or agent, the agent last started in that project (Claude if none)."),
+        "What clicking a pinned project with no terminals opens (its heading, its New row, its ⌘1–9, or opening it from ⌘K, where ⌥↩ opens the other kind): terminal, a shell; or agent, the agent last started in that project (Claude if none)."),
     s!("projects.new_terminal_in", en(&["project", "main"]), S("project"), "general", false,
         "Where ⌘T and the new-agent shortcut open in the current project: project, the project's own folder (a worktree project stays in its worktree); or main, the repo's checkout that already has main or master out (the main checkout when none does). midna never checks a branch out for this, so other agents' worktrees keep their branches."),
     s!("updates.feed_url", SettingKind::String, S(DEFAULT_FEED_URL), "general", true,
