@@ -289,10 +289,11 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
     let s = d.core().state.session(&p.id).cloned().ok_or_else(|| not_found(&p.id))?;
     let busy = matches!(s.status.state, StatusState::Working | StatusState::NeedsYou);
     if !ctx.is_human() {
-        if busy && !p.force {
+        // An agent's own terminal is always working while it runs `close`: closing it needs no force.
+        let own = ctx.session.as_deref() == Some(s.id.as_str());
+        if busy && !p.force && !own {
             return Err(RpcError::conflict(format!("session {} is {}; pass force to close it anyway", s.id, s.status.state.as_str())));
         }
-        let own = ctx.session.as_deref() == Some(s.id.as_str());
         let (may_close_idle, may_force_close) = {
             let core = d.core();
             (core.state.setting_bool("agents.may_close_idle"), core.state.setting_bool("agents.may_force_close"))
@@ -304,7 +305,8 @@ pub fn close(d: &Arc<Daemon>, ctx: &Ctx, p: SessionCloseParams) -> R {
         let default = if may_force_close { Some(Effect::Allow) } else { (!own && !may_close_idle).then_some(Effect::Ask) };
         super::policy::gate_with(d, ctx, ActionKind::Cli, &format!("{value} {}", s.id), Some(&s), default)?;
         // The human may be reading it: the app gets a say first (`close_hold.rs`).
-        crate::close_hold::close(d, &p.id, p.force, p.cleanup, if p.force { "force_close" } else { "close" }, ctx.actor());
+        // Forced for its own: the close must not be dropped later for being busy (`close_hold::finish`).
+        crate::close_hold::close(d, &p.id, p.force || own, p.cleanup, if p.force { "force_close" } else { "close" }, ctx.actor());
         return ok(OkResult { ok: true });
     }
     let closing = crate::cleanup::capture(d, &p.id, p.cleanup);

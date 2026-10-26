@@ -483,14 +483,31 @@ fn agent_close_policy() {
     let d = TestDaemon::start();
     let mut h = d.human();
     let sid = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    call(&mut d.agent(Some(&other)), "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": {} }));
     let mut a = d.agent(Some(&sid));
-    call(&mut a, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": {} }));
-    // Working session: plain close is a conflict for agents.
-    assert_eq!(call_err(&mut a, "session.close", json!({ "id": sid })).code, CONFLICT);
+    // Someone else's working terminal: plain close is a conflict for agents.
+    assert_eq!(call_err(&mut a, "session.close", json!({ "id": other })).code, CONFLICT);
     // A deny rule on `close --force*` refuses the forced close.
     call(&mut h, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "cli", "pattern": "close --force*" } }));
-    assert_eq!(call_err(&mut a, "session.close", json!({ "id": sid, "force": true })).code, REFUSED);
-    call(&mut h, "session.close", json!({ "id": sid })); // humans aren't gated
+    assert_eq!(call_err(&mut a, "session.close", json!({ "id": other, "force": true })).code, REFUSED);
+    call(&mut h, "session.close", json!({ "id": other })); // humans aren't gated
+}
+
+#[test]
+fn agent_closes_its_own_working_terminal() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    call(&mut a, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": {} }));
+    // It's working (it's running `midna close`), but it's its own: no --force needed (#90).
+    call(&mut a, "session.close", json!({ "id": sid }));
+    let start = std::time::Instant::now();
+    while h.call_value("session.get", json!({ "id": sid })).is_ok() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "own working terminal never closed");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[test]
