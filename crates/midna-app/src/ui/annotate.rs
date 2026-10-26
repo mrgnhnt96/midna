@@ -608,8 +608,10 @@ fn rail(a: &AnnotateView, t: &Theme, narrow: bool, cx: &mut Context<AnnotateView
                 .group("annot-note")
                 .child(num)
                 .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(text))
-                // The note being edited has its own trash under the field. Always in the tree,
-                // shown on hover by style, like the thumbnails' ✕.
+                // The note being edited has its own trash under the field; it keeps an empty column
+                // the trash's width, so the text wraps the same when the field leaves. Always in
+                // the tree, shown on hover by style, like the thumbnails' ✕.
+                .when(editing, |d| d.child(div().flex_none().w(px(14.))))
                 .when(!editing, |d| {
                     d.child(
                         div()
