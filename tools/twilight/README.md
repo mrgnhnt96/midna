@@ -12,10 +12,17 @@ The shipped files are `crates/midnad/assets/sounds/twilight/<Name>.wav`. midnad 
 | Strum | turn_done | `tw-done` |
 | Hm | agent, from_trigger | `tw-ping` |
 | Rise | approved | `tw-approved-c` |
-| Nn-nn | denied | `tw-denied` |
+| Settle | denied | `tw-denied-e` |
+| Nn-nn | (denied until 2026-10-26) | `tw-denied` |
+| Fall | | `tw-denied-a` |
+| Step | | `tw-denied-b` |
+| Tap-tap | | `tw-denied-d` |
 | Whoosh | queue_sent | `tw-sent` |
 | Fwip | image_added | `tw-sparkle-b` |
-| Close | closed | `tw-closed-a` |
+| Tock | closed | `tw-closed-r3c` |
+| Close | (closed until 2026-10-26) | `tw-closed-a` |
+| Cascade | | `tw-closed-r3b` |
+| Drop | | `tw-closed-r3e` |
 | Tick | switched | `tw-tick` |
 | Thump | command_bar | `tw-portal-c` |
 | Tick-tick | copied | `tw-copy` |
@@ -26,7 +33,7 @@ Edit its block in `synth.py`, run it, listen, and copy `out/<rendered as>.wav` o
 
 The script was tuned over several rounds of listening, so it doesn't rebuild every shipped file exactly. The shipped WAVs are the source of truth.
 
-- **Rebuilt exactly:** Portal, Call, Strum, Rise, Fwip, Thump, Close.
+- **Rebuilt exactly:** Portal, Call, Strum, Rise, Fwip, Thump, Close, Settle, Fall, Step, Tap-tap, Tock, Cascade, Drop.
 - **Close relatives only:** Hm, Nn-nn, Whoosh and Tick-tick come from the first round, when every sound shared one random sequence; their recipes are at the end of the script. Uh-oh and Tick were approved before `write()` started trimming and fading the ends. The shipped Tick is also `tw-tick` at half its level, and the shipped Tick-tick is a quarter of its approved level (it was ~13 dB louder than Tick).
 
 `KEEP` lists the approved sounds, and `write()` won't overwrite a file in `out/` that's in it. To redo one, remove it from `KEEP`. Every block calls `seed("<name>")`, so a sound's noise stays the same from run to run.

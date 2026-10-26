@@ -230,7 +230,7 @@ macro_rules! s {
 
 /// A notification category's sound, volume and image (see `notify::{sound_key, volume_key, image_key}`).
 const SOUNDS: SettingKind = en_path(&[
-    "none", "Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick", "Basso", "Blow", "Bottle", "Frog", "Funk",
+    "none", "Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick", "Settle", "Fall", "Step", "Tap-tap", "Tock", "Cascade", "Drop", "Basso", "Blow", "Bottle", "Frog", "Funk",
     "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink",
 ]);
 macro_rules! snd {
@@ -747,10 +747,10 @@ pub static SETTINGS: &[SettingSpec] = &[
     snd!("restarted", "none"), push!("restarted", false), pushf!("restarted"), vol!("restarted"), pic!("restarted"), ttl!("restarted"), txt!("restarted", "{{reason}}. "), stay!("restarted", 6), color!("restarted", "work"), bell!("restarted", false),
     snd!("cleanup", "none"), push!("cleanup", false), pushf!("cleanup"), vol!("cleanup"), pic!("cleanup"), ttl!("cleanup"), txt!("cleanup", "{{terminal}} (the closed terminal's name), {{removed}} and {{kept}} (what went and what stayed, comma-separated). "), stay!("cleanup", 8), color!("cleanup", "ok"), bell!("cleanup", false),
     snd!("approved", "Rise"), vol!("approved"),
-    snd!("denied", "Nn-nn"), vol!("denied"),
+    snd!("denied", "Settle"), vol!("denied"),
     snd!("queue_sent", "Whoosh"), vol!("queue_sent"),
     snd!("image_added", "Fwip"), vol!("image_added"),
-    snd!("closed", "Close"), vol!("closed"),
+    snd!("closed", "Tock"), vol!("closed"),
     snd!("switched", "Tick"), vol!("switched"),
     snd!("command_bar", "Thump"), vol!("command_bar"),
     snd!("copied", "Tick-tick"), vol!("copied"),

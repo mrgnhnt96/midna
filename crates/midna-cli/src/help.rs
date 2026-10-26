@@ -344,8 +344,9 @@ pub static VERBS: &[Verb] = &[
                   card, 0 = until handled) and notify.color.<kind>. notify.badge (background|always|off) shows or\n\
                   hides the floating badge; notify.badge.corner says which corner it sits in.\n\
                   Each kind has a sound, a volume and an image: settings notify.sound.<kind> (none, one of midna's\n\
-                  Twilight sounds, the defaults: Portal, Call, Uh-oh, Strum, Hm, Rise, Nn-nn, Whoosh, Fwip, Close,\n\
-                  Tick, Thump, Tick-tick; a macOS sound like Glass; or an imported file), notify.volume.<kind>\n\
+                  Twilight sounds, the defaults: Portal, Call, Uh-oh, Strum, Hm, Rise, Settle, Whoosh, Fwip, Tock,\n\
+                  Tick, Thump, Tick-tick, plus Nn-nn, Close, Fall, Step, Tap-tap, Cascade, Drop; a macOS sound like\n\
+                  Glass; or an imported file), notify.volume.<kind>\n\
                   (0-100, times the master notify.volume) and notify.image.<kind> (empty = notify.image, every\n\
                   notification's image). `import` copies a sound\n\
                   (aiff, wav, mp3, m4a, caf) or image (png, jpg, gif) into midna, --for sets it for those kinds;\n\

@@ -70,7 +70,7 @@ def tone(freq, dur, harmonics=(1, 0.3, 0.1), a=0.006, tau=0.3, detune=0.0):
 
 
 # v1 sounds the user liked: never re-rendered (their noise/randomness would change).
-KEEP = {"tw-ping", "tw-denied", "tw-sent", "tw-copy", "tw-failed", "tw-tick", "tw-attention", "tw-done", "tw-portal-a", "tw-approved-c", "tw-portal-c", "tw-sparkle-b"}
+KEEP = {"tw-ping", "tw-denied", "tw-sent", "tw-copy", "tw-failed", "tw-tick", "tw-attention", "tw-done", "tw-portal-a", "tw-approved-c", "tw-portal-c", "tw-sparkle-b", "tw-denied-a", "tw-denied-b", "tw-denied-d", "tw-denied-e", "tw-closed-r3b", "tw-closed-r3c", "tw-closed-r3e"}
 
 
 def seed(name):
@@ -348,3 +348,44 @@ fade_a = lambda: [(0.5 - 0.5 * math.cos(math.pi * min(1, u / 0.4))) * (1 - u) **
 shut_a = apply(noise_sweep(A_DUR, 900, 180, q=1.8), fade_a())
 hint_a = apply(sweep(A_DUR, 380, 150, shape=1.6), fade_a())
 write("tw-closed-a", reverb(mix(gain(shut_a, 0.5), gain(hint_a, 0.08)), wet=0.3, tail=0.6), peak=0.25)
+
+# denied, round 2 (2026-10-26): Nn-nn's low voice gliding down got called a fart. Voices for
+# actions never landed (see approved), so these are non-voice options in Rise's timbre.
+# A: Rise backwards (G5 -> C5), B: a softer step down (E5 -> A4), C: a high falling breath,
+# D: two soft muted taps going down, E: one warm minor dyad (A4 + C5) that settles.
+# The user picked E (ships as Settle, the new default) and kept A, B, D as Fall, Step, Tap-tap.
+seed("denied-a")
+write("tw-denied-a", reverb(mix(tone(784.0, 0.5, (1, 0.25, 0.06), a=0.008, tau=0.08), tone(523.3, 0.7, (1, 0.25, 0.06), a=0.008, tau=0.12), at=[0, 0.07]), wet=0.2, tail=0.3), peak=0.6)
+seed("denied-b")
+write("tw-denied-b", reverb(mix(tone(659.3, 0.5, (1, 0.2, 0.04), a=0.012, tau=0.07), tone(440.0, 0.7, (1, 0.2, 0.04), a=0.012, tau=0.11), at=[0, 0.09]), wet=0.2, tail=0.3), peak=0.5)
+seed("denied-c")
+C_DUR = 0.3
+sigh = apply(noise_sweep(C_DUR, 2600, 1100, q=2.2), [min(1, u / 0.3) * (1 - u) ** 1.2 for u in (i / n(C_DUR) for i in range(n(C_DUR)))])
+write("tw-denied-c", reverb(mix(sigh, gain(tone(587.3, 0.4, (1, 0.15), a=0.03, tau=0.1), 0.25), at=[0, 0.05]), wet=0.22, tail=0.3), peak=0.4)
+seed("denied-d")
+tap = lambda f: tone(f, 0.12, (1, 0.3, 0.05), a=0.004, tau=0.025)
+write("tw-denied-d", reverb(mix(tap(880.0), tap(659.3), at=[0, 0.1]), wet=0.18, tail=0.2), peak=0.45)
+seed("denied-e")
+write("tw-denied-e", reverb(mix(tone(440.0, 0.7, (1, 0.25, 0.06), a=0.015, tau=0.14), tone(523.3, 0.7, (1, 0.25, 0.06), a=0.015, tau=0.14), at=[0, 0.02]), wet=0.25, tail=0.35), peak=0.5)
+
+# closed, round 3 (2026-10-26): Close (a breath falling to 180 Hz over a low hum) also got
+# called a fart. Options that stay out of the low end:
+# A: Close pitched up, the breath falls 2400 -> 900 Hz, no hum. B: a quick soft arpeggio down
+# (G5 E5 C5). C: one soft muted tap that dips a little. D: a short high breath that closes into
+# a tiny tap. E: a soft two-note fifth down (C6 -> F5), shorter and higher than Fall.
+# The user picked C (ships as Tock, the new default) and kept B and E as Cascade and Drop.
+seed("closed-r3a")
+R3A = 0.32
+fold = apply(noise_sweep(R3A, 2400, 900, q=2.0), [(0.5 - 0.5 * math.cos(math.pi * min(1, u / 0.35))) * (1 - u) ** 1.4 for u in (i / n(R3A) for i in range(n(R3A)))])
+write("tw-closed-r3a", reverb(fold, wet=0.25, tail=0.35), peak=0.3)
+seed("closed-r3b")
+arp = mix(*[tone(f, 0.45, (1, 0.2, 0.04), a=0.006, tau=0.07) for f in (784.0, 659.3, 523.3)], at=[0, 0.05, 0.1])
+write("tw-closed-r3b", reverb(arp, wet=0.2, tail=0.3), peak=0.4)
+seed("closed-r3c")
+dip = [math.sin(2 * math.pi * (700 * t - 60 * t * t / 0.12)) for t in (i / SR for i in range(n(0.12)))]
+write("tw-closed-r3c", reverb(apply(dip, [min(1, i / n(0.005)) * math.exp(-i / (0.03 * SR)) for i in range(n(0.12))]), wet=0.15, tail=0.15), peak=0.35)
+seed("closed-r3d")
+breath = apply(noise_sweep(0.2, 2800, 1500, q=2.2), env_adsr(n(0.2), 0.08, 0, 1, 0.1))
+write("tw-closed-r3d", reverb(mix(gain(breath, 0.6), tone(880.0, 0.15, (1, 0.3), a=0.004, tau=0.025), at=[0, 0.16]), wet=0.18, tail=0.25), peak=0.35)
+seed("closed-r3e")
+write("tw-closed-r3e", reverb(mix(tone(1046.5, 0.3, (1, 0.2, 0.04), a=0.006, tau=0.05), tone(698.5, 0.5, (1, 0.2, 0.04), a=0.006, tau=0.09), at=[0, 0.06]), wet=0.2, tail=0.25), peak=0.4)

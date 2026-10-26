@@ -77,6 +77,13 @@ static TWILIGHT_FILES: &[&[u8]] = &[
     include_bytes!("../assets/sounds/twilight/Tick.wav"),
     include_bytes!("../assets/sounds/twilight/Thump.wav"),
     include_bytes!("../assets/sounds/twilight/Tick-tick.wav"),
+    include_bytes!("../assets/sounds/twilight/Settle.wav"),
+    include_bytes!("../assets/sounds/twilight/Fall.wav"),
+    include_bytes!("../assets/sounds/twilight/Step.wav"),
+    include_bytes!("../assets/sounds/twilight/Tap-tap.wav"),
+    include_bytes!("../assets/sounds/twilight/Tock.wav"),
+    include_bytes!("../assets/sounds/twilight/Cascade.wav"),
+    include_bytes!("../assets/sounds/twilight/Drop.wav"),
 ];
 
 /// Write the Twilight sounds to `MIDNA_HOME/notify/twilight` (at startup), replacing any that
