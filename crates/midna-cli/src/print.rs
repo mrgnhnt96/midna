@@ -401,6 +401,18 @@ pub fn system_load(v: &Value) {
         v["load_percent"],
         v["busy_at"]
     );
+    let bytes = |k: &str| midna_proto::system::bytes_label(v[k].as_u64().unwrap_or(0));
+    if v["memory_total_bytes"].as_u64().unwrap_or(0) > 0 {
+        let held = if v["memory_held"].as_bool() == Some(true) { "agents wait to start heavy work" } else { "agents carry on" };
+        println!(
+            "memory pressure {} on {}: {} compressed, {} swap; {held} (at {}, setting system.busy_memory)",
+            s(v, "memory_pressure"),
+            bytes("memory_total_bytes"),
+            bytes("compressed_bytes"),
+            bytes("swap_used_bytes"),
+            s(v, "busy_memory_at")
+        );
+    }
     let names = |t: &Value| t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
     let mac = |t: &Value| midna_proto::system::share_label(midna_proto::system::share_of_mac(t["cpu_percent"].as_u64().unwrap_or(0) as u32, cpus));
     let top = v["top"].as_array().cloned().unwrap_or_default();
@@ -422,6 +434,15 @@ pub fn system_load(v: &Value) {
             println!("{:<12} {:>5} {:>6}  {busiest}", s(o, "name"), mac(o), o["processes"]);
         }
     }
+    let memory = v["memory_top"].as_array().cloned().unwrap_or_default();
+    if !memory.is_empty() {
+        println!("{:<12} {:>8} {:>6}  {}", "TERMINAL", "MEMORY", "PROCS", "NAME / BIGGEST");
+        for t in &memory {
+            let biggest = t["biggest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let mem = midna_proto::system::bytes_label(t["memory_bytes"].as_u64().unwrap_or(0));
+            println!("{:<12} {:>8} {:>6}  {}  ({biggest})", s(t, "session_id"), mem, t["processes"], s(t, "name"));
+        }
+    }
     let system = v["system_percent"].as_u64().unwrap_or(0);
     if system > 0 {
         println!("macOS and other users' processes: {system}%");
@@ -429,14 +450,17 @@ pub fn system_load(v: &Value) {
     if !top.is_empty() {
         println!("pause one with `midna system pause <terminal>`, stop what it started with `midna system stop <terminal>`");
     }
-    let slots = v["build_slots"].as_u64().unwrap_or(0);
-    let builds = v["builds"].as_array().cloned().unwrap_or_default();
-    let holding = builds.iter().filter(|b| b["waiting"].as_bool() != Some(true)).count();
-    if slots > 0 || !builds.is_empty() {
-        let limit = if slots == 0 { "no limit".to_string() } else { format!("{holding} of {slots} slots in use") };
-        println!("builds and tests: {limit} (setting guard.build_slots)");
+    let all = v["builds"].as_array().cloned().unwrap_or_default();
+    for (model, what, key) in [(false, "builds and tests", "build_slots"), (true, "model runs", "model_slots")] {
+        let slots = v[key].as_u64().unwrap_or(0);
+        let builds: Vec<&Value> = all.iter().filter(|b| (b["model"].as_bool() == Some(true)) == model).collect();
+        let holding = builds.iter().filter(|b| b["waiting"].as_bool() != Some(true)).count();
+        if (slots > 0 && (!model || !builds.is_empty())) || !builds.is_empty() {
+            let limit = if slots == 0 { "no limit".to_string() } else { format!("{holding} of {slots} slots in use") };
+            println!("{what}: {limit} (setting guard.{key})");
+        }
     }
-    for b in &builds {
+    for b in &all {
         let what = if b["waiting"].as_bool() == Some(true) { "waits" } else { "holds" };
         let mins = b["for_secs"].as_u64().unwrap_or(0) / 60;
         println!("  {what} {:<5} {:<12} {}  ({})", format!("{mins}m"), s(b, "session_id"), s(b, "command").lines().next().unwrap_or(""), s(b, "name"));

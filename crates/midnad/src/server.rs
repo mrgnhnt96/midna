@@ -238,6 +238,7 @@ fn background(d: &Arc<Daemon>) {
     crate::clock::start(d);
     crate::keep_awake::start(d);
     crate::guard::start(d);
+    crate::panic::start(d);
     crate::worktrees::start(d);
     crate::trust::start(d);
 }
