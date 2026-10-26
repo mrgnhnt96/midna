@@ -565,6 +565,12 @@ fn local_agents_use_the_normal_config_and_a_triggers_own_mode_and_tools() {
     let cmd = started_command(&mut h, &t["id"]);
     assert_eq!(mode(&cmd).as_deref(), Some("auto"), "{cmd:?}");
     assert!(cmd.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == slack), "{cmd:?}");
+    // A global ask on that tool steps aside for the terminal the trigger started (#104).
+    let started = call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] }))[0]["session_started"].clone();
+    assert_eq!(session(&mut h, started.as_str().unwrap())["allowed_tools"], json!([slack]));
+    call(&mut h, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "tool", "pattern": slack } }));
+    let r = call(&mut h, "policy.check", json!({ "action": { "kind": "tool", "value": slack, "session": started } }));
+    assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("allow"), Some("launch")), "{r}");
 
     // An agent may change the rest, but changing them asks again.
     let mut act = t["action"].clone();

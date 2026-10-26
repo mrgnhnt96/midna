@@ -90,7 +90,8 @@ pub fn claude_decision(r: &Value) -> Option<Value> {
     let decision = r.get("decision")?.as_str()?;
     let source = r.get("source").and_then(Value::as_str).unwrap_or("");
     let permission = match (decision, source) {
-        (_, "default") => return None,
+        // `launch`: an ask rule stepped aside for the terminal's own --allowedTools.
+        (_, "default" | "launch") => return None,
         ("allow", _) => "allow",
         ("deny", _) => "deny",
         _ => "ask",
@@ -126,6 +127,7 @@ mod tests {
     #[test]
     fn decisions() {
         assert!(claude_decision(&json!({"decision": "allow", "source": "default"})).is_none());
+        assert!(claude_decision(&json!({"decision": "allow", "source": "launch"})).is_none());
         let d = claude_decision(&json!({"decision": "deny", "source": "rule", "reason": "rule r_1"})).unwrap();
         assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "deny");
         let d = claude_decision(&json!({"decision": "ask", "source": "timeout"})).unwrap();

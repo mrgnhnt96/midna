@@ -135,11 +135,17 @@ struct FeedEntry {
     default: bool,
     /// An unmatched tool call: midna had no opinion, the agent's own permission flow decided.
     passthrough: bool,
+    /// An ask rule matched, but the terminal was launched with the tool in --allowedTools.
+    launch: bool,
 }
 
 /// What a feed row points at: the rule, or "no rule" for defaults-table decisions.
 fn feed_target(f: &FeedEntry) -> &'static str {
-    if f.passthrough { "no rule · agent's own prompt decides" } else { "no rule · default" }
+    match () {
+        _ if f.launch => "ask rule · launched with --allowedTools",
+        _ if f.passthrough => "no rule · agent's own prompt decides",
+        _ => "no rule · default",
+    }
 }
 
 /// Names the screen needs from the main window (projects, terminals, selection).
@@ -435,6 +441,7 @@ impl RulesView {
                     outcome: None,
                     default,
                     passthrough: d.get("passthrough").and_then(|x| x.as_bool()).unwrap_or(false),
+                    launch: d.get("source").and_then(|x| x.as_str()) == Some("launch"),
                 };
                 if self.paused && !history {
                     self.held.insert(0, entry);
@@ -912,6 +919,7 @@ impl RulesView {
             let why = match &rule {
                 Some(rule) => format!("{} · {}", rule.matcher.pattern, scope_label(n, &rule.scope)),
                 None if source == "default" => "no rule matched · policy.default".into(),
+                None if source == "launch" => "an ask rule matched · launched with --allowedTools".into(),
                 None => source.to_string(),
             };
             div()
@@ -1304,6 +1312,7 @@ impl RulesView {
             };
             let on = self.hl.as_deref() == Some(f.rule_id.as_str());
             let outcome = f.outcome.clone().unwrap_or_else(|| match f.verdict.as_str() {
+                _ if f.launch => "ran".into(),
                 _ if f.passthrough => "unsupervised".into(),
                 "deny" => "blocked".into(),
                 "allow" => "ran".into(),
