@@ -329,7 +329,9 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
                 ask(m, window, cx);
             } else if let Some(r) = rows.get(m.palette.sel.min(n.saturating_sub(1))) {
                 let cmd = r.cmd.clone();
-                activate(m, &cmd, window, cx);
+                if !(md.alt && open_other(m, &cmd, window, cx)) {
+                    activate(m, &cmd, window, cx);
+                }
             }
         }
         "tab" if prompt_mode(m) => {}
@@ -363,6 +365,16 @@ fn activate(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut Con
         return;
     }
     execute(m, cmd, window, cx);
+}
+
+/// ⌥ on a project row: open the kind `projects.empty_opens` doesn't pick (a shell when it
+/// says agent, and the other way round). False when `cmd` isn't a project row.
+fn open_other(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    let Some(Run::OpenProject { path: Some(path) }) = cmd.run.clone() else { return false };
+    m.palette.armed = None;
+    close(m, window, cx);
+    m.add_project(path, true, window, cx);
+    true
 }
 
 /// Run a command. Public so other views (and future agents' code) can run registry rows.
@@ -407,7 +419,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             crate::ui::queue::toggle(m, window, cx);
         }
         Run::Replace { session } => m.replace_session(session, cx),
-        Run::OpenProject { path: Some(path) } => m.add_project(path, window, cx),
+        Run::OpenProject { path: Some(path) } => m.add_project(path, false, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
         Run::OpenIde { ide, dir } => {
             if let Some(ide) = m.ide.list.iter().find(|i| i.id == ide).cloned() {
@@ -773,6 +785,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     });
 
     let sel_danger = rows.get(sel).is_some_and(|r| r.cmd.danger.is_some());
+    let sel_project = rows.get(sel).is_some_and(|r| matches!(r.cmd.run, Some(Run::OpenProject { path: Some(_) })));
+    let other_label = if m.empty_opens_agent() { "⌥↩ open terminal" } else { "⌥↩ open agent" };
     let enter_label = if prompts_mode {
         "jump"
     } else if none {
@@ -797,6 +811,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .text_color(t.dim)
         .child("↑↓ select")
         .child(format!("↩ {enter_label}"))
+        .when(sel_project && !prompts_mode, |d| d.child(other_label))
         .when(prompts_mode, |d| d.child("prompts sent before a /clear can't be jumped to"))
         .when(!prompts_mode, |d| {
             d.child("⇧↩ ask instead")
@@ -901,9 +916,11 @@ fn row(m: &MainWindow, t: &Theme, r: &Row, n: usize, on: bool, cx: &mut Context<
         .cursor_pointer()
         .when(on, |d| d.bg(t.accent_soft).shadow(vec![BoxShadow { color: edge, offset: point(px(2.), px(0.)), blur_radius: px(0.), spread_radius: px(0.), inset: true }]))
         .when(!on, |d| d.hover(|s| s.bg(t.panel)))
-        .on_click(cx.listener(move |m, _, w, cx| {
+        .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
             m.palette.sel = n;
-            activate(m, &cmd, w, cx);
+            if !(ev.modifiers().alt && open_other(m, &cmd, w, cx)) {
+                activate(m, &cmd, w, cx);
+            }
         }))
         .child(
             div()

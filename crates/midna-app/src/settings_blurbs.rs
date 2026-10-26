@@ -11,7 +11,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "ui.ask.agent" => "The agent ⌘K's Ask starts; tab switches it there.",
         "ui.ask.scope" => "Start it in the current project or in your home folder.",
         "projects.roots" => "Their subfolders show up in ⌘K, ready to open.",
-        "projects.empty_opens" => "Clicking a pinned project with no terminals opens a shell or its agent.",
+        "projects.empty_opens" => "A project with no terminals opens a shell or its agent (click or ⌘K).",
         "projects.new_terminal_in" => "Main opens ⌘T where main or master is already checked out.",
         "ide.app" => "Used when no per-folder rule matches.",
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",

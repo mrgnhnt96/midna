@@ -109,7 +109,7 @@ fn recent_list(t: &Theme, recent: Vec<crate::commands::RecentProject>, cx: &mut 
                 .rounded(px(8.))
                 .cursor_pointer()
                 .hover(|s| s.bg(t.raised))
-                .on_click(cx.listener(move |m, _, window, cx| m.add_project(path.clone(), window, cx)))
+                .on_click(cx.listener(move |m, ev: &ClickEvent, window, cx| m.add_project(path.clone(), ev.modifiers().alt, window, cx)))
                 .child(crate::icons::Icon::Project.el(14., t.fg))
                 .child(div().flex_none().text_color(t.fg).font_weight(FontWeight::BOLD).child(r.name))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(r.sub)),

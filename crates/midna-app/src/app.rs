@@ -1776,22 +1776,27 @@ impl MainWindow {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let _ = this.update_in(cx, |m, window, cx| m.add_project(path.to_string_lossy().into_owned(), window, cx));
+            let _ = this.update_in(cx, |m, window, cx| m.add_project(path.to_string_lossy().into_owned(), false, window, cx));
         })
         .detach();
     }
 
     /// Add `path` as a project (a no-op if it already is one), then go to it: its first
-    /// terminal outside the Background group, or a new shell there when it has none.
-    pub fn add_project(&mut self, path: String, _window: &mut Window, cx: &mut Context<Self>) {
-        self.rpc("project.add", json!({ "path": path }), cx, |m, v, window, cx| {
+    /// terminal outside the Background group, or what `projects.empty_opens` asks for when it
+    /// has none. `other` (⌥) always opens a new one of the kind the setting doesn't pick.
+    pub fn add_project(&mut self, path: String, other: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.rpc("project.add", json!({ "path": path }), cx, move |m, v, window, cx| {
             let Some(pid) = v.get("id").and_then(|x| x.as_str()).map(str::to_string) else {
                 return;
             };
             m.request_refresh(refresh::PROJECTS, cx);
+            if other {
+                let agent = (!m.empty_opens_agent()).then(|| m.last_agent(Some(&pid)));
+                return m.open_session(Some(pid), agent, cx);
+            }
             match m.sessions.iter().find(|s| !s.background && s.project_id.as_deref() == Some(pid.as_str())).map(|s| s.id.clone()) {
                 Some(id) => m.select(id, window, cx),
-                None => m.open_session(Some(pid), None, cx),
+                None => m.open_in_empty(pid, cx),
             }
         });
     }
