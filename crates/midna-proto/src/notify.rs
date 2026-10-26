@@ -100,10 +100,10 @@ macro_rules! fx {
 
 pub static EFFECTS: &[SoundEffect] = &[
     fx!("approved", "You approve", "action", "Rise", 100, "You approve something: an approval or permission prompt, \"I've done it\", a trigger you start."),
-    fx!("denied", "You deny", "action", "Nn-nn", 100, "You deny an approval or permission prompt, or keep a rule an agent wanted removed."),
+    fx!("denied", "You deny", "action", "Settle", 100, "You deny an approval or permission prompt, or keep a rule an agent wanted removed."),
     fx!("queue_sent", "Queued message sent", "action", "Whoosh", 100, "A message you queued went into its terminal (the pill's \"Sent\")."),
     fx!("image_added", "Image added to chat", "action", "Fwip", 100, "You paste, drop or pick an image into the image sheet."),
-    fx!("closed", "Terminal closed", "action", "Close", 100, "You closed a terminal, or replaced it with a new session (⌘R)."),
+    fx!("closed", "Terminal closed", "action", "Tock", 100, "You closed a terminal, or replaced it with a new session (⌘R)."),
     fx!("switched", "Switch terminal", "ui", "Tick", 100, "You select another terminal."),
     fx!("command_bar", "Open ⌘K", "ui", "Thump", 100, "The command bar opens."),
     fx!("copied", "Copy", "ui", "Tick-tick", 100, "midna copies something for you (a selection, a link, a session id)."),
@@ -253,7 +253,7 @@ pub static SYSTEM_SOUNDS: &[&str] = &["Basso", "Blow", "Bottle", "Frog", "Funk",
 /// midnad ships them inside its binary and writes them to `MIDNA_HOME/notify/twilight/<name>.wav`
 /// at startup. Every kind's default sound is one of these. Names have no extension, like the
 /// macOS ones, so they never clash with an imported file's name.
-pub static TWILIGHT: &[&str] = &["Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick"];
+pub static TWILIGHT: &[&str] = &["Portal", "Call", "Uh-oh", "Strum", "Hm", "Rise", "Nn-nn", "Whoosh", "Fwip", "Close", "Tick", "Thump", "Tick-tick", "Settle", "Fall", "Step", "Tap-tap", "Tock", "Cascade", "Drop"];
 
 /// Where a Twilight sound lives under `home` (MIDNA_HOME), whether or not it's there yet.
 pub fn twilight_path(home: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
