@@ -51,7 +51,7 @@
   - `close <id>` and `close --force <id>`
   - `restart <id>`
   - `<action> <target>` for window commands
-  - Agents can't close a working session without `force` (error `4`).
+  - Agents can't close a working session without `force` (error `4`), except their own (`ctx.session`): it is always working while its agent runs `close`, and the close goes through as forced so `close_hold` doesn't drop it (#90).
   - Closing another session's terminal while `agents.may_close_idle` is false turns a default allow into ask.
   - `window.command` from agents needs `agents.may_move_windows` for everything except `front` and `open_screen`.
 - **Expired rules are deleted** and emit `rule.expired`.

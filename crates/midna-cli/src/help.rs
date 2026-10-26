@@ -144,7 +144,7 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "close <id> [--force] [--no-cleanup]",
         summary: "close a terminal and kill its process",
-        details: "A working terminal needs --force. `close --force` and closing another terminal may ask the\n\
+        details: "A working terminal needs --force, except your own ($MIDNA_SESSION). `close --force` and closing another terminal may ask the\n\
                   human (settings agents.may_close_idle and agents.may_force_close, rules on `close …`); add\n\
                   --no-wait to get the needs-you id back at once instead of waiting (see `midna needs`).\n\
                   An approval still open when its terminal closes is withdrawn. Afterwards midna cleans up what\n\
