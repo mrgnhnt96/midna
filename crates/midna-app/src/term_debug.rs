@@ -197,7 +197,7 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
         "release" => {
             window.dispatch_event(PlatformInput::ModifiersChanged(ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default() }), cx);
         }
-        // Right-click at a cell (opens the context menu).
+        // Right-click at a cell (opens the context menu, or the link menu on a link).
         "rclick" if nums.len() >= 2 => {
             let Some(p) = at(cx, nums[0], nums[1]) else {
                 return;

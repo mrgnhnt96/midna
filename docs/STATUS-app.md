@@ -263,7 +263,7 @@ Decisions: DECISIONS.md "Closing the open TODOs". Verified against a temp `MIDNA
 - `midna daemon restart`: the status bar and card said "midnad restarting…", then both panes of the split re-attached by themselves and took input; the one control call caught at the exec (`ui.commands.list`) was retried and succeeded.
 - Rules feed shows "no rule · default" and "no rule · agent's own prompt decides / unsupervised" rows next to rule rows; removing a rule and pressing Undo restored it with its original id (`rule.restored` in the log).
 - ⌘K: user commands from `ui.commands.add` ("Deploy staging") match; the Ask toggles reflect `ui.ask.agent=codex`; the query field edits mid-word (typed, ←←⌫).
-- Terminal: ⌘-hover underlines `https://…` and `src/main.rs:1`; right-click shows Copy/Paste/Open link/Select All/Clear with Open link enabled over a link.
+- Terminal: ⌘-hover underlines `https://…` and `src/main.rs:1`; right-click shows Copy/Paste/Paste as Secret/Select All/Clear, or the link menu (as a plain click opens it) over a link.
 - Settings: Permissions and Login item rows show `midna permissions open …`; Update rows `midna updates check|install`; Danger zone has "Reset midna" (`midna daemon reset`); Agents has the two ⌘K Ask settings.
 
 **Not verified:** the Kass AX insert (`kass-probe … kass-sim`): the screen locked again before it could run, and it needs midna-app frontmost. The commands in the Kass section above still apply. `updates.install` end to end needs a packaged build with a feed (dev builds report `disabled`; the proxy path is covered by `tests/ui_updates_reset.rs`).
