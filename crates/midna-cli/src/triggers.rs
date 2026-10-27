@@ -365,12 +365,15 @@ pub fn action_from(a: &Args, project: Option<String>, cur: Option<&Value>) -> Re
         run_mods(a, &mut act)?;
         return Ok(Some(act));
     }
-    // --permission-mode / --allow-tool alone edit the current start_agent (update).
-    if !a.has("agent") && AGENT_MODS.iter().any(|f| a.has(f)) {
+    // --prompt / --permission-mode / --allow-tool alone edit the current start_agent (update).
+    if !a.has("agent") && (a.has("prompt") || AGENT_MODS.iter().any(|f| a.has(f))) {
         let Some(cur) = cur.filter(|c| c["kind"] == "start_agent" && picked.is_empty()) else {
-            return Err(Fail::Usage("--permission-mode and --allow-tool go with --agent claude".into()));
+            return Err(Fail::Usage("--prompt, --permission-mode and --allow-tool go with --agent claude|codex".into()));
         };
         let mut act = cur.clone();
+        if let Some(p) = a.get("prompt") {
+            act["prompt_template"] = json!(p);
+        }
         agent_mods(a, &mut act)?;
         return Ok(Some(act));
     }
@@ -941,6 +944,11 @@ mod tests {
         assert_eq!(edited["allowed_tools"], json!([]));
         assert_eq!(edited["prompt_template"], "Stand-up");
         assert!(action_from(&args(&["t", "--allow-tool", slack]), None, Some(&json!({ "kind": "attention", "message": "x" }))).is_err());
+        // update: --prompt alone replaces the template and keeps the rest (#115)
+        let reprompted = ok(action_from(&args(&["t", "--prompt", "Retro"]), None, Some(&act))).unwrap();
+        assert_eq!(reprompted, json!({ "kind": "start_agent", "project_id": "p", "agent": "claude", "prompt_template": "Retro", "permission_mode": "auto", "allowed_tools": [slack, "Bash(git status)"] }));
+        assert!(action_from(&args(&["t", "--prompt", "x"]), None, Some(&json!({ "kind": "attention", "message": "x" }))).is_err());
+        assert!(action_from(&args(&["t", "--prompt", "x"]), None, None).is_err(), "add: --prompt needs --agent");
     }
 
     #[test]
