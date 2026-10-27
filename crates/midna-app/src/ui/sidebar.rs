@@ -383,7 +383,8 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                     .when(menu_open, |d| {
                         // New terminal opens in the current project, so its keys belong on this menu only there
                         let keys = (m.current_project_id() == pid).then(|| m.key_label("keys.new_terminal")).filter(|k| !k.is_empty());
-                        d.child(project_menu(t, pid.clone(), pinned, keys, cx))
+                        let summary = pid.as_deref().map(|p| (m.summary.records(p).next().is_some(), m.key_label("keys.project_summary")));
+                        d.child(project_menu(t, pid.clone(), pinned, keys, summary, cx))
                     }),
             );
         let header = wipe(line, 0., header.into_any_element());
@@ -397,6 +398,13 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             crate::ui::fold_peek::forget(m, p);
         }
         line += usize::from(g.project.is_some());
+        let summary_row = pid.as_deref().filter(|p| fold < 1. && crate::ui::summary::row_wanted(m, p, empty)).map(|p| {
+            let el = div().flex_none().overflow_hidden().opacity(1. - fold).child(crate::ui::summary::sidebar_row(m, t, p, compact, cx));
+            let el = wipe(line, 26., el.into_any_element());
+            line += 1;
+            el
+        });
+        let (summary_top, summary_end) = if empty { (summary_row, None) } else { (None, summary_row) };
         // Folded, the ghost row goes with the fold (as the rows do).
         let new_row = pid.clone().filter(|_| empty && fold < 1.).map(|p| {
             let ghost = ghost_row(t, p, m.empty_opens_agent(), cx);
@@ -406,7 +414,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             el
         });
         // Root terminals belong to no project: no heading, just rows.
-        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(new_row).when(g.project.is_none(), |d| d.pt(px(4.)));
+        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(summary_top).children(new_row).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());
@@ -449,7 +457,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             }
         }
         run.extend(ghosts(None, cx));
-        group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
+        group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m)).children(summary_end);
         // A project that just turned up (an agent opened its first terminal) unfolds whole.
         list = list.child(match m.close_anim.arrival(&key) {
             Some(a) => arrive(a, group.into_any_element()),
@@ -880,7 +888,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let pad_y = if compact { 5. } else { 8. };
     // Just closed or opened the terminal beside it: the highlight is moving (`ui::close_anim`).
     let hl = m.close_anim.highlight(&s.id, selected);
-    let own = selected && hl == crate::ui::close_anim::Highlight::Own;
+    let own = selected && hl == crate::ui::close_anim::Highlight::Own && m.screen != Screen::Summary;
     let (armed, hover_id) = (m.row_close.is_armed(&s.id), s.id.clone());
 
     div()
@@ -1269,10 +1277,12 @@ fn new_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) -> imp
     .with_priority(1)
 }
 
-fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// `summary`: whether the project's Summary has records, and its shortcut's keys (root has none).
+fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, summary: Option<(bool, String)>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let p1 = pid.clone();
     let p2 = pid.clone();
     let p3 = pid.clone();
+    let (p4, p5) = (pid.clone(), pid.clone());
     deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             menu_box(t)
@@ -1303,6 +1313,27 @@ fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Opt
                         cx.notify();
                     }),
                 ))
+                .when_some(summary, |d, (any, keys)| {
+                    d.child(
+                        menu_item(t, "summary", "Show summary", "", cx.listener(move |m, _, w, cx| {
+                            m.menu = Menu::None;
+                            if let Some(p) = p4.clone() {
+                                crate::ui::summary::open(m, p, w, cx);
+                            }
+                        }))
+                        .when(!keys.is_empty(), |d| d.child(super::header::key_chip(t, keys.into()))),
+                    )
+                    .when(any, |d| {
+                        d.child(menu_item(t, "summary-clear", "Clear summary", "", cx.listener(move |m, _, _, cx| {
+                            m.menu = Menu::None;
+                            if let Some(p) = p5.clone() {
+                                m.summary.closed.retain(|c| c.project_id != p);
+                                m.rpc("summary.remove", serde_json::json!({ "project_id": p }), cx, |_, _, _, _| {});
+                            }
+                            cx.notify();
+                        })))
+                    })
+                })
                 // Root has no project to pin.
                 .when_some(p3, |d, p| {
                     d.child(div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line)).child(

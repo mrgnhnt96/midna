@@ -43,6 +43,7 @@ pub mod server;
 pub mod state;
 pub mod stream;
 pub mod subagent_log;
+pub mod summary;
 pub mod term;
 pub mod trust;
 pub mod upgrade;

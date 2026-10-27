@@ -104,6 +104,8 @@ pub enum Icon {
     /// The status bar's `cache`: the selected agent's prompt cache is warm / cold.
     Flame,
     Snowflake,
+    /// A project's Summary of closed terminals (`ui/summary.rs`).
+    Summary,
 }
 
 impl Icon {
@@ -179,6 +181,7 @@ impl Icon {
             Icon::Sun => "icons/sun.svg",
             Icon::Flame => "icons/flame.svg",
             Icon::Snowflake => "icons/snowflake.svg",
+            Icon::Summary => "icons/summary.svg",
             Icon::Chain => "icons/chain.svg",
             Icon::ChainBroken => "icons/chain-broken.svg",
         }
@@ -227,6 +230,7 @@ impl Icon {
             "issue" => Icon::Issue,
             "folder" => Icon::Folder,
             "server" => Icon::Server,
+            "summary" => Icon::Summary,
             _ => return None,
         })
     }
@@ -310,6 +314,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/settings.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>"##
+        }
+        "icons/summary.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M2 3.5h12M2 8h12M2 12.5h8"/></svg>"##
         }
         "icons/queue.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6"/></svg>"##

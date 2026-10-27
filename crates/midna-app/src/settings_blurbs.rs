@@ -15,6 +15,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "projects.new_terminal_in" => "Main opens ⌘T where main or master is already checked out.",
         "ide.app" => "Used when no per-folder rule matches.",
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",
+        "summary.keep_days" => "Days a project's Summary keeps the terminals that closed in it.",
         "windows.close_with_terminals" => "When you close one main window while another is open.",
         "finder.quick_action" => "Right-click a folder in Finder to open it in midna.",
         // Appearance
@@ -169,6 +170,7 @@ pub(super) fn shortcut_title(setting: &str) -> String {
         "keys.terminal_forward" => "Forward again",
         "keys.project_menu" => "Open the project's … menu",
         "keys.fold_project" => "Fold or unfold the project",
+        "keys.project_summary" => "Show the project's Summary",
         "keys.sidebar" => "Collapse or expand the sidebar",
         "keys.replace" => "Replace the terminal with a new session",
         "keys.terminal_menu" => "Open the terminal's … menu",

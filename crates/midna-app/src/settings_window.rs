@@ -167,7 +167,7 @@ impl Sec {
 const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::General, "Updates", &["@update", "updates.channel"]),
     (Sec::General, "⌘K Ask an agent", &["ui.ask.agent", "ui.ask.scope"]),
-    (Sec::General, "Projects and windows", &["projects.roots", "projects.empty_opens", "projects.new_terminal_in", "ide.app", "ide.rules", "windows.close_with_terminals", "finder.quick_action"]),
+    (Sec::General, "Projects and windows", &["projects.roots", "projects.empty_opens", "projects.new_terminal_in", "summary.keep_days", "ide.app", "ide.rules", "windows.close_with_terminals", "finder.quick_action"]),
     (Sec::Appearance, "Theme", &["theme", "theme.dark", "theme.light", "theme.colors", "density", "ui.haptics"]),
     (Sec::Appearance, "Bars", &["ui.header.script", "ui.header.buttons", "ui.row.script", "ui.status.script", "ui.status.items", "ui.status.looks", "ui.status.background_ring", "git.refresh_secs"]),
     (Sec::Appearance, "Sidebar footer", &["sidebar.footer.stats", "sidebar.footer.range", "sidebar.footer.buttons", "sidebar.footer.compact"]),
@@ -1091,6 +1091,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "windows.close_with_terminals" => "Closing a window with terminals",
         "projects.empty_opens" => "Empty pinned project opens",
         "projects.new_terminal_in" => "New terminals open in",
+        "summary.keep_days" => "Summary keeps closed terminals (days)",
         "ide.app" => "Open in IDE",
         "ide.rules" => "IDE per folder or file",
         "finder.quick_action" => "Finder “Open in Midna”",

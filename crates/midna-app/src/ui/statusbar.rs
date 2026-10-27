@@ -51,7 +51,7 @@ pub fn save_state(m: &mut MainWindow) {
     let mine: Vec<String> = m.order.iter().filter(|id| m.shows(id)).cloned().collect();
     m.order = merge_order(&base, &mine);
     let mut all = saved.as_object().cloned().unwrap_or_default();
-    for (k, v) in [("seen", serde_json::json!(m.seen)), ("collapsed", serde_json::json!(m.collapsed)), ("order", serde_json::json!(m.order)), ("sidebar_collapsed", serde_json::json!(m.sidebar_collapsed)), ("background_open", serde_json::json!(m.background_open)), ("background_hidden", serde_json::json!(m.background_hidden))] {
+    for (k, v) in [("seen", serde_json::json!(m.seen)), ("collapsed", serde_json::json!(m.collapsed)), ("order", serde_json::json!(m.order)), ("sidebar_collapsed", serde_json::json!(m.sidebar_collapsed)), ("background_open", serde_json::json!(m.background_open)), ("background_hidden", serde_json::json!(m.background_hidden)), ("summary_closed", serde_json::json!(m.summary.dismissed))] {
         all.insert(k.into(), v);
     }
     let _ = std::fs::write(p, serde_json::Value::Object(all).to_string());

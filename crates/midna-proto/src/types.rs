@@ -1480,6 +1480,9 @@ pub mod kinds {
     /// A link's state changed (`{url}`, from `links.refresh` or a GitHub webhook): the app drops what
     /// it cached for the link (its hover card, a pull request's or run's color) and asks again.
     pub const LINK_STALE: &str = "links.stale";
+    /// A project's Summary changed: a terminal closed into it, an app annotated one, or records
+    /// were removed (`{id?, action: added|annotated|removed|resumed}`); read it with `summary.list`.
+    pub const SUMMARY_CHANGED: &str = "summary.changed";
     /// An app registered or removed its link patterns (`{owner, count}`); see `links.patterns.list`.
     pub const LINK_PATTERNS_CHANGED: &str = "links.patterns_changed";
     /// An app registered or removed its link menus, or the human approved their commands

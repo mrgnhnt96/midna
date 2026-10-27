@@ -2072,7 +2072,7 @@ impl WindowAction {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WindowCommandParams {
     pub action: WindowAction,
-    /// Usually a session id; for open_screen a screen name (rules, triggers, insights, notifications, settings, needs_you).
+    /// Usually a session id; for open_screen a screen name (rules, triggers, insights, notifications, summary (the current project's), settings, needs_you).
     #[serde(default)]
     pub target: Option<String>,
     /// Action-specific value, e.g. `true`/`false` for keep_on_top, `left`/`right` for snap.

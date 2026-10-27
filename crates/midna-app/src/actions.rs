@@ -86,6 +86,8 @@ actions!(
         /// The current project's … menu / fold its group in the sidebar.
         ToggleProjectMenu,
         FoldProject,
+        /// The current project's Summary of closed terminals.
+        ShowProjectSummary,
         /// Collapse the sidebar to a rail / expand it again.
         ToggleSidebar,
     ]
@@ -150,6 +152,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.terminal_forward", TerminalForward, MAIN),
     shortcut!("keys.project_menu", ToggleProjectMenu, MAIN),
     shortcut!("keys.fold_project", FoldProject, MAIN),
+    shortcut!("keys.project_summary", ShowProjectSummary, MAIN),
     shortcut!("keys.sidebar", ToggleSidebar, MAIN),
     shortcut!("keys.rename", RenameSession, MAIN),
     shortcut!("keys.restart", RestartSession, MAIN),
