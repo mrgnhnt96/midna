@@ -224,17 +224,18 @@ fn frame<V: 'static>(
     plot: AnyElement,
     cx: &mut Context<V>,
 ) -> Div {
-    let plot_h = height - PAD_TOP;
     let n = data.values.len();
     let reached = data.reached.min(n);
-    let mut axis = div().relative().w(px(AXIS_W)).h(px(height)).flex_none();
+    // ticks are placed by fraction so the chart can shrink to fit a short card
+    let mut ticks = div().absolute().top(px(PAD_TOP)).bottom_0().left_0().right_0();
     let mut v = 0.;
     while v <= top + 1e-9 {
-        let y = PAD_TOP + (1. - (v / top) as f32) * plot_h;
-        axis =
-            axis.child(div().absolute().top(px(y - 7.)).right(px(10.)).text_size(px(11.)).line_height(px(14.)).text_color(t.dim).whitespace_nowrap().child(data.unit.fmt_axis(v)));
+        let y = relative(1. - (v / top) as f32);
+        ticks =
+            ticks.child(div().absolute().top(y).mt(px(-7.)).right(px(10.)).text_size(px(11.)).line_height(px(14.)).text_color(t.dim).whitespace_nowrap().child(data.unit.fmt_axis(v)));
         v += step;
     }
+    let axis = div().relative().w(px(AXIS_W)).h_full().flex_none().child(ticks);
     let cell = state.plot.clone();
     let cell2 = state.plot.clone();
     let cell3 = state.plot.clone();
@@ -243,7 +244,7 @@ fn frame<V: 'static>(
         .relative()
         .flex_1()
         .min_w_0()
-        .h(px(height))
+        .h_full()
         .child(plot)
         .child(canvas(move |b, _, _| cell.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
         .on_mouse_move(cx.listener(move |view, ev: &MouseMoveEvent, _, cx| {
@@ -319,7 +320,8 @@ fn frame<V: 'static>(
         let pos = point(px(if right_half { x - slot / 2. - 10. } else { x + slot / 2. + 10. }), b.origin.y + px(4.));
         Some(tooltip_card(data, i, t, pos, right_half))
     });
-    div().flex().flex_col().w_full().child(div().flex().w_full().child(axis).child(plot_box)).child(xl).children(tooltip)
+    // `height` is the plot's natural height; in a shorter card it shrinks so the x labels stay in view
+    div().flex().flex_col().w_full().min_h_0().child(div().flex().w_full().h(px(height)).min_h_0().child(axis).child(plot_box)).child(xl.flex_none()).children(tooltip)
 }
 
 fn tooltip_card(data: &ChartData, i: usize, t: &Theme, pos: Point<Pixels>, flip: bool) -> AnyElement {
