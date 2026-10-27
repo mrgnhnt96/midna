@@ -283,7 +283,8 @@ const TOPICS: &[(&str, &str)] = &[
         window is at 100% and has not reset (new turns fail until limited_until); a window whose resets_at passed is \
         marked expired. Each terminal's own last report is in session.get agent_info.rate_limits. Event \
         usage.limit_reached {agent, window, used_percentage, resets_at} fires once per window when it hits 100%: \
-        subscribe to it (or a local trigger on it) instead of polling."),
+        subscribe to it (or a local trigger on it) instead of polling. usage.sampled {agent, five_hour?, seven_day?} logs \
+        the numbers each time they move; `midna insights detail` (and the Insights widget Plan usage) charts them."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \

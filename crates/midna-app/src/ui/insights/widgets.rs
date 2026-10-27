@@ -82,6 +82,7 @@ pub const SPECS: &[Spec] = &[
     Spec { id: "working_waiting", title: "Working vs waiting on you", desc: "Per agent terminal", group: "Overview" },
     Spec { id: "approvals", title: "Approvals", desc: "Approvals granted over time", group: "Overview" },
     Spec { id: "triggers", title: "Triggers fired", desc: "Triggers over time", group: "Overview" },
+    Spec { id: "usage", title: "Plan usage", desc: "Claude's 5-hour and weekly limits over time", group: "Overview" },
     Spec { id: "parallelism", title: "Agents working at once", desc: "How many ran in parallel", group: "Leverage" },
     Spec { id: "autonomy", title: "Autonomy", desc: "Turn lengths and the longest run", group: "Leverage" },
     Spec { id: "latency", title: "How fast you answer", desc: "Every needs-you wait", group: "Friction" },
@@ -226,6 +227,11 @@ impl InsightsView {
             "projects" => self.projects_widget(t, d),
             "models" => models(t, p, d),
             "bests" => bests(t, d),
+            "usage" => match size {
+                Size::Small => usage_small(t, p, d),
+                Size::Wide => usage(t, p, d, self.range, 150.),
+                Size::Large => usage(t, p, d, self.range, 360.),
+            },
             _ => div(),
         }
     }
@@ -421,18 +427,7 @@ fn parallelism(t: &Theme, p: &Palette, d: &InsightsDetail, range: Range, plot_h:
     )
     .w_full()
     .h(px(plot_h));
-    let n = c.samples.len().max(1);
-    let start = parse_rfc3339(&d.from).unwrap_or(0);
-    let mut axis = div().relative().h(px(14.)).text_size(px(10.5)).text_color(t.dim);
-    let marks: Vec<(usize, String)> = if c.step_secs == 600 {
-        (0..n).step_by(36).map(|i| (i, hour_label(local_tm(start + i as i64 * 600).tm_hour))).collect()
-    } else {
-        let per_day = 24;
-        (0..n).step_by(per_day * if range == Range::Month { 5 } else { 1 }).map(|i| (i, short_day(&midna_proto::time::format_unix(start + i as i64 * 3600)))).collect()
-    };
-    for (i, label) in marks {
-        axis = axis.child(div().absolute().left(relative(i as f32 / n as f32)).child(label));
-    }
+    let axis = time_axis(t, &d.from, c.step_secs, c.samples.len(), range);
     let peak_when = c.peak_at.as_deref().map(|a| {
         let tm = local_tm(parse_rfc3339(a).unwrap_or(0));
         format!("{}:{:02}", hour_label(tm.tm_hour).trim_end_matches(['a', 'p']), tm.tm_min) + if tm.tm_hour < 12 { " AM" } else { " PM" }
@@ -447,6 +442,125 @@ fn parallelism(t: &Theme, p: &Palette, d: &InsightsDetail, range: Range, plot_h:
             ],
         )),
     )
+}
+
+/// Hour marks (10-minute steps) or day marks (hourly) under a chart of `n` steps from `from`.
+fn time_axis(t: &Theme, from: &str, step: i64, n: usize, range: Range) -> Div {
+    let n = n.max(1);
+    let start = parse_rfc3339(from).unwrap_or(0);
+    let mut axis = div().relative().h(px(14.)).text_size(px(10.5)).text_color(t.dim);
+    let marks: Vec<(usize, String)> = if step == 600 {
+        (0..n).step_by(36).map(|i| (i, hour_label(local_tm(start + i as i64 * 600).tm_hour))).collect()
+    } else {
+        let per_day = 24;
+        (0..n).step_by(per_day * if range == Range::Month { 5 } else { 1 }).map(|i| (i, short_day(&midna_proto::time::format_unix(start + i as i64 * 3600)))).collect()
+    };
+    for (i, label) in marks {
+        axis = axis.child(div().absolute().left(relative(i as f32 / n as f32)).child(label));
+    }
+    axis
+}
+
+/// The usage windows with a reading: label, color and their steps.
+fn usage_lines(p: &Palette, d: &InsightsDetail) -> Vec<(&'static str, Hsla, Vec<Option<f64>>)> {
+    let u = &d.usage;
+    [("5h", p.agents, &u.five_hour), ("7d", p.you, &u.seven_day)].into_iter().filter(|(_, _, v)| v.iter().any(Option::is_some)).map(|(l, c, v)| (l, c, v.clone())).collect()
+}
+
+/// One line per window, 0 to 100%, a run of readings to a line (a step with none breaks it), with
+/// dashed guides at 50% and 100%.
+fn usage_plot(lines: Vec<(&'static str, Hsla, Vec<Option<f64>>)>, grid: Hsla, stroke: f32) -> Canvas<()> {
+    canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let n = lines.first().map_or(1, |l| l.2.len()).max(1) as f32;
+            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+            let x = |k: usize| b.origin.x + px(w * (k as f32 + 0.5) / n);
+            let y = |pct: f64| b.origin.y + px(h - 2. - (h - 4.) * (pct.clamp(0., 100.) / 100.) as f32);
+            for g in [50., 100.] {
+                let mut path = PathBuilder::stroke(px(1.)).dash_array(&[px(3.), px(3.)]);
+                path.move_to(point(b.origin.x, y(g)));
+                path.line_to(point(b.origin.x + px(w), y(g)));
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, grid);
+                }
+            }
+            for (_, c, pts) in &lines {
+                let mut path = PathBuilder::stroke(px(stroke));
+                let mut prev = false;
+                for (k, pct) in pts.iter().enumerate() {
+                    match pct {
+                        Some(pct) if prev => path.line_to(point(x(k), y(*pct))),
+                        Some(pct) => path.move_to(point(x(k), y(*pct))),
+                        None => {}
+                    }
+                    prev = pct.is_some();
+                }
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, *c);
+                }
+            }
+        },
+    )
+}
+
+/// "9:40 AM" for a 10-minute step, "Tue 3p" for an hour.
+fn step_label(start: i64, step: i64, k: usize) -> String {
+    let at = start + k as i64 * step;
+    let tm = local_tm(at);
+    if step == 600 {
+        format!("{}:{:02} {}", hour_label(tm.tm_hour).trim_end_matches(['a', 'p']), tm.tm_min, if tm.tm_hour < 12 { "AM" } else { "PM" })
+    } else {
+        format!("{} {}", super::WEEKDAYS[tm.tm_wday as usize % 7], hour_label(tm.tm_hour))
+    }
+}
+
+fn usage(t: &Theme, p: &Palette, d: &InsightsDetail, range: Range, plot_h: f32) -> Div {
+    let u = &d.usage;
+    let h = head(t, "Plan usage", if u.step_secs == 600 { "10-minute steps" } else { "hourly steps" }, None);
+    let lines = usage_lines(p, d);
+    if lines.is_empty() {
+        return h.child(empty(t, "No usage reported in this range (Claude's status line reports it on Pro and Max plans)"));
+    }
+    let n = lines[0].2.len();
+    let start = parse_rfc3339(&d.from).unwrap_or(0);
+    // A hover target per step, with every window's reading.
+    let targets = div().absolute().inset_0().flex().children((0..n).map(|k| {
+        let read: Vec<String> = lines.iter().filter_map(|(l, _, pts)| pts[k].map(|v| format!("{l} {}%", v.round()))).collect();
+        div()
+            .id(SharedString::from(format!("usage-step-{k}")))
+            .flex_1()
+            .h_full()
+            .when(!read.is_empty(), |el| el.tooltip(crate::ui::header::tip(format!("{} · {}", step_label(start, u.step_secs, k), read.join(" · ")))))
+    }));
+    let key = legend(t, &lines.iter().map(|(l, c, _)| (*c, if *l == "5h" { "5-hour".to_string() } else { "Weekly".to_string() })).collect::<Vec<_>>());
+    let stats: Vec<Div> = lines
+        .iter()
+        .map(|(l, _, pts)| {
+            let now = pts.iter().rev().find_map(|v| *v).unwrap_or(0.);
+            let top = pts.iter().flatten().copied().fold(0., f64::max);
+            stat(t, format!("{}%", now.round()), &format!("{} now · highest {}%", if *l == "5h" { "5-hour" } else { "weekly" }, top.round()))
+        })
+        .collect();
+    let plot = div().relative().w_full().h(px(plot_h)).border_b_1().border_color(t.line).child(usage_plot(lines, charts::alpha(t.dim, 0.3), 2.).absolute().top_0().left_0().size_full()).child(targets);
+    h.child(
+        div()
+            .flex_1()
+            .flex()
+            .gap(px(16.))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(4.)).child(plot).child(time_axis(t, &d.from, u.step_secs, n, range)).child(key))
+            .child(side_stats(t, stats)),
+    )
+}
+
+fn usage_small(t: &Theme, p: &Palette, d: &InsightsDetail) -> Div {
+    let h = head(t, "Plan usage", "", None);
+    let lines = usage_lines(p, d);
+    let Some((label, _, pts)) = lines.first() else { return h.child(empty(t, "No usage reported in this range")) };
+    let now = pts.iter().rev().find_map(|v| *v).unwrap_or(0.);
+    let rest: Vec<String> = lines[1..].iter().filter_map(|(l, _, pts)| pts.iter().rev().find_map(|v| *v).map(|v| format!("{l} {}%", v.round()))).collect();
+    let sub = format!("{} used now{}", if *label == "5h" { "5-hour" } else { "weekly" }, rest.iter().map(|r| format!(" · {r}")).collect::<String>());
+    h.child(stat(t, format!("{}%", now.round()), &sub)).child(div().flex_1()).child(usage_plot(lines, charts::alpha(t.dim, 0.3), 1.5).w_full().h(px(64.)))
 }
 
 fn autonomy(t: &Theme, p: &Palette, d: &InsightsDetail) -> Div {

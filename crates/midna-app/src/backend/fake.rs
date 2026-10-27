@@ -1107,7 +1107,7 @@ fn fake_history() -> Value {
 /// Sample data for the Insights widgets (`insights.detail`), so they can be screenshotted
 /// without a daemon. Shaped like a busy day; deterministic.
 fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project]) -> midna_proto::InsightsDetail {
-    use midna_proto::{InsightsAgentTime, InsightsBests, InsightsConcurrency, InsightsCorrections, InsightsCount, InsightsDetail, InsightsHeatDay, InsightsTurnLengths, InsightsWait, time};
+    use midna_proto::{InsightsAgentTime, InsightsBests, InsightsConcurrency, InsightsCorrections, InsightsCount, InsightsDetail, InsightsHeatDay, InsightsTurnLengths, InsightsUsage, InsightsWait, time};
     let now = time::now_unix();
     let agents: Vec<&Session> = sessions.iter().filter(|s| s.agent.is_some()).collect();
     let sessions: Vec<&Session> = if agents.is_empty() { sessions.iter().collect() } else { agents };
@@ -1130,6 +1130,12 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
     };
     let n = ((axis_end - from + step - 1) / step) as usize;
     let samples: Vec<f64> = (0..n).map(|i| from + i as i64 * step).map(|t| if t < reached { (load(t) * 100.0).round() / 100.0 } else { 0.0 }).collect();
+    // the 5-hour window climbs with the work and resets every 5 hours; the week creeps up
+    let usage = InsightsUsage {
+        step_secs: step,
+        five_hour: (0..n).map(|i| from + i as i64 * step).map(|t| (t < reached).then(|| ((t - today).rem_euclid(5 * 3600) as f64 / 180.0 * (0.4 + load(t) / 4.0)).min(100.0).round())).collect(),
+        seven_day: (0..n).map(|i| from + i as i64 * step).map(|t| (t < reached).then(|| (32.0 + (t - today) as f64 / 7_200.0).clamp(0.0, 100.0).round())).collect(),
+    };
     let scale = days as i64;
     let sid = |i: usize| sessions.get(i).map(|s| s.id.clone()).unwrap_or_else(|| format!("s_fake{i}"));
     let row = |i: usize, w: i64, b: i64, idle: i64| {
@@ -1192,5 +1198,6 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
             peak_agents: 7,
             peak_at: Some(at(today - 2 * 86_400 + 14 * 3600 + 1200)),
         },
+        usage,
     }
 }

@@ -1916,6 +1916,24 @@ pub struct InsightsDetail {
     pub models: Vec<InsightsCount>,
     /// Records over the whole log.
     pub bests: InsightsBests,
+    /// Claude's plan usage in the concurrency samples' steps.
+    #[serde(default)]
+    pub usage: InsightsUsage,
+}
+
+/// Claude's plan usage windows over the range, from `usage.sampled`: each step's highest reading,
+/// else the last one before it held until its window resets (0 after). `None`: no reading yet, or
+/// still to come. Both empty when there is no reading at all.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InsightsUsage {
+    /// Same as `concurrency.step_secs`.
+    pub step_secs: i64,
+    /// Used percentage (0-100) of the 5-hour window per step.
+    #[serde(default)]
+    pub five_hour: Vec<Option<f64>>,
+    /// Used percentage of the weekly window per step.
+    #[serde(default)]
+    pub seven_day: Vec<Option<f64>>,
 }
 
 /// Agents in the `working` state at once.

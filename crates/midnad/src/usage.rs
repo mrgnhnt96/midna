@@ -11,6 +11,10 @@
 //! window run and wins; in the same run, usage only goes up, so the higher number wins; an older
 //! run, or a window left out, keeps what is stored. Different Claude accounts in different
 //! terminals would mix: the higher numbers stick until their window resets.
+//!
+//! Each time the merged numbers move (a percentage changes or a new window run starts), a
+//! `usage.sampled` event logs them, for Insights' usage chart. A repeat of the same numbers logs
+//! nothing: the chart holds a reading until its window resets.
 use crate::daemon::Daemon;
 use midna_proto::*;
 use serde::{Deserialize, Serialize};
@@ -34,19 +38,27 @@ pub struct StoredUsage {
 /// window reaches 100% (once per window and reset time).
 pub fn observe(d: &Daemon, sid: &str, project: &str, payload: &Value) {
     let Some(limits) = crate::agent_work::rate_limits(payload, &time::now_rfc3339()) else { return };
-    let (changed, reached) = {
+    let (changed, sampled, reached) = {
         let mut core = d.core();
         let u = core.state.usage.get_or_insert_with(Default::default);
         let (merged, fresh) = merge(u.claude.as_ref(), limits);
         let session = if fresh { Some(sid.to_string()) } else { u.session.clone() };
         let changed = u.claude.as_ref().is_none_or(|c| !c.same_as(&merged)) || u.session != session;
+        let sampled = u.claude.as_ref().is_none_or(|c| moved(c, &merged)).then(|| merged.clone());
         let reached = newly_reached(u, &merged, time::now_unix());
         u.claude = Some(merged);
         u.session = session;
-        (changed, reached)
+        (changed, sampled, reached)
     };
     if changed {
         d.mark_dirty();
+    }
+    if let Some(l) = sampled {
+        let mut data = json!({ "agent": "claude" });
+        for (window, w) in l.windows() {
+            data[window] = json!({ "used_percentage": w.used_percentage, "resets_at": w.resets_at });
+        }
+        d.emit(kinds::USAGE_SAMPLED, Actor::system(), Some(project.to_string()), Some(sid.to_string()), data);
     }
     for (window, w) in reached {
         let data = json!({ "agent": "claude", "window": window, "used_percentage": w.used_percentage, "resets_at": w.resets_at });
@@ -86,6 +98,17 @@ fn merge(old: Option<&RateLimits>, new: RateLimits) -> (RateLimits, bool) {
     let seven_day = pick(&old.seven_day, new.seven_day);
     let observed_at = if current { new.observed_at } else { old.observed_at.clone() };
     (RateLimits { five_hour, seven_day, observed_at }, current)
+}
+
+/// Whether `new` says something `old` didn't: a window's percentage changed, one came or went, or
+/// a new window run started (`resets_at` alone drifts by seconds between reports).
+fn moved(old: &RateLimits, new: &RateLimits) -> bool {
+    let reset = |w: &RateLimitWindow| w.resets_at.as_deref().and_then(time::parse_rfc3339);
+    let differ = |o: &Option<RateLimitWindow>, n: &Option<RateLimitWindow>| match (o, n) {
+        (Some(o), Some(n)) => o.used_percentage != n.used_percentage || reset(o).zip(reset(n)).is_some_and(|(a, b)| (a - b).abs() > SAME_RUN_SECS),
+        (o, n) => o.is_some() != n.is_some(),
+    };
+    differ(&old.five_hour, &new.five_hour) || differ(&old.seven_day, &new.seven_day)
 }
 
 /// Windows of `limits` at their limit that `u` has not announced yet (and remembers them).
@@ -168,6 +191,17 @@ mod tests {
         assert_eq!((pct(&m.five_hour), m.observed_at.as_str(), current), (Some(98.0), "t3", true));
         let (m, current) = merge(Some(&fresh), l(win(2.0, now + 18_600), win(29.0, now + 9000), "t3"));
         assert_eq!((pct(&m.five_hour), current), (Some(2.0), true));
+    }
+
+    #[test]
+    fn only_a_new_percentage_or_window_run_is_a_sample() {
+        let now = 1_000_000;
+        let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>| RateLimits { five_hour: five, seven_day: week, observed_at: "t".into() };
+        let old = l(win(40.0, now + 600), win(8.0, now + 9000));
+        assert!(!moved(&old, &l(win(40.0, now + 610), win(8.0, now + 9000))), "resets_at drifting is the same reading");
+        assert!(moved(&old, &l(win(41.0, now + 600), win(8.0, now + 9000))));
+        assert!(moved(&old, &l(win(40.0, now + 18_600), win(8.0, now + 9000))), "a new window run");
+        assert!(moved(&old, &l(None, win(8.0, now + 9000))));
     }
 
     #[test]
