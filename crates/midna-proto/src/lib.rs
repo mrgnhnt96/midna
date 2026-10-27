@@ -17,6 +17,7 @@ pub mod paths;
 pub mod prompts;
 pub mod secrets;
 pub mod settings;
+pub mod summary;
 pub mod system;
 pub mod themes;
 pub mod time;
@@ -31,6 +32,10 @@ pub use error::RpcError;
 pub use frame::{Cell, Frame, RowData};
 pub use methods::*;
 pub use openrpc::openrpc;
+pub use summary::{
+    ClosedTerminal, SummaryAnnotateParams, SummaryAnnotateResult, SummaryButton, SummaryListParams, SummaryListResult, SummaryPanel, SummaryRemoveParams, SummaryRemoveResult,
+    SummaryResumeResult,
+};
 pub use system::{
     HeavyTerminal, OtherProcess, Paused, RunAnywayParams, RunAnywayResult, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
     WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,

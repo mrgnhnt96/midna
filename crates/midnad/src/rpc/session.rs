@@ -389,6 +389,8 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
 /// Kill, stop the engine, drop the session and its open needs-you items. `how` says why
 /// (`session.closed`, and `agent.session_ended` once the dying agent's hook arrives).
 pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool, how: &'static str) {
+    // Its Summary record, while its prompts and links are still there to read.
+    let record = crate::summary::capture(d, sid, how, ctx.actor());
     let (rt, project) = {
         let mut core = d.core();
         let rt = core.rt.remove(sid);
@@ -427,6 +429,9 @@ pub fn close_inner(d: &Daemon, ctx: &Ctx, sid: &str, force: bool, how: &'static 
     d.links.forget(&d.cfg.home, sid);
     d.mark_dirty();
     d.emit(kinds::SESSION_CLOSED, ctx.actor(), project, Some(sid.to_string()), json!({ "force": force, "how": how }));
+    if let Some(r) = record {
+        crate::summary::record(d, r);
+    }
 }
 
 pub fn rename(d: &Daemon, ctx: &Ctx, p: SessionRenameParams) -> R {

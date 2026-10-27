@@ -22,6 +22,7 @@ pub mod queue;
 pub mod need_anim;
 pub mod needs_you;
 pub mod notifications;
+pub mod summary;
 pub mod toast;
 pub mod tooltip;
 pub mod popout;
@@ -311,6 +312,7 @@ impl Render for MainWindow {
             (_, Screen::Triggers) => triggers::render(self, window, cx),
             (_, Screen::Insights) => insights::render(self, window, cx),
             (_, Screen::Notifications) => notifications::render(self, &t, window, cx),
+            (_, Screen::Summary) => summary::render(self, &t, window, cx),
         };
 
         let root = div()

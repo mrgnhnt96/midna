@@ -26,6 +26,8 @@ pub enum Screen {
     Insights,
     /// Every notification midna recorded (`ui/notifications.rs`); the status bar's bell.
     Notifications,
+    /// A project's closed terminals (`ui/summary.rs`); which project is `summary.project`.
+    Summary,
 }
 
 /// Modal layers over the main window (CommandBar-A, NeedsYou-C, the image sheet).
@@ -61,6 +63,8 @@ pub enum Menu {
     HeaderButtons,
     /// Right-click menu on the sidebar footer (`ui/footer.rs`).
     Footer,
+    /// The Summary's ⋯ menu on the record on screen (`ui/summary.rs`).
+    Summary,
     /// The stat picker for one of the footer card's slots while customizing.
     FooterStat(usize),
     /// The footer's "Add a button" menu while customizing.
@@ -220,6 +224,8 @@ pub struct MainWindow {
     pub toast: Option<(String, Instant)>,
     /// Notification history and the unread count (`ui/notifications.rs`).
     pub inbox: crate::ui::notifications::Inbox,
+    /// Projects' closed terminals and the Summary screen (`ui/summary.rs`).
+    pub summary: crate::ui::summary::SummaryPage,
     /// In-app banner cards while midna is in front (`ui/toast.rs`).
     pub cards: crate::ui::toast::Cards,
     /// Rules-B / Triggers-A screens, created the first time they are shown.
@@ -261,6 +267,7 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let summary_closed = crate::ui::statusbar::load_state(&backend, "summary_closed");
         let seen = crate::ui::statusbar::load_state(&backend, "seen");
         let mut collapsed: std::collections::HashSet<String> = crate::ui::statusbar::load_state(&backend, "collapsed");
         collapsed.extend(crate::ui::fold_peek::debug_folded());
@@ -438,6 +445,7 @@ impl MainWindow {
             overlay_focus: cx.focus_handle(),
             toast: None,
             inbox: Default::default(),
+            summary: crate::ui::summary::SummaryPage::new(summary_closed),
             cards: Default::default(),
             rules_view: None,
             triggers_view: None,
@@ -559,6 +567,7 @@ impl MainWindow {
                         self.restart_expected = false;
                         crate::ui::command_bar::reload_user_commands(self, cx);
                         crate::ui::notifications::fetch(self, cx);
+                        crate::ui::summary::fetch(self, cx);
                         if !was_connected {
                             // re-attach after a reconnect (the split pane and pop-outs
                             // re-attach themselves, see TerminalView::watch_stream)
@@ -660,6 +669,9 @@ impl MainWindow {
                     && let Some(sid) = e.session_id.clone().filter(|s| self.selected.as_ref() == Some(s))
                 {
                     crate::ui::links::fetch(self, sid, cx);
+                }
+                if k == midna_proto::kinds::SUMMARY_CHANGED {
+                    crate::ui::summary::fetch(self, cx);
                 }
                 if k == midna_proto::kinds::NOTIFY_POSTED || k == midna_proto::kinds::NOTIFY_READ || k == midna_proto::kinds::NOTIFY_WITHDRAWN {
                     crate::ui::notifications::on_event(self, &e, cx);
@@ -851,6 +863,13 @@ impl MainWindow {
                     "triggers" => Screen::Triggers,
                     "insights" => Screen::Insights,
                     "notifications" => Screen::Notifications,
+                    "summary" => match self.current_project_id().filter(|p| p != ROOT_PROJECT_ID) {
+                        Some(p) => {
+                            self.summary.project = Some(p);
+                            Screen::Summary
+                        }
+                        None => Screen::Terminal,
+                    },
                     _ => Screen::Terminal,
                 };
                 // Opening is idempotent (set_screen toggles a screen that is already showing).
@@ -1183,6 +1202,16 @@ impl MainWindow {
                     "triggers" => self.screen = Screen::Triggers,
                     "insights" => self.screen = Screen::Insights,
                     "notifications" => self.set_screen(Screen::Notifications, window, cx),
+                    // dev: a project's Summary (`summary:p_taskboard1`), its ⋯ menu open with `+menu`
+                    s if s.starts_with("summary:") => {
+                        let (pid, menu) = s["summary:".len()..].split_once('+').map_or((&s["summary:".len()..], false), |(p, _)| (p, true));
+                        crate::ui::summary::open(self, pid.to_string(), window, cx);
+                        if menu {
+                            self.menu = Menu::Summary;
+                        }
+                    }
+                    // dev: a project's … menu open (`project-menu:p_taskboard1`)
+                    s if s.starts_with("project-menu:") => self.menu = Menu::Project(s["project-menu:".len()..].to_string()),
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     // dev: a needs-you item by id (`needs:n_settng`)
@@ -1261,8 +1290,9 @@ impl MainWindow {
             }
         }
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
-        // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays.
-        groups.retain(|g| !g.sessions.is_empty() || g.project.is_some_and(|p| p.pinned));
+        // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays, and so does
+        // one that keeps its Summary row (`ui::summary`).
+        groups.retain(|g| !g.sessions.is_empty() || g.project.is_some_and(|p| p.pinned || crate::ui::summary::row_wanted(self, &p.id, true)));
         let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
         for g in groups.iter_mut().chain(std::iter::once(&mut root)) {
             g.sessions.sort_by_key(|s| rank(s));
@@ -1280,6 +1310,9 @@ impl MainWindow {
     }
 
     pub fn current_project_id(&self) -> Option<String> {
+        if let Some(p) = crate::ui::summary::shown(self) {
+            return Some(p.to_string());
+        }
         self.selected_session().and_then(|s| s.project_id.clone()).or_else(|| self.groups().iter().find_map(|g| g.project).map(|p| p.id.clone()))
     }
 
@@ -1699,25 +1732,29 @@ impl MainWindow {
         if let Some(a) = agent {
             p["agent"] = json!(a);
         }
-        self.rpc("session.open", p, cx, |m, v, window, cx| {
-            let id = v.get("id").and_then(|x| x.as_str()).or_else(|| v.get("session").and_then(|s| s.get("id")).and_then(|x| x.as_str())).map(str::to_string);
-            m.sessions_changed(cx);
-            // Show it now: until the refetch lands, a refresh would find it missing and select another.
-            if let Ok(s) = serde_json::from_value::<Session>(v.get("session").unwrap_or(&v).clone())
-                && !m.sessions.iter().any(|x| x.id == s.id)
-            {
-                m.sessions.push(s);
-            }
-            if let Some(id) = id {
-                m.windows.borrow_mut().claim(&id, m.id);
-                let old = m.terminal.clone();
-                crate::ui::close_anim::open(m, &id, old, cx);
-                m.selected = Some(id);
-                m.terminal = None;
-                m.pending_terminal = None;
-                m.ensure_terminal(window, cx);
-            }
-        });
+        self.rpc("session.open", p, cx, |m, v, window, cx| m.show_opened(v, window, cx));
+    }
+
+    /// A terminal the daemon just opened for this window (`session.open`'s result, or one with
+    /// it under `session`): select it, and focus it as soon as it attaches.
+    pub fn show_opened(&mut self, v: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let id = v.get("id").and_then(|x| x.as_str()).or_else(|| v.get("session").and_then(|s| s.get("id")).and_then(|x| x.as_str())).map(str::to_string);
+        self.sessions_changed(cx);
+        // Show it now: until the refetch lands, a refresh would find it missing and select another.
+        if let Ok(s) = serde_json::from_value::<Session>(v.get("session").unwrap_or(&v).clone())
+            && !self.sessions.iter().any(|x| x.id == s.id)
+        {
+            self.sessions.push(s);
+        }
+        if let Some(id) = id {
+            self.windows.borrow_mut().claim(&id, self.id);
+            let old = self.terminal.clone();
+            crate::ui::close_anim::open(self, &id, old, cx);
+            self.selected = Some(id);
+            self.terminal = None;
+            self.pending_terminal = None;
+            self.ensure_terminal(window, cx);
+        }
     }
 
     /// The agent most recently started in a project (Claude when none).
@@ -1899,6 +1936,15 @@ impl MainWindow {
     /// needs you) asks for a second ⌘W first. With no terminal
     /// selected, close the window.
     fn close_tab(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        // The Summary of a project with nothing open is its last tab: ⌘W closes it, and the project goes.
+        if self.menu == Menu::None
+            && self.overlay == Overlay::None
+            && let Some(pid) = crate::ui::summary::shown(self).map(str::to_string)
+            && !self.sessions.iter().any(|s| s.project_id.as_deref() == Some(pid.as_str()) && !s.background)
+        {
+            crate::ui::summary::close_row(self, &pid, window, cx);
+            return;
+        }
         // A menu, overlay or screen (Rules, Triggers, Insights) in front closes first, like esc.
         if self.menu != Menu::None || self.overlay != Overlay::None || self.screen != Screen::Terminal {
             window.dispatch_action(Box::new(Dismiss), cx);
@@ -2275,6 +2321,14 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &FoldProject, _w, cx| {
                 if let Some(p) = m.selected_session().and_then(|s| s.project_id.clone()).filter(|p| p != ROOT_PROJECT_ID) {
                     crate::ui::sidebar::toggle_fold(m, p, cx);
+                }
+            }))
+            .on_action(cx.listener(|m, _: &ShowProjectSummary, w, cx| {
+                // On the Summary already: back to the terminal, as the screens' own keys do.
+                if m.screen == Screen::Summary {
+                    m.set_screen(Screen::Terminal, w, cx);
+                } else if let Some(p) = m.current_project_id().filter(|p| p != ROOT_PROJECT_ID) {
+                    crate::ui::summary::open(m, p, w, cx);
                 }
             }))
             .on_action(cx.listener(|m, _: &ToggleSidebar, _w, cx| crate::ui::sidebar::toggle_collapsed(m, cx)))

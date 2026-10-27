@@ -9,6 +9,7 @@ mod print;
 mod queue;
 mod secret;
 mod shim;
+mod summary;
 mod triggers;
 
 use args::{ArgError, Args};
@@ -324,6 +325,7 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "links" => links(a, &out),
+        "summary" => summary::summary(a, &out),
         "queue" => queue::queue(a, &out),
         "notify" | "notifications" => notify(a, &out),
         "key" => {

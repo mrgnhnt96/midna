@@ -191,6 +191,8 @@ pub struct Daemon {
     pub updates: Mutex<UpdatesStatus>,
     /// Session links (`links.rs`), loaded per terminal on first use.
     pub links: crate::links::Links,
+    /// Projects' Summaries of closed terminals (`summary.rs`), loaded on first use. Lock after `core`.
+    pub summary: crate::summary::Summary,
     /// The notifier's book-keeping (`notify.rs`). Lock after `core`, never before it.
     notify: Mutex<crate::notify::State>,
     /// Local triggers' worker and book-keeping (`local.rs`). Lock after `core`, never before it.
@@ -261,6 +263,7 @@ impl Daemon {
             commands_mtime: Mutex::new(std::fs::metadata(cfg.home.join("commands.json")).and_then(|m| m.modified()).ok()),
             updates: Mutex::new(UpdatesStatus::default()),
             links: Default::default(),
+            summary: Default::default(),
             notify: Mutex::new(Default::default()),
             local: Default::default(),
             queue: Default::default(),

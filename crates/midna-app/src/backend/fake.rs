@@ -175,7 +175,14 @@ impl FakeBackend {
     pub fn new() -> Self {
         let p = |id: &str, name: &str, order: u32| Project { id: id.into(), name: name.into(), path: format!("~/Development/{name}"), order, ..Default::default() };
         // dotfiles: pinned with no terminals, so the sidebar shows its "New terminal" row.
-        let projects = vec![p("p_zonai1", "zonai", 0), p("p_drops1", "drops-app", 1), p("p_midna1", "midna", 2), Project { pinned: true, ..p("p_dotfiles1", "dotfiles", 3) }];
+        // taskboard: every terminal closed, so it stays for its Summary row (`fake_summary`).
+        let projects = vec![
+            p("p_zonai1", "zonai", 0),
+            p("p_drops1", "drops-app", 1),
+            p("p_midna1", "midna", 2),
+            Project { pinned: true, ..p("p_dotfiles1", "dotfiles", 3) },
+            p("p_taskboard1", "taskboard", 4),
+        ];
         let git = |branch: &str, add: u32, rem: u32, files: u32, pr: Option<(u64, Checks)>| {
             Some(GitInfo {
                 branch: branch.into(),
@@ -543,6 +550,12 @@ impl Backend for FakeBackend {
             "session.subagent_log" => fake_subagent_log(&p("agent").unwrap_or_default(), params.get("from").and_then(Value::as_u64).unwrap_or(0)),
             "needs_you.list" => serde_json::to_value(&st.needs)?,
             "notify.history" => fake_history(),
+            "summary.list" => {
+                let project = p("project_id");
+                let closed: Vec<Value> = fake_summary().into_iter().filter(|c| project.is_none() || c["project_id"].as_str() == project.as_deref()).collect();
+                json!({ "closed": closed, "keep_days": 7 })
+            }
+            "summary.remove" => json!({ "removed": 1 }),
             "notify.read" => {
                 FAKE_READ.store(true, std::sync::atomic::Ordering::Relaxed);
                 json!({ "read_seq": 900, "unread": 0 })
@@ -1200,4 +1213,52 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
         },
         usage,
     }
+}
+
+/// Closed terminals for the Summary (`ui/summary.rs`): taskboard's (all closed) and midna's.
+fn fake_summary() -> Vec<Value> {
+    let tb = |task: &str, title: &str, state: &str, color: &str| {
+        json!({ "taskboard": {
+            "app": "Taskboard", "title": format!("{task} {title}"), "url": format!("taskboard://task/{task}"),
+            "badge": state, "color": color, "subtitle": "G12 Drag and drop · 3/5", "subtitle_url": "taskboard://goal/G12",
+            "line": format!("{task} {state}"),
+            "buttons": [{"label": "Open task", "open": format!("taskboard://task/{task}")}, {"label": "Next in goal: T734", "open": "taskboard://task/T734"}],
+        }})
+    };
+    let prompts = |list: &[(&str, i64)]| -> Value { list.iter().enumerate().map(|(i, (t, m))| json!({"n": i + 1, "text": t, "at": ago(*m), "on_screen": true})).collect() };
+    vec![
+        json!({
+            "id": "c0000001", "project_id": "p_taskboard1", "name": "fix drop paths", "kind": "agent", "agent": "claude", "cwd": "/tmp",
+            "conversation_id": "3f1c", "worktree": "midna-wt2", "branch": "feat/drop-paths", "opened_at": ago(50), "closed_at": ago(2),
+            "how": "close", "by": {"kind": "agent", "session": "c0000001"}, "state": "done", "turns": 3, "cost_usd": 3.12,
+            "prompts": prompts(&[("Dropped non-image files should type their path into the terminal", 48), ("Quote paths with spaces the way Terminal.app does", 23), ("Ship it", 9)]),
+            "links": [
+                {"id": "l_1", "kind": "pr", "target": "https://github.com/mrgnhnt96/midna/pull/119", "title": "PR #119 · midna", "source": "tool", "mentions": 2, "first_at": ago(10), "last_at": ago(4), "pinned": true},
+                {"id": "l_2", "kind": "file", "target": "/tmp/midna/crates/midna-app/src/terminal/drop.rs", "title": "crates/midna-app/src/terminal/drop.rs", "source": "tool", "mentions": 5, "first_at": ago(40), "last_at": ago(12), "pinned": false},
+            ],
+            "apps": tb("T731", "Dropped files type their path", "Done", "green"),
+        }),
+        json!({
+            "id": "c0000002", "project_id": "p_taskboard1", "name": "image drop polish", "kind": "agent", "agent": "claude", "cwd": "/tmp",
+            "conversation_id": "9a2e", "branch": "feat/image-drop", "opened_at": ago(140), "closed_at": ago(70),
+            "how": "close", "by": {"kind": "human"}, "state": "idle", "turns": 2,
+            "prompts": prompts(&[("Polish the image drop sheet", 138), ("Looks good, open the PR", 80)]),
+            "apps": tb("T733", "Image drop polish", "In review", "amber"),
+        }),
+        json!({
+            "id": "c0000003", "project_id": "p_taskboard1", "name": "cargo test", "kind": "shell", "cwd": "/tmp",
+            "opened_at": ago(200), "closed_at": ago(190), "how": "exited", "by": {"kind": "system"}, "state": "exited", "exit_code": 0,
+        }),
+        json!({
+            "id": "c0000004", "project_id": "p_taskboard1", "name": "sidebar drop", "kind": "agent", "agent": "claude", "cwd": "/tmp",
+            "conversation_id": "77b0", "opened_at": ago(1500), "closed_at": ago(1478), "how": "close", "by": {"kind": "human"},
+            "state": "failed", "reason": "killed by signal 9", "turns": 1,
+            "prompts": prompts(&[("Let folders dropped on the sidebar open as projects", 1499)]),
+        }),
+        json!({
+            "id": "c0000005", "project_id": "p_midna1", "name": "release beta.37", "kind": "agent", "agent": "claude", "cwd": "/tmp",
+            "conversation_id": "51aa", "branch": "main", "opened_at": ago(400), "closed_at": ago(360), "how": "close", "by": {"kind": "human"},
+            "state": "done", "turns": 1, "cost_usd": 0.84, "prompts": prompts(&[("tb release cut v0.1.0-beta.37", 399)]),
+        }),
+    ]
 }

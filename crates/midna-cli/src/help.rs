@@ -268,6 +268,29 @@ pub static VERBS: &[Verb] = &[
         methods: &["links.list", "links.pin", "links.remove", "links.add", "links.refresh", "links.patterns.list", "links.patterns.register", "links.actions.list", "links.actions.register"],
     },
     Verb {
+        name: "summary",
+        aliases: &[],
+        usage: "summary [list] [--project <id|name>]\n       \
+                summary resume <closed-id>\n       \
+                summary remove <closed-id> | --project <id|name>\n       \
+                summary annotate <terminal-id> --owner <app> --file <panel.json|-> | --clear",
+        summary: "the terminals that closed in a project lately: what they did, how they ended, and apps' panels on them",
+        details: "When a terminal in a project closes, midna keeps a record of it for summary.keep_days (7 by default):\n\
+                  its name, agent, conversation, worktree and branch, when it opened and closed, who closed it, its\n\
+                  status then, the prompts the human sent, its cost and its links. The human sees them on the\n\
+                  project's Summary (its … menu, ⌥⌘Y); a project whose terminals have all closed keeps a Summary row\n\
+                  in the sidebar. `resume` opens one again in its conversation and folder; `remove` drops one, or\n\
+                  with --project clears that project's Summary.\n\
+                  `annotate` is for apps: it puts your panel on a terminal's record, replacing your earlier one. The\n\
+                  file holds {\"title\": \"T731 Dropped files type their path\", \"url\": \"taskboard://task/T731\",\n\
+                  \"badge\": \"Done\", \"color\": \"green\", \"subtitle\": \"G12 Drag and drop · 3/5\", \"subtitle_url\": \"…\",\n\
+                  \"line\": \"T731 Done\", \"buttons\": [{\"label\": \"Open task\", \"open\": \"taskboard://task/T731\"}]}; only\n\
+                  title is required. `line` is the record's second line in the Summary's list, in `color` (a status\n\
+                  color or #rrggbb). Links and buttons only open URLs. Annotate a running terminal and the panel\n\
+                  carries over when it closes; annotate again when your state changes (a task done, a PR merged).",
+        methods: &["summary.list", "summary.remove", "summary.resume", "summary.annotate"],
+    },
+    Verb {
         name: "queue",
         aliases: &[],
         usage: "queue [list] [--session <id>]\n       \
@@ -566,7 +589,7 @@ pub static VERBS: &[Verb] = &[
         usage: "window <front|keep_on_top|pop_out|snap|close|open_screen> [target] [value]\n       \
                 window split <terminal-id> [side|stacked] | window split close\n       window list",
         summary: "ask the GUI to act on a window",
-        details: "front, open_screen (rules|triggers|insights|notifications|settings|needs_you) and split (show a terminal\n\
+        details: "front, open_screen (rules|triggers|insights|notifications|summary|settings|needs_you) and split (show a terminal\n\
                   beside the selected one) are always allowed; the rest need the human-only setting\n\
                   agents.may_move_windows. Rules can still deny `window` actions (e.g. `split*`).",
         methods: &["window.list", "window.command"],

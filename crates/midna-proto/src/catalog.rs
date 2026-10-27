@@ -1,6 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::cleanup::*;
+use crate::summary::*;
 use crate::methods::*;
 use crate::system::*;
 use crate::types::*;
@@ -287,6 +288,25 @@ fn build() -> Vec<MethodSpec> {
             "Approve the commands an app's link menus run (links.actions.register), as they are now: `fingerprint` is \
              the one its approval needs-you carries, so a change since then refuses. The human answers this from that \
              needs-you."),
+        m::<SummaryListParams, SummaryListResult>("summary.list").d(
+            "A project's Summary: the terminals that closed in it lately, newest first (all projects without \
+             `project_id`). Each record has its name, agent, conversation, worktree and branch, when it opened and \
+             closed, who closed it (`by`, `how`), its status then, the prompts the human sent, its cost, its links, and \
+             apps' panels (`apps`). Records older than summary.keep_days go."),
+        m::<SummaryRemoveParams, SummaryRemoveResult>("summary.remove").mutating().d(
+            "Remove a closed terminal from its project's Summary (`id`), or clear a project's Summary (`project_id`). \
+             A project with no terminals leaves the sidebar once its Summary is empty."),
+        m::<SummaryAnnotateParams, SummaryAnnotateResult>("summary.annotate").mutating().d(
+            "Put your app's panel on a terminal's Summary record, replacing your earlier one: {title, url?, badge?, \
+             color?, subtitle?, subtitle_url?, line?, buttons?: [{label, open}], app?}. `id` may be a running terminal \
+             (the panel waits and carries over when it closes) or a closed one; `panel: null` removes yours. `line` is \
+             the record's second line in the Summary's list (`T731 Done`), in `color` (a status color or #rrggbb). \
+             Links and buttons only open URLs (`https://…` or an app's own scheme such as `taskboard://…`). Each \
+             `owner` has one panel per terminal; update it when your state changes (a task done, a PR merged)."),
+        m::<IdParams, SummaryResumeResult>("summary.resume").mutating().d(
+            "Open a closed terminal again: an agent comes back in its conversation (Claude --resume, codex resume), \
+             in the folder it worked in, with its name and agent arguments; a shell opens in its folder. The record \
+             leaves the Summary; it comes back when the new terminal closes."),
         m::<QueueListParams, QueueListResult>("queue.list").d(
             "A terminal's queued messages, in the order midnad will type them, and whether the queue is paused. The first \
              waiting one says what it is waiting for (`waiting_for`). Defaults to your own terminal."),

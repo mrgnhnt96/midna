@@ -33,9 +33,10 @@ WHAT YOU CAN DO
   secrets    [secret:NAME] = a stored secret: midna secret exec NAME -- <cmd> ($NAME set, output masked) · write NAME .env · list
              save a token a command produced: <cmd> | midna secret save NAME (stdin only; never echo it)
   settings   midna settings list | get | set | reset   (human-only keys: setting one asks the human)
-  windows    midna focus <id> · window open_screen <rules|triggers|insights|notifications|settings|needs_you>
+  windows    midna focus <id> · window open_screen <rules|triggers|insights|notifications|summary|settings|needs_you>
   links      midna links [pin|add] · links patterns set <app> --rule '<regex> = <url> [preview:\"<cmd> $1\"]' (cmd's JSON fills the hover card)
              links actions register --owner <app> --file menus.json (an app's own items in a link's click menu)
+  summary    midna summary [--project P] (terminals closed lately) · resume <id> · annotate <id> --owner <app> --file panel.json
   projects   midna projects add <path> · update <id> --name/--icon · pin|unpin <id> · add-command <id> --name N -- <cmd>
   learn      midna help · midna <verb> --help · midna schema [method|--list] · midna skill · midna explain <topic>
 
