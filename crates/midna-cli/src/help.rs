@@ -501,7 +501,8 @@ pub static VERBS: &[Verb] = &[
                   your normal agent config. --permission-mode (default, manual, auto, acceptEdits, plan, dontAsk,\n\
                   bypassPermissions) and --allow-tool TOOL (repeatable, e.g. mcp__claude_ai_Slack__slack_send_message)\n\
                   set that for one Claude trigger's agents only; they're human only (an agent asks the human). On\n\
-                  update, alone they change the current agent; an empty value clears one.\n\
+                  update, alone they change the current agent; an empty value clears one. --prompt TEMPLATE alone\n\
+                  replaces the current agent's prompt and keeps the rest.\n\
                   \n\
                   Local triggers (source local; inferred for hook.*, agent.*, session.*, needs_you.*, idle, schedule, or any\n\
                   local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\
