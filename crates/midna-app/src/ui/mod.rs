@@ -27,6 +27,7 @@ pub mod tooltip;
 pub mod popout;
 pub mod quit_hold;
 pub mod rename;
+pub mod row_close;
 pub mod rules;
 pub mod screen_kit;
 pub mod screens;
