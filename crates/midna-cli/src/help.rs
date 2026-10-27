@@ -694,7 +694,8 @@ pub static VERBS: &[Verb] = &[
         details: "The latest any Claude terminal's status line reported (account-wide), with when and where it was\n\
                   seen. LIMITED = a window is at 100% until it resets; new turns fail until then. A window whose\n\
                   reset time passed is marked out of date. Each terminal's own last report: `midna call session.get`\n\
-                  (agent_info.rate_limits). Event usage.limit_reached fires once when a window hits 100%.",
+                  (agent_info.rate_limits). Event usage.limit_reached fires once when a window hits 100%;\n\
+                  usage.sampled each time the numbers move (charted by `midna insights detail`).",
         methods: &["usage.get"],
     },
     Verb {

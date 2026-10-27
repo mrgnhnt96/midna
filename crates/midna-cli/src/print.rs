@@ -233,6 +233,16 @@ pub fn insights_detail(v: &Value) {
     } else {
         println!("agents at once  peak {}{}, avg {} while working, {} with 2+", i(c, "peak"), at(c, "peak_at"), plain(&c["avg_while_working"]), dur(i(c, "multi_secs")));
     }
+    let u = &v["usage"];
+    let usage: Vec<String> = [("five_hour", "5-hour"), ("seven_day", "weekly")]
+        .into_iter()
+        .filter_map(|(key, label)| {
+            let pts: Vec<f64> = u[key].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+            let (last, top) = (pts.last()?, pts.iter().copied().fold(0.0, f64::max));
+            Some(format!("{label} {}% now, highest {}%", last.round(), top.round()))
+        })
+        .collect();
+    println!("plan usage      {}", none(usage.join(", ")));
     let t = &v["turns"];
     let bins: Vec<String> = t["bins"].as_array().into_iter().flatten().map(plain).collect();
     let longest_in = t["longest_session"].as_str().map(|sid| format!(" ({sid})")).unwrap_or_default();

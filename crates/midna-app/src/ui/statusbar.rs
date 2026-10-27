@@ -269,7 +269,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
         // The daemon-backed items need midnad; the rest always show.
         let el = match item.as_str() {
             "daemon" => Some(daemon_item(m, t)),
-            "usage" if connected => usage_item(m, t),
+            "usage" if connected => usage_item(m, t, cx),
             "cache" if connected => cache_item(m, t),
             "policy" if connected => Some(policy_item(m, t)),
             "webhooks" if connected => Some(webhooks_item(m, t, cx)),
@@ -340,12 +340,24 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
 /// Claude's plan limits in the taskboard's usage pill: a rounded pill with, per window, a label,
 /// a 34×5 bar and the percentage, a hairline between windows, amber from 75% and red (bold)
 /// from 90%. A window Claude doesn't report (the 5-hour one
-/// on some plans) is left out; nothing shows until a Claude terminal has reported any.
-fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
+/// on some plans) is left out; nothing shows until a Claude terminal has reported any. Clicking it
+/// opens Insights, which charts the usage over time.
+fn usage_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let u = m.usage.claude.as_ref()?;
     let now = midna_proto::time::now_unix();
     let stale = midna_proto::time::parse_rfc3339(&u.observed_at).is_some_and(|s| now - s > 3600);
-    let mut row = div().id("usage").flex().flex_none().items_center().py(px(2.)).px(px(4.)).rounded_full().bg(t.raised).when(stale, |d| d.opacity(0.6));
+    let mut row = div()
+        .id("usage")
+        .flex()
+        .flex_none()
+        .items_center()
+        .py(px(2.))
+        .px(px(4.))
+        .rounded_full()
+        .bg(t.raised)
+        .cursor_pointer()
+        .when(stale, |d| d.opacity(0.6))
+        .on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Insights, w, cx)));
     let mut tips = Vec::new();
     let mut shown = 0;
     for (label, name, len, w) in [("5h", "5-hour", 5 * 3600, &u.five_hour), ("7d", "Weekly", 7 * 86400, &u.seven_day)] {
@@ -390,6 +402,7 @@ fn usage_item(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
     if stale {
         tips.push(format!("Last reported {}", crate::ui::screen_kit::ago(Some(&u.observed_at))));
     }
+    tips.push("Click to chart it in Insights".into());
     Some(row.tooltip(tip(tips.join("\n"))).into_any_element())
 }
 

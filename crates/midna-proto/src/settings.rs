@@ -354,6 +354,7 @@ pub const INSIGHTS_WIDGETS: &[(&str, &str, &[&str])] = &[
     ("working_waiting", "small", &["small", "wide"]),
     ("approvals", "small", &["small", "wide"]),
     ("triggers", "small", &["small", "wide"]),
+    ("usage", "wide", &["small", "wide", "large"]),
     ("parallelism", "wide", &["small", "wide", "large"]),
     ("autonomy", "small", &["small", "wide"]),
     ("latency", "wide", &["small", "wide", "large"]),
@@ -366,7 +367,7 @@ pub const INSIGHTS_WIDGETS: &[(&str, &str, &[&str])] = &[
     ("bests", "small", &["small", "wide"]),
 ];
 pub const DEFAULT_INSIGHTS_LAYOUTS: &[&str] = &[
-    "My layout = headline turns parallelism agent_time heatmap latency approved spend working_waiting",
+    "My layout = headline turns usage parallelism agent_time heatmap latency approved spend working_waiting",
     "Overview = headline turns spend working_waiting approvals triggers",
     "Am I the bottleneck? = latency:large agent_time approved corrections parallelism:small",
     "Spend = models:wide spend:wide projects bests",
@@ -543,7 +544,7 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("sidebar.footer.compact", SettingKind::Bool, B(false), "appearance", false,
         "A shorter sidebar footer: the Insights card on one line and icon-only buttons. Terminal rows keep the `density` setting."),
     s!("insights.layouts", SettingKind::RuleList, L(DEFAULT_INSIGHTS_LAYOUTS), "appearance", false,
-        "Saved layouts of the Insights screen, one per line: `<name> = <widget>[:<size>] …` in order, size small, wide or large (left out = the widget's usual size). Widgets: headline, turns, spend, working_waiting, approvals, triggers, parallelism, autonomy, latency, agent_time, approved, corrections, heatmap, projects, models, bests (`midna explain insights.layouts` for their sizes). E.g. `Mine = parallelism:large heatmap approved:small`. Arrange them on the Insights screen, or ask an agent."),
+        "Saved layouts of the Insights screen, one per line: `<name> = <widget>[:<size>] …` in order, size small, wide or large (left out = the widget's usual size). Widgets: headline, turns, spend, working_waiting, approvals, triggers, usage, parallelism, autonomy, latency, agent_time, approved, corrections, heatmap, projects, models, bests (`midna explain insights.layouts` for their sizes). E.g. `Mine = parallelism:large heatmap approved:small`. Arrange them on the Insights screen, or ask an agent."),
     s!("insights.layout", SettingKind::String, S("My layout"), "appearance", false,
         "The name of the layout in insights.layouts the Insights screen shows."),
     s!("insights.colors.agents", en_other(CHART_COLORS), S("accent"), "appearance", false,

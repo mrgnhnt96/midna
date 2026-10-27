@@ -606,7 +606,8 @@ fn build() -> Vec<MethodSpec> {
              working at once (samples per 10 min or hour, peak, time with two or more), turn lengths (bins, median, \
              longest), needs-you waits, per-terminal working / blocked-on-you / idle-after-a-turn time, approvals by \
              what was approved, denials and interrupted turns per day, a 7-day × 24-hour heatmap of agent work and \
-             your activity, working time per project, spend per model, and records over the whole log."),
+             your activity, working time per project, spend per model, Claude's 5-hour and weekly plan usage \
+             per step (from usage.sampled), and records over the whole log."),
         m::<InsightsActivityParams, Vec<Event>>("insights.activity").d(
             "Recent meaningful activity (status changes, turns, approvals, rules, needs-you), newest first. Use events.list for the raw log."),
         // clock
@@ -638,7 +639,7 @@ fn build() -> Vec<MethodSpec> {
              the latest any Claude terminal's status line reported, with when (`observed_at`) and which terminal. \
              `limited` = a window is at 100% and has not reset (new turns fail until `limited_until`); a window whose \
              resets_at has passed is marked `expired` (its percentage is out of date). A usage.limit_reached event fires \
-             once when a window hits 100%. Each terminal's own last report is in session.get agent_info.rate_limits. \
+             once when a window hits 100%, and usage.sampled each time a percentage moves (insights.detail charts it). Each terminal's own last report is in session.get agent_info.rate_limits. \
              Empty until a Claude terminal has drawn its status line (setting agents.claude.statusline; API-key accounts \
              never report limits)."),
         // window

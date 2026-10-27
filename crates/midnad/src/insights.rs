@@ -675,6 +675,8 @@ pub fn detail(events: &[Event], range: InsightsRange, now: i64, labels: &Labels)
         multi_secs,
     };
 
+    let usage = usage_steps(events, from, step, n, now);
+
     // turn lengths
     let mut lens: Vec<(i64, &Turn)> = f.turns.iter().filter(|t| in_range(t.end)).map(|t| (t.end - t.start, t)).collect();
     let mut bins = vec![0i64; 6];
@@ -841,7 +843,61 @@ pub fn detail(events: &[Event], range: InsightsRange, now: i64, labels: &Labels)
         projects,
         models,
         bests,
+        usage,
     }
+}
+
+/// A reading with no `resets_at` holds this long.
+const USAGE_HOLD_SECS: i64 = 30 * 60;
+
+/// Each window's used percentage in the `n` steps of `step` seconds from `from` (see
+/// `InsightsUsage`), from the `usage.sampled` events.
+fn usage_steps(events: &[Event], from: i64, step: i64, n: usize, now: i64) -> InsightsUsage {
+    let mut samples: [Vec<(i64, f64, Option<i64>)>; 2] = [vec![], vec![]];
+    for e in events.iter().filter(|e| e.kind == kinds::USAGE_SAMPLED) {
+        let Some(t) = time::parse_rfc3339(&e.at) else { continue };
+        for (i, window) in ["five_hour", "seven_day"].into_iter().enumerate() {
+            let Some(pct) = e.data.pointer(&format!("/{window}/used_percentage")).and_then(Value::as_f64) else { continue };
+            let resets = e.data.pointer(&format!("/{window}/resets_at")).and_then(Value::as_str).and_then(time::parse_rfc3339);
+            samples[i].push((t, pct, resets));
+        }
+    }
+    let [five, week] = samples.map(|s| steps(&s, from, step, n, now));
+    if five.iter().chain(&week).all(Option::is_none) {
+        return InsightsUsage { step_secs: step, ..Default::default() };
+    }
+    InsightsUsage { step_secs: step, five_hour: five, seven_day: week }
+}
+
+/// One window's readings `(at, pct, resets_at)`, oldest first, in steps: a step's highest reading,
+/// else the last one before it until its window reset (then 0).
+fn steps(samples: &[(i64, f64, Option<i64>)], from: i64, step: i64, n: usize, now: i64) -> Vec<Option<f64>> {
+    let mut next = 0;
+    let mut last: Option<(i64, f64, Option<i64>)> = None;
+    (0..n as i64)
+        .map(|k| {
+            let (a, b) = (from + k * step, from + (k + 1) * step);
+            if a > now {
+                return None;
+            }
+            let mut hi: Option<f64> = None;
+            while let Some(&x) = samples.get(next).filter(|x| x.0 < b) {
+                if x.0 >= a {
+                    hi = Some(hi.map_or(x.1, |h| h.max(x.1)));
+                }
+                last = Some(x);
+                next += 1;
+            }
+            hi.or_else(|| {
+                let (at, pct, resets) = last?;
+                match resets {
+                    Some(r) if r <= a => Some(0.0),
+                    Some(_) => Some(pct),
+                    None => (a - at <= USAGE_HOLD_SECS).then_some(pct),
+                }
+            })
+        })
+        .collect()
 }
 
 /// Kinds shown in the activity feed.
@@ -1015,6 +1071,32 @@ mod tests {
         let y = detail(&events, InsightsRange::Yesterday, now, &no_labels());
         assert_eq!((y.concurrency.samples.len(), y.concurrency.peak), (144, 0));
         assert_eq!(y.bests.peak_agents, 2, "records span the whole log");
+    }
+
+    #[test]
+    fn usage_steps_hold_a_reading_until_its_window_resets() {
+        const FROM: i64 = 1_800_000_000;
+        let at = |step: f64| FROM + (step * 600.0) as i64;
+        let samples = [(at(-2.0), 5.0, Some(at(1.0))), (at(1.2), 10.0, Some(at(4.0))), (at(1.7), 14.0, Some(at(4.0))), (at(6.5), 30.0, None)];
+        let s = steps(&samples, FROM, 600, 144, at(9.0));
+        assert_eq!(s.len(), 144);
+        assert_eq!(s[0], Some(5.0), "held from before the range");
+        assert_eq!(s[1], Some(14.0), "the step's highest");
+        assert_eq!(s[3], Some(14.0), "held until the reset");
+        assert_eq!(s[4], Some(0.0), "the window reset");
+        assert_eq!(s[6], Some(30.0));
+        assert_eq!(s[9], Some(30.0), "no reset: held for 30 minutes");
+        assert_eq!(s[10], None, "still to come");
+        assert!(steps(&samples[3..], FROM, 600, 144, at(20.0))[..6].iter().all(Option::is_none), "nothing before the first reading");
+        assert_eq!(steps(&samples[3..], FROM, 600, 144, at(20.0))[10], None, "too long since a reading with no reset");
+
+        let (now, t0) = clock();
+        let events = vec![ev(1, t0 + 10, "usage.sampled", "s1", json!({"agent": "claude", "five_hour": {"used_percentage": 40, "resets_at": time::format_unix(t0 + 7200)}}))];
+        let d = detail(&events, InsightsRange::Today, now, &no_labels());
+        let k = ((t0 - time::local_day_start(now)) / 600) as usize;
+        assert_eq!((d.usage.step_secs, d.usage.five_hour.len(), d.usage.five_hour[k]), (600, 144, Some(40.0)));
+        assert!(d.usage.seven_day.iter().all(Option::is_none));
+        assert_eq!(detail(&[], InsightsRange::Today, now, &no_labels()).usage.five_hour, Vec::<Option<f64>>::new(), "no reading at all");
     }
 
     #[test]
