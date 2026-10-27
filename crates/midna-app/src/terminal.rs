@@ -1278,24 +1278,30 @@ impl TerminalView {
         .detach();
     }
 
-    /// Dropped image files go to the image sheet, like ⌘V of a screenshot; outside an agent
-    /// they're pasted as files.
+    /// Dropped files, sorted by what's in them: images go to the image sheet, like ⌘V of a
+    /// screenshot (outside an agent they're pasted as files); anything else is typed in as its
+    /// path, escaped as a shell wants it (Claude Code reads it that way too).
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = crate::annotate::image_paths(paths);
-        if paths.is_empty() {
+        let (images, others) = crate::annotate::sort_dropped(paths);
+        if !others.is_empty() {
+            let typed: Vec<String> = others.iter().map(|p| escaped_path(p)).collect();
+            self.paste_text(&format!("{} ", typed.join(" ")), window, cx);
+            cx.notify();
+        }
+        if images.is_empty() {
             return;
         }
         if !self.is_agent() {
-            self.paste_images_inline(paths.into_iter().map(crate::annotate::Source::Path).collect(), cx);
+            self.paste_images_inline(images.into_iter().map(crate::annotate::Source::Path).collect(), cx);
         } else {
-            window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths }), cx);
+            window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths: images }), cx);
         }
     }
 
-    /// Image files dragged over this pane focus it, so you can see which terminal gets them.
+    /// Files dragged over this pane focus it, so you can see which terminal gets them.
     fn on_file_drag(&mut self, ev: &DragMoveEvent<ExternalPaths>, window: &mut Window, cx: &mut Context<Self>) {
         let over = self.drop_hit.borrow().as_ref().is_some_and(|h| h.is_hovered(window));
-        if over && !self.focus.is_focused(window) && !crate::annotate::image_paths(ev.drag(cx)).is_empty() {
+        if over && !self.focus.is_focused(window) && !ev.drag(cx).paths().is_empty() {
             self.focus.focus(window, cx);
             cx.notify();
         }
@@ -2177,9 +2183,9 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             )))
-            // An accent edge while image files are dragged over the pane.
+            // An accent edge while files are dragged over the pane.
             .child(div().absolute().top_0().left_0().size_full().drag_over::<ExternalPaths>(move |s, paths, _, _| {
-                if crate::annotate::image_paths(paths).is_empty() { s } else { s.border_2().border_color(drop_edge).bg(drop_edge.opacity(0.06)) }
+                if paths.paths().is_empty() { s } else { s.border_2().border_color(drop_edge).bg(drop_edge.opacity(0.06)) }
             }))
             .children(pill)
             .children(preview)
@@ -2442,10 +2448,31 @@ fn paint_grid(
     }
 }
 
+/// A path as a shell (or Claude Code's input) reads it as one word: special characters
+/// backslash-escaped, as Terminal.app types a dropped file.
+fn escaped_path(p: &std::path::Path) -> String {
+    let mut out = String::new();
+    for c in p.to_string_lossy().chars() {
+        if c.is_whitespace() || "\\'\"`$&|;<>()[]{}*?!#".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{caps_text, key_msg, link_span, not_running_detail, on_update_notice, other_text};
+    use super::{caps_text, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text};
     use serde_json::json;
+
+    #[test]
+    fn dropped_paths_are_one_shell_word() {
+        use std::path::Path;
+        assert_eq!(escaped_path(Path::new("/tmp/notes.md")), "/tmp/notes.md");
+        assert_eq!(escaped_path(Path::new("/Users/me/My Docs/plan (v2).pdf")), "/Users/me/My\\ Docs/plan\\ \\(v2\\).pdf");
+        assert_eq!(escaped_path(Path::new("/tmp/it's $5 & up")), "/tmp/it\\'s\\ \\$5\\ \\&\\ up");
+    }
 
     #[test]
     fn not_running_says_why_and_where() {
