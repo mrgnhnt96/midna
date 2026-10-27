@@ -1064,6 +1064,36 @@ pub fn image_paths(paths: &ExternalPaths) -> Vec<PathBuf> {
     paths.paths().iter().filter(|p| looks_like_image(p)).cloned().collect()
 }
 
+/// Dropped files split into (images, everything else), by what's in them: a screenshot without
+/// an extension is an image, a text file named `.png` isn't. Folders are everything else.
+pub fn sort_dropped(paths: &ExternalPaths) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    paths.paths().iter().cloned().partition(|p| is_image_file(p))
+}
+
+/// Whether the file at `p` holds an image the sheet can take, from its first bytes; its
+/// extension decides when it can't be read.
+pub fn is_image_file(p: &Path) -> bool {
+    use std::io::Read;
+    if p.is_dir() {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    let Ok(n) = std::fs::File::open(p).and_then(|mut f| f.read(&mut head)) else {
+        return looks_like_image(p);
+    };
+    is_image_bytes(&head[..n])
+}
+
+/// Whether `head` (a file's first bytes) starts an image the sheet can take.
+fn is_image_bytes(head: &[u8]) -> bool {
+    use ::image::ImageFormat as F;
+    // HEIC/HEIF: an ISO box `ftyp` with an HEIF brand.
+    if head.len() >= 12 && &head[4..8] == b"ftyp" && matches!(&head[8..12], b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"mif1" | b"msf1") {
+        return true;
+    }
+    matches!(::image::guess_format(head), Ok(F::Png | F::Jpeg | F::Gif | F::WebP | F::Tiff | F::Bmp))
+}
+
 /// Where an image comes from.
 pub enum Source {
     Bytes { name: String, bytes: Vec<u8> },
@@ -1291,11 +1321,32 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMsg, Draft, Mark, Note, OVERSCROLL, Outgoing, Removed, STAGE_PAD, Shot, Source, anchored, fit_scale, lead, load, notes_text, pan_limit, pasted_image_paths};
+    use super::{ClientMsg, Draft, Mark, Note, OVERSCROLL, Outgoing, Removed, STAGE_PAD, Shot, Source, anchored, fit_scale, is_image_file, lead, load, notes_text, pan_limit, pasted_image_paths};
     use ::core::prelude::v1::test;
     use gpui_kit::{Image, ImageFormat};
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    #[test]
+    fn dropped_files_are_images_by_their_bytes() {
+        let dir = std::env::temp_dir().join(format!("midna-dropped-kinds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        assert!(is_image_file(&file("shot", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR")), "no extension, still a PNG");
+        assert!(is_image_file(&file("photo.jpeg", b"\xff\xd8\xff\xe0\0\x10JFIF")));
+        assert!(is_image_file(&file("IMG_1.HEIC", b"\0\0\0\x18ftypheic\0\0\0\0")));
+        assert!(!is_image_file(&file("fake.png", b"just some text")), "named .png, holds text");
+        assert!(!is_image_file(&file("notes.md", b"# notes")));
+        assert!(!is_image_file(&file("clip.mp4", b"\0\0\0\x18ftypmp42\0\0\0\0")));
+        assert!(!is_image_file(&file("empty.png", b"")));
+        assert!(!is_image_file(&dir), "a folder");
+        assert!(is_image_file(&dir.join("gone.png")), "unreadable: the extension decides");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn shot(name: &str, notes: &[&str]) -> Shot {
         let notes = notes.iter().map(|t| note(Mark::Pin { x: 0.5, y: 0.5 }, t)).collect();
