@@ -124,8 +124,8 @@ pub struct TerminalView {
     hover_cmd: bool,
     /// The card previewing the link under the pointer (`terminal/link_preview.rs`).
     preview: link_preview::Preview,
-    /// Right-click menu: where it opened, and the link under that cell (if any).
-    menu: Option<(Point<Pixels>, Option<Value>)>,
+    /// Right-click menu: where it opened.
+    menu: Option<Point<Pixels>>,
     /// The menu a plain click on a link opens (`link_menu.rs`).
     link_menu: link_menu::LinkMenus,
     marked: Option<String>,
@@ -1661,27 +1661,34 @@ impl TerminalView {
 
     // ------------------------------------------------------------------ context menu
 
+    /// The right-click menu, or the link menu when the click is on a link (as a plain click
+    /// opens it), once `session.link_at` answers.
     fn open_menu(&mut self, pos: Point<Pixels>, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
         self.link_menu.menu = None;
-        self.menu = Some((pos, None));
-        cx.notify();
         if x < 0. || y < 0. {
+            self.menu = Some(pos);
+            cx.notify();
             return;
         }
+        let click = self.link_menu.click;
+        let cell = (x.floor() as i32, y.floor() as i32);
         let params = json!({ "id": self.session_id, "col": x as u16, "row": y as u16 });
         self.call("session.link_at", params, window, cx, move |t, r, _, cx| {
-            let link = r.ok().filter(|v| v.get("kind").and_then(Value::as_str).is_some_and(|k| k != "none"));
-            if let Some((p, l)) = t.menu.as_mut()
-                && *p == pos
-            {
-                *l = link;
-                cx.notify();
+            if t.link_menu.click != click {
+                return;
+            }
+            match r.ok().filter(|v| v.get("kind").and_then(Value::as_str).is_some_and(|k| k != "none")) {
+                Some(_) => t.open_link_menu_at(cell, cx),
+                None => {
+                    t.menu = Some(pos);
+                    cx.notify();
+                }
             }
         });
     }
 
     fn menu_action(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let link = self.menu.take().and_then(|(_, l)| l);
+        self.menu = None;
         match what {
             "copy" => self.copy_selection(window, cx),
             "paste" => {
@@ -1690,11 +1697,6 @@ impl TerminalView {
                 }
             }
             "paste_secret" => return self.paste_as_secret(window, cx),
-            "open" => {
-                if let Some(v) = link {
-                    self.open_link(&v, cx);
-                }
-            }
             "select_all" => self.call("session.select_all", json!({ "id": self.session_id }), window, cx, |_, _, _, _| {}),
             "clear" => self.call("session.clear", json!({ "id": self.session_id }), window, cx, |_, _, _, _| {}),
             _ => {}
@@ -1704,13 +1706,8 @@ impl TerminalView {
     }
 
     fn render_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (pos, link) = self.menu.clone()?;
+        let pos = self.menu?;
         let has_sel = !self.ext.selection.is_empty();
-        let link_label = match link.as_ref().and_then(|v| v.get("kind")).and_then(Value::as_str) {
-            Some("file") => "Open file",
-            Some("session") => "Go to terminal",
-            _ => "Open link",
-        };
         let clear_keys = crate::actions::label(cx, "keys.clear");
         let item = |id: &'static str, label: &'static str, keys: &str, enabled: bool, cx: &mut Context<Self>| {
             div()
@@ -1747,8 +1744,6 @@ impl TerminalView {
             .child(item("copy", "Copy", "⌘C", has_sel, cx))
             .child(item("paste", "Paste", "⌘V", true, cx))
             .child(item("paste_secret", "Paste as Secret", "⌥⌘V", true, cx))
-            .child(sep())
-            .child(item("open", link_label, "⌘-click", link.is_some(), cx))
             .child(sep())
             .child(item("select_all", "Select All", "⌘A", true, cx))
             .child(item("clear", "Clear", &clear_keys, true, cx));
