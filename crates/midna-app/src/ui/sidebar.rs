@@ -238,7 +238,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
 
     let top = wipe(0, 0., titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false)).into_any_element());
 
-    if m.need_anim.moving() || m.close_anim.moving() {
+    if m.need_anim.moving() || m.close_anim.moving() || m.row_close.moving() {
         window.request_animation_frame();
     }
     let btn_look = m.need_anim.button(need_n > 0);
@@ -835,6 +835,9 @@ fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds:
     cx.notify();
 }
 
+/// Each terminal row's hover group: its ✕ shows while the pointer is on the row.
+const ROW_GROUP: &str = "sidebar-row";
+
 fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
     // Part of a multi-selection but not the terminal on screen.
@@ -878,6 +881,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     // Just closed or opened the terminal beside it: the highlight is moving (`ui::close_anim`).
     let hl = m.close_anim.highlight(&s.id, selected);
     let own = selected && hl == crate::ui::close_anim::Highlight::Own;
+    let (armed, hover_id) = (m.row_close.is_armed(&s.id), s.id.clone());
 
     div()
         .id(SharedString::from(format!("row-{}", s.id)))
@@ -897,6 +901,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
         })
         .when(marked, |d| d.bg(t.accent_soft))
         .when(!selected && !marked, |d| d.hover(|st| st.bg(t.raised.opacity(0.5))))
+        .when(armed && !selected && !marked, |d| d.bg(t.raised.opacity(0.5)))
         .map(|d| crate::annotate::row_drop_target(d, m, &s.id, t, cx))
         .on_drag(drag, |_, _, _, cx| cx.new(|_| NoGhost))
         .on_drag_move(cx.listener(move |m, ev: &DragMoveEvent<DraggedRow>, _, cx| {
@@ -908,13 +913,19 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
             }
         }))
         .on_click(cx.listener(move |m, ev: &ClickEvent, w, cx| {
-            if click_marks(m, &id, ev, w, cx) {
+            // A click on a row with its close line open backs out of closing it.
+            let armed = m.row_close.armed.as_ref().map(|a| a.id.clone());
+            crate::ui::row_close::disarm(m, cx);
+            if armed.as_deref() == Some(id.as_str()) {
+            } else if click_marks(m, &id, ev, w, cx) {
             } else if ev.click_count() == 2 {
                 crate::ui::rename::start(m, &id, crate::ui::rename::At::Sidebar, w, cx);
             } else {
                 m.select_only(id.clone(), w, cx);
             }
         }))
+        .group(ROW_GROUP)
+        .on_hover(cx.listener(move |m, over: &bool, _, cx| crate::ui::row_close::hover(m, &hover_id, *over, cx)))
         .when_some(look.sweep, |d, b| d.overflow_hidden().child(crate::ui::need_anim::band_el(t, b)))
         .when(own, |d| d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
         .when(look.edge > 0., |d| d.child(crate::ui::need_anim::edge_el(t, look.edge)))
@@ -938,7 +949,14 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                         .when(!segs.is_empty(), |d| d.child(div().ml_auto().flex_none().child(segments(&segs, t, 10.5, cx)))),
                 )
                 .when(crate::ui::popout::is_popped(&s.id, cx), |d| d.child(Icon::PopOut.el(12., t.dim)))
-                .child(super::terminal_icon(m, t, s, 14., t.dim)),
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .size(px(14.))
+                        .child(div().when(!armed, |d| d.group_hover(ROW_GROUP, |s| s.opacity(0.))).when(armed, |d| d.opacity(0.)).child(super::terminal_icon(m, t, s, 14., t.dim)))
+                        .child(crate::ui::row_close::x_button(m, s, ROW_GROUP, t, cx)),
+                ),
         )
         .when_some(line2, |d, (text, color)| {
             let unfold = look.line;
@@ -955,6 +973,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                     .child(div().min_w_0().truncate().child(text)),
             )
         })
+        .children(crate::ui::row_close::line(m, s, t, cx))
 }
 
 /// `host`'s split, as a row tucked under it (design A on the Midna Splits canvas): a `└`,

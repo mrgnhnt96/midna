@@ -169,6 +169,8 @@ pub struct MainWindow {
     pub need_anim: crate::ui::need_anim::NeedAnim,
     /// Closed rows folding away and the pane sliding to the next terminal (`ui::close_anim`).
     pub close_anim: crate::ui::close_anim::CloseAnim,
+    /// A sidebar row's ✕ and the confirm line it opens (`ui::row_close`).
+    pub row_close: crate::ui::row_close::RowClose,
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
     pub fold_heights: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     pub selected: Option<String>,
@@ -381,6 +383,7 @@ impl MainWindow {
             fold_shown: Default::default(),
             need_anim: Default::default(),
             close_anim: Default::default(),
+            row_close: Default::default(),
             fold_heights: Default::default(),
             webhooks: Value::Null,
             hooks: Value::Null,
@@ -1922,6 +1925,32 @@ impl MainWindow {
         let next = neighbour(&self.sidebar_rows(Some(&id), cx), &id, |_| true);
         crate::ui::close_anim::start(self, std::slice::from_ref(&id), next.as_deref(), cx);
         self.select_neighbour(&id, window, cx);
+        self.sessions.retain(|s| s.id != id);
+        self.menu = Menu::None;
+        self.sessions_floor = self.refresh_seq + 1;
+        self.rpc("session.close", json!({ "id": id, "force": true }), cx, |m, _, _, cx| m.sessions_changed(cx));
+        cx.notify();
+    }
+
+    /// A sidebar row's ✕, confirmed (`ui::row_close`): close that terminal, no second try
+    /// needed (its confirm line already said what's running). The one on screen hands the
+    /// selection to its neighbour, like ⌘W; any other folds away and the selection stays.
+    pub fn close_row(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sessions.iter().any(|s| s.id == id) {
+            return;
+        }
+        crate::sounds::play("closed");
+        let shown = self.selected.as_deref() == Some(id);
+        let next = if shown { neighbour(&self.sidebar_rows(Some(id), cx), id, |_| true) } else { None };
+        crate::ui::close_anim::start(self, &[id.to_string()], next.as_deref(), cx);
+        crate::ui::split::forget(self, id, window, cx);
+        if shown {
+            self.select_neighbour(id, window, cx);
+        }
+        self.marked.retain(|x| x != id);
+        if self.marked.len() < 2 {
+            self.marked.clear();
+        }
         self.sessions.retain(|s| s.id != id);
         self.menu = Menu::None;
         self.sessions_floor = self.refresh_seq + 1;
