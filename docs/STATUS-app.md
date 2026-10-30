@@ -215,6 +215,7 @@ Code: `src/kass.rs` (handshake listener), `src/composer.rs` (native `NSTextView`
 
 - Kass's WillBegin shows the composer under the selected terminal, makes the text view first responder and replies `dictationReady` (0.4–9 ms measured). DidEnd: empty → hides; text → stays for review (↩ sends with `session.input`, Esc cancels) or sends at once with `kass.auto_send`.
 - ⇧⌘D opens it by hand for typing or pasting long prompts. ⇧↩ adds a newline; multi-line text goes as one bracketed paste.
+- **Markdown lists** (`list_edit.rs`): ⇧↩ on a `- `, `- [ ] ` or `1. ` line starts the next item; ⇧↩ on an empty item ends the list. Deleting a numbered line renumbers the rest, and the cursor stays put.
 - Settings shows "Handshake detected" after the first Kass notification.
 
 **Verified** (temp `MIDNA_HOME`, a `/bin/cat` terminal, the spike's `kass-probe` plus a small Swift poster for DidEnd):
@@ -245,6 +246,7 @@ Decisions: DECISIONS.md "Terminal pane as a daily driver". Code: `midnad/src/eng
 - **Selection:** drag, double-click word, triple-click line, option-drag rectangle, autoscroll past the edges, ⌘C / ⌘A from the engine (wide chars `世界` copied correctly, rectangles, wrapped lines joined). Selection stays on its text as output arrives.
 - **Links:** ⌘-click OSC 8 hyperlinks, `https://example.com/a_(b)` (trailing `).` trimmed), `src/main.rs:2:5` (opened in `$EDITOR +2` in a new terminal, or `open`).
 - **Find** ⌘F with count (`10/11`), ↩/⇧↩, esc.
+- **Markdown lists in an agent's input box** (Claude Code, Codex): ⇧↩ on a `- ` or `1. ` line types the next marker, ⇧↩ on an empty item erases it. Removing a numbered line renumbers the rest once the agent has redrawn: midna reads the box off the screen (`term_edit::input_cursor`), walks the cursor with ←/→ to each number, retypes it and walks back.
 - **Split** ⌘D / header button: side by side or stacked, own streams, focus edge, close / move to main.
 - **Performance** (release, 1180×720 window, 30×~150 grid; screen locked, so the dev driver drew at a 120 Hz pace instead of the display link): `cat` of a 105 MB colored file with wide chars finished in **0.73 s** while the pane ran **86–100 frames/s** (capped by the 8 ms pacing), draw **mean 1.2 ms / max 4.8 ms**; `yes | head -c 200M` took **4.1 s** at **~100 frames/s**, draw mean 0.75 ms / max 1.4 ms; typing during/after stayed immediate. Headroom for the spike's 120 fps.
 

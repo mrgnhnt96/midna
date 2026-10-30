@@ -636,9 +636,22 @@ define_class!(
             ok
         }
 
+        /// Notes whether the edit removes text, for [`renumber`].
+        #[unsafe(method(shouldChangeTextInRange:replacementString:))]
+        fn should_change_text(&self, range: NSRange, with: Option<&NSString>) -> bool {
+            let ok: bool = unsafe { msg_send![super(self), shouldChangeTextInRange: range, replacementString: with] };
+            if ok && !RENUMBERING.get() {
+                REMOVED.set(with.map_or(0, |s| s.length()) < range.length);
+            }
+            ok
+        }
+
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             let _: () = unsafe { msg_send![super(self), didChangeText] };
+            if !RENUMBERING.get() && REMOVED.replace(false) {
+                renumber(self);
+            }
             emit(ComposerEvent::Changed);
         }
 
@@ -646,6 +659,9 @@ define_class!(
         fn do_command(&self, cmd: Sel) {
             if cmd == sel!(insertNewline:) && !newline_modifier(self.mtm()) {
                 emit(ComposerEvent::Submit(self.string().to_string()));
+                return;
+            }
+            if cmd == sel!(insertNewline:) && list_newline(self) {
                 return;
             }
             if cmd == sel!(cancelOperation:) {
@@ -656,6 +672,75 @@ define_class!(
         }
     }
 );
+
+thread_local! {
+    /// The edit under way removes text (`shouldChangeTextInRange:` saw it).
+    static REMOVED: Cell<bool> = const { Cell::new(false) };
+    /// [`renumber`] is changing the text: its own edits don't trigger it again.
+    static RENUMBERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// UTF-16 offset `u` (an `NSRange`'s) in `s` as a byte offset.
+fn byte_at(s: &str, u: usize) -> usize {
+    let mut n = 0;
+    for (i, c) in s.char_indices() {
+        if n >= u {
+            return i;
+        }
+        n += c.len_utf16();
+    }
+    s.len()
+}
+
+fn utf16_at(s: &str, b: usize) -> usize {
+    s[..b].encode_utf16().count()
+}
+
+/// ⇧↩ on a list item (`list_edit::newline`): the next item's marker after the line break, or
+/// an empty item's marker cleared. False for a plain line break (or a selection).
+fn list_newline(tv: &ComposerTextView) -> bool {
+    let sel = tv.selectedRange();
+    if sel.length != 0 {
+        return false;
+    }
+    let text = tv.string().to_string();
+    let Some(nl) = crate::list_edit::newline(&text, byte_at(&text, sel.location)) else { return false };
+    let (range, insert) = match nl {
+        crate::list_edit::Newline::Continue(s) => (sel, s),
+        crate::list_edit::Newline::End(r) => (NSRange::new(utf16_at(&text, r.start), utf16_at(&text, r.end) - utf16_at(&text, r.start)), String::new()),
+    };
+    // `insertText:` goes through `shouldChangeText…`, so ⌘Z undoes it.
+    let s = NSString::from_str(&insert);
+    let _: () = unsafe { msg_send![tv, insertText: &*s, replacementRange: range] };
+    renumber(tv);
+    true
+}
+
+/// Renumber the numbered list at the cursor (`list_edit::renumber`), keeping the cursor where it
+/// was. One undo step.
+fn renumber(tv: &ComposerTextView) {
+    let sel = tv.selectedRange();
+    let text = tv.string().to_string();
+    let cursor = byte_at(&text, sel.location);
+    let edits = crate::list_edit::renumber(&text, cursor);
+    if edits.is_empty() {
+        return;
+    }
+    let Some(storage) = (unsafe { tv.textStorage() }) else { return };
+    RENUMBERING.set(true);
+    // Back to front, so the earlier ranges still hold.
+    for (r, s) in edits.iter().rev() {
+        let range = NSRange::new(utf16_at(&text, r.start), utf16_at(&text, r.end) - utf16_at(&text, r.start));
+        let s = NSString::from_str(s);
+        if tv.shouldChangeTextInRange_replacementString(range, Some(&s)) {
+            storage.replaceCharactersInRange_withString(range, &s);
+        }
+    }
+    tv.didChangeText();
+    RENUMBERING.set(false);
+    let at = utf16_at(&crate::list_edit::apply(&text, &edits), crate::list_edit::shift(cursor, &edits));
+    tv.setSelectedRange(NSRange::new(at, 0));
+}
 
 /// ⇧↩ / ⌥↩ insert a newline instead of sending.
 fn newline_modifier(mtm: MainThreadMarker) -> bool {
