@@ -45,6 +45,11 @@ const PAD_Y: f32 = 14.0;
 const IDLE_PAINT: Duration = Duration::from_millis(250);
 /// Kitty keyboard flags (see the kitty spec).
 const KITTY_REPORT_EVENTS: u8 = 2;
+/// How long after a deleting key (or a new list item) an agent's redraws may renumber its list.
+const LIST_WATCH: Duration = Duration::from_millis(800);
+/// How long the agent must go without a redraw (and the keyboard without a key) before the list
+/// is renumbered, so the screen shows every key sent so far.
+const LIST_QUIET: Duration = Duration::from_millis(80);
 
 /// `terminal.option_as_meta` (default on): option+key is sent as Meta (ESC prefix / alt
 /// modifier) instead of typing the macOS character. Set by the main window from settings.
@@ -131,6 +136,10 @@ pub struct TerminalView {
     marked: Option<String>,
     /// ⇧-arrow selection in the input line (`term_edit`).
     kbd_sel: Option<KbdSel>,
+    /// Until when a redraw of an agent's input may renumber its list (`list_key`).
+    list_watch: Option<Instant>,
+    /// Bumped by each redraw while `list_watch` runs; a renumber waits for it to settle.
+    list_gen: u64,
     /// The terminal is an agent terminal, "claude" or "codex" (`session.get`): its input box
     /// gets text editing although the agent draws full-screen, and the left button selects
     /// (see `on_down`).
@@ -431,6 +440,8 @@ impl TerminalView {
             hover_cmd: false,
             preview: Default::default(),
             kbd_sel: None,
+            list_watch: None,
+            list_gen: 0,
             agent: None,
             project_id: None,
             secret_sheet: None,
@@ -692,6 +703,9 @@ impl TerminalView {
             // Check once the app has gone quiet, not between its redraws.
             self.check_erase_later(120, cx);
         }
+        if (rows_changed || moved) && self.list_watch.is_some() {
+            self.fix_list_numbers_later(cx);
+        }
         if let Some(s) = self.stream() {
             s.want();
         }
@@ -758,6 +772,12 @@ impl TerminalView {
                 self.deliver(ClientMsg::Key(k));
                 cx.stop_propagation();
             }
+            return;
+        }
+        self.list_watch = None;
+        if self.find.is_none() && self.marked.is_none() && self.list_key(ks) {
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         if self.find.is_none() && self.marked.is_none() && self.edit_key(ks, cx) {
@@ -829,6 +849,113 @@ impl TerminalView {
             self.deliver(ClientMsg::Key(k));
             cx.stop_propagation();
             cx.notify();
+        }
+    }
+
+    /// Markdown lists in Claude Code's or Codex's input (`list_edit`): ⇧↩ on an item types the
+    /// next one's marker after the line break, or clears an empty item's marker. A key that
+    /// deletes lets the next redraws renumber the list at the cursor (`fix_list_numbers`). True
+    /// when the key was handled here.
+    fn list_key(&mut self, ks: &Keystroke) -> bool {
+        let m = &ks.modifiers;
+        if !self.is_agent() || m.control || self.find.is_some() {
+            return false;
+        }
+        let deletes = matches!(ks.key.as_str(), "backspace" | "delete") || (m.platform && ks.key == "x");
+        let newline = ks.key == "enter" && m.shift && !m.platform && !m.alt && self.kbd_range().is_none() && self.ext.selection.is_empty();
+        if !deletes && !newline {
+            return false;
+        }
+        let Some(c) = self.live_cursor() else { return false };
+        let Some((text, at)) = term_edit::input_cursor(&self.grid, c) else { return false };
+        if deletes {
+            self.list_watch = Some(Instant::now() + LIST_WATCH);
+            return false;
+        }
+        match crate::list_edit::newline(&text, at) {
+            None => false,
+            Some(crate::list_edit::Newline::Continue(marker)) => {
+                let Some(k) = key_msg_now(ks, false) else { return false };
+                self.deliver(ClientMsg::Key(k));
+                self.deliver(ClientMsg::Input(marker.trim_start_matches('\n').as_bytes().to_vec()));
+                // A new item in the middle pushes the numbers below it down.
+                self.list_watch = Some(Instant::now() + LIST_WATCH);
+                true
+            }
+            Some(crate::list_edit::Newline::End(r)) => {
+                for _ in 0..text[r.start..at].chars().count() {
+                    self.arrow("backspace");
+                }
+                self.typed();
+                true
+            }
+        }
+    }
+
+    /// [`Self::fix_list_numbers`] once the agent has gone quiet: the walk counts characters on
+    /// the screen, so a key still on its way (⌫ held down, say) would throw it off.
+    fn fix_list_numbers_later(&mut self, cx: &mut Context<Self>) {
+        self.list_gen += 1;
+        let generation = self.list_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LIST_QUIET).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.list_gen != generation {
+                    return;
+                }
+                if t.sink.frame.lock().is_ok_and(|f| f.is_some()) {
+                    // A frame not drawn yet: take it in, which schedules this again.
+                    t.pull(cx);
+                } else if t.last_input.elapsed() < LIST_QUIET {
+                    t.fix_list_numbers_later(cx);
+                } else {
+                    t.fix_list_numbers();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// While `list_watch` runs: renumber the list at the cursor in an agent's input if the
+    /// screen shows it miscounted (`list_edit::renumber`). The cursor walks to each number,
+    /// retypes it and walks back, all in one burst, so the agent redraws once with only the
+    /// digits changed.
+    fn fix_list_numbers(&mut self) {
+        let Some(until) = self.list_watch else { return };
+        if Instant::now() > until {
+            self.list_watch = None;
+            return;
+        }
+        if self.erasing.is_some() {
+            return;
+        }
+        let Some(c) = self.live_cursor() else { return };
+        let Some((text, at)) = term_edit::input_cursor(&self.grid, c) else { return };
+        let edits = crate::list_edit::renumber(&text, at);
+        if edits.is_empty() {
+            return;
+        }
+        self.list_watch = None;
+        let chars = |b: usize| text[..b].chars().count();
+        let mut cur = chars(at);
+        // Back to front: what comes before an edit is still the screen's text.
+        for (r, digits) in edits.iter().rev() {
+            self.walk(cur, chars(r.end));
+            for _ in 0..text[r.clone()].chars().count() {
+                self.arrow("backspace");
+            }
+            self.send_msg(ClientMsg::Input(digits.as_bytes().to_vec()));
+            cur = chars(r.start) + digits.len();
+        }
+        let after = crate::list_edit::apply(&text, &edits);
+        self.walk(cur, after[..crate::list_edit::shift(at, &edits)].chars().count());
+        self.typed();
+    }
+
+    /// Arrow from character `from` of the input to character `to` (← → cross line breaks).
+    fn walk(&mut self, from: usize, to: usize) {
+        for _ in 0..from.abs_diff(to) {
+            self.arrow(if to < from { "left" } else { "right" });
         }
     }
 
@@ -1947,6 +2074,7 @@ impl EntityInputHandler for TerminalView {
             f.query.push_str(text);
             self.run_find(true, true, window, cx);
         } else if !text.is_empty() {
+            self.list_watch = None;
             self.erase_selection(cx);
             self.deliver(ClientMsg::Input(text.as_bytes().to_vec()));
         }

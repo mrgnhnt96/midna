@@ -164,10 +164,7 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
     let (top, bottom) = claude_box(grid, cursor)?;
     let first = grid.get(top as usize)?;
     let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '>'))? as u16;
-    let start = glyph + 2;
-    // The placeholder ("Try …") is dim; the cursor's cell on it is drawn plainly.
-    let shown: Vec<&Cell> = first.cells.get(start as usize + 1..text_end(first) as usize).unwrap_or_default().iter().filter(|c| !matches!(c.ch, ' ' | '\0')).collect();
-    if !shown.is_empty() && shown.iter().all(|c| is_dim(c)) {
+    if placeholder(first, glyph + 2) {
         return Some(String::new());
     }
     let lines: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
@@ -180,11 +177,54 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
     Some(text)
 }
 
-/// Row `y` of the text in Claude Code's box whose prompt row is `top`: past the prompt glyph
+/// Whether the prompt row `first`, its text starting at column `start`, shows the dim
+/// placeholder ("Try …"). The cursor's cell on it is drawn plainly.
+fn placeholder(first: &RowData, start: u16) -> bool {
+    let shown: Vec<&Cell> = first.cells.get(start as usize + 1..text_end(first) as usize).unwrap_or_default().iter().filter(|c| !matches!(c.ch, ' ' | '\0')).collect();
+    !shown.is_empty() && shown.iter().all(|c| is_dim(c))
+}
+
+/// The text in an agent's input box and the cursor's byte offset in it, for markdown lists
+/// (`list_edit`). Rows are joined as [`input_text`] joins Claude Code's; Codex wraps one cell
+/// wider (`cols - 3`), and a blank row ends its input (see [`input_rows`]). Spaces between the
+/// row's text and the cursor count (the agent has typed them; the screen shows none). None when
+/// the cursor isn't in a box or the box shows its placeholder.
+pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
+    let (top, bottom) = input_rows(grid, cursor)?;
+    let first = grid.get(top as usize)?;
+    let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))?;
+    if placeholder(first, glyph as u16 + 2) {
+        return None;
+    }
+    let width = first.cells.len().saturating_sub(if first.cells[glyph].ch == '›' { 3 } else { 4 });
+    let mut text = String::new();
+    let mut at = 0;
+    let mut prev: Option<String> = None;
+    for y in top..=bottom {
+        let mut line = box_row(grid, top, y);
+        let whole = line.clone();
+        if let Some(p) = &prev {
+            text.push_str(row_break(p, &line, width));
+        }
+        if y == cursor.1 {
+            let r = grid.get(y as usize)?;
+            let start = if y == top { glyph as u16 + 2 } else { AGENT_INDENT };
+            let n = chars_between(r, start, cursor.0.max(start));
+            let shown = line.chars().count();
+            line.extend(std::iter::repeat_n(' ', n.saturating_sub(shown)));
+            at = text.len() + line.char_indices().nth(n).map_or(line.len(), |(i, _)| i);
+        }
+        text.push_str(&line);
+        prev = Some(whole);
+    }
+    Some((text, at))
+}
+
+/// Row `y` of the text in an agent's box whose prompt row is `top`: past the prompt glyph
 /// and its space on the prompt row, past the indent below it.
 fn box_row(grid: &[RowData], top: u16, y: u16) -> String {
     let Some(r) = grid.get(y as usize) else { return String::new() };
-    let start = if y == top { r.cells.iter().position(|c| matches!(c.ch, '❯' | '>')).map_or(AGENT_INDENT, |g| g as u16 + 2) } else { AGENT_INDENT };
+    let start = if y == top { r.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>')).map_or(AGENT_INDENT, |g| g as u16 + 2) } else { AGENT_INDENT };
     text_of(r, start, text_end(r).max(start))
 }
 
@@ -782,6 +822,31 @@ mod tests {
         let g = grid(&[&rule, "❯ one", "", "  two", &rule]);
         assert_eq!(row_edge("left", &g, (3, 3)), None, "after a blank line: a line of its own");
         assert_eq!(input_end(&g, (0, 2)), Some(vec![Send::Arrow("down"), Send::Bytes(b"\x05")]), "from a blank line");
+    }
+
+    #[test]
+    fn finds_the_cursor_in_claudes_input() {
+        let rule = "─".repeat(30);
+        let g = grid(&[&rule, "❯ 1. a", "  2. b", &rule]);
+        assert_eq!(input_cursor(&g, (6, 2)), Some(("1. a\n2. b".into(), 9)));
+        assert_eq!(input_cursor(&g, (2, 1)), Some(("1. a\n2. b".into(), 0)));
+        // "3. " typed: the space after the marker isn't drawn.
+        let g = grid(&[&rule, "❯ 1. a", "  3.", &rule]);
+        assert_eq!(input_cursor(&g, (5, 2)), Some(("1. a\n3. ".into(), 8)));
+        let g = grid(&[&rule, "❯ the quick brown fox jumps", "  over", &rule]);
+        assert_eq!(input_cursor(&g, (4, 2)), Some(("the quick brown fox jumps over".into(), 28)));
+        assert_eq!(input_cursor(&g, (0, 0)), None, "not in the box");
+    }
+
+    #[test]
+    fn finds_the_cursor_in_codexs_input() {
+        let g = grid(&["› 1. alpha", "  2. beta", "", "  GPT-6 status"]);
+        assert_eq!(input_cursor(&g, (9, 1)), Some(("1. alpha\n2. beta".into(), 16)), "the status line isn't text");
+        // Codex wraps at `cols - 3`: "ffff" would have fit after this row, so it's a line break.
+        let g = grid(&["› aaaa bbbb cccc dddd ee", "  ffff", "", "  GPT-6 status"]);
+        assert_eq!(input_cursor(&g, (6, 1)).map(|t| t.0), Some("aaaa bbbb cccc dddd ee\nffff".into()));
+        let g = grid(&["› aaaa bbbb cccc dddd eeeee", "  ffff", "", "  GPT-6 status"]);
+        assert_eq!(input_cursor(&g, (6, 1)).map(|t| t.0), Some("aaaa bbbb cccc dddd eeeee ffff".into()));
     }
 
     #[test]

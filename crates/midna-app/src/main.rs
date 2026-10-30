@@ -24,6 +24,7 @@ mod ide;
 mod install;
 mod kass;
 mod lifecycle;
+mod list_edit;
 mod model;
 mod notify;
 mod report;
