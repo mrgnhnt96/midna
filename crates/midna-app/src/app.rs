@@ -1755,6 +1755,11 @@ impl MainWindow {
             self.sessions.push(s);
         }
         if let Some(id) = id {
+            // Opened from a screen (the Summary, Insights…): back to the terminal, which then
+            // takes focus (`show_terminal` only focuses on the terminal screen).
+            if self.screen != Screen::Terminal {
+                self.set_screen(Screen::Terminal, window, cx);
+            }
             self.windows.borrow_mut().claim(&id, self.id);
             let old = self.terminal.clone();
             crate::ui::close_anim::open(self, &id, old, cx);

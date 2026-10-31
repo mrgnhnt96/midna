@@ -131,7 +131,6 @@ fn resume(m: &mut MainWindow, id: String, cx: &mut Context<MainWindow>) {
     m.menu = Menu::None;
     m.rpc("summary.resume", json!({ "id": id }), cx, |m, v, window, cx| {
         m.summary.closed.retain(|c| Some(&c.id) != v["session"]["id"].as_str().map(str::to_string).as_ref());
-        m.set_screen(Screen::Terminal, window, cx);
         m.show_opened(v, window, cx);
         fetch(m, cx);
     });
