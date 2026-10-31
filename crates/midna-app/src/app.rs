@@ -540,12 +540,20 @@ impl MainWindow {
 
     fn rebind(&self, cx: &mut Context<Self>) {
         let settings = self.settings.clone();
-        bind_keys(cx, |k| {
-            settings.get(k).map(|v| match v {
-                Value::String(s) => s.clone(),
-                _ => String::new(),
-            })
-        });
+        let when: Vec<String> = match settings.get("keys.when") {
+            Some(Value::Array(rules)) => rules.iter().filter_map(|r| r.as_str().map(str::to_string)).collect(),
+            _ => Vec::new(),
+        };
+        bind_keys(
+            cx,
+            |k| {
+                settings.get(k).map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                })
+            },
+            &when,
+        );
     }
 
     // ------------------------------------------------------------------ backend

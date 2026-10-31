@@ -61,7 +61,7 @@ fn main() {
         let (ui_font, mono_font) = theme::load_fonts(cx);
         let system_dark = matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
         cx.set_global(Theme::from_def(&theme::startup_def(&backend, system_dark), ui_font, mono_font));
-        bind_keys(cx, |_| None);
+        bind_keys(cx, |_| None, &[]);
         // First-launch install / login item / CLI link / auto-update (dev mode: spawn midnad).
         lifecycle::start(backend.clone(), cx);
         // A trackpad tap on every click of something clickable (haptics.rs, `ui.haptics`).
