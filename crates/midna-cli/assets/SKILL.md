@@ -402,6 +402,12 @@ when it is taken or released.
   `midna settings set <key> <value>` changes one.
 - Human-only keys (for example `approve.from_cli`, `agents.may_move_windows` and `policy.default`)
   can be read but not written. Setting one asks the human instead.
+- Shortcuts are `keys.*` settings. Where each one works is its when clause (a GPUI context
+  predicate); `keys.when` overrides it, one `<keys.* key> = <when clause>` rule per shortcut
+  (`*` = anywhere). Settings has no row for it, so it's yours to set when the human asks for a
+  shortcut to work somewhere else. Setting it replaces the whole list, so `midna settings get
+  keys.when` first; `midna explain keys.when` has the syntax. midnad rejects a clause that
+  doesn't parse.
 
 ## Windows
 

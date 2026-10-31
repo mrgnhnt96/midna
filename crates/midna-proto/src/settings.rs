@@ -160,6 +160,12 @@ impl SettingSpec {
                     if self.key == "theme.colors" {
                         crate::themes::check_override(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                     }
+                    if self.key == "keys.when" {
+                        check_key_when(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
+                        if out.iter().any(|r| r.split_once(" = ").is_some_and(|(n, _)| n == m)) {
+                            return Err(format!("{}: two rules for `{m}`", self.key));
+                        }
+                    }
                     if self.key == "insights.layouts" {
                         check_insights_layout(val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                         if out.iter().any(|r| r.split_once(" = ").is_some_and(|(n, _)| n == m)) {
@@ -412,6 +418,60 @@ fn check_insights_layout(value: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A `keys.when` value that drops a shortcut's when clause: it works anywhere in the app.
+pub const WHEN_ANYWHERE: &str = "*";
+
+/// A `keys.when` rule: `<keys.* setting> = <when expression>`.
+fn check_key_when(m: &str, val: &str) -> Result<(), String> {
+    if !setting(m).is_some_and(|s| matches!(s.ty, SettingKind::Keybinding)) {
+        return Err(format!("`{m}` is not a shortcut setting (a keys.* key from `midna settings list`)"));
+    }
+    if val == WHEN_ANYWHERE { Ok(()) } else { check_when(val) }
+}
+
+/// Whether `expr` parses as a GPUI when clause: identifiers, `!`, `&&`, `||`, `==`, `!=`,
+/// `>` (a context inside another) and parentheses. Mirrors `KeyBindingContextPredicate::parse`
+/// (minus vim's operator characters), so the daemon can turn a bad one away before the app sees it.
+pub fn check_when(src: &str) -> Result<(), String> {
+    fn ident(s: &str) -> (&str, &str) {
+        s.split_at(s.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-')).unwrap_or(s.len()))
+    }
+    // (rest, whether the operand is a name, parenthesized or not)
+    fn primary(s: &str) -> Result<(&str, bool), String> {
+        match s.chars().next() {
+            None => Err("it ends too soon".into()),
+            Some('(') => {
+                let (rest, name) = expr(s[1..].trim_start(), 0)?;
+                let rest = rest.strip_prefix(')').ok_or("a `(` has no `)`")?;
+                Ok((rest.trim_start(), name))
+            }
+            Some('!') => Ok((expr(s[1..].trim_start(), 5)?.0, false)),
+            Some(c) if c.is_alphanumeric() || c == '_' || c == '-' => Ok((ident(s).1.trim_start(), true)),
+            Some(c) => Err(format!("unexpected `{c}`")),
+        }
+    }
+    fn expr(s: &str, min: u32) -> Result<(&str, bool), String> {
+        let (mut s, mut bare) = primary(s)?;
+        'ops: loop {
+            for (op, prec) in [(">", 1), ("&&", 3), ("||", 2), ("==", 4), ("!=", 4)] {
+                if s.starts_with(op) && prec >= min {
+                    let (rest, right) = expr(s[op.len()..].trim_start(), prec + 1)?;
+                    if prec == 4 && !(bare && right) {
+                        return Err(format!("both sides of `{op}` must be names"));
+                    }
+                    (s, bare) = (rest, false);
+                    continue 'ops;
+                }
+            }
+            return Ok((s, bare));
+        }
+    }
+    match expr(src.trim(), 0)? {
+        ("", _) => Ok(()),
+        (rest, _) => Err(format!("unexpected `{}`", rest.chars().next().unwrap_or(' '))),
+    }
 }
 /// Theme colors an Insights color setting can name (or `#RRGGBB`).
 pub const CHART_COLORS: &[&str] = &["accent", "work", "need", "ok", "err", "fg", "dim"];
@@ -835,6 +895,14 @@ pub static SETTINGS: &[SettingSpec] = &[
     s!("keys.note_newline", KB, S("shift-enter"), "keys", false, "In the image sheet, start a new line in the note you're editing (enter saves the note)."),
     s!("keys.close", KB, S("cmd-w"), "keys", false, "Close the selected terminal (in Settings or a pop-out: that window)."),
     s!("keys.quit", KB, S("cmd-q"), "keys", false, "Quit midna (hold it in the main window). Terminals keep running in midnad."),
+    s!("keys.when", SettingKind::RuleList, L(&[]), "keys", false,
+        "Where shortcuts work, one `<keys.* setting> = <when clause>` rule per shortcut, replacing its built-in when clause (Settings ▸ Shortcuts shows the result as Where). \
+        A when clause is a GPUI context predicate: context names joined with && (both), || (either), ! (not) and parentheses, `A > B` (B inside A) and `key == value`. \
+        Contexts: MidnaMain (the main window and pop-outs), Terminal (the focused terminal), Modal (the image sheet, needs-you cards), Popover (command bar, links, queue, subagents, IDE picker), \
+        Screen (rules, triggers, insights, notifications, summary), and `overlay == <id>` for one of them (annotate, needs_you, command_bar, links, queue, subagents, ide, rules, triggers, insights, notifications, summary). \
+        Main-window shortcuts default to `MidnaMain && !Modal && !Popover`. * = anywhere in the app. \
+        e.g. `keys.new_agent = MidnaMain` also works over the image sheet. A shortcut without a rule keeps its own; a bad clause is turned away here, and the app ignores one it can't use. \
+        Setting it replaces the whole list: get it first to keep the other rules. Not shown in Settings; agents set it."),
     s!("kass.auto_send", SettingKind::Bool, B(false), "kass", false,
         "Send the composer's text to the terminal as soon as a Kass dictation ends, instead of keeping it open for review."),
 ];
@@ -937,6 +1005,27 @@ mod tests {
         assert_eq!(s.coerce(&json!("")), Ok(json!([])));
         assert!(s.coerce(&json!("pubspec.yaml")).is_err());
         assert!(s.coerce(&json!("= xcode")).is_err());
+    }
+
+    #[test]
+    fn when_clauses_parse_like_gpui() {
+        for ok in ["MidnaMain", "MidnaMain && !Modal", "a || b && !(c || d)", "Workspace > Terminal", "mode == visible", "a != b && c", "  x-y_z  ", "a == (b)"] {
+            assert_eq!(check_when(ok), Ok(()), "{ok}");
+        }
+        for bad in ["", "&& a", "a &&", "(a", "a)", "a b", "!(a) == b", "a == (b && c)", "a == b == c", "a $ b"] {
+            assert!(check_when(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn key_when_rules_name_a_shortcut_and_parse() {
+        let s = setting("keys.when").unwrap();
+        assert_eq!(s.coerce(&json!("keys.new_agent=MidnaMain && !Modal\nkeys.settings = *")), Ok(json!(["keys.new_agent = MidnaMain && !Modal", "keys.settings = *"])));
+        assert_eq!(s.coerce(&json!(["keys.clear = Terminal || mode == visible"])), Ok(json!(["keys.clear = Terminal || mode == visible"])));
+        assert!(s.coerce(&json!(["keys.nope = MidnaMain"])).unwrap_err().contains("not a shortcut setting"));
+        assert!(s.coerce(&json!(["theme = MidnaMain"])).unwrap_err().contains("not a shortcut setting"));
+        assert!(s.coerce(&json!(["keys.new_agent = MidnaMain &&"])).unwrap_err().contains("keys.new_agent"));
+        assert!(s.coerce(&json!(["keys.new_agent = a", "keys.new_agent = b"])).unwrap_err().contains("two rules"));
     }
 
     #[test]

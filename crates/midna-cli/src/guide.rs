@@ -241,7 +241,8 @@ const TOPICS: &[(&str, &str)] = &[
         a folder agents.trust_folders covers is answered Yes without one. `midna needs get <id>` says where one item stands."),
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
         description. Agents may change any key not marked human only; setting a human-only key asks the human. The GUI \
-        updates live on settings.changed. Keybindings are settings too (keys.*)."),
+        updates live on settings.changed. Keybindings are settings too (keys.*); keys.when changes where one works \
+        (`<keys.* key> = <when clause>` rules, * = anywhere; `midna explain keys.when`)."),
     ("scripts", "What the terminal header, each sidebar row and the status bar show is set by scripts. Settings: \
         ui.header.script, ui.row.script, ui.status.script (run for the selected terminal), and ui.status.items, the \
         status bar's items left to right (daemon, usage, cache, policy, webhooks, triggers, hooks, accessibility, awake, script, spacer, update, \

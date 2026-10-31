@@ -297,9 +297,9 @@ fn capitalize(s: &str) -> String {
 /// `midna_proto::settings` holds the default and the description).
 pub struct Shortcut {
     pub setting: &'static str,
-    /// Where it works (see [`When`]).
+    /// Where it works by default (see [`When`]); `keys.when` can change it ([`when_clause`]).
     pub when: When,
-    bind: fn(&str, When) -> KeyBinding,
+    bind: fn(&str, Option<&str>) -> KeyBinding,
 }
 
 macro_rules! shortcut {
@@ -478,19 +478,52 @@ pub fn label(cx: &App, setting: &str) -> String {
     if keys.is_empty() { String::new() } else { pretty(&keys) }
 }
 
+/// Each `keys.*` setting's when clause as bound now (`keys.when` applied; `None` = anywhere).
+#[derive(Default)]
+pub struct BoundWhen(HashMap<&'static str, Option<String>>);
+impl Global for BoundWhen {}
+
+/// Where a `keys.*` shortcut works as bound now: its when clause, or `None` for anywhere.
+pub fn when_clause(cx: &App, setting: &str) -> Option<String> {
+    match cx.try_global::<BoundWhen>().and_then(|b| b.0.get(setting)) {
+        Some(w) => w.clone(),
+        None => SHORTCUTS.iter().find(|s| s.setting == setting).and_then(|s| s.when).map(str::to_string),
+    }
+}
+
+/// A shortcut's when clause with its `keys.when` rule applied (`<setting> = <clause>`,
+/// `*` = anywhere). midnad checks rules before saving them; one GPUI still can't parse is
+/// logged and the built-in clause kept.
+fn effective_when(s: &Shortcut, rules: &[String]) -> Option<String> {
+    let Some(w) = rules.iter().find_map(|r| r.split_once('=').filter(|(k, _)| k.trim() == s.setting).map(|(_, w)| w.trim())) else {
+        return s.when.map(str::to_string);
+    };
+    if w == midna_proto::settings::WHEN_ANYWHERE {
+        None
+    } else if KeyBindingContextPredicate::parse(w).is_ok() {
+        Some(w.to_string())
+    } else {
+        eprintln!("midna-app: ignoring keys.when for {}: {w:?} doesn't parse", s.setting);
+        s.when.map(str::to_string)
+    }
+}
+
 fn valid(keys: &str) -> bool {
     !keys.trim().is_empty() && keys.split_whitespace().all(|k| Keystroke::parse(k).is_ok())
 }
 
-/// Rebuild all keybindings from the current settings (`get` returns a `keys.*` value).
-pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
+/// Rebuild all keybindings from the current settings (`get` returns a `keys.*` value, `when`
+/// is `keys.when`'s rules).
+pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>, when: &[String]) {
     cx.clear_key_bindings();
     let mut bound = BoundKeys::default();
+    let mut wheres = BoundWhen::default();
     let mut b: Vec<KeyBinding> = Vec::new();
     for s in SHORTCUTS {
+        let w = effective_when(s, when);
         let k = normalize_keys(&get(s.setting).unwrap_or_else(|| default_key(s.setting).to_string()));
         if valid(&k) {
-            b.push((s.bind)(&k, s.when));
+            b.push((s.bind)(&k, w.as_deref()));
             bound.0.insert(s.setting, k);
         } else {
             if !k.is_empty() {
@@ -498,6 +531,7 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
             }
             bound.0.insert(s.setting, String::new());
         }
+        wheres.0.insert(s.setting, w);
     }
     b.extend(crate::composer::bindings());
     for i in 1..=9 {
@@ -518,6 +552,7 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     }
     cx.bind_keys(b);
     cx.set_global(bound);
+    cx.set_global(wheres);
 }
 
 /// Whether a binding (`keys`, any format) is exactly the recorded keystrokes (normalized).
@@ -699,6 +734,31 @@ mod tests {
     }
 
     #[test]
+    fn daemon_when_check_agrees_with_gpui() {
+        let cases = [
+            "MidnaMain", "MidnaMain && !Modal && !Popover", "a || b && !(c || d)", "Workspace > Terminal", "overlay == annotate",
+            "a != b && c", "  x-y_z  ", "a == (b)", "", "&& a", "a &&", "(a", "a)", "a b", "!(a) == b", "a == (b && c)",
+            "a == b == c", "a $ b",
+        ];
+        for w in cases.into_iter().chain(super::SHORTCUTS.iter().chain(super::OVERLAY_KEYS).filter_map(|s| s.when)) {
+            let gpui = gpui_kit::KeyBindingContextPredicate::parse(w).is_ok();
+            assert_eq!(midna_proto::settings::check_when(w).is_ok(), gpui, "{w:?} (GPUI ok: {gpui})");
+        }
+    }
+
+    #[test]
+    fn keys_when_overrides_a_shortcuts_clause() {
+        let s = |k: &str| super::SHORTCUTS.iter().find(|s| s.setting == k).unwrap();
+        let rules = ["keys.new_agent = MidnaMain".to_string(), "keys.split = *".into(), "keys.rules = MidnaMain &&".into()];
+        assert_eq!(super::effective_when(s("keys.new_agent"), &rules).as_deref(), Some("MidnaMain"));
+        assert_eq!(super::effective_when(s("keys.split"), &rules), None);
+        // One GPUI can't parse keeps the built-in clause, as does a shortcut without a rule.
+        assert_eq!(super::effective_when(s("keys.rules"), &rules).as_deref(), super::WINDOW);
+        assert_eq!(super::effective_when(s("keys.deny"), &rules).as_deref(), super::WINDOW);
+        assert_eq!(super::effective_when(s("keys.quit"), &[]), None);
+    }
+
+    #[test]
     fn overlay_keys_name_real_overlays() {
         for s in super::OVERLAY_KEYS {
             let Some(id) = s.when.and_then(|w| w.strip_prefix("overlay == ")) else { continue };
@@ -765,7 +825,13 @@ mod dispatch {
 
     /// Opens the window with the overlay focused, then presses each key and collects what ran.
     fn press(kind: Kind, id: &'static str, keys: &[&str], cx: &mut TestAppContext) -> Vec<(String, Vec<&'static str>)> {
-        cx.update(|cx| bind_keys(cx, |_| None));
+        press_with(&[], kind, id, keys, cx)
+    }
+
+    /// [`press`] with `keys.when` rules applied.
+    fn press_with(when: &[&str], kind: Kind, id: &'static str, keys: &[&str], cx: &mut TestAppContext) -> Vec<(String, Vec<&'static str>)> {
+        let when: Vec<String> = when.iter().map(|w| w.to_string()).collect();
+        cx.update(|cx| bind_keys(cx, |_| None, &when));
         let log = Log::default();
         let l = log.clone();
         let window = cx.add_window(|window, cx| {
@@ -823,5 +889,18 @@ mod dispatch {
     fn screens_keep_main_shortcuts(cx: &mut TestAppContext) {
         let got = press(Kind::Screen, overlay::RULES, &["cmd-t", "cmd-1", "cmd-w"], cx);
         assert_eq!(got, vec![ran("cmd-t", &["new_agent"]), ran("cmd-1", &["select_project"]), ran("cmd-w", &["close_window"])]);
+    }
+
+    #[gpui_kit::test]
+    fn keys_when_moves_a_shortcut(cx: &mut TestAppContext) {
+        // ⌘T made to work over the image sheet, ⌘D anywhere; ⌘1 isn't a setting and stays put.
+        let when = ["keys.new_agent = MidnaMain", "keys.split = *"];
+        let got = press_with(&when, Kind::Modal, overlay::ANNOTATE, &["cmd-t", "cmd-d", "cmd-1"], cx);
+        assert_eq!(got, vec![ran("cmd-t", &["new_agent"]), ran("cmd-d", &["split"]), ran("cmd-1", &[])]);
+        cx.update(|cx| {
+            assert_eq!(super::when_clause(cx, "keys.new_agent").as_deref(), Some("MidnaMain"));
+            assert_eq!(super::when_clause(cx, "keys.split"), None);
+            assert_eq!(super::when_clause(cx, "keys.deny").as_deref(), super::WINDOW);
+        });
     }
 }
