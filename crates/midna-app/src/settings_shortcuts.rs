@@ -7,7 +7,7 @@
 //! Clicking a shortcut's keys rebinds it the same way: press the new keys, ↩ saves, ⎋
 //! cancels. × on the row (or Remove in its right-click menu) unbinds it. Keys another shortcut uses move: saving unbinds the other one.
 use super::*;
-use crate::actions::{FIXED, SHORTCUTS, keys_match, keystroke_text, pretty, setting_keys};
+use crate::actions::{FIXED, SHORTCUTS, Shortcut, keys_match, keystroke_text, pretty, setting_keys, where_label};
 use crate::ui::sidebar::{menu_box, menu_item as item};
 
 /// A shortcut being rebound: the keys pressed so far, and the hook that catches them.
@@ -55,7 +55,7 @@ impl SettingsWindow {
                 .filter(|f| rec.is_empty() || f.keys.iter().any(|k| keys_match(k, rec)))
                 .map(|f| RowSpec {
                     label: f.title.to_string(),
-                    note: Some((f.place.to_string(), Hsla::default())),
+                    note: Some((where_label(f.when), Hsla::default())),
                     control: Control::Keys { setting: None, keys: f.label.map(str::to_string).unwrap_or_else(|| f.keys.iter().map(|k| pretty(k)).collect::<Vec<_>>().join(" · ")) },
                     cli: String::new(),
                     who: Who::ReadOnly,
@@ -71,10 +71,10 @@ impl SettingsWindow {
                     return None;
                 }
                 // while rebinding: what the new keys would take from another shortcut
-                let note = self.editing.as_ref().filter(|e| e.setting == s.setting).and_then(|e| e.keys.as_ref().map(|k| self.conflict_note(e.setting, k))).filter(|n| !n.is_empty());
+                let conflict = self.editing.as_ref().filter(|e| e.setting == s.setting).and_then(|e| e.keys.as_ref().map(|k| self.conflict_note(e.setting, k))).filter(|n| !n.is_empty());
                 Some(RowSpec {
                     label: blurbs::shortcut_title(s.setting),
-                    note: note.map(|n| (n, t.need)),
+                    note: Some(conflict.map_or_else(|| (where_label(self.when_of(s).as_deref()), Hsla::default()), |n| (n, t.need))),
                     control: Control::Keys { setting: Some(s.setting), keys: pretty(&v) },
                     cli: format!("midna settings set {} {}", s.setting, if v.is_empty() { "\"\"".into() } else { v }),
                     who: Who::Agents,
@@ -190,8 +190,19 @@ impl SettingsWindow {
     fn conflict_note(&self, setting: &str, keys: &str) -> String {
         let title = blurbs::shortcut_title;
         let mut notes: Vec<String> = self.taken_by(setting, keys).iter().map(|k| format!("Used by “{}”: saving unbinds it.", title(k))).collect();
-        notes.extend(FIXED.iter().filter(|f| f.keys.iter().any(|k| keys_match(k, &[keys.to_string()]))).map(|f| format!("Also used in {}: {}.", f.place, f.title.to_lowercase())));
+        notes.extend(FIXED.iter().filter(|f| f.keys.iter().any(|k| keys_match(k, &[keys.to_string()]))).map(|f| format!("Also used for “{}” ({}).", f.title, where_label(f.when))));
         notes.join(" ")
+    }
+
+    /// Where a shortcut works: its `keys.when` override (`<keys.* key> = <clause>`, `*` for
+    /// anywhere) when it has one, else its built-in clause. `None` is anywhere.
+    fn when_of(&self, s: &Shortcut) -> Option<String> {
+        let rules = self.value("keys.when");
+        let over = rules.as_array().into_iter().flatten().filter_map(Value::as_str).find_map(|r| r.split_once('=').filter(|(k, _)| k.trim() == s.setting).map(|(_, w)| w.trim().to_string()));
+        match over {
+            Some(w) => (w != "*").then_some(w),
+            None => s.when.map(str::to_string),
+        }
     }
 
     /// The page header's key detector: press a shortcut to find what it does.

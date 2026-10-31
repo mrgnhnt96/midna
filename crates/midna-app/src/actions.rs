@@ -175,6 +175,124 @@ pub const TERM: When = Some("Terminal");
 /// Any modal or popover.
 pub const COVERED: When = Some("Modal || Popover");
 
+/// The Settings window.
+pub const CTX_SETTINGS: &str = "MidnaSettings";
+
+/// What Settings ▸ Shortcuts calls each context and overlay id a when clause can name
+/// ([`where_label`]). A name not here shows as written.
+pub const PLACES: &[(&str, &str)] = &[
+    (CTX_MAIN, "Main window"),
+    (CTX_TERM, "Terminal"),
+    (CTX_OVERLAY, "Overlays"),
+    (Kind::Modal.name(), "Sheets"),
+    (Kind::Popover.name(), "Popovers"),
+    (Kind::Screen.name(), "Screens"),
+    (crate::composer::CTX_COMPOSER, "Composer"),
+    (CTX_SETTINGS, "Settings"),
+    (crate::ui::text_input::CTX_WRAP, "Notes"),
+    (overlay::ANNOTATE, "Image sheet"),
+    (overlay::NEEDS_YOU, "Needs-you cards"),
+    (overlay::COMMAND_BAR, "Command bar"),
+    (overlay::LINKS, "Links"),
+    (overlay::QUEUE, "Queue"),
+    (overlay::SUBAGENTS, "Subagents"),
+    (overlay::IDE, "IDE picker"),
+    (overlay::RULES, "Rules"),
+    (overlay::TRIGGERS, "Triggers"),
+    (overlay::INSIGHTS, "Insights"),
+    (overlay::NOTIFICATIONS, "Notifications"),
+    (overlay::SUMMARY, "Summary"),
+];
+
+/// A when clause in words, for Settings ▸ Shortcuts: `None` is "Anywhere",
+/// `MidnaMain && !Modal && !Popover` is "Main window, not in sheets or popovers". A clause
+/// that doesn't parse shows as written.
+pub fn where_label(when: Option<&str>) -> String {
+    let Some(w) = when.map(str::trim).filter(|w| !w.is_empty() && *w != "*") else {
+        return "Anywhere".into();
+    };
+    match KeyBindingContextPredicate::parse(w) {
+        Ok(p) => capitalize(&describe(&p)),
+        Err(_) => w.to_string(),
+    }
+}
+
+/// A predicate in words: what it needs, then ", not in …" for what it rules out.
+fn describe(p: &KeyBindingContextPredicate) -> String {
+    use KeyBindingContextPredicate as P;
+    let mut all = vec![];
+    flatten(p, true, &mut all);
+    let (mut yes, mut no) = (vec![], vec![]);
+    for p in all {
+        match p {
+            P::Not(inner) => flatten(inner, false, &mut no),
+            P::NotEqual(k, v) if k.as_ref() == "overlay" => no.push(p),
+            p => yes.push(p),
+        }
+    }
+    let yes = yes.into_iter().map(term).enumerate().map(|(i, s)| if i == 0 { s } else { lower(&s) }).collect::<Vec<_>>().join(", ");
+    let no = lower(&list(&no.into_iter().map(term).collect::<Vec<_>>()));
+    match (yes.is_empty(), no.is_empty()) {
+        (_, true) => yes,
+        (true, false) => format!("not in {no}"),
+        (false, false) => format!("{yes}, not in {no}"),
+    }
+}
+
+/// The parts of a run of `&&` (`and`) or `||`.
+fn flatten<'a>(p: &'a KeyBindingContextPredicate, and: bool, out: &mut Vec<&'a KeyBindingContextPredicate>) {
+    use KeyBindingContextPredicate as P;
+    match p {
+        P::And(a, b) | P::Or(a, b) if and == matches!(p, P::And(..)) => {
+            flatten(a, and, out);
+            flatten(b, and, out);
+        }
+        p => out.push(p),
+    }
+}
+
+/// One place: a context, an overlay, or a compound in words.
+fn term(p: &KeyBindingContextPredicate) -> String {
+    use KeyBindingContextPredicate as P;
+    let place = |id: &str| PLACES.iter().find(|(c, _)| *c == id).map_or(id.to_string(), |(_, n)| n.to_string());
+    match p {
+        P::Identifier(id) => place(id),
+        P::Equal(k, v) | P::NotEqual(k, v) if k.as_ref() == "overlay" => place(v),
+        P::Or(..) => {
+            let mut any = vec![];
+            flatten(p, false, &mut any);
+            list(&any.into_iter().map(term).collect::<Vec<_>>())
+        }
+        P::Descendant(outer, inner) => format!("{} in {}", term(inner), lower(&term(outer))),
+        P::Not(_) | P::And(..) => describe(p),
+        p => p.to_string(),
+    }
+}
+
+/// "a", "a or b", "a, b or c" (lowercased after the first).
+fn list(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().enumerate().map(|(i, s)| if i == 0 { s.clone() } else { lower(s) }).collect();
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => items.concat(),
+    }
+}
+
+/// "Image sheet" -> "image sheet", but "IDE picker" stays, and so does a context name that
+/// isn't in [`PLACES`] (it shows as written).
+fn lower(s: &str) -> String {
+    let mut c = s.chars();
+    match (c.next(), c.next()) {
+        (Some(a), Some(b)) if b.is_lowercase() && PLACES.iter().any(|(_, n)| s.starts_with(n)) => a.to_lowercase().chain(s[a.len_utf8()..].chars()).collect(),
+        _ => s.to_string(),
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or(String::new(), |a| a.to_uppercase().chain(c).collect())
+}
+
 /// One rebindable shortcut: its `keys.*` setting and the binding it makes (the catalog in
 /// `midna_proto::settings` holds the default and the description).
 pub struct Shortcut {
@@ -280,12 +398,12 @@ pub struct Fixed {
     /// Shown instead of the keys when they're a range (⌘1–9).
     pub label: Option<&'static str>,
     pub title: &'static str,
-    /// Where it works.
-    pub place: &'static str,
+    /// Where it works (see [`When`]); Settings shows it through [`where_label`].
+    pub when: When,
 }
 
-const fn fixed(keys: &'static [&'static str], title: &'static str, place: &'static str) -> Fixed {
-    Fixed { keys, label: None, title, place }
+const fn fixed(keys: &'static [&'static str], title: &'static str, when: When) -> Fixed {
+    Fixed { keys, label: None, title, when }
 }
 
 pub const FIXED: &[Fixed] = &[
@@ -293,52 +411,52 @@ pub const FIXED: &[Fixed] = &[
         keys: &["cmd-1", "cmd-2", "cmd-3", "cmd-4", "cmd-5", "cmd-6", "cmd-7", "cmd-8", "cmd-9"],
         label: Some("⌘1–9"),
         title: "Jump to project 1–9",
-        place: "Main window",
+        when: WINDOW,
     },
-    fixed(&["escape"], "Close the overlay, or go back to the terminal", "Main window"),
-    fixed(&["cmd-h"], "Hide midna", "Anywhere"),
-    fixed(&["cmd-alt-h"], "Hide other apps", "Anywhere"),
-    fixed(&["cmd-c"], "Copy the selection", "Terminal"),
-    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet, or pastes its path with terminal.image_paste = inline; a secret pasted into an agent asks to store it)", "Terminal"),
-    fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", "Terminal"),
-    fixed(&["cmd-a"], "Select all", "Terminal"),
-    fixed(&["cmd-z", "cmd-shift-z", "cmd-y"], "Undo / redo in Claude Code's input", "Terminal"),
-    fixed(&["cmd-f"], "Find in the terminal", "Terminal"),
-    fixed(&["cmd-g", "enter"], "Find: older match", "Terminal find"),
-    fixed(&["cmd-shift-g", "shift-enter"], "Find: newer match", "Terminal find"),
-    fixed(&["cmd-up", "cmd-home"], "Scroll to the top", "Terminal"),
-    fixed(&["cmd-down", "cmd-end"], "Scroll to the bottom", "Terminal"),
-    fixed(&["cmd-pageup", "cmd-pagedown"], "Scroll a page", "Terminal"),
-    fixed(&["up", "down"], "Move the selection", "Command bar, links, lists"),
-    fixed(&["enter"], "Run the selected command", "Command bar"),
-    fixed(&["shift-enter"], "Ask an agent instead", "Command bar"),
-    fixed(&["tab"], "Switch agent (Claude / Codex)", "Command bar"),
-    fixed(&["shift-tab"], "Switch between project and root", "Command bar"),
-    fixed(&["shift-enter"], "Pin or unpin the selected link", "Links"),
-    fixed(&["alt-enter"], "Jump to where the link came up", "Links"),
-    fixed(&["tab", "shift-tab"], "Next / previous tab", "Links"),
-    fixed(&["enter"], "Queue the message, or edit the selected one", "Queue"),
-    fixed(&["shift-enter"], "Send the selected message now", "Queue"),
-    fixed(&["alt-up", "alt-down"], "Move the selected message", "Queue"),
-    fixed(&["alt-backspace"], "Remove the selected message", "Queue"),
-    fixed(&["tab"], "Change when it goes in", "Queue"),
-    fixed(&["cmd-o"], "Open the card's terminal", "Needs-you cards"),
-    fixed(&["cmd-shift-enter"], "Approve all", "Needs-you cards"),
-    fixed(&["enter"], "Edit the selected note", "Image sheet"),
-    fixed(&["backspace"], "Remove the selected note", "Image sheet"),
-    fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo in the note being edited", "Image sheet"),
-    fixed(&["cmd-z"], "Put back the last removed note or image", "Image sheet"),
-    fixed(&["cmd-up", "cmd-down"], "Previous / next image", "Image sheet"),
-    fixed(&["cmd-w"], "Remove the image, or close the sheet when there's none", "Image sheet"),
-    fixed(&["cmd-=", "cmd--", "cmd-0"], "Zoom in / out / fit", "Image sheet"),
-    Fixed { keys: &["cmd"], label: Some("⌘ scroll · pinch"), title: "Zoom about the pointer", place: "Image sheet" },
-    Fixed { keys: &["alt"], label: Some("⌥ drag · scroll"), title: "Pan the image (a middle-drag too)", place: "Image sheet" },
-    fixed(&["cmd-v"], "Add the image on the clipboard", "Image sheet"),
-    fixed(&["enter"], "Send to the terminal", "Composer"),
-    fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo", "Composer"),
-    fixed(&["cmd-k", "cmd-f"], "Search settings (↩ asks an agent instead)", "Settings"),
-    fixed(&["cmd-[", "cmd-]"], "Previous / next section", "Settings"),
-    fixed(&["cmd-alt-k"], "Record keys: find a shortcut by pressing it", "Settings"),
+    fixed(&["escape"], "Close the overlay, or go back to the terminal", Some(CTX_OVERLAY)),
+    fixed(&["cmd-h"], "Hide midna", ANYWHERE),
+    fixed(&["cmd-alt-h"], "Hide other apps", ANYWHERE),
+    fixed(&["cmd-c"], "Copy the selection", TERM),
+    fixed(&["cmd-v"], "Paste (an image on the clipboard opens the image sheet, or pastes its path with terminal.image_paste = inline; a secret pasted into an agent asks to store it)", TERM),
+    fixed(&["cmd-alt-v"], "Paste as Secret: store the clipboard in the Keychain, paste [secret:NAME]", TERM),
+    fixed(&["cmd-a"], "Select all", TERM),
+    fixed(&["cmd-z", "cmd-shift-z", "cmd-y"], "Undo / redo in Claude Code's input", TERM),
+    fixed(&["cmd-f"], "Find in the terminal", TERM),
+    fixed(&["cmd-g", "enter"], "Find: older match", TERM),
+    fixed(&["cmd-shift-g", "shift-enter"], "Find: newer match", TERM),
+    fixed(&["cmd-up", "cmd-home"], "Scroll to the top", TERM),
+    fixed(&["cmd-down", "cmd-end"], "Scroll to the bottom", TERM),
+    fixed(&["cmd-pageup", "cmd-pagedown"], "Scroll a page", TERM),
+    fixed(&["up", "down"], "Move the selection", Some("Popover")),
+    fixed(&["enter"], "Run the selected command", Some("overlay == command_bar")),
+    fixed(&["shift-enter"], "Ask an agent instead", Some("overlay == command_bar")),
+    fixed(&["tab"], "Switch agent (Claude / Codex)", Some("overlay == command_bar")),
+    fixed(&["shift-tab"], "Switch between project and root", Some("overlay == command_bar")),
+    fixed(&["shift-enter"], "Pin or unpin the selected link", Some("overlay == links")),
+    fixed(&["alt-enter"], "Jump to where the link came up", Some("overlay == links")),
+    fixed(&["tab", "shift-tab"], "Next / previous tab", Some("overlay == links")),
+    fixed(&["enter"], "Queue the message, or edit the selected one", Some("overlay == queue")),
+    fixed(&["shift-enter"], "Send the selected message now", Some("overlay == queue")),
+    fixed(&["alt-up", "alt-down"], "Move the selected message", Some("overlay == queue")),
+    fixed(&["alt-backspace"], "Remove the selected message", Some("overlay == queue")),
+    fixed(&["tab"], "Change when it goes in", Some("overlay == queue")),
+    fixed(&["cmd-o"], "Open the card's terminal", Some("overlay == needs_you")),
+    fixed(&["cmd-shift-enter"], "Approve all", Some("overlay == needs_you")),
+    fixed(&["enter"], "Edit the selected note", Some("overlay == annotate")),
+    fixed(&["backspace"], "Remove the selected note", Some("overlay == annotate")),
+    fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo in the note being edited", Some("overlay == annotate")),
+    fixed(&["cmd-z"], "Put back the last removed note or image", Some("overlay == annotate")),
+    fixed(&["cmd-up", "cmd-down"], "Previous / next image", Some("overlay == annotate")),
+    fixed(&["cmd-w"], "Remove the image, or close the sheet when there's none", Some("overlay == annotate")),
+    fixed(&["cmd-=", "cmd--", "cmd-0"], "Zoom in / out / fit", Some("overlay == annotate")),
+    Fixed { keys: &["cmd"], label: Some("⌘ scroll · pinch"), title: "Zoom about the pointer", when: Some("overlay == annotate") },
+    Fixed { keys: &["alt"], label: Some("⌥ drag · scroll"), title: "Pan the image (a middle-drag too)", when: Some("overlay == annotate") },
+    fixed(&["cmd-v"], "Add the image on the clipboard", Some("overlay == annotate")),
+    fixed(&["enter"], "Send to the terminal", Some(crate::composer::CTX_COMPOSER)),
+    fixed(&["cmd-z", "cmd-shift-z"], "Undo / redo", Some(crate::composer::CTX_COMPOSER)),
+    fixed(&["cmd-k", "cmd-f"], "Search settings (↩ asks an agent instead)", Some(CTX_SETTINGS)),
+    fixed(&["cmd-[", "cmd-]"], "Previous / next section", Some(CTX_SETTINGS)),
+    fixed(&["cmd-alt-k"], "Record keys: find a shortcut by pressing it", Some(CTX_SETTINGS)),
 ];
 
 /// The keys bound to each `keys.*` setting right now (normalized), for tooltips and labels.
@@ -542,6 +660,40 @@ mod tests {
         for s in super::SHORTCUTS.iter().chain(super::OVERLAY_KEYS) {
             if let Some(w) = s.when {
                 assert!(gpui_kit::KeyBindingContextPredicate::parse(w).is_ok(), "{}: {w:?}", s.setting);
+            }
+        }
+    }
+
+    #[test]
+    fn where_labels() {
+        use super::where_label as w;
+        assert_eq!(w(super::ANYWHERE), "Anywhere");
+        assert_eq!(w(Some("*")), "Anywhere");
+        assert_eq!(w(super::WINDOW), "Main window, not in sheets or popovers");
+        assert_eq!(w(super::UNCOVERED), "Not in sheets or popovers");
+        assert_eq!(w(super::COVERED), "Sheets or popovers");
+        assert_eq!(w(super::TERM), "Terminal");
+        assert_eq!(w(Some("overlay == annotate")), "Image sheet");
+        assert_eq!(w(Some("overlay == links || overlay == queue || overlay == ide")), "Links, queue or IDE picker");
+        assert_eq!(w(Some("MidnaMain && !(Modal || overlay == command_bar)")), "Main window, not in sheets or command bar");
+        assert_eq!(w(Some("MidnaMain && overlay != annotate")), "Main window, not in image sheet");
+        assert_eq!(w(Some("MidnaMain > Terminal")), "Terminal in main window");
+        // names it doesn't know show as written
+        assert_eq!(w(Some("Editor && !Vim")), "Editor, not in Vim");
+        assert_eq!(w(Some("Terminal && !(Popover || Vim)")), "Terminal, not in popovers or Vim");
+        assert_eq!(w(Some("MidnaMain &&")), "MidnaMain &&");
+    }
+
+    /// Every context and overlay a binding names has a human name.
+    #[test]
+    fn every_when_names_a_known_place() {
+        let fixed = super::FIXED.iter().map(|f| (f.title, f.when));
+        let bound = super::SHORTCUTS.iter().chain(super::OVERLAY_KEYS).map(|s| (s.setting, s.when));
+        for (what, when) in bound.chain(fixed) {
+            let Some(w) = when else { continue };
+            assert!(gpui_kit::KeyBindingContextPredicate::parse(w).is_ok(), "{what}: {w:?}");
+            for word in w.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|s| !s.is_empty() && *s != "overlay") {
+                assert!(super::PLACES.iter().any(|(c, _)| *c == word), "{what}: no name for {word:?} in actions::PLACES");
             }
         }
     }
