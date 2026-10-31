@@ -87,9 +87,35 @@ fn transcript_prompts(path: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The human's `agent.prompt_submitted` events in `sid`, oldest first (the newest
+/// [`MAX_PROMPTS`]). The first call reads the log's files (a terminal's first prompts can be
+/// weeks old, past the in-memory window); later ones read only the events logged since, so
+/// switching to a terminal doesn't scan the month's log every time.
+pub fn logged(d: &Daemon, sid: &str) -> Vec<Event> {
+    let upto = d.log.seq();
+    let seen = d.links.prompts.lock().unwrap_or_else(|e| e.into_inner()).get(sid).map(|c| c.0);
+    if seen.is_none_or(|s| s < upto) {
+        let from = seen.unwrap_or(0);
+        let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
+        // Read without the cache's lock: a first read can take a while.
+        let new = d.log.list(from, MAX_PROMPTS, &filter);
+        let last = new.last().map_or(upto, |e| e.seq.max(upto));
+        let mut cache = d.links.prompts.lock().unwrap_or_else(|e| e.into_inner());
+        let (s, events) = cache.entry(sid.to_string()).or_default();
+        // Another call may have read further meanwhile; then its reading stands.
+        if *s == from {
+            events.extend(new.into_iter().filter(is_human_prompt));
+            if events.len() > MAX_PROMPTS {
+                events.drain(..events.len() - MAX_PROMPTS);
+            }
+            *s = last;
+        }
+    }
+    d.links.prompts.lock().unwrap_or_else(|e| e.into_inner()).get(sid).map(|c| c.1.clone()).unwrap_or_default()
+}
+
 fn from_events(d: &Daemon, sid: &str, current: Option<&String>) -> Vec<PromptMark> {
-    let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
-    let events: Vec<Event> = d.log.list(0, MAX_PROMPTS, &filter).into_iter().filter(is_human_prompt).collect();
+    let events = logged(d, sid);
     let last_conv = events.iter().rev().find_map(|e| e.data.get("conversation").and_then(|c| c.as_str()).map(str::to_string));
     events
         .iter()

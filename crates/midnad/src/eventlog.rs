@@ -185,12 +185,26 @@ impl EventLog {
     }
 
     /// Register a subscriber; replays events after `since` first (atomically, so nothing is
-    /// lost). A `since` older than the in-memory window is replayed from the files.
+    /// lost). A `since` older than the in-memory window is replayed from the files, read
+    /// without the lock held (see [`FileScan`]).
     pub fn subscribe(&self, since: Option<u64>, filter: EventFilter, tx: OutTx) -> u64 {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(since) = since {
-            for e in g.older_than_window(since, usize::MAX, &filter) {
-                let _ = tx.send(Out::Line(notification(&e)));
+        let Some(mut since) = since else {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            g.subs.push(Sub { tx, filter });
+            return g.seq;
+        };
+        loop {
+            let scan = self.inner.lock().unwrap_or_else(|e| e.into_inner()).file_scan(since);
+            if let Some(scan) = scan {
+                for e in scan.read(since, usize::MAX, &filter) {
+                    let _ = tx.send(Out::Line(notification(&e)));
+                }
+                since = since.max(scan.first - 1);
+            }
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            // The window was trimmed past `since` while the files were read: read the gap too.
+            if g.file_scan(since).is_some() {
+                continue;
             }
             let start = g.events.partition_point(|e| e.seq <= since);
             for e in &g.events[start..] {
@@ -198,22 +212,28 @@ impl EventLog {
                     let _ = tx.send(Out::Line(notification(e)));
                 }
             }
+            g.subs.push(Sub { tx, filter });
+            return g.seq;
         }
-        g.subs.push(Sub { tx, filter });
-        g.seq
     }
 
     /// Events with seq > since matching the filter; the newest `limit` of them, oldest first.
     /// When the window holds fewer than `limit` matches and `since` predates it, the rest
-    /// comes from the files.
+    /// comes from the files, read without the lock held: a read of a big month takes a second,
+    /// and every append (made with `core` held) would wait on it.
     pub fn list(&self, since: u64, limit: usize, filter: &EventFilter) -> Vec<Event> {
-        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let start = g.events.partition_point(|e| e.seq <= since);
-        let mut out: Vec<Event> = g.events[start..].iter().filter(|e| filter.matches(e)).cloned().collect();
-        if out.len() > limit {
-            out.drain(..out.len() - limit);
-        } else if out.len() < limit {
-            let mut older = g.older_than_window(since, limit - out.len(), filter);
+        let (mut out, scan) = {
+            let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let start = g.events.partition_point(|e| e.seq <= since);
+            let mut out: Vec<Event> = g.events[start..].iter().filter(|e| filter.matches(e)).cloned().collect();
+            if out.len() > limit {
+                out.drain(..out.len() - limit);
+            }
+            let scan = if out.len() < limit { g.file_scan(since) } else { None };
+            (out, scan)
+        };
+        if let Some(scan) = scan {
+            let mut older = scan.read(since, limit - out.len(), filter);
             older.append(&mut out);
             out = older;
         }
@@ -265,19 +285,60 @@ impl Inner {
         }
     }
 
-    /// Matching events with `since < seq < first in-memory seq`, read from the files; the
-    /// newest `limit` of them, oldest first. Empty when the window covers `since`.
-    fn older_than_window(&self, since: u64, limit: usize, filter: &EventFilter) -> Vec<Event> {
+    /// What a read of the events older than the window needs, or None when the window covers
+    /// `since`.
+    fn file_scan(&self, since: u64) -> Option<FileScan> {
         let first = self.events.first().map(|e| e.seq).unwrap_or(self.seq + 1);
-        if since + 1 >= first || limit == 0 {
-            return vec![];
+        if since + 1 >= first {
+            return None;
         }
-        let mut out: std::collections::VecDeque<Event> = Default::default();
         let mut files = archives(&self.dir);
         files.push(self.path.clone());
-        for p in files {
-            for e in read_file(&p) {
-                if e.seq > since && e.seq < first && filter.matches(&e) {
+        Some(FileScan { files, first })
+    }
+}
+
+/// The files holding the events older than the in-memory window (oldest first) and the
+/// window's first seq, taken under the lock so the files can be read without it. Events
+/// in the files are in seq order, so a read stops at `first`.
+struct FileScan {
+    files: Vec<PathBuf>,
+    first: u64,
+}
+
+impl FileScan {
+    /// Matching events with `since < seq < first`; the newest `limit` of them, oldest first.
+    /// Only lines that can match are parsed (see [`Prefilter`]).
+    fn read(&self, since: u64, limit: usize, filter: &EventFilter) -> Vec<Event> {
+        let mut out: std::collections::VecDeque<Event> = Default::default();
+        if limit == 0 {
+            return vec![];
+        }
+        let pre = Prefilter::new(filter);
+        let mut line = String::new();
+        'files: for p in &self.files {
+            let Ok(f) = std::fs::File::open(p) else { continue };
+            let mut r = std::io::BufReader::new(f);
+            loop {
+                line.clear();
+                match r.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                if let Some(seq) = line_seq(&line) {
+                    if seq >= self.first {
+                        break 'files;
+                    }
+                    if seq <= since {
+                        continue;
+                    }
+                }
+                if !pre.may_match(&line) {
+                    continue;
+                }
+                // A torn last line (crash mid-write) is skipped, not fatal.
+                let Ok(e) = serde_json::from_str::<Event>(&line) else { continue };
+                if e.seq > since && e.seq < self.first && filter.matches(&e) {
                     out.push_back(e);
                     if out.len() > limit {
                         out.pop_front();
@@ -286,6 +347,46 @@ impl Inner {
             }
         }
         out.into()
+    }
+}
+
+/// A logged line's seq, read off its start (`{"seq":N,`) without parsing the rest.
+fn line_seq(line: &str) -> Option<u64> {
+    let rest = line.strip_prefix("{\"seq\":")?;
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok()
+}
+
+/// A cheap test of a raw log line against an [`EventFilter`] before it is parsed: the text a
+/// matching event's JSON must hold (`"kind":"<prefix>`, `"session_id":"<id>"`, …). It can say
+/// yes to a line that doesn't match (the parsed event is checked again), never no to one that
+/// does. A value JSON would escape is left out of the test.
+struct Prefilter {
+    /// Every group must have a needle in the line.
+    groups: Vec<Vec<String>>,
+}
+
+impl Prefilter {
+    fn new(f: &EventFilter) -> Prefilter {
+        let plain = |s: &str| !s.chars().any(|c| c == '"' || c == '\\' || c.is_control());
+        let mut groups = vec![];
+        if let Some(kinds) = &f.kinds
+            && kinds.iter().all(|k| plain(k))
+        {
+            groups.push(kinds.iter().map(|k| format!("\"kind\":\"{k}")).collect());
+        }
+        for (key, v) in [("session_id", &f.session_id), ("project_id", &f.project_id)] {
+            if let Some(v) = v
+                && plain(v)
+            {
+                groups.push(vec![format!("\"{key}\":\"{v}\"")]);
+            }
+        }
+        Prefilter { groups }
+    }
+
+    fn may_match(&self, line: &str) -> bool {
+        self.groups.iter().all(|g| g.iter().any(|n| line.contains(n.as_str())))
     }
 }
 
@@ -370,6 +471,74 @@ mod tests {
         assert_eq!(log.list(0, 1000, &EventFilter::default()).len(), 25);
         let f = EventFilter { kinds: Some(vec!["x".into()]), ..Default::default() };
         assert_eq!(log.list(3, 5, &f).first().map(|e| e.seq), Some(21));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn sev(seq: u64, kind: &str, session: Option<&str>) -> Event {
+        Event { seq, at: "2020-01-05T00:00:00Z".into(), kind: kind.into(), actor: Actor::system(), project_id: None, session_id: session.map(Into::into), data: json!({ "kind": "decoy" }) }
+    }
+
+    #[test]
+    fn prefilter_never_drops_a_match() {
+        let line = |e: &Event| serde_json::to_string(e).unwrap();
+        assert_eq!(line_seq(&line(&sev(42, "x", None))), Some(42));
+        assert_eq!(line_seq("garbage"), None);
+        let f = EventFilter { kinds: Some(vec!["agent.".into(), "rule.added".into()]), session_id: Some("s1".into()), project_id: None };
+        let pre = Prefilter::new(&f);
+        assert!(pre.may_match(&line(&sev(1, "agent.prompt_submitted", Some("s1")))));
+        assert!(pre.may_match(&line(&sev(1, "rule.added", Some("s1")))));
+        assert!(!pre.may_match(&line(&sev(1, "agent.prompt_submitted", Some("s2")))));
+        assert!(!pre.may_match(&line(&sev(1, "session.opened", Some("s1")))));
+        // A value JSON escapes isn't tested on the raw line.
+        let odd = EventFilter { session_id: Some("a\"b".into()), ..Default::default() };
+        assert!(Prefilter::new(&odd).may_match(&line(&sev(1, "x", Some("a\"b")))));
+    }
+
+    #[test]
+    fn filtered_reads_from_the_files_match_the_parsed_events() {
+        let home = tmp("filtered");
+        let path = home.join("events.jsonl");
+        let mut old = vec![];
+        for seq in 1..=60 {
+            let kind = if seq % 3 == 0 { "agent.prompt_submitted" } else { "session.output" };
+            old.push(sev(seq, kind, Some(if seq % 2 == 0 { "s1" } else { "s2" })));
+        }
+        append_lines(&path, &old).unwrap();
+        let log = EventLog::open(&path).unwrap();
+        log.append("agent.prompt_submitted", Actor::system(), None, Some("s1".into()), json!({}));
+        let f = EventFilter { kinds: Some(vec!["agent.".into()]), session_id: Some("s1".into()), project_id: None };
+        let want: Vec<u64> = (1..=60).filter(|s| s % 6 == 0).chain([61]).collect();
+        assert_eq!(log.list(0, 100, &f).iter().map(|e| e.seq).collect::<Vec<_>>(), want);
+        assert_eq!(log.list(30, 2, &f).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![60, 61]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn subscribe_from_the_files_misses_nothing_appended_meanwhile() {
+        let home = tmp("subrace");
+        let path = home.join("events.jsonl");
+        let old: Vec<Event> = (1..=20_000).map(|s| ev(s, "2020-01-05T00:00:00Z")).collect();
+        append_lines(&path, &old).unwrap();
+        let log = std::sync::Arc::new(EventLog::open_with(&path, RETAIN_DAYS * 86_400, 50).unwrap());
+        let writer = {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    log.append("x", Actor::system(), None, None, json!({}));
+                }
+            })
+        };
+        let (tx, rx) = crate::conn::OutTx::pair();
+        log.subscribe(Some(0), EventFilter::default(), tx);
+        writer.join().unwrap();
+        let seqs: Vec<u64> = rx
+            .try_iter()
+            .filter_map(|o| match o {
+                Out::Line(l) => serde_json::from_str::<Value>(&l).ok().and_then(|v| v["params"]["seq"].as_u64()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seqs, (1..=20_500).collect::<Vec<_>>(), "every event once, in order");
         let _ = std::fs::remove_dir_all(&home);
     }
 

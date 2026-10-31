@@ -74,9 +74,9 @@ pub struct Links {
     stores: Mutex<HashMap<Id, Store>>,
     /// Terminals with a read already scheduled.
     pending: Mutex<HashSet<Id>>,
-    /// Per terminal: when each prompt was sent (unix secs, session.prompts' order) and the event
+    /// Per terminal: the human's logged prompts (see `crate::prompts::logged`) and the event
     /// log seq read up to, so only newer events are read next time.
-    prompts: Mutex<HashMap<Id, (u64, Vec<i64>)>>,
+    pub(crate) prompts: Mutex<HashMap<Id, (u64, Vec<Event>)>>,
 }
 
 fn dir(home: &Path) -> PathBuf {
@@ -116,20 +116,7 @@ impl Links {
 /// When each prompt was sent to `sid` (unix secs), oldest first: prompt `n` is index `n - 1`,
 /// as in `session.prompts`.
 pub fn prompt_times(d: &Daemon, sid: &str) -> Vec<i64> {
-    let mut cache = d.links.prompts.lock().unwrap_or_else(|e| e.into_inner());
-    let (seen, times) = cache.entry(sid.to_string()).or_default();
-    let upto = d.log.seq();
-    if *seen < upto {
-        let filter = EventFilter { kinds: Some(vec![kinds::AGENT_PROMPT_SUBMITTED.into()]), session_id: Some(sid.into()), project_id: None };
-        for e in d.log.list(*seen, crate::prompts::MAX_PROMPTS, &filter) {
-            if crate::prompts::is_human_prompt(&e) {
-                times.push(time::parse_rfc3339(&e.at).unwrap_or(0));
-            }
-            *seen = (*seen).max(e.seq);
-        }
-        *seen = (*seen).max(upto);
-    }
-    times.clone()
+    crate::prompts::logged(d, sid).iter().map(|e| time::parse_rfc3339(&e.at).unwrap_or(0)).collect()
 }
 
 /// The prompt an entry at unix time `t` belongs to (`n`), given `prompt_times`.
