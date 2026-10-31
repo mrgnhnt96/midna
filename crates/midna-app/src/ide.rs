@@ -4,6 +4,7 @@
 //! then file rules like `pubspec.yaml = android-studio`), else the default `ide.app`. The
 //! button and ⌥⌘E open the selected terminal's folder there; picking an editor in the menu
 //! opens it there and remembers it for the project (⌥: as the default).
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -606,7 +607,7 @@ pub fn menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl Int
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             div()
                 .id("ide-menu")
-                .key_context("MidnaOverlay")
+                .key_context(overlay_context(Kind::Popover, overlay::IDE))
                 .track_focus(&m.ide.focus)
                 .on_key_down(cx.listener(on_key))
                 .occlude()

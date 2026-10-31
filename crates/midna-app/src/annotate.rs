@@ -43,6 +43,11 @@ actions!(
         PasteImage,
         /// ⌘E: reopen the sheet for the focused terminal's attached draft.
         EditAttachment,
+        /// ⌘↩ in the sheet (`keys.approve`): attach the images to the terminal.
+        AttachImages,
+        /// ⌘W in the sheet (`keys.close`): remove the image on screen, or close the sheet when
+        /// there's none.
+        RemoveImage,
     ]
 );
 

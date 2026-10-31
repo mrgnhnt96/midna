@@ -1,5 +1,6 @@
 //! The image sheet (design: "D · Sheet + image strip") and the "added, not sent yet" tray
 //! under the terminal. State and behavior live in `crate::annotate`; this draws `AnnotateView`.
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::annotate::{self as an, AnnotateView, Mark, Outbox};
 use crate::icons::Icon;
 use crate::theme::{Theme, ThemeMode};
@@ -118,7 +119,7 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
 
     let dialog = div()
         .id("annotate")
-        .key_context("MidnaOverlay")
+        .key_context(overlay_context(Kind::Modal, overlay::ANNOTATE))
         .track_focus(&a.focus)
         .capture_key_down(cx.listener(AnnotateView::capture_key))
         .on_key_down(cx.listener(AnnotateView::on_key))
@@ -129,16 +130,14 @@ fn sheet(a: &AnnotateView, t: &Theme, window: &mut Window, cx: &mut Context<Anno
                 v.close(w, cx);
             }
         }))
-        // ⌘W removes the image on screen; with none left it closes the sheet.
-        .on_action(cx.listener(|v, _: &crate::actions::CloseWindow, w, cx| {
+        .on_action(cx.listener(|v, _: &an::RemoveImage, w, cx| {
             if v.draft(cx).is_some_and(|d| !d.shots.is_empty()) {
                 v.remove_image(v.cur, w, cx);
             } else {
                 v.close(w, cx);
             }
         }))
-        .on_action(cx.listener(|v, _: &crate::actions::ApproveOnce, w, cx| v.attach(w, cx)))
-        .on_action(cx.listener(|_, _: &an::AddImage, _, _| {}))
+        .on_action(cx.listener(|v, _: &an::AttachImages, w, cx| v.attach(w, cx)))
         .on_drop(cx.listener(|v, paths: &ExternalPaths, w, cx| v.add(paths.paths().iter().cloned().map(an::Source::Path).collect(), w, cx)))
         // A click anywhere but a note card (they stop the event) finishes the note being edited.
         .on_mouse_down(

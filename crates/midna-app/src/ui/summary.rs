@@ -7,6 +7,7 @@
 //! closed keeps its heading with a Summary row instead of leaving the sidebar; closing that row
 //! (its ✕, or ⌘W on the Summary) lets the project go until another terminal closes in it.
 use super::screen_kit::{clock, day_label};
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
 use crate::model::Glyph;
@@ -319,7 +320,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
 
     div()
         .id("summary")
-        .key_context("MidnaOverlay")
+        .key_context(overlay_context(Kind::Screen, overlay::SUMMARY))
         .track_focus(&m.overlay_focus)
         .on_key_down(cx.listener(on_key))
         .on_action(cx.listener(|m, _: &crate::actions::Dismiss, w, cx| {

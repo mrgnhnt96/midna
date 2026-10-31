@@ -4,6 +4,7 @@
 //! agent turns over time stacked by project → spend over time → working vs waiting on you
 //! per terminal → approvals and triggers. Every number comes from midnad
 //! (`insights.summary`, `insights.series`), i.e. from events only.
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Screen};
 use crate::backend::Backend;
 use crate::model::{Event, Project, Session, parse_list, parse_rfc3339};
@@ -756,7 +757,7 @@ fn hour_label(h: i32) -> String {
 /// The Insights screen in place of the terminal pane (Escape returns to the terminal).
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let view = m.insights_view(cx);
-    div().id("screen-insights").key_context("MidnaOverlay").track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
+    div().id("screen-insights").key_context(overlay_context(Kind::Screen, overlay::INSIGHTS)).track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
 }
 
 #[cfg(test)]

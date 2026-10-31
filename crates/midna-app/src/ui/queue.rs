@@ -8,6 +8,7 @@
 //! pane (main, split, pop-out) draws its own pill. The panel is its own view (`QueueView`), so
 //! any window can host one: the main window and each pop-out do. It sits at the window level,
 //! outside the terminal's element tree, so typing in its field never reaches the terminal.
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::MainWindow;
 use crate::backend::Backend;
 use crate::icons::Icon;
@@ -604,7 +605,7 @@ impl Render for QueueView {
                     anchored().position(point(anchor.x, anchor.y - px(8.))).anchor(Anchor::BottomRight).snap_to_window_with_margin(px(8.)).child(
                         div()
                             .id("queue-panel")
-                            .key_context("MidnaOverlay")
+                            .key_context(overlay_context(Kind::Popover, overlay::QUEUE))
                             .track_focus(&self.focus)
                             .on_key_down(cx.listener(Self::on_key))
                             .occlude()
