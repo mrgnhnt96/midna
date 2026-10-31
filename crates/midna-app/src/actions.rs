@@ -100,77 +100,176 @@ pub struct SelectProject(pub usize);
 
 pub const CTX_MAIN: &str = "MidnaMain";
 pub const CTX_TERM: &str = "Terminal";
+/// Every overlay over the main window has this (escape dismisses it), its [`Kind`] and its
+/// id: `MidnaOverlay Modal overlay=annotate`.
+pub const CTX_OVERLAY: &str = "MidnaOverlay";
+
+/// What kind of place an overlay is, which decides whether main-window shortcuts reach it.
+/// The composer is none of these: it's a field in place over its own terminal (switching
+/// terminals puts it away as a draft), so main-window shortcuts keep working there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// Takes the window until you finish with it: the image sheet, the needs-you cards. Blocks
+    /// main-window shortcuts.
+    Modal,
+    /// A small panel you dismiss: the command bar, links, queue, subagents, the IDE picker.
+    /// Blocks main-window shortcuts.
+    Popover,
+    /// Stands in for the terminal pane: rules, triggers, insights, notifications, summary.
+    /// Main-window shortcuts keep working.
+    Screen,
+}
+
+impl Kind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Kind::Modal => "Modal",
+            Kind::Popover => "Popover",
+            Kind::Screen => "Screen",
+        }
+    }
+}
+
+/// Each overlay's id (`overlay=<id>`), for bindings that work in that overlay alone.
+pub mod overlay {
+    pub const ANNOTATE: &str = "annotate";
+    pub const NEEDS_YOU: &str = "needs_you";
+    pub const COMMAND_BAR: &str = "command_bar";
+    pub const LINKS: &str = "links";
+    pub const QUEUE: &str = "queue";
+    pub const SUBAGENTS: &str = "subagents";
+    pub const IDE: &str = "ide";
+    pub const RULES: &str = "rules";
+    pub const TRIGGERS: &str = "triggers";
+    pub const INSIGHTS: &str = "insights";
+    pub const NOTIFICATIONS: &str = "notifications";
+    pub const SUMMARY: &str = "summary";
+    #[cfg(test)]
+    pub const ALL: &[&str] = &[ANNOTATE, NEEDS_YOU, COMMAND_BAR, LINKS, QUEUE, SUBAGENTS, IDE, RULES, TRIGGERS, INSIGHTS, NOTIFICATIONS, SUMMARY];
+}
+
+/// An overlay's key context (see [`CTX_OVERLAY`]).
+pub fn overlay_context(kind: Kind, id: &'static str) -> KeyContext {
+    let mut c = KeyContext::default();
+    c.add(CTX_OVERLAY);
+    c.add(kind.name());
+    c.set("overlay", id);
+    c
+}
+
+/// Where a binding works: a GPUI context predicate (`&&`, `||`, `!`, `==`, `!=`, `>`), or
+/// `None` for anywhere. `!X` is false when any context around the focus has X.
+pub type When = Option<&'static str>;
+
+/// The main window (and pop-outs) while no modal or popover is up; screens keep it. The
+/// default for main-window shortcuts.
+pub const WINDOW: When = Some("MidnaMain && !Modal && !Popover");
+/// Anywhere, modals, popovers and Settings included: the app-level actions (settings, new
+/// window, quit, hide).
+pub const ANYWHERE: When = None;
+/// Any window while no modal or popover is up: ⌘W. A modal or popover closes on it instead
+/// (see [`OVERLAY_KEYS`]).
+pub const UNCOVERED: When = Some("!Modal && !Popover");
+/// The focused terminal.
+pub const TERM: When = Some("Terminal");
+/// Any modal or popover.
+pub const COVERED: When = Some("Modal || Popover");
 
 /// One rebindable shortcut: its `keys.*` setting and the binding it makes (the catalog in
 /// `midna_proto::settings` holds the default and the description).
 pub struct Shortcut {
     pub setting: &'static str,
-    bind: fn(&str) -> KeyBinding,
+    /// Where it works (see [`When`]).
+    pub when: When,
+    bind: fn(&str, When) -> KeyBinding,
 }
 
 macro_rules! shortcut {
-    ($setting:literal, $action:expr, $ctx:expr) => {
-        Shortcut { setting: $setting, bind: |k| KeyBinding::new(k, $action, $ctx) }
+    ($setting:literal, $action:expr, $when:expr) => {
+        Shortcut { setting: $setting, when: $when, bind: |k, when| KeyBinding::new(k, $action, when) }
     };
 }
 
-const MAIN: Option<&str> = Some(CTX_MAIN);
-const TERM: Option<&str> = Some(CTX_TERM);
-
 /// Every rebindable shortcut. Each has a `keys.*` row in the settings catalog (a test checks).
+/// Main-window shortcuts are blocked under a modal or popover ([`WINDOW`]); only the
+/// app-level ones work everywhere.
 pub const SHORTCUTS: &[Shortcut] = &[
-    shortcut!("keys.command_bar", ToggleCommandBar, MAIN),
-    shortcut!("keys.next_needs_you", NextNeedsYou, MAIN),
-    shortcut!("keys.needs_you", OpenNeedsYou, MAIN),
-    shortcut!("keys.new_terminal", NewTerminal, MAIN),
-    shortcut!("keys.new_agent", NewAgent, MAIN),
-    shortcut!("keys.new_terminal_root", NewTerminalRoot, MAIN),
-    shortcut!("keys.new_agent_root", NewAgentRoot, MAIN),
-    shortcut!("keys.approve", ApproveOnce, MAIN),
-    shortcut!("keys.approve_options", ApproveOptions, MAIN),
-    shortcut!("keys.deny", Deny, MAIN),
-    shortcut!("keys.settings", OpenSettings, None),
-    shortcut!("keys.rules", OpenRules, MAIN),
-    shortcut!("keys.triggers", OpenTriggers, MAIN),
-    shortcut!("keys.insights", OpenInsights, MAIN),
-    shortcut!("keys.open_project", OpenProject, MAIN),
-    shortcut!("keys.new_window", NewWindow, None),
-    shortcut!("keys.composer", crate::composer::OpenComposer, MAIN),
-    shortcut!("keys.add_image", crate::annotate::AddImage, MAIN),
-    shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, MAIN),
+    shortcut!("keys.command_bar", ToggleCommandBar, WINDOW),
+    shortcut!("keys.next_needs_you", NextNeedsYou, WINDOW),
+    shortcut!("keys.needs_you", OpenNeedsYou, WINDOW),
+    shortcut!("keys.new_terminal", NewTerminal, WINDOW),
+    shortcut!("keys.new_agent", NewAgent, WINDOW),
+    shortcut!("keys.new_terminal_root", NewTerminalRoot, WINDOW),
+    shortcut!("keys.new_agent_root", NewAgentRoot, WINDOW),
+    shortcut!("keys.approve", ApproveOnce, WINDOW),
+    shortcut!("keys.approve_options", ApproveOptions, WINDOW),
+    shortcut!("keys.deny", Deny, WINDOW),
+    shortcut!("keys.settings", OpenSettings, ANYWHERE),
+    shortcut!("keys.rules", OpenRules, WINDOW),
+    shortcut!("keys.triggers", OpenTriggers, WINDOW),
+    shortcut!("keys.insights", OpenInsights, WINDOW),
+    shortcut!("keys.open_project", OpenProject, WINDOW),
+    shortcut!("keys.new_window", NewWindow, ANYWHERE),
+    shortcut!("keys.composer", crate::composer::OpenComposer, WINDOW),
+    shortcut!("keys.add_image", crate::annotate::AddImage, WINDOW),
+    shortcut!("keys.edit_attachment", crate::annotate::EditAttachment, WINDOW),
     shortcut!("keys.paste_image_inline", TermPasteImageInline, TERM),
     shortcut!("keys.note_newline", crate::ui::text_input::Newline, Some(crate::ui::text_input::CTX_WRAP)),
-    shortcut!("keys.links", crate::ui::links::ToggleLinks, MAIN),
-    shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, MAIN),
-    shortcut!("keys.queue", crate::ui::queue::ToggleQueue, MAIN),
+    shortcut!("keys.links", crate::ui::links::ToggleLinks, WINDOW),
+    shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, WINDOW),
+    shortcut!("keys.queue", crate::ui::queue::ToggleQueue, WINDOW),
     shortcut!("keys.prev_prompt", PrevPrompt, TERM),
     shortcut!("keys.next_prompt", NextPrompt, TERM),
-    shortcut!("keys.prompts", OpenPrompts, MAIN),
-    shortcut!("keys.next_terminal", NextTerminal, MAIN),
-    shortcut!("keys.prev_terminal", PrevTerminal, MAIN),
-    shortcut!("keys.terminal_back", TerminalBack, MAIN),
-    shortcut!("keys.terminal_forward", TerminalForward, MAIN),
-    shortcut!("keys.project_menu", ToggleProjectMenu, MAIN),
-    shortcut!("keys.fold_project", FoldProject, MAIN),
-    shortcut!("keys.project_summary", ShowProjectSummary, MAIN),
-    shortcut!("keys.sidebar", ToggleSidebar, MAIN),
-    shortcut!("keys.rename", RenameSession, MAIN),
-    shortcut!("keys.restart", RestartSession, MAIN),
-    shortcut!("keys.replace", ReplaceSession, MAIN),
-    shortcut!("keys.terminal_menu", ToggleTerminalMenu, MAIN),
-    shortcut!("keys.copy_session_id", CopySessionId, MAIN),
-    shortcut!("keys.mute", ToggleMute, MAIN),
+    shortcut!("keys.prompts", OpenPrompts, WINDOW),
+    shortcut!("keys.next_terminal", NextTerminal, WINDOW),
+    shortcut!("keys.prev_terminal", PrevTerminal, WINDOW),
+    shortcut!("keys.terminal_back", TerminalBack, WINDOW),
+    shortcut!("keys.terminal_forward", TerminalForward, WINDOW),
+    shortcut!("keys.project_menu", ToggleProjectMenu, WINDOW),
+    shortcut!("keys.fold_project", FoldProject, WINDOW),
+    shortcut!("keys.project_summary", ShowProjectSummary, WINDOW),
+    shortcut!("keys.sidebar", ToggleSidebar, WINDOW),
+    shortcut!("keys.rename", RenameSession, WINDOW),
+    shortcut!("keys.restart", RestartSession, WINDOW),
+    shortcut!("keys.replace", ReplaceSession, WINDOW),
+    shortcut!("keys.terminal_menu", ToggleTerminalMenu, WINDOW),
+    shortcut!("keys.copy_session_id", CopySessionId, WINDOW),
+    shortcut!("keys.mute", ToggleMute, WINDOW),
     shortcut!("keys.clear", TermClear, TERM),
-    shortcut!("keys.split", SplitRight, MAIN),
-    shortcut!("keys.split_orientation", ToggleSplitOrientation, MAIN),
-    shortcut!("keys.split_to_main", SplitToMain, MAIN),
-    shortcut!("keys.focus_pane", FocusOtherPane, MAIN),
-    shortcut!("keys.pop_out", PopOut, MAIN),
-    shortcut!("keys.open_ide", crate::ide::OpenInIde, MAIN),
-    shortcut!("keys.choose_ide", crate::ide::ChooseIde, MAIN),
-    shortcut!("keys.keep_on_top", ToggleKeepOnTop, MAIN),
-    shortcut!("keys.close", CloseWindow, None),
-    shortcut!("keys.quit", HoldToQuit, None),
+    shortcut!("keys.split", SplitRight, WINDOW),
+    shortcut!("keys.split_orientation", ToggleSplitOrientation, WINDOW),
+    shortcut!("keys.split_to_main", SplitToMain, WINDOW),
+    shortcut!("keys.focus_pane", FocusOtherPane, WINDOW),
+    shortcut!("keys.pop_out", PopOut, WINDOW),
+    shortcut!("keys.open_ide", crate::ide::OpenInIde, WINDOW),
+    shortcut!("keys.choose_ide", crate::ide::ChooseIde, WINDOW),
+    shortcut!("keys.keep_on_top", ToggleKeepOnTop, WINDOW),
+    shortcut!("keys.close", CloseWindow, UNCOVERED),
+    shortcut!("keys.quit", HoldToQuit, ANYWHERE),
+];
+
+/// What a shortcut's keys do inside one overlay, where the main-window binding is blocked
+/// (rebinding the shortcut moves these too). Bound after [`SHORTCUTS`]: two bindings that
+/// match at the same depth go to the later one, so the image sheet's ⌘W beats the
+/// modal-wide one.
+pub const OVERLAY_KEYS: &[Shortcut] = &[
+    // ⌘W closes a modal or popover, like escape.
+    shortcut!("keys.close", Dismiss, COVERED),
+    // A popover's own shortcut closes it again.
+    shortcut!("keys.command_bar", ToggleCommandBar, Some("overlay == command_bar")),
+    shortcut!("keys.needs_you", OpenNeedsYou, Some("overlay == needs_you")),
+    shortcut!("keys.links", crate::ui::links::ToggleLinks, Some("overlay == links")),
+    shortcut!("keys.queue", crate::ui::queue::ToggleQueue, Some("overlay == queue")),
+    shortcut!("keys.subagents", crate::ui::subagents::ToggleSubagents, Some("overlay == subagents")),
+    shortcut!("keys.choose_ide", crate::ide::ChooseIde, Some("overlay == ide")),
+    // The needs-you cards answer the card on screen.
+    shortcut!("keys.approve", ApproveOnce, Some("overlay == needs_you")),
+    shortcut!("keys.deny", Deny, Some("overlay == needs_you")),
+    shortcut!("keys.next_needs_you", NextNeedsYou, Some("overlay == needs_you")),
+    shortcut!("keys.approve", crate::ui::command_bar::RunSelected, Some("overlay == command_bar")),
+    shortcut!("keys.deny", crate::ui::command_bar::ClearQuery, Some("overlay == command_bar")),
+    shortcut!("keys.approve", crate::annotate::AttachImages, Some("overlay == annotate")),
+    shortcut!("keys.close", crate::annotate::RemoveImage, Some("overlay == annotate")),
 ];
 
 /// Keys that aren't settings: standard editing keys and the keys a screen handles itself.
@@ -273,7 +372,7 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     for s in SHORTCUTS {
         let k = normalize_keys(&get(s.setting).unwrap_or_else(|| default_key(s.setting).to_string()));
         if valid(&k) {
-            b.push((s.bind)(&k));
+            b.push((s.bind)(&k, s.when));
             bound.0.insert(s.setting, k);
         } else {
             if !k.is_empty() {
@@ -284,16 +383,21 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>) {
     }
     b.extend(crate::composer::bindings());
     for i in 1..=9 {
-        b.push(KeyBinding::new(&format!("cmd-{i}"), SelectProject(i - 1), MAIN));
+        b.push(KeyBinding::new(&format!("cmd-{i}"), SelectProject(i - 1), WINDOW));
     }
-    b.push(KeyBinding::new("escape", Dismiss, Some("MidnaOverlay")));
+    b.push(KeyBinding::new("escape", Dismiss, Some(CTX_OVERLAY)));
     b.push(KeyBinding::new("cmd-c", TermCopy, TERM));
     b.push(KeyBinding::new("cmd-x", TermCut, TERM));
     b.push(KeyBinding::new("cmd-v", TermPaste, TERM));
     b.push(KeyBinding::new("cmd-alt-v", TermPasteSecret, TERM));
     b.push(KeyBinding::new("cmd-a", TermSelectAll, TERM));
-    b.push(KeyBinding::new("cmd-h", Hide, None));
-    b.push(KeyBinding::new("cmd-alt-h", HideOthers, None));
+    b.push(KeyBinding::new("cmd-h", Hide, ANYWHERE));
+    b.push(KeyBinding::new("cmd-alt-h", HideOthers, ANYWHERE));
+    for s in OVERLAY_KEYS {
+        if let Some(k) = bound.0.get(s.setting).filter(|k| !k.is_empty()) {
+            b.push((s.bind)(k, s.when));
+        }
+    }
     cx.bind_keys(b);
     cx.set_global(bound);
 }
@@ -431,5 +535,141 @@ mod tests {
         assert_eq!(super::normalize_keys("cmd-shift-comma"), "cmd-shift-,");
         let ks = gpui_kit::Keystroke::parse(&super::normalize_keys("cmd-comma")).unwrap();
         assert_eq!((ks.key.as_str(), ks.modifiers.platform), (",", true));
+    }
+
+    #[test]
+    fn when_clauses_parse() {
+        for s in super::SHORTCUTS.iter().chain(super::OVERLAY_KEYS) {
+            if let Some(w) = s.when {
+                assert!(gpui_kit::KeyBindingContextPredicate::parse(w).is_ok(), "{}: {w:?}", s.setting);
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_keys_name_real_overlays() {
+        for s in super::OVERLAY_KEYS {
+            let Some(id) = s.when.and_then(|w| w.strip_prefix("overlay == ")) else { continue };
+            assert!(super::overlay::ALL.contains(&id), "{}: no overlay {id:?}", s.setting);
+        }
+    }
+}
+
+/// The default bindings in a window shaped like the main one: `MidnaMain` with an overlay in
+/// it that has focus. Each test presses keys and reads which actions ran.
+#[cfg(test)]
+mod dispatch {
+    // Not `super::*`: GPUI's test macro would come in with it and shadow `#[test]`.
+    use super::{
+        ApproveOnce, CTX_MAIN, CloseWindow, Dismiss, HoldToQuit, Kind, NewAgent, OpenSettings, SelectProject, SplitRight,
+        bind_keys, overlay, overlay_context,
+    };
+    use crate::annotate::{AttachImages, RemoveImage};
+    use crate::ui::links::ToggleLinks;
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Action, App, Context, FocusHandle, TestAppContext, Window, div};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    type Log = Rc<RefCell<Vec<&'static str>>>;
+
+    struct Probe {
+        kind: Kind,
+        id: &'static str,
+        focus: FocusHandle,
+        log: Log,
+    }
+
+    fn record<A: Action>(log: &Log, name: &'static str) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+        let log = log.clone();
+        move |_, _, _| log.borrow_mut().push(name)
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let l = &self.log;
+            div()
+                .key_context(CTX_MAIN)
+                .size_full()
+                .on_action(record::<NewAgent>(l, "new_agent"))
+                .on_action(record::<SplitRight>(l, "split"))
+                .on_action(record::<SelectProject>(l, "select_project"))
+                .on_action(record::<ApproveOnce>(l, "approve"))
+                .on_action(record::<CloseWindow>(l, "close_window"))
+                .on_action(record::<OpenSettings>(l, "settings"))
+                .on_action(record::<HoldToQuit>(l, "quit"))
+                .child(
+                    div()
+                        .key_context(overlay_context(self.kind, self.id))
+                        .track_focus(&self.focus)
+                        .size_full()
+                        .on_action(record::<RemoveImage>(l, "remove_image"))
+                        .on_action(record::<AttachImages>(l, "attach"))
+                        .on_action(record::<Dismiss>(l, "dismiss"))
+                        .on_action(record::<ToggleLinks>(l, "toggle_links")),
+                )
+        }
+    }
+
+    /// Opens the window with the overlay focused, then presses each key and collects what ran.
+    fn press(kind: Kind, id: &'static str, keys: &[&str], cx: &mut TestAppContext) -> Vec<(String, Vec<&'static str>)> {
+        cx.update(|cx| bind_keys(cx, |_| None));
+        let log = Log::default();
+        let l = log.clone();
+        let window = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            Probe { kind, id, focus, log: l }
+        });
+        cx.run_until_parked();
+        keys.iter()
+            .map(|k| {
+                cx.simulate_keystrokes(window.into(), k);
+                (k.to_string(), std::mem::take(&mut *log.borrow_mut()))
+            })
+            .collect()
+    }
+
+    fn ran(k: &str, actions: &[&'static str]) -> (String, Vec<&'static str>) {
+        (k.to_string(), actions.to_vec())
+    }
+
+    #[gpui_kit::test]
+    fn image_sheet_blocks_main_shortcuts(cx: &mut TestAppContext) {
+        let got = press(Kind::Modal, overlay::ANNOTATE, &["cmd-t", "cmd-d", "cmd-1", "cmd-w", "cmd-enter", "cmd-q", "cmd-,", "escape"], cx);
+        assert_eq!(
+            got,
+            vec![
+                ran("cmd-t", &[]),
+                ran("cmd-d", &[]),
+                ran("cmd-1", &[]),
+                ran("cmd-w", &["remove_image"]),
+                ran("cmd-enter", &["attach"]),
+                ran("cmd-q", &["quit"]),
+                ran("cmd-,", &["settings"]),
+                ran("escape", &["dismiss"]),
+            ]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn popover_blocks_main_shortcuts(cx: &mut TestAppContext) {
+        let got = press(Kind::Popover, overlay::LINKS, &["cmd-t", "cmd-enter", "cmd-w", "cmd-l", "cmd-,"], cx);
+        assert_eq!(
+            got,
+            vec![
+                ran("cmd-t", &[]),
+                ran("cmd-enter", &[]),
+                ran("cmd-w", &["dismiss"]),
+                ran("cmd-l", &["toggle_links"]),
+                ran("cmd-,", &["settings"]),
+            ]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn screens_keep_main_shortcuts(cx: &mut TestAppContext) {
+        let got = press(Kind::Screen, overlay::RULES, &["cmd-t", "cmd-1", "cmd-w"], cx);
+        assert_eq!(got, vec![ran("cmd-t", &["new_agent"]), ran("cmd-1", &["select_project"]), ran("cmd-w", &["close_window"])]);
     }
 }

@@ -2,6 +2,7 @@
 //! window. Rows come from the registry in `crate::commands`; free text that matches
 //! nothing hands the text to a new agent ("Ask an agent").
 use super::border_w;
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Overlay, Screen, refresh};
 use crate::commands::{self, CmdIcon, Command, Run};
 use crate::icons::Icon;
@@ -11,6 +12,16 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+actions!(
+    midna,
+    [
+        /// ⌘↩ in the bar (`keys.approve`): run the selected row.
+        RunSelected,
+        /// ⌘⌫ in the bar (`keys.deny`): clear the query.
+        ClearQuery,
+    ]
+);
 
 /// Max rows shown for a non-empty query.
 const LIMIT: usize = 12;
@@ -824,7 +835,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
 
     let dialog = div()
         .id("command-bar")
-        .key_context("MidnaOverlay")
+        .key_context(overlay_context(Kind::Popover, overlay::COMMAND_BAR))
         .on_key_down(cx.listener(on_key))
         .on_action(cx.listener(|m, _: &crate::actions::Dismiss, w, cx| {
             if m.palette.armed.take().is_some() {
@@ -833,8 +844,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                 close(m, w, cx);
             }
         }))
-        .on_action(cx.listener(|m, _: &crate::actions::ApproveOnce, w, cx| approve_key(m, w, cx)))
-        .on_action(cx.listener(|m, _: &crate::actions::Deny, _w, cx| set_query(m, String::new(), cx)))
+        .on_action(cx.listener(|m, _: &RunSelected, w, cx| approve_key(m, w, cx)))
+        .on_action(cx.listener(|m, _: &ClearQuery, _w, cx| set_query(m, String::new(), cx)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .absolute()
         .top(px(92.))

@@ -52,3 +52,7 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 ] }
 # image annotations (src/annotate.rs): sniff formats and read dimensions; also the snapshot PNG writer
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+# #[gpui_kit::test]: key dispatch through real windows (src/actions.rs)
+gpui-kit = { version = "0.7", default-features = false, features = ["test-support"] }

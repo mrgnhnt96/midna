@@ -4,6 +4,7 @@
 //! terminal. ↩ opens, ⌥↩ finds where it came up, ⇧↩ pins, ⇥ / ⇧⇥ switch the kind tab. Resting on a
 //! row previews it in the terminal's link-preview card (bottom right); a row's × removes it, ⌘Z
 //! puts the last one back.
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -428,7 +429,7 @@ pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl 
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             div()
                 .id("links-popover")
-                .key_context("MidnaOverlay")
+                .key_context(overlay_context(Kind::Popover, overlay::LINKS))
                 .track_focus(&m.links.focus)
                 .on_key_down(cx.listener(on_key))
                 .occlude()

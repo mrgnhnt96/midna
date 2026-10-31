@@ -3,6 +3,7 @@
 //! stays). Data is `MainWindow::needs`
 //! (`needs_you.list`, refreshed on `needs_you.*` events); every action is `needs_you.resolve`.
 use super::border_w;
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Overlay, Screen};
 use crate::commands;
 use crate::icons::Icon;
@@ -434,7 +435,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
 
     div()
         .id("needs-you")
-        .key_context("MidnaOverlay")
+        .key_context(overlay_context(Kind::Modal, overlay::NEEDS_YOU))
         .track_focus(&m.stack.focus)
         .on_key_down(cx.listener(on_key))
         .on_action(cx.listener(|m, _: &crate::actions::ApproveOnce, w, cx| primary(m, w, cx)))

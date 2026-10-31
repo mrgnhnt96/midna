@@ -10,6 +10,7 @@ mod schedule;
 
 use super::rules::{Names, ask};
 use super::screen_kit::{self as kit, KeyOutcome, LineInput};
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Overlay, refresh};
 use crate::backend::{Backend, BackendEvent, ConnState};
 use crate::icons::Icon;
@@ -836,7 +837,7 @@ pub fn open_delivery_path(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let view = view(m, cx);
-    div().id("screen-triggers").key_context("MidnaOverlay").track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
+    div().id("screen-triggers").key_context(overlay_context(Kind::Screen, overlay::TRIGGERS)).track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
 }
 
 // ------------------------------------------------------------------ rendering

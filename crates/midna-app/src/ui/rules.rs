@@ -3,6 +3,7 @@
 //! (`policy.check`), and the live "Last fired" feed (`rule.fired` events) docked at the
 //! bottom. No form builder: rules are added by agents and by prompting.
 use super::screen_kit::{self as kit, KeyOutcome, LineInput};
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, refresh};
 use crate::backend::{Backend, BackendEvent, ConnState};
 use crate::icons::Icon;
@@ -689,7 +690,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             v
         }
     };
-    div().id("screen-rules").key_context("MidnaOverlay").track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
+    div().id("screen-rules").key_context(overlay_context(Kind::Screen, overlay::RULES)).track_focus(&m.overlay_focus).flex().flex_1().min_w_0().h_full().child(view).into_any_element()
 }
 
 // ------------------------------------------------------------------ rendering

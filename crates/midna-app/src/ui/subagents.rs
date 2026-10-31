@@ -3,6 +3,7 @@
 //! popover (⌥⌘A): running subagents (with what each was asked to do), then the ones that
 //! finished since the human's last prompt. ↑↓ select, ↩ or a click opens the subagent's
 //! read-only window (`ui/subagent_window.rs`).
+use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -183,7 +184,7 @@ pub fn popover(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl 
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
             div()
                 .id("subagents-popover")
-                .key_context("MidnaOverlay")
+                .key_context(overlay_context(Kind::Popover, overlay::SUBAGENTS))
                 .track_focus(&m.subagents.focus)
                 .on_key_down(cx.listener(on_key))
                 .occlude()
