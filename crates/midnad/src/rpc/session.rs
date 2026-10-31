@@ -501,8 +501,8 @@ pub fn set_background(d: &Daemon, ctx: &Ctx, p: SessionSetBackgroundParams) -> R
 
 /// Gap between typed text and the Enter that submits it (see `input`).
 const ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
-/// Gap after an image paste: the agent reads the file and swaps in `[Image #N]` before the
-/// next input arrives (the app's image sheet uses the same beat).
+/// Gap after an image paste, and the beat between steps. Claude Code is waited on for each
+/// image's `[Image #N]` chip as well (see [`image_chips`]), as the app's image sheet does.
 const PASTE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Agents may not answer a permission prompt by typing into the terminal that shows it: that
@@ -537,12 +537,20 @@ pub fn input(d: &Daemon, ctx: &Ctx, p: SessionInputParams) -> R {
     let bytes = p.text.clone().into_bytes();
     let gone = || RpcError::conflict(format!("session {} is not accepting input (process gone?)", p.id));
     // Each image is its own paste, a beat apart, so the agent sees one path per paste.
+    let claude = !images.is_empty() && d.core().state.session(&p.id).is_some_and(|s| matches!(s.agent, Some(AgentKind::Claude)));
+    let deadline = std::time::Instant::now() + image_chips::WAIT;
     for (i, img) in images.iter().enumerate() {
         if i > 0 {
             std::thread::sleep(PASTE_GAP);
         }
+        let before = claude.then(|| chips(&rt));
         if !rt.client(midna_proto::frame::ClientMsg::Paste(img.display().to_string())) {
             return Err(gone());
+        }
+        if let Some(before) = before {
+            while std::time::Instant::now() < deadline && !image_chips::arrived(&before, &chips(&rt)) {
+                std::thread::sleep(image_chips::POLL);
+            }
         }
     }
     if !images.is_empty() && !bytes.is_empty() {
@@ -569,6 +577,11 @@ pub fn input(d: &Daemon, ctx: &Ctx, p: SessionInputParams) -> R {
         d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), json!({ "text": preview, "enter": p.enter, "bytes": bytes.len(), "images": images }));
     }
     ok(OkResult { ok: true })
+}
+
+/// The `[Image #N]` numbers on the terminal's screen.
+fn chips(rt: &term::RtHandle) -> std::collections::BTreeSet<u32> {
+    rt.read(true).map(|(lines, _, _)| image_chips::on_screen(&lines)).unwrap_or_default()
 }
 
 pub fn read(d: &Daemon, p: SessionReadParams) -> R {

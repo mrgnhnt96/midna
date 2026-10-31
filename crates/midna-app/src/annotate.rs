@@ -22,7 +22,9 @@
 //! The composer's send (Kass, `composer.rs`) takes it too: the images, then its text and notes.
 //!
 //! Images are normalized into `$TMPDIR/midna-images/`: PNG, JPEG, GIF and WebP are kept as
-//! they are; anything else (HEIC, TIFF, …) is converted to PNG with `sips`.
+//! they are; anything else (HEIC, TIFF, …) is converted to PNG with `sips`. One turned by its
+//! EXIF orientation or longer than 2000 px is redrawn upright at that size (`fitted`), as a JPEG
+//! if it's a photo: Claude Code is slow to read a big file, and delivery waits on it.
 use crate::app::{MainWindow, Overlay};
 use crate::ui::text_input::{FieldChanged, TextField};
 use gpui_kit::prelude::*;
@@ -1204,6 +1206,9 @@ fn load(src: Source) -> anyhow::Result<Shot> {
         Ok(::image::ImageFormat::WebP) => Some((ImageFormat::Webp, "webp")),
         _ => None,
     };
+    // A photo (JPEG, or HEIC and the like) is saved as a JPEG if it's redrawn below; a
+    // screenshot stays a PNG, so its text stays sharp.
+    let photo = matches!(kept, None | Some((ImageFormat::Jpeg, _)));
     let (format, path, bytes) = match kept {
         Some((f, ext)) => {
             let path = dir.join(format!("{stem}.{ext}"));
@@ -1224,17 +1229,14 @@ fn load(src: Source) -> anyhow::Result<Shot> {
             (ImageFormat::Png, path.clone(), std::fs::read(&path)?)
         }
     };
-    // A phone photo is often stored sideways with an EXIF orientation. gpui draws it turned,
-    // but the stage is sized from the stored pixels, so marks wouldn't line up (and an agent
-    // reading the file may not turn it). Turn the pixels themselves.
-    let (format, path, bytes) = match upright(&bytes) {
-        Some(png) => {
-            let up = dir.join(format!("{stem}-up.png"));
-            std::fs::write(&up, &png)?;
+    let (format, path, bytes) = match fitted(&bytes, photo) {
+        Some((f, ext, out)) => {
+            let up = dir.join(format!("{stem}-up.{ext}"));
+            std::fs::write(&up, &out)?;
             if up != path {
                 let _ = std::fs::remove_file(&path);
             }
-            (ImageFormat::Png, up, png)
+            (f, up, out)
         }
         None => (format, path, bytes),
     };
@@ -1242,20 +1244,39 @@ fn load(src: Source) -> anyhow::Result<Shot> {
     Ok(Shot { name, path, image: Arc::new(Image::from_bytes(format, bytes)), w, h, notes: vec![] })
 }
 
-/// `bytes` re-encoded as a PNG with its EXIF orientation applied, or None when it has none
+/// The longest side an image keeps. Claude scales anything bigger down to this before it
+/// looks at it, so more pixels only make the file slower for the agent to read: a phone
+/// photo saved whole as a PNG was 25 MB, and Claude Code took 12 s to attach it.
+const MAX_SIDE: u32 = 2000;
+
+/// `bytes` redrawn upright and no bigger than [`MAX_SIDE`], as a JPEG for a `photo` and a PNG
+/// otherwise, with its format and extension. None when it's upright and small enough already
 /// (or can't be read, which the caller reports).
-fn upright(bytes: &[u8]) -> Option<Vec<u8>> {
+///
+/// A phone photo is often stored sideways with an EXIF orientation. gpui draws it turned, but
+/// the stage is sized from the stored pixels, so marks wouldn't line up (and an agent reading
+/// the file may not turn it). So the pixels themselves are turned.
+fn fitted(bytes: &[u8], photo: bool) -> Option<(ImageFormat, &'static str, Vec<u8>)> {
     use ::image::ImageDecoder;
     let mut dec = ::image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
     let o = dec.orientation().ok()?;
-    if o == ::image::metadata::Orientation::NoTransforms {
+    let (w, h) = dec.dimensions();
+    if o == ::image::metadata::Orientation::NoTransforms && w.max(h) <= MAX_SIDE {
         return None;
     }
     let mut img = ::image::DynamicImage::from_decoder(dec).ok()?;
     img.apply_orientation(o);
-    let mut png = vec![];
-    img.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).ok()?;
-    Some(png)
+    if img.width().max(img.height()) > MAX_SIDE {
+        img = img.resize(MAX_SIDE, MAX_SIDE, ::image::imageops::FilterType::Lanczos3);
+    }
+    let mut out = vec![];
+    if photo {
+        ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode_image(&img.to_rgb8()).ok()?;
+        Some((ImageFormat::Jpeg, "jpg", out))
+    } else {
+        img.write_to(&mut std::io::Cursor::new(&mut out), ::image::ImageFormat::Png).ok()?;
+        Some((ImageFormat::Png, "png", out))
+    }
 }
 
 /// Normalize an image into `$TMPDIR/midna-images/` and return the file to paste (⌘V inline).
@@ -1506,6 +1527,21 @@ mod tests {
         assert_eq!((s.w, s.h), (3, 2));
         assert!(s.path.exists() && s.path.extension().unwrap() == "png");
         assert!(load(Source::Bytes { name: "junk".into(), bytes: b"not an image".to_vec() }).is_err());
+    }
+
+    #[test]
+    fn big_images_shrink_to_the_longest_side_claude_uses() {
+        let mut png = vec![];
+        ::image::RgbImage::new(4000, 1000).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+        let s = load(Source::Bytes { name: "wide".into(), bytes: png }).unwrap();
+        assert_eq!((s.w, s.h), (2000, 500));
+        assert_eq!(s.path.extension().unwrap(), "png", "a screenshot stays a PNG");
+        let mut jpg = vec![];
+        ::image::RgbImage::new(1500, 3000).write_to(&mut std::io::Cursor::new(&mut jpg), ::image::ImageFormat::Jpeg).unwrap();
+        let s = load(Source::Bytes { name: "tall".into(), bytes: jpg }).unwrap();
+        assert_eq!((s.w, s.h), (1000, 2000));
+        assert_eq!(s.path.extension().unwrap(), "jpg", "a photo stays a JPEG");
+        assert_eq!(::image::image_dimensions(&s.path).unwrap(), (1000, 2000));
     }
 
     #[test]

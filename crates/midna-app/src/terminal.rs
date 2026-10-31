@@ -14,6 +14,7 @@ use crate::term_edit::{self, EraseJob, KbdSel, MoveJob, Pending};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use midna_proto::image_chips;
 use serde_json::{Value, json};
 use std::cell::{Cell as StdCell, RefCell};
 use std::collections::HashMap;
@@ -1256,8 +1257,10 @@ impl TerminalView {
     }
 
     /// ↩ with an image attachment waiting (`annotate.rs`): paste each image path, then a
-    /// newline and the notes, then press ↩. Spaced out so the app handles each paste (Claude Code turns a
-    /// pasted image path into `[Image #N]` and reads the file as it does).
+    /// newline and the notes, then press ↩. Spaced out so the app handles each paste. Claude Code
+    /// reads each pasted image before it shows `[Image #N]`, which takes seconds for a big one,
+    /// and a paste or ↩ that lands meanwhile loses the image, so in Claude each image waits for
+    /// its chip ([`image_chips`]).
     fn deliver_attachment(&mut self, enter: &KeyMsg, cx: &mut Context<Self>) -> bool {
         let Some(stream) = self.stream.borrow().clone() else {
             return false;
@@ -1265,18 +1268,44 @@ impl TerminalView {
         let Some(out) = crate::annotate::take(&self.session_id, cx) else {
             return false;
         };
+        let images = if self.agent_kind() == Some("claude") { out.paths.len() } else { 0 };
         let mut steps = out.steps();
         steps.push(ClientMsg::Key(enter.clone()));
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
+            let deadline = Instant::now() + image_chips::WAIT;
             for (i, s) in steps.iter().enumerate() {
                 if i > 0 {
                     cx.background_executor().timer(Duration::from_millis(250)).await;
                 }
+                let before = if i < images { this.read_with(cx, |t, _| t.image_chips()).ok() } else { None };
                 stream.send(s);
+                let Some(before) = before else { continue };
+                while Instant::now() < deadline {
+                    cx.background_executor().timer(image_chips::POLL).await;
+                    match this.update(cx, |t, cx| t.image_chips_now(cx)) {
+                        Ok(now) if !image_chips::arrived(&before, &now) => {}
+                        _ => break,
+                    }
+                }
             }
         })
         .detach();
         true
+    }
+
+    /// [`Self::image_chips`] after taking in a frame not drawn yet: the window may not be
+    /// redrawing (another app in front) while the wait runs.
+    fn image_chips_now(&mut self, cx: &mut Context<Self>) -> std::collections::BTreeSet<u32> {
+        if self.sink.frame.lock().is_ok_and(|f| f.is_some()) {
+            self.pull(cx);
+        }
+        self.image_chips()
+    }
+
+    /// The `[Image #N]` numbers on the screen.
+    fn image_chips(&self) -> std::collections::BTreeSet<u32> {
+        let rows: Vec<String> = self.grid.iter().map(|r| r.cells.iter().map(|c| c.ch).collect()).collect();
+        image_chips::on_screen(&rows)
     }
 
     pub(crate) fn paste_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
