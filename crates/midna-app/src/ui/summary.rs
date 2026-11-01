@@ -390,7 +390,8 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
     let menu_open = m.menu == Menu::Summary;
     let resume_label = if c.conversation_id.is_some() { "Resume conversation" } else { "Open again" };
     let (resume_keys, remove_keys) = (m.key_label("keys.approve"), m.key_label("keys.deny"));
-    let (r_id, x_id) = (c.id.clone(), c.id.clone());
+    let (r_id, x_id, b_id) = (c.id.clone(), c.id.clone(), c.id.clone());
+    let reopen_tip = format!("{} in a new tab ({resume_keys})", if c.conversation_id.is_some() { "Resume its conversation" } else { "Open it again" });
 
     let menu = deferred(
         anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
@@ -439,6 +440,11 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
         .child(div().min_w_0().text_size(px(15.)).font_weight(FontWeight::BOLD).truncate().child(c.name.clone()))
         .child(Icon::from_glyph(glyph(c)).el(14., t.dim))
         .child(div().flex_1())
+        .child(
+            super::screen_kit::btn(t, "sum-reopen", "Reopen in new tab")
+                .tooltip(super::header::tip(reopen_tip))
+                .on_click(cx.listener(move |m, _, _, cx| resume(m, b_id.clone(), cx))),
+        )
         .child(more);
 
     let mut facts: Vec<(&str, String, bool)> = vec![("Closed", when_long(&c.closed_at), false), ("Closed by", closed_by(m, c), false)];
@@ -467,6 +473,41 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
                 .gap(px(12.))
                 .child(div().flex_none().w(px(110.)).text_color(t.dim).child(label))
                 .child(div().min_w_0().when(mono, |d| d.font_family(t.mono_font.clone()).text_size(px(12.))).child(value)),
+        );
+    }
+    // The agent's own session id (`claude --resume <id>`), with a copy button.
+    if let Some(conv) = c.conversation_id.clone() {
+        let label = match c.agent {
+            Some(AgentKind::Claude) => "Claude session",
+            Some(AgentKind::Codex) => "Codex session",
+            None => "Session",
+        };
+        let copy = conv.clone();
+        grid = grid.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(div().flex_none().w(px(110.)).text_color(t.dim).child(label))
+                .child(div().min_w_0().truncate().font_family(t.mono_font.clone()).text_size(px(12.)).child(conv))
+                .child(
+                    div()
+                        .id("sum-copy-session")
+                        .flex_none()
+                        .size(px(22.))
+                        .rounded(px(5.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.raised))
+                        .tooltip(super::header::tip("Copy session id"))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                            m.toast("Copied the session id", cx);
+                        }))
+                        .child(Icon::Copy.el(13., t.dim)),
+                ),
         );
     }
 
