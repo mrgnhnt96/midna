@@ -35,6 +35,12 @@ pub fn share(always: bool, cx: &mut App) {
 /// Height of the bar.
 pub(super) const BAR_H: f32 = PAD_Y + LINE_H;
 
+/// The prompt pill's widest content, and its padding (left, right) and gaps.
+const PILL_MAX: f32 = 518.;
+const PILL_PAD: (f32, f32) = (10., 8.);
+const PILL_GAP: f32 = 8.;
+const CHEVRON: f32 = 10.;
+
 /// Live ↓: its width (the gap after it included), and how long it takes to slide in or out.
 const LIVE_W: f32 = 70.;
 const LIVE_MS: f32 = 180.;
@@ -45,6 +51,10 @@ const HINT_HOLD: Duration = Duration::from_millis(250);
 
 /// The prompt pill's width, eased to its new content's (another prompt's title) over `LIVE_MS`.
 /// `to` = 0 until first measured.
+///
+/// The width comes from shaping the pill's text ([`pill_width`]), never from laying the pill out:
+/// its title truncates to whatever room it gets, so a measured width fed back into the pill's
+/// own width chased itself (the pill wobbled, and drew text cut off with no `…`).
 #[derive(Default)]
 struct PillWidth {
     from: f32,
@@ -62,7 +72,7 @@ impl PillWidth {
         self.at.is_some_and(|at| at.elapsed().as_secs_f32() * 1000. < LIVE_MS)
     }
 
-    /// Its content measured `w` wide (at prepaint): ease there from where it is.
+    /// Its content is `w` wide now: ease there from where it is.
     fn measured(&mut self, w: f32, animate: bool) -> bool {
         if (w - self.to).abs() < 0.5 {
             return false;
@@ -274,7 +284,7 @@ impl TerminalView {
     }
 
     /// The pinned bar and the rail, over the grid.
-    pub(super) fn render_nav(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub(super) fn render_nav(&self, theme: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let nav = &self.nav;
         let row = self.bar_row(cx);
         let mut out = vec![];
@@ -294,7 +304,7 @@ impl TerminalView {
         // The bar's pill only names a prompt (never "Before your first prompt"): without one, the
         // bar is just Live ↓ while scrolled back.
         if nav.scrolled || (row && self.shown_prompt().is_some()) {
-            out.push(self.render_bar(theme, cx));
+            out.push(self.render_bar(theme, window, cx));
         }
         out
     }
@@ -311,7 +321,7 @@ impl TerminalView {
         }
     }
 
-    fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_bar(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let nav = &self.nav;
         let vis = nav.on_screen();
         let shown = self.shown_prompt();
@@ -324,6 +334,11 @@ impl TerminalView {
             Some((None, text)) => (String::new(), text.to_string(), String::new()),
             None => (String::new(), String::new(), String::new()),
         };
+        // The pill's content width, from its text alone (see `PillWidth`).
+        let content = if title.is_empty() { 0. } else { pill_width(t, &num, &title, &pos, window) };
+        if content > 0. && nav.pill.borrow_mut().measured(content, !cx.reduce_motion()) {
+            window.request_animation_frame();
+        }
         let eased = |at: Option<Instant>| at.map_or(1., |at| 1. - (1. - (at.elapsed().as_secs_f32() * 1000. / LIVE_MS).min(1.)).powi(3));
         // Live ↓ slides in from the left edge, pushing the pill over, and back out at the live end.
         let e = eased(nav.live_at);
@@ -387,30 +402,22 @@ impl TerminalView {
                     .text_color(t.fg)
                     .cursor_pointer()
                     .hover(|s| s.border_color(t.dim))
-                    .child(div().flex().h_full().on_children_prepainted({
-                        let pill = nav.pill.clone();
-                        move |b, window, cx| {
-                            if let Some(b) = b.first()
-                                && pill.borrow_mut().measured(f32::from(b.size.width), !cx.reduce_motion())
-                            {
-                                window.request_animation_frame();
-                            }
-                        }
-                    }).child(
+                    // Its content is laid out at its full width, which the pill's easing clips.
+                    .child(
                         div()
                             .flex_none()
-                            .max_w(px(518.))
+                            .w(px(content))
                             .h_full()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .pl(px(10.))
-                            .pr(px(8.))
+                            .gap(px(PILL_GAP))
+                            .pl(px(PILL_PAD.0))
+                            .pr(px(PILL_PAD.1))
                             .when(!num.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.accent).child(num)))
-                            .child(div().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                            .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                             .when(!pos.is_empty(), |d| d.child(div().flex_none().text_size(px(11.5)).text_color(t.dim).child(pos)))
-                            .child(crate::icons::Icon::Chevron.el(10., t.dim)),
-                    ))
+                            .child(crate::icons::Icon::Chevron.el(CHEVRON, t.dim)),
+                    )
                     .on_click(|_, w, cx| w.dispatch_action(Box::new(OpenPrompts), cx)),
             ))
             .when_some(target.filter(|_| go > 0.), |d, i| {
@@ -512,6 +519,22 @@ impl TerminalView {
 }
 
 /// "14:17" (local).
+/// How wide the prompt pill's content is (up to `PILL_MAX`): its number, title, position and
+/// chevron as shaped, with the padding and gaps between them.
+fn pill_width(t: &Theme, num: &str, title: &str, pos: &str, window: &Window) -> f32 {
+    let shape = |text: &str, family: &SharedString, size: f32| {
+        if text.is_empty() {
+            return None;
+        }
+        let run = TextRun { len: text.len(), font: font(family.clone()), color: t.fg, background_color: None, underline: None, strikethrough: None };
+        Some(f32::from(window.text_system().shape_line(SharedString::from(text.to_string()), px(size), &[run], None).width).ceil())
+    };
+    let parts = [shape(num, &t.mono_font, 11.5), shape(title, &t.ui_font, 12.5), shape(pos, &t.ui_font, 11.5), Some(CHEVRON)];
+    let parts: Vec<f32> = parts.into_iter().flatten().collect();
+    let w = PILL_PAD.0 + PILL_PAD.1 + parts.iter().sum::<f32>() + PILL_GAP * (parts.len() - 1) as f32;
+    w.min(PILL_MAX)
+}
+
 fn hhmm(at: &str) -> String {
     let c = crate::ui::screen_kit::clock(at);
     c.get(..5).unwrap_or(&c).to_string()
