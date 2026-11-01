@@ -2196,7 +2196,7 @@ impl Render for TerminalView {
         let link_menu = self.render_link_menu(&theme, cx);
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
         self.update_nav(window, cx);
-        let nav = self.render_nav(&theme, cx);
+        let nav = self.render_nav(&theme, window, cx);
         // Claude's pinned prompt row slides out above the top, so the conversation scrolls behind
         // the prompt bar (same size: the agent isn't resized).
         let tuck = if self.hides_top_row() { LINE_H } else { 0. };
