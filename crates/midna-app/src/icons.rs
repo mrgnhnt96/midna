@@ -106,6 +106,8 @@ pub enum Icon {
     Snowflake,
     /// A project's Summary of closed terminals (`ui/summary.rs`).
     Summary,
+    /// Copy to the clipboard (two overlapping sheets).
+    Copy,
 }
 
 impl Icon {
@@ -184,6 +186,7 @@ impl Icon {
             Icon::Summary => "icons/summary.svg",
             Icon::Chain => "icons/chain.svg",
             Icon::ChainBroken => "icons/chain-broken.svg",
+            Icon::Copy => "icons/copy.svg",
         }
     }
 
@@ -231,6 +234,7 @@ impl Icon {
             "folder" => Icon::Folder,
             "server" => Icon::Server,
             "summary" => Icon::Summary,
+            "copy" => Icon::Copy,
             _ => return None,
         })
     }
@@ -356,6 +360,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/screen.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M1.5 6h13"/></svg>"##
+        }
+        "icons/copy.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg>"##
         }
         "icons/check.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>"##
