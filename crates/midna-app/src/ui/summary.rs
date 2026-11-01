@@ -11,6 +11,7 @@ use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
 use crate::model::Glyph;
+use crate::ui::close_anim;
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -81,15 +82,46 @@ pub fn apply(m: &mut MainWindow, r: SummaryListResult, cx: &mut Context<MainWind
     cx.notify();
 }
 
+/// The sidebar row with the highlight: the Summary's while it's on screen, else the selected
+/// terminal's.
+pub fn lit_row(m: &MainWindow) -> Option<String> {
+    match shown(m) {
+        Some(p) => Some(close_anim::summary_key(p)),
+        None => m.selected.clone(),
+    }
+}
+
+/// The screen just moved to or from a Summary: `from` had the highlight before (`lit_row`),
+/// and `was` is the project whose Summary was on screen. Its row glides the highlight, and folds
+/// away when it leaves the sidebar (with its whole project, when that goes too).
+pub fn moved(m: &mut MainWindow, from: Option<String>, was: Option<String>, cx: &mut Context<MainWindow>) {
+    let gone = was.filter(|p| shown(m) != Some(p.as_str())).and_then(|p| leaves(m, p));
+    let to = lit_row(m);
+    close_anim::summary(m, from, to, gone, cx);
+}
+
+/// Whether `pid`'s Summary row is gone from the sidebar, and whether its project went with it.
+fn leaves(m: &MainWindow, pid: String) -> Option<(String, bool)> {
+    let groups = m.groups();
+    match groups.iter().find(|g| g.project.is_some_and(|p| p.id == pid)) {
+        None => Some((pid, true)),
+        Some(g) if !row_wanted(m, &pid, g.sessions.is_empty()) => Some((pid, false)),
+        Some(_) => None,
+    }
+}
+
 /// Show `pid`'s Summary (from the project's … menu, its Summary row or ⌥⌘Y).
 pub fn open(m: &mut MainWindow, pid: String, window: &mut Window, cx: &mut Context<MainWindow>) {
     if shown(m) == Some(pid.as_str()) {
         return;
     }
+    let (from, was) = (lit_row(m), shown(m).map(str::to_string));
     m.summary.project = Some(pid);
     m.summary.sel = None;
     if m.screen != Screen::Summary {
         m.set_screen(Screen::Summary, window, cx);
+    } else {
+        moved(m, from, was, cx);
     }
     fetch(m, cx);
     cx.notify();
@@ -104,6 +136,8 @@ pub fn close_row(m: &mut MainWindow, pid: &str, window: &mut Window, cx: &mut Co
     }
     if shown(m) == Some(pid) {
         m.set_screen(Screen::Terminal, window, cx);
+    } else if let Some(gone) = leaves(m, pid.to_string()) {
+        close_anim::summary(m, None, None, Some(gone), cx);
     }
     cx.notify();
 }
@@ -448,7 +482,7 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
                     .rounded(px(6.))
                     .bg(t.panel)
                     .child(div().flex_none().w(px(52.)).text_size(px(12.)).text_color(t.dim).child(when(&p.at)))
-                    .child(div().min_w_0().child(p.text.lines().next().unwrap_or("").to_string())),
+                    .child(div().flex_1().min_w_0().child(p.text.trim().to_string())),
             );
         }
         let more = (c.turns as usize > c.prompts.len()).then(|| div().text_size(px(12.)).text_color(t.dim).child(format!("and {} more", c.turns as usize - c.prompts.len())));
@@ -591,44 +625,56 @@ fn panel(t: &Theme, owner: &str, p: &SummaryPanel) -> impl IntoElement + use<> {
         )
 }
 
-/// The Summary row in a project's group: the list icon, "Summary", and when the last
-/// terminal closed. A click shows it; its ✕ closes the row (`close_row`).
+/// The Summary row in a project's group: the list icon, "Summary", and when the last terminal
+/// closed where a terminal's icon sits (its ✕ on hover). A click shows it; its ✕ closes the
+/// row (`close_row`).
 pub fn sidebar_row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut Context<MainWindow>) -> AnyElement {
     let on = shown(m) == Some(pid);
-    let n = m.summary.records(pid).count();
-    let last = m.summary.newest(pid).map(|ts| super::screen_kit::ago(Some(ts))).map(|a| format!("last closed {a}"));
-    let sub = match (n, last) {
-        (0, _) | (_, None) => "nothing closed lately".to_string(),
-        (_, Some(l)) => l,
+    // The highlight on its way to or from a terminal's row (`ui::close_anim::summary`); folding
+    // away, the fold draws it.
+    let hl = m.close_anim.highlight(&close_anim::summary_key(pid), on);
+    let own = on && hl == close_anim::Highlight::Own;
+    let moving = match hl {
+        close_anim::Highlight::At { top, h } if m.close_anim.summary_leaving(pid).is_none() => Some((top, h)),
+        _ => None,
     };
+    let last = m.summary.newest(pid).map(|ts| super::screen_kit::ago(Some(ts)));
     let (open_id, close_id) = (pid.to_string(), pid.to_string());
     let group = SharedString::from(format!("sum-side-{pid}"));
     div()
         .id(SharedString::from(format!("summary-row-{pid}")))
         .relative()
         .flex()
-        .flex_col()
-        .gap(px(2.))
+        .items_center()
+        .gap(px(9.))
         .w_full()
         .px(px(14.))
         .py(px(if compact { 5. } else { 8. }))
         .cursor_pointer()
         .group(group.clone())
-        .when(on, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
+        .when_some(moving, |d, (top, h)| d.child(super::sidebar::highlight(t).top(px(top)).h(px(h))))
+        .when(own, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
         .when(!on, |d| d.hover(|s| s.bg(t.raised.opacity(0.5))))
         .tooltip(super::header::tip_keys("This project's closed terminals", "keys.project_summary"))
         .on_click(cx.listener(move |m, _, w, cx| open(m, open_id.clone(), w, cx)))
+        .child(div().w(px(12.)).flex_none().flex().items_center().child(Icon::Summary.el(12., if on { t.accent } else { t.dim })))
+        .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child("Summary"))
         .child(
             div()
+                .relative()
+                .flex_none()
+                .min_w(px(16.))
+                .h(px(16.))
                 .flex()
                 .items_center()
-                .gap(px(9.))
-                .child(div().w(px(12.)).flex_none().flex().items_center().child(Icon::Summary.el(12., if on { t.accent } else { t.dim })))
-                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child("Summary"))
+                .justify_end()
+                .children(last.map(|a| div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().group_hover(group.clone(), |s| s.opacity(0.)).child(a)))
                 .child(
                     div()
                         .id(SharedString::from(format!("summary-x-{pid}")))
-                        .flex_none()
+                        .absolute()
+                        .top_0()
+                        .right_0()
                         .size(px(16.))
                         .rounded(px(4.))
                         .flex()
@@ -645,7 +691,6 @@ pub fn sidebar_row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut
                         .child(Icon::Cross.el(10., t.dim)),
                 ),
         )
-        .when(!compact, |d| d.child(div().pl(px(21.)).text_size(px(12.)).text_color(t.dim).truncate().child(sub)))
         .into_any_element()
 }
 

@@ -1300,7 +1300,11 @@ impl MainWindow {
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
         // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays, and so does
         // one that keeps its Summary row (`ui::summary`).
-        groups.retain(|g| !g.sessions.is_empty() || g.project.is_some_and(|p| p.pinned || crate::ui::summary::row_wanted(self, &p.id, true)));
+        // A project going with its Summary row folds away first (`ui::close_anim::summary`).
+        groups.retain(|g| {
+            !g.sessions.is_empty()
+                || g.project.is_some_and(|p| p.pinned || crate::ui::summary::row_wanted(self, &p.id, true) || self.close_anim.summary_leaving(&p.id).is_some_and(|l| l.whole))
+        });
         let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
         for g in groups.iter_mut().chain(std::iter::once(&mut root)) {
             g.sessions.sort_by_key(|s| rank(s));
@@ -1397,6 +1401,7 @@ impl MainWindow {
             crate::notify::clear(&id);
             self.seen(&id, cx);
         }
+        let (lit, summary) = (crate::ui::summary::lit_row(self), crate::ui::summary::shown(self).map(str::to_string));
         if self.selected.as_deref() != Some(&id) {
             crate::windows::save_soon(cx);
             if let Some(old) = self.selected.take().filter(|_| !self.navigating) {
@@ -1410,6 +1415,9 @@ impl MainWindow {
         }
         if self.screen != Screen::Terminal {
             self.screen = Screen::Terminal;
+            if summary.is_some() {
+                crate::ui::summary::moved(self, lit, summary, cx);
+            }
         }
         self.ensure_terminal(window, cx);
         crate::ui::split::sync(self, window, cx);
@@ -1584,7 +1592,11 @@ impl MainWindow {
 
     pub fn set_screen(&mut self, s: Screen, window: &mut Window, cx: &mut Context<Self>) {
         let was = self.screen;
+        let (lit, summary) = (crate::ui::summary::lit_row(self), crate::ui::summary::shown(self).map(str::to_string));
         self.screen = if self.screen == s { Screen::Terminal } else { s };
+        if (was == Screen::Summary) != (self.screen == Screen::Summary) {
+            crate::ui::summary::moved(self, lit, summary, cx);
+        }
         if was == Screen::Notifications && self.screen != Screen::Notifications {
             crate::ui::notifications::closed(self);
         } else if was != Screen::Notifications && self.screen == Screen::Notifications {
