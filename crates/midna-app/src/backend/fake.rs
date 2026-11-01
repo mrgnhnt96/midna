@@ -1231,7 +1231,7 @@ fn fake_summary() -> Vec<Value> {
             "id": "c0000001", "project_id": "p_taskboard1", "name": "fix drop paths", "kind": "agent", "agent": "claude", "cwd": "/tmp",
             "conversation_id": "3f1c", "worktree": "midna-wt2", "branch": "feat/drop-paths", "opened_at": ago(50), "closed_at": ago(2),
             "how": "close", "by": {"kind": "agent", "session": "c0000001"}, "state": "done", "turns": 3, "cost_usd": 3.12,
-            "prompts": prompts(&[("Dropped non-image files should type their path into the terminal", 48), ("Quote paths with spaces the way Terminal.app does", 23), ("Ship it", 9)]),
+            "prompts": prompts(&[("Dropped non-image files should type their path into the terminal", 48), ("Quote paths with spaces the way Terminal.app does. A path with a quote in it should\nstill come out right, and so should one with a newline, which Terminal.app escapes too", 23), ("Ship it", 9)]),
             "links": [
                 {"id": "l_1", "kind": "pr", "target": "https://github.com/mrgnhnt96/midna/pull/119", "title": "PR #119 · midna", "source": "tool", "mentions": 2, "first_at": ago(10), "last_at": ago(4), "pinned": true},
                 {"id": "l_2", "kind": "file", "target": "/tmp/midna/crates/midna-app/src/terminal/drop.rs", "title": "crates/midna-app/src/terminal/drop.rs", "source": "tool", "mentions": 5, "first_at": ago(40), "last_at": ago(12), "pinned": false},

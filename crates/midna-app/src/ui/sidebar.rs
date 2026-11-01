@@ -398,11 +398,24 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             crate::ui::fold_peek::forget(m, p);
         }
         line += usize::from(g.project.is_some());
-        let summary_row = pid.as_deref().filter(|p| fold < 1. && crate::ui::summary::row_wanted(m, p, empty)).map(|p| {
-            let el = div().flex_none().overflow_hidden().opacity(1. - fold).child(crate::ui::summary::sidebar_row(m, t, p, compact, cx));
+        // Its Summary just closed: the row folds away, or the whole group does.
+        let summary_leave = pid.as_deref().and_then(|p| m.close_anim.summary_leaving(p));
+        let summary_row = pid.as_deref().filter(|_| fold < 1.).and_then(|p| {
+            let row = |cx: &mut Context<MainWindow>| measured(m, &crate::ui::close_anim::summary_key(p), crate::ui::summary::sidebar_row(m, t, p, compact, cx));
+            let el = match summary_leave {
+                _ if crate::ui::summary::row_wanted(m, p, empty) => match m.close_anim.arrival(&crate::ui::close_anim::summary_key(p)) {
+                    Some(a) => arrive(a, row(cx)),
+                    None => row(cx),
+                },
+                Some(l) if l.whole => row(cx),
+                Some(l) => fold_away(m, l, t, row(cx)),
+                None => return None,
+            };
+            // Only while folding: at rest a highlight moving out of the row shows.
+            let el = div().flex_none().when(fold > 0., |d| d.overflow_hidden()).opacity(1. - fold).child(el);
             let el = wipe(line, 26., el.into_any_element());
             line += 1;
-            el
+            Some(el)
         });
         let (summary_top, summary_end) = if empty { (summary_row, None) } else { (None, summary_row) };
         // Folded, the ghost row goes with the fold (as the rows do).
@@ -458,10 +471,13 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         }
         run.extend(ghosts(None, cx));
         group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m)).children(summary_end);
-        // A project that just turned up (an agent opened its first terminal) unfolds whole.
-        list = list.child(match m.close_anim.arrival(&key) {
-            Some(a) => arrive(a, group.into_any_element()),
-            None => group.into_any_element(),
+        // A project that just turned up (an agent opened its first terminal) unfolds whole, and
+        // one that went with its Summary row folds away whole.
+        let group = measured(m, &crate::ui::close_anim::group_key(&key), group.into_any_element());
+        list = list.child(match (m.close_anim.arrival(&key), summary_leave.filter(|l| l.whole)) {
+            (Some(a), _) => arrive(a, group),
+            (None, Some(l)) => fold_away(m, l, t, group),
+            _ => group,
         });
     }
     if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
@@ -887,8 +903,9 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let segs = m.row_segments.get(&s.id).cloned().unwrap_or_default();
     let pad_y = if compact { 5. } else { 8. };
     // Just closed or opened the terminal beside it: the highlight is moving (`ui::close_anim`).
-    let hl = m.close_anim.highlight(&s.id, selected);
-    let own = selected && hl == crate::ui::close_anim::Highlight::Own && m.screen != Screen::Summary;
+    let lit = selected && m.screen != Screen::Summary;
+    let hl = m.close_anim.highlight(&s.id, lit);
+    let own = lit && hl == crate::ui::close_anim::Highlight::Own;
     let (armed, hover_id) = (m.row_close.is_armed(&s.id), s.id.clone());
 
     div()
@@ -1027,7 +1044,7 @@ fn split_row(m: &MainWindow, host: &Session, focused: bool, t: &Theme, compact: 
 }
 
 /// The selected row's background and accent edge, on its own: for a highlight on the move.
-fn highlight(t: &Theme) -> Div {
+pub fn highlight(t: &Theme) -> Div {
     div().absolute().left_0().right_0().bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent))
 }
 
@@ -1052,6 +1069,36 @@ fn ghost(m: &MainWindow, g: &crate::ui::close_anim::Ghost, t: &Theme, compact: b
     div()
         .relative()
         .when_some(full.filter(|_| g.slot), |d, h| d.child(highlight(t).top_0().h(px(h))))
+        .child(content)
+        .child(div().absolute().inset_0().occlude())
+        .into_any_element()
+}
+
+/// A Summary row folding away after its Summary closed, or its whole project group
+/// (`ui::close_anim::summary`): like a closed row's ghost, its content lifts and fades while
+/// its room closes. The highlight leaving the row for one further down is drawn here, so the
+/// rows below draw over it. It takes no clicks.
+fn fold_away(m: &MainWindow, l: &crate::ui::close_anim::SummaryLeave, t: &Theme, el: AnyElement) -> AnyElement {
+    let (fold, lift) = l.progress();
+    let full = l.height();
+    let measure = l.measure();
+    let content = div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .when_some(full, |d, h| d.h(px(h * (1. - fold))))
+        .on_children_prepainted(move |b, _, _| {
+            if let Some(b) = b.first() {
+                measure.set(f32::from(b.size.height));
+            }
+        })
+        .child(div().flex_none().flex().flex_col().relative().top(px(-crate::ui::close_anim::LIFT * lift)).opacity(1. - lift).child(el));
+    div()
+        .relative()
+        .map(|d| match m.close_anim.highlight(&crate::ui::close_anim::summary_key(&l.pid), false) {
+            crate::ui::close_anim::Highlight::At { top, h } => d.child(highlight(t).top(px(l.offset() + top)).h(px(h))),
+            _ => d,
+        })
         .child(content)
         .child(div().absolute().inset_0().occlude())
         .into_any_element()

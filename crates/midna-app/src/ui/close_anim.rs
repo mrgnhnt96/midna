@@ -22,6 +22,10 @@
 //! Moving to the terminal above or below (⌥⌘↑ / ⌥⌘↓, `switch`) slides too: the highlight glides
 //! to it, across project headings too, from where each row was last laid out (`rows`), and the
 //! pane slides the same way, once the terminal has drawn (`on_show`). With Reduce Motion on, nothing moves.
+//!
+//! Opening or leaving a project's Summary (`summary`) glides the highlight between its Summary
+//! row and the terminal's the same way. A Summary row that leaves the sidebar with it folds away
+//! like a closed row, and a project that goes with it folds away whole, heading and all.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::terminal::TerminalView;
@@ -121,6 +125,27 @@ struct Step {
     at: Instant,
 }
 
+/// A Summary row folding away (or its whole project group, `whole`) after its Summary closed.
+pub struct SummaryLeave {
+    pub pid: String,
+    pub whole: bool,
+    /// The row's top within what folds (the heading above it, when `whole`).
+    offset: f32,
+    at: Instant,
+    /// Its measured height (0 until the first frame).
+    height: Rc<Cell<f32>>,
+}
+
+/// The key of `pid`'s Summary row in `CloseAnim::rows` and the highlight's moves.
+pub fn summary_key(pid: &str) -> String {
+    format!("summary:{pid}")
+}
+
+/// The key of a sidebar group (a project id, or "root") in `CloseAnim::rows`.
+pub fn group_key(key: &str) -> String {
+    format!("group:{key}")
+}
+
 #[derive(Default)]
 pub struct CloseAnim {
     ghosts: Vec<Ghost>,
@@ -132,6 +157,7 @@ pub struct CloseAnim {
     opening: Option<Opening>,
     arrivals: Vec<Arrival>,
     step: Option<Step>,
+    summary: Option<SummaryLeave>,
     /// Each sidebar row's top and height in the window, as last laid out (`sidebar::measured`).
     pub rows: Rc<std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>>,
 }
@@ -337,6 +363,40 @@ pub fn switch(m: &mut MainWindow, to: &str, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
+/// The highlight moved from row `from` to row `to` (a session id or `summary_key`) as a
+/// project's Summary opened or closed. `gone`: the Summary row `from` names just left the
+/// sidebar, and whether its whole project went with it; it folds away. A row that wasn't laid
+/// out before (a Summary row that just turned up) unfolds instead, the highlight in it.
+pub fn summary(m: &mut MainWindow, from: Option<String>, to: Option<String>, gone: Option<(String, bool)>, cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        return;
+    }
+    let now = Instant::now();
+    let a = &mut m.close_anim;
+    let rows = a.rows.borrow();
+    a.summary = gone.and_then(|(pid, whole)| {
+        let row = rows.get(&summary_key(&pid))?.0;
+        let offset = if whole { row - rows.get(&group_key(&pid))?.0 } else { 0. };
+        Some(SummaryLeave { pid, whole, offset, at: now, height: Rc::new(Cell::new(0.)) })
+    });
+    a.step = match (from.as_ref().and_then(|f| rows.get(f)), to.as_ref().and_then(|t| rows.get(t))) {
+        (Some(&from_at), Some(&to_at)) if from != to => {
+            let dir = if to_at.0 < from_at.0 { Dir::Above } else { Dir::Below };
+            Some(Step { from: from.clone().unwrap_or_default(), to: to.clone().unwrap_or_default(), dir, from_at, to_at, at: now })
+        }
+        _ => None,
+    };
+    let unseen = to.filter(|t| !rows.contains_key(t) && t.starts_with("summary:"));
+    drop(rows);
+    if let Some(key) = unseen {
+        a.arrivals.retain(|x| x.key != key);
+        a.arrivals.push(Arrival { key, at: now, height: Rc::new(Cell::new(0.)) });
+    }
+    a.pane_due = None;
+    cx.notify();
+}
+
 /// The pane is about to show `next` in place of `old`: slide them if `old` was just closed.
 pub fn on_show(m: &mut MainWindow, old: &Entity<TerminalView>, next: &Entity<TerminalView>, cx: &App) {
     let Some((ids, dir, at)) = m.close_anim.pane_due.take() else { return };
@@ -363,6 +423,14 @@ impl CloseAnim {
             self.step = None;
         }
         self.arrivals.retain(|a| ms(a.at) < SLIDE_MS);
+        if self.summary.as_ref().is_some_and(|s| ms(s.at) >= SLIDE_MS) {
+            self.summary = None;
+        }
+    }
+
+    /// `pid`'s Summary row (or its whole group), when it's folding away.
+    pub fn summary_leaving(&self, pid: &str) -> Option<&SummaryLeave> {
+        self.summary.as_ref().filter(|s| s.pid == pid && ms(s.at) < SLIDE_MS)
     }
 
     /// The sidebar is moving (it asks for the next frame).
@@ -372,6 +440,7 @@ impl CloseAnim {
             || self.opening.as_ref().is_some_and(|o| ms(o.at) < SLIDE_MS)
             || self.step.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
             || self.arrivals.iter().any(|a| ms(a.at) < SLIDE_MS)
+            || self.summary.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
     }
 
     /// The row or group `key`, when it's unfolding after turning up on its own.
@@ -413,9 +482,11 @@ impl CloseAnim {
         if let Some(s) = self.step.as_ref().filter(|s| ms(s.at) < SLIDE_MS) {
             let e = ease_out(ms(s.at) / SLIDE_MS);
             let h = s.from_at.1 + (s.to_at.1 - s.from_at.1) * e;
+            // A Summary row folding away above the row it moves to pulls that row up with it.
+            let pulled = self.summary.as_ref().filter(|g| summary_key(&g.pid) == s.from).map_or(0., |g| g.height().unwrap_or(0.) * g.progress().0);
             match s.dir {
                 Dir::Below if s.to == id && selected => return Highlight::None,
-                Dir::Below if s.from == id && !selected => return Highlight::At { top: (s.to_at.0 - s.from_at.0) * e, h },
+                Dir::Below if s.from == id && !selected => return Highlight::At { top: (s.to_at.0 - pulled - s.from_at.0) * e, h },
                 Dir::Above if s.to == id && selected => return Highlight::At { top: (s.from_at.0 - s.to_at.0) * (1. - e), h },
                 _ => {}
             }
@@ -427,6 +498,28 @@ impl CloseAnim {
             },
             _ => Highlight::Own,
         }
+    }
+}
+
+impl SummaryLeave {
+    /// How far it has folded and its content lifted, 0..1 each.
+    pub fn progress(&self) -> (f32, f32) {
+        let t = ms(self.at);
+        (ease_out(t / SLIDE_MS), (t / LIFT_MS).clamp(0., 1.).powi(2))
+    }
+
+    /// Where the Summary row sits in what folds, from its top.
+    pub fn offset(&self) -> f32 {
+        self.offset
+    }
+
+    /// Its full height, once measured.
+    pub fn height(&self) -> Option<f32> {
+        Some(self.height.get()).filter(|h| *h > 0.)
+    }
+
+    pub fn measure(&self) -> Rc<Cell<f32>> {
+        self.height.clone()
     }
 }
 
