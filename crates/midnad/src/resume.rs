@@ -1,5 +1,5 @@
-//! Resume after sleep (`agents.resume_after_sleep`) and after a lost network
-//! (`agents.resume_after_network`).
+//! Resume after sleep (`agents.resume_after_sleep`), after a lost network
+//! (`agents.resume_after_network`) and after a usage limit resets (`agents.resume_after_limit`).
 //!
 //! An agent mid-turn when the Mac goes to sleep or the network drops loses its API connection;
 //! Claude ends that turn with `StopFailure` (status `failed`, process still running). On wake
@@ -13,6 +13,13 @@
 //! its turn by itself, exits or closes is dropped. A failure still waiting for the network stays
 //! pending even when Claude's `idle_prompt` then turns `failed` into `done` (on wake it often
 //! lands before Wi-Fi is back); only a new turn (`on_turn_started`) clears it.
+//!
+//! A turn that dies on Claude's usage limit (5-hour or weekly) is resumed once that window
+//! resets: the reset comes from the usage the status lines report (`usage.rs`), else from the
+//! error ("…|<unix>"), plus `LIMIT_BUFFER`. Until then nothing goes in, and keep-awake doesn't
+//! count the agent (`watching_before`). With no reset known, it is retried every
+//! `LIMIT_RETRY_EVERY` for `LIMIT_UNKNOWN_FOR`, and those tries don't count toward `MAX_TRIES`.
+//! One limit stops every agent at once, so their prompts go in `LIMIT_STAGGER` apart.
 use crate::daemon::Daemon;
 use midna_proto::*;
 use std::collections::HashMap;
@@ -31,11 +38,21 @@ const BACKOFF: [i64; MAX_TRIES] = [5, 60, 300];
 /// How often reachability is checked while a failed agent waits for the network.
 const PROBE_EVERY: Duration = Duration::from_secs(5);
 const PROBE_HOST: &str = "api.anthropic.com:443";
+/// How long after a usage window resets an agent stopped by it is resumed.
+const LIMIT_BUFFER: i64 = 60;
+/// How far apart the agents one limit stopped are resumed.
+const LIMIT_STAGGER: i64 = 30;
+/// With no reset time known, how often a limited agent is retried, and for how long.
+const LIMIT_RETRY_EVERY: i64 = 60 * 60;
+const LIMIT_UNKNOWN_FOR: i64 = 6 * 60 * 60;
+/// How long past its reset a limit watch is kept (for the retries).
+const LIMIT_GRACE: i64 = 60 * 60;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Cause {
     Sleep,
     Network,
+    Limit,
 }
 
 impl Cause {
@@ -43,6 +60,7 @@ impl Cause {
         match self {
             Cause::Sleep => "agents.resume_after_sleep",
             Cause::Network => "agents.resume_after_network",
+            Cause::Limit => "agents.resume_after_limit",
         }
     }
 
@@ -50,13 +68,15 @@ impl Cause {
         match self {
             Cause::Sleep => "resume after sleep",
             Cause::Network => "resume after network loss",
+            Cause::Limit => "resume after usage limit",
         }
     }
 }
 
 struct Watch {
     cause: Cause,
-    until: Instant,
+    /// Unix time the watch gives up (wall clock: a limit can be days away, slept through).
+    until: i64,
     tries: usize,
     /// The queued prompt, until it has been typed.
     queued: Option<Id>,
@@ -65,11 +85,41 @@ struct Watch {
     /// A failure seen but not answered yet (waiting for the network), kept until it is answered
     /// or the agent starts another turn, whatever its status says meanwhile.
     pending: Option<Timestamp>,
+    /// `Cause::Limit`: unix time the prompt may go in (the window's reset plus `LIMIT_BUFFER`),
+    /// and whether that reset was known (only then does a try count toward `MAX_TRIES`).
+    resume_at: i64,
+    reset_known: bool,
 }
 
 impl Watch {
     fn new(cause: Cause, for_: Duration) -> Watch {
-        Watch { cause, until: Instant::now() + for_, tries: 0, queued: None, answered: None, pending: None }
+        let until = time::now_unix() + for_.as_secs() as i64;
+        Watch { cause, until, tries: 0, queued: None, answered: None, pending: None, resume_at: 0, reset_known: false }
+    }
+
+    /// A new watch for an agent a usage limit stopped (kept `LIMIT_UNKNOWN_FOR` unless its reset
+    /// is later).
+    fn limited() -> Watch {
+        Watch::new(Cause::Limit, Duration::from_secs(LIMIT_UNKNOWN_FOR as u64))
+    }
+
+    /// Wait for the limit that stopped the agent: until `reset` (unix), or a retry later.
+    fn limit(&mut self, reset: Option<i64>, buffer: i64) {
+        let now = time::now_unix();
+        if self.cause != Cause::Limit {
+            *self = Watch::limited();
+        }
+        match reset {
+            Some(r) => {
+                self.resume_at = r + buffer;
+                self.reset_known = true;
+                self.until = self.until.max(self.resume_at + LIMIT_GRACE);
+            }
+            None => {
+                self.resume_at = now + LIMIT_RETRY_EVERY;
+                self.reset_known = false;
+            }
+        }
     }
 }
 
@@ -82,9 +132,18 @@ pub struct Runtime {
     probe: Mutex<Option<Probe>>,
     /// The last reachability check: when, and whether it got through.
     online: Mutex<Option<(Instant, bool)>>,
+    /// When the last limit resume was queued for (unix), to stagger the next.
+    last_limit_at: Mutex<i64>,
+    /// Replaces (`LIMIT_BUFFER`, `LIMIT_STAGGER`) (tests).
+    limit_timing: Mutex<Option<(i64, i64)>>,
 }
 
 impl Runtime {
+    /// (`LIMIT_BUFFER`, `LIMIT_STAGGER`), or what a test set.
+    fn limit_timing(&self) -> (i64, i64) {
+        self.limit_timing.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or((LIMIT_BUFFER, LIMIT_STAGGER))
+    }
+
     fn watch(&self) -> MutexGuard<'_, HashMap<Id, Watch>> {
         self.watch.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -111,6 +170,11 @@ pub fn set_probe(d: &Daemon, f: impl Fn() -> bool + Send + Sync + 'static) {
     *d.resume.online.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Replace how long after a reset limited agents are resumed, and how far apart (tests).
+pub fn set_limit_timing(d: &Daemon, buffer_secs: i64, stagger_secs: i64) {
+    *d.resume.limit_timing.lock().unwrap_or_else(|e| e.into_inner()) = Some((buffer_secs, stagger_secs));
+}
+
 fn reachable(host: &str) -> bool {
     let Ok(addrs) = host.to_socket_addrs() else { return false };
     addrs.into_iter().any(|a| TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok())
@@ -125,12 +189,59 @@ pub fn is_network_error(error: &str, details: &str) -> bool {
         .any(|w| text.contains(w))
 }
 
+/// Whether a `StopFailure` reads like Claude's usage limit (5-hour or weekly): its `rate_limit`
+/// error, or "Claude AI usage limit reached|<unix>", "You've hit your limit · resets 3pm" and the
+/// like.
+pub fn is_limit_error(error: &str, details: &str) -> bool {
+    error == "rate_limit" || limit_words(details)
+}
+
+fn limit_words(text: &str) -> bool {
+    let text = text.to_lowercase();
+    ["usage limit", "rate limit", "limit reached", "hit your limit", "limit will reset", "5-hour limit", "weekly limit", "session limit"].iter().any(|w| text.contains(w))
+}
+
+/// When the limit that stopped a turn resets (unix): the latest reset of a window the status
+/// lines report at 100%, else a unix time in the error ("…|1748886000"), else the reset of the
+/// window the error names. None when nothing says.
+fn limit_reset(d: &Daemon, text: &str) -> Option<i64> {
+    let now = time::now_unix();
+    let usage = crate::usage::get(d).claude;
+    let future = |t: Option<&str>| t.and_then(time::parse_rfc3339).filter(|&t| t > now);
+    if let Some(r) = future(usage.as_ref().and_then(|u| u.limited_until.as_deref())) {
+        return Some(r);
+    }
+    if let Some(r) = text.split('|').skip(1).filter_map(|p| p.trim().split(|c: char| !c.is_ascii_digit()).next()?.parse::<i64>().ok()).find(|&t| t > now && t < now + 8 * 86_400) {
+        return Some(r);
+    }
+    let text = text.to_lowercase();
+    let usage = usage?;
+    let window = if text.contains("weekly") || text.contains("7-day") {
+        usage.seven_day
+    } else if text.contains("5-hour") || text.contains("session") {
+        usage.five_hour
+    } else {
+        None
+    };
+    future(window?.resets_at.as_deref())
+}
+
 /// An agent's turn died (`StopFailure`): if it was a lost connection, watch it so it is
-/// resumed once the network is back. Claude sometimes sends only `server_error` with no details
-/// and puts what went wrong in the turn's last message ("API Error: Can't reach the API server
-/// … (ENOTFOUND)"), so that message counts too when it is an API error.
+/// resumed once the network is back; if it hit a usage limit, so it is resumed once that limit
+/// resets. Claude sometimes sends only `server_error` with no details and puts what went wrong
+/// in the turn's last message ("API Error: Can't reach the API server … (ENOTFOUND)"), so that
+/// message counts too when it is an API error (or, for a limit, plainly says so).
 pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str, message: &str) {
-    let in_message = message.trim_start().starts_with("API Error") && is_network_error("", message);
+    let api_error = message.trim_start().starts_with("API Error");
+    let limit_message = (api_error && limit_words(message)) || ["usage limit reached", "hit your limit"].iter().any(|w| message.to_lowercase().contains(w));
+    if (is_limit_error(error, details) || limit_message) && !is_network_error(error, details) {
+        if d.core().state.setting_bool(Cause::Limit.setting()) {
+            let reset = limit_reset(d, &format!("{details} {message}"));
+            d.resume.watch().entry(sid.clone()).or_insert_with(Watch::limited).limit(reset, d.resume.limit_timing().0);
+        }
+        return;
+    }
+    let in_message = api_error && is_network_error("", message);
     if !(is_network_error(error, details) || in_message) || !d.core().state.setting_bool(Cause::Network.setting()) {
         return;
     }
@@ -149,6 +260,12 @@ pub fn on_turn_started(d: &Daemon, sid: &Id) {
 /// How many agents are waiting to be resumed.
 pub fn watching(d: &Daemon) -> usize {
     d.resume.watch().len()
+}
+
+/// How many agents are waiting to be resumed before `horizon` (unix): an agent waiting for a
+/// usage limit that resets later doesn't count (keep-awake needn't hold the Mac for it).
+pub fn watching_before(d: &Daemon, horizon: i64) -> usize {
+    d.resume.watch().values().filter(|w| w.cause != Cause::Limit || w.queued.is_some() || w.resume_at < horizon).count()
 }
 
 pub fn start(d: &Arc<Daemon>) {
@@ -199,14 +316,13 @@ fn tick(d: &Daemon) {
     if d.resume.watch().is_empty() {
         return;
     }
-    let (sleep_on, network_on) = {
+    let on: Vec<Cause> = {
         let core = d.core();
-        (core.state.setting_bool(Cause::Sleep.setting()), core.state.setting_bool(Cause::Network.setting()))
+        [Cause::Sleep, Cause::Network, Cause::Limit].into_iter().filter(|c| core.state.setting_bool(c.setting())).collect()
     };
-    d.resume.watch().retain(|_, w| match w.cause {
-        Cause::Sleep => sleep_on,
-        Cause::Network => network_on,
-    });
+    d.resume.watch().retain(|_, w| on.contains(&w.cause));
+    let (buffer, stagger) = d.resume.limit_timing();
+    let limit_reset_now = d.resume.watch().values().any(|w| w.cause == Cause::Limit).then(|| limit_reset(d, "")).flatten();
     let prompt = d.core().state.setting_str("agents.resume_after_sleep_prompt");
     let ids: Vec<Id> = d.resume.watch().keys().cloned().collect();
     for sid in ids {
@@ -231,11 +347,24 @@ fn tick(d: &Daemon) {
         }
         let failed = alive && w.pending.is_some();
         let finished = matches!(state, StatusState::Done | StatusState::Idle) && !in_turn && w.queued.is_none() && w.pending.is_none();
-        if !alive || finished || Instant::now() > w.until || (failed && w.tries >= MAX_TRIES) {
+        // A later report can say when the limit really resets (or that it lasts longer).
+        if w.cause == Cause::Limit
+            && failed
+            && w.queued.is_none()
+            && let Some(r) = limit_reset_now
+            && (!w.reset_known || r + buffer > w.resume_at)
+        {
+            w.limit(Some(r), buffer);
+        }
+        if !alive || finished || time::now_unix() > w.until || (failed && w.tries >= MAX_TRIES) {
             watch.remove(&sid);
             continue;
         }
         if !failed || w.queued.is_some() || prompt.trim().is_empty() {
+            continue;
+        }
+        // A limit is waited out before anything goes in.
+        if w.cause == Cause::Limit && time::now_unix() < w.resume_at {
             continue;
         }
         let cause = w.cause;
@@ -246,8 +375,18 @@ fn tick(d: &Daemon) {
         }
         let mut watch = d.resume.watch();
         let Some(w) = watch.get_mut(&sid) else { continue };
-        let at = time::format_unix(time::now_unix() + BACKOFF[w.tries]);
-        w.tries += 1;
+        let mut at = time::now_unix() + BACKOFF[w.tries];
+        if w.cause == Cause::Limit {
+            // One limit stops every agent: resume them a little apart.
+            let mut last = d.resume.last_limit_at.lock().unwrap_or_else(|e| e.into_inner());
+            at = at.max(*last + stagger);
+            *last = at;
+        }
+        let at = time::format_unix(at);
+        // A retry while the reset isn't known is only a check; it doesn't use up a try.
+        if w.cause != Cause::Limit || w.reset_known {
+            w.tries += 1;
+        }
         w.answered = w.pending.take();
         drop(watch);
         let added = crate::queue::add(d, &sid, prompt.clone(), true, vec![], SendWhen::At { at }, None, actor(cause), None);

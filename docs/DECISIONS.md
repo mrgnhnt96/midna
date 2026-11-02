@@ -747,6 +747,12 @@ Canvas https://claude.ai/artifact/FuNu2MJ7p2k6RC1E88Dezf had A (a floating card 
 - **On by default.** A `StopFailure` whose `error`/`error_details` reads like a lost connection (`connection`, `network`, `timed out`, `fetch failed`, `ENOTFOUND`, `ECONNRESET`, …) puts that agent on a 6-hour watch, no sleep needed. Rate limits, auth and billing errors are left alone.
 - **Waits for the network.** Typing `continue` while offline only fails the turn again, so a failed watched agent (from either watch, sleep included) gets its prompt only once a TCP connect to `api.anthropic.com:443` succeeds (checked at most every 5s, 3s timeout). Then the same queue path, prompt (`agents.resume_after_sleep_prompt`), backoff and 3 tries as resume after sleep, with `by` name "resume after network loss". Turning either setting off drops only its own watches.
 
+## Resume after a usage limit (midnad `resume.rs`; setting `agents.resume_after_limit`; 2026-11-02)
+- **On by default.** A `StopFailure` with `error` `rate_limit`, or whose details or last message read like Claude's usage limit ("usage limit reached", "hit your limit", "5-hour limit", …), puts that agent on a limit watch. A sleep or network watch it was already on becomes a limit watch.
+- **Waits for the reset.** The reset is, in order: the latest `resets_at` of a window the status lines report at 100% (`usage.get`'s `limited_until`, re-read every tick, so a later report can move it out), a unix time in the error ("…|1748886000"), or the `resets_at` of the window the error names (weekly / 5-hour). The prompt goes in through the queue a minute after it, with `by` name "resume after usage limit", the same prompt, backoff and 3 tries. Nothing is queued before then, so a human who continues the agent by hand meanwhile cancels the resume, and keep-awake doesn't hold the Mac for a reset that isn't due before its horizon.
+- **One limit stops every agent**, so their prompts go in 30s apart rather than all at once.
+- **No reset known** (no status line report and nothing in the error): retried every hour for 6 hours. Those retries don't count toward the 3 tries.
+
 ## Open in Midna from Finder (midna-app `finder.rs`, `packaging/finder-sync`; setting `finder.quick_action`; 2026-10-05, extension 2026-10-06)
 
 - **A Finder Sync extension, because only it gets an icon.** "Open in Midna" sits on Finder's right-click menu with Midna's icon, under Quick Actions. The 2026-10-05 version was a Quick Action workflow in `~/Library/Services`; tried while moving off it (2026-10-06):
