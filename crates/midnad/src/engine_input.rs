@@ -538,10 +538,9 @@ impl Engine {
         self.meta_dirty = true;
     }
 
-    /// Text of viewport row `y` with the column of each char, following soft wraps up and
-    /// down. Returns (text, columns, (row, col) per char) and the char index of (x, y).
-    fn logical_line(&self, x: u16, y: u16) -> Option<(Vec<char>, usize)> {
-        let (cols, rows) = self.size();
+    /// The viewport rows `(top, bottom)` of the soft-wrapped line through row `y`.
+    fn line_rows(&self, y: u16) -> (u16, u16) {
+        let rows = self.size().1;
         let wrapped = |yy: u16| -> bool {
             self.term
                 .grid_ref(Point::Viewport(PointCoordinate { x: 0, y: yy as u32 }))
@@ -558,13 +557,20 @@ impl Engine {
         while bottom + 1 < rows && bottom - y < 8 && wrapped(bottom) {
             bottom += 1;
         }
+        (top, bottom)
+    }
+
+    /// Text of viewport rows `top..=bottom`, one char per cell (wide chars once), and the
+    /// char index of cell `at` when it's among them.
+    fn rows_text(&self, top: u16, bottom: u16, at: Option<(u16, u16)>) -> (Vec<char>, Option<usize>) {
+        let cols = self.size().0;
         let mut chars = Vec::new();
         let mut hit = None;
         let mut buf = ['\0'; 16];
         for yy in top..=bottom {
             for xx in 0..cols {
                 let Ok(r) = self.term.grid_ref(Point::Viewport(PointCoordinate { x: xx, y: yy as u32 })) else { continue };
-                if (yy, xx) == (y, x) {
+                if at == Some((xx, yy)) {
                     hit = Some(chars.len());
                 }
                 let n = r.graphemes(&mut buf).unwrap_or(0);
@@ -581,7 +587,31 @@ impl Engine {
                 }
             }
         }
-        Some((chars, hit?))
+        (chars, hit)
+    }
+
+    /// The logical lines around viewport row `y` (up to `HARD_WRAP_ROWS` each way), the
+    /// index of the one holding (x, y) and the char index of (x, y) in it.
+    fn nearby_lines(&self, x: u16, y: u16) -> Option<(Vec<Vec<char>>, usize, usize)> {
+        let rows = self.size().1;
+        let (top, bottom) = self.line_rows(y);
+        let (line, hit) = self.rows_text(top, bottom, Some((x, y)));
+        let mut lines = vec![line];
+        let mut at = 0;
+        let mut t = top;
+        while t > 0 && at < HARD_WRAP_ROWS {
+            let (a, b) = self.line_rows(t - 1);
+            lines.insert(0, self.rows_text(a, b, None).0);
+            at += 1;
+            t = a;
+        }
+        let mut b = bottom;
+        while b + 1 < rows && lines.len() - at - 1 < HARD_WRAP_ROWS {
+            let (a, bb) = self.line_rows(b + 1);
+            lines.push(self.rows_text(a, bb, None).0);
+            b = bb;
+        }
+        Some((lines, at, hit?))
     }
 
     /// The OSC 8 hyperlink at a viewport cell, else a detected http(s) URL, a reference to
@@ -605,9 +635,16 @@ impl Engine {
                 });
             }
         }
-        let (chars, i) = self.logical_line(x, y)?;
+        let (lines, at, i) = self.nearby_lines(x, y)?;
         let pwd = osc7_path(self.term.pwd().unwrap_or(""));
-        detect_link(&chars, i, &[pwd.as_deref().unwrap_or(""), cwd], &crate::schemes::app_for, tabs, patterns)
+        let dirs = [pwd.as_deref().unwrap_or(""), cwd];
+        // A URL an app broke onto the next line itself (Claude Code does, indenting the rest).
+        if let Some((joined, j)) = join_hard_wrapped(&lines, at, i)
+            && let Some(link @ (Link::Url(_) | Link::App { .. } | Link::File { .. })) = detect_link(&joined, j, &dirs, &crate::schemes::app_for, tabs, patterns)
+        {
+            return Some(link);
+        }
+        detect_link(&lines[at], i, &dirs, &crate::schemes::app_for, tabs, patterns)
     }
 
     /// Find `query` (case-insensitive unless it has capitals) in scrollback + screen, moving
@@ -679,6 +716,56 @@ impl Engine {
         }
         FindHit { total: hits.len(), index: idx + 1 }
     }
+}
+
+/// How many lines above and below a click `join_hard_wrapped` may join.
+const HARD_WRAP_ROWS: usize = 4;
+
+/// `lines[at]` with the word at char `i` joined to its pieces on the lines around it, when an
+/// app broke a long word with a newline itself (Claude Code does, indenting what follows):
+/// a line whose word runs to the right edge goes on with the first word of the next line.
+/// Returns the joined text and the click's index in it, or None when there's nothing to join.
+fn join_hard_wrapped(lines: &[Vec<char>], at: usize, i: usize) -> Option<(Vec<char>, usize)> {
+    let ws = |c: &char| c.is_whitespace() || *c == '\0';
+    // The line's last word ends at the right edge (at most one cell short of it).
+    let to_edge = |l: &[char]| l.len() >= 2 && l.iter().rev().take_while(|c| ws(c)).count() <= 1;
+    let trimmed = |l: &[char]| l.iter().position(|c| !ws(c)).map_or(&l[l.len()..], |p| &l[p..]).to_vec();
+    let word_start = |l: &[char], i: usize| (0..=i).rev().find(|&k| k == 0 || ws(&l[k - 1])).unwrap_or(0);
+    let mut line = lines.get(at)?.clone();
+    let mut hit = i;
+    if hit >= line.len() || ws(&line[hit]) {
+        return None;
+    }
+    let mut joined = false;
+    // Up: while the clicked word starts its line and the line above ends at the edge.
+    let mut k = at;
+    while k > 0 && line[..word_start(&line, hit)].iter().all(ws) && to_edge(&lines[k - 1]) {
+        let lead = line.iter().take_while(|c| ws(c)).count();
+        let mut prev = lines[k - 1].clone();
+        while prev.last().is_some_and(ws) {
+            prev.pop();
+        }
+        hit = hit - lead + prev.len();
+        prev.extend_from_slice(&line[lead..]);
+        line = prev;
+        joined = true;
+        k -= 1;
+    }
+    // Down: while the clicked word ends its line at the edge.
+    let mut k = at;
+    while k + 1 < lines.len() && to_edge(&line) && line[hit..].iter().skip_while(|c| !ws(c)).all(ws) {
+        let next = trimmed(&lines[k + 1]);
+        if next.is_empty() {
+            break;
+        }
+        while line.last().is_some_and(ws) {
+            line.pop();
+        }
+        line.extend_from_slice(&next);
+        joined = true;
+        k += 1;
+    }
+    joined.then_some((line, hit))
 }
 
 /// `file://host/path` (OSC 7) -> `/path`.
@@ -1178,6 +1265,25 @@ mod tests {
         e.feed(b"0123456789abcdef", 1);
         e.select_all();
         assert_eq!(e.selection_text().as_deref(), Some("0123456789abcdef"));
+    }
+
+    #[test]
+    fn links_hard_wrapped_by_the_app() {
+        // Claude Code breaks a long URL with a newline and indents the rest.
+        let mut e = Engine::new(30, 6, None);
+        e.feed(b"1. Open https://a.dev/login?x1\r\n   2&y=true\r\n2. Check https://b.dev/q ok\r\n   and more", 1);
+        let full = Some(Link::Url("https://a.dev/login?x12&y=true".into()));
+        assert_eq!(e.link_at(12, 0, "/", &[], &[]), full, "from the first piece");
+        assert_eq!(e.link_at(5, 1, "/", &[], &[]), full, "from the continuation");
+        // A URL that stops short of the edge keeps to its line.
+        assert_eq!(e.link_at(12, 2, "/", &[], &[]), Some(Link::Url("https://b.dev/q".into())));
+        // Three rows, clicked in the middle.
+        let mut e = Engine::new(20, 4, None);
+        e.feed(b"https://c.dev/aaaaaa\r\n  bbbbbbbbbbbbbbbbbb\r\n  cc done", 1);
+        let full = Some(Link::Url("https://c.dev/aaaaaabbbbbbbbbbbbbbbbbbcc".into()));
+        assert_eq!(e.link_at(5, 1, "/", &[], &[]), full);
+        assert_eq!(e.link_at(3, 2, "/", &[], &[]), full);
+        assert_eq!(e.link_at(6, 2, "/", &[], &[]), None, "the word after the URL isn't part of it");
     }
 
     #[test]
