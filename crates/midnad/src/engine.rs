@@ -63,6 +63,8 @@ pub struct Engine {
     has_selection: bool,
     /// The column the selection starts at (in reading order); None for a rectangle.
     sel_col: Option<u16>,
+    /// Keeps a selection on the alternate screen on its text (see `follow_selection`).
+    sel_follow: Option<input::Follow>,
     /// Selection or modes changed: send a frame even when no row is dirty.
     meta_dirty: bool,
     /// Cursor (position, style) in the last frame: an app that only moves the cursor (Claude
@@ -93,6 +95,7 @@ impl Engine {
             input: input::Input::new(),
             has_selection: false,
             sel_col: None,
+            sel_follow: None,
             meta_dirty: false,
             sent_cursor: None,
             colors_gen: 0,
@@ -146,6 +149,7 @@ impl Engine {
 
     pub fn resize(&mut self, cols: u16, rows: u16, cw: u32, ch: u32) {
         let _ = self.term.resize(cols, rows, cw.max(1), ch.max(1));
+        self.sel_follow = None;
         if cw > 0 && ch > 0 {
             (self.cell_w, self.cell_h) = (cw, ch);
         }
@@ -232,6 +236,7 @@ impl Engine {
     /// Build a frame of dirty rows (None when clean).
     pub fn frame(&mut self) -> Option<Frame> {
         self.sync_colors();
+        self.follow_selection();
         let t0 = now_ns();
         let Engine { term, rs, rows_it, cells_it, .. } = self;
         let snap = rs.update(term).ok()?;

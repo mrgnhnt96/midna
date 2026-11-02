@@ -35,6 +35,55 @@ pub(super) struct Input {
     find: Option<FindState>,
 }
 
+/// A selection on the alternate screen, kept on its text when the app repaints the screen
+/// instead of scrolling it (see [`Engine::follow_selection`]).
+pub(super) struct Follow {
+    /// First and last selected cells `(x, y)`, top row first, and whether it's a rectangle.
+    a: (u16, u16),
+    b: (u16, u16),
+    rect: bool,
+    /// Each screen row's text when the selection was last placed; read at the next frame.
+    screen: Option<Vec<String>>,
+}
+
+/// Where a selection's text went after the app redrew the screen.
+#[derive(Debug, PartialEq)]
+enum Moved {
+    /// Down by this many rows (up when negative).
+    By(i32),
+    /// Off the screen.
+    Gone,
+}
+
+/// Where the text of rows `top..=bottom` in `old` is in `now`: the nearest shift that puts
+/// every row still on the screen on the same text. When the rows are nowhere, the screen's
+/// own shift (the one most rows agree on) tells whether they went off it.
+fn moved(old: &[String], now: &[String], top: usize, bottom: usize) -> Option<Moved> {
+    let n = now.len() as i32;
+    let at = |y: usize, d: i32| -> Option<&String> { (y as i32 + d >= 0 && (y as i32 + d) < n).then(|| &now[(y as i32 + d) as usize]) };
+    for k in 1..n {
+        for d in [-k, k] {
+            let mut text = false;
+            let fits = (top..=bottom.min(old.len().saturating_sub(1))).all(|y| match at(y, d) {
+                Some(row) => {
+                    text |= !old[y].is_empty();
+                    *row == old[y]
+                }
+                None => true,
+            });
+            if fits && text {
+                return Some(Moved::By(d));
+            }
+        }
+    }
+    // Rows of words, not rules and borders, which repeat all over a screen.
+    let wordy = |row: &String| row.chars().any(char::is_alphanumeric);
+    let agree = |d: i32| old.iter().enumerate().filter(|(y, row)| wordy(row) && at(*y, d) == Some(row)).count();
+    let (d, votes) = (1 - n..n).filter(|&d| d != 0).map(|d| (d, agree(d))).max_by_key(|&(d, v)| (v, -d.abs()))?;
+    let off = top as i32 + d >= n || (bottom as i32) + d < 0;
+    (off && votes >= 2 && votes > agree(0)).then_some(Moved::Gone)
+}
+
 struct FindState {
     query: String,
     /// (screen row, column) of the current match.
@@ -208,6 +257,7 @@ impl Engine {
             let _ = self.term.set_selection(None);
             self.has_selection = false;
             self.sel_col = None;
+            self.sel_follow = None;
             self.meta_dirty = true;
         }
     }
@@ -381,15 +431,75 @@ impl Engine {
         Geometry { columns: cols as u32, cell_width: cw, padding_left: 0, screen_height: rows as u32 * ch }
     }
 
-    /// Returns whether there's a selection now, and the column it starts at (reading order).
-    fn install(term: &Terminal<'static, 'static>, sel: Option<Selection<'_>>) -> (bool, Option<u16>) {
+    /// Returns whether there's a selection now, the column it starts at (reading order), and
+    /// on the alternate screen, what [`Self::follow_selection`] keeps on its text.
+    fn install(term: &Terminal<'static, 'static>, sel: Option<Selection<'_>>) -> (bool, Option<u16>, Option<Follow>) {
         let _ = term.set_selection(sel.as_ref());
-        let col = sel.as_ref().filter(|s| !s.is_rectangle()).and_then(|s| {
-            let at = |r| term.point_from_grid_ref(&r, PointSpace::Screen).ok().flatten();
-            let (a, b) = (at(s.start())?, at(s.end())?);
-            Some(if (a.y, a.x) <= (b.y, b.x) { a.x } else { b.x })
-        });
-        (sel.is_some(), col)
+        let Some(s) = sel.as_ref() else { return (false, None, None) };
+        let at = |r| term.point_from_grid_ref(&r, PointSpace::Screen).ok().flatten();
+        let Some((a, b)) = at(s.start()).zip(at(s.end())) else { return (true, None, None) };
+        let (a, b) = if (a.y, a.x) <= (b.y, b.x) { (a, b) } else { (b, a) };
+        let rect = s.is_rectangle();
+        let alt = matches!(term.active_screen(), Ok(Screen::Alternate));
+        let follow = alt.then(|| Follow { a: (a.x, a.y as u16), b: (b.x, b.y as u16), rect, screen: None });
+        (true, (!rect).then_some(a.x), follow)
+    }
+
+    /// Viewport row `y`'s text, trailing spaces trimmed.
+    fn row_text(&self, y: u16) -> String {
+        let (chars, _) = self.rows_text(y, y, None);
+        chars.into_iter().collect::<String>().trim_end().to_string()
+    }
+
+    /// Full-screen apps (Claude Code's fullscreen transcript) redraw the alternate screen
+    /// rather than scroll it, so the selection's cells stay put while their text moves. Called
+    /// before each frame: once the selected rows read differently, find their text again and
+    /// move the selection onto it, or drop it when the text went off the screen. Rows that
+    /// match nowhere (half-way through a redraw) leave it alone until a later frame.
+    pub(super) fn follow_selection(&mut self) {
+        if self.input.selecting || !self.has_selection || self.sel_follow.is_none() {
+            return;
+        }
+        if !matches!(self.term.active_screen(), Ok(Screen::Alternate)) {
+            self.sel_follow = None;
+            return;
+        }
+        let (cols, rows) = self.size();
+        let Some(f) = self.sel_follow.as_ref() else { return };
+        let (a, b, rect) = (f.a, f.b, f.rect);
+        let bottom = b.1.min(rows.saturating_sub(1));
+        let Some(old) = f.screen.as_ref() else {
+            let screen = (0..rows).map(|y| self.row_text(y)).collect();
+            if let Some(f) = self.sel_follow.as_mut() {
+                f.screen = Some(screen);
+            }
+            return;
+        };
+        if old.len() != rows as usize {
+            self.sel_follow = None;
+            return;
+        }
+        if (a.1..=bottom).all(|y| self.row_text(y) == old[y as usize]) {
+            return;
+        }
+        let now: Vec<String> = (0..rows).map(|y| self.row_text(y)).collect();
+        match moved(old, &now, a.1 as usize, bottom as usize) {
+            None => {}
+            Some(Moved::Gone) => self.clear_selection(),
+            Some(Moved::By(d)) => {
+                let last = rows as i32 - 1;
+                let (ay, by) = (a.1 as i32 + d, b.1 as i32 + d);
+                let a = if ay < 0 { (if rect { a.0 } else { 0 }, 0) } else { (a.0, ay.min(last)) };
+                let b = if by > last { (if rect { b.0 } else { cols.saturating_sub(1) }, last) } else { (b.0, by.max(0)) };
+                let at = |(x, y): (u16, i32)| self.term.grid_ref(Point::Viewport(PointCoordinate { x, y: y as u32 }));
+                let (Ok(ra), Ok(rb)) = (at(a), at(b)) else { return };
+                let sel = Selection::new(ra, rb, rect);
+                let follow;
+                (self.has_selection, self.sel_col, follow) = Self::install(&self.term, Some(sel));
+                self.sel_follow = follow.map(|f| Follow { screen: Some(now), ..f });
+                self.meta_dirty = true;
+            }
+        }
     }
 
     fn select_press(&mut self, m: &MouseMsg) {
@@ -402,7 +512,7 @@ impl Engine {
         let _ = input.press.set_repeat_distance(cw.max(ch) as f64);
         let _ = input.press.set_time(t);
         let sel = input.press.apply(&mut input.gesture, term, r).ok().flatten();
-        (self.has_selection, self.sel_col) = Self::install(term, sel);
+        (self.has_selection, self.sel_col, self.sel_follow) = Self::install(term, sel);
         self.input.selecting = true;
         self.meta_dirty = true;
     }
@@ -423,7 +533,7 @@ impl Engine {
             let _ = input.tick.set_position((m.x * cw as f32) as f64, (m.y * ch as f32) as f64);
             let _ = input.tick.set_rectangle(m.mods & MOD_ALT != 0);
             if let Ok(Some(sel)) = input.tick.apply(&mut input.gesture, term, vp, geom) {
-                (self.has_selection, self.sel_col) = Self::install(term, Some(sel));
+                (self.has_selection, self.sel_col, self.sel_follow) = Self::install(term, Some(sel));
                 self.meta_dirty = true;
                 return;
             }
@@ -433,7 +543,7 @@ impl Engine {
         let _ = input.drag.set_position((m.x * cw as f32) as f64, (m.y * ch as f32) as f64);
         let _ = input.drag.set_rectangle(m.mods & MOD_ALT != 0);
         if let Ok(Some(sel)) = input.drag.apply(&mut input.gesture, term, r, geom) {
-            (self.has_selection, self.sel_col) = Self::install(term, Some(sel));
+            (self.has_selection, self.sel_col, self.sel_follow) = Self::install(term, Some(sel));
             self.meta_dirty = true;
         }
     }
@@ -534,7 +644,7 @@ impl Engine {
     /// Select everything (scrollback + screen).
     pub fn select_all(&mut self) {
         let sel = self.term.select_all().ok().flatten();
-        (self.has_selection, self.sel_col) = Self::install(&self.term, sel);
+        (self.has_selection, self.sel_col, self.sel_follow) = Self::install(&self.term, sel);
         self.meta_dirty = true;
     }
 
@@ -712,6 +822,7 @@ impl Engine {
             let _ = self.term.set_selection(Some(&sel));
             self.has_selection = true;
             self.sel_col = Some(a.x);
+            self.sel_follow = None;
             self.meta_dirty = true;
         }
         FindHit { total: hits.len(), index: idx + 1 }
@@ -1246,6 +1357,77 @@ mod tests {
         // Typing clears it.
         k(&mut e, "z", 0, "z");
         assert_eq!(e.selection_text(), None);
+    }
+
+    /// The alternate screen drawn the way Claude Code's fullscreen mode draws it: every row
+    /// repainted in place, transcript lines `from..` on top and a fixed footer below.
+    fn repaint(e: &mut Engine, from: usize, rows: usize) {
+        let mut out = String::from("\x1b[H");
+        for y in 0..rows - 1 {
+            out += &format!("\x1b[{};1H\x1b[2Kline {}", y + 1, from + y);
+        }
+        out += &format!("\x1b[{rows};1H\x1b[2K> prompt");
+        e.feed(out.as_bytes(), 1);
+    }
+
+    #[test]
+    fn selection_follows_text_an_app_repaints() {
+        let mut e = Engine::new(30, 8, None);
+        e.feed(b"\x1b[?1049h", 1);
+        repaint(&mut e, 0, 8);
+        let m = |action, x, y| MouseMsg { action, button: 1, mods: 0, x, y };
+        // Drag over "line 3" to "line 4".
+        e.mouse(&m(MouseAction::Press, 0.1, 3.5));
+        e.mouse(&m(MouseAction::Motion, 5.9, 4.5));
+        e.mouse(&m(MouseAction::Release, 5.9, 4.5));
+        assert_eq!(e.selection_text().as_deref(), Some("line 3\nline 4"));
+        e.frame();
+        // Two more lines of output: the transcript moves up two rows.
+        repaint(&mut e, 2, 8);
+        let f = e.frame().unwrap();
+        assert_eq!(e.selection_text().as_deref(), Some("line 3\nline 4"));
+        assert_eq!(f.ext.selection, vec![(1, 0, 29), (2, 0, 5)]);
+        // Half off the top: what's left stays selected.
+        repaint(&mut e, 4, 8);
+        e.frame();
+        assert_eq!(e.selection_text().as_deref(), Some("line 4"));
+        // All the way off: no selection on whatever took its place.
+        repaint(&mut e, 9, 8);
+        e.frame();
+        assert_eq!(e.selection_text(), None);
+    }
+
+    #[test]
+    fn selection_stays_while_the_screen_is_half_redrawn() {
+        let mut e = Engine::new(30, 8, None);
+        e.feed(b"\x1b[?1049h", 1);
+        repaint(&mut e, 0, 8);
+        let m = |action, x, y| MouseMsg { action, button: 1, mods: 0, x, y };
+        e.mouse(&m(MouseAction::Press, 0.1, 5.5));
+        e.mouse(&m(MouseAction::Motion, 5.9, 5.5));
+        e.mouse(&m(MouseAction::Release, 5.9, 5.5));
+        e.frame();
+        // Something else entirely (a dialog) draws over it: left where it was.
+        e.feed(b"\x1b[6;1H\x1b[2KAllow this command?", 1);
+        e.frame();
+        assert_eq!(e.selection_text().as_deref(), Some("Allow"));
+        // The transcript comes back, moved up one: the selection finds it.
+        repaint(&mut e, 1, 8);
+        e.frame();
+        assert_eq!(e.selection_text().as_deref(), Some("line 5"));
+    }
+
+    #[test]
+    fn moved_text() {
+        let s = |v: &[&str]| v.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let old = s(&["a", "b", "c", "d", "", "> x"]);
+        assert_eq!(moved(&old, &s(&["c", "d", "e", "f", "", "> x"]), 2, 3), Some(Moved::By(-2)));
+        assert_eq!(moved(&old, &s(&["", "a", "b", "c", "d", "> x"]), 1, 2), Some(Moved::By(1)));
+        // Blank rows alone prove nothing.
+        assert_eq!(moved(&old, &s(&["q", "r", "s", "t", "u", "> x"]), 4, 4), None);
+        // Text that's gone with the rest of the screen sliding up past it.
+        let old = s(&["a", "b", "c", "d", "e", "f", "g", "> x"]);
+        assert_eq!(moved(&old, &s(&["f", "g", "h", "i", "j", "k", "l", "> x"]), 0, 1), Some(Moved::Gone));
     }
 
     #[test]
