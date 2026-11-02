@@ -94,8 +94,15 @@ fn merge(old: Option<&RateLimits>, new: RateLimits) -> (RateLimits, bool) {
             }
         }
     };
-    let five_hour = pick(&old.five_hour, new.five_hour);
     let seven_day = pick(&old.seven_day, new.seven_day);
+    // Claude is retiring the 5-hour window: a current report without one clears it, and a stored
+    // one that has expired with nothing newer is dropped. A stale report keeps what is stored.
+    let now = time::now_unix();
+    let five_hour = match new.five_hour {
+        n @ Some(_) => pick(&old.five_hour, n),
+        None if current => None,
+        None => old.five_hour.clone().filter(|w| !w.resets_at.as_deref().and_then(time::parse_rfc3339).is_some_and(|r| r <= now)),
+    };
     let observed_at = if current { new.observed_at } else { old.observed_at.clone() };
     (RateLimits { five_hour, seven_day, observed_at }, current)
 }
@@ -169,7 +176,7 @@ mod tests {
 
     #[test]
     fn stale_reports_never_replace_fresher_numbers() {
-        let now = 1_000_000;
+        let now = time::now_unix();
         let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
         let fresh = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
         let pct = |w: &Option<RateLimitWindow>| w.as_ref().map(|w| w.used_percentage);
@@ -191,6 +198,35 @@ mod tests {
         assert_eq!((pct(&m.five_hour), m.observed_at.as_str(), current), (Some(98.0), "t3", true));
         let (m, current) = merge(Some(&fresh), l(win(2.0, now + 18_600), win(29.0, now + 9000), "t3"));
         assert_eq!((pct(&m.five_hour), current), (Some(2.0), true));
+    }
+
+    #[test]
+    fn a_current_report_without_five_hour_clears_it() {
+        let now = time::now_unix();
+        let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
+        let old = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
+
+        let (m, current) = merge(Some(&old), l(None, win(30.0, now + 9000), "t3"));
+        assert!(m.five_hour.is_none() && current, "current report drops the stale 5h");
+        assert_eq!(m.seven_day.map(|w| w.used_percentage), Some(30.0));
+
+        // seven_day missing too: still falls back to the old weekly value.
+        let (m, _) = merge(Some(&old), l(None, None, "t3"));
+        assert!(m.five_hour.is_none());
+        assert_eq!(m.seven_day.map(|w| w.used_percentage), Some(29.0));
+    }
+
+    #[test]
+    fn a_stale_report_drops_only_an_expired_five_hour() {
+        let now = time::now_unix();
+        let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
+        // Stale (weekly far behind): the live 5h is kept, the expired one is dropped.
+        let live = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
+        let (m, current) = merge(Some(&live), l(None, win(8.0, now + 9000), "t3"));
+        assert!(!current && m.five_hour.is_some());
+        let expired = l(win(97.0, now - 60), win(29.0, now + 9000), "t2");
+        let (m, current) = merge(Some(&expired), l(None, win(8.0, now + 9000), "t3"));
+        assert!(!current && m.five_hour.is_none());
     }
 
     #[test]

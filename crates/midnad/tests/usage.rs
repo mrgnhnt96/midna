@@ -55,3 +55,22 @@ fn status_line_limits_reach_session_get_and_usage_get() {
     call(&mut h, "session.close", json!({ "id": sid, "force": true }));
     assert_eq!(call(&mut h, "usage.get", json!({}))["claude"]["five_hour"]["used_percentage"], 100.0);
 }
+
+#[test]
+fn a_report_without_five_hour_drops_the_stored_one() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    statusline(&mut a, 40.0, 3600);
+    assert_eq!(call(&mut h, "usage.get", json!({}))["claude"]["five_hour"]["used_percentage"], 40.0);
+
+    // Claude stops reporting the 5-hour window; the weekly one moves forward.
+    let now = time::now_unix();
+    let payload = json!({ "session_id": "c1", "model": { "id": "claude-opus-5-5" }, "cost": { "total_cost_usd": 0.1 },
+        "rate_limits": { "seven_day": { "used_percentage": 9, "resets_at": now + 86_400 } } });
+    call(&mut a, "agent.hook", json!({ "agent": "claude", "event": "statusline", "payload": payload }));
+    let c = call(&mut h, "usage.get", json!({}))["claude"].clone();
+    assert!(c["five_hour"].is_null(), "{c}");
+    assert_eq!(c["seven_day"]["used_percentage"], 9.0);
+}
