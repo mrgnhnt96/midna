@@ -63,6 +63,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "agents.shell_on_exit" => "The terminal turns into your shell, in the same folder.",
         "agents.resume_after_sleep" => "Retry agents whose turn died while the Mac slept.",
         "agents.resume_after_network" => "Retry agents whose turn died when the network dropped.",
+        "agents.resume_after_limit" => "Retry agents whose turn hit Claude's usage limit, once it resets.",
         "agents.resume_after_sleep_prompt" => "What midna types into an agent to resume it.",
         "keep_awake.enabled" => "Stops idle sleep during the hours below.",
         "keep_awake.mode" => "Only while agents have work, or the whole time.",

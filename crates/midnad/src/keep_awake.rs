@@ -157,7 +157,7 @@ fn work(d: &Daemon, now: i64, horizon: i64) -> Vec<String> {
             .filter(|t| cron::Schedule::of(&t.filter, t.fired).ok().and_then(|c| c.upcoming(now, 1).first().copied()).is_some_and(|at| at < horizon))
             .count()
     };
-    let resuming = crate::resume::watching(d);
+    let resuming = crate::resume::watching_before(d, horizon);
     let n = |n: usize, one: &str, many: &str| (n > 0).then(|| format!("{n} {}", if n == 1 { one } else { many }));
     [
         n(working, "agent working", "agents working"),

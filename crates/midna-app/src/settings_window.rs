@@ -180,7 +180,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Shortcuts, "", &["@shortcuts"]),
     (Sec::Shortcuts, "Built in", &["@built_in"]),
     (Sec::Agents, "Connection", &["@cli", "@hooks.claude", "@hooks.codex", "agents.mcp", "agents.claude.statusline", "agents.claude.crons_to_midna", "agents.system_hint"]),
-    (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.shell_on_exit", "agents.resume_after_sleep", "agents.resume_after_network", "agents.resume_after_sleep_prompt"]),
+    (Sec::Agents, "Lifecycle", &["agents.restart_on_update", "agents.restart_idle_secs", "agents.adopt_typed", "agents.shell_on_exit", "agents.resume_after_sleep", "agents.resume_after_network", "agents.resume_after_limit", "agents.resume_after_sleep_prompt"]),
     (
         Sec::Agents,
         "Keep the Mac awake",
@@ -1115,6 +1115,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "agents.shell_on_exit" => "Drop to a shell when an agent exits",
         "agents.resume_after_sleep" => "Resume after sleep",
         "agents.resume_after_network" => "Resume after network loss",
+        "agents.resume_after_limit" => "Resume after usage limit",
         "agents.resume_after_sleep_prompt" => "Resume message",
         "triggers.agent_mode" => "Agents started by triggers",
         "projects.roots" => "Project folders",
