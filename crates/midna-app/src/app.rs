@@ -2311,8 +2311,18 @@ impl MainWindow {
                     crate::ui::popout::open(m, id, w, cx);
                 }
             }))
-            .on_action(cx.listener(|m, _: &RestartSession, _w, cx| m.restart_selected(cx)))
-            .on_action(cx.listener(|m, _: &ReplaceSession, _w, cx| m.replace_selected(cx)))
+            // Only on the terminal screen: elsewhere (a Summary, Rules…) the selected terminal is
+            // off screen, maybe showing in another window, and the keys would hit it unseen.
+            .on_action(cx.listener(|m, _: &RestartSession, _w, cx| {
+                if m.screen == Screen::Terminal {
+                    m.restart_selected(cx);
+                }
+            }))
+            .on_action(cx.listener(|m, _: &ReplaceSession, _w, cx| {
+                if m.screen == Screen::Terminal {
+                    m.replace_selected(cx);
+                }
+            }))
             .on_action(cx.listener(|m, _: &ApproveOptions, _w, cx| {
                 if m.overlay == Overlay::NeedsYou {
                     m.stack.menu = !m.stack.menu;
