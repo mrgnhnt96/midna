@@ -1237,8 +1237,15 @@ impl TerminalView {
 
     fn finish_erase(&mut self, cx: &mut Context<Self>) {
         if let Some((_, queued)) = self.erasing.take() {
+            let typed = !queued.is_empty();
             for m in queued {
                 self.send_msg(m);
+            }
+            // A deleted list item: `fix_list_numbers` waited out the erase, and the agent may
+            // not redraw again, so look now, with a fresh watch (the erase can outlast it).
+            if self.list_watch.is_some() && !typed {
+                self.list_watch = Some(Instant::now() + LIST_WATCH);
+                self.fix_list_numbers_later(cx);
             }
         }
         cx.notify();
