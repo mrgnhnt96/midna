@@ -917,6 +917,16 @@ impl TerminalView {
         .detach();
     }
 
+    /// Whether typing `typed` at the cursor in an agent's input lands in a list item's number.
+    fn types_number(&self, typed: &str) -> bool {
+        if !self.is_agent() || typed.is_empty() || !typed.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let Some(c) = self.live_cursor() else { return false };
+        let Some((text, at)) = term_edit::input_cursor(&self.grid, c) else { return false };
+        crate::list_edit::in_number(&format!("{}{typed}{}", &text[..at], &text[at..]), at + typed.len())
+    }
+
     /// While `list_watch` runs: renumber the list at the cursor in an agent's input if the
     /// screen shows it miscounted (`list_edit::renumber`). The cursor walks to each number,
     /// retypes it and walks back, all in one burst, so the agent redraws once with only the
@@ -2111,8 +2121,13 @@ impl EntityInputHandler for TerminalView {
             self.run_find(true, true, window, cx);
         } else if !text.is_empty() {
             self.list_watch = None;
+            let number = self.ext.selection.is_empty() && self.types_number(text);
             self.erase_selection(cx);
             self.deliver(ClientMsg::Input(text.as_bytes().to_vec()));
+            if number {
+                // A new number in a list item: the items after it count on from it.
+                self.list_watch = Some(Instant::now() + LIST_WATCH);
+            }
         }
         cx.notify();
     }
