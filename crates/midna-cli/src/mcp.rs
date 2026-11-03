@@ -66,19 +66,12 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
         "secret.set" => "Prefer piping in a shell (`<command> | midna secret save NAME`): a value you pass here is already in \
             your context, so the secret is marked exposed.",
         "secret.replace" => "Agents: never call this; call secret_set, which asks the human when it would replace their secret.",
-        "trigger.add" | "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers (source local) fire on this Mac and \
-            act on the terminal that fired. event: hook.<HookEvent> (hook.Stop, hook.Notification, …), a midna event kind \
-            (agent.prompt_blocked data {hook, message, prompt}, agent.turn_ended, session.status, …), idle (with \
-            filter.idle_minutes) or schedule (filter.cron: 5 fields in local time or @daily etc., or `@every 55m` for intervals cron can't say; without a session/project/agent \
-            filter it fires once about no terminal; also filter.window {from, until} HH:MM local, until excluded, starts_at, \
-            ends_at (RFC 3339), max_runs (1 = once) and wake: true (wake the Mac for each run, even outside keep-awake hours; needs keep_awake.wake)); globs ok. filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
-            (case-insensitive). action: {kind:send_to_session, steps:[{text, enter:true}]} (in order, each waits for the agent) | \
-            {kind:set_status, label, color, icon?, base, clear_on: prompt|turn|status|never} | {kind:clear_status} | {kind:notify, title, body?, sound:true} | attention | \
-            run_command {project_id, command, background?, headless?, timeout_secs?} (background: a terminal in the Background group; \
-            headless: no terminal, exit code and output tail on the delivery's command_runs) | start_agent. Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or bare {{<path>}}. \
-            cooldown_secs defaults to 60 per terminal; events triggers cause never fire triggers. enabled:true (add, local only) or \
-            trigger_set_enabled turns a local trigger on with no approval; do it when the human asked for the trigger. trigger_test takes \
-            session for local triggers. The `guide` tool (section “Local triggers”) has worked examples.",
+        // The local-trigger how-to lives on trigger_add alone: it was the biggest repeat in tools/list.
+        "trigger.add" => "enabled: true (local only) or trigger_set_enabled turns a local trigger on with no approval; do it \
+            when the human asked for the trigger. trigger_test dry-runs one first (session names the terminal for a local \
+            trigger). The `guide` tool (section “Local triggers”) has worked examples.",
+        "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers: see trigger_add and the `guide` tool \
+            (section “Local triggers”).",
         "needs_you.resolve" => "Agents normally don't call this: answering is the human's job. Refused unless the human enabled \
             approve.from_cli, and then only for your own session's approvals.",
         "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action. \
@@ -384,6 +377,22 @@ mod tests {
                 let name: String = part.chars().take_while(|c| *c != '"').collect();
                 assert!(t["inputSchema"]["$defs"].get(&name).is_some(), "{}: missing $defs/{name}", t["name"]);
             }
+        }
+    }
+
+    /// trigger_add and trigger_update once took 25 KB of tools/list, which a client that loads every
+    /// tool up front pays for on each turn. Their schemas stay whole; their descriptions keep to a
+    /// budget, and the local-trigger how-to sits on trigger_add only.
+    #[test]
+    fn trigger_descriptions_stay_lean() {
+        let t = tools();
+        let desc = |n: &str| t.iter().find(|t| t["name"] == n).unwrap()["description"].as_str().unwrap().to_string();
+        let (add, update) = (desc("trigger_add"), desc("trigger_update"));
+        assert!(add.len() + update.len() <= 3500, "trigger_add {} + trigger_update {} bytes is over 3500", add.len(), update.len());
+        assert!(add.contains("enabled: true") && add.contains("“Local triggers”"), "{add}");
+        for n in ["trigger_update", "trigger_list", "trigger_test"] {
+            let d = desc(n);
+            assert!(d.contains("see trigger_add") && !d.contains("trigger_set_enabled turns"), "{n}: {d}");
         }
     }
 }
