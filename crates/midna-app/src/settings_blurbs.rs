@@ -13,6 +13,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "projects.roots" => "Their subfolders show up in ⌘K, ready to open.",
         "projects.empty_opens" => "A project with no terminals opens a shell or its agent (click or ⌘K).",
         "projects.new_terminal_in" => "Main opens ⌘T where main or master is already checked out.",
+        "projects.switch_to_main" => "Only a clean main checkout no other terminal is in; worktrees never switch.",
         "ide.app" => "Used when no per-folder rule matches.",
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",
         "summary.keep_days" => "Days a project's Summary keeps the terminals that closed in it.",
