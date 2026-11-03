@@ -919,6 +919,12 @@ pub struct SessionOpenParams {
     /// with `cwd`: ignored. The app's ⌘T sets this when `projects.new_terminal_in` is `main`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_default_branch: bool,
+    /// When it opens in the repo's main checkout and that is on another branch, `git switch` it
+    /// to the default branch first, if its tree is clean, no checkout has that branch out and no
+    /// other live terminal works in it. Never a linked worktree. With `cwd`: ignored. The app's
+    /// ⌘T sets this when `projects.switch_to_main` is on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switch_to_default_branch: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

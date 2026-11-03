@@ -165,6 +165,51 @@ fn pick_default_branch<'a>(list: &'a [Entry], origin_head: Option<&str>) -> Opti
     Some(wanted.into_iter().find_map(|b| list.iter().find(|e| !e.bare && e.branch == b)).unwrap_or(main))
 }
 
+/// `projects.switch_to_main`: a new tab is about to open in `cwd`. When that is the repo's main
+/// checkout (never a linked worktree, those are agents'), it is on another branch, its tree is
+/// clean, no checkout has the default branch out and no other live terminal works in it,
+/// `git switch` it to the default branch. Some(branch) when it switched.
+pub fn switch_idle_main_checkout(d: &Daemon, cwd: &str) -> Option<String> {
+    let list = parse_list(&git(cwd, &["worktree", "list", "--porcelain"])?);
+    let origin = git(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+    let has = |b: &str| git(cwd, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_some();
+    let real = |p: &str| std::fs::canonicalize(p).ok();
+    let here = real(cwd)?;
+    let main = list.first().filter(|e| !e.bare)?;
+    let others: Vec<PathBuf> = list[1..].iter().filter_map(|e| real(&e.path)).collect();
+    let in_main = |p: &Path| real(&main.path).is_some_and(|m| p.starts_with(&m)) && !others.iter().any(|o| p.starts_with(o));
+    if !in_main(&here) {
+        return None;
+    }
+    let branch = switch_target(&list, origin.as_deref().map(str::trim), has)?;
+    if !git(&main.path, &["status", "--porcelain"])?.trim().is_empty() {
+        return None;
+    }
+    let busy = {
+        let core = d.core();
+        core.state.sessions.iter().filter_map(|s| core.rt.get(&s.id).map(|r| crate::git::work_cwd(s, Some(r.pid)))).filter_map(|c| real(&c)).any(|c| in_main(&c))
+    };
+    if busy {
+        return None;
+    }
+    git(&main.path, &["switch", "--quiet", &branch]).map(|_| branch)
+}
+
+/// The default branch to switch `list`'s main checkout to, or None to leave it: it's detached
+/// or already on it, or a checkout has it out (git refuses that), or no such local branch
+/// (`has`). The default is origin's HEAD branch when known, else main, else master.
+fn switch_target(list: &[Entry], origin_head: Option<&str>, has: impl Fn(&str) -> bool) -> Option<String> {
+    let main = list.first().filter(|e| !e.bare && !e.branch.is_empty())?;
+    let wanted: Vec<&str> = match origin_head.and_then(|o| o.strip_prefix("origin/")) {
+        Some(b) => vec![b],
+        None => vec!["main", "master"],
+    };
+    if wanted.iter().any(|b| list.iter().any(|e| e.branch == *b)) {
+        return None;
+    }
+    wanted.into_iter().find(|b| has(b)).map(str::to_string).filter(|b| *b != main.branch)
+}
+
 /// Newest mtime (unix) of the worktree's own git files: HEAD moves on checkout/commit, the index
 /// on add/status, the reflog on every ref change.
 fn git_activity(path: &str) -> Option<i64> {
@@ -372,5 +417,22 @@ mod tests {
         // Nothing on it: the main checkout, as it is.
         assert_eq!(pick(&[e("/r", "feat"), e("/r-wt", "fix")], None).as_deref(), Some("/r"));
         assert_eq!(pick(&[Entry { bare: true, ..e("/r.git", "") }], None), None);
+    }
+
+    #[test]
+    fn switch_target_only_when_no_checkout_has_the_default_branch() {
+        let e = |path: &str, branch: &str| Entry { path: path.into(), branch: branch.into(), ..Default::default() };
+        let all = |_: &str| true;
+        assert_eq!(switch_target(&[e("/r", "feat"), e("/r-wt", "fix")], None, all).as_deref(), Some("main"));
+        assert_eq!(switch_target(&[e("/r", "feat")], None, |b| b == "master").as_deref(), Some("master"));
+        assert_eq!(switch_target(&[e("/r", "feat")], Some("origin/develop"), all).as_deref(), Some("develop"));
+        // origin's HEAD isn't a local branch: leave it, even with main there.
+        assert_eq!(switch_target(&[e("/r", "feat")], Some("origin/develop"), |b| b == "main"), None);
+        // Already on it, or a worktree has it out.
+        assert_eq!(switch_target(&[e("/r", "main")], None, all), None);
+        assert_eq!(switch_target(&[e("/r", "feat"), e("/r-wt", "main")], None, all), None);
+        // Detached (mid-rebase, bisect) or bare.
+        assert_eq!(switch_target(&[e("/r", "")], None, all), None);
+        assert_eq!(switch_target(&[Entry { bare: true, ..e("/r.git", "") }], None, all), None);
     }
 }

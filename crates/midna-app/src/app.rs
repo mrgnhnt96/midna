@@ -1748,9 +1748,18 @@ impl MainWindow {
     /// [`Self::open_session`]; `on_default_branch` opens in the repo's checkout that has main or
     /// master out (`session.open`'s `on_default_branch`).
     fn open_session_with(&mut self, project: Option<String>, agent: Option<AgentKind>, on_default_branch: bool, cx: &mut Context<Self>) {
+        self.open_new_tab(project, agent, on_default_branch, false, cx);
+    }
+
+    /// [`Self::open_session_with`]; `switch_to_main` lets the daemon switch an idle main
+    /// checkout to main/master first (`session.open`'s `switch_to_default_branch`).
+    fn open_new_tab(&mut self, project: Option<String>, agent: Option<AgentKind>, on_default_branch: bool, switch_to_main: bool, cx: &mut Context<Self>) {
         let mut p = json!({"kind": if agent.is_some() { "agent" } else { "shell" }});
         if on_default_branch {
             p["on_default_branch"] = json!(true);
+        }
+        if switch_to_main {
+            p["switch_to_default_branch"] = json!(true);
         }
         if let Some(pid) = project {
             p["project_id"] = json!(pid);
@@ -1814,16 +1823,21 @@ impl MainWindow {
         self.setting_str("projects.new_terminal_in").as_deref() == Some("main")
     }
 
+    /// Whether ⌘T and the new-agent shortcut may switch an idle main checkout to main/master (`projects.switch_to_main`).
+    fn new_terminal_switches_to_main(&self) -> bool {
+        self.settings.get("projects.switch_to_main").and_then(Value::as_bool).unwrap_or(true)
+    }
+
     fn new_terminal(&mut self, _: &NewTerminal, _w: &mut Window, cx: &mut Context<Self>) {
         let p = self.current_project_id();
-        let main = self.new_terminal_on_main();
-        self.open_session_with(p, None, main, cx);
+        let (main, switch) = (self.new_terminal_on_main(), self.new_terminal_switches_to_main());
+        self.open_new_tab(p, None, main, switch, cx);
     }
     fn new_agent(&mut self, _: &NewAgent, _w: &mut Window, cx: &mut Context<Self>) {
         let p = self.current_project_id();
         let a = self.last_agent(p.as_deref());
-        let main = self.new_terminal_on_main();
-        self.open_session_with(p, Some(a), main, cx);
+        let (main, switch) = (self.new_terminal_on_main(), self.new_terminal_switches_to_main());
+        self.open_new_tab(p, Some(a), main, switch, cx);
     }
     fn new_terminal_root(&mut self, _: &NewTerminalRoot, _w: &mut Window, cx: &mut Context<Self>) {
         self.open_session(Some(ROOT_PROJECT_ID.into()), None, cx);

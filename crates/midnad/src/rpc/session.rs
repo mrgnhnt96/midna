@@ -213,6 +213,10 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
         .filter(|t| *t != project.path);
     let cwd = target.clone().or_else(|| p.cwd.clone()).unwrap_or_else(|| project.path.clone());
     let project = target.and_then(|t| super::project::containing(d, &t)).unwrap_or(project);
+    // Before the shell starts, so its first prompt already shows the new branch.
+    if p.switch_to_default_branch && p.cwd.is_none() && project.id != ROOT_PROJECT_ID {
+        crate::worktrees::switch_idle_main_checkout(d, &cwd);
+    }
     let sid = hex_id(8);
     let mut env = session_env(d, &sid, &project.id);
     let (command, agent) = match p.kind {
@@ -367,6 +371,7 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
             background: s.background,
             close_on_exit: s.close_on_exit,
             on_default_branch: false,
+            switch_to_default_branch: false,
         },
     )?;
     {

@@ -687,6 +687,62 @@ fn on_default_branch_opens_in_the_checkout_that_has_main_out() {
 }
 
 #[test]
+fn switch_to_default_branch_moves_only_an_idle_clean_main_checkout() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(cwd).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let main = d.home.join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    git(&main, &["init", "-q", "-b", "main"]);
+    std::fs::write(main.join("x"), "").unwrap();
+    git(&main, &["add", "."]);
+    git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
+    git(&main, &["checkout", "-q", "-b", "feat"]);
+    // A linked worktree nested inside the main checkout's folder (like .claude/worktrees/…).
+    git(&main, &["worktree", "add", "-q", ".wt/fix", "-b", "fix"]);
+    std::fs::write(main.join(".git/info/exclude"), ".wt/\n").unwrap();
+    let repo = call(&mut h, "project.add", json!({ "path": main }))["id"].clone();
+    let wt = call(&mut h, "project.add", json!({ "path": main.join(".wt/fix") }))["id"].clone();
+    let open = |h: &mut Client, pid: &Value, switch: bool| {
+        call(h, "session.open", json!({ "kind": "shell", "project_id": pid, "switch_to_default_branch": switch, "command": ["/bin/sh"] }))["id"].clone()
+    };
+    let close = |h: &mut Client, id: &Value| {
+        call(h, "session.close", json!({ "id": id, "force": true }));
+    };
+    let branch = || git(&main, &["branch", "--show-current"]);
+    // Off: nothing moves.
+    let s = open(&mut h, &repo, false);
+    close(&mut h, &s);
+    assert_eq!(branch(), "feat");
+    // A worktree's new tab never moves its branch, and a terminal in it doesn't hold the main checkout.
+    let in_wt = open(&mut h, &wt, true);
+    assert_eq!(git(&main.join(".wt/fix"), &["branch", "--show-current"]), "fix");
+    assert_eq!(branch(), "feat");
+    // Uncommitted changes keep it.
+    std::fs::write(main.join("x"), "dirty").unwrap();
+    let s = open(&mut h, &repo, true);
+    close(&mut h, &s);
+    assert_eq!(branch(), "feat");
+    git(&main, &["checkout", "-q", "x"]);
+    // Another terminal working in it keeps it.
+    let other = open(&mut h, &repo, false);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let s = open(&mut h, &repo, true);
+    close(&mut h, &s);
+    assert_eq!(branch(), "feat");
+    close(&mut h, &other);
+    // Idle and clean: switched before the tab opens.
+    let s = open(&mut h, &repo, true);
+    assert_eq!(branch(), "main");
+    close(&mut h, &s);
+    close(&mut h, &in_wt);
+}
+
+#[test]
 fn a_worktree_outside_every_project_opens_in_its_repos_project() {
     let d = TestDaemon::start();
     let mut h = d.human();
