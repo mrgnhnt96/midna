@@ -32,6 +32,26 @@ midna needs                # what is waiting on the human right now
 midna explain <id>         # why a terminal/rule/trigger/needs-you item is the way it is
 ```
 
+## Script it
+
+When a job takes several calls, do them in one shell command instead of one MCP call each: list,
+filter with `jq`, act. `--json` output is stable, and `midna call` reaches any method, even one
+with no verb.
+
+```
+# the screen of every idle agent
+for id in $(midna list --json | jq -r '.[] | select(.kind == "agent" and .status.state == "idle") | .id'); do
+  echo "== $id"; midna read "$id" --screen
+done
+
+# a method with no verb: look up its params, then call it
+midna schema session.list | jq .params.properties
+midna call session.list '{"project_id":"midna"}' | jq -r '.[].name'
+
+# ask without blocking (the needs-you id is printed, exit 4), then wait for the human's answer
+id=$(midna close "$t" --force --no-wait); [ $? -eq 4 ] && midna needs wait "$id" --timeout 600
+```
+
 ## Terminals
 
 - `midna open [--name N] [-- argv...]` opens a shell. Use `--monitor CMD` for a long-running process

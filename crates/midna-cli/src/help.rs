@@ -883,6 +883,8 @@ pub fn usage() -> String {
     out.push_str(
         "\n`midna <folder>` (e.g. `midna .`) opens the Midna app on that folder: a shell already there, else a new one.\n\
          New here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
+         Several calls? Chain them in one command: `midna list --json | jq …`, `midna call <method> '<json>'`\n\
+         (the guide's \"Script it\" section).\n\
          Free text with flags goes after `--`, e.g. `midna check command -- git push --force`.\n\
          --no-wait (any verb): don't block on an approval; print its needs-you id and exit 4 (the call\n\
          carries on when the human answers; follow it with `midna needs get|wait <id>`).\n\
@@ -915,6 +917,34 @@ mod tests {
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);
         }
+    }
+
+    #[test]
+    fn the_guides_script_it_examples_use_real_verbs_flags_and_methods() {
+        let section = crate::guide::SKILL_MD.split("\n## Script it\n").nth(1).expect("the guide has a Script it section");
+        let section = section.split("\n## ").next().unwrap();
+        for want in ["--json | jq", "midna call ", "midna schema ", "--no-wait", "midna needs wait "] {
+            assert!(section.contains(want), "Script it doesn't show `{want}`");
+        }
+        let examples = section.split("```").nth(1).expect("Script it has an example block");
+        let mut checked = 0;
+        for cmd in examples.split("midna ").skip(1) {
+            let cmd = cmd.split(['|', ';', ')', '\n']).next().unwrap();
+            let mut words = cmd.split_whitespace();
+            let name = words.next().unwrap();
+            let v = verb(name).unwrap_or_else(|| panic!("`midna {name}` is not a verb"));
+            for w in words {
+                if let Some(flag) = w.strip_prefix("--") {
+                    let global = ["json", "no-wait"].contains(&flag);
+                    assert!(global || v.usage.contains(w), "`midna {name}` takes no {w}");
+                } else if name == "call" || name == "schema" {
+                    assert!(catalog().iter().any(|m| m.name == w), "no method {w}");
+                    break;
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked >= 5, "only {checked} midna commands in the examples");
     }
 
     #[test]
