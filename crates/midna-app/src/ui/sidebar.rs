@@ -917,7 +917,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let lit = selected && m.screen != Screen::Summary;
     let hl = m.close_anim.highlight(&s.id, lit);
     let own = lit && hl == crate::ui::close_anim::Highlight::Own;
-    let (armed, hover_id) = (m.row_close.is_armed(&s.id), s.id.clone());
+    let (armed, hover_id) = (m.row_close.looks_armed(&s.id), s.id.clone());
 
     div()
         .id(SharedString::from(format!("row-{}", s.id)))
