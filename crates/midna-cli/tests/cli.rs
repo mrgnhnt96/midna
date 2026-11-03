@@ -323,7 +323,7 @@ fn agents_get_mcp_skill_and_hint_without_global_config() {
     let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "codex", "cwd": "/tmp" })).unwrap();
     let cmd: Vec<String> = serde_json::from_value(sess["command"].clone()).unwrap();
     let joined = cmd.join(" ");
-    assert!(joined.contains("mcp_servers.midna.command=") && joined.contains(r#"mcp_servers.midna.args=["mcp"]"#), "{joined}");
+    assert!(joined.contains("mcp_servers.midna.command=") && joined.contains(r#"mcp_servers.midna.args=["mcp","--compact"]"#), "{joined}");
     assert!(joined.contains(&format!("MIDNA_SESSION=\"{}\"", sess["id"].as_str().unwrap())), "{joined}");
     assert!(joined.contains("developer_instructions="), "{joined}");
     // Both settings off: none of it.

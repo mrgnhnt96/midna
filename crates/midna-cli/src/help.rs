@@ -779,11 +779,13 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "mcp",
         aliases: &[],
-        usage: "mcp",
+        usage: "mcp [--compact]",
         summary: "stdio MCP server exposing every method as a tool",
         details: "Speaks MCP (JSON-RPC over stdin/stdout). Tool names are method names with `.` → `_`\n\
                   (session_open, rule_add…), plus capabilities, explain and guide. Agents midna launches get it\n\
-                  automatically (setting agents.mcp).",
+                  automatically (setting agents.mcp).\n\
+                  --compact lists seven tools instead, for clients that load every schema up front (Codex gets\n\
+                  this): capabilities, explain, guide, search_methods, describe_method, call_read and call.",
         methods: &[],
     },
     Verb {

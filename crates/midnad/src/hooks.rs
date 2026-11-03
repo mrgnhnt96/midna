@@ -92,7 +92,7 @@ pub fn codex_mcp_args(cli: &str, env: &[(String, String)]) -> Vec<String> {
         "-c".into(),
         format!("mcp_servers.midna.command={}", toml_str(cli)),
         "-c".into(),
-        r#"mcp_servers.midna.args=["mcp"]"#.into(),
+        r#"mcp_servers.midna.args=["mcp","--compact"]"#.into(),
         "-c".into(),
         format!("mcp_servers.midna.env={{{}}}", env.join(",")),
     ]
