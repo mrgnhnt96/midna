@@ -636,7 +636,8 @@ define_class!(
             ok
         }
 
-        /// Notes whether the edit removes text, for [`renumber`].
+        /// Notes whether the edit removes text, for [`renumber`] (which also runs when a number
+        /// is typed into a list item).
         #[unsafe(method(shouldChangeTextInRange:replacementString:))]
         fn should_change_text(&self, range: NSRange, with: Option<&NSString>) -> bool {
             let ok: bool = unsafe { msg_send![super(self), shouldChangeTextInRange: range, replacementString: with] };
@@ -649,7 +650,7 @@ define_class!(
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             let _: () = unsafe { msg_send![super(self), didChangeText] };
-            if !RENUMBERING.get() && REMOVED.replace(false) {
+            if !RENUMBERING.get() && (REMOVED.replace(false) || typed_number(self)) {
                 renumber(self);
             }
             emit(ComposerEvent::Changed);
@@ -714,6 +715,13 @@ fn list_newline(tv: &ComposerTextView) -> bool {
     let _: () = unsafe { msg_send![tv, insertText: &*s, replacementRange: range] };
     renumber(tv);
     true
+}
+
+/// The edit just made left the cursor in a list item's number: a new number was typed there.
+fn typed_number(tv: &ComposerTextView) -> bool {
+    let sel = tv.selectedRange();
+    let text = tv.string().to_string();
+    sel.length == 0 && crate::list_edit::in_number(&text, byte_at(&text, sel.location))
 }
 
 /// Renumber the numbered list at the cursor (`list_edit::renumber`), keeping the cursor where it

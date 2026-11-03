@@ -6,7 +6,8 @@
 //!   empty item ends the list instead: its marker is cleared and no line is added.
 //! - After an edit that removes text (or a new item in the middle), the numbered list at the
 //!   cursor is renumbered from its first item's number. Only the digits change, so the cursor
-//!   stays where it was. A number being edited (the cursor inside its marker) is left alone.
+//!   stays where it was. A number being edited (the cursor inside its marker) is left alone,
+//!   and the items after it count on from it, so typing a new number moves the rest along.
 //!
 //! Offsets are byte offsets into the text.
 use std::ops::Range;
@@ -91,8 +92,16 @@ pub fn newline(text: &str, cursor: usize) -> Option<Newline> {
     Some(Newline::Continue(format!("\n{}{marker} ", &text[line.start..line.start + it.indent])))
 }
 
+/// Whether the cursor sits just past a digit of a numbered item's marker: an edit that left it
+/// there changed that item's number, for [`renumber`] to carry on to the items after it.
+pub fn in_number(text: &str, cursor: usize) -> bool {
+    let line = line_at(text, cursor);
+    item(&text[line.clone()]).is_some_and(|it| matches!(it.marker, Marker::Number(..)) && (line.start + it.digits.start + 1..=line.start + it.digits.end).contains(&cursor))
+}
+
 /// The digits to change so the numbered list at the cursor counts up by one from its first
-/// item, in order. A list is the numbered items at one indent with nothing between them but
+/// item, in order, except that the item whose number is being edited keeps it and the items
+/// after it count on from there. A list is the numbered items at one indent with nothing between them but
 /// deeper lines (a nested list, say); a blank line or a shallower line ends it. The cursor's own
 /// line doesn't end a list when it isn't an item, so a list whose middle item just lost its
 /// marker still counts through it. Nor does it when it's blank (⌘⌫ emptied an item), unless the
@@ -146,7 +155,9 @@ pub fn renumber(text: &str, cursor: usize) -> Vec<Edit> {
         match open.last_mut().filter(|o| o.0 == it.indent) {
             Some(o) => {
                 let editing = is_here && (range.start + it.digits.start + 1..range.start + it.body).contains(&cursor);
-                if n != o.2 && !editing {
+                if editing {
+                    o.2 = n;
+                } else if n != o.2 {
                     let d = it.digits.clone();
                     o.4.push((range.start + d.start..range.start + d.end, o.2.to_string()));
                 }
@@ -282,6 +293,29 @@ mod tests {
     fn a_number_being_typed_is_left_alone() {
         assert_eq!(renumbered("1. a\n1|. b"), "1. a\n1|. b");
         assert_eq!(renumbered("1. a\n2. b\n1|. c"), "1. a\n2. b\n1|. c");
+    }
+
+    #[test]
+    fn the_items_after_a_typed_number_count_on_from_it() {
+        assert_eq!(renumbered("5|. a\n2. b\n3. c"), "5|. a\n6. b\n7. c");
+        assert_eq!(renumbered("1. a\n5|. b\n3. c\n4. d"), "1. a\n5|. b\n6. c\n7. d");
+        assert_eq!(renumbered("1. a\n12|. b\n3. c"), "1. a\n12|. b\n13. c");
+        assert_eq!(renumbered("1. a\n2. b\n   1. x\n4|. c\n4. d"), "1. a\n2. b\n   1. x\n4|. c\n5. d");
+    }
+
+    #[test]
+    fn a_typed_digit_is_in_a_number() {
+        let inside = |s: &str| {
+            let (t, c) = at(s);
+            in_number(&t, c)
+        };
+        assert!(inside("1. a\n5|. b"));
+        assert!(inside("1. a\n1|2. b"));
+        assert!(!inside("1. a\n|5. b"));
+        assert!(!inside("1. a\n5.| b"));
+        assert!(!inside("1. a\n5. b|"));
+        assert!(!inside("1. a\n5|"));
+        assert!(!inside("- a\nx5|"));
     }
 
     #[test]
