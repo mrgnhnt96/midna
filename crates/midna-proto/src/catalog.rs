@@ -514,38 +514,28 @@ fn build() -> Vec<MethodSpec> {
              `state`: needs_secret (a human must paste the secret), draft (ready to enable), active, paused. `builtin` marks the \
              ones midna ships (they can be edited, paused or removed)."),
         m::<TriggerAddParams, Trigger>("trigger.add").mutating().d(
-            "Create a webhook trigger. It starts as needs_secret and never fires until a human sets its secret and enables it; \
-             agents can draft freely. event: GitHub `pull_request.opened`/`push`/`check_run.completed` (event[.action]), \
-             Bitbucket `pullrequest:created`. filter: repo (owner/name), branch, action, label (globs). action: \
-             {kind:start_agent, project_id, agent, prompt_template, permission_mode?, allowed_tools?} | {kind:run_command, project_id, command, background?, headless?, timeout_secs?} | {kind:attention, message}. \
-             Templates: {{pr.number}} {{pr.title}} {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path like {{pull_request.head.ref}}; {{payload}} and object/array paths render as JSON. \
-             In run_command each value is shell-quoted, and the command gets the delivery's JSON body in the file $MIDNA_PAYLOAD (headless: \
-             also on stdin) with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY (the delivery id); it opens a monitor terminal as a tab, or with background:true in the sidebar's \
-             Background group, or with headless:true runs with no terminal (exit code and output tail go on the delivery's command_runs; \
-             stopped after timeout_secs, default 1800). Set github_hook_id to enable missed-delivery recovery. \
-             A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use the human's normal config. \
-             start_agent's permission_mode (Claude's --permission-mode) and allowed_tools (--allowedTools, for that trigger's agents only) \
-             are human only: an agent setting or changing them asks the human, and the trigger is added or changed only if they approve. \
-             LOCAL triggers (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human \
-             asked for it). event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, hook.Notification, hook.PreCompact; \
-             data = the hook payload), any midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
-             session.status, needs_you.raised; data = the event data), `idle` (filter.idle_minutes: no prompt or turn for that \
-             long; fires once per idle stretch), or `schedule` (filter.cron: `min hour dom month dow` in local time, names and \
-             @hourly/@daily/@weekly/@monthly/@yearly ok, `@every 55m` for an interval that doesn't divide the hour; data {cron, scheduled_for, local_time}; without a session/project/agent \
-             filter it fires once about no terminal, with one it acts on every running terminal that matches). \
-             filter: session, project, agent, idle_minutes, cron, match {dotted.path: glob} \
-             (case-insensitive, every entry must match). Extra actions, acting on the terminal that fired: \
-             {kind:send_to_session, steps:[{text, enter=true}]} (typed in order; each step waits until the agent is ready; \
-             on agent.prompt_blocked the refused prompt Claude put back in its input box is cleared first), \
-             {kind:set_status, label, color (red|orange|amber|yellow|green|teal|blue|purple|pink|gray|#rrggbb), icon?, \
-             base (idle|working|needs_you|done|failed: still drives sorting, notifications, Needs You), clear_on (prompt|turn|status|never)}, \
-             {kind:clear_status}. Any trigger may also {kind:notify, title, body?, sound=true, category?, open?, id?} (a macOS notification, \
-             category from_trigger; clicking it selects the terminal that fired, or opens `open`, a URL (a webhook's defaults \
-             to what it's about); a firing with the same `id` replaces the one still showing). Local templates: {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, \
-             {{session.id|name|project_id|agent|status}}, {{data.<path>}} or {{<path>}}. cooldown_secs (default 60) spaces \
-             firings per terminal; what a trigger causes never fires triggers. Example (compact, then resend): \
-             {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact first*\"}}, \
-             action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
+            "Create a trigger; the input schema documents every field. Webhook triggers (source github|bitbucket) start as \
+             needs_secret and never fire until a human sets the secret and enables them; agents can draft freely. LOCAL triggers \
+             (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human asked for it). \
+             event: GitHub `pull_request.opened`/`push` (event[.action]), Bitbucket `pullrequest:created`; local `hook.<HookEvent>` \
+             (hook.Stop, hook.Notification; data = the hook payload), a midna event kind (agent.prompt_blocked {hook, message, \
+             prompt}, agent.turn_ended, session.status; data = the event data), `idle` (filter.idle_minutes; once per idle stretch) \
+             or `schedule` (filter.cron, window, starts_at, ends_at, max_runs, wake; data {cron, scheduled_for, local_time}; \
+             without a session/project/agent filter it fires once about no terminal, with one it acts on every running terminal \
+             that matches). filter (globs): repo, branch, action, label; local session, project, agent, match {dotted.path: glob} \
+             (case-insensitive, every entry must match). action kind: start_agent | run_command | attention | notify, and for \
+             local triggers, acting on the terminal that fired, send_to_session (on agent.prompt_blocked the refused prompt Claude \
+             put back in its input box is cleared first) | set_status | clear_status. Templates: {{pr.number}} {{pr.title}} \
+             {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path ({{payload}} and object/array paths render as \
+             JSON); local {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, {{session.id|name|project_id|agent|status}}, \
+             {{data.<path>}} or {{<path>}}. run_command shell-quotes each value and gets the delivery's JSON body in the file \
+             $MIDNA_PAYLOAD (headless: also on stdin) with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY \
+             (the delivery id). A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use \
+             the human's normal config. start_agent's permission_mode and allowed_tools are human only: an agent setting or \
+             changing them asks the human, and the trigger is added or changed only if they approve. Set github_hook_id to enable \
+             missed-delivery recovery. cooldown_secs (default 60) spaces firings per terminal; what a trigger causes never fires \
+             triggers. Example (compact, then resend): {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact \
+             first*\"}}, action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
         m::<TriggerUpdateParams, Trigger>("trigger.update").mutating().d(
             "Edit a trigger (name, event, filter, action, github_hook_id, session_name_template, cooldown_secs). When an agent \
              changes the action or source of an enabled webhook trigger, it goes back to draft and a human must re-enable it \
