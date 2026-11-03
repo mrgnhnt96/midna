@@ -403,11 +403,14 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let summary_row = pid.as_deref().filter(|_| fold < 1.).and_then(|p| {
             let row = |cx: &mut Context<MainWindow>| measured(m, &crate::ui::close_anim::summary_key(p), crate::ui::summary::sidebar_row(m, t, p, compact, cx));
             let el = match summary_leave {
-                _ if crate::ui::summary::row_wanted(m, p, empty) => match m.close_anim.arrival(&crate::ui::close_anim::summary_key(p)) {
+                // In a project left with no terminals it unfolds with the ghost row (below).
+                _ if crate::ui::summary::row_wanted(m, p, empty) => match m.close_anim.arrival(&crate::ui::close_anim::summary_key(p)).filter(|_| !empty) {
                     Some(a) => arrive(a, row(cx)),
                     None => row(cx),
                 },
-                Some(l) if l.whole => row(cx),
+                Some(l) if l.whole && l.row => row(cx),
+                // Its last terminal closed and it keeps no row: the group folds away without one.
+                Some(l) if l.whole => return None,
                 Some(l) => fold_away(m, l, t, row(cx)),
                 None => return None,
             };
@@ -419,15 +422,23 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         });
         let (summary_top, summary_end) = if empty { (summary_row, None) } else { (None, summary_row) };
         // Folded, the ghost row goes with the fold (as the rows do).
-        let new_row = pid.clone().filter(|_| empty && fold < 1.).map(|p| {
+        // A project folding away whole with its last terminal leaves without one.
+        let going = summary_leave.is_some_and(|l| l.whole && !l.row);
+        let new_row = pid.clone().filter(|_| empty && fold < 1. && !going).map(|p| {
             let ghost = ghost_row(t, p, m.empty_opens_agent(), cx);
             let ghost = div().flex_none().overflow_hidden().h(px(34. * (1. - fold))).opacity(1. - fold).child(ghost);
             let el = wipe(line, 26., ghost.into_any_element());
             line += 1;
             el
         });
+        // Its last terminal just closed: the Summary row and the ghost row unfold together once
+        // the closed row has folded away (`close_anim::start`).
+        let top: Vec<AnyElement> = match pid.as_deref().filter(|_| empty).and_then(|p| m.close_anim.arrival(&crate::ui::close_anim::summary_key(p))) {
+            Some(a) => vec![arrive(a, div().flex().flex_col().children(summary_top).children(new_row).into_any_element())],
+            None => summary_top.into_iter().chain(new_row).collect(),
+        };
         // Root terminals belong to no project: no heading, just rows.
-        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(summary_top).children(new_row).when(g.project.is_none(), |d| d.pt(px(4.)));
+        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(top).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
         let key = pid.clone().unwrap_or_else(|| "root".into());

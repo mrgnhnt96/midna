@@ -1300,10 +1300,16 @@ impl MainWindow {
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
         // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays, and so does
         // one that keeps its Summary row (`ui::summary`).
-        // A project going with its Summary row folds away first (`ui::close_anim::summary`).
+        // A project going with its Summary row folds away first (`ui::close_anim::summary`), and
+        // one whose last terminal just closed waits for its Summary row (`ui::close_anim::start`).
         groups.retain(|g| {
             !g.sessions.is_empty()
-                || g.project.is_some_and(|p| p.pinned || crate::ui::summary::row_wanted(self, &p.id, true) || self.close_anim.summary_leaving(&p.id).is_some_and(|l| l.whole))
+                || g.project.is_some_and(|p| {
+                    p.pinned
+                        || crate::ui::summary::row_wanted(self, &p.id, true)
+                        || self.close_anim.summary_leaving(&p.id).is_some_and(|l| l.whole)
+                        || self.close_anim.summary_arriving(&p.id)
+                })
         });
         let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
         for g in groups.iter_mut().chain(std::iter::once(&mut root)) {

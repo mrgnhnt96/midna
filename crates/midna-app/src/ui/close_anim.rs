@@ -26,6 +26,10 @@
 //! Opening or leaving a project's Summary (`summary`) glides the highlight between its Summary
 //! row and the terminal's the same way. A Summary row that leaves the sidebar with it folds away
 //! like a closed row, and a project that goes with it folds away whole, heading and all.
+//!
+//! Closing a project's last terminal leaves its heading for a Summary row (`ui::summary`): the
+//! closed row folds away first, then the Summary row unfolds in its place. A project that keeps
+//! no row (its Summary was seen lately) folds away whole with its last row.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::terminal::TerminalView;
@@ -129,6 +133,8 @@ struct Step {
 pub struct SummaryLeave {
     pub pid: String,
     pub whole: bool,
+    /// It has a Summary row to fold away (not a project whose last terminal just closed).
+    pub row: bool,
     /// The row's top within what folds (the heading above it, when `whole`).
     offset: f32,
     at: Instant,
@@ -255,6 +261,7 @@ fn ms(since: Instant) -> f32 {
 
 /// ⌘W closed `ids`, still in `m.sessions`; `next` is about to be selected.
 pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Context<MainWindow>) {
+    let emptied = crate::ui::summary::closing(m, ids);
     gpui_kit::base::apply_system_reduce_motion(cx);
     if cx.reduce_motion() {
         return;
@@ -274,6 +281,19 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
         .collect();
     a.glide = p.glide.map(|(id, d)| (id, d, now));
     a.pane_due = p.pane.map(|d| (ids.to_vec(), d, now));
+    // The Summary row (and a pinned project's ghost row) waits for the closed row to fold, then
+    // unfolds (its record turns up meanwhile); a project keeping neither folds away whole, its
+    // last row folding inside.
+    let after = now + Duration::from_secs_f32(SLIDE_MS / 1000.);
+    for (pid, keeps) in emptied {
+        if keeps || m.projects.iter().any(|p| p.id == pid && p.pinned) {
+            let key = summary_key(&pid);
+            a.arrivals.retain(|x| x.key != key);
+            a.arrivals.push(Arrival { key, at: after, height: Rc::new(Cell::new(0.)) });
+        } else {
+            a.summary = Some(SummaryLeave { pid, whole: true, row: false, offset: 0., at: now, height: Rc::new(Cell::new(0.)) });
+        }
+    }
     cx.notify();
 }
 
@@ -378,7 +398,7 @@ pub fn summary(m: &mut MainWindow, from: Option<String>, to: Option<String>, gon
     a.summary = gone.and_then(|(pid, whole)| {
         let row = rows.get(&summary_key(&pid))?.0;
         let offset = if whole { row - rows.get(&group_key(&pid))?.0 } else { 0. };
-        Some(SummaryLeave { pid, whole, offset, at: now, height: Rc::new(Cell::new(0.)) })
+        Some(SummaryLeave { pid, whole, row: true, offset, at: now, height: Rc::new(Cell::new(0.)) })
     });
     a.step = match (from.as_ref().and_then(|f| rows.get(f)), to.as_ref().and_then(|t| rows.get(t))) {
         (Some(&from_at), Some(&to_at)) if from != to => {
@@ -431,6 +451,12 @@ impl CloseAnim {
     /// `pid`'s Summary row (or its whole group), when it's folding away.
     pub fn summary_leaving(&self, pid: &str) -> Option<&SummaryLeave> {
         self.summary.as_ref().filter(|s| s.pid == pid && ms(s.at) < SLIDE_MS)
+    }
+
+    /// `pid`'s Summary row is waiting for its project's last closed row to fold, or unfolding:
+    /// the project keeps its heading meanwhile, record or not.
+    pub fn summary_arriving(&self, pid: &str) -> bool {
+        self.arrival(&summary_key(pid)).is_some()
     }
 
     /// The sidebar is moving (it asks for the next frame).
