@@ -502,7 +502,10 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "hook" => hook::run(a),
-        "mcp" => mcp::run(),
+        "mcp" => {
+            a.check(&["compact"])?;
+            mcp::run(if a.has("compact") { mcp::Mode::Compact } else { mcp::Mode::Full })
+        }
         "call" => {
             let method = a.need(1, "method")?;
             if method == "secret.exec_env" {

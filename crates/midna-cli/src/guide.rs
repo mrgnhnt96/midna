@@ -12,6 +12,25 @@ pub const SKILL_MD: &str = include_str!("../assets/SKILL.md");
 pub enum Surface {
     Cli,
     Mcp,
+    /// `midna mcp --compact`: methods are reached through `call_read` / `call`, not a tool each.
+    McpCompact,
+}
+
+/// The compact MCP mode's own tools; hints name these as tools, everything else as a method to call.
+const COMPACT_TOOLS: &[&str] = &["capabilities", "explain", "guide", "search_methods", "describe_method", "call_read", "call"];
+
+/// How compact MCP mode runs `method` with `params` (a JSON object, or empty for none).
+pub fn compact_call(method: &str, params: &str) -> String {
+    let m = catalog().iter().find(|m| m.name == method || m.name.replace('.', "_") == method);
+    let (tool, name) = match m {
+        Some(m) => (if m.mutating { "call" } else { "call_read" }, m.name),
+        None => ("call", method),
+    };
+    if params.is_empty() {
+        format!("the `{tool}` tool with {{\"method\":\"{name}\"}}")
+    } else {
+        format!("the `{tool}` tool with {{\"method\":\"{name}\",\"params\":{params}}}")
+    }
 }
 
 /// `midna capabilities`: short, agent-oriented, works offline.
@@ -73,6 +92,8 @@ fn cmd(surface: Surface, cli: &str, tool: &str) -> String {
     match surface {
         Surface::Cli => format!("`midna {cli}`"),
         Surface::Mcp => format!("the `{tool}` tool"),
+        Surface::McpCompact if COMPACT_TOOLS.contains(&tool) => format!("the `{tool}` tool"),
+        Surface::McpCompact => compact_call(tool, ""),
     }
 }
 
@@ -93,6 +114,7 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
             match surface {
                 Surface::Cli => format!("`midna rules request-removal {id} --reason \"…\"`"),
                 Surface::Mcp => format!("the `rule_request_removal` tool with {{\"id\":\"{id}\",\"reason\":\"…\"}}"),
+                Surface::McpCompact => compact_call("rule.request_removal", &format!("{{\"id\":\"{id}\",\"reason\":\"…\"}}")),
             }
         ),
         (HUMAN_ONLY, "trigger.set_secret") => "Webhook secrets are the human's: midna asked them to paste it in Triggers and discarded \
@@ -117,6 +139,7 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
                 match surface {
                     Surface::Cli => format!("`midna needs get {n}` or `midna needs wait {n}`"),
                     Surface::Mcp => format!("the `needs_you_get` tool with {{\"id\":\"{n}\",\"wait_secs\":60}}"),
+                    Surface::McpCompact => compact_call("needs_you.get", &format!("{{\"id\":\"{n}\",\"wait_secs\":60}}")),
                 }
             )
         }
@@ -140,7 +163,7 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
             "The terminal is busy. Close it anyway with {} (policy-checked; may ask the human), or wait until it is idle.",
             match surface {
                 Surface::Cli => format!("`midna close {id} --force`"),
-                Surface::Mcp => "force: true".into(),
+                Surface::Mcp | Surface::McpCompact => "force: true".into(),
             }
         ),
         (CONFLICT, _) if e.message.contains("upgrading") => "midnad is restarting; retry in a second.".into(),
@@ -157,7 +180,11 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
             };
             format!("List the valid ids with {list}.")
         }
+        (BAD_PARAMS, m) if surface == Surface::McpCompact => {
+            format!("See the params with the `describe_method` tool with {{\"method\":\"{m}\"}}.")
+        }
         (BAD_PARAMS, m) => format!("See the params with {}.", cmd(surface, &format!("schema {m}"), "explain")),
+        (UNKNOWN_METHOD, _) if surface == Surface::McpCompact => "Find the method with the `search_methods` tool.".into(),
         (UNKNOWN_METHOD, _) => format!("List the methods with {}.", cmd(surface, "schema --list", "capabilities")),
         _ => return None,
     })
@@ -315,7 +342,9 @@ const TOPICS: &[(&str, &str)] = &[
         the request path) and the human decides. Never route around a refusal."),
     ("mcp", "`midna mcp` is a stdio MCP server; agents midna launches get it automatically (setting agents.mcp). Tool \
         names are method names with `.` → `_` (session_open, rule_add, …) plus capabilities, explain and guide. A \
-        refused call returns isError with the next step to take."),
+        refused call returns isError with the next step to take. `midna mcp --compact` (what Codex gets) lists only \
+        capabilities, explain, guide, search_methods, describe_method, call_read (read-only methods) and call (any method); \
+        find a method with search_methods, read its params with describe_method, then run it."),
 ];
 
 pub fn topic(name: &str) -> Option<&'static str> {
@@ -772,6 +801,23 @@ mod tests {
         assert!(h.contains("rule_request_removal"), "{h}");
         let e = RpcError::human_only("x").with_data(json!({"needs_you_id": "n_9"}));
         assert!(next_step("project.remove", &json!({}), &e, Surface::Cli).unwrap().contains("n_9"));
+    }
+
+    #[test]
+    fn compact_hints_name_call_and_describe_method() {
+        let c = Surface::McpCompact;
+        let e = RpcError::human_only("rule.remove is human only");
+        let h = next_step("rule.remove", &json!({"id": "r_1"}), &e, c).unwrap();
+        assert!(h.contains(r#"the `call` tool with {"method":"rule.request_removal","params":{"id":"r_1""#), "{h}");
+        let h = next_step("session.get", &json!({}), &RpcError::bad_params("nope"), c).unwrap();
+        assert!(h.contains(r#"the `describe_method` tool with {"method":"session.get"}"#), "{h}");
+        let e = RpcError::new(PENDING, "pending").with_data(json!({"needs_you_id": "n_4"}));
+        let h = next_step("session.close", &json!({}), &e, c).unwrap();
+        assert!(h.contains(r#"the `call_read` tool with {"method":"needs_you.get","params":{"id":"n_4""#), "{h}");
+        let h = next_step("session.read", &json!({}), &RpcError::not_found("gone"), c).unwrap();
+        assert!(h.contains(r#"the `call_read` tool with {"method":"session.list"}"#), "{h}");
+        let e = RpcError::human_only("x").with_data(json!({"needs_you_id": "n_9"}));
+        assert!(next_step("project.remove", &json!({}), &e, c).unwrap().contains("the `explain` tool"));
     }
 
     #[test]

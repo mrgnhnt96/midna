@@ -54,8 +54,12 @@ struct Mcp {
 
 impl Mcp {
     fn spawn(sock: &str, session: Option<&str>) -> Mcp {
+        Mcp::spawn_with(sock, session, &[])
+    }
+
+    fn spawn_with(sock: &str, session: Option<&str>, args: &[&str]) -> Mcp {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_midna"));
-        cmd.arg("mcp").env("MIDNA_SOCKET", sock).env_remove("MIDNA_SESSION").env_remove("MIDNA_HOME");
+        cmd.arg("mcp").args(args).env("MIDNA_SOCKET", sock).env_remove("MIDNA_SESSION").env_remove("MIDNA_HOME");
         if let Some(s) = session {
             cmd.env("MIDNA_SESSION", s);
         }
@@ -283,4 +287,100 @@ fn agent_workflow_through_mcp_only() {
     assert!(why.contains("waiting on the human") && why.contains("staging password"), "{why}");
 
     m.ok("session_close", json!({ "id": sid }));
+}
+
+/// `midna mcp --compact`: seven tools, and every method still reachable through
+/// search_methods -> describe_method -> call_read / call.
+#[test]
+fn compact_mode_search_describe_call() {
+    let d = D::start();
+    let mut human = d.human();
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = human.call_value("project.add", json!({ "path": dir, "name": "demo" })).unwrap();
+    let pid = project["id"].as_str().unwrap().to_string();
+    let open = |human: &mut midna_proto::Client, name: &str| -> String {
+        let s = human.call_value("session.open", json!({ "project_id": pid, "kind": "shell", "command": ["/bin/sh"], "name": name })).unwrap();
+        s["id"].as_str().unwrap().to_string()
+    };
+    let me = open(&mut human, "agent");
+    let other = open(&mut human, "other");
+
+    let mut m = Mcp::spawn_with(&d.sock(), Some(&me), &["--compact"]);
+    let i = init(&mut m);
+    assert!(i["instructions"].as_str().unwrap().contains("search_methods"), "{i}");
+    let listed = m.request("tools/list", json!({}));
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["capabilities", "explain", "guide", "search_methods", "describe_method", "call_read", "call"]);
+    let bytes = listed["result"].to_string().len();
+    assert!(bytes < 6000, "compact tools/list is {bytes} bytes");
+
+    // Search -> describe -> call.
+    let found = m.ok("search_methods", json!({ "query": "webhook" }));
+    assert!(found["methods"].as_array().unwrap().iter().any(|f| f["method"] == "trigger.add"), "{found}");
+    let session = m.ok("search_methods", json!({ "group": "session", "detail": "names", "limit": 100 }));
+    assert!(session["methods"].as_array().unwrap().contains(&json!("session.open")), "{session}");
+    let open = m.ok("describe_method", json!({ "method": "session.open" }));
+    assert_eq!(open["tool"], "call");
+    assert!(open["input_schema"]["properties"]["kind"].is_object(), "{open}");
+    let sh = m.ok("call", json!({ "method": "session.open", "params": { "kind": "shell", "command": ["/bin/sh"], "name": "build" } }));
+    let sid = sh["id"].as_str().unwrap().to_string();
+    assert_eq!(sh["project_id"], pid.as_str());
+    m.ok("call", json!({ "method": "session_input", "params": { "id": sid, "text": "echo mcp-$((2+3))", "enter": true } }));
+    let t0 = Instant::now();
+    loop {
+        let r = m.ok("call_read", json!({ "method": "session.read", "params": { "id": sid, "lines": 20 } }));
+        if r["text"].as_str().unwrap().lines().any(|l| l.trim() == "mcp-5") {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "output never appeared: {}", r["text"]);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // call_read only runs read-only methods.
+    let rule = json!({ "effect": "deny", "matcher": { "kind": "command", "pattern": "rm -rf /*" }, "scope": { "kind": "project", "id": pid } });
+    let r = m.tool("call_read", json!({ "method": "rule.add", "params": rule }));
+    assert_eq!(r["isError"], true);
+    assert!(text(&r).contains("the `call` tool"), "{}", text(&r));
+    assert!(human.call_value("rule.list", json!({})).unwrap().as_array().unwrap().is_empty());
+
+    // Refusals name the compact way to the next step, in dotted method names.
+    let rid = m.ok("call", json!({ "method": "rule.add", "params": rule }))["id"].as_str().unwrap().to_string();
+    let r = m.tool("call", json!({ "method": "rule.remove", "params": { "id": rid } }));
+    assert_eq!(r["isError"], true);
+    assert_eq!(r["structuredContent"]["error"]["code"], 2);
+    let msg = text(&r);
+    assert!(msg.contains(r#"the `call` tool with {"method":"rule.request_removal""#) && msg.contains(&rid), "{msg}");
+    assert!(!msg.contains("rule_request_removal"), "{msg}");
+    let why = text(&m.tool("explain", json!({ "target": rid })));
+    assert!(why.contains("rm -rf"), "{why}");
+    let r = m.tool("call_read", json!({ "method": "session.get", "params": { "nope": 1 } }));
+    assert_eq!(r["isError"], true);
+    assert!(text(&r).contains(r#"the `describe_method` tool with {"method":"session.get"}"#), "{}", text(&r));
+    let r = m.tool("call", json!({ "method": "settings.set", "params": { "key": "approve.from_cli", "value": true } }));
+    assert_eq!(r["isError"], true);
+    assert!(text(&r).contains("needs-you") && text(&r).contains("Don't retry"), "{}", text(&r));
+
+    // no_wait: a close that needs the human comes back pending at once.
+    let t0 = Instant::now();
+    let r = m.tool("call", json!({ "method": "session.close", "params": { "id": other, "force": true }, "no_wait": true }));
+    assert!(t0.elapsed() < Duration::from_secs(10), "no_wait waited");
+    assert_eq!(r["isError"], true);
+    assert_eq!(r["structuredContent"]["error"]["code"], 6, "{r}");
+    assert!(text(&r).contains(r#"the `call_read` tool with {"method":"needs_you.get""#), "{}", text(&r));
+
+    // Skipped methods stay unreachable, and per-method tool names point at call / call_read.
+    for (tool, args) in [("describe_method", json!({ "method": "secret.exec_env" })),
+                         ("call_read", json!({ "method": "secret.exec_env", "params": { "name": "X" } })),
+                         ("call", json!({ "method": "secret_exec_env", "params": { "name": "X" } }))] {
+        let r = m.tool(tool, args);
+        assert_eq!(r["isError"], true, "{tool}");
+        assert!(text(&r).contains("secret exec"), "{tool}: {}", text(&r));
+    }
+    let r = m.request("tools/call", json!({ "name": "session_list", "arguments": {} }));
+    assert_eq!(r["error"]["code"], -32602);
+    assert!(r["error"]["message"].as_str().unwrap().contains("call_read"), "{r}");
+
+    m.ok("call", json!({ "method": "session.close", "params": { "id": sid } }));
 }
