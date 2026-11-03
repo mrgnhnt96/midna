@@ -95,7 +95,8 @@ pub fn newline(text: &str, cursor: usize) -> Option<Newline> {
 /// item, in order. A list is the numbered items at one indent with nothing between them but
 /// deeper lines (a nested list, say); a blank line or a shallower line ends it. The cursor's own
 /// line doesn't end a list when it isn't an item, so a list whose middle item just lost its
-/// marker still counts through it.
+/// marker still counts through it. Nor does it when it's blank (⌘⌫ emptied an item), unless the
+/// next item starts over at 1: that's a second list.
 pub fn renumber(text: &str, cursor: usize) -> Vec<Edit> {
     let here = line_at(text, cursor);
     // Open lists by indent: (indent, delimiter, next number, whether it touches the cursor, edits).
@@ -110,13 +111,21 @@ pub fn renumber(text: &str, cursor: usize) -> Vec<Edit> {
     };
     let mut start = 0;
     let mut prev_here = false;
+    // The cursor's line was blank and left the lists open, for the line after it to decide.
+    let mut blank_here = false;
     for line in text.split('\n') {
         let range = start..start + line.len();
         start = range.end + 1;
         let is_here = range == here;
         let after_here = std::mem::replace(&mut prev_here, is_here);
+        let after_blank = std::mem::replace(&mut blank_here, false);
+        if after_blank && !matches!(item(line), Some(Item { marker: Marker::Number(n, _), .. }) if n != 1) {
+            close(&mut open, 0);
+        }
         let Some(it) = item(line) else {
-            if line.trim().is_empty() {
+            if line.trim().is_empty() && is_here {
+                blank_here = true;
+            } else if line.trim().is_empty() {
                 close(&mut open, 0);
             } else if !is_here {
                 let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
@@ -234,6 +243,17 @@ mod tests {
         // The cursor stays put when a number before it gets shorter or longer.
         assert_eq!(renumbered("9. a\n11. b|"), "9. a\n10. b|");
         assert_eq!(renumbered("8. a\n9. b\n9. c|"), "8. a\n9. b\n10. c|");
+    }
+
+    #[test]
+    fn an_item_emptied_by_cmd_backspace_doesnt_split_the_list() {
+        assert_eq!(renumbered("1. a\n|\n3. c"), "1. a\n|\n2. c");
+        assert_eq!(renumbered("1. a\n|\n3. c\n4. d"), "1. a\n|\n2. c\n3. d");
+        assert_eq!(renumbered("1. a\n   |\n3. c"), "1. a\n   |\n2. c");
+        // A list that starts over at 1 past the blank line is its own.
+        assert_eq!(renumbered("1. a\n|\n1. x\n3. y"), "1. a\n|\n1. x\n2. y");
+        // Only the cursor's blank line bridges.
+        assert_eq!(renumbered("1. a|\n\n3. c"), "1. a|\n\n3. c");
     }
 
     #[test]
