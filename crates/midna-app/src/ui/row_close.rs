@@ -3,7 +3,7 @@
 //! Close, away from where you clicked, and says when an agent is still working or waiting on
 //! you. Close ignores clicks for its first `ARM` (a double-click on the ✕ can't close), and the
 //! line folds back after `REVERT`, `LEAVE` after the pointer leaves the row, on a second click
-//! of the ✕ or on a click on the row.
+//! of the ✕ or on a click on the row. Closed, the row folds away with its line still open.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::theme::Theme;
@@ -21,6 +21,8 @@ const LEAVE: Duration = Duration::from_millis(600);
 const OPEN_MS: f32 = 180.;
 /// The line's height, open.
 const LINE_H: f32 = 33.;
+/// A closed row's ghost draws its line open this long (past its fold).
+const CLOSED: Duration = Duration::from_millis(crate::ui::close_anim::SLIDE_MS as u64 + 100);
 
 pub struct Armed {
     pub id: String,
@@ -32,6 +34,9 @@ pub struct RowClose {
     pub armed: Option<Armed>,
     /// The row whose line is folding back, and since when.
     leaving: Option<(String, Instant)>,
+    /// The row just closed from its line, and when: its ghost folds away with the line still
+    /// open (`ui::close_anim`), rather than losing it first.
+    closed: Option<(String, Instant)>,
     /// Folds the line back when `REVERT` or `LEAVE` runs out (dropping it cancels).
     task: Option<Task<()>>,
 }
@@ -41,9 +46,22 @@ impl RowClose {
         self.armed.as_ref().is_some_and(|a| a.id == id)
     }
 
+    /// `id` was just closed from its line: its ghost still draws it open.
+    fn just_closed(&self, id: &str) -> bool {
+        self.closed.as_ref().is_some_and(|(c, at)| c == id && at.elapsed() < CLOSED)
+    }
+
+    /// `id` looks armed: armed, or folding away after its Close.
+    pub fn looks_armed(&self, id: &str) -> bool {
+        self.is_armed(id) || self.just_closed(id)
+    }
+
     /// How far `id`'s line is open, 0 to 1.
     pub fn open(&self, id: &str) -> f32 {
         let p = |at: Instant| (at.elapsed().as_secs_f32() * 1000. / OPEN_MS).min(1.);
+        if self.just_closed(id) {
+            return 1.;
+        }
         match (&self.armed, &self.leaving) {
             (Some(a), _) if a.id == id => ease_out(p(a.at)),
             (_, Some((l, at))) if l == id => 1. - ease_out(p(*at)),
@@ -117,6 +135,7 @@ fn confirm(m: &mut MainWindow, id: &str, window: &mut Window, cx: &mut Context<M
     m.row_close.task = None;
     m.row_close.armed = None;
     m.row_close.leaving = None;
+    m.row_close.closed = Some((id.to_string(), Instant::now()));
     m.close_row(id, window, cx);
 }
 
@@ -134,7 +153,7 @@ fn ask(m: &MainWindow, s: &Session) -> (String, bool) {
 
 /// The ✕ that sits on the agent icon: shown while the row is hovered (`group`) or armed.
 pub fn x_button(m: &MainWindow, s: &Session, group: &'static str, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let (id, armed) = (s.id.clone(), m.row_close.is_armed(&s.id));
+    let (id, armed) = (s.id.clone(), m.row_close.looks_armed(&s.id));
     div()
         .id(SharedString::from(format!("row-x-{}", s.id)))
         .absolute()
@@ -164,7 +183,7 @@ pub fn line(m: &MainWindow, s: &Session, t: &Theme, cx: &mut Context<MainWindow>
         return None;
     }
     let (text, busy) = ask(m, s);
-    let ready = m.row_close.ready(&s.id);
+    let ready = m.row_close.ready(&s.id) || m.row_close.just_closed(&s.id);
     let (cancel_id, close_id, line) = (s.id.clone(), s.id.clone(), t.line);
     Some(
         div()
@@ -229,6 +248,16 @@ mod tests {
         assert!(!armed("a", Duration::from_millis(50)).ready("a"));
         assert!(armed("a", ARM).ready("a"));
         assert!(!armed("a", ARM).ready("b"));
+    }
+
+    #[test]
+    fn a_row_closed_from_its_line_keeps_it_open_while_it_folds() {
+        let r = RowClose { closed: Some(("a".into(), Instant::now())), ..Default::default() };
+        assert_eq!(r.open("a"), 1.);
+        assert!(r.looks_armed("a") && !r.is_armed("a") && !r.looks_armed("b"));
+        let r = RowClose { closed: Some(("a".into(), Instant::now() - Duration::from_secs(1))), ..Default::default() };
+        assert_eq!(r.open("a"), 0.);
+        assert!(!r.looks_armed("a"));
     }
 
     #[test]
