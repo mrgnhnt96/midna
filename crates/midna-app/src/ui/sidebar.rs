@@ -414,8 +414,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                 Some(l) => fold_away(m, l, t, row(cx)),
                 None => return None,
             };
-            // Only while folding: at rest a highlight moving out of the row shows.
-            let el = div().flex_none().when(fold > 0., |d| d.overflow_hidden()).opacity(1. - fold).child(el);
+            // Its room folds with the group's (as the rows' runs do), its content fading.
+            let el = div().flex_none().opacity(1. - fold).child(el).into_any_element();
+            let el = fold_run(vec![el], format!("{p}/summary"), fold, m)?;
             let el = wipe(line, 26., el.into_any_element());
             line += 1;
             Some(el)

@@ -1086,6 +1086,12 @@ impl MainWindow {
                 let rows = self.sidebar_rows(Some(&sel), cx);
                 closed_neighbour = neighbour(&rows, &sel, |id| s.iter().any(|x| x.id == id));
             }
+            // Terminals that closed on their own (auto close, their shell exiting, another
+            // client) fold away like ⌘W's, while they're still in `sessions`.
+            let gone: Vec<String> = self.sessions.iter().filter(|x| !s.iter().any(|y| y.id == x.id)).map(|x| x.id.clone()).collect();
+            if self.loaded && !gone.is_empty() {
+                crate::ui::close_anim::start(self, &gone, closed_neighbour.as_deref(), cx);
+            }
             self.sessions = s;
             // New terminals (from an agent, a trigger, the CLI) land in the home window.
             if self.is_home() {
