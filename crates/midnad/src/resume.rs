@@ -309,7 +309,7 @@ pub fn on_wake(d: &Daemon, slept_at: i64) {
 }
 
 fn actor(cause: Cause) -> Actor {
-    Actor { kind: ActorKind::System, session: None, name: Some(cause.name().into()) }
+    Actor { kind: ActorKind::System, session: None, name: Some(cause.name().into()), trigger: None, via: None }
 }
 
 fn tick(d: &Daemon) {

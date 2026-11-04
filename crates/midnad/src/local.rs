@@ -831,7 +831,7 @@ pub fn prompt_blocked(d: &Arc<Daemon>, sid: &str, content: &str) {
     let Some((project, agent)) = d.core().state.session(sid).map(|s| (s.project_id.clone(), s.agent)) else { return };
     crate::rpc::agent::end_turn_if_open(d, sid, "prompt blocked");
     d.set_status(sid, StatusState::Idle, Some("prompt blocked by a hook".into()), None, Actor::system());
-    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: agent.map(|a| a.as_str().to_string()) };
+    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: agent.map(|a| a.as_str().to_string()), trigger: None, via: None };
     let prompt = prompt.or_else(|| last_prompt(d, sid));
     d.emit(kinds::AGENT_PROMPT_BLOCKED, actor, Some(project), Some(sid.to_string()), json!({ "hook": hook, "message": message, "prompt": prompt }));
 }

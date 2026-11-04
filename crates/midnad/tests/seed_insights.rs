@@ -56,7 +56,7 @@ impl Log {
 }
 
 fn agent_actor(sid: &str, agent: &str) -> Actor {
-    Actor { kind: ActorKind::Agent, session: Some(sid.into()), name: Some(agent.into()) }
+    Actor { kind: ActorKind::Agent, session: Some(sid.into()), name: Some(agent.into()), trigger: None, via: None }
 }
 
 /// Write `state.json` (projects) and `events.jsonl` (history up to `now`) into `home`.
@@ -129,7 +129,7 @@ pub fn seed_history(home: &Path, now: i64) -> usize {
         for _ in 0..rng.range(0, if weekend { 1 } else { 3 }) {
             let t = day + rng.range(9 * 3600, 18 * 3600);
             if t < cutoff {
-                let actor = Actor { kind: ActorKind::Trigger, session: None, name: Some("PR review".into()) };
+                let actor = Actor { kind: ActorKind::Trigger, session: None, name: Some("PR review".into()), trigger: None, via: None };
                 log.push(t, "trigger.fired", actor, Some("p_a91c07"), None, json!({"trigger_id": "t_review", "event": "pull_request.opened"}));
             }
         }

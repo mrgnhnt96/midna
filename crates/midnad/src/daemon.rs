@@ -213,6 +213,9 @@ pub struct Daemon {
     pub worktrees: crate::worktrees::Runtime,
     /// What terminals touched, and cleanup runs (`cleanup.rs`). Never held together with `core`.
     pub cleanup: crate::cleanup::Runtime,
+    /// Triggers' headless runs still going (`headless.rs`), to attribute their calls. Never held
+    /// together with `core`.
+    pub runs: crate::headless::Runs,
 }
 
 impl Daemon {
@@ -274,6 +277,7 @@ impl Daemon {
             guard: Default::default(),
             worktrees: Default::default(),
             cleanup: Default::default(),
+            runs: Default::default(),
             cfg,
         }))
     }

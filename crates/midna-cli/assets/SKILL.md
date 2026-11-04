@@ -232,6 +232,11 @@ events below and for any local-only flag; passing it is always fine.
   payload / event data, e.g. `{{message}}`). In `--run` each value is shell-quoted.
 - `--cooldown 5m` (default 60s) is per terminal. Events a trigger causes never fire triggers, so
   a `--send` can't loop.
+- Who did it: an event's `actor` is `{kind: trigger, name, trigger: <id>}` when a trigger acted on
+  its own. While a headless `--run` command is still going, the midna calls it makes (`midna open
+  --agent …`, `midna attention …`) get `{kind: trigger, name, trigger: <id>, via: "run"}`, with agent
+  privileges; midna works this out from the process tree, never from `MIDNA_TRIGGER`. A run's own
+  `--allowedTools` isn't widened: only the tools set on the trigger are.
 - Durations: `90s`, `55m`, `1h30m`. A bare number means minutes for `--idle-for`, seconds for
   `--cooldown`.
 - Escape hatch: `--action-json '{"kind":"send_to_session","steps":[{"text":"/compact"}]}'` and

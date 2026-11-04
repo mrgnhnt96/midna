@@ -91,7 +91,7 @@ pub fn tick(d: &Daemon) {
 
 fn raise(d: &Daemon, sid: &str, cwd: &str, screen: Vec<String>) {
     let agent = d.core().state.session(sid).and_then(|s| s.agent).map(|a| a.as_str()).unwrap_or("the agent");
-    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.to_string()) };
+    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.to_string()), trigger: None, via: None };
     let mut item = d.new_needs_you(NeedsYouKind::PermissionPrompt, format!("{TITLE} {cwd}"), actor, Some(sid.to_string()));
     item.detail = format!(
         "{agent} asks whether to trust the files in {cwd} before it starts (it may read, edit and run them). \
@@ -181,7 +181,7 @@ fn remember(d: &Daemon, cwd: &str) {
         _ => cwd.to_string(),
     };
     list.push(entry);
-    let human = Actor { kind: ActorKind::Human, session: None, name: None };
+    let human = Actor { kind: ActorKind::Human, session: None, name: None, trigger: None, via: None };
     crate::rpc::settings::set_as(d, human, "agents.trust_folders", json!(list));
 }
 

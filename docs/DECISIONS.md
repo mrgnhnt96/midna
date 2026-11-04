@@ -168,7 +168,8 @@
   - Every non-duplicate request is recorded (cap 500 in state; oldest pruned). Payloads of authenticated deliveries are kept in `$MIDNA_HOME/deliveries/<d_id>.json` (0600) for replay.
   - A verified GitHub `ping` sets `github_hook_id` on the triggers whose secret signed it (and whose repo filter matches), so recovery needs no extra setup.
   - Delivery gained (additively) `action`, `repo`, `subject`, `http_status`, `eval` (one line per listening trigger), `triggers_fired`, `sessions_started`, `recovered`, `replay_of`. Trigger gained `last_fired_summary`, `enabled_at`, `secret_set_at`, `secret_store`, `github_hook_id`, `session_name_template`.
-- **Actions.** Run with a `Ctx` whose actor is `{kind: trigger, name: <trigger name>}` (new `Ctx.as_actor`, agent-level privileges), through `rpc::session::open`.
+- **Actions.** Run with a `Ctx` whose actor is `{kind: trigger, name: <trigger name>, trigger: <id>}` (new `Ctx.as_actor`, agent-level privileges), through `rpc::session::open`.
+  - Calls from a headless run's processes while it runs act as `{kind: trigger, name, trigger: <id>, via: run}` (`bind_caller` asks `headless::Runs::owner(peer pid)`: the pid's ancestry, or its `getsid`, contains a live run's pid). Role stays agent, any session claim is dropped, and a run's own `--allowedTools` doesn't widen `allowed_tools`: only the trigger's own `allowed_tools`, set by the human, do. `MIDNA_TRIGGER` and caller claims are never trusted for this. Taskboard's start grants read `actor.trigger` off `session.opened`.
   - `start_agent`: prompt = rendered template; terminal name = `session_name_template` or `<trigger name> #<pr>`.
   - `run_command`: a `monitor` terminal; **every substituted value is shell-single-quoted** so PR titles can't inject shell.
   - `attention`: a bulk-safe `note` needs-you with `trigger_id`.
