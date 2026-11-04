@@ -271,7 +271,7 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
     let p = plan(&groups, &order, ids, next);
     let now = Instant::now();
     let a = &mut m.close_anim;
-    a.ghosts = p
+    let new: Vec<Ghost> = p
         .ghosts
         .into_iter()
         .filter_map(|(id, group, next, slot)| {
@@ -279,8 +279,20 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
             Some(Ghost { session, group, next, slot, at: now, height: Rc::new(Cell::new(0.)) })
         })
         .collect();
-    a.glide = p.glide.map(|(id, d)| (id, d, now));
-    a.pane_due = p.pane.map(|d| (ids.to_vec(), d, now));
+    // Ghosts still folding stay (a terminal closing on its own mid-⌘W); one that sat above a
+    // row closing now moves to sit above what that row did.
+    a.ghosts.retain(|g| ms(g.at) < SLIDE_MS);
+    for g in &mut a.ghosts {
+        while let Some(n) = new.iter().find(|x| g.next.as_deref() == Some(&x.session.id)) {
+            g.next = n.next.clone();
+        }
+    }
+    a.ghosts.extend(new);
+    // The highlight and the pane move only when the closing hands the selection on.
+    if next.is_some() {
+        a.glide = p.glide.map(|(id, d)| (id, d, now));
+        a.pane_due = p.pane.map(|d| (ids.to_vec(), d, now));
+    }
     // The Summary row (and a pinned project's ghost row) waits for the closed row to fold, then
     // unfolds (its record turns up meanwhile); a project keeping neither folds away whole, its
     // last row folding inside.
