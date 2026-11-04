@@ -104,7 +104,7 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
   - Fields: `{ id, effect: allow|ask|deny, matcher: Matcher, scope: global|project(id)|session(id), expires_at?, added_by: Actor, added_at, origin?: {needs_you_id, approval_scope}, fired: u64, last_fired_at?, removal_request?: RemovalRequest }`
   - **Matcher** `{ kind: command|tool|path|cli|window, pattern: string }`. Patterns are globs, e.g. `git push --force*`, `Bash(rm -rf*)`, `close --force`.
   - **RemovalRequest** `{ requested_by: Actor, reason, at, needs_you_id }`
-- **Actor** `{ kind: human|agent|system|trigger, session?: id, name?: string }`
+- **Actor** `{ kind: human|agent|system|trigger, session?: id, name?: string, trigger?: id, via?: "run" }`. `trigger` is the acting trigger's id; `via: "run"` marks a call from a headless run's process tree (`headless::Runs::owner`, matched by peer pid ancestry or `getsid`, never by `MIDNA_TRIGGER`).
 - **PolicyAction** `{ kind: command|tool|path|cli|window, value: string, session?: id, project?: id }`
   - **Evaluation**:
     - The most specific scope wins (session > project > global).

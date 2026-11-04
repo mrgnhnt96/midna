@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     let sid = p.session.clone().or(ctx.session.clone()).ok_or_else(|| RpcError::bad_params("no session: run inside a midna terminal or pass session"))?;
     let live = d.core().state.session(&sid).map(|s| (s.status.state, s.project_id.clone()));
-    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.clone()), name: Some(p.agent.as_str().into()) };
+    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.clone()), name: Some(p.agent.as_str().into()), trigger: None, via: None };
     let ev = p.event.as_str();
     let payload = &p.payload;
     let Some((cur, project)) = live else {

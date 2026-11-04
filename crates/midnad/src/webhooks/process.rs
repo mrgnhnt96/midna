@@ -417,7 +417,7 @@ fn stale_link(source: TriggerSource, event: &str, payload: &Value) -> Option<Str
 }
 
 pub fn trigger_actor(t: &Trigger) -> Actor {
-    Actor { kind: ActorKind::Trigger, session: None, name: Some(t.name.clone()) }
+    Actor::trigger(&t.id, &t.name)
 }
 
 fn agent_label(a: AgentKind) -> &'static str {

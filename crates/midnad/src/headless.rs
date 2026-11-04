@@ -6,6 +6,8 @@
 //! (`Body`); otherwise stdin is closed. Its exit code and the end of its output go on the delivery that
 //! fired it (`Delivery::command_runs`), then `trigger.command_finished` is emitted.
 //!
+//! While it runs, midnad calls from its processes act as the trigger (`Runs::owner`).
+//!
 //! Each run has a thread of its own that waits for it, so the trigger thread never blocks.
 //! Past its timeout the group gets SIGTERM, then SIGKILL 5 seconds later.
 use crate::daemon::Daemon;
@@ -27,6 +29,43 @@ const KEEP_BYTES: usize = 64 * 1024;
 const DRAIN: Duration = Duration::from_secs(2);
 /// What a run still going when midnad last stopped says.
 pub const LOST: &str = "midnad restarted while it ran";
+
+/// Headless runs still going: (pid, trigger id, trigger name). A run is its own POSIX session
+/// (`setsid`), so its pid is also its session id. Not persisted: a run midnad lost track of
+/// across a restart is no longer anyone's.
+#[derive(Default)]
+pub struct Runs(Mutex<Vec<(i32, Id, String)>>);
+
+impl Runs {
+    fn book(&self) -> std::sync::MutexGuard<'_, Vec<(i32, Id, String)>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn add(&self, pid: i32, t: &Trigger) {
+        self.book().push((pid, t.id.clone(), t.name.clone()));
+    }
+
+    fn remove(&self, pid: i32) {
+        self.book().retain(|(p, _, _)| *p != pid);
+    }
+
+    /// The trigger whose run process `pid` belongs to, as its actor (`via: "run"`): a run is
+    /// among `pid`'s ancestors, or `pid` is in a run's POSIX session (a process that
+    /// double-forked away keeps its session). Only midnad's own record of the processes it
+    /// started counts, never `MIDNA_TRIGGER`.
+    pub fn owner(&self, pid: i32) -> Option<Actor> {
+        let runs = self.book().clone();
+        if runs.is_empty() {
+            return None;
+        }
+        let of = |p: i32| runs.iter().find(|(r, _, _)| *r == p).map(|(_, id, name)| Actor::trigger_run(id, name));
+        if let Some(a) = crate::peer::ancestry(pid).into_iter().find_map(of) {
+            return Some(a);
+        }
+        let sid = unsafe { libc::getsid(pid) };
+        if sid > 1 { of(sid) } else { None }
+    }
+}
 
 /// The webhook delivery a command runs for.
 pub struct Body<'a> {
@@ -118,6 +157,9 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
         Ok(c) => c,
         Err(e) => return failed(run, e),
     };
+    let pid = child.id() as i32;
+    // Before anything it runs can call midnad.
+    d.runs.add(pid, t);
     // A command that doesn't read its stdin just closes it: the write fails and that's fine.
     if let (Some(mut stdin), Some(b)) = (child.stdin.take(), body) {
         let json = b.json.to_string();
@@ -148,9 +190,9 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
         read_done2.store(true, std::sync::atomic::Ordering::Release);
     });
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS));
+    let runs = &d.runs;
     let (d, del, started) = (d.clone(), delivery_id.to_string(), run.clone());
-    let _ = std::thread::Builder::new().name("headless-run".into()).spawn(move || {
-        let pid = child.id() as i32;
+    let waiter = std::thread::Builder::new().name("headless-run".into()).spawn(move || {
         let began = Instant::now();
         let mut killed_at: Option<Instant> = None;
         let mut timed_out = false;
@@ -173,6 +215,8 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
             }
             std::thread::sleep(Duration::from_millis(100));
         };
+        // It's over: what it left behind is no longer the trigger's.
+        d.runs.remove(pid);
         let drain = Instant::now();
         while !read_done.load(std::sync::atomic::Ordering::Acquire) && drain.elapsed() < DRAIN {
             std::thread::sleep(Duration::from_millis(20));
@@ -190,6 +234,9 @@ pub fn start(d: &Arc<Daemon>, t: &Trigger, delivery_id: &str, project_id: &str, 
         }
         finish(&d, &del, run);
     });
+    if waiter.is_err() {
+        runs.remove(pid);
+    }
     run
 }
 

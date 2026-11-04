@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     fn by(mut e: Event, kind: ActorKind) -> Event {
-        e.actor = Actor { kind, session: None, name: None };
+        e.actor = Actor { kind, session: None, name: None, trigger: None, via: None };
         e
     }
 

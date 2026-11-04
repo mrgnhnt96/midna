@@ -23,7 +23,9 @@ pub enum ActorKind {
     Trigger,
 }
 
-/// Who did something. Agents inside a midna terminal carry their session id.
+/// Who did something. Agents inside a midna terminal carry their session id. A trigger carries
+/// its id (`trigger`) and name; `via: "run"` marks a call made by a process of that trigger's
+/// headless run (midnad matches the caller's process to the run it started, never an env var).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Actor {
@@ -32,17 +34,29 @@ pub struct Actor {
     pub session: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 impl Actor {
     pub fn human() -> Actor {
-        Actor { kind: ActorKind::Human, session: None, name: None }
+        Actor { kind: ActorKind::Human, session: None, name: None, trigger: None, via: None }
     }
     pub fn system() -> Actor {
-        Actor { kind: ActorKind::System, session: None, name: None }
+        Actor { kind: ActorKind::System, session: None, name: None, trigger: None, via: None }
     }
     pub fn agent(session: Option<Id>) -> Actor {
-        Actor { kind: ActorKind::Agent, session, name: None }
+        Actor { kind: ActorKind::Agent, session, name: None, trigger: None, via: None }
+    }
+    /// Trigger `id` (named `name`) acting on its own.
+    pub fn trigger(id: &str, name: &str) -> Actor {
+        Actor { kind: ActorKind::Trigger, session: None, name: Some(name.to_string()), trigger: Some(id.to_string()), via: None }
+    }
+    /// A process of trigger `id`'s headless run.
+    pub fn trigger_run(id: &str, name: &str) -> Actor {
+        Actor { via: Some("run".into()), ..Actor::trigger(id, name) }
     }
     pub fn is_human(&self) -> bool {
         self.kind == ActorKind::Human
@@ -276,7 +290,7 @@ pub struct Session {
     /// The `--allowedTools` its agent was launched with, when the human gave them: the human
     /// opened it, or a `start_agent` trigger's `allowed_tools` did. A global or project `ask`
     /// rule on one of these tools steps aside (`DecisionSource::Launch`). Empty when an agent
-    /// opened it, whatever its arguments.
+    /// or a trigger's headless run opened it, whatever its arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
 }

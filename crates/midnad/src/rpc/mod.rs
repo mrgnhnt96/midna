@@ -155,7 +155,7 @@ impl Ctx {
         Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None, supervised: false }
     }
 
-    /// A webhook trigger acting on its own (agent-level privileges, actor kind `trigger`).
+    /// A trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
         Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None, supervised: false }
     }
@@ -183,7 +183,19 @@ impl Ctx {
 ///   tests): the claim is trusted;
 /// - anywhere else (another terminal app, a process that escaped its terminal): the claim is
 ///   dropped and the caller is an agent with no terminal.
+///
+/// A process of a trigger's headless run (still going) acts as that trigger
+/// (`Actor::trigger_run`), with an agent's role and no terminal, whatever it claims. midnad
+/// knows the run from the process it started, not from `MIDNA_TRIGGER`.
 pub fn bind_caller(d: &Daemon, ctx: &mut Ctx) -> Result<(), RpcError> {
+    if ctx.role == Role::Agent
+        && ctx.as_actor.is_none()
+        && let Some(run) = ctx.pid.and_then(|pid| d.runs.owner(pid))
+    {
+        ctx.session = None;
+        ctx.as_actor = Some(run);
+        return Ok(());
+    }
     let Some(claim) = ctx.session.clone() else { return Ok(()) };
     let Some(pid) = ctx.pid else {
         ctx.session = None;

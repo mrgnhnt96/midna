@@ -270,8 +270,9 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
         adopted: None,
         close_on_exit: p.close_on_exit,
         auto_name: None,
-        // Only tools the human gave count: an agent could launch one with any arguments.
-        allowed_tools: if agent.is_some() && (ctx.is_human() || ctx.actor().kind == ActorKind::Trigger) {
+        // Only tools the human gave count: an agent could launch one with any arguments, and so
+        // could a trigger's headless run (`via: "run"`), whose command line no one checked.
+        allowed_tools: if agent.is_some() && (ctx.is_human() || matches!(ctx.actor(), Actor { kind: ActorKind::Trigger, via: None, .. })) {
             crate::policy::launch_allowed_tools(&p.agent_args)
         } else {
             vec![]
@@ -1240,7 +1241,7 @@ pub fn on_title(d: &Arc<Daemon>, sid: &str, generation: u64, title: &str, screen
             }
         }
         (TitleHint::Working, StatusState::Idle | StatusState::Done) if agent == AgentKind::Codex => {
-            let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.as_str().into()) };
+            let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.as_str().into()), trigger: None, via: None };
             crate::rpc::agent::start_turn(d, sid, &project, &actor);
             d.set_status(sid, StatusState::Working, Some("working (title)".into()), None, Actor::system());
         }

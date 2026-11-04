@@ -173,6 +173,8 @@ fn signed_github_delivery_starts_agent_with_rendered_prompt() {
     let opened = ev.iter().find(|e| e["kind"] == "session.opened").unwrap();
     assert_eq!(opened["actor"]["kind"], "trigger");
     assert_eq!(opened["actor"]["name"], "Review new PRs");
+    assert_eq!(opened["actor"]["trigger"], tid.as_str());
+    assert!(opened["actor"].get("via").is_none(), "{opened}");
     let fired = ev.iter().find(|e| e["kind"] == "trigger.fired").unwrap();
     assert_eq!(fired["data"]["trigger_id"], tid.as_str());
     assert_eq!(fired["session_id"], sid.as_str());
@@ -606,6 +608,62 @@ fn headless_run_command_gets_the_delivery_body() {
     let rec = midnad::webhooks::process::recover(&daemon, "pull_request", "guid-body-2", pr("synchronize", 10)).expect("recovered");
     assert_eq!(read(2, "stdin"), pr("synchronize", 10).to_string());
     assert_eq!(read(2, "env"), format!("pull_request synchronize guid-body-2 {}", rec.id));
+}
+
+/// A shell line that sends one `session.open` (an agent with `--allowedTools Bash`, named
+/// `name`) to the socket in `$sock`, the way `midna open --agent claude` would.
+fn open_over_socket(pid: &str, name: &str, sock: &str) -> String {
+    let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "session.open",
+                      "params": { "project_id": pid, "kind": "agent", "agent": "claude", "name": name,
+                                  "agent_args": ["--allowedTools", "Bash"], "caller": { "role": "agent" } } });
+    format!("printf '%s\\n' '{req}' | nc -U \"{sock}\" -w 5")
+}
+
+fn opened_by(c: &mut Client, name: &str) -> (Value, Value) {
+    let s = wait_for(15, &format!("terminal {name}"), || {
+        call(c, "session.list", json!({})).as_array().unwrap().iter().find(|s| s["name"] == name).cloned()
+    });
+    let ev = call(c, "events.list", json!({ "filter": { "kinds": ["session.opened"] } }));
+    let e = ev.as_array().unwrap().iter().find(|e| e["session_id"] == s["id"]).cloned().expect("session.opened");
+    (s, e["actor"].clone())
+}
+
+#[test]
+fn a_headless_runs_calls_act_as_its_trigger() {
+    let d = D::start();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
+    let pid = project(&mut h);
+    // The run claims a terminal too: it isn't in one, so the claim doesn't stick.
+    let cmd = format!("MIDNA_SESSION=s_nope {}", open_over_socket(&pid, "from-run", "$MIDNA_SOCKET"));
+    let t = call(
+        &mut h,
+        "trigger.add",
+        json!({ "name": "Nightly", "source": "github", "event": "pull_request.*",
+                "action": { "kind": "run_command", "project_id": pid, "command": cmd, "headless": true, "timeout_secs": 30 } }),
+    );
+    let tid = t["id"].as_str().unwrap().to_string();
+    call(&mut h, "trigger.set_secret", json!({ "id": tid, "secret": SECRET }));
+    call(&mut h, "trigger.set_enabled", json!({ "id": tid, "enabled": true }));
+    assert_eq!(github(d.port(), "pull_request", "guid-run-1", SECRET, &pr("opened", 3)).0, 202);
+
+    let (s, actor) = opened_by(&mut h, "from-run");
+    assert_eq!(actor, json!({ "kind": "trigger", "name": "Nightly", "trigger": tid, "via": "run" }));
+    // No more say than an agent: the tools on its own command line don't count.
+    assert!(s.get("allowed_tools").is_none(), "{s}");
+
+    // Setting MIDNA_TRIGGER (or claiming a trigger) outside a run makes nothing of the kind.
+    let sock = d.sock().to_string_lossy().into_owned();
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(open_over_socket(&pid, "outside", &sock).replace("\"caller\":{\"role\":\"agent\"}", &format!("\"caller\":{{\"role\":\"agent\",\"trigger\":\"{tid}\"}}")))
+        .env("MIDNA_TRIGGER", &tid)
+        .env("MIDNA_DELIVERY", "d_fake")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let (_, actor) = opened_by(&mut h, "outside");
+    assert_eq!(actor, json!({ "kind": "agent" }));
 }
 
 #[test]
