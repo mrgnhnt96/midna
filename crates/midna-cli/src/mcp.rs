@@ -139,7 +139,7 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             to get the needs-you id back at once (error 6): the close then happens if they approve, and needs_you_get \
             {id, wait_secs} tells you how it went.",
         "agent.hook" => "Internal: midna's hook bridge calls this. Agents don't need it.",
-        "session.input" => "To message another agent, send the text with enter=true; add images as absolute paths in `images` \
+        "session.input" => "To message another agent, send the text: Enter is pressed for you (enter=false leaves it in the box). Add images as absolute paths in `images` \
             (e.g. a screenshot you saved). To press special keys use session_key. Read the result with session_read.",
         "needs_you.raise" => "Etiquette: one short line, only when blocked (kind=blocked) or the human must know (kind=note). \
             Check needs_you_list first to avoid duplicates.",

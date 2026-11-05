@@ -148,3 +148,22 @@ fn input_enter_follows_kitty_keyboard_mode() {
     wait_for(5, "kitty enter", || read(&mut h, &kitty).contains("033   [   1   3   u").then_some(()));
     wait_for(5, "legacy enter", || read(&mut h, &legacy).contains("e  \\r").then_some(()));
 }
+
+/// Agents send `text: "…\n"` and leave `enter` out. Typed raw, that LF is ctrl-J to Claude Code:
+/// a new line in the box, never sent. `enter` defaults to true, and a trailing newline is Enter.
+#[test]
+fn input_submits_by_default_and_on_a_trailing_newline() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let open = |h: &mut Client| {
+        let script = r"printf '\033[>1u'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -c; sleep 5";
+        let s = call(h, "session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh", "-c", script] }));
+        s["id"].as_str().unwrap().to_string()
+    };
+    let (default, newline) = (open(&mut h), open(&mut h));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    call(&mut h, "session.input", json!({ "id": default, "text": "a" }));
+    call(&mut h, "session.input", json!({ "id": newline, "text": "b\n", "enter": false }));
+    wait_for(5, "default enter", || read(&mut h, &default).contains("a 033   [   1   3   u").then_some(()));
+    wait_for(5, "newline enter", || read(&mut h, &newline).contains("b 033   [   1   3   u").then_some(()));
+}
