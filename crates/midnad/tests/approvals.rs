@@ -312,7 +312,7 @@ fn answer_in_terminal(tag: &str, keys: &str) -> (Value, Value) {
         call(&mut h, "needs_you.list", json!({ "session_id": sid })).as_array().unwrap().iter().find(|n| n["kind"] == "permission_prompt").cloned()
     });
     for k in keys.split_inclusive('\r') {
-        call(&mut h, "session.input", json!({ "id": sid, "text": k }));
+        call(&mut h, "session.input", json!({ "id": sid, "text": k, "enter": false }));
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     std::thread::sleep(std::time::Duration::from_millis(3500));

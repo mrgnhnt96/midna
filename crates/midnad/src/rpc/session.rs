@@ -534,7 +534,22 @@ fn refuse_prompt_answer(d: &Daemon, ctx: &Ctx, sid: &str, rt: &term::RtHandle) -
     Ok(())
 }
 
-pub fn input(d: &Daemon, ctx: &Ctx, p: SessionInputParams) -> R {
+/// `text` without its trailing newlines, and whether there were any. A trailing newline means
+/// Enter: typed raw, Claude Code reads LF as ctrl-J, a new line in the box that is never sent.
+/// Only a text ending in LF counts; a bare trailing CR is a key someone typed on purpose.
+pub(crate) fn split_trailing_enter(text: &str) -> (&str, bool) {
+    if !text.ends_with('\n') {
+        return (text, false);
+    }
+    (text.trim_end_matches(['\n', '\r']), true)
+}
+
+pub fn input(d: &Daemon, ctx: &Ctx, mut p: SessionInputParams) -> R {
+    let (text, enter) = split_trailing_enter(&p.text);
+    if enter {
+        p.text = text.to_string();
+        p.enter = true;
+    }
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
     refuse_prompt_answer(d, ctx, &p.id, &rt)?;
     // Copy every image before typing anything, so a bad path leaves the terminal untouched.
@@ -1347,4 +1362,21 @@ fn absolute_cwd(d: &Daemon, ctx: &Ctx, cwd: &str) -> Result<String, RpcError> {
 
 pub fn home_dir() -> String {
     std::env::var("HOME").ok().filter(|h| std::path::Path::new(h).is_dir()).unwrap_or_else(|| "/".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_trailing_enter;
+
+    #[test]
+    fn a_trailing_newline_is_enter() {
+        assert_eq!(split_trailing_enter("hi"), ("hi", false));
+        assert_eq!(split_trailing_enter("hi\n"), ("hi", true));
+        assert_eq!(split_trailing_enter("one\ntwo\n\n"), ("one\ntwo", true));
+        assert_eq!(split_trailing_enter("hi\r\n"), ("hi", true));
+        assert_eq!(split_trailing_enter("one\ntwo"), ("one\ntwo", false));
+        // A bare CR is a keystroke the caller chose (approving a picker, say), not a newline.
+        assert_eq!(split_trailing_enter("\x1b[B\r"), ("\x1b[B\r", false));
+        assert_eq!(split_trailing_enter("\n"), ("", true));
+    }
 }

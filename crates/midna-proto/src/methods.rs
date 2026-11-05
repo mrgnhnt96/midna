@@ -993,10 +993,11 @@ pub struct SessionSetStatusParams {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionInputParams {
     pub id: Id,
-    /// Text to type. Use escape sequences for special keys (e.g. "\u0003" for ctrl-c).
+    /// Text to type. Use escape sequences for special keys (e.g. "\u0003" for ctrl-c). A trailing
+    /// newline is not typed: it presses Enter, even with `enter: false`.
     pub text: String,
-    /// Press Enter (carriage return) after the text.
-    #[serde(default)]
+    /// Press Enter after the text (default true). False types it into the input box only.
+    #[serde(default = "yes")]
     pub enter: bool,
     /// Absolute paths of images to attach before the text (PNG, JPEG, GIF, WebP; other formats
     /// macOS can read are converted to PNG). Each is pasted as its path, which Claude Code and

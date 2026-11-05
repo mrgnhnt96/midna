@@ -288,8 +288,10 @@ fn type_message(d: &Arc<Daemon>, sid: &str, m: &QueuedMessage) -> Result<(), Str
         let p = SessionInputParams { id: sid.to_string(), text: text.to_string(), enter, images };
         crate::rpc::session::input(d, &ctx, p).map(|_| ()).map_err(|e| e.message)
     };
-    if !m.text.contains('\n') {
-        return input(&m.text, m.enter, m.images.clone());
+    let (text, trailing) = crate::rpc::session::split_trailing_enter(&m.text);
+    let enter = m.enter || trailing;
+    if !text.contains('\n') {
+        return input(text, enter, m.images.clone());
     }
     // Several lines go in as one paste, so a newline isn't a submit.
     if !m.images.is_empty() {
@@ -298,10 +300,10 @@ fn type_message(d: &Arc<Daemon>, sid: &str, m: &QueuedMessage) -> Result<(), Str
     }
     let rt = d.rt(sid).ok_or("the terminal's process ended")?;
     let gone = || "the terminal stopped taking input".to_string();
-    if !rt.client(midna_proto::frame::ClientMsg::Paste(m.text.clone())) {
+    if !rt.client(midna_proto::frame::ClientMsg::Paste(text.to_string())) {
         return Err(gone());
     }
-    if m.enter {
+    if enter {
         std::thread::sleep(ENTER_DELAY);
         if !rt.key(crate::term::Key::Enter) {
             return Err(gone());
@@ -331,7 +333,7 @@ fn finish(d: &Daemon, sid: &str, m: &QueuedMessage, res: Result<(), String>) {
             {
                 let mut book = d.queue.book();
                 let w = book.watch.entry(sid.to_string()).or_default();
-                *w = Watch { sent_at: Some(Instant::now()), unsubmitted: !m.enter, ..Default::default() };
+                *w = Watch { sent_at: Some(Instant::now()), unsubmitted: !m.enter && !crate::rpc::session::split_trailing_enter(&m.text).1, ..Default::default() };
             }
             edit(d, sid, |q| q.retain(|x| x.id != m.id));
             changed(d, sid, m.by.clone(), "sent", json!({ "id": m.id, "text": clip(&m.text, 200), "trigger_id": m.trigger_id }));

@@ -167,7 +167,8 @@ fn build() -> Vec<MethodSpec> {
         m::<IdParams, Session>("session.clear_status").mutating().d(
             "Take a terminal's custom status label off, whether session.set_status or a trigger put it there. A status it still holds goes back to idle."),
         m::<SessionInputParams, OkResult>("session.input").mutating().d(
-            "Type text into a terminal, optionally followed by Enter; to an agent (Claude Code, Codex) this is a chat message. \
+            "Type text into a terminal, then press Enter (`enter` defaults to true; false leaves the text in the input box); \
+             to an agent (Claude Code, Codex) this is a chat message. A trailing newline presses Enter rather than typing a new line. \
              `images` (absolute paths) are attached first, each pasted as a path the agent turns into [Image #N]. \
              Input from agents is logged as session.input_by_agent. \
              Never answer another agent's permission prompt unless session.read shows the prompt."),
