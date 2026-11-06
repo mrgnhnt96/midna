@@ -258,7 +258,14 @@ fn discoverability() {
     // capabilities, skill and schema work without a daemon.
     let caps = stdout(&midna(s, &["capabilities"], None, None));
     assert!(caps.contains("HUMAN ONLY") && caps.contains("rule.remove") && caps.contains("approve.from_cli"), "{caps}");
-    assert!(stdout(&midna(s, &["skill"], None, None)).starts_with("---\nname: midna"));
+    let core = stdout(&midna(s, &["skill"], None, None));
+    assert!(core.starts_with("---\nname: midna") && core.contains("\n## Topics\n"), "{core}");
+    assert!(stdout(&midna(s, &["skill", "triggers"], None, None)).starts_with("## Local triggers"));
+    assert!(stdout(&midna(s, &["guide", "keep_awake"], None, None)).starts_with("## Keeping the Mac awake"));
+    let unknown = midna(s, &["skill", "nope"], None, None);
+    assert_eq!(code(&unknown), 2);
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("keep-awake"), "{unknown:?}");
+    assert_eq!(code(&midna(s, &["skill", "triggers", "secrets"], None, None)), 2);
     let one: Value = serde_json::from_str(&stdout(&midna(s, &["schema", "rule_add"], None, None))).unwrap();
     assert_eq!(one["method"], "rule.add");
     assert!(one["params"]["properties"]["matcher"].is_object());
@@ -305,6 +312,9 @@ fn agents_get_mcp_skill_and_hint_without_global_config() {
     assert_eq!(mcp["mcpServers"]["midna"]["command"], env!("CARGO_BIN_EXE_midna"));
     assert_eq!(mcp["mcpServers"]["midna"]["args"], json!(["mcp"]));
     assert!(std::fs::read_to_string(home.join("hooks/SKILL.md")).unwrap().contains("Never route around a denial"));
+    for (name, text) in midnad::hooks::SKILL_TOPICS {
+        assert_eq!(std::fs::read_to_string(home.join(format!("hooks/skill-{name}.md"))).unwrap(), *text);
+    }
     let sess = h.call_value("session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp", "prompt": "hi" })).unwrap();
     let cmd: Vec<String> = serde_json::from_value(sess["command"].clone()).unwrap();
     let pos = |f: &str| cmd.iter().position(|a| a == f).unwrap_or_else(|| panic!("{f} missing from {cmd:?}"));

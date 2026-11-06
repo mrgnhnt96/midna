@@ -201,14 +201,20 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "skill" => {
+            let topic = match &a.pos[1..] {
+                [] => None,
+                [name] => Some(guide::skill_topic(name).map_err(Fail::Usage)?),
+                _ => return Err(Fail::Usage("usage: midna skill [topic] [--path]".into())),
+            };
             if a.has("path") {
                 let home = std::env::var("MIDNA_SKILL").ok().filter(|s| !s.is_empty());
-                match home {
-                    Some(p) => println!("{p}"),
-                    None => return Err(Fail::Other("MIDNA_SKILL is not set (not in a midna terminal); `midna skill` prints the guide".into())),
+                match (home, topic) {
+                    (Some(p), Some((name, _))) => println!("{}", std::path::Path::new(&p).with_file_name(guide::skill_topic_file(name)).display()),
+                    (Some(p), None) => println!("{p}"),
+                    (None, _) => return Err(Fail::Other("MIDNA_SKILL is not set (not in a midna terminal); `midna skill` prints the guide".into())),
                 }
             } else {
-                print!("{}", guide::SKILL_MD);
+                print!("{}", topic.map_or(guide::SKILL_MD, |(_, text)| *text));
             }
             Ok(())
         }

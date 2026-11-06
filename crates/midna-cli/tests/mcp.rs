@@ -193,6 +193,20 @@ fn protocol_conformance() {
     assert_eq!(res[0]["uri"], "midna://skill");
     let r = m.request("resources/read", json!({ "uri": "midna://skill" }));
     assert!(r["result"]["contents"][0]["text"].as_str().unwrap().contains("# midna"));
+
+    // Each topic comes through the tool and as a listed resource.
+    assert_eq!(res.as_array().unwrap().len(), midnad::hooks::SKILL_TOPICS.len() + 1);
+    for (name, topic) in midnad::hooks::SKILL_TOPICS {
+        assert_eq!(text(&m.tool("guide", json!({ "topic": name }))), *topic);
+        let uri = format!("midna://skill/{name}");
+        assert!(res.as_array().unwrap().iter().any(|r| r["uri"] == uri), "{uri} isn't listed");
+        let r = m.request("resources/read", json!({ "uri": uri }));
+        assert_eq!(r["result"]["contents"][0]["uri"], uri);
+        assert_eq!(r["result"]["contents"][0]["text"], *topic);
+    }
+    let r = m.request("tools/call", json!({ "name": "guide", "arguments": { "topic": "nope" } }));
+    assert_eq!(r["result"]["isError"], true);
+    assert!(text(&r["result"]).contains("keep-awake"), "{r}");
     assert_eq!(m.request("resources/read", json!({ "uri": "midna://nope" }))["error"]["code"], -32002);
     let caps = m.tool("capabilities", json!({}));
     assert!(text(&caps).contains("HUMAN ONLY"));

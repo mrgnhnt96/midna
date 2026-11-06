@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 pub const SKILL_MD: &str = include_str!("../assets/SKILL.md");
 
+include!("../assets/skill_topics.rs");
+
 /// Where the caller is, so hints name the right thing to run.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -57,7 +59,7 @@ WHAT YOU CAN DO
              links actions register --owner <app> --file menus.json (an app's own items in a link's click menu)
   summary    midna summary [--project P] (terminals closed lately) · resume <id> · annotate <id> --owner <app> --file panel.json
   projects   midna projects add <path> · update <id> --name/--icon · pin|unpin <id> · add-command <id> --name N -- <cmd>
-  learn      midna help · midna <verb> --help · midna schema [method|--list] · midna skill · midna explain <topic>
+  learn      midna help · midna <verb> --help · midna schema [method|--list] · midna skill [topic] · midna explain <topic>
 
 HUMAN ONLY (calling these makes a request the human sees; nothing happens until they approve)
   methods    {}
@@ -72,7 +74,7 @@ RULES OF THE ROAD
   - Raise attention only when you are blocked or the human must know; one short line.
   - Don't answer another agent's prompt unless `midna read <id> --screen` shows it.
 
-Full guide: `midna skill` (also $MIDNA_SKILL). Your role and session: `midna info`.",
+Guide: `midna skill` (also $MIDNA_SKILL) has the core rules and lists its topics (`midna skill <topic>`). Your role and session: `midna info`.",
         human_only.join(", "),
         human_settings.join(", "),
     )
@@ -125,9 +127,12 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
             cmd(surface, "attention \"…\"", "needs_you_raise")
         ),
         (HUMAN_ONLY, _) if needs_you.is_some() => wait(needs_you.as_deref().unwrap_or("")),
-        (HUMAN_ONLY, _) => "This is the human's call. Ask them in one line with `midna attention` and continue with something else.".into(),
-        (REFUSED, "window.command") => format!(
-            "Front and open_screen are always allowed. For the rest the human must turn on agents.may_move_windows; \
+        (HUMAN_ONLY, _) => format!(
+            "This is the human's call. Ask them in one line with {} and continue with something else.",
+            cmd(surface, "attention \"…\"", "needs_you_raise")
+        ),
+        (REFUSED, "window.command") if e.message.contains("agents.may_move_windows") => format!(
+            "Front, open_screen and split need no setting. For the rest the human must turn on agents.may_move_windows; \
              {} asks them (human-only setting).",
             cmd(surface, "settings set agents.may_move_windows true", "settings_set")
         ),
@@ -333,9 +338,9 @@ const TOPICS: &[(&str, &str)] = &[
         wakes for and when. It needs a one-time admin grant (keep_awake.wake_setup, `midna keep-awake wake setup`, human \
         only): a root-owned helper that can only schedule or cancel this midna's own wakes, run through sudo without a \
         password. A closed lid still keeps a laptop asleep."),
-    ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
-        keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
-        `window` actions."),
+    ("windows", "`midna focus <id>`, `midna window front|open_screen <screen>` and `midna window split` need no \
+        setting. pop_out, keep_on_top, snap and close need the human-only setting agents.may_move_windows. All of them \
+        are policy-checked as `window` actions, so a rule can still deny one."),
     ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
         dismissing items, macOS permissions. Calling one never does it: it becomes a needs-you request (or tells you \
@@ -347,9 +352,14 @@ const TOPICS: &[(&str, &str)] = &[
         find a method with search_methods, read its params with describe_method, then run it."),
 ];
 
-pub fn topic(name: &str) -> Option<&'static str> {
+/// Finds a topic the way people type it: plural or not, `_` for `-`.
+fn find_topic(topics: &'static [(&'static str, &'static str)], name: &str) -> Option<&'static (&'static str, &'static str)> {
     let n = name.trim_end_matches('s');
-    TOPICS.iter().find(|(k, _)| *k == name || k.trim_end_matches('s') == n || k.replace('-', "_") == name).map(|(_, t)| *t)
+    topics.iter().find(|(k, _)| *k == name || k.trim_end_matches('s') == n || k.replace('-', "_") == name)
+}
+
+pub fn topic(name: &str) -> Option<&'static str> {
+    find_topic(TOPICS, name).map(|(_, t)| *t)
 }
 
 // ------------------------------------------------------------------ explain
@@ -774,7 +784,10 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
         _ => {}
     }
     if let Some(t) = topic(target) {
-        return Ok(t.to_string());
+        return Ok(match find_topic(SKILL_TOPICS, target) {
+            Some((name, _)) => format!("{t}\n\nHow-to and examples: `midna skill {name}`."),
+            None => t.to_string(),
+        });
     }
     if let Some(m) = explain_method(target) {
         return Ok(m);
@@ -786,6 +799,30 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
         "nothing called `{target}`: not an id, method, setting or topic. Topics: {}",
         TOPICS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")
     )))
+}
+
+/// A guide topic's name and text.
+pub fn skill_topic(name: &str) -> Result<&'static (&'static str, &'static str), String> {
+    find_topic(SKILL_TOPICS, name).ok_or_else(|| {
+        let names = SKILL_TOPICS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ");
+        format!("no guide topic `{name}`. Topics: {names}. `midna explain <topic>` covers others.")
+    })
+}
+
+/// The guide's core, or one topic when `topic` names it.
+pub fn skill_text(topic: Option<&str>) -> Result<&'static str, String> {
+    match topic.filter(|t| !t.is_empty()) {
+        Some(t) => skill_topic(t).map(|(_, text)| *text),
+        None => Ok(SKILL_MD),
+    }
+}
+
+/// The guide at a `midna://skill` or `midna://skill/<topic>` address.
+pub fn skill_resource(uri: &str) -> Option<&'static str> {
+    match uri.strip_prefix("midna://skill")? {
+        "" => Some(SKILL_MD),
+        path => skill_topic(path.strip_prefix('/')?).ok().map(|(_, text)| *text),
+    }
 }
 
 #[cfg(test)]
@@ -821,11 +858,79 @@ mod tests {
     }
 
     #[test]
+    fn the_human_only_fallback_names_the_surfaces_call() {
+        let e = RpcError::human_only("x");
+        assert!(next_step("project.remove", &json!({}), &e, Surface::Cli).unwrap().contains("midna attention"));
+        let h = next_step("project.remove", &json!({}), &e, Surface::Mcp).unwrap();
+        assert!(h.contains("needs_you_raise") && !h.contains("midna attention"), "{h}");
+    }
+
+    #[test]
+    fn the_window_hint_names_the_setting_only_when_the_setting_refused() {
+        let params = json!({"action": "snap"});
+        let e = RpcError::refused("snap needs agents.may_move_windows");
+        let h = next_step("window.command", &params, &e, Surface::Cli).unwrap();
+        assert!(h.contains("midna settings set agents.may_move_windows true"), "{h}");
+        let e = RpcError::refused("denied by rule r_1");
+        let h = next_step("window.command", &params, &e, Surface::Cli).unwrap_or_default();
+        assert!(!h.contains("agents.may_move_windows"), "{h}");
+    }
+
+    #[test]
     fn topics_and_methods_explain_offline() {
         let mut nope = |_: &str, _: Value| -> Result<Value, RpcError> { Err(RpcError::internal("offline")) };
         assert!(explain(&mut nope, &["rules".into()], Surface::Cli).unwrap().contains("request-removal"));
         assert!(explain(&mut nope, &["rule_add".into()], Surface::Cli).unwrap().contains("rule.add"));
         assert!(explain(&mut nope, &["approve.from_cli".into()], Surface::Cli).unwrap().contains("human only"));
         assert!(explain(&mut nope, &["zzz".into()], Surface::Cli).is_err());
+    }
+
+    #[test]
+    fn every_guide_topic_has_a_pointer_in_the_core_saying_when_to_read_it() {
+        for (name, text) in SKILL_TOPICS {
+            assert!(SKILL_MD.contains(&format!("\n- `{name}`: ")), "SKILL.md's Topics section doesn't list `{name}`");
+            assert!(text.starts_with("## "), "{name}: a topic opens with its heading");
+        }
+    }
+
+    #[test]
+    fn guide_topics_take_the_spellings_explain_topics_do() {
+        assert!(skill_text(Some("triggers")).unwrap().contains("Local triggers"));
+        assert_eq!(skill_text(Some("trigger")), skill_text(Some("triggers")));
+        assert_eq!(skill_text(Some("keep_awake")), skill_text(Some("keep-awake")));
+        assert_eq!(skill_text(None), Ok(SKILL_MD));
+        assert_eq!(skill_text(Some("")), Ok(SKILL_MD));
+        let e = skill_text(Some("nope")).unwrap_err();
+        assert!(SKILL_TOPICS.iter().all(|(name, _)| e.contains(name)), "{e}");
+    }
+
+    #[test]
+    fn the_guide_resource_serves_the_core_and_each_topic() {
+        assert_eq!(skill_resource("midna://skill"), Some(SKILL_MD));
+        for (name, text) in SKILL_TOPICS {
+            assert_eq!(skill_resource(&format!("midna://skill/{name}")), Some(*text));
+        }
+        for uri in ["midna://skill/", "midna://skill/nope", "midna://skillet", "midna://nope"] {
+            assert_eq!(skill_resource(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn the_guide_core_fits_its_budget() {
+        let bytes = SKILL_MD.len();
+        assert!(
+            bytes <= 8 * 1024,
+            "SKILL.md is {bytes} bytes; keep it to 8 KB (~2.5k tokens). Move text to a topic file (assets/skill-<topic>.md) or `midna <verb> --help`"
+        );
+    }
+
+    #[test]
+    fn explain_links_a_topic_the_guide_also_covers() {
+        let mut nope = |_: &str, _: Value| -> Result<Value, RpcError> { Err(RpcError::internal("offline")) };
+        for name in ["triggers", "secrets", "keep-awake"] {
+            let text = explain(&mut nope, &[name.into()], Surface::Cli).unwrap();
+            assert!(text.ends_with(&format!("`midna skill {name}`.")), "{text}");
+        }
+        assert!(!explain(&mut nope, &["rules".into()], Surface::Cli).unwrap().contains("midna skill"));
     }
 }
