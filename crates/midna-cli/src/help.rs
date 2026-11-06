@@ -28,11 +28,13 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "skill",
         aliases: &["guide"],
-        usage: "skill [--path]",
-        summary: "print the bundled agent guide (SKILL.md)",
-        details: "Prints the guide: when to use which verb, attention etiquette, approvals, rules, triggers,\n\
-                  settings, windows, and never routing around a denial. In a midna terminal the same file\n\
-                  is at $MIDNA_SKILL. `--path` prints that path instead.",
+        usage: "skill [topic] [--path]",
+        summary: "print the bundled agent guide (SKILL.md) or one of its topics",
+        details: "Prints the guide's core: when to use which verb, attention etiquette, approvals, rules,\n\
+                  webhook triggers, settings, windows, and never routing around a denial. It lists its topics,\n\
+                  and `midna skill <topic>` prints one: triggers, keep-awake, load, secrets, queue, terminals,\n\
+                  links. In a midna terminal the core is at $MIDNA_SKILL and each topic's file sits beside it.\n\
+                  `--path` prints that path instead.",
         methods: &[],
     },
     Verb {
@@ -884,7 +886,7 @@ pub fn usage() -> String {
     }
     out.push_str(
         "\n`midna <folder>` (e.g. `midna .`) opens the Midna app on that folder: a shell already there, else a new one.\n\
-         New here? `midna capabilities` (overview), `midna skill` (guide), `midna explain <id|topic>`.\n\
+         New here? `midna capabilities` (overview), `midna skill` (guide and its topics), `midna explain <id|topic>`.\n\
          Several calls? Chain them in one command: `midna list --json | jq …`, `midna call <method> '<json>'`\n\
          (the guide's \"Script it\" section).\n\
          Free text with flags goes after `--`, e.g. `midna check command -- git push --force`.\n\
@@ -918,6 +920,14 @@ mod tests {
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);
+        }
+    }
+
+    #[test]
+    fn skill_help_names_every_guide_topic() {
+        let help = verb_help(verb("skill").unwrap());
+        for (name, _) in crate::guide::SKILL_TOPICS {
+            assert!(help.contains(name), "`midna skill --help` doesn't name `{name}`: {help}");
         }
     }
 

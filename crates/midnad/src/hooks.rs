@@ -55,6 +55,8 @@ pub fn skill_path(home: &Path) -> PathBuf {
 /// The guide agents read. The source of truth lives with the CLI (`midna skill` prints it).
 pub const SKILL_MD: &str = include_str!("../../midna-cli/assets/SKILL.md");
 
+include!("../../midna-cli/assets/skill_topics.rs");
+
 /// Read-only midna MCP tools Claude may call without its own permission prompt. Everything
 /// that acts still goes through Claude's normal permission flow and midna's own policy.
 const CLAUDE_MCP_READ_ONLY: &[&str] = &[
@@ -69,7 +71,7 @@ pub fn system_hint(mcp: bool) -> String {
     format!(
         "You are running inside a midna terminal (midna = an AI-managed terminal; the human watches it). \
          Run `midna capabilities` to see what you can do here (terminals, attention, approvals, rules, triggers, settings, windows); \
-         the full guide is `midna skill` (file $MIDNA_SKILL).{tools} \
+         the guide is `midna skill` (file $MIDNA_SKILL), which lists its topics.{tools} \
          `[secret:NAME]` is a stored secret midna keeps out of your context: use it with `midna secret exec NAME -- <command>` ($NAME is set there); save a token a command produced with `<command> | midna secret save NAME`. Never ask for, echo or print a secret's value. \
          Human-only actions become requests the human sees: when midna refuses or denies something, never route around it."
     )
@@ -135,7 +137,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
 }
 
 /// (Re)write the agent files under $MIDNA_HOME/hooks/: claude-settings.json (and its -base
-/// twin without hooks), mcp.json, SKILL.md.
+/// twin without hooks), mcp.json, SKILL.md and a file per guide topic beside it.
 pub fn write_claude_settings(d: &Daemon) {
     let statusline = d.core().state.setting_bool("agents.claude.statusline");
     let mut v = claude_settings(&d.cfg.cli_path, statusline);
@@ -145,7 +147,11 @@ pub fn write_claude_settings(d: &Daemon) {
     }
     write_atomic(&claude_base_settings_path(&d.cfg.home), &serde_json::to_vec_pretty(&v).unwrap_or_default());
     write_atomic(&mcp_config_path(&d.cfg.home), &serde_json::to_vec_pretty(&mcp_config(&d.cfg.cli_path)).unwrap_or_default());
-    write_atomic(&skill_path(&d.cfg.home), SKILL_MD.as_bytes());
+    let skill = skill_path(&d.cfg.home);
+    write_atomic(&skill, SKILL_MD.as_bytes());
+    for (name, text) in SKILL_TOPICS {
+        write_atomic(&skill.with_file_name(skill_topic_file(name)), text.as_bytes());
+    }
 }
 
 /// `notify=[...]` for `codex -c`: Codex appends the event JSON as the last argv.

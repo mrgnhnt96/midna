@@ -1,6 +1,6 @@
 //! `midna mcp`: a stdio MCP server (newline-delimited JSON-RPC 2.0, MCP 2025-06-18) exposing
 //! every catalog method as a tool, plus three guide tools (`capabilities`, `explain`, `guide`)
-//! and the guide as a resource (`midna://skill`).
+//! and the guide as resources (`midna://skill`, `midna://skill/<topic>`).
 //!
 //! - `midna mcp --compact` lists seven tools instead (the three guide tools, `search_methods`,
 //!   `describe_method`, `call_read` and `call`) for clients that load every schema up front.
@@ -44,7 +44,8 @@ const LISTED_BYTES: usize = 1024;
 const INSTRUCTIONS: &str = "midna is the AI-managed terminal you are running in (if MIDNA_SESSION is set). These tools \
 drive it: list/read/open terminals (session_*), get the human's attention (needs_you_raise), test and add policy rules \
 (policy_check, rule_add), draft webhook triggers or add local hook/event/idle triggers (trigger_add), change settings (settings_set), and move the GUI \
-(window_command). Start with the `capabilities` tool; `explain` answers \"why\" about any id; `guide` is the full guide. \
+(window_command). Start with the `capabilities` tool; `explain` answers \"why\" about any id; `guide` has the core rules \
+and lists its topics. \
 Human-only actions (removing rules, secrets, enabling webhook triggers, human-only settings, project_remove, daemon_stop) are \
 never done for you: calling them asks the human and returns an error with the needs-you id and the next step. Never \
 route around a refusal.";
@@ -73,7 +74,7 @@ fn compact_instructions() -> String {
         "midna is the AI-managed terminal you are running in (if MIDNA_SESSION is set). Its methods are reached through four \
 tools: `search_methods` finds one by words or group, `describe_method` shows its params and rules, `call_read` runs a \
 read-only method and `call` runs one that changes state. Groups: {}. Start with the `capabilities` tool; `explain` \
-answers \"why\" about any id; `guide` is the full guide. Human-only actions (removing rules, secrets, enabling webhook \
+answers \"why\" about any id; `guide` has the core rules and lists its topics. Human-only actions (removing rules, secrets, enabling webhook \
 triggers, human-only settings, project.remove, daemon.stop) are never done for you: calling them asks the human and \
 returns an error with the needs-you id and the next step. Never route around a refusal.",
         groups.join(", ")
@@ -149,9 +150,9 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
         // The local-trigger how-to lives on trigger_add alone: it was the biggest repeat in tools/list.
         "trigger.add" => "enabled: true (local only) or trigger_set_enabled turns a local trigger on with no approval; do it \
             when the human asked for the trigger. trigger_test dry-runs one first (session names the terminal for a local \
-            trigger). The `guide` tool (section “Local triggers”) has worked examples.",
+            trigger). The `guide` tool (topic `triggers`) has worked examples.",
         "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers: see trigger_add and the `guide` tool \
-            (section “Local triggers”).",
+            (topic `triggers`).",
         "needs_you.resolve" => "Agents normally don't call this: answering is the human's job. Refused unless the human enabled \
             approve.from_cli, and then only for your own session's approvals.",
         "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action. \
@@ -254,12 +255,30 @@ fn extra_tools() -> Vec<Value> {
         json!({
             "name": "guide",
             "title": "midna agent guide",
-            "description": "The full midna agent guide (SKILL.md): when to use which tool, attention etiquette, approvals, rules, \
-                triggers, settings, windows, and never routing around a denial.",
-            "inputSchema": { "type": "object", "properties": {} },
+            "description": "The midna agent guide's core (SKILL.md): when to use which tool, attention etiquette, approvals, rules, \
+                settings, windows, and never routing around a denial. It lists its topics; `topic` reads one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "topic": { "type": "string", "description": guide::SKILL_TOPICS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ") } }
+            },
             "annotations": ro,
         }),
     ]
+}
+
+/// The guide's core, then a resource per topic, described by its heading.
+fn skill_resources() -> Vec<Value> {
+    let core = json!({
+        "uri": "midna://skill", "name": "midna-skill", "title": "midna agent guide",
+        "description": "How to use midna as an agent (SKILL.md).", "mimeType": "text/markdown",
+    });
+    let topics = guide::SKILL_TOPICS.iter().map(|(name, text)| {
+        json!({
+            "uri": format!("midna://skill/{name}"), "name": format!("midna-skill-{name}"), "title": format!("midna guide: {name}"),
+            "description": text.lines().next().unwrap_or_default().trim_start_matches("## "), "mimeType": "text/markdown",
+        })
+    });
+    std::iter::once(core).chain(topics).collect()
 }
 
 pub fn tools() -> Vec<Value> {
@@ -573,7 +592,12 @@ fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<
     };
     match tool {
         "capabilities" => return Ok(text_result(guide::capabilities(), false)),
-        "guide" => return Ok(text_result(guide::SKILL_MD.to_string(), false)),
+        "guide" => {
+            return Ok(match guide::skill_text(args.get("topic").and_then(Value::as_str)) {
+                Ok(text) => text_result(text.to_string(), false),
+                Err(e) => text_result(e, true),
+            });
+        }
         "explain" => {
             let mut words: Vec<String> = args.get("target").and_then(Value::as_str).map(|t| vec![t.to_string()]).unwrap_or_default();
             if let Some(v) = args.get("value").and_then(Value::as_str) {
@@ -654,14 +678,13 @@ pub fn handle(client: &mut Option<Client>, msg: &Value, mode: Mode) -> Option<Va
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": match mode { Mode::Full => tools(), Mode::Compact => compact_tools() } })),
         "tools/call" => call_tool(client, &params, mode),
-        "resources/list" => Ok(json!({ "resources": [{
-            "uri": "midna://skill", "name": "midna-skill", "title": "midna agent guide",
-            "description": "How to use midna as an agent (SKILL.md).", "mimeType": "text/markdown",
-        }] })),
+        "resources/list" => Ok(json!({ "resources": skill_resources() })),
         "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
         "resources/read" => match params.get("uri").and_then(Value::as_str) {
-            Some("midna://skill") => Ok(json!({ "contents": [{ "uri": "midna://skill", "mimeType": "text/markdown", "text": guide::SKILL_MD }] })),
-            Some(u) => Err(json!({ "code": -32002, "message": format!("resource not found: {u}") })),
+            Some(u) => match guide::skill_resource(u) {
+                Some(text) => Ok(json!({ "contents": [{ "uri": u, "mimeType": "text/markdown", "text": text }] })),
+                None => Err(json!({ "code": -32002, "message": format!("resource not found: {u}") })),
+            },
             None => Err(json!({ "code": -32602, "message": "resources/read needs params.uri" })),
         },
         m if m.starts_with("notifications/") => return None,
@@ -749,7 +772,7 @@ mod tests {
         let desc = |n: &str| t.iter().find(|t| t["name"] == n).unwrap()["description"].as_str().unwrap().to_string();
         let (add, update) = (desc("trigger_add"), desc("trigger_update"));
         assert!(add.len() + update.len() <= 3500, "trigger_add {} + trigger_update {} bytes is over 3500", add.len(), update.len());
-        assert!(add.contains("enabled: true") && add.contains("“Local triggers”"), "{add}");
+        assert!(add.contains("enabled: true") && add.contains("topic `triggers`"), "{add}");
         for n in ["trigger_update", "trigger_list", "trigger_test"] {
             let d = desc(n);
             assert!(d.contains("see trigger_add") && !d.contains("trigger_set_enabled turns"), "{n}: {d}");

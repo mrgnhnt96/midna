@@ -414,6 +414,7 @@ Goal: an agent dropped into a midna terminal with no instructions can find and u
   - midnad writes `hooks/mcp.json` and `hooks/SKILL.md` next to `claude-settings.json` at startup (`write_claude_settings`).
   - Every terminal gets `MIDNA_SKILL=<MIDNA_HOME>/hooks/SKILL.md`.
   - The skill's source is `crates/midna-cli/assets/SKILL.md`. midnad `include_str!`s it from there, so one file feeds `midna skill`, the MCP `guide` tool, the `midna://skill` resource and the file.
+  - The skill is a core plus topics, so a load carries the common rules and the rest comes on request. Each topic is `assets/skill-<name>.md`, listed once in `assets/skill_topics.rs` (both crates `include!` it), read with `midna skill <topic>`, the `guide` tool's `topic` or `midna://skill/<topic>`, and written beside `hooks/SKILL.md`. `midna explain` topics stay short reference text and link to the guide topic of the same name.
   - `claude-settings.json` now also carries `permissions.allow` for the **read-only** midna MCP tools (`mcp__midna__session_list`, `…_read`, `…_explain`, …). Claude doesn't prompt for looking around, and in `-p` mode they work at all. Acting tools still go through Claude's own permission flow plus midna's policy.
 - **`midna mcp` audit (MCP 2025-06-18):**
   - Protocol version negotiation: echo a supported version, else the latest. Resources capability: `resources/list` / `read` serve `midna://skill`.
