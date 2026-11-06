@@ -31,9 +31,9 @@ pub static VERBS: &[Verb] = &[
         usage: "skill [topic] [--path]",
         summary: "print the bundled agent guide (SKILL.md) or one of its topics",
         details: "Prints the guide's core: when to use which verb, attention etiquette, what is human only, and\n\
-                  never routing around a denial. It lists its topics,\n\
-                  and `midna skill <topic>` prints one: triggers, keep-awake, load, secrets, queue, terminals,\n\
-                  links. In a midna terminal the core is at $MIDNA_SKILL and each topic's file sits beside it.\n\
+                  never routing around a denial. It lists its topics, and `midna skill <topic>` prints one:\n\
+                  triggers, keep-awake, load, secrets, queue, terminals, links. In a midna terminal the core is\n\
+                  at $MIDNA_SKILL and each topic's file sits beside it.\n\
                   `--path` prints that path instead.",
         methods: &[],
     },
@@ -500,7 +500,8 @@ pub static VERBS: &[Verb] = &[
         summary: "list, add, and request removal of policy rules",
         details: "Agents may add rules; only the human removes them. To get one removed, run\n\
                   `midna rules request-removal <id> --reason \"…\"`: the human sees it and decides.\n\
-                  Patterns are globs: `git push --force*`, `Bash(rm -rf*)`.",
+                  Patterns are globs: `git push --force*`, `Bash(rm -rf*)`. The narrowest scope wins\n\
+                  (session > project > global); within a scope deny > ask > allow. `midna check` tests one.",
         methods: &["rule.list", "rule.add", "rule.request_removal", "rule.remove", "rule.restore"],
     },
     // ---------------------------------------------------------------- triggers / webhooks
@@ -748,7 +749,8 @@ pub static VERBS: &[Verb] = &[
         summary: "user commands in the human's ⌘K palette ($MIDNA_HOME/commands.json)",
         details: "Add commands for workflows the human repeats; they show up in the palette at once. --rpc runs\n\
                   a daemon method as the human when they pick it (human-only methods always ask twice).\n\
-                  Per-project scripts belong in `midna projects add-command` instead.",
+                  Per-project scripts belong in `midna projects add-command` instead.\n\
+                  `midna commands add --title \"Deploy staging\" --rpc session.open --params '{\"kind\":\"monitor\",\"command\":[\"./deploy.sh\"]}'`",
         methods: &["ui.commands.list", "ui.commands.add", "ui.commands.remove"],
     },
     Verb {
