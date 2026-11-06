@@ -6,13 +6,16 @@
 //!   `describe_method`, `call_read` and `call`) for clients that load every schema up front.
 //! - Tool names replace `.` with `_` (MCP clients accept only `[A-Za-z0-9_-]`).
 //! - Descriptions are written for an agent and say what is human only and what a refusal means.
+//! - A result is one text block, sent once: `content` is the field every client and protocol
+//!   version reads. Tools declare no `outputSchema`, so there is no `structuredContent` copy.
+//! - `session_list` is a summary of each terminal; `session_get` has the rest.
 //! - Daemon refusals come back as tool results with `isError: true` and the next step to take
 //!   (they are not protocol errors: the model should read them). Unknown tools, missing or
 //!   non-object arguments are JSON-RPC `-32602`; unknown methods `-32601`; bad JSON `-32700`.
 use crate::Res;
 use crate::guide::{self, Surface};
 use midna_proto::{Client, ClientError, MethodSpec, RpcError, catalog};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
 
 /// Methods that need a dedicated streaming connection and can't work as one-shot tools.
@@ -21,6 +24,22 @@ const SKIP: &[&str] = &["stream.attach", "events.subscribe", "secret.exec_env"];
 
 /// Protocol versions we speak, newest first.
 const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// What an agent's terminal listing keeps of each `Session`. A keep-list, so a bulky field added
+/// later stays out until someone chooses it. The app reads the full `session.list` RPC result.
+const LISTED: &[&str] = &[
+    "id", "project_id", "name", "kind", "agent", "cwd", "pid", "title", "status", "created_at", "last_activity_at", "keep_on_top",
+    "background", "git", "custom_status", "queue_paused", "paused",
+];
+
+/// The `agent_info` fields a listing keeps.
+const LISTED_AGENT_INFO: &[&str] = &["model", "permission_mode"];
+
+/// The longest string a listing shows, unless the entry needs less to fit `LISTED_BYTES`.
+const LISTED_TEXT: usize = 120;
+
+/// A listed terminal stays under this, as JSON.
+const LISTED_BYTES: usize = 1024;
 
 const INSTRUCTIONS: &str = "midna is the AI-managed terminal you are running in (if MIDNA_SESSION is set). These tools \
 drive it: list/read/open terminals (session_*), get the human's attention (needs_you_raise), test and add policy rules \
@@ -120,6 +139,8 @@ fn dotted(text: &str) -> String {
 /// Extra, MCP-specific notes per method: when to use it and what a refusal means.
 fn notes(m: &MethodSpec) -> Option<&'static str> {
     Some(match m.name {
+        "session.list" => "Each entry is a summary: long text is cut, and the launch command, agent_args, most of agent_info \
+            and the queued messages are left out. session_get {id} has all of it.",
         "rule.remove" => "Agents: this is refused. Use rule_request_removal {id, reason}; the human sees it and decides.",
         "trigger.set_secret" => "Agents: never call this; the secret is discarded and the human is asked to paste it in the GUI.",
         "secret.set" => "Prefer piping in a shell (`<command> | midna secret save NAME`): a value you pass here is already in \
@@ -207,7 +228,7 @@ fn extra_tools() -> Vec<Value> {
             "name": "capabilities",
             "title": "midna capabilities",
             "description": "Start here. A short overview of everything midna lets you do (terminals, attention, approvals, rules, \
-                triggers, settings, windows), what is human only and what to do instead, plus every method with its flags.",
+                triggers, settings, windows), and what is human only and what to do instead.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": ro,
         }),
@@ -321,7 +342,7 @@ fn lookup(name: &str) -> Result<&'static MethodSpec, Value> {
     match catalog().iter().find(|m| m.name == name || tool_name(m.name) == name) {
         Some(m) if SKIP.contains(&m.name) => Err(skipped(m.name)),
         Some(m) => Ok(m),
-        None => Err(text_result(format!("unknown method `{name}`. Find it with the `search_methods` tool."), None, true)),
+        None => Err(text_result(format!("unknown method `{name}`. Find it with the `search_methods` tool."), true)),
     }
 }
 
@@ -331,7 +352,7 @@ fn skipped(method: &str) -> Value {
     } else {
         "it needs a streaming connection of its own"
     };
-    text_result(format!("`{method}` can't be called over MCP: {why}."), None, true)
+    text_result(format!("`{method}` can't be called over MCP: {why}."), true)
 }
 
 /// The first sentence of a method's description.
@@ -381,8 +402,7 @@ fn search_methods(args: &Value) -> Value {
         let list: Vec<String> = groups.iter().map(|(g, n)| format!("{g} ({n})")).collect();
         let text = format!("Groups (methods): {}.
 Search with query (words) or group.", list.join(", "));
-        let structured = json!({ "groups": groups.iter().map(|(g, n)| json!({ "group": g, "methods": n })).collect::<Vec<_>>() });
-        return text_result(text, Some(structured), false);
+        return text_result(text, false);
     }
     let words: Vec<String> = query.split_whitespace().map(str::to_string).collect();
     let mut hits: Vec<(usize, &MethodSpec)> = methods
@@ -395,38 +415,24 @@ Search with query (words) or group.", list.join(", "));
     hits.truncate(limit);
     if hits.is_empty() {
         let text = "No method matches. Try other words, or search_methods with no arguments to see the groups.".to_string();
-        return text_result(text, Some(json!({ "methods": [], "total": 0 })), false);
+        return text_result(text, false);
     }
     let mut lines = Vec::new();
-    let mut found = Vec::new();
     for (_, m) in &hits {
         let tool = if m.mutating { "call" } else { "call_read" };
         let human = if m.human_only { ", human only" } else { "" };
-        match detail {
-            "names" => {
-                lines.push(m.name.to_string());
-                found.push(json!(m.name));
-            }
-            "full" => {
-                lines.push(format!("{} ({tool}{human}): {}
-Params: {}", m.name, compact_description(m), input_schema(m)));
-                found.push(json!({
-                    "method": m.name, "read_only": !m.mutating, "human_only": m.human_only,
-                    "description": compact_description(m), "input_schema": input_schema(m),
-                }));
-            }
-            _ => {
-                lines.push(format!("{} ({tool}{human}): {}", m.name, summary(m)));
-                found.push(json!({ "method": m.name, "summary": summary(m), "read_only": !m.mutating, "human_only": m.human_only }));
-            }
-        }
+        lines.push(match detail {
+            "names" => m.name.to_string(),
+            "full" => format!("{} ({tool}{human}): {}\nParams: {}", m.name, compact_description(m), input_schema(m)),
+            _ => format!("{} ({tool}{human}): {}", m.name, summary(m)),
+        });
     }
     let more = if total > hits.len() { format!("
 {} more; raise limit to see them.", total - hits.len()) } else { String::new() };
     let text = format!("{}{more}
 describe_method {{method}} shows a method's params.", lines.join("
 "));
-    text_result(text, Some(json!({ "methods": found, "total": total })), false)
+    text_result(text, false)
 }
 
 fn describe_method(args: &Value) -> Value {
@@ -437,18 +443,16 @@ fn describe_method(args: &Value) -> Value {
     };
     let tool = if m.mutating { "call" } else { "call_read" };
     let kind = if m.mutating { "changes state" } else { "read only" };
-    let schema = input_schema(m);
-    let text = format!(
-        "{} ({kind}; run it with the `{tool}` tool: {{\"method\":\"{}\",\"params\":{{…}}}})\n{}\nParams (JSON Schema): {schema}",
-        m.name,
-        m.name,
-        compact_description(m)
-    );
-    let structured = json!({
-        "method": m.name, "tool": tool, "description": compact_description(m),
-        "mutating": m.mutating, "human_only": m.human_only, "input_schema": schema,
-    });
-    text_result(text, Some(structured), false)
+    text_result(
+        format!(
+            "{} ({kind}; run it with the `{tool}` tool: {{\"method\":\"{}\",\"params\":{{…}}}})\n{}\nParams (JSON Schema): {}",
+            m.name,
+            m.name,
+            compact_description(m),
+            input_schema(m)
+        ),
+        false,
+    )
 }
 
 /// `call_read` / `call`: `{method, params?, no_wait?}` to the shared `call_method`.
@@ -468,7 +472,7 @@ fn call_compact(client: &mut Option<Client>, args: &Value, read_only: bool) -> R
             "`{}` changes state, and call_read only runs read-only methods. Use the `call` tool with {{\"method\":\"{}\"}}.",
             m.name, m.name
         );
-        return Ok(text_result(text, None, true));
+        return Ok(text_result(text, true));
     }
     if !read_only && args.get("no_wait").and_then(Value::as_bool) == Some(true) {
         params["no_wait"] = json!(true);
@@ -480,12 +484,53 @@ fn method_for(tool: &str) -> Option<&'static str> {
     catalog().iter().find(|m| tool_name(m.name) == tool && !SKIP.contains(&m.name)).map(|m| m.name)
 }
 
-fn text_result(text: String, structured: Option<Value>, is_error: bool) -> Value {
-    let mut r = json!({ "content": [{ "type": "text", "text": text }], "isError": is_error });
-    if let Some(s) = structured {
-        r["structuredContent"] = s;
+fn text_result(text: String, is_error: bool) -> Value {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+}
+
+/// A copy of `v` with every string cut to `max` characters.
+fn clipped(v: &Value, max: usize) -> Value {
+    match v {
+        Value::String(s) if s.chars().count() > max => Value::String(s.chars().take(max - 1).chain(['…']).collect()),
+        Value::Array(a) => a.iter().map(|v| clipped(v, max)).collect(),
+        Value::Object(o) => o.iter().map(|(k, v)| (k.clone(), clipped(v, max))).collect(),
+        v => v.clone(),
     }
-    r
+}
+
+fn picked(v: &Value, keys: &[&str], max: usize) -> Map<String, Value> {
+    keys.iter().filter_map(|k| Some((k.to_string(), clipped(v.get(*k)?, max)))).collect()
+}
+
+fn summarized(s: &Value, max: usize) -> Value {
+    let mut entry = picked(s, LISTED, max);
+    if let Some(info) = s.get("agent_info") {
+        entry.insert("agent_info".to_string(), picked(info, LISTED_AGENT_INFO, max).into());
+    }
+    if let Some(n) = s.get("queue").and_then(Value::as_array).map(Vec::len).filter(|n| *n > 0) {
+        entry.insert("queued".to_string(), n.into());
+    }
+    entry.into()
+}
+
+/// One terminal as a listing shows it: strings are cut shorter until the entry fits.
+fn listed_session(s: &Value) -> Value {
+    let mut max = LISTED_TEXT;
+    loop {
+        let entry = summarized(s, max);
+        if max <= 8 || entry.to_string().len() < LISTED_BYTES {
+            return entry;
+        }
+        max /= 2;
+    }
+}
+
+/// What an agent gets of a method's result: the RPC result, but for terminal listings.
+fn for_agent(method: &str, v: Value) -> Value {
+    match (method, &v) {
+        ("session.list", Value::Array(list)) => list.iter().map(listed_session).collect(),
+        _ => v,
+    }
 }
 
 /// One RPC call on the lazily (re)connected client, so the server survives daemon restarts.
@@ -516,7 +561,7 @@ fn error_result(e: &RpcError) -> Value {
     if let Some(d) = &e.data {
         text.push_str(&format!("\n{d}"));
     }
-    text_result(text, Some(json!({ "error": e })), true)
+    text_result(text, true)
 }
 
 fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<Value, Value> {
@@ -527,8 +572,8 @@ fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<
         Some(_) => return Err(json!({ "code": -32602, "message": "tools/call arguments must be an object" })),
     };
     match tool {
-        "capabilities" => return Ok(text_result(guide::capabilities(), Some(guide::capabilities_json()), false)),
-        "guide" => return Ok(text_result(guide::SKILL_MD.to_string(), None, false)),
+        "capabilities" => return Ok(text_result(guide::capabilities(), false)),
+        "guide" => return Ok(text_result(guide::SKILL_MD.to_string(), false)),
         "explain" => {
             let mut words: Vec<String> = args.get("target").and_then(Value::as_str).map(|t| vec![t.to_string()]).unwrap_or_default();
             if let Some(v) = args.get("value").and_then(Value::as_str) {
@@ -536,7 +581,7 @@ fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<
             }
             let mut caller = |m: &str, p: Value| rpc(client, m, p);
             return Ok(match guide::explain(&mut caller, &words, mode.surface()) {
-                Ok(t) => text_result(t, None, false),
+                Ok(t) => text_result(t, false),
                 Err(e) => error_result(&e),
             });
         }
@@ -577,11 +622,7 @@ fn call_method(client: &mut Option<Client>, method: &str, mut args: Value, surfa
         rpc(client, method, args.clone())
     };
     match res {
-        Ok(v) => text_result(
-            serde_json::to_string_pretty(&v).unwrap_or_default(),
-            Some(if v.is_object() { v } else { json!({ "result": v }) }),
-            false,
-        ),
+        Ok(v) => text_result(serde_json::to_string(&for_agent(method, v)).unwrap_or_default(), false),
         Err(e) => error_result(&guide::with_next_step(method, &args, e, surface)),
     }
 }
@@ -751,11 +792,51 @@ mod tests {
     }
 
     #[test]
+    fn a_listing_keeps_a_summary_of_each_terminal() {
+        let long = "x".repeat(8000);
+        let session = json!({
+            "id": "s1", "project_id": "p1", "name": long, "kind": "agent", "agent": "claude", "cwd": "/work", "pid": 7,
+            "command": ["claude", long], "agent_args": [long], "title": long, "keep_on_top": false,
+            "status": { "state": "working", "reason": long, "since": "2026-11-06T10:00:00Z" },
+            "created_at": "2026-11-06T10:00:00Z", "last_activity_at": "2026-11-06T10:00:00Z",
+            "git": { "branch": "main", "ahead": 0, "behind": 0, "added": 1, "removed": 2, "files": 1 },
+            "agent_info": { "model": "opus", "permission_mode": "default", "transcript_path": long, "background": [long], "rate_limits": { "a": long } },
+            "custom_status": { "label": "Blocked", "color": "red", "detail": long, "since": "2026-11-06T10:00:00Z" },
+            "queue": [{ "id": "q1", "text": long }, { "id": "q2", "text": long }],
+            "adopted": { "agent": "claude", "bin": long, "args": [long] },
+            "notify": { "turn_done": false }, "allowed_tools": [long], "auto_name": { "name": long },
+        });
+        let list = for_agent("session.list", json!([session]));
+        let entry = &list[0];
+        let bytes = entry.to_string().len();
+        assert!(bytes < LISTED_BYTES, "a listed terminal is {bytes} bytes: {entry}");
+        assert_eq!(entry["id"], "s1");
+        assert_eq!(entry["status"]["state"], "working");
+        assert_eq!(entry["git"]["branch"], "main");
+        assert_eq!(entry["agent_info"], json!({ "model": "opus", "permission_mode": "default" }));
+        assert_eq!(entry["queued"], 2);
+        for gone in ["command", "agent_args", "queue", "adopted", "notify", "allowed_tools", "auto_name"] {
+            assert!(entry.get(gone).is_none(), "{gone} leaked: {entry}");
+        }
+        let small = for_agent("session.list", json!([{ "id": "s1", "title": long, "queue": [] }]));
+        assert_eq!(small[0]["title"].as_str().unwrap().chars().count(), LISTED_TEXT);
+        assert!(small[0].get("queued").is_none(), "{small}");
+        let wide = "界\"".repeat(4000);
+        let every_field = LISTED.iter().map(|k| (k.to_string(), json!(wide))).collect::<Map<_, _>>();
+        let full = for_agent("session.list", json!([every_field]));
+        assert!(full[0].to_string().len() < LISTED_BYTES, "every kept field at its longest: {}", full[0]);
+        let other = json!([{ "id": "s1", "command": ["claude"] }]);
+        assert_eq!(for_agent("session.get", other.clone()), other);
+    }
+
+    #[test]
     fn search_finds_methods_by_words_and_group() {
         let found = |args: Value| -> Vec<String> {
             let r = search_methods(&args);
             assert!(!is_error(&r), "{r}");
-            r["structuredContent"]["methods"].as_array().unwrap().iter().map(|m| m["method"].as_str().unwrap().to_string()).collect()
+            let t = text(&r);
+            let hits = t.lines().filter(|l| l.contains("): ")).map(|l| l.split(' ').next().unwrap().to_string());
+            hits.collect()
         };
         assert!(found(json!({ "query": "webhook" })).contains(&"trigger.add".to_string()));
         assert_eq!(found(json!({ "query": "close terminal" }))[0], "session.close");
@@ -763,12 +844,13 @@ mod tests {
         let session = found(json!({ "group": "session", "limit": 500 }));
         assert!(session.iter().all(|m| m.starts_with("session.")) && session.contains(&"session.open".to_string()));
         assert_eq!(found(json!({ "query": "session", "limit": 3 })).len(), 3);
-        let names = search_methods(&json!({ "group": "rule", "detail": "names" }));
-        assert!(names["structuredContent"]["methods"].as_array().unwrap().contains(&json!("rule.add")));
-        let full = search_methods(&json!({ "query": "rule.add", "detail": "full", "limit": 1 }));
-        assert!(full["structuredContent"]["methods"][0]["input_schema"]["properties"].is_object(), "{full}");
-        let groups = search_methods(&json!({}));
-        assert!(groups["structuredContent"]["groups"].as_array().unwrap().iter().any(|g| g["group"] == "trigger"));
+        let names = text(&search_methods(&json!({ "group": "rule", "detail": "names" }))).to_string();
+        assert!(names.lines().any(|l| l == "rule.add"), "{names}");
+        let full = text(&search_methods(&json!({ "query": "rule.add", "detail": "full", "limit": 1 }))).to_string();
+        let params = full.lines().find_map(|l| l.strip_prefix("Params: ")).unwrap();
+        assert!(serde_json::from_str::<Value>(params).unwrap()["properties"].is_object(), "{full}");
+        let groups = text(&search_methods(&json!({}))).to_string();
+        assert!(groups.contains("trigger ("), "{groups}");
         for skip in SKIP {
             assert!(!found(json!({ "query": skip, "limit": 500 })).contains(&skip.to_string()), "{skip} is searchable");
         }
@@ -781,11 +863,13 @@ mod tests {
             for name in [m.name.to_string(), tool_name(m.name)] {
                 let r = describe_method(&json!({ "method": name }));
                 assert!(!is_error(&r), "{name}: {}", text(&r));
-                let s = &r["structuredContent"];
-                assert_eq!(s["method"], m.name);
-                assert_eq!(s["tool"], if m.mutating { "call" } else { "call_read" }, "{name}");
-                assert_eq!(s["input_schema"]["type"], "object", "{name}");
-                assert_refs_resolve(&s["input_schema"], m.name);
+                let t = text(&r);
+                let tool = if m.mutating { "call" } else { "call_read" };
+                assert!(t.starts_with(&format!("{} (", m.name)) && t.contains(&format!("the `{tool}` tool")), "{name}: {t}");
+                let schema = t.split_once("Params (JSON Schema): ").unwrap().1;
+                let schema: Value = serde_json::from_str(schema).unwrap();
+                assert_eq!(schema["type"], "object", "{name}");
+                assert_refs_resolve(&schema, m.name);
                 if m.human_only && !["rule.remove", "trigger.set_secret", "secret.replace"].contains(&m.name) {
                     assert!(text(&r).contains("HUMAN ONLY"), "{name}");
                 }

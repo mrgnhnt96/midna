@@ -97,7 +97,8 @@
 - **MCP.**
   - Tool names are method names with `.` replaced by `_`.
   - `stream.attach` and `events.subscribe` are left out, since streaming can't work as a one-shot tool.
-  - Results come back as both text and `structuredContent`.
+  - Results are sent once, as text (compact JSON for a method's result). `content` is the one field every client and protocol version reads, and tools declare no `outputSchema`. Sending `structuredContent` as well doubled every result for clients that pass both on (Codex scripts), while Claude Code hands its model the structured half on success and the text on errors.
+  - `session_list` is a summary per terminal, under 1 KB, from a keep-list in `mcp.rs`. `session_get` has the launch command, `agent_args` and the full `agent_info`. The `session.list` RPC stays complete because the app reads it.
 
 ## GUI (midna-app)
 
@@ -423,7 +424,7 @@ Goal: an agent dropped into a midna terminal with no instructions can find and u
     - `-32602` unknown tool, missing name, or non-object arguments
     - `-32002` unknown resource
     - Responses and notifications sent to us get no reply.
-  - **Daemon refusals are tool results with `isError: true`, not protocol errors**, so the model reads them. The text is `<message>\nNext: <what to do>`, and `structuredContent.error` holds the RpcError, including `data.needs_you_id` and `data.next`.
+  - **Daemon refusals are tool results with `isError: true`, not protocol errors**, so the model reads them. The text is `<message> (midna error <code>)`, then the RpcError's `data` as JSON, including `needs_you_id` and `next`.
   - Tool names stay `group_method` (`[a-zA-Z0-9_-]`, ≤64 chars, unique; unit-tested). Descriptions rewrite dotted method names to tool names, leaving event kinds like `session.input_by_agent` alone.
   - Every human-only tool says "HUMAN ONLY: calling this does not do it… asks the human…". `rule_remove` points at `rule_request_removal`, and `trigger_set_secret` says never call it. A few tools carry usage notes (`needs_you_raise` etiquette, `policy_request` blocks, `agent_hook` internal).
   - `inputSchema` is the schemars schema with `$schema`/`title` removed and `type: object` forced. Its `$defs` refs resolve (tested).
