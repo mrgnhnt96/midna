@@ -134,7 +134,9 @@ impl PromptNav {
             // Half-painted: keep the last frame's reading, or Live ↓ flickers while scrolling.
             return false;
         }
-        let hint = self.here.and_then(|h| vis.iter().position(|&i| i == h));
+        // The top row's own prompt, not `here`: that is often the one before it, so a repeated
+        // prompt's reading would move every frame and the pill flicker between two prompts.
+        let hint = self.top_shown.and_then(|h| vis.iter().position(|&i| i == h));
         let a = scr::assign(&sc.rows, &texts, hint);
         self.scrolled = if alt { sc.scrolled } else { !at_bottom };
         self.top_shown = a.iter().flatten().next().and_then(|&i| vis.get(i).copied());
@@ -612,6 +614,33 @@ mod tests {
         n.hint_at = Some(Instant::now() - Duration::from_secs(1));
         n.scan(&torn, Some(4), true, true);
         assert!(!n.scrolled);
+    }
+
+    #[test]
+    fn prompts_sharing_a_first_line_read_the_same_every_frame() {
+        let img = "[Image #1]\nAnnotations (coordinates are percentages from the image's top-left):";
+        let mut n = nav(&[img, img, "Close this tab once the PR merges"]);
+        // The whole conversation fits, under the banner: each row is its own prompt.
+        let all: Vec<String> =
+            ["  Claude Code v2.1.319", "", "❯ [Image #1] Annotations (coordinates are perc…", "", "❯ [Image #1] Annotations (coordinates are perc…", "", "❯ Close this tab once the PR merges", RULE, "❯", RULE]
+                .map(String::from)
+                .to_vec();
+        n.scan(&all, Some(8), true, true);
+        let first = (n.here, n.before_first, n.top_shown);
+        assert_eq!(first, (None, true, Some(0)));
+        for _ in 0..4 {
+            n.scan(&all, Some(8), true, true);
+            assert_eq!((n.here, n.before_first, n.top_shown), first);
+        }
+        // Only one of the two rows left on screen: nothing tells them apart, so it must hold still.
+        let mut n = nav(&[img, img, "Close this tab once the PR merges"]);
+        let one: Vec<String> = ["  a reply", "", "❯ [Image #1] Annotations (coordinates are perc…", "", "❯ Close this tab once the PR merges", RULE, "❯", RULE].map(String::from).to_vec();
+        n.scan(&one, Some(6), true, true);
+        let first = (n.here, n.before_first, n.top_shown);
+        for _ in 0..4 {
+            n.scan(&one, Some(6), true, true);
+            assert_eq!((n.here, n.before_first, n.top_shown), first);
+        }
     }
 
     #[test]

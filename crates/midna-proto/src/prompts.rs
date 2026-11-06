@@ -112,21 +112,26 @@ pub fn scan(lines: &[String], cursor_row: Option<u16>) -> ScreenScan {
 
 /// Which prompt each scanned row shows: an index into `prompts` (oldest first), or None for a
 /// row that is no known prompt (a slash command). Rows go down the screen in conversation
-/// order; a repeated prompt text resolves to the occurrence nearest `hint` (the newest when
-/// None), then each later row to the next match after the one above it.
+/// order, each to the next match after the one above it. A repeated prompt text starts from the
+/// occurrence that places the most rows, then the one nearest `hint` (the newest when None).
 pub fn assign(rows: &[(u16, String)], prompts: &[String], hint: Option<usize>) -> Vec<Option<usize>> {
-    let mut last: Option<usize> = None;
+    let shows = |row: usize, i: usize| matches(&rows[row].1, &prompts[i]);
+    let Some(lead) = (0..rows.len()).find(|&r| (0..prompts.len()).any(|i| shows(r, i))) else {
+        return vec![None; rows.len()];
+    };
+    let from = |start: usize| {
+        let mut out = vec![None; rows.len()];
+        out[lead] = Some(start);
+        let mut last = start;
+        for (r, slot) in out.iter_mut().enumerate().skip(lead + 1) {
+            *slot = (last + 1..prompts.len()).find(|&i| shows(r, i));
+            last = slot.unwrap_or(last);
+        }
+        out
+    };
     let hint = hint.unwrap_or(prompts.len());
-    rows.iter()
-        .map(|(_, text)| {
-            let cands = prompts.iter().enumerate().filter(|(i, p)| last.is_none_or(|l| *i > l) && matches(text, p)).map(|(i, _)| i);
-            let pick = if last.is_none() { cands.min_by_key(|i| i.abs_diff(hint)) } else { cands.min() };
-            if pick.is_some() {
-                last = pick;
-            }
-            pick
-        })
-        .collect()
+    let placed = |a: &[Option<usize>]| a.iter().flatten().count();
+    (0..prompts.len()).filter(|&i| shows(lead, i)).map(|i| (i, from(i))).min_by_key(|(i, a)| (std::cmp::Reverse(placed(a)), i.abs_diff(hint))).map(|(_, a)| a).unwrap_or_default()
 }
 
 /// Where the top of the view is, from the assigned rows: a prompt on the top two rows (row 0
@@ -251,6 +256,15 @@ mod tests {
         let rows = vec![(3, "ship it".to_string()), (9, "fix the build".to_string())];
         assert_eq!(assign(&rows, &ps, None), [Some(2), Some(3)], "newest by default");
         assert_eq!(assign(&rows, &ps, Some(0)), [Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn repeated_prompts_start_where_every_row_fits() {
+        let ps: Vec<String> = ["[Image #1]\nLeft", "[Image #1]\nRight", "close it"].map(String::from).to_vec();
+        let rows = vec![(2, "[Image #1]".to_string()), (4, "[Image #1]".to_string()), (6, "close it".to_string())];
+        for hint in [None, Some(0), Some(1), Some(2)] {
+            assert_eq!(assign(&rows, &ps, hint), [Some(0), Some(1), Some(2)], "hint {hint:?}");
+        }
     }
 
     #[test]
