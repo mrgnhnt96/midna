@@ -9,8 +9,9 @@
 //! - Overloaded: the Mac's CPU has been busy for `guard.overload_secs` (`system.overloaded`).
 //!   Design B on the "Overload: real CPU" canvas: one sentence on who is using the Mac (midna's
 //!   terminals or other apps), a bar of the Mac's CPU split between the two, then a column for
-//!   each, the cause first: the terminals with Pause / Resume (a name opens the terminal; a paused
-//!   terminal's card has Stop processes), and the other apps, which midna can't pause. Every
+//!   each: the terminals on the left, whoever the cause is, with Pause / Resume (a name opens the
+//!   terminal; a paused terminal's card has Stop processes), and the other apps, which midna can't
+//!   pause. Every
 //!   percent is a share of the whole Mac. Closes itself on `system.calm`; the status bar's CPU
 //!   item reopens it.
 //!
@@ -278,7 +279,7 @@ impl SystemWindow {
             )
     }
 
-    /// The sentence and the bar, then the cause's column first.
+    /// The sentence and the bar, then the columns in the bar's order: terminals, then other apps.
     fn overload_body(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
         let l = &self.load;
         let (verdict, sub) = verdict(l);
@@ -293,9 +294,7 @@ impl SystemWindow {
             .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(verdict))
             .child(div().text_color(t.dim).text_size(px(13.5)).child(sub))
             .child(div().pt(px(4.)).child(cpu_bar(t, l, 14.)));
-        let terms = self.midna_column(t, cx);
-        let apps = self.other_column(t);
-        let cols = if midna_is_the_cause(l.cpu_percent, l.midna_percent) { [terms, apps] } else { [apps, terms] };
+        let cols = [self.midna_column(t, cx), self.other_column(t)];
         let footer = div()
             .flex_none()
             .flex()
