@@ -52,6 +52,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "terminal.preview_path_click" => "Clicking the path at the top of a preview.",
         "terminal.image_paste" => "Add notes in the image sheet first, or paste the image's path.",
         "terminal.option_as_meta" => "Option-b moves back a word; off, Option types characters like é.",
+        "terminal.cmd_enter_sends" => "In Claude Code and Codex, ↩ starts a new line and ⌘↩ sends.",
         "terminal.prompt_bar" => "Which of your prompts you're reading, on the terminal's top row.",
         // Agents
         "agents.mcp" => "Agents midna starts can drive midna as tools.",

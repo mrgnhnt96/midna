@@ -50,6 +50,7 @@ midna settings set theme.colors "accent = #FF79C6"
 | `projects.roots` | none | Folders your projects live in, offered in ⌘K. |
 | `ide.app` | `auto` | The editor the header's editor button opens. `ide.rules` overrides it per folder or file type. |
 | `terminal.option_as_meta` | `true` | <kbd>⌥</kbd> acts as Meta. |
+| `terminal.cmd_enter_sends` | `false` | In Claude Code and Codex, <kbd>⌘</kbd> <kbd>↩</kbd> sends and <kbd>↩</kbd> starts a new line. |
 | `kass.auto_send` | `false` | Send Kass dictations without review. |
 | `updates.channel` | `stable` | `stable` or `beta`. |
 | `webhooks.path` | `off` | Human only. `tailscale_funnel` to receive webhooks. |

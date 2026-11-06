@@ -54,6 +54,7 @@ Commands that destroy something, like closing a busy terminal, need <kbd>↩</kb
 - **Links.** <kbd>⌘</kbd>-click opens URLs and file paths like `src/main.rs:12:5`, which open in `$EDITOR` at that line.
 - **Text editing.** <kbd>⌘</kbd> <kbd>←</kbd> / <kbd>→</kbd>, <kbd>⌥</kbd> <kbd>←</kbd> / <kbd>→</kbd>, <kbd>⌥</kbd> <kbd>⌫</kbd> and <kbd>⌘</kbd> <kbd>⌫</kbd> work as in a Mac text field, and <kbd>⇧</kbd> with them selects.
 - **Option as Meta** is on by default (`terminal.option_as_meta`). Turn it off to type accented characters with <kbd>⌥</kbd>.
+- **<kbd>⌘</kbd> <kbd>↩</kbd> to send** is off by default (`terminal.cmd_enter_sends`). Turn it on and, in Claude Code's or Codex's input, <kbd>↩</kbd> starts a new line and <kbd>⌘</kbd> <kbd>↩</kbd> sends. <kbd>↩</kbd> still confirms the agent's menus.
 - **Open in your editor.** The editor button in the header opens the terminal's folder in Cursor, VS Code, Zed, a JetBrains IDE, Xcode and others midna finds installed (<kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>E</kbd>). The one you pick is remembered per project.
 
 ## Splits and windows

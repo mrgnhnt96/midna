@@ -740,6 +740,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Show \"Open in Midna\", with Midna's icon, when you right-click a folder in Finder: it opens a terminal in that folder. It's midna's Finder extension, the same switch as System Settings › Login Items & Extensions › Finder."),
     s!("terminal.option_as_meta", SettingKind::Bool, B(true), "terminal", false,
         "Option (alt) acts as Meta in terminals: option-b sends ESC b (word back in shells). Off = option types macOS characters (option-e e = é)."),
+    s!("terminal.cmd_enter_sends", SettingKind::Bool, B(false), "terminal", false,
+        "In Claude Code's and Codex's input, ⌘↩ sends and ↩ starts a new line, as ⇧↩ does. ↩ still confirms the agent's menus, and ⌘↩ still approves a pending approval first (keys.approve). Other terminals are unchanged."),
     s!("terminal.link_preview", en(&["hover", "cmd", "off"]), S("hover"), "terminal", false,
         "Preview a path or link in a card at the bottom right of the terminal: hover (resting the pointer on it), cmd (⌘-hover only) or off. The card stays while the pointer is on it and for a moment after it leaves."),
     s!("terminal.pr_status", SettingKind::Bool, B(true), "terminal", false,
