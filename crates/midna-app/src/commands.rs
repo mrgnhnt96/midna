@@ -109,6 +109,10 @@ pub struct Command {
     pub state: Option<String>,
     /// Approval rows offer scope chips (once / 15 min / 1 h / session / always).
     pub approve_menu: bool,
+    /// The project this row goes to. Typing its name ranks the row first. Built-in rows only:
+    /// commands.json can't claim it.
+    #[serde(skip)]
+    pub project: Option<String>,
     pub run: Option<Run>,
 }
 
@@ -140,6 +144,10 @@ impl Command {
     }
     fn danger(mut self, s: impl Into<String>) -> Self {
         self.danger = Some(s.into());
+        self
+    }
+    fn project(mut self, name: &str) -> Self {
+        self.project = Some(name.into());
         self
     }
 }
@@ -458,6 +466,7 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         let c = Command::new(format!("project:{}", p.id), CmdIcon::Project, format!("Go to project {}", p.name), Run::OpenProject { path: Some(p.path.clone()) })
             .sub(if slot.is_some() { tilde(&p.path) } else { format!("{} · closed, opens a terminal", tilde(&p.path)) })
             .kw("jump switch project open")
+            .project(&p.name)
             .keys(slot.filter(|i| *i < 9).map(|i| format!("⌘{}", i + 1)).unwrap_or_default());
         out.push(featured(c, &p.path));
     }
@@ -465,6 +474,7 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         let cmd = Command::new(format!("folder:{}", c.path), CmdIcon::Project, format!("Open project {}", c.name), Run::OpenProject { path: Some(c.path.clone()) })
             .sub(format!("{} · in {}, opens a terminal", tilde(&c.path), c.root))
             .kw("open project folder repo directory")
+            .project(&c.name)
             .cli(format!("midna project add {}", tilde(&c.path)));
         out.push(cmd);
     }
@@ -960,8 +970,19 @@ pub struct Hit<'a> {
     pub head: Option<String>,
 }
 
+/// Lifts a project's row above every other match when the query is its name (most) or the
+/// start of its name (shorter names first). `q` is lowercase.
+fn project_bonus(c: &Command, q: &str) -> f32 {
+    match c.project.as_deref().map(str::to_lowercase) {
+        Some(name) if name == q => 2000.,
+        Some(name) if name.starts_with(q) => 1000. - name.chars().count().min(100) as f32,
+        _ => 0.,
+    }
+}
+
 /// Empty query: featured commands grouped by heading (Needs you, then Suggested, then any
-/// other headings in first-seen order). Otherwise the best `limit` matches by score.
+/// other headings in first-seen order). Otherwise the best `limit` matches by score, with
+/// projects named by the query first.
 pub fn search<'a>(cmds: &'a [Command], query: &str, limit: usize) -> Vec<Hit<'a>> {
     let q = query.trim();
     if q.is_empty() {
@@ -983,12 +1004,13 @@ pub fn search<'a>(cmds: &'a [Command], query: &str, limit: usize) -> Vec<Hit<'a>
         }
         return out;
     }
+    let lower = q.to_lowercase();
     let mut scored: Vec<(f32, Hit)> = cmds
         .iter()
         .enumerate()
         .filter_map(|(n, c)| {
             let hay = if c.sub.is_empty() { c.keywords.clone() } else { format!("{} {}", c.keywords, c.sub) };
-            fuzzy(q, &c.title, &hay).map(|m| (m.score + if c.pending { 8. } else { 0. } - n as f32 * 0.01, Hit { cmd: c, hits: m.hits, head: None }))
+            fuzzy(q, &c.title, &hay).map(|m| (m.score + project_bonus(c, &lower) + if c.pending { 8. } else { 0. } - n as f32 * 0.01, Hit { cmd: c, hits: m.hits, head: None }))
         })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -1519,6 +1541,27 @@ mod tests {
         assert!(titles(&search(&cmds, "dev api", 8)).contains(&"Go to dev server"));
         assert!(search(&cmds, "e", 3).len() <= 3);
         assert!(search(&cmds, "why does the build fail on main", 8).is_empty(), "free text falls through to Ask");
+    }
+
+    #[test]
+    fn search_puts_a_named_project_first() {
+        let (mut p, mut s, n) = snapshot_fixture();
+        p.push(Project { id: "p_site".into(), name: "midna-site".into(), path: "/src/midna-site".into(), ..Default::default() });
+        // a terminal named like the project, waiting on you, would otherwise outrank it
+        s[0].name = "midna".into();
+        let cmds = build_fixture(&p, &s, &n, &|_| None);
+        let top = titles(&search(&cmds, "midna", 8));
+        assert_eq!(top[..2], ["Go to project midna", "Go to project midna-site"], "exact name, then longer names");
+        assert_eq!(titles(&search(&cmds, "MID", 8))[0], "Go to project midna", "start of the name, any case");
+        // words that aren't the project's name rank as before
+        assert_eq!(titles(&search(&cmds, "rules", 8))[0], "Open Rules");
+        assert_eq!(titles(&search(&cmds, "midna test", 8))[0], "Run cargo test");
+    }
+
+    #[test]
+    fn user_commands_cannot_claim_a_project() {
+        let cmds = parse_user_commands(r#"[{"title":"Go to api","project":"api","run":{"kind":"focus","session":"s1"}}]"#);
+        assert_eq!(cmds[0].project, None);
     }
 
     #[test]
