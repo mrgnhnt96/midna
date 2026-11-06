@@ -454,12 +454,14 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
     // "Go to project" reopens them with a new terminal. Background terminals don't count: they
     // sit in their own group, so a project with only those is closed too. The most recently
     // opened closed ones are listed under "Recent" before anything is typed; folders under
-    // projects.roots only show up when searched for.
+    // projects.roots only show up when searched for. Anything in a system temp folder stays out
+    // of the list unless a terminal (background ones too) is open in that project.
+    let listed: Vec<&Project> = s.projects.iter().filter(|p| !in_temp_dir(&p.path) || s.sessions.iter().any(|x| x.project_id.as_deref() == Some(p.id.as_str()))).collect();
     let open_projects: Vec<&str> = s.projects.iter().filter(|p| s.sessions.iter().any(|x| !x.background && x.project_id.as_deref() == Some(p.id.as_str()))).map(|p| p.id.as_str()).collect();
     let recent: Vec<String> = recent_projects(s.projects, &open_projects).into_iter().take(RECENT_MAX).map(|r| r.path).collect();
     let featured = |c: Command, path: &str| if recent.iter().any(|r| r == path) { c.featured("Recent") } else { c };
     // recent ones first, most recent first, so "Recent" reads in that order
-    let mut ordered: Vec<&Project> = s.projects.iter().collect();
+    let mut ordered = listed.clone();
     ordered.sort_by_key(|p| recent.iter().position(|r| *r == p.path).unwrap_or(usize::MAX));
     for p in ordered {
         let slot = open_projects.iter().position(|id| *id == p.id);
@@ -470,7 +472,7 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .keys(slot.filter(|i| *i < 9).map(|i| format!("⌘{}", i + 1)).unwrap_or_default());
         out.push(featured(c, &p.path));
     }
-    for c in s.discovered.iter().filter(|c| c.project_id.is_none()) {
+    for c in s.discovered.iter().filter(|c| c.project_id.is_none() && !in_temp_dir(&c.path)) {
         let cmd = Command::new(format!("folder:{}", c.path), CmdIcon::Project, format!("Open project {}", c.name), Run::OpenProject { path: Some(c.path.clone()) })
             .sub(format!("{} · in {}, opens a terminal", tilde(&c.path), c.root))
             .kw("open project folder repo directory")
@@ -556,7 +558,7 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
     }
 
     // ---- Project commands (current project first)
-    let mut projects: Vec<&Project> = s.projects.iter().collect();
+    let mut projects = listed;
     if let Some(h) = here {
         projects.sort_by_key(|p| p.id != h.id);
     }
@@ -1029,10 +1031,19 @@ pub struct RecentProject {
     pub sub: String,
 }
 
-/// Closed projects, most recently opened first. Folders under `projects.roots` aren't
-/// listed here: ⌘K finds them when searched for.
+/// System temp folders, as macOS spells them with and without the `/private` symlink.
+/// `$TMPDIR` sits under `/var/folders`.
+const TEMP_DIRS: [&str; 6] = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders"];
+
+/// Whether `path` is a system temp folder or inside one.
+fn in_temp_dir(path: &str) -> bool {
+    TEMP_DIRS.iter().any(|d| path.strip_prefix(d).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
+}
+
+/// Closed projects, most recently opened first, leaving out temp folders. Folders under
+/// `projects.roots` aren't listed here: ⌘K finds them when searched for.
 pub fn recent_projects(projects: &[Project], open: &[&str]) -> Vec<RecentProject> {
-    let mut closed: Vec<&Project> = projects.iter().filter(|p| !open.contains(&p.id.as_str())).collect();
+    let mut closed: Vec<&Project> = projects.iter().filter(|p| !open.contains(&p.id.as_str()) && !in_temp_dir(&p.path)).collect();
     closed.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at).then(a.order.cmp(&b.order)));
     closed.into_iter().map(|p| RecentProject {
         name: p.name.clone(),
@@ -1407,6 +1418,43 @@ mod tests {
         // folders under projects.roots: searchable, never listed up front, once per path
         assert_eq!(search(&cmds, "kass", 5)[0].cmd.run, Some(Run::OpenProject { path: Some("/src/kass".into()) }));
         assert!(!cmds.iter().any(|c| c.id == "folder:/src/new"));
+    }
+
+    #[test]
+    fn temp_folders_are_listed_only_with_a_terminal_open() {
+        for p in ["/tmp", "/tmp/x", "/private/tmp/claude-501/proof", "/var/folders/ab/T/x", "/private/var/folders/ab/T/x"] {
+            assert!(in_temp_dir(p), "{p}");
+        }
+        for p in ["/tmpfiles/x", "/Users/me/tmp/x", "/var/log", "/src/midna"] {
+            assert!(!in_temp_dir(p), "{p}");
+        }
+
+        let p = |id: &str, path: &str| Project {
+            id: id.into(),
+            name: id.into(),
+            path: path.into(),
+            last_opened_at: Some("2026-10-03T10:00:00Z".into()),
+            commands: vec![ProjectCommand { name: "test".into(), run: format!("test {id}"), pinned: false }],
+            ..Default::default()
+        };
+        let projects = [p("scratch", "/private/tmp/scratch"), p("midna", "/src/midna")];
+        assert_eq!(recent_projects(&projects, &[]).into_iter().map(|r| r.name).collect::<Vec<_>>(), ["midna"]);
+
+        let shows = |session: Option<Session>| {
+            let sessions: Vec<Session> = session.into_iter().collect();
+            let cmds = build_fixture(&projects, &sessions, &[], &|_| None);
+            let has = |id: &str| cmds.iter().any(|c| c.id == id);
+            assert!(has("project:midna") && has("run:midna:test"));
+            assert_eq!(has("project:scratch"), has("run:scratch:test"));
+            has("project:scratch")
+        };
+        let terminal = Session { id: "s1".into(), project_id: Some("scratch".into()), ..Default::default() };
+        assert!(!shows(None));
+        assert!(shows(Some(terminal.clone())));
+        assert!(shows(Some(Session { background: true, ..terminal })));
+
+        // a typed path still opens one
+        assert!(path_command("/tmp", "/Users/me", &projects).is_some());
     }
 
     #[test]
