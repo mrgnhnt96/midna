@@ -30,10 +30,10 @@ pub static VERBS: &[Verb] = &[
         aliases: &["guide"],
         usage: "skill [topic] [--path]",
         summary: "print the bundled agent guide (SKILL.md) or one of its topics",
-        details: "Prints the guide's core: when to use which verb, attention etiquette, approvals, rules,\n\
-                  webhook triggers, settings, windows, and never routing around a denial. It lists its topics,\n\
-                  and `midna skill <topic>` prints one: triggers, keep-awake, load, secrets, queue, terminals,\n\
-                  links. In a midna terminal the core is at $MIDNA_SKILL and each topic's file sits beside it.\n\
+        details: "Prints the guide's core: when to use which verb, attention etiquette, what is human only, and\n\
+                  never routing around a denial. It lists its topics, and `midna skill <topic>` prints one:\n\
+                  triggers, keep-awake, load, secrets, queue, terminals, links. In a midna terminal the core is\n\
+                  at $MIDNA_SKILL and each topic's file sits beside it.\n\
                   `--path` prints that path instead.",
         methods: &[],
     },
@@ -149,7 +149,9 @@ pub static VERBS: &[Verb] = &[
         details: "A working terminal needs --force, except your own ($MIDNA_SESSION). `close --force` and closing another terminal may ask the\n\
                   human (settings agents.may_close_idle and agents.may_force_close, rules on `close …`); add\n\
                   --no-wait to get the needs-you id back at once instead of waiting (see `midna needs`).\n\
-                  An approval still open when its terminal closes is withdrawn. Afterwards midna cleans up what\n\
+                  An approval still open when its terminal closes is withdrawn. If the human is looking at the\n\
+                  terminal, `close` returns at once but the close waits on a 5-second countdown they can stop\n\
+                  (`session.close_kept`) or put off until they look away. Afterwards midna cleans up what\n\
                   it left behind (`midna cleanup`); --no-cleanup skips that this once.",
         methods: &["session.close"],
     },
@@ -169,7 +171,8 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "rename <id> <name...>",
         summary: "rename a terminal",
-        details: "Changes the sidebar label.",
+        details: "Changes the sidebar label, and stops midna naming it automatically from the agent's summary\n\
+                  (setting terminal.auto_name).",
         methods: &["session.rename"],
     },
     Verb {
@@ -343,7 +346,7 @@ pub static VERBS: &[Verb] = &[
                   exited, triggers, restarted), whether it's on globally and for the terminal (default: yours).\n\
                   `set` overrides a kind for one terminal (default drops the override); --global changes the\n\
                   `notify.<key>` setting. `mute` silences a terminal. Change these when the human asks (\"tell me\n\
-                  when every turn ends here\"). `send` notifies the human on purpose: when they asked to be told, or\n\
+                  when every turn ends here\"), and don't turn off something they rely on. `send` notifies the human on purpose: when they asked to be told, or\n\
                   a result needs them while they may be away. Not for routine progress; approvals, failures and long\n\
                   turns already notify. At most 6 a minute (--sound plays the human's sound for agent notifications).\n\
                   It works from outside midna terminals too (a background server, a cron job). In --detail, URLs and\n\
@@ -352,7 +355,7 @@ pub static VERBS: &[Verb] = &[
                   sending again with the same id replaces the one still showing (a repeating alert), and\n\
                   `withdraw <id>` takes it away once it no longer applies. --action <label> (up to 6, 24 characters\n\
                   each) adds buttons; ones sharing a first word, or the text before \": \" (\"Later: 1 hour\"), fold into one split button\n\
-                  whose face is the first of them, so put the usual pick first: --wait 10m blocks until the human\n\
+                  whose face is the first of them, so put the usual pick first; a response is always the full label. --wait 10m blocks until the human\n\
                   picks one, clicks or dismisses it and prints the label, `clicked`, `dismissed` or `no response`;\n\
                   without --wait, `response <id>` asks later, and every response is a `notify.responded` event\n\
                   (`midna trigger add --event notify.responded --match action='Snooze*' …` reacts to it). Buttons\n\
@@ -380,6 +383,11 @@ pub static VERBS: &[Verb] = &[
                   (aiff, wav, mp3, m4a, caf) or image (png, jpg, gif) into midna, --for sets it for those kinds;\n\
                   `media` lists what's there; `test` shows a kind's notification even when it's off. Pick sounds\n\
                   and images only when the human asks.\n\
+                  A kind's title and text are templates: `settings set notify.body.turn_done \"{{elapsed}} · {{reply}}\"`,\n\
+                  notify.title.<kind> likewise (empty = midna's own; a body of `none` shows the title only; a title\n\
+                  can't be empty). Each has {{text}} and {{heading}} (midna's own body and title), {{project}},\n\
+                  {{session.name}} and its own variables (in the setting's description, `settings list --json`);\n\
+                  `notify test <kind>` shows it with sample values.\n\
                   Sound effects play in the app with no banner and use the same settings: approved, denied,\n\
                   queue_sent, image_added, closed (what the human does) and switched, command_bar, copied (UI cues).\n\
                   notify.sounds turns every sound off; notify.sounds_in_app off silences sounds while midna is the\n\
@@ -417,8 +425,9 @@ pub static VERBS: &[Verb] = &[
         usage: "send <id> [--image PATH]... <text...> [--no-enter]",
         summary: "type text into a terminal (or message its agent), then Enter",
         details: "Free text with flags goes after `--`: `midna send ab12cd34 -- ls --all`. Works for Claude Code\n\
-                  and Codex: multi-line text stays one message. --image (repeatable) attaches a PNG, JPEG, GIF or\n\
-                  WebP (other formats are converted) ahead of the text; the agent shows it as [Image #N].\n\
+                  and Codex: multi-line text stays one message. --no-enter types it without pressing Enter. --image\n\
+                  (repeatable) attaches a PNG, JPEG, GIF or WebP (other formats are converted) ahead of the text;\n\
+                  the agent shows it as [Image #N]: `midna send ab12cd34 --image /tmp/shot.png -- \"Does this look right?\"`.\n\
                   Never answer another agent's permission prompt unless `midna read <id> --screen` shows it.",
         methods: &["session.input"],
     },
@@ -454,7 +463,8 @@ pub static VERBS: &[Verb] = &[
         aliases: &["needs-you"],
         usage: "needs\n       needs get <n_id>\n       needs wait <n_id> [--timeout S]",
         summary: "list what is waiting on the human; follow one item",
-        details: "Approvals, permission prompts (also an agent's \"trust this folder?\" dialog), blocked agents,\n\
+        details: "Approvals, permission prompts (also an agent's \"trust this folder?\" dialog: don't type into it;\n\
+                  folders in the human-only setting agents.trust_folders are answered Yes), blocked agents,\n\
                   notes, failures, rule-removal requests, missing webhook secrets. `midna explain <n_id>` explains one.\n\
                   get   where one item stands: open, resolved (how, by whom), withdrawn (its terminal or its asker\n\
                   \x20     went away) or timeout; for a --no-wait call also what that call ended with.\n\
@@ -490,7 +500,8 @@ pub static VERBS: &[Verb] = &[
         summary: "list, add, and request removal of policy rules",
         details: "Agents may add rules; only the human removes them. To get one removed, run\n\
                   `midna rules request-removal <id> --reason \"…\"`: the human sees it and decides.\n\
-                  Patterns are globs: `git push --force*`, `Bash(rm -rf*)`.",
+                  Patterns are globs: `git push --force*`, `Bash(rm -rf*)`. The narrowest scope wins\n\
+                  (session > project > global); within a scope deny > ask > allow. `midna check` tests one.",
         methods: &["rule.list", "rule.add", "rule.request_removal", "rule.remove", "rule.restore"],
     },
     // ---------------------------------------------------------------- triggers / webhooks
@@ -582,7 +593,12 @@ pub static VERBS: &[Verb] = &[
         usage: "settings [list] | get <key> | set <key> <value> | reset <key>",
         summary: "read and change settings",
         details: "`list` marks human-only keys; agents can read them, and setting one asks the human.\n\
-                  Values are JSON or bare strings (`true`, `42`, `dark`).",
+                  Values are JSON or bare strings (`true`, `42`, `dark`).\n\
+                  Shortcuts are `keys.*` settings. Where each works is its when clause (a GPUI context predicate);\n\
+                  `keys.when` overrides it, one `<keys.* key> = <when clause>` rule per shortcut (`*` = anywhere).\n\
+                  Settings has no row for it, so it's yours to set when the human asks for a shortcut to work\n\
+                  somewhere else. Setting it replaces the whole list, so `settings get keys.when` first;\n\
+                  `midna explain keys.when` has the syntax. midnad rejects a clause that doesn't parse.",
         methods: &["settings.list", "settings.get", "settings.set", "settings.reset"],
     },
     Verb {
@@ -592,8 +608,8 @@ pub static VERBS: &[Verb] = &[
                 window split <terminal-id> [side|stacked] | window split close\n       window list",
         summary: "ask the GUI to act on a window",
         details: "front, open_screen (rules|triggers|insights|notifications|summary|settings|needs_you) and split (show a terminal\n\
-                  beside the selected one) are always allowed; the rest need the human-only setting\n\
-                  agents.may_move_windows. Rules can still deny `window` actions (e.g. `split*`).",
+                  beside the selected one; `split close` folds it and the terminal keeps running) are always allowed;\n\
+                  the rest need the human-only setting agents.may_move_windows. Rules can still deny `window` actions (e.g. `split*`).",
         methods: &["window.list", "window.command"],
     },
     Verb {
@@ -733,7 +749,8 @@ pub static VERBS: &[Verb] = &[
         summary: "user commands in the human's ⌘K palette ($MIDNA_HOME/commands.json)",
         details: "Add commands for workflows the human repeats; they show up in the palette at once. --rpc runs\n\
                   a daemon method as the human when they pick it (human-only methods always ask twice).\n\
-                  Per-project scripts belong in `midna projects add-command` instead.",
+                  Per-project scripts belong in `midna projects add-command` instead.\n\
+                  `midna commands add --title \"Deploy staging\" --rpc session.open --params '{\"kind\":\"monitor\",\"command\":[\"./deploy.sh\"]}'`",
         methods: &["ui.commands.list", "ui.commands.add", "ui.commands.remove"],
     },
     Verb {

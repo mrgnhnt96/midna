@@ -255,8 +255,8 @@ fn extra_tools() -> Vec<Value> {
         json!({
             "name": "guide",
             "title": "midna agent guide",
-            "description": "The midna agent guide's core (SKILL.md): when to use which tool, attention etiquette, approvals, rules, \
-                settings, windows, and never routing around a denial. It lists its topics; `topic` reads one.",
+            "description": "The midna agent guide's core (SKILL.md): when to use which tool, attention etiquette, what is human only, \
+                and never routing around a denial. It lists its topics; `topic` reads one.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "topic": { "type": "string", "description": guide::SKILL_TOPICS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ") } }
