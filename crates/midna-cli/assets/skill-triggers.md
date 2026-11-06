@@ -87,3 +87,12 @@ Every weekday at 9, start a Claude terminal that summarizes overnight PRs:
 midna triggers add --name "Morning PRs" --cron '0 9 * * mon-fri' --project <project-id> \
   --agent claude --prompt "Summarize PRs opened since yesterday 9am" --enable
 ```
+
+## Webhook triggers
+
+- `midna triggers add --name N --event pull_request.opened --repo owner/name --project P --agent claude --prompt "Review PR {{pr.number}}"`
+  drafts a trigger. Other actions are `--run CMD` and `--attention MSG`.
+- Agent-made webhook triggers start as `needs_secret`. Only a human can paste the signing secret
+  and enable the trigger. Tell the human; don't try to set the secret yourself.
+- `midna triggers test <id> --payload file.json` dry-runs a trigger. `midna explain <trigger-id>`
+  says what it does and what it is waiting for.

@@ -17,3 +17,6 @@
   answers it for the midna app and for clients the human listed in `agents.trusted_clients`
   (e.g. Taskboard, outside midna terminals); agents get error 2. If you are blocked on another
   terminal's question, use `midna attention`.
+- When you tell the human about another terminal, name it by its id (`midna list`) or link it as
+  `[name](midna://session/<id>)`: ⌘-clicking a terminal's id, an agent's conversation id (its
+  first 8+ characters do) or a `midna://session/<id>` link brings that terminal to the front.

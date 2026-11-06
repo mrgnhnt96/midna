@@ -127,9 +127,12 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
             cmd(surface, "attention \"…\"", "needs_you_raise")
         ),
         (HUMAN_ONLY, _) if needs_you.is_some() => wait(needs_you.as_deref().unwrap_or("")),
-        (HUMAN_ONLY, _) => "This is the human's call. Ask them in one line with `midna attention` and continue with something else.".into(),
-        (REFUSED, "window.command") => format!(
-            "Front and open_screen are always allowed. For the rest the human must turn on agents.may_move_windows; \
+        (HUMAN_ONLY, _) => format!(
+            "This is the human's call. Ask them in one line with {} and continue with something else.",
+            cmd(surface, "attention \"…\"", "needs_you_raise")
+        ),
+        (REFUSED, "window.command") if e.message.contains("agents.may_move_windows") => format!(
+            "Front, open_screen and split need no setting. For the rest the human must turn on agents.may_move_windows; \
              {} asks them (human-only setting).",
             cmd(surface, "settings set agents.may_move_windows true", "settings_set")
         ),
@@ -335,9 +338,9 @@ const TOPICS: &[(&str, &str)] = &[
         wakes for and when. It needs a one-time admin grant (keep_awake.wake_setup, `midna keep-awake wake setup`, human \
         only): a root-owned helper that can only schedule or cancel this midna's own wakes, run through sudo without a \
         password. A closed lid still keeps a laptop asleep."),
-    ("windows", "`midna focus <id>` and `midna window front|open_screen <screen>` are always allowed. pop_out, \
-        keep_on_top, snap and close need the human-only setting agents.may_move_windows, and are policy-checked as \
-        `window` actions."),
+    ("windows", "`midna focus <id>`, `midna window front|open_screen <screen>` and `midna window split` need no \
+        setting. pop_out, keep_on_top, snap and close need the human-only setting agents.may_move_windows. All of them \
+        are policy-checked as `window` actions, so a rule can still deny one."),
     ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
         dismissing items, macOS permissions. Calling one never does it: it becomes a needs-you request (or tells you \
@@ -855,6 +858,25 @@ mod tests {
     }
 
     #[test]
+    fn the_human_only_fallback_names_the_surfaces_call() {
+        let e = RpcError::human_only("x");
+        assert!(next_step("project.remove", &json!({}), &e, Surface::Cli).unwrap().contains("midna attention"));
+        let h = next_step("project.remove", &json!({}), &e, Surface::Mcp).unwrap();
+        assert!(h.contains("needs_you_raise") && !h.contains("midna attention"), "{h}");
+    }
+
+    #[test]
+    fn the_window_hint_names_the_setting_only_when_the_setting_refused() {
+        let params = json!({"action": "snap"});
+        let e = RpcError::refused("snap needs agents.may_move_windows");
+        let h = next_step("window.command", &params, &e, Surface::Cli).unwrap();
+        assert!(h.contains("midna settings set agents.may_move_windows true"), "{h}");
+        let e = RpcError::refused("denied by rule r_1");
+        let h = next_step("window.command", &params, &e, Surface::Cli).unwrap_or_default();
+        assert!(!h.contains("agents.may_move_windows"), "{h}");
+    }
+
+    #[test]
     fn topics_and_methods_explain_offline() {
         let mut nope = |_: &str, _: Value| -> Result<Value, RpcError> { Err(RpcError::internal("offline")) };
         assert!(explain(&mut nope, &["rules".into()], Surface::Cli).unwrap().contains("request-removal"));
@@ -891,6 +913,15 @@ mod tests {
         for uri in ["midna://skill/", "midna://skill/nope", "midna://skillet", "midna://nope"] {
             assert_eq!(skill_resource(uri), None, "{uri}");
         }
+    }
+
+    #[test]
+    fn the_guide_core_fits_its_budget() {
+        let bytes = SKILL_MD.len();
+        assert!(
+            bytes <= 8 * 1024,
+            "SKILL.md is {bytes} bytes; keep it to 8 KB (~2.5k tokens). Move text to a topic file (assets/skill-<topic>.md) or `midna <verb> --help`"
+        );
     }
 
     #[test]
