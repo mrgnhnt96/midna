@@ -235,7 +235,8 @@ fn mcp_exposes_catalog_as_tools() {
     assert_eq!(open["inputSchema"]["type"], "object");
     assert!(open["description"].as_str().unwrap().contains("agent"));
     assert_eq!(replies[2]["result"]["isError"], false);
-    assert_eq!(replies[2]["result"]["structuredContent"]["role"], "agent");
+    let info: serde_json::Value = serde_json::from_str(replies[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(info["role"], "agent");
     assert_eq!(replies[3]["result"]["isError"], true);
 }
 

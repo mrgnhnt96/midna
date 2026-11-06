@@ -15,10 +15,31 @@ pub fn plain(v: &Value) -> String {
     }
 }
 
+/// The widest a `midna settings list` value or default prints, so one long value can't pad every row.
+const SETTINGS_CELL: usize = 40;
+
+/// `s` on one line, at most `max` characters, ending in `…` when it was cut.
+fn clip(s: &str, max: usize) -> String {
+    let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let mut out: String = flat.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
 pub fn table(rows: Vec<Vec<String>>) {
+    for line in table_lines(rows) {
+        println!("{line}");
+    }
+}
+
+fn table_lines(rows: Vec<Vec<String>>) -> Vec<String> {
     let n = rows.iter().map(Vec::len).max().unwrap_or(0);
     // A row's last cell isn't padded, so it doesn't widen its column (a note row can be long).
     let widths: Vec<usize> = (0..n).map(|i| rows.iter().filter(|r| i + 1 < r.len()).map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
+    let mut lines = Vec::with_capacity(rows.len());
     for r in rows {
         let mut line = String::new();
         for (i, c) in r.iter().enumerate() {
@@ -28,8 +49,9 @@ pub fn table(rows: Vec<Vec<String>>) {
                 line.push_str(&format!("{c:<w$}  ", w = widths[i]));
             }
         }
-        println!("{}", line.trim_end());
+        lines.push(line.trim_end().to_string());
     }
+    lines
 }
 
 pub fn kv(v: &Value) {
@@ -180,12 +202,29 @@ pub fn check(v: &Value) {
 }
 
 pub fn settings(v: &Value) {
+    for line in settings_lines(v) {
+        println!("{line}");
+    }
+}
+
+fn settings_lines(v: &Value) -> Vec<String> {
+    let mut cut = false;
+    let mut cell = |x: &Value, k: &str| {
+        let full = s(x, k);
+        let shown = clip(&full, SETTINGS_CELL);
+        cut |= shown != full;
+        shown
+    };
     let mut rows = vec![vec!["KEY".into(), "VALUE".into(), "DEFAULT".into(), "".into()]];
     for x in v.as_array().into_iter().flatten() {
         let flag = if x["human_only"].as_bool() == Some(true) { "human only" } else { "" };
-        rows.push(vec![s(x, "key"), s(x, "value"), s(x, "default"), flag.into()]);
+        rows.push(vec![s(x, "key"), cell(x, "value"), cell(x, "default"), flag.into()]);
     }
-    table(rows);
+    let mut lines = table_lines(rows);
+    if cut {
+        lines.push(format!("Values over {SETTINGS_CELL} characters are cut: `midna settings get <key>` prints one in full, `--json` prints them all."));
+    }
+    lines
 }
 
 fn dur(secs: i64) -> String {
@@ -593,5 +632,35 @@ pub fn cleanup_plan(p: &Value) {
     }
     for k in p["skipped"].as_array().cloned().unwrap_or_default() {
         println!("  left    {}", plain(&k));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_long_setting_does_not_pad_the_other_rows() {
+        let long = "x".repeat(5000);
+        let list = json!([
+            { "key": "theme", "value": "dark", "default": "dark", "human_only": false },
+            { "key": "notify.sounds", "value": long, "default": long, "human_only": true },
+            { "key": "multi.line", "value": "one\ntwo", "default": "", "human_only": false },
+        ]);
+        let lines = settings_lines(&list);
+        let widest = 7 + 2 + 2 * (SETTINGS_CELL + 2) + 10;
+        assert!(lines[..4].iter().all(|l| l.chars().count() <= widest + 6), "{lines:#?}");
+        assert_eq!(lines[1], format!("{:<13}  {:<40}  dark", "theme", "dark"));
+        assert!(lines[2].contains('…') && lines[2].ends_with("human only"), "{}", lines[2]);
+        assert!(lines[3].contains("one two"), "{}", lines[3]);
+        assert!(lines[4].contains("settings get"), "{lines:#?}");
+    }
+
+    #[test]
+    fn short_settings_are_shown_whole_with_no_footer() {
+        let lines = settings_lines(&json!([{ "key": "theme", "value": "x".repeat(SETTINGS_CELL), "default": "dark" }]));
+        assert_eq!(lines.len(), 2);
+        assert!(!lines[1].contains('…'), "{}", lines[1]);
     }
 }

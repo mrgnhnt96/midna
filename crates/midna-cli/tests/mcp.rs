@@ -107,7 +107,8 @@ impl Mcp {
     fn ok(&mut self, name: &str, args: Value) -> Value {
         let r = self.tool(name, args);
         assert_eq!(r["isError"], false, "{name} failed: {}", text(&r));
-        r["structuredContent"].clone()
+        assert!(r.get("structuredContent").is_none(), "{name} sent its result twice: {r}");
+        serde_json::from_str(&text(&r)).unwrap_or_else(|e| panic!("{name}: {e}: {}", text(&r)))
     }
 }
 
@@ -184,7 +185,7 @@ fn protocol_conformance() {
     // Arguments may be omitted.
     let r = m.request("tools/call", json!({ "name": "daemon_info" }));
     assert_eq!(r["result"]["isError"], false);
-    assert_eq!(r["result"]["structuredContent"]["role"], "agent");
+    assert!(text(&r["result"]).contains(r#""role":"agent""#), "{r}");
 
     // The guide is a tool and a resource.
     assert!(text(&m.tool("guide", json!({}))).contains("Never route around a denial"));
@@ -195,10 +196,51 @@ fn protocol_conformance() {
     assert_eq!(m.request("resources/read", json!({ "uri": "midna://nope" }))["error"]["code"], -32002);
     let caps = m.tool("capabilities", json!({}));
     assert!(text(&caps).contains("HUMAN ONLY"));
-    assert!(caps["structuredContent"]["methods"].as_array().unwrap().len() >= midna_proto::catalog().len());
+    assert!(text(&caps).len() < 8000 && caps.get("structuredContent").is_none(), "capabilities is an overview, not every method");
 }
 
 /// The end-to-end agent workflow, through MCP only.
+/// Every terminal in a listing stays under 1 KB, whatever its launch command, through the per-method
+/// tool and `call_read`. The full command stays in `session_get` and the RPC the app reads.
+#[test]
+fn a_terminal_listing_stays_small_with_a_long_launch_command() {
+    let d = D::start();
+    let mut human = d.human();
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = human.call_value("project.add", json!({ "path": dir, "name": "demo" })).unwrap();
+    let marker = "launch-marker-".repeat(600);
+    let command = json!(["/bin/sh", "-c", format!("sleep 60 # {marker}")]);
+    let long = "n".repeat(4000);
+    let params = json!({ "project_id": project["id"], "kind": "shell", "command": command, "name": long });
+    let s = human.call_value("session.open", params).unwrap();
+    let sid = s["id"].as_str().unwrap().to_string();
+
+    let check = |list: &Value| {
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 1, "{list:?}");
+        let entry = &list[0];
+        assert_eq!(entry["id"], sid.as_str());
+        let bytes = entry.to_string().len();
+        assert!(bytes < 1024, "a listed terminal is {bytes} bytes: {entry}");
+        assert!(entry.get("command").is_none() && entry.get("agent_args").is_none(), "{entry}");
+        assert!(!entry.to_string().contains("launch-marker"), "{entry}");
+    };
+
+    let mut m = Mcp::spawn(&d.sock(), None);
+    init(&mut m);
+    check(&m.ok("session_list", json!({})));
+    assert_eq!(m.ok("session_get", json!({ "id": sid }))["command"], command, "session_get keeps the launch command");
+    drop(m);
+
+    let mut m = Mcp::spawn_with(&d.sock(), None, &["--compact"]);
+    init(&mut m);
+    check(&m.ok("call_read", json!({ "method": "session.list" })));
+
+    let rpc = human.call_value("session.list", json!({})).unwrap();
+    assert_eq!(rpc[0]["command"], command, "the RPC the app reads stays whole");
+}
+
 #[test]
 fn agent_workflow_through_mcp_only() {
     let d = D::start();
@@ -219,7 +261,7 @@ fn agent_workflow_through_mcp_only() {
     assert_eq!(info["role"], "agent");
     assert_eq!(info["session"], me.as_str());
     let projects = m.ok("project_list", json!({}));
-    assert_eq!(projects["result"][0]["id"], pid.as_str());
+    assert_eq!(projects[0]["id"], pid.as_str());
 
     // Open a shell (defaults to my project), run a command, read the output.
     let sh = m.ok("session_open", json!({ "kind": "shell", "command": ["/bin/sh"], "name": "build" }));
@@ -243,7 +285,7 @@ fn agent_workflow_through_mcp_only() {
     assert_eq!(r["isError"], true);
     let msg = text(&r);
     assert!(msg.contains("human") && msg.contains("rule_request_removal") && msg.contains(&rid), "{msg}");
-    assert_eq!(r["structuredContent"]["error"]["code"], 2);
+    assert!(msg.contains("(midna error 2)"), "{msg}");
     let item = m.ok("rule_request_removal", json!({ "id": rid, "reason": "too broad for the build dir" }));
     assert_eq!(item["kind"], "rule_removal");
     let rules = human.call_value("rule.list", json!({})).unwrap();
@@ -317,13 +359,14 @@ fn compact_mode_search_describe_call() {
     assert!(bytes < 6000, "compact tools/list is {bytes} bytes");
 
     // Search -> describe -> call.
-    let found = m.ok("search_methods", json!({ "query": "webhook" }));
-    assert!(found["methods"].as_array().unwrap().iter().any(|f| f["method"] == "trigger.add"), "{found}");
-    let session = m.ok("search_methods", json!({ "group": "session", "detail": "names", "limit": 100 }));
-    assert!(session["methods"].as_array().unwrap().contains(&json!("session.open")), "{session}");
-    let open = m.ok("describe_method", json!({ "method": "session.open" }));
-    assert_eq!(open["tool"], "call");
-    assert!(open["input_schema"]["properties"]["kind"].is_object(), "{open}");
+    let found = text(&m.tool("search_methods", json!({ "query": "webhook" })));
+    assert!(found.lines().any(|l| l.starts_with("trigger.add (")), "{found}");
+    let session = text(&m.tool("search_methods", json!({ "group": "session", "detail": "names", "limit": 100 })));
+    assert!(session.lines().any(|l| l == "session.open"), "{session}");
+    let open = text(&m.tool("describe_method", json!({ "method": "session.open" })));
+    assert!(open.contains("the `call` tool"), "{open}");
+    let schema: Value = serde_json::from_str(open.split_once("Params (JSON Schema): ").unwrap().1).unwrap();
+    assert!(schema["properties"]["kind"].is_object(), "{open}");
     let sh = m.ok("call", json!({ "method": "session.open", "params": { "kind": "shell", "command": ["/bin/sh"], "name": "build" } }));
     let sid = sh["id"].as_str().unwrap().to_string();
     assert_eq!(sh["project_id"], pid.as_str());
@@ -349,8 +392,8 @@ fn compact_mode_search_describe_call() {
     let rid = m.ok("call", json!({ "method": "rule.add", "params": rule }))["id"].as_str().unwrap().to_string();
     let r = m.tool("call", json!({ "method": "rule.remove", "params": { "id": rid } }));
     assert_eq!(r["isError"], true);
-    assert_eq!(r["structuredContent"]["error"]["code"], 2);
     let msg = text(&r);
+    assert!(msg.contains("(midna error 2)"), "{msg}");
     assert!(msg.contains(r#"the `call` tool with {"method":"rule.request_removal""#) && msg.contains(&rid), "{msg}");
     assert!(!msg.contains("rule_request_removal"), "{msg}");
     let why = text(&m.tool("explain", json!({ "target": rid })));
@@ -367,7 +410,7 @@ fn compact_mode_search_describe_call() {
     let r = m.tool("call", json!({ "method": "session.close", "params": { "id": other, "force": true }, "no_wait": true }));
     assert!(t0.elapsed() < Duration::from_secs(10), "no_wait waited");
     assert_eq!(r["isError"], true);
-    assert_eq!(r["structuredContent"]["error"]["code"], 6, "{r}");
+    assert!(text(&r).contains("(midna error 6)"), "{r}");
     assert!(text(&r).contains(r#"the `call_read` tool with {"method":"needs_you.get""#), "{}", text(&r));
 
     // Skipped methods stay unreachable, and per-method tool names point at call / call_read.
