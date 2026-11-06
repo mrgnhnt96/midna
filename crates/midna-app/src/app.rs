@@ -261,6 +261,8 @@ pub struct MainWindow {
     /// and one fetched before a terminal opened or closed must not undo it.
     refresh_seq: u64,
     sessions_floor: u64,
+    /// A `front` command's terminal that `sessions` doesn't list yet (see `front_terminal`).
+    front_waiting: Option<String>,
     loaded: bool,
     _tasks: Vec<Task<()>>,
 }
@@ -465,6 +467,7 @@ impl MainWindow {
             refresh_scheduled: false,
             refresh_seq: 0,
             sessions_floor: 0,
+            front_waiting: None,
             loaded: false,
             _tasks: tasks,
         };
@@ -858,11 +861,8 @@ impl MainWindow {
                 // Like a clicked notification: midna becomes the frontmost app, showing the terminal.
                 cx.activate(true);
                 window.activate_window();
-                if let Some(t) = target.filter(|t| self.sessions.iter().any(|s| &s.id == t)) {
-                    if self.screen != Screen::Terminal {
-                        self.set_screen(Screen::Terminal, window, cx);
-                    }
-                    self.select(t, window, cx);
+                if let Some(t) = target {
+                    self.front_terminal(t, window, cx);
                 }
             }
             "open_screen" => {
@@ -907,6 +907,23 @@ impl MainWindow {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Show terminal `id` for a `front` command. `session.focus` right after `session.open` beats
+    /// the refresh that lists the new terminal, so the window it'll land in waits for a list
+    /// started from here on: that one has it, or it's gone and the wait ends with it.
+    fn front_terminal(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sessions.iter().any(|s| s.id == id) {
+            self.front_waiting = None;
+            if self.screen != Screen::Terminal {
+                self.set_screen(Screen::Terminal, window, cx);
+            }
+            self.select(id, window, cx);
+        } else if self.shows(&id) {
+            self.front_waiting = Some(id);
+            self.sessions_floor = self.refresh_seq + 1;
+            self.request_refresh(refresh::SESSIONS, cx);
         }
     }
 
@@ -1078,6 +1095,7 @@ impl MainWindow {
         // The selected terminal closing (⌘K, the header menu, its shell exiting): its neighbour
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
+        let mut fronted = None;
         // An older list than the one we have (or than a terminal we just opened or closed) would
         // drop the new tab, or move the selection off it, until the next session event.
         if let Some(s) = r.sessions.filter(|_| r.seq >= self.sessions_floor) {
@@ -1105,6 +1123,7 @@ impl MainWindow {
                     crate::windows::save_soon(cx);
                 }
             }
+            fronted = listed(self.front_waiting.take(), &self.sessions);
             let live = &self.sessions;
             self.marked.retain(|id| live.iter().any(|s| &s.id == id));
             if self.marked.len() < 2 {
@@ -1162,6 +1181,9 @@ impl MainWindow {
         }
         if let Some(rows) = r.rows {
             self.row_segments = rows;
+        }
+        if let Some(id) = fronted {
+            self.front_terminal(id, window, cx);
         }
         // keep a valid selection
         // (a popped-out terminal lives in its own window, never in the main pane)
@@ -2521,11 +2543,24 @@ pub fn background_note(s: &Session) -> Option<String> {
     (!parts.is_empty()).then(|| format!("{} still running", parts.join(" and ")))
 }
 
+/// `id`, if `sessions` lists it.
+fn listed(id: Option<String>, sessions: &[Session]) -> Option<String> {
+    id.filter(|id| sessions.iter().any(|s| &s.id == id))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{background_note, busy_count_phrase, busy_phrase, neighbour, RowGroup};
+    use super::{background_note, busy_count_phrase, busy_phrase, listed, neighbour, RowGroup};
     use crate::model::{Session, StatusState};
     use midna_proto::{AgentInfo, BackgroundTask};
+
+    #[test]
+    fn a_waiting_front_command_ends_with_the_first_fresh_list() {
+        let sessions = [Session { id: "s1".into(), ..Default::default() }];
+        assert_eq!(listed(Some("s1".into()), &sessions).as_deref(), Some("s1"));
+        assert_eq!(listed(Some("closed".into()), &sessions), None);
+        assert_eq!(listed(None, &sessions), None);
+    }
 
     #[test]
     fn closing_says_whether_a_terminal_runs_or_needs_you() {
