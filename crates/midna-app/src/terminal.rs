@@ -10,7 +10,7 @@
 use crate::actions::*;
 use crate::backend::{AttachRequest, Backend, TermStream};
 use crate::frame::*;
-use crate::term_edit::{self, EraseJob, KbdSel, MoveJob, Pending};
+use crate::term_edit::{self, EraseJob, KbdSel, MoveJob, Pending, ReadJob};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -46,6 +46,10 @@ const PAD_Y: f32 = 14.0;
 const IDLE_PAINT: Duration = Duration::from_millis(250);
 /// Kitty keyboard flags (see the kitty spec).
 const KITTY_REPORT_EVENTS: u8 = 2;
+/// Batches of ⌫ to empty a long input before giving up.
+const CLEAR_ROUNDS: u8 = 40;
+/// Checks of the screen for a walk's ↓ to show before giving up.
+const WALK_TRIES: u8 = 8;
 /// How long after a deleting key (or a new list item) an agent's redraws may renumber its list.
 const LIST_WATCH: Duration = Duration::from_millis(800);
 /// How long the agent must go without a redraw (and the keyboard without a key) before the list
@@ -1039,7 +1043,7 @@ impl TerminalView {
             if !m.shift {
                 self.kbd_sel = None;
             } else if self.kbd_range().is_none() {
-                self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+                self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
             }
             for mv in moves {
                 self.send_move(mv);
@@ -1050,7 +1054,7 @@ impl TerminalView {
             let Some(c) = self.live_cursor() else { return false };
             let Some(mv) = term_edit::vertical(key, self.is_agent(), &self.grid, c) else { return false };
             if self.kbd_range().is_none() {
-                self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+                self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
             }
             self.send_move(mv);
             return true;
@@ -1068,7 +1072,7 @@ impl TerminalView {
             if m.shift {
                 let Some(c) = self.live_cursor() else { return false };
                 if self.kbd_range().is_none() {
-                    self.kbd_sel = Some(KbdSel { anchor: c, kill: false });
+                    self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
                 }
                 for mv in row_edge.unwrap_or_else(|| vec![mv]) {
                     self.send_move(mv);
@@ -1106,7 +1110,7 @@ impl TerminalView {
             match self.live_cursor() {
                 Some(c) if key == "backspace" && cmd && !self.is_agent() && !self.ext.alt_screen => {
                     // Erased in `pull` once the cursor is at the line start.
-                    self.kbd_sel = Some(KbdSel { anchor: c, kill: true });
+                    self.kbd_sel = Some(KbdSel { anchor: c, kill: true, all: false });
                     self.send(b"\x01");
                 }
                 _ => self.send(bytes),
@@ -1174,6 +1178,12 @@ impl TerminalView {
             return false;
         }
         let Some(c) = self.live_cursor() else { return false };
+        if kbd.is_some_and(|k| k.all) {
+            self.ext.selection.clear();
+            self.press_clear();
+            self.settle(Some(Pending::Clear { rounds: CLEAR_ROUNDS }), cx);
+            return true;
+        }
         let Some((s, e)) = term_edit::replace_range(kbd, &self.ext.selection, c) else { return false };
         let mouse = !kbd.is_some_and(|k| k.anchor != c);
         if mouse && !(s.1 == c.1 && e.1 == c.1) {
@@ -1236,6 +1246,59 @@ impl TerminalView {
         Some(job)
     }
 
+    /// One batch of ⌫ to erase Claude's input from its end: a few windows' worth of text.
+    fn press_clear(&mut self) {
+        let Some((s, e)) = self.live_cursor().and_then(|c| term_edit::box_text_span(&self.grid, c)) else { return };
+        for _ in 0..4 * (term_edit::lower_bound(&self.grid, s, e, self.indent()) + (e.1 - s.1) as usize + 1) {
+            self.arrow("backspace");
+        }
+    }
+
+    /// Read all of Claude's input for ⌘C or ⌘X (`check_erase` finishes the job). The cursor
+    /// walks through it, so the selection is put back at the end of a copy.
+    fn read_input(&mut self, c: term_edit::Pos, cut: bool, cx: &mut Context<Self>) {
+        let Some((job, ups)) = ReadJob::start(&self.grid, c, cut) else { return };
+        self.kbd_sel = None;
+        for _ in 0..ups {
+            self.arrow("up");
+        }
+        self.settle(Some(Pending::Read(job)), cx);
+    }
+
+    /// The text is read: copy it and return to its end, to erase it from there (⌘X) or leave
+    /// it selected (⌘C).
+    fn finish_read(&mut self, text: String, rows: usize, cut: bool, cx: &mut Context<Self>) {
+        Self::to_clipboard(text, cx);
+        // All but the last row's worth, which `ToEnd` confirms: never ↓ past the last row.
+        let downs = rows.saturating_sub(2);
+        for _ in 0..downs {
+            self.arrow("down");
+        }
+        let from = self.cursor.filter(|_| downs > 0).map(|c| (c, term_edit::box_row_at(&self.grid, c)));
+        self.set_pending(Pending::ToEnd { from, tries: WALK_TRIES, clear: cut });
+        self.check_erase_later(250, cx);
+    }
+
+    fn set_pending(&mut self, job: Pending) {
+        if let Some((pending, _)) = self.erasing.as_mut() {
+            *pending = Some(job);
+        }
+    }
+
+    /// At the text's last row: its end, then erase it all or select it all.
+    fn finish_to_end(&mut self, c: term_edit::Pos, clear: bool, cx: &mut Context<Self>) {
+        self.send_move(term_edit::Send::Bytes(b"\x05"));
+        if clear {
+            self.press_clear();
+            self.set_pending(Pending::Clear { rounds: CLEAR_ROUNDS });
+            return self.check_erase_later(250, cx);
+        }
+        if let Some((start, _)) = term_edit::select_all(&self.grid, c) {
+            self.kbd_sel = Some(KbdSel { anchor: start, kill: false, all: true });
+        }
+        self.finish_erase(cx);
+    }
+
     /// Hold the input typed from now on until the app has gone quiet (and `job` is done).
     fn settle(&mut self, job: Option<Pending>, cx: &mut Context<Self>) {
         self.erasing = Some((job, vec![]));
@@ -1268,6 +1331,55 @@ impl TerminalView {
         }
         let Some((pending, _)) = self.erasing.as_mut() else { return };
         let job = match pending {
+            Some(Pending::Read(job)) => {
+                let (read, cut, rows) = match self.cursor {
+                    Some(c) => (job.step(&self.grid, c), job.cut, job.rows()),
+                    None => (term_edit::Read::Failed, job.cut, job.rows()),
+                };
+                match read {
+                    term_edit::Read::Wait => self.check_erase_later(120, cx),
+                    term_edit::Read::Up(n) => {
+                        for _ in 0..n {
+                            self.arrow("up");
+                        }
+                        self.check_erase_later(250, cx);
+                    }
+                    term_edit::Read::Done(text) => self.finish_read(text, rows, cut, cx),
+                    term_edit::Read::Failed => self.finish_erase(cx),
+                }
+                return;
+            }
+            Some(Pending::ToEnd { from, tries, clear }) => {
+                let Some(c) = self.cursor else { return self.finish_erase(cx) };
+                let Some(below) = term_edit::rows_below(&self.grid, c) else { return self.finish_erase(cx) };
+                let now = (c, term_edit::box_row_at(&self.grid, c));
+                if from.as_ref() == Some(&now) {
+                    // The last ↓ haven't shown yet: more now could run past the last row.
+                    if *tries == 0 {
+                        return self.finish_erase(cx);
+                    }
+                    *tries -= 1;
+                    return self.check_erase_later(120, cx);
+                }
+                if below == 0 {
+                    let clear = *clear;
+                    return self.finish_to_end(c, clear, cx);
+                }
+                *from = Some(now);
+                *tries = WALK_TRIES;
+                for _ in 0..below {
+                    self.arrow("down");
+                }
+                return self.check_erase_later(250, cx);
+            }
+            Some(Pending::Clear { rounds }) => {
+                if self.cursor.is_none_or(|c| term_edit::input_text(&self.grid, c).is_none_or(|t| t.is_empty())) || *rounds == 0 {
+                    return self.finish_erase(cx);
+                }
+                *rounds -= 1;
+                self.press_clear();
+                return self.check_erase_later(250, cx);
+            }
             Some(Pending::Move(mv)) => {
                 let Some(c) = self.cursor.filter(|&c| !mv.passed(c)) else { return self.finish_erase(cx) };
                 if c == mv.target {
@@ -1554,6 +1666,9 @@ impl TerminalView {
     /// ⌘X: copy the selection, then erase it as ⌫ would. Outside the input line (output, a
     /// full-screen app) there's nothing to erase, so it only copies.
     fn on_cut(&mut self, _: &TermCut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_all(true, cx) {
+            return;
+        }
         if let Some((s, e)) = self.kbd_range() {
             Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
             self.erase_selection(cx);
@@ -1573,7 +1688,24 @@ impl TerminalView {
         });
     }
 
+    /// ⌘C or ⌘X with all of a box that may be a window on longer text selected: the screen
+    /// doesn't hold what's selected, so read it. True when that's underway, or one already is.
+    fn read_all(&mut self, cut: bool, cx: &mut Context<Self>) -> bool {
+        if !self.kbd_sel.is_some_and(|k| k.all) {
+            return false;
+        }
+        if self.erasing.is_none()
+            && let Some(c) = self.live_cursor()
+        {
+            self.read_input(c, cut, cx);
+        }
+        true
+    }
+
     fn copy_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_all(false, cx) {
+            return;
+        }
         // A keyboard selection (⇧ moves, ⌘A in an agent's box) is ours, not the engine's.
         if let Some((s, e)) = self.kbd_range() {
             Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
@@ -1610,10 +1742,19 @@ impl TerminalView {
             && let Some(c) = self.live_cursor()
             && let Some((start, moves)) = term_edit::select_all(&self.grid, c)
         {
-            self.kbd_sel = Some(KbdSel { anchor: start, kill: false });
+            let all = self.agent_kind() == Some("claude") && term_edit::box_is_full(&self.grid, c);
+            self.kbd_sel = Some(KbdSel { anchor: start, kill: false, all });
             self.ext.selection.clear();
-            for mv in moves {
-                self.send_move(mv);
+            if all {
+                // The window's last row may not be the text's: walk there.
+                if self.erasing.is_none() {
+                    self.settle(Some(Pending::ToEnd { from: None, tries: WALK_TRIES, clear: false }), cx);
+                    self.check_erase(cx);
+                }
+            } else {
+                for mv in moves {
+                    self.send_move(mv);
+                }
             }
             cx.notify();
             return;

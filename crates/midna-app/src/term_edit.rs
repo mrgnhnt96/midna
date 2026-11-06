@@ -22,6 +22,10 @@
 //!   surrounded the selection meeting at the cursor. A mouse selection elsewhere in the same
 //!   input (dragged across rows, say) is reached first by a [`MoveJob`], which walks the
 //!   cursor to its nearer edge the same way, checking the cursor's position on screen.
+//! - A long input in Claude Code shows only a window on its text, with `❯` on the window's top
+//!   row whether or not that's where the text starts, so the screen alone can't say how much
+//!   there is. ⌘A there remembers it meant all of it: ⌘C and ⌘X read the rest with a
+//!   [`ReadJob`], and ⌫ or typing erases until the box is empty ([`Pending::Clear`]).
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
 use crate::frame::{Cell, F_INPUT, F_SPACER, RowData};
@@ -40,6 +44,8 @@ pub struct KbdSel {
     /// ⌘⌫ in a shell: erase this selection as soon as the cursor reaches the line start
     /// (zsh's ctrl-u would clear the whole line, not just what's left of the cursor).
     pub kill: bool,
+    /// ⌘A in a box at its tallest: the selection is all the text, rows out of view included.
+    pub all: bool,
 }
 
 /// What the app should be sent for a move: readline bytes, or a plain arrow key (which the
@@ -99,6 +105,33 @@ pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
     let (top, _) = input_rows(grid, cursor)?;
     let glyph = grid.get(top as usize)?.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))? as u16;
     Some(((glyph + 2, top), text_edge("down", grid, cursor)?))
+}
+
+/// Whether Claude Code's input box around the cursor is as tall as it gets (half the terminal
+/// less five rows), so that it may be a window on longer text.
+pub fn box_is_full(grid: &[RowData], cursor: Pos) -> bool {
+    claude_box(grid, cursor).is_some_and(|(top, bottom)| (bottom - top + 1) as usize >= (grid.len() / 2).saturating_sub(5))
+}
+
+/// How many ↓ reach the last row on screen of the input around the cursor (none on it). Claude
+/// keeps the cursor mid-window while there's text beyond it, so being on the window's last row
+/// means being on the text's. Never press more than this: ↓ past the last row goes to the next
+/// history entry, and on a recalled prompt that replaces the text.
+pub fn rows_below(grid: &[RowData], cursor: Pos) -> Option<u16> {
+    let (_, bottom) = claude_box(grid, cursor)?;
+    Some(bottom.saturating_sub(cursor.1))
+}
+
+/// The ends on screen of the text in Claude's input around the cursor.
+pub fn box_text_span(grid: &[RowData], cursor: Pos) -> Option<(Pos, Pos)> {
+    let (start, _) = select_all(grid, cursor)?;
+    let (_, bottom) = claude_box(grid, cursor)?;
+    Some((start, (text_end(grid.get(bottom as usize)?), bottom)))
+}
+
+/// The text of the cursor's row of Claude's input, to tell whether a move has shown yet.
+pub fn box_row_at(grid: &[RowData], cursor: Pos) -> String {
+    claude_box(grid, cursor).map_or(String::new(), |(top, _)| box_row(grid, top, cursor.1))
 }
 
 /// The prompt row and last row of an agent's input around the cursor. Inside Claude Code's
@@ -603,6 +636,88 @@ impl MoveJob {
 pub enum Pending {
     Move(MoveJob),
     Erase(EraseJob),
+    /// Reading all of Claude's input for ⌘C or ⌘X.
+    Read(ReadJob),
+    /// Walking the cursor to the end of Claude's input, `tries` checks left for the screen to
+    /// show the last ↓ pressed, from where it was then. `clear`: then erase it all (⌘X).
+    ToEnd { from: Option<(Pos, String)>, tries: u8, clear: bool },
+    /// Pressing ⌫ at the end of Claude's input until it's empty, `rounds` batches left. Extra
+    /// presses do nothing at its start. (Not ⌦: Claude splits a burst of its escape sequence
+    /// and types the pieces into the input.)
+    Clear { rounds: u8 },
+}
+
+/// What a step of a [`ReadJob`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// The screen doesn't show the last ↑ pressed yet.
+    Wait,
+    /// Press ↑ this many times, then look again.
+    Up(u16),
+    /// That's the first row: here's all the text.
+    Done(String),
+    /// The rows no longer line up (the box changed under us): leave the text alone.
+    Failed,
+}
+
+/// Reading all of Claude's input, from the end up. ↑ goes to the window's top row, which is
+/// always safe (↑ past the text's first row would recall history), and Claude then scrolls so
+/// the cursor is mid-window, so the row the cursor lands on is how many rows came into view.
+/// The rows still in view must match what was read, which also tells a late redraw from a
+/// finished one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadJob {
+    /// The text's rows read so far, the last window's first.
+    rows: Vec<String>,
+    /// The height of the window.
+    height: usize,
+    /// Checks left for a redraw to show the last ↑ pressed.
+    tries: u8,
+    /// ⌘X: erase the text once read.
+    pub cut: bool,
+}
+
+impl ReadJob {
+    /// Checks of the screen allowed between two batches of ↑.
+    const TRIES: u8 = 8;
+
+    /// The job for the box around the cursor, and how many ↑ to press first.
+    pub fn start(grid: &[RowData], cursor: Pos, cut: bool) -> Option<(ReadJob, u16)> {
+        let (top, bottom) = claude_box(grid, cursor)?;
+        let rows: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
+        Some((ReadJob { height: rows.len(), rows, tries: Self::TRIES, cut }, cursor.1 - top))
+    }
+
+    /// Rows of text read so far.
+    pub fn rows(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Take in the screen once the keys pressed have had time to show.
+    pub fn step(&mut self, grid: &[RowData], cursor: Pos) -> Read {
+        let Some((top, bottom)) = claude_box(grid, cursor) else { return Read::Failed };
+        let window: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
+        let new = (cursor.1 - top) as usize;
+        if window.len() != self.height {
+            return Read::Failed;
+        }
+        if window[new..] != self.rows[..self.height - new] {
+            self.tries = self.tries.saturating_sub(1);
+            return if self.tries == 0 { Read::Failed } else { Read::Wait };
+        }
+        if new > 0 {
+            self.rows.splice(0..0, window[..new].iter().cloned());
+            self.tries = Self::TRIES;
+            return Read::Up(new as u16);
+        }
+        let width = grid.get(top as usize).map_or(0, |r| r.cells.len().saturating_sub(4));
+        let mut text = self.rows[0].clone();
+        for pair in self.rows.windows(2) {
+            text.push_str(row_break(&pair[0], &pair[1], width));
+            text.push_str(&pair[1]);
+        }
+        Read::Done(text)
+    }
 }
 
 /// Erasing a selection that spans rows, checked against the screen (see the module docs).
@@ -705,6 +820,95 @@ mod tests {
             }
         }
         g
+    }
+
+    /// Claude's box showing `window` of `text` rows, the rest of the terminal around it, and the
+    /// cursor on window row `at`.
+    fn claude_window(text: &[String], first: usize, height: usize, at: u16) -> (Vec<RowData>, Pos) {
+        let rule = "─".repeat(30);
+        let rows: Vec<String> = text[first..first + height].iter().enumerate().map(|(i, r)| format!("{}{r}", if i == 0 { "❯ " } else { "  " })).collect();
+        let mut g = vec!["output"];
+        g.push(&rule);
+        g.extend(rows.iter().map(String::as_str));
+        g.push(&rule);
+        (grid(&g), (4, 2 + at))
+    }
+
+    /// Run a job over `text` the way Claude scrolls: ↑ to the window's top row recentres it.
+    fn read_through(text: &[String], height: usize) -> String {
+        let mut first = text.len() - height;
+        let (g, c) = claude_window(text, first, height, height as u16 - 1);
+        let (mut job, mut ups) = ReadJob::start(&g, c, false).unwrap();
+        let mut at = height as u16 - 1;
+        loop {
+            let line = first + at as usize - ups as usize;
+            first = line.saturating_sub(height / 2);
+            at = (line - first) as u16;
+            let (g, c) = claude_window(text, first, height, at);
+            match job.step(&g, c) {
+                Read::Up(n) => ups = n,
+                Read::Done(t) => return t,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_joins_the_rows_out_of_view() {
+        let text: Vec<String> = (0..37).map(|i| format!("line {i}")).collect();
+        assert_eq!(read_through(&text, 10), text.join("\n"));
+    }
+
+    #[test]
+    fn a_read_keeps_rows_that_repeat() {
+        let mut text: Vec<String> = (0..14).map(|i| format!("line {i}")).collect();
+        text.extend(std::iter::repeat_n("same".to_string(), 9));
+        text.extend(["", "", "last"].map(String::from));
+        assert_eq!(read_through(&text, 10), text.join("\n"));
+    }
+
+    #[test]
+    fn a_read_of_a_box_with_nothing_hidden_takes_one_step() {
+        let text: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        assert_eq!(read_through(&text, 10), text.join("\n"));
+    }
+
+    #[test]
+    fn a_read_waits_for_the_redraw_and_stops_if_the_box_changes() {
+        let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let (g, c) = claude_window(&text, 20, 10, 9);
+        let (mut job, ups) = ReadJob::start(&g, c, true).unwrap();
+        assert_eq!(ups, 9);
+        assert_eq!(job.step(&g, c), Read::Wait, "the screen hasn't moved yet");
+        let (shorter, c) = claude_window(&text, 20, 9, 4);
+        assert_eq!(job.step(&shorter, c), Read::Failed, "another height");
+        let (g, c) = claude_window(&text, 20, 10, 9);
+        let (mut job, _) = ReadJob::start(&g, c, true).unwrap();
+        for _ in 0..ReadJob::TRIES - 1 {
+            assert_eq!(job.step(&g, c), Read::Wait);
+        }
+        assert_eq!(job.step(&g, c), Read::Failed, "it never moved");
+    }
+
+    #[test]
+    fn rows_below_stops_at_the_last_row_on_screen() {
+        let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let (g, c) = claude_window(&text, 10, 10, 5);
+        assert_eq!(rows_below(&g, c), Some(4));
+        let (g, c) = claude_window(&text, 20, 10, 9);
+        assert_eq!(rows_below(&g, c), Some(0));
+    }
+
+    #[test]
+    fn a_box_is_full_at_half_the_terminal_less_five_rows() {
+        let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let pad = |mut g: Vec<RowData>, rows: usize| {
+            g.resize(rows, row(&" ".repeat(30)));
+            g
+        };
+        let (g, c) = claude_window(&text, 0, 10, 9);
+        assert!(box_is_full(&pad(g.clone(), 30), c), "the tallest it gets in 30 rows");
+        assert!(!box_is_full(&pad(g, 50), c), "room to grow in 50 rows");
     }
 
     #[test]
@@ -936,7 +1140,7 @@ mod tests {
 
     #[test]
     fn picks_the_range() {
-        let k = Some(KbdSel { anchor: (10, 3), kill: false });
+        let k = Some(KbdSel { anchor: (10, 3), kill: false, all: false });
         assert_eq!(replace_range(k, &[], (4, 3)), Some(((4, 3), (10, 3))));
         assert_eq!(replace_range(k, &[], (4, 5)), Some(((10, 3), (4, 5))), "spans rows");
         assert_eq!(replace_range(k, &[], (10, 3)), None, "empty keyboard selection");
