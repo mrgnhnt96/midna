@@ -64,8 +64,24 @@ pub fn set_option_as_meta(on: bool) {
 /// image sheet. Set by the main window from settings.
 static IMAGE_PASTE_INLINE: AtomicBool = AtomicBool::new(false);
 
+/// `terminal.cmd_enter_sends`: in an agent's input ↩ starts a new line and ⌘↩ sends.
+static CMD_ENTER_SENDS: AtomicBool = AtomicBool::new(false);
+static LIVE_AGENTS: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 pub fn set_image_paste_inline(on: bool) {
     IMAGE_PASTE_INLINE.store(on, Ordering::Relaxed);
+}
+
+pub fn set_cmd_enter_sends(on: bool) {
+    CMD_ENTER_SENDS.store(on, Ordering::Relaxed);
+}
+
+/// The sessions with an agent running, from the daemon's list. A view's own `agent` is read
+/// once when it opens, so it outlives an agent that exits and leaves a shell behind.
+pub fn share_live_agents(sessions: &[crate::model::Session]) {
+    if let Ok(mut live) = LIVE_AGENTS.lock() {
+        *live = sessions.iter().filter(|s| s.agent.is_some()).map(|s| s.id.clone()).collect();
+    }
 }
 
 pub fn image_paste_inline() -> bool {
@@ -220,6 +236,25 @@ fn key_msg(ks: &Keystroke, held: bool, option_as_meta: bool) -> Option<KeyMsg> {
     let mods = mods_of(m) & !MOD_SUPER;
     let text = ks.key_char.clone().filter(|c| c.chars().all(|c| !c.is_control())).unwrap_or_default();
     Some(KeyMsg { action: if held { KeyAction::Repeat } else { KeyAction::Press }, mods, key: ks.key.clone(), text })
+}
+
+/// `terminal.cmd_enter_sends` for a key pressed in an agent's terminal: ⌘↩ becomes ↩, and ↩
+/// in the input box (`in_input`) becomes ⇧↩. Elsewhere, as in a menu, ↩ stays ↩. None leaves
+/// the key as it is.
+fn swap_enter(ks: &Keystroke, in_input: bool) -> Option<Keystroke> {
+    let m = &ks.modifiers;
+    if ks.key != "enter" || m.shift || m.alt || m.control || m.function {
+        return None;
+    }
+    let mut out = ks.clone();
+    if m.platform {
+        out.modifiers.platform = false;
+    } else if in_input {
+        out.modifiers.shift = true;
+    } else {
+        return None;
+    }
+    Some(out)
 }
 
 /// [`key_msg`] for the key event being handled, with Caps Lock applied to its text: GPUI's
@@ -748,7 +783,6 @@ impl TerminalView {
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
-        let m = &ks.modifiers;
         if self.secret_sheet.is_some() {
             return;
         }
@@ -764,6 +798,9 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
+        let swapped = self.enter_swap(ks);
+        let ks = swapped.as_ref().unwrap_or(ks);
+        let m = &ks.modifiers;
         let undo_key = m.platform && !m.alt && !m.control && matches!((ks.key.as_str(), m.shift), ("z", _) | ("y", false));
         if !undo_key {
             self.redo.clear();
@@ -851,6 +888,19 @@ impl TerminalView {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    /// The key to handle instead of `ks` under `terminal.cmd_enter_sends`. Agent menus hide the
+    /// cursor, so they don't count as the input box. Pending approvals take ⌘↩ before it gets here.
+    fn enter_swap(&self, ks: &Keystroke) -> Option<Keystroke> {
+        if ks.key != "enter" || !CMD_ENTER_SENDS.load(Ordering::Relaxed) || self.find.is_some() || self.marked.is_some() {
+            return None;
+        }
+        let live = self.agent_proc.is_some() || LIVE_AGENTS.lock().is_ok_and(|l| l.contains(&self.session_id));
+        if !live {
+            return None;
+        }
+        swap_enter(ks, self.live_cursor().is_some_and(|c| term_edit::in_input(&self.grid, c)))
     }
 
     /// Markdown lists in Claude Code's or Codex's input (`list_edit`): ⇧↩ on an item types the
@@ -2702,6 +2752,19 @@ mod tests {
         let mut k = Keystroke::parse(s).unwrap();
         k.key_char = key_char.map(str::to_string);
         k
+    }
+
+    #[test]
+    fn cmd_enter_sends_swaps_enter() {
+        let swap = |s: &str, in_input: bool| super::swap_enter(&ks(s, None), in_input).map(|k| k.unparse());
+        assert_eq!(swap("enter", true).as_deref(), Some("shift-enter"), "in the input ↩ starts a new line");
+        assert_eq!(swap("enter", false), None, "in a menu ↩ still confirms");
+        assert_eq!(swap("cmd-enter", true).as_deref(), Some("enter"), "⌘↩ sends");
+        assert_eq!(swap("cmd-enter", false).as_deref(), Some("enter"), "and confirms a menu");
+        assert_eq!(swap("shift-enter", true), None, "⇧↩ is already a new line");
+        assert_eq!(swap("alt-enter", true), None);
+        assert_eq!(swap("cmd-shift-enter", true), None);
+        assert_eq!(swap("a", true), None);
     }
 
     #[test]

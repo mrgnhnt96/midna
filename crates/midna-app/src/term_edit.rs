@@ -125,6 +125,11 @@ fn input_rows(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
     Some((top, bottom))
 }
 
+/// Whether the cursor is in an agent's input box, placeholder or not.
+pub fn in_input(grid: &[RowData], cursor: Pos) -> bool {
+    input_rows(grid, cursor).is_some()
+}
+
 fn is_rule(row: &RowData) -> bool {
     text_of(row, 0, text_end(row)).trim_start().starts_with("──")
 }
@@ -700,6 +705,18 @@ mod tests {
             }
         }
         g
+    }
+
+    #[test]
+    fn in_input_is_the_agents_box_only() {
+        let rule = "─".repeat(30);
+        let g = grid(&["some output", &rule, "❯ hello", "  world", &rule, "  ? for shortcuts"]);
+        assert!(in_input(&g, (7, 2)), "the prompt row");
+        assert!(in_input(&g, (7, 3)), "a later line of the input");
+        assert!(!in_input(&g, (3, 0)), "the transcript above");
+        assert!(!in_input(&g, (3, 5)), "the hints below");
+        let empty = grid(&[&rule, "❯ ", &rule]);
+        assert!(in_input(&empty, (2, 1)), "an empty box");
     }
 
     #[test]
