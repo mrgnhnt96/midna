@@ -4,6 +4,13 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// The most unread input a terminal holds. macOS stops taking a write here, wherever in the
+/// write that falls.
+const INPUT_ROOM: usize = 1022;
+/// How long a write waits for an app that has stopped reading its input.
+const ROOM_WAIT: Duration = Duration::from_secs(2);
 
 /// Inherited variables that would confuse programs in a fresh terminal (e.g. Claude Code
 /// refusing to start "nested" because midnad was launched from inside a Claude session).
@@ -110,8 +117,28 @@ pub fn resize(fd: RawFd, cols: u16, rows: u16) {
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
 }
 
-/// Write everything (the master fd is blocking; retries on EINTR/EAGAIN).
+/// Bytes the app hasn't read from its input yet.
+fn unread_input(fd: RawFd) -> Option<usize> {
+    let mut n: libc::c_int = 0;
+    (unsafe { libc::ioctl(fd, libc::FIONREAD, &mut n) } == 0).then_some(n as usize)
+}
+
+/// Wait for room for all of `len` bytes. A key's escape sequence that doesn't fit is cut where
+/// the room ends: an app that's behind reads `ESC [` of `ESC [ 3 ~`, gives up on it and takes the
+/// `3~` that follows for typing.
+fn wait_for_room(fd: RawFd, len: usize) {
+    let by = Instant::now() + ROOM_WAIT;
+    while unread_input(fd).is_some_and(|n| n + len > INPUT_ROOM) && Instant::now() < by {
+        std::thread::sleep(Duration::from_micros(200));
+    }
+}
+
+/// Write everything (the master fd is blocking; retries on EINTR/EAGAIN), in one piece if it can
+/// be.
 pub fn write_all(fd: RawFd, mut b: &[u8]) -> bool {
+    if b.len() <= INPUT_ROOM {
+        wait_for_room(fd, b.len());
+    }
     while !b.is_empty() {
         let n = unsafe { libc::write(fd, b.as_ptr() as *const _, b.len()) };
         if n <= 0 {
@@ -135,4 +162,53 @@ pub fn which(prog: &str, path: &str) -> Option<String> {
     path.split(':').map(|d| format!("{d}/{prog}")).find(|p| {
         std::fs::metadata(p).map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0).unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+
+    /// A pty in raw mode, as a full-screen app sets it: (master, slave).
+    fn raw_pty() -> (OwnedFd, OwnedFd) {
+        let (mut master, mut slave) = (-1, -1);
+        let made = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert_eq!(made, 0);
+        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(slave.as_raw_fd(), &mut t);
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &t);
+        }
+        (master, slave)
+    }
+
+    #[test]
+    fn a_burst_of_keys_reaches_a_slow_app_whole() {
+        const KEY: &[u8] = b"\x1b[3~";
+        const PRESSES: usize = 2000;
+        let (master, slave) = raw_pty();
+        let fd = master.as_raw_fd();
+        let writer = std::thread::spawn(move || (0..PRESSES).all(|_| write_all(fd, KEY)));
+        let (mut buf, mut total) = ([0u8; 4096], 0);
+        while total < PRESSES * KEY.len() {
+            std::thread::sleep(Duration::from_millis(2));
+            let n = unsafe { libc::read(slave.as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()) };
+            assert!(n > 0);
+            assert_eq!(n as usize % KEY.len(), 0, "a read ended inside a key, {total} bytes in");
+            total += n as usize;
+        }
+        assert!(writer.join().unwrap());
+    }
+
+    #[test]
+    fn an_app_that_stops_reading_doesnt_hold_a_write_forever() {
+        let (master, _slave) = raw_pty();
+        let fd = master.as_raw_fd();
+        assert!(write_all(fd, &[b'x'; INPUT_ROOM - 2]));
+        let start = Instant::now();
+        wait_for_room(fd, 4);
+        assert!((ROOM_WAIT..ROOM_WAIT * 2).contains(&start.elapsed()));
+    }
 }
