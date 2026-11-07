@@ -7,7 +7,7 @@ use midna_proto::Frame;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Weak};
 
@@ -377,8 +377,23 @@ struct Client {
     out: SyncSender<Frame>,
 }
 
+/// Writes keys to the PTY, in order, so the engine thread never waits on them. An app that's
+/// printing doesn't read its input, and a write to a full input blocks. If the engine blocked,
+/// the PTY reader's queue would fill, the app would stay stuck printing, and it could never get
+/// back to reading.
+fn input_thread(sid: &str, fd: Arc<PtyFd>) -> Sender<Vec<u8>> {
+    let (tx, rx) = channel::<Vec<u8>>();
+    let _ = std::thread::Builder::new().name(format!("input-{sid}")).spawn(move || {
+        for bytes in rx {
+            pty::write_all(fd.0, &bytes);
+        }
+    });
+    tx
+}
+
 #[allow(clippy::too_many_arguments)]
 fn engine_thread(sid: String, generation: u64, make: MakeEngine, title: String, fd: Arc<PtyFd>, rx: Receiver<EngineMsg>, d: Weak<Daemon>, kitty: Arc<AtomicU8>) {
+    let input = input_thread(&sid, fd.clone());
     let _ = std::thread::Builder::new().name(format!("engine-{sid}")).spawn(move || {
         let mut eng = make();
         kitty.store(eng.kitty_flags(), Ordering::Relaxed);
@@ -440,7 +455,7 @@ fn engine_thread(sid: String, generation: u64, make: MakeEngine, title: String, 
                         _ => vec![],
                     };
                     if !out.is_empty() {
-                        pty::write_all(fd.0, &out);
+                        let _ = input.send(out);
                     }
                 }
                 EngineMsg::With(f) => f(eng),

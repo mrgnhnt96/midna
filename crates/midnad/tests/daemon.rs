@@ -855,6 +855,41 @@ fn state_persists_across_restart() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// An app that's printing doesn't read its input, and keys sent faster than it reads fill the
+/// terminal's input. The terminal must go on taking its output, or the app never gets back to
+/// reading and the session locks up for good.
+#[test]
+fn keys_an_app_isnt_reading_dont_stop_its_output() {
+    use midna_proto::frame::{ClientMsg, KeyAction, KeyMsg};
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let id = open_sh(&mut c);
+    let mut st = d.human().attach(&id, 60, 10, 8, 16).unwrap();
+    let print = "stty raw -echo; sleep 1; yes | head -c 4000000; stty sane; clear; echo printed-\"it\"-all";
+    call(&mut c, "session.input", json!({ "id": id, "text": print, "enter": true }));
+    std::thread::sleep(Duration::from_millis(300));
+    std::thread::spawn(move || {
+        for _ in 0..3000 {
+            let key = KeyMsg { action: KeyAction::Press, mods: 0, key: "backspace".into(), text: String::new() };
+            if st.send(&ClientMsg::Key(key)).is_err() {
+                return;
+            }
+        }
+    });
+    let (done, printed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while !read(&mut c, &id).contains("printed-it-all") {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = done.send(());
+    });
+    let locked = printed.recv_timeout(Duration::from_secs(30)).is_err();
+    if locked {
+        std::mem::forget(d); // shutting down would wait on the locked terminal forever
+    }
+    assert!(!locked, "the terminal locked up");
+}
+
 /// Structured keys over the stream and `session.key` are encoded for the app's keyboard mode;
 /// wheel scrolling moves the viewport; a mouse drag selects and `session.selection` copies it.
 #[test]
