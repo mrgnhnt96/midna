@@ -51,6 +51,9 @@ const CLEAR_ROUNDS: u8 = 40;
 /// Checks of the screen, about five seconds, for a walk's ↓ to show or for a read to start
 /// before giving up: a busy Claude can take seconds to redraw.
 const WALK_TRIES: u8 = 40;
+/// ctrl-e pressed at a time to walk to the end of Codex's input: each reaches a line's end or
+/// goes on to the next's, and they do nothing at the text's end.
+const CODEX_WALK: usize = 100;
 /// How long a message stays over the terminal.
 const NOTICE_FOR: Duration = Duration::from_secs(5);
 /// How long after a deleting key (or a new list item) an agent's redraws may renumber its list.
@@ -751,9 +754,10 @@ impl TerminalView {
         if rows_changed || moved {
             self.follow_long_sel();
         }
-        if self.erasing.is_some() {
+        if let Some((pending, _)) = &self.erasing {
             // Check once the app has gone quiet, not between its redraws.
-            self.check_erase_later(120, cx);
+            let quiet = if let Some(Pending::Read(job)) = pending { job.quiet_ms().min(120) } else { 120 };
+            self.check_erase_later(quiet, cx);
         }
         if (rows_changed || moved) && self.list_watch.is_some() {
             self.fix_list_numbers_later(cx);
@@ -1357,7 +1361,7 @@ impl TerminalView {
         Some(job)
     }
 
-    /// One batch of ⌫ to erase Claude's input from its end: a few windows' worth of text.
+    /// One batch of ⌫ to erase an agent's input from its end: a few windows' worth of text.
     fn press_clear(&mut self) {
         let Some((s, e)) = self.live_cursor().and_then(|c| term_edit::box_text_span(&self.grid, c)) else { return };
         for _ in 0..4 * (term_edit::lower_bound(&self.grid, s, e, self.indent()) + (e.1 - s.1) as usize + 1) {
@@ -1365,15 +1369,25 @@ impl TerminalView {
         }
     }
 
-    /// Read all of Claude's input for ⌘C or ⌘X (`check_erase` finishes the job). The cursor
+    /// Read all of an agent's input for ⌘C or ⌘X (`check_erase` finishes the job). The cursor
     /// walks through it, so the selection is put back at the end of a copy.
-    fn read_input(&mut self, job: ReadJob, ups: u16, cx: &mut Context<Self>) {
+    fn read_input(&mut self, job: ReadJob, keys: term_edit::Read, cx: &mut Context<Self>) {
         self.kbd_sel = None;
-        for _ in 0..ups {
-            self.arrow("up");
-        }
+        let quiet = job.quiet_ms();
+        self.press_read_keys(&keys);
         self.set_pending(Pending::Read(job));
-        self.check_erase_later(250, cx);
+        self.check_erase_later(quiet, cx);
+    }
+
+    fn press_read_keys(&mut self, keys: &term_edit::Read) {
+        let (key, n) = match keys {
+            term_edit::Read::Up(n) => ("up", *n),
+            term_edit::Read::Left => ("left", 1),
+            _ => return,
+        };
+        for _ in 0..n {
+            self.arrow(key);
+        }
     }
 
     /// The read gave up with the text intact: say so and go back to its end. Nothing stays
@@ -1414,7 +1428,8 @@ impl TerminalView {
     fn finish_read(&mut self, text: String, rows: usize, cut: bool, cx: &mut Context<Self>) {
         Self::to_clipboard(text, cx);
         // All but the last row's worth, which `ToEnd` confirms: never ↓ past the last row.
-        let downs = rows.saturating_sub(2);
+        // Codex's walk needs no help, and ↓ could reach the end of a recalled prompt there.
+        let downs = if self.agent_kind() == Some("codex") { 0 } else { rows.saturating_sub(2) };
         for _ in 0..downs {
             self.arrow("down");
         }
@@ -1429,7 +1444,8 @@ impl TerminalView {
         }
     }
 
-    /// At the text's last row: its end, then what the walk was for.
+    /// At the text's last row: its end, then what the walk was for. Never a ↑ or ↓ here, which
+    /// a recalled prompt in Codex would take for history.
     fn finish_to_end(&mut self, c: term_edit::Pos, then: AtEnd, cx: &mut Context<Self>) {
         self.send_move(term_edit::Send::Bytes(b"\x05"));
         if then == AtEnd::Clear {
@@ -1493,6 +1509,7 @@ impl TerminalView {
             self.pull(cx);
             return;
         }
+        let codex = self.agent_kind() == Some("codex");
         let Some((pending, _)) = self.erasing.as_mut() else { return };
         let job = match pending {
             Some(Pending::Follow { tries, then }) => {
@@ -1521,19 +1538,34 @@ impl TerminalView {
                 return self.check_erase_later(120, cx);
             }
             Some(Pending::Read(job)) => {
-                let (read, cut, rows) = (job.step(&self.grid, self.cursor), job.cut, job.rows());
+                let (read, cut, rows, quiet) = (job.step(&self.grid, self.cursor), job.cut, job.rows(), job.quiet_ms());
                 match read {
                     term_edit::Read::Wait => self.check_erase_later(120, cx),
-                    term_edit::Read::Up(n) => {
-                        for _ in 0..n {
-                            self.arrow("up");
-                        }
-                        self.check_erase_later(250, cx);
+                    keys @ (term_edit::Read::Up(_) | term_edit::Read::Left) => {
+                        self.press_read_keys(&keys);
+                        self.check_erase_later(quiet, cx);
                     }
                     term_edit::Read::Done(text) => self.finish_read(text, rows, cut, cx),
                     term_edit::Read::Failed => self.read_failed(cut, cx),
                 }
                 return;
+            }
+            Some(Pending::ToEnd { from, tries, then }) if codex => {
+                let then = *then;
+                let now = self.cursor.and_then(|c| Some((c, term_edit::input_text(&self.grid, c)?)));
+                // A → that didn't move the cursor off the end of a row is the sign of the
+                // text's end: rows that repeat can make the screen look the same anywhere.
+                if let Some((c, _)) = now.as_ref().filter(|n| from.as_ref() == Some(*n) && term_edit::at_row_end(&self.grid, n.0)) {
+                    return self.finish_to_end(*c, then, cx);
+                }
+                if *tries == 0 {
+                    return self.walk_gave_up(then, cx);
+                }
+                *tries -= 1;
+                *from = now;
+                self.send(&[0x05; CODEX_WALK]);
+                self.arrow("right");
+                return self.check_erase_later(250, cx);
             }
             Some(Pending::ToEnd { from, tries, then }) => {
                 let then = *then;
@@ -1945,7 +1977,7 @@ impl TerminalView {
             && let Some(c) = self.live_cursor()
             && let Some((start, moves)) = term_edit::select_all(&self.grid, c)
         {
-            let all = self.agent_kind() == Some("claude") && term_edit::box_is_full(&self.grid, c);
+            let all = term_edit::box_is_full(&self.grid, c);
             self.kbd_sel = Some(KbdSel { anchor: start, kill: false, all });
             self.long_sel = None;
             self.ext.selection.clear();

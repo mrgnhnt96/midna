@@ -31,6 +31,12 @@
 //! - A ⇧ selection there runs past the window, so its ends can't be screen positions: the text
 //!   scrolls under them. A [`LongSel`] keeps the rows the window has shown and both ends as rows
 //!   of those. ⌘C and ⌘X copy from them, and ⌫ or typing erases the characters they count.
+//! - Codex's long input is a window too, but it keeps the cursor at the window's edge and
+//!   scrolls one row per ↑ or ↓, and on a recalled prompt ↑ or ↓ at the very start or end of
+//!   the text swap in another history entry. It does say what's hidden: `↑` ends the window's
+//!   top row while there are rows above, `↓` its last row while there are rows below. So the
+//!   walk to the end uses ctrl-e, which never touches history, and a [`ReadJob`] climbs one ↑
+//!   at a time for as long as the top row says there's more.
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
 use crate::frame::{Cell, F_INPUT, F_SPACER, RowData};
@@ -112,10 +118,15 @@ pub fn select_all(grid: &[RowData], cursor: Pos) -> Option<(Pos, Vec<Send>)> {
     Some(((glyph + 2, top), text_edge("down", grid, cursor)?))
 }
 
-/// Whether Claude Code's input box around the cursor is as tall as it gets (half the terminal
-/// less five rows), so that it may be a window on longer text.
+/// Whether the agent's input box around the cursor may be a window on longer text. Codex
+/// marks one. Claude Code doesn't, so its box counts once it's as tall as it gets: half the
+/// terminal less five rows.
 pub fn box_is_full(grid: &[RowData], cursor: Pos) -> bool {
-    claude_box(grid, cursor).is_some_and(|(top, bottom)| (bottom - top + 1) as usize >= (grid.len() / 2).saturating_sub(5))
+    let Some((top, bottom)) = claude_box(grid, cursor) else { return false };
+    if grid.get(top as usize).is_some_and(is_codex_prompt) {
+        return grid.get(top as usize).is_some_and(hides_rows_above) || grid.get(bottom as usize).is_some_and(hides_rows_below);
+    }
+    (bottom - top + 1) as usize >= (grid.len() / 2).saturating_sub(5)
 }
 
 /// How many ↓ reach the last row on screen of the input around the cursor (none on it). Claude
@@ -140,12 +151,12 @@ pub fn box_row_at(grid: &[RowData], cursor: Pos) -> String {
 }
 
 /// The prompt row and last row of an agent's input around the cursor. Inside Claude Code's
-/// box (closed by a rule below) blank rows are empty lines of the text; without a rule (as in
-/// Codex, whose status line sits under a blank row) a blank row ends the input.
+/// box (closed by a rule below) and Codex's (see [`above_footer`]) blank rows are empty lines
+/// of the text; anywhere else a blank row ends the input.
 fn input_rows(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
     let row = |y: u16| grid.get(y as usize);
     if let Some((top, bottom)) = claude_box(grid, cursor)
-        && row(bottom + 1).is_some_and(is_rule)
+        && (row(bottom + 1).is_some_and(is_rule) || row(top).is_some_and(is_codex_prompt))
     {
         return Some((top, bottom));
     }
@@ -172,9 +183,19 @@ fn is_rule(row: &RowData) -> bool {
     text_of(row, 0, text_end(row)).trim_start().starts_with("──")
 }
 
-/// Claude Code's input box around the cursor: its prompt row and last row. Rows run from the
-/// prompt row down to the box's bottom rule; blank rows are empty lines. None when the cursor
-/// isn't in a box.
+/// The last row above what Codex draws under its box: a blank row, then a status row and a
+/// hint row, either of which can be blank and both of which look like rows of text. None when
+/// the screen doesn't end that way.
+fn above_footer(grid: &[RowData]) -> Option<u16> {
+    let blank = |r: &&RowData| text_end(r) == 0;
+    let from_end = grid.iter().rev().skip_while(blank).position(|r| text_end(r) == 0)?;
+    let trailing = grid.iter().rev().take_while(blank).count();
+    (grid.len() - trailing - from_end).checked_sub(2).map(|y| y as u16)
+}
+
+/// An agent's input box around the cursor: its prompt row and last row. Rows run from the
+/// prompt row down to Claude Code's bottom rule or the blank row over Codex's footer; blank
+/// rows are empty lines. None when the cursor isn't in a box.
 fn claude_box(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
     let row = |y: u16| grid.get(y as usize);
     let inside = |r: &RowData| !is_rule(r) && (is_continuation(r) || text_end(r) == 0);
@@ -190,34 +211,76 @@ fn claude_box(grid: &[RowData], cursor: Pos) -> Option<(u16, u16)> {
         bottom += 1;
     }
     if !row(bottom + 1).is_some_and(is_rule) {
-        // No bottom rule: a blank row ended it, as in Codex's box. Trailing blank rows aren't text.
-        while bottom > top.max(cursor.1) && row(bottom).is_some_and(|r| text_end(r) == 0) {
+        if row(top).is_some_and(is_codex_prompt) {
+            bottom = above_footer(grid).filter(|&y| y >= top).map_or(bottom, |y| y.min(bottom));
+            if cursor.1 > bottom {
+                return None;
+            }
+        }
+        // Trailing blank rows aren't text.
+        while bottom > top.max(cursor.1) && row(bottom).is_some_and(|r| text_end(r) == 0 && !hides_rows_below(r)) {
             bottom -= 1;
         }
     }
     Some((top, bottom))
 }
 
-/// The text in Claude Code's input box around the cursor, rebuilt from the screen (for ⇧⌘Z,
-/// which types it back after ⌘Z). Claude wraps at words, `cols - 4` cells wide, and drops the
-/// space it wrapped at, so a row ends in a wrap when the next row's first word wouldn't have
-/// fit after it, and in a line break when it would. Some("") for the dim placeholder; None
-/// when the cursor isn't in a box.
+/// The text in an agent's input box around the cursor, rebuilt from the screen (for ⇧⌘Z,
+/// which types it back after ⌘Z). Agents wrap at words ([`Wrap`]) and drop the space
+/// they wrapped at, so a row ends in a wrap when the next row's first word wouldn't have fit
+/// after it, and in a line break when it would. Some("") for the dim placeholder; None when
+/// the cursor isn't in a box.
 pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
     let (top, bottom) = claude_box(grid, cursor)?;
     let first = grid.get(top as usize)?;
-    let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '>'))? as u16;
+    let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))? as u16;
     if placeholder(first, glyph + 2) {
         return Some(String::new());
     }
     let lines: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
-    let width = first.cells.len().saturating_sub(4);
-    let mut text = lines[0].clone();
-    for pair in lines.windows(2) {
-        text.push_str(row_break(&pair[0], &pair[1], width));
+    Some(join_rows(&lines, Wrap::of(first)))
+}
+
+/// How an agent wraps its input: at `cols - 4` in Claude Code and `cols - 3` in Codex. Codex also
+/// breaks after a `-` or `/` inside a word, dropping nothing there.
+#[derive(Clone, Copy)]
+struct Wrap {
+    width: usize,
+    codex: bool,
+}
+
+impl Wrap {
+    /// From the box's prompt row.
+    fn of(first: &RowData) -> Wrap {
+        let codex = is_codex_prompt(first);
+        Wrap { width: first.cells.len().saturating_sub(if codex { 3 } else { 4 }), codex }
+    }
+
+    /// The first thing on `row` that couldn't be parted from itself, in cells.
+    fn first_piece(self, row: &str) -> usize {
+        let word = row.chars().take_while(|c| *c != ' ');
+        if !self.codex {
+            return word.count();
+        }
+        let mut n = 0;
+        for c in word {
+            n += 1;
+            if matches!(c, '-' | '/') {
+                break;
+            }
+        }
+        n
+    }
+}
+
+/// The rows of an agent's input as its text.
+fn join_rows(rows: &[String], wrap: Wrap) -> String {
+    let mut text = rows.first().cloned().unwrap_or_default();
+    for pair in rows.windows(2) {
+        text.push_str(row_break(&pair[0], &pair[1], wrap));
         text.push_str(&pair[1]);
     }
-    Some(text)
+    text
 }
 
 /// Whether the prompt row `first`, its text starting at column `start`, shows the dim
@@ -228,10 +291,9 @@ fn placeholder(first: &RowData, start: u16) -> bool {
 }
 
 /// The text in an agent's input box and the cursor's byte offset in it, for markdown lists
-/// (`list_edit`). Rows are joined as [`input_text`] joins Claude Code's; Codex wraps one cell
-/// wider (`cols - 3`), and a blank row ends its input (see [`input_rows`]). Spaces between the
-/// row's text and the cursor count (the agent has typed them; the screen shows none). None when
-/// the cursor isn't in a box or the box shows its placeholder.
+/// (`list_edit`). Rows are joined as [`input_text`] joins them. Spaces between the row's text
+/// and the cursor count (the agent has typed them; the screen shows none). None when the cursor
+/// isn't in a box or the box shows its placeholder.
 pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
     let (top, bottom) = input_rows(grid, cursor)?;
     let first = grid.get(top as usize)?;
@@ -239,7 +301,7 @@ pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
     if placeholder(first, glyph as u16 + 2) {
         return None;
     }
-    let width = first.cells.len().saturating_sub(if first.cells[glyph].ch == '›' { 3 } else { 4 });
+    let wrap = Wrap::of(first);
     let mut text = String::new();
     let mut at = 0;
     let mut prev: Option<String> = None;
@@ -247,7 +309,7 @@ pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
         let mut line = box_row(grid, top, y);
         let whole = line.clone();
         if let Some(p) = &prev {
-            text.push_str(row_break(p, &line, width));
+            text.push_str(row_break(p, &line, wrap));
         }
         if y == cursor.1 {
             let r = grid.get(y as usize)?;
@@ -293,8 +355,8 @@ fn box_window(grid: &[RowData], cursor: Pos) -> Option<(u16, Vec<RowData>)> {
 pub fn row_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
     let (top, bottom) = claude_box(grid, cursor)?;
     let (y, row) = (cursor.1, grid.get(cursor.1 as usize)?);
-    let width = grid.get(top as usize)?.cells.len().saturating_sub(4);
-    let joined = |a: u16| row_break(&box_row(grid, top, a), &box_row(grid, top, a + 1), width) != "\n";
+    let wrap = Wrap::of(grid.get(top as usize)?);
+    let joined = |a: u16| row_break(&box_row(grid, top, a), &box_row(grid, top, a + 1), wrap) != "\n";
     let n = match key {
         "left" if y > top && joined(y - 1) => chars_between(row, AGENT_INDENT, cursor.0.max(AGENT_INDENT)),
         "right" if y < bottom && joined(y) => chars_between(row, cursor.0.min(text_end(row)), text_end(row)),
@@ -303,14 +365,19 @@ pub fn row_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
     Some(vec![Send::Arrow(if key == "left" { "left" } else { "right" }); n])
 }
 
-/// What joins two rows of Claude's input text, `width` cells wide: nothing, the space it
-/// wrapped at, or a line break (see [`input_text`]).
-fn row_break(prev: &str, next: &str, width: usize) -> &'static str {
-    let prev = prev.chars().count();
-    let word = next.chars().take_while(|c| *c != ' ').count();
-    if prev >= width {
-        "" // Cut mid-word (a path, a URL): nothing was dropped.
-    } else if word > 0 && prev > 0 && prev + 1 + word > width {
+/// What joins two rows of an agent's input text: nothing, the space it wrapped at, or a line
+/// break (see [`input_text`]). A full row in Claude was cut mid-word (a path, a URL), and in
+/// Codex only one that's a single word was: words that fill a row exactly lose the space after
+/// them.
+fn row_break(prev: &str, next: &str, wrap: Wrap) -> &'static str {
+    let split_word = wrap.codex && prev.ends_with(['-', '/']);
+    let cut = !wrap.codex || !prev.contains(' ');
+    let (prev, piece) = (prev.chars().count(), wrap.first_piece(next));
+    if split_word && piece > 0 && prev + piece > wrap.width {
+        ""
+    } else if prev >= wrap.width {
+        if cut { "" } else { " " }
+    } else if !split_word && piece > 0 && prev > 0 && prev + 1 + piece > wrap.width {
         " "
     } else {
         "\n"
@@ -322,7 +389,9 @@ fn row_break(prev: &str, next: &str, width: usize) -> &'static str {
 /// soft-wrapped line.
 pub fn selected_text(grid: &[RowData], s: Pos, e: Pos, agent: bool) -> String {
     let indent = if agent { AGENT_INDENT } else { 0 };
-    let width = grid.get(s.1 as usize).map_or(0, |r| r.cells.len().saturating_sub(4));
+    let prompt = claude_box(grid, s).and_then(|(top, _)| grid.get(top as usize));
+    let row = prompt.or(grid.get(s.1 as usize));
+    let wrap = row.map_or(Wrap { width: 0, codex: false }, Wrap::of);
     let mut text = String::new();
     let mut prev: Option<String> = None;
     for y in s.1..=e.1 {
@@ -331,12 +400,17 @@ pub fn selected_text(grid: &[RowData], s: Pos, e: Pos, agent: bool) -> String {
         let x1 = if y == e.1 { e.0.min(text_end(row)) } else { text_end(row) };
         let whole = text_of(row, indent, text_end(row).max(indent));
         if let (Some(p), true) = (&prev, agent) {
-            text.push_str(row_break(p, &whole, width));
+            text.push_str(row_break(p, &whole, wrap));
         }
         text.push_str(&text_of(row, x0, x1));
         prev = Some(whole);
     }
     text
+}
+
+/// Whether the cursor is past the last character of its row.
+pub fn at_row_end(grid: &[RowData], cursor: Pos) -> bool {
+    grid.get(cursor.1 as usize).is_some_and(|r| cursor.0 >= text_end(r))
 }
 
 /// The moves to the end of Claude Code's input from the cursor: down to its last row, then
@@ -381,9 +455,19 @@ pub fn for_agent(mv: Send, agent: Option<&str>) -> Send {
     }
 }
 
+/// The first thing drawn in a row's leading cells.
+fn lead_glyph(row: &RowData) -> Option<char> {
+    row.cells.iter().take(3).map(|c| c.ch).find(|c| !matches!(c, ' ' | '\0' | '\u{a0}'))
+}
+
 /// An agent input's first row: the prompt glyph in the leading cells.
 fn is_prompt_row(row: &RowData) -> bool {
-    row.cells.iter().take(3).map(|c| c.ch).find(|c| !matches!(c, ' ' | '\0' | '\u{a0}')).is_some_and(|c| matches!(c, '❯' | '›' | '>'))
+    lead_glyph(row).is_some_and(|c| matches!(c, '❯' | '›' | '>'))
+}
+
+/// The first row of Codex's input, whose glyph is its own.
+fn is_codex_prompt(row: &RowData) -> bool {
+    lead_glyph(row) == Some('›')
 }
 
 /// A row of an agent's input after the first: indented text (borders and blank rows aren't).
@@ -419,9 +503,22 @@ fn text_of(row: &RowData, a: u16, b: u16) -> String {
     row.cells.get(a..b.max(a)).map_or(String::new(), |cs| cs.iter().filter(|c| c.flags & F_SPACER == 0).map(|c| if c.ch == '\0' { ' ' } else { c.ch }).collect())
 }
 
-/// Column just past the last non-blank cell of `row`.
+/// Whether Codex marks `row`, the top row of its window, as having rows above it. Its text
+/// never reaches the last column, so what's there is only ever a mark.
+fn hides_rows_above(row: &RowData) -> bool {
+    row.cells.last().is_some_and(|c| c.ch == '↑')
+}
+
+/// Whether Codex marks `row`, the last row of its window, as having rows below it.
+fn hides_rows_below(row: &RowData) -> bool {
+    row.cells.last().is_some_and(|c| c.ch == '↓')
+}
+
+/// Column just past the last non-blank cell of `row`, leaving out a mark of Codex's.
 fn text_end(row: &RowData) -> u16 {
-    row.cells.iter().rposition(|c: &Cell| c.flags & F_SPACER != 0 || !matches!(c.ch, ' ' | '\0' | '\u{a0}')).map_or(0, |i| i as u16 + 1)
+    let marked = hides_rows_above(row) || hides_rows_below(row);
+    let cells = &row.cells[..row.cells.len() - marked as usize];
+    cells.iter().rposition(|c: &Cell| c.flags & F_SPACER != 0 || !matches!(c.ch, ' ' | '\0' | '\u{a0}')).map_or(0, |i| i as u16 + 1)
 }
 
 fn leading_blanks(row: &RowData) -> u16 {
@@ -656,15 +753,16 @@ impl MoveJob {
 pub enum Pending {
     Move(MoveJob),
     Erase(EraseJob),
-    /// ⌘C or ⌘X waiting for the screen to show Claude's box (it may be mid-redraw), `tries`
+    /// ⌘C or ⌘X waiting for the screen to show the agent's box (it may be mid-redraw), `tries`
     /// checks left.
     StartRead { cut: bool, tries: u8 },
-    /// Reading all of Claude's input for ⌘C or ⌘X.
+    /// Reading all of an agent's input for ⌘C or ⌘X.
     Read(ReadJob),
-    /// Walking the cursor to the end of Claude's input, `tries` checks left for the screen to
-    /// show the last ↓ pressed, from where it was then.
+    /// Walking the cursor to the end of an agent's input, `tries` checks left. In Claude's that
+    /// many for the screen to show the last ↓ pressed, from where it was then; in Codex's that
+    /// many batches of ctrl-e, from what the last one left on screen.
     ToEnd { from: Option<(Pos, String)>, tries: u8, then: AtEnd },
-    /// Pressing ⌫ at the end of Claude's input until it's empty, `rounds` batches left. Extra
+    /// Pressing ⌫ at the end of an agent's input until it's empty, `rounds` batches left. Extra
     /// presses do nothing at its start.
     Clear { rounds: u8 },
     /// Waiting for the screen to catch up with a [`LongSel`], `tries` checks left.
@@ -679,7 +777,7 @@ pub enum WithSel {
     Erase,
 }
 
-/// What to do once the cursor has walked to the end of Claude's input.
+/// What to do once the cursor has walked to the end of an agent's input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtEnd {
     /// Select it all (⌘A, or a ⌘C that has been read).
@@ -699,6 +797,8 @@ pub enum Read {
     Wait,
     /// Press ↑ this many times, then look again.
     Up(u16),
+    /// Press ← once, then look again.
+    Left,
     /// That's the first row: here's all the text.
     Done(String),
     /// The rows no longer line up (the box changed under us): leave the text alone.
@@ -710,6 +810,10 @@ pub enum Read {
 /// the cursor is mid-window, so the row the cursor lands on is how many rows came into view.
 /// The rows still in view must match what was read, which also tells a late redraw from a
 /// finished one.
+///
+/// Codex scrolls one row per ↑ only once the cursor is on the window's top row, so from there
+/// it's one ↑ at a time ([`Climb`]). The window stays where it is on screen, its height the
+/// rows from the prompt row to the cursor at the text's end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadJob {
     /// The text's rows read so far, the last window's first.
@@ -720,18 +824,46 @@ pub struct ReadJob {
     tries: u8,
     /// ⌘X: erase the text once read.
     pub cut: bool,
+    /// The window's top row and how far along a read of Codex's input is.
+    climb: Option<(u16, Climb)>,
+}
+
+/// How far along a read of Codex's input is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Climb {
+    /// ← pressed at `from`, off the text's very end, where ↑ can recall history.
+    Leaving { from: Pos },
+    /// ↑ pressed up to the window's top row, all of them on rows in view.
+    ToTop,
+    /// One ↑ pressed on the top row, `still` checks ago with nothing to show for it. Only ever
+    /// pressed under Codex's mark: ↑ on the text's first row is the way into history.
+    Scroll { still: u8 },
 }
 
 impl ReadJob {
     /// Checks of the screen allowed between two batches of ↑, about five seconds: a busy
     /// Claude can take seconds to redraw, and ↑ pressed meanwhile are still on their way.
     const TRIES: u8 = 40;
+    /// Checks of a window that shows no change before taking it for a row that repeats the
+    /// whole window: Codex redraws in milliseconds, far inside these.
+    const REPEATS_AFTER: u8 = 2;
 
-    /// The job for the box around the cursor, and how many ↑ to press first.
-    pub fn start(grid: &[RowData], cursor: Pos, cut: bool) -> Option<(ReadJob, u16)> {
+    /// The job for the box around the cursor, and the keys to press first. In Codex the cursor
+    /// must be at the text's end, which is the window's last row.
+    pub fn start(grid: &[RowData], cursor: Pos, cut: bool) -> Option<(ReadJob, Read)> {
         let (top, bottom) = claude_box(grid, cursor)?;
+        let codex = grid.get(top as usize).is_some_and(is_codex_prompt);
+        let bottom = if codex { cursor.1 } else { bottom };
         let rows: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
-        Some((ReadJob { height: rows.len(), rows, tries: Self::TRIES, cut }, cursor.1 - top))
+        let climb = codex.then_some((top, Climb::Leaving { from: cursor }));
+        let keys = if codex { Read::Left } else { Read::Up(cursor.1 - top) };
+        Some((ReadJob { height: rows.len(), rows, tries: Self::TRIES, cut, climb }, keys))
+    }
+
+    /// How long after pressing keys to look at the screen, and how long the app must have been
+    /// quiet by then, in milliseconds. A read of Codex looks after every row.
+    pub fn quiet_ms(&self) -> u64 {
+        if self.climb.is_some() { 30 } else { 250 }
     }
 
     /// Rows of text read so far.
@@ -742,6 +874,9 @@ impl ReadJob {
     /// Take in the screen once the keys pressed have had time to show. A screen that doesn't
     /// fit may be a redraw caught halfway, so it only uses up a try.
     pub fn step(&mut self, grid: &[RowData], cursor: Option<Pos>) -> Read {
+        if let Some((top, climb)) = self.climb {
+            return self.climb_step(top, climb, grid, cursor);
+        }
         let Some((cursor, (top, bottom))) = cursor.and_then(|c| Some((c, claude_box(grid, c)?))) else { return self.wait() };
         let window: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
         let new = (cursor.1 - top) as usize;
@@ -753,13 +888,47 @@ impl ReadJob {
             self.tries = Self::TRIES;
             return Read::Up(new as u16);
         }
-        let width = grid.get(top as usize).map_or(0, |r| r.cells.len().saturating_sub(4));
-        let mut text = self.rows[0].clone();
-        for pair in self.rows.windows(2) {
-            text.push_str(row_break(&pair[0], &pair[1], width));
-            text.push_str(&pair[1]);
+        Read::Done(join_rows(&self.rows, grid.get(top as usize).map_or(Wrap { width: 0, codex: false }, Wrap::of)))
+    }
+
+    /// A step of reading Codex's input (see [`Climb`]).
+    fn climb_step(&mut self, top: u16, climb: Climb, grid: &[RowData], cursor: Option<Pos>) -> Read {
+        let Some(c) = cursor.filter(|_| grid.get(top as usize).is_some_and(is_codex_prompt)) else { return self.wait() };
+        let window: Vec<String> = (top..top + self.height as u16).map(|y| box_row(grid, top, y)).collect();
+        let same = window[..] == self.rows[..self.height];
+        let shifted = window[1..] == self.rows[..self.height - 1];
+        let more = grid.get(top as usize).is_some_and(hides_rows_above);
+        match climb {
+            Climb::Leaving { from } if !same || c == from => self.wait(),
+            Climb::Leaving { .. } => {
+                self.climb = Some((top, Climb::ToTop));
+                Read::Up(c.1 - top)
+            }
+            Climb::ToTop if !same || c.1 != top => self.wait(),
+            Climb::ToTop => self.climb_on(top, grid),
+            Climb::Scroll { .. } if c.1 != top => self.wait(),
+            // A window of rows that all repeat looks the same once it has moved.
+            Climb::Scroll { still } if same && more && !(shifted && still >= Self::REPEATS_AFTER) => {
+                self.climb = Some((top, Climb::Scroll { still: still + 1 }));
+                self.wait()
+            }
+            Climb::Scroll { .. } if shifted => {
+                self.rows.insert(0, window[0].clone());
+                self.climb_on(top, grid)
+            }
+            Climb::Scroll { .. } => self.wait(),
         }
-        Read::Done(text)
+    }
+
+    /// One more ↑ while Codex says there are rows above the window, else all of it is read.
+    fn climb_on(&mut self, top: u16, grid: &[RowData]) -> Read {
+        let Some(first) = grid.get(top as usize) else { return self.wait() };
+        if !hides_rows_above(first) {
+            return Read::Done(join_rows(&self.rows, Wrap::of(first)));
+        }
+        self.climb = Some((top, Climb::Scroll { still: 0 }));
+        self.tries = Self::TRIES;
+        Read::Up(1)
     }
 
     fn wait(&mut self) -> Read {
@@ -902,13 +1071,13 @@ impl LongSel {
     /// Spaces at a line's end don't show, and aren't counted: they stay.
     pub fn erase(&self) -> (EraseJob, usize) {
         let (s, e) = ordered(self.anchor, self.cursor);
-        let width = self.rows[0].cells.len().saturating_sub(4);
+        let wrap = Wrap::of(&self.rows[0]);
         let (mut counted, mut uncounted) = (0, 0);
         for y in s.1 as usize..e.1 as usize {
             let (row, next) = (box_text(&self.rows[y]), box_text(&self.rows[y + 1]));
-            match row_break(&row, &next, width) {
+            match row_break(&row, &next, wrap) {
                 "" => uncounted += 1,
-                " " if next.chars().take_while(|c| *c != ' ').count() >= width => counted += 1,
+                " " if next.chars().take_while(|c| *c != ' ').count() >= wrap.width => counted += 1,
                 _ => {}
             }
         }
@@ -1045,7 +1214,8 @@ mod tests {
     fn read_through(text: &[String], height: usize) -> String {
         let mut first = text.len() - height;
         let (g, c) = claude_window(text, first, height, height as u16 - 1);
-        let (mut job, mut ups) = ReadJob::start(&g, c, false).unwrap();
+        let (mut job, first_keys) = ReadJob::start(&g, c, false).unwrap();
+        let Read::Up(mut ups) = first_keys else { panic!("{first_keys:?}") };
         let mut at = height as u16 - 1;
         loop {
             let line = first + at as usize - ups as usize;
@@ -1085,7 +1255,7 @@ mod tests {
         let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
         let (g, c) = claude_window(&text, 20, 10, 9);
         let (mut job, ups) = ReadJob::start(&g, c, true).unwrap();
-        assert_eq!(ups, 9);
+        assert_eq!(ups, Read::Up(9));
         for _ in 0..ReadJob::TRIES - 1 {
             assert_eq!(job.step(&g, Some(c)), Read::Wait, "the screen hasn't moved yet");
         }
@@ -1103,6 +1273,245 @@ mod tests {
         assert_eq!(job.step(&shorter, Some(at)), Read::Wait, "the box half drawn");
         let (moved, at) = claude_window(&text, 15, 10, 5);
         assert_eq!(job.step(&moved, Some(at)), Read::Up(5), "the redraw landed");
+    }
+
+    /// Codex's input as measured on 0.163.0: the cursor sits at the window's edge and scrolls it
+    /// one row at a time, ↑ keeps the column, the window's rows carry its marks, and on a
+    /// recalled prompt ↑ at the text's very start or end swaps in another history entry.
+    struct CodexInput {
+        text: Vec<String>,
+        first: usize,
+        height: usize,
+        y: usize,
+        col: usize,
+        want: usize,
+        recalled: bool,
+    }
+
+    impl CodexInput {
+        fn at_end(text: &[String], height: usize) -> CodexInput {
+            let y = text.len() - 1;
+            let col = text[y].chars().count();
+            CodexInput { text: text.to_vec(), first: text.len() - height, height, y, col, want: col, recalled: true }
+        }
+
+        fn left(&mut self) {
+            if self.col > 0 {
+                self.col -= 1;
+            } else if self.y > 0 {
+                self.y -= 1;
+                self.col = self.text[self.y].chars().count();
+            }
+            self.want = self.col;
+        }
+
+        fn up(&mut self) {
+            let very_end = self.y == self.text.len() - 1 && self.col == self.text[self.y].chars().count();
+            assert!(!self.recalled || !(very_end || (self.y, self.col) == (0, 0)), "↑ recalls history at row {} column {}", self.y, self.col);
+            if self.y == 0 {
+                self.col = 0;
+                return;
+            }
+            self.y -= 1;
+            self.first = self.first.min(self.y);
+            self.col = self.want.min(self.text[self.y].chars().count());
+        }
+
+        fn screen(&self) -> (Vec<RowData>, Pos) {
+            let last = self.first + self.height;
+            let rows = self.text[self.first..last].iter().enumerate().map(|(i, r)| {
+                let mark = match i {
+                    0 if self.first > 0 => "↑",
+                    i if i == self.height - 1 && last < self.text.len() => "↓",
+                    _ => "",
+                };
+                format!("{:<29}{mark}", format!("{}{r}", if i == 0 { "› " } else { "  " }))
+            });
+            let mut g = vec!["output".to_string(), String::new()];
+            g.extend(rows);
+            g.extend(["", "  GPT-6 status", "  ? for shortcuts"].map(String::from));
+            let g: Vec<&str> = g.iter().map(String::as_str).collect();
+            (grid(&g), (AGENT_INDENT + self.col as u16, 2 + (self.y - self.first) as u16))
+        }
+
+        /// Run a read to its end, the screen showing each key before the next look.
+        fn read(&mut self) -> Read {
+            let (g, c) = self.screen();
+            let (mut job, mut keys) = ReadJob::start(&g, c, false).unwrap();
+            loop {
+                match keys {
+                    Read::Left => self.left(),
+                    Read::Up(n) => (0..n).for_each(|_| self.up()),
+                    Read::Wait => {}
+                    done => return done,
+                }
+                let (g, c) = self.screen();
+                keys = job.step(&g, Some(c));
+            }
+        }
+    }
+
+    fn numbered(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("line {i}")).collect()
+    }
+
+    #[test]
+    fn a_codex_read_joins_the_rows_out_of_view() {
+        let text = numbered(37);
+        assert_eq!(CodexInput::at_end(&text, 12).read(), Read::Done(text.join("\n")));
+    }
+
+    #[test]
+    fn a_codex_read_with_nothing_hidden_stops_at_the_first_row() {
+        let text = numbered(12);
+        assert_eq!(CodexInput::at_end(&text, 12).read(), Read::Done(text.join("\n")));
+    }
+
+    #[test]
+    fn a_codex_read_keeps_blank_rows_and_rows_that_repeat() {
+        let mut text = numbered(5);
+        text.extend(["", "gap", ""].map(String::from));
+        text.extend(std::iter::repeat_n("same".to_string(), 30));
+        text.extend(["", "", "last"].map(String::from));
+        assert_eq!(CodexInput::at_end(&text, 12).read(), Read::Done(text.join("\n")));
+    }
+
+    #[test]
+    fn a_codex_read_stops_where_the_mark_does_and_presses_no_further() {
+        for tail in [&["x"][..], &["ab", "x"], &["ab", ""], &["ab", "", "x"]] {
+            let mut text = numbered(20);
+            text.extend(tail.iter().map(|s| s.to_string()));
+            let mut input = CodexInput::at_end(&text, 12);
+            assert_eq!(input.read(), Read::Done(text.join("\n")), "ending {tail:?}");
+            assert_eq!((input.y, input.first), (0, 0), "ending {tail:?}");
+        }
+    }
+
+    #[test]
+    fn a_codex_read_takes_text_that_starts_blank_or_has_a_window_of_blanks() {
+        let mut text = vec!["hidden".to_string()];
+        text.extend(std::iter::repeat_n(String::new(), 20));
+        text.push("last".into());
+        assert_eq!(CodexInput::at_end(&text, 12).read(), Read::Done(text.join("\n")));
+        let mut text = vec![String::new()];
+        text.extend(numbered(20));
+        assert_eq!(CodexInput::at_end(&text, 12).read(), Read::Done(text.join("\n")));
+    }
+
+    #[test]
+    fn a_codex_read_waits_for_each_key_to_show() {
+        let text = numbered(20);
+        let mut input = CodexInput::at_end(&text, 12);
+        let (end, c) = input.screen();
+        let (mut job, keys) = ReadJob::start(&end, c, false).unwrap();
+        assert_eq!(keys, Read::Left);
+        assert_eq!(job.step(&end, Some(c)), Read::Wait, "the ← hasn't shown");
+        input.left();
+        let (g, c) = input.screen();
+        assert_eq!(job.step(&g, Some(c)), Read::Up(11));
+        assert_eq!(job.step(&g, Some(c)), Read::Wait, "the ↑ haven't shown");
+        (0..11).for_each(|_| input.up());
+        let (g, c) = input.screen();
+        assert_eq!(job.step(&g, Some(c)), Read::Up(1));
+        assert_eq!(job.step(&g, Some(c)), Read::Wait, "the window hasn't moved yet");
+        assert_eq!(job.step(&end, Some(c)), Read::Wait, "a stale screen");
+        input.up();
+        let (g, c) = input.screen();
+        assert_eq!(job.step(&g, Some(c)), Read::Up(1));
+        assert_eq!(job.rows(), 13);
+    }
+
+    #[test]
+    fn codexs_box_ends_above_its_footer() {
+        let g = grid(&["output", "", "› one", "", "  two", "  three", "", "  GPT-6 status", "  ? for shortcuts"]);
+        assert_eq!(input_rows(&g, (4, 4)), Some((2, 5)), "a blank row is a line of the text");
+        assert_eq!(input_rows(&g, (2, 3)), Some((2, 5)), "the cursor can be on one");
+        assert_eq!(input_text(&g, (4, 4)), Some("one\n\ntwo\nthree".into()));
+        assert!(!in_input(&g, (4, 7)), "the status row");
+        assert!(!in_input(&g, (4, 8)), "the hint row");
+        let no_hint = grid(&["› one", "  two", "", "  GPT-6 status", ""]);
+        assert_eq!(input_rows(&no_hint, (4, 1)), Some((0, 1)));
+        let no_status = grid(&["› one", "  two", "", "", "  ? for shortcuts"]);
+        assert_eq!(input_rows(&no_status, (4, 1)), Some((0, 1)));
+        assert_eq!(input_rows(&grid(&["› one", "  two"]), (4, 1)), Some((0, 1)), "nothing under it");
+    }
+
+    #[test]
+    fn codexs_marks_say_when_its_box_is_a_window() {
+        let text = numbered(30);
+        let (g, c) = CodexInput::at_end(&text, 12).screen();
+        assert!(box_is_full(&g, c), "rows above");
+        let mut top = CodexInput::at_end(&text, 12);
+        (top.first, top.y, top.col) = (0, 0, 2);
+        let (g, c) = top.screen();
+        assert!(box_is_full(&g, c), "rows below");
+        let (g, c) = CodexInput::at_end(&numbered(12), 12).screen();
+        assert!(!box_is_full(&g, c), "as tall, nothing hidden");
+    }
+
+    #[test]
+    fn codexs_rows_join_the_way_it_broke_them() {
+        let codex = Wrap { width: 20, codex: true };
+        assert_eq!(row_break("aaaa bbbb cccc dddd ", "eeee", codex), " ", "a space at the wrap");
+        assert_eq!(row_break("aaaa bbbb cccc ddddd", "eeee", codex), " ", "words that fill the row exactly");
+        assert_eq!(row_break("xxxxxxxxxxxxxxxxxxxx", "xxxx", codex), "", "one word cut at the edge");
+        assert_eq!(row_break("well00-well01-well2-", "well03-well04", codex), "", "after a hyphen in a word");
+        assert_eq!(row_break("example.com/path001/", "path002/path003", codex), "", "after a slash in a word");
+        assert_eq!(row_break("well-", "known", codex), "\n", "a line that ends in a hyphen");
+        assert_eq!(row_break("short", "row", codex), "\n");
+        assert_eq!(row_break("aaaa bbbb cccc dddd", "well-known", codex), " ", "only the word's first part has to not fit");
+    }
+
+    #[test]
+    fn a_full_row_in_claude_is_still_cut_mid_word() {
+        let claude = Wrap { width: 20, codex: false };
+        assert_eq!(row_break("aaaa bbbb cccc ddddd", "eeee", claude), "");
+        assert_eq!(row_break("well00-well01-well2-", "well03", claude), "");
+    }
+
+    #[test]
+    fn codexs_marks_are_not_text() {
+        let text = numbered(30);
+        let mut input = CodexInput::at_end(&text, 3);
+        input.first = 5;
+        input.y = 6;
+        let (g, _) = input.screen();
+        assert_eq!(input_rows(&g, (2, 3)), Some((2, 4)));
+        assert_eq!(input_text(&g, (2, 3)), Some("line 5\nline 6\nline 7".into()));
+        assert!(at_row_end(&g, (8, 2)), "on the row marked ↑");
+        assert!(at_row_end(&g, (8, 4)), "on the row marked ↓");
+    }
+
+    #[test]
+    fn a_blank_row_marked_with_more_below_stays_in_codexs_box() {
+        let mut text = numbered(5);
+        text.extend([String::new(), "more".into()]);
+        let mut input = CodexInput::at_end(&text, 6);
+        (input.first, input.y, input.col) = (0, 0, 2);
+        let (g, c) = input.screen();
+        assert_eq!(input_rows(&g, c), Some((2, 7)));
+    }
+
+    #[test]
+    fn reads_codexs_input_back_at_its_own_width() {
+        let g = grid(&["› aaaa bbbb cccc dddd ee", "  ffff", "", "  GPT-6 status"]);
+        assert_eq!(input_text(&g, (6, 1)), Some("aaaa bbbb cccc dddd ee\nffff".into()));
+        let g = grid(&["› aaaa bbbb cccc dddd eeeee", "  ffff", "", "  GPT-6 status"]);
+        assert_eq!(input_text(&g, (6, 1)), Some("aaaa bbbb cccc dddd eeeee ffff".into()));
+    }
+
+    #[test]
+    fn a_selection_in_codex_joins_rows_as_a_read_does() {
+        let g = grid(&["› aaaa bbbb cccc dddd eeeee", "  ffff", "", "  GPT-6 status"]);
+        assert_eq!(selected_text(&g, (2, 0), (6, 1), true), "aaaa bbbb cccc dddd eeeee ffff");
+    }
+
+    #[test]
+    fn at_row_end_counts_trailing_spaces() {
+        let g = grid(&["› one"]);
+        assert!(at_row_end(&g, (5, 0)));
+        assert!(at_row_end(&g, (7, 0)));
+        assert!(!at_row_end(&g, (4, 0)));
     }
 
     #[test]
