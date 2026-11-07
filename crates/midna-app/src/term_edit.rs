@@ -28,6 +28,9 @@
 //!   [`ReadJob`], and ⌫ or typing erases until the box is empty ([`Pending::Clear`]). Claude
 //!   can take seconds to redraw and can be caught halfway through one, so these wait out a
 //!   screen that doesn't fit, and say so when they give up.
+//! - A ⇧ selection there runs past the window, so its ends can't be screen positions: the text
+//!   scrolls under them. A [`LongSel`] keeps the rows the window has shown and both ends as rows
+//!   of those. ⌘C and ⌘X copy from them, and ⌫ or typing erases the characters they count.
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
 use crate::frame::{Cell, F_INPUT, F_SPACER, RowData};
@@ -266,6 +269,21 @@ fn box_row(grid: &[RowData], top: u16, y: u16) -> String {
     let Some(r) = grid.get(y as usize) else { return String::new() };
     let start = if y == top { r.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>')).map_or(AGENT_INDENT, |g| g as u16 + 2) } else { AGENT_INDENT };
     text_of(r, start, text_end(r).max(start))
+}
+
+/// A row of Claude's input as text, past the indent `❯` also sits in.
+fn box_text(row: &RowData) -> String {
+    text_of(row, AGENT_INDENT, text_end(row).max(AGENT_INDENT))
+}
+
+/// Claude's box around the cursor: its top row on screen, and its rows with `❯` blanked.
+fn box_window(grid: &[RowData], cursor: Pos) -> Option<(u16, Vec<RowData>)> {
+    let (top, bottom) = claude_box(grid, cursor)?;
+    let mut rows = grid.get(top as usize..=bottom as usize)?.to_vec();
+    for cell in rows[0].cells.iter_mut().take(AGENT_INDENT as usize) {
+        cell.ch = ' ';
+    }
+    Some((top, rows))
 }
 
 /// ⌘← / ⌘→ in Claude Code's input on a row that wraps: arrows to that screen row's start or
@@ -649,6 +667,16 @@ pub enum Pending {
     /// Pressing ⌫ at the end of Claude's input until it's empty, `rounds` batches left. Extra
     /// presses do nothing at its start.
     Clear { rounds: u8 },
+    /// Waiting for the screen to catch up with a [`LongSel`], `tries` checks left.
+    Follow { tries: u8, then: WithSel },
+}
+
+/// What to do with a [`LongSel`] once the screen has caught up with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WithSel {
+    Copy,
+    Cut,
+    Erase,
 }
 
 /// What to do once the cursor has walked to the end of Claude's input.
@@ -740,13 +768,172 @@ impl ReadJob {
     }
 }
 
+/// A ⇧ selection in Claude's long input. The window moves with the cursor, so each frame is
+/// lined up with the rows seen so far, which gives both ends as rows of the text. Only rows the
+/// window has shown are kept: the selection grew to its ends through them, so that's all it holds.
+#[derive(Clone, Debug)]
+pub struct LongSel {
+    /// The rows seen, in order, with `❯` blanked: it's on whichever row is on top of the window.
+    rows: Vec<RowData>,
+    height: usize,
+    /// The row of `rows` on top of the window.
+    first: usize,
+    /// Where the selection started and where the cursor is: (column, row of `rows`).
+    anchor: Pos,
+    cursor: Pos,
+    /// The ↑ and ↓ pressed that haven't shown yet. Rows that repeat can look the same after a
+    /// move, and only these tell. They're counted apart, not as the row they'll end on, because
+    /// a key pressed before the selection can land after it starts: that row would never come.
+    ups: u16,
+    downs: u16,
+    /// The last frame lined up. One that doesn't may be a redraw caught halfway.
+    fits: bool,
+}
+
+impl LongSel {
+    /// Starts at the cursor, in a box that may be a window on longer text (None in any other).
+    pub fn start(grid: &[RowData], cursor: Pos) -> Option<LongSel> {
+        if !box_is_full(grid, cursor) {
+            return None;
+        }
+        let (top, rows) = box_window(grid, cursor)?;
+        let at = (cursor.0, cursor.1 - top);
+        Some(LongSel { height: rows.len(), rows, first: 0, anchor: at, cursor: at, ups: 0, downs: 0, fits: true })
+    }
+
+    /// An arrow is on its way to Claude.
+    pub fn pressed(&mut self, key: &str) {
+        match key {
+            "up" => self.ups += 1,
+            "down" => self.downs += 1,
+            _ => {}
+        }
+    }
+
+    /// Take in a frame.
+    pub fn see(&mut self, grid: &[RowData], cursor: Pos) {
+        self.fits = self.line_up(grid, cursor).is_some();
+    }
+
+    fn line_up(&mut self, grid: &[RowData], cursor: Pos) -> Option<()> {
+        let (top, window) = box_window(grid, cursor)?;
+        if window.len() != self.height {
+            return None;
+        }
+        let (at, old, height) = ((cursor.1 - top) as i64, self.first as i64, self.height as i64);
+        let want = self.cursor.1 as i64 + self.ahead() - at;
+        let first = (old - height + 1..old + height).filter(|&f| self.matches(&window, f)).min_by_key(|f| (f - want).abs())?;
+        if first < 0 {
+            let new = -first as usize;
+            self.rows.splice(0..0, window[..new].iter().cloned());
+            self.anchor.1 += new as u16;
+            self.cursor.1 += new as u16;
+        }
+        self.first = first.max(0) as usize;
+        let known = self.rows.len() - self.first;
+        self.rows.extend(window.into_iter().skip(known));
+        let row = self.first as u16 + at as u16;
+        self.answered(row as i64 - self.cursor.1 as i64);
+        self.cursor = (cursor.0, row);
+        Some(())
+    }
+
+    /// The cursor moved this many rows: that many of the arrows pressed have shown. A move past
+    /// those was a key from before the selection, and answers nothing.
+    fn answered(&mut self, moved: i64) {
+        let keys = if moved < 0 { &mut self.ups } else { &mut self.downs };
+        *keys = keys.saturating_sub(moved.unsigned_abs().min(u16::MAX as u64) as u16);
+        if self.ahead() == 0 {
+            (self.ups, self.downs) = (0, 0);
+        }
+    }
+
+    /// How many rows the arrows on their way will still move the cursor, down being positive.
+    fn ahead(&self) -> i64 {
+        self.downs as i64 - self.ups as i64
+    }
+
+    /// Whether `window` shows the rows seen, with its top row at `first`.
+    fn matches(&self, window: &[RowData], first: i64) -> bool {
+        window.iter().zip(first..).all(|(row, y)| usize::try_from(y).ok().and_then(|y| self.rows.get(y)).is_none_or(|seen| box_text(seen) == box_text(row)))
+    }
+
+    /// Every arrow pressed has shown, and the screen makes sense.
+    pub fn settled(&self) -> bool {
+        self.fits && self.ahead() == 0
+    }
+
+    /// Nothing is selected, and no arrow is on its way to change that.
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.cursor && self.ahead() == 0
+    }
+
+    /// Where the cursor would be on screen with every arrow pressed shown, kept in the box: the
+    /// last row anyone has seen is as far as a key can go.
+    pub fn aimed(&self, grid: &[RowData], cursor: Pos) -> Pos {
+        let Some((top, bottom)) = claude_box(grid, cursor) else { return cursor };
+        (cursor.0, (cursor.1 as i64 + self.ahead()).clamp(top as i64, bottom as i64) as u16)
+    }
+
+    /// The selection's fixed end on screen. Out of view, the window's edge on that side, so what
+    /// the window shows of the selection is painted. None when the cursor isn't in a box.
+    pub fn anchor_on_screen(&self, grid: &[RowData], cursor: Pos) -> Option<Pos> {
+        let (top, bottom) = claude_box(grid, cursor)?;
+        let y = top as i64 + self.anchor.1 as i64 - self.first as i64;
+        Some(if y < top as i64 {
+            (AGENT_INDENT, top)
+        } else if y > bottom as i64 {
+            (text_end(grid.get(bottom as usize)?).max(AGENT_INDENT), bottom)
+        } else {
+            (self.anchor.0, y as u16)
+        })
+    }
+
+    pub fn text(&self) -> String {
+        let (s, e) = ordered(self.anchor, self.cursor);
+        selected_text(&self.rows, s, e, true)
+    }
+
+    /// The erase for the selection and how many times to press its key. A burst that long
+    /// can leave Claude quiet with presses still to come, so counting on the screen to say when
+    /// to stop could run past the selection: the count never goes over. Two row breaks can't be
+    /// told from the rows, so they're left to single keys, checked one at a time: a break before
+    /// a word that fills its row may be a space or a cut, and so may the end of a full row.
+    /// Spaces at a line's end don't show, and aren't counted: they stay.
+    pub fn erase(&self) -> (EraseJob, usize) {
+        let (s, e) = ordered(self.anchor, self.cursor);
+        let width = self.rows[0].cells.len().saturating_sub(4);
+        let (mut counted, mut uncounted) = (0, 0);
+        for y in s.1 as usize..e.1 as usize {
+            let (row, next) = (box_text(&self.rows[y]), box_text(&self.rows[y + 1]));
+            match row_break(&row, &next, width) {
+                "" => uncounted += 1,
+                " " if next.chars().take_while(|c| *c != ' ').count() >= width => counted += 1,
+                _ => {}
+            }
+        }
+        let (first, last) = (&self.rows[s.1 as usize], &self.rows[e.1 as usize]);
+        let job = EraseJob {
+            key: if self.cursor == e { "backspace" } else { "delete" },
+            start_col: s.0,
+            indent: AGENT_INDENT,
+            before: text_of(first, AGENT_INDENT, s.0),
+            after: text_of(last, e.0, text_end(last).max(e.0)),
+            budget: counted + uncounted,
+        };
+        (job, self.text().chars().count() - counted)
+    }
+}
+
 /// Erasing a selection that spans rows, checked against the screen (see the module docs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EraseJob {
     /// "backspace" with the cursor at the selection's end, "delete" at its start.
     pub key: &'static str,
-    /// Where the selection started, and the row's text before it.
+    /// Where the selection started, and the row's text before it, past `indent` cells: in
+    /// Claude's window the row may gain or lose the `❯` of the window's top row.
     pub start_col: u16,
+    pub indent: u16,
     pub before: String,
     /// The text after the selection's end, to the end of its row.
     pub after: String,
@@ -783,7 +970,7 @@ impl EraseJob {
         if (key == "backspace" && input_start) || (key == "delete" && input_end) {
             return Some(Erase::Blind(key, n + budget));
         }
-        let job = EraseJob { key, start_col: s.0, before: text_of(first, 0, s.0), after: text_of(last, e.0, text_end(last)), budget };
+        let job = EraseJob { key, start_col: s.0, indent: 0, before: text_of(first, 0, s.0), after: text_of(last, e.0, text_end(last)), budget };
         Some(Erase::Checked(job, n))
     }
 
@@ -791,14 +978,14 @@ impl EraseJob {
     /// text that followed it comes next.
     pub fn done(&self, grid: &[RowData], cursor: Pos) -> bool {
         let Some(row) = grid.get(cursor.1 as usize) else { return false };
-        if cursor.0 != self.start_col || text_of(row, 0, cursor.0) != self.before {
+        if cursor.0 != self.start_col || text_of(row, self.indent, cursor.0) != self.before {
             return false;
         }
         let end = text_end(row);
         let right = text_of(row, cursor.0, end.max(cursor.0));
         // The rest may wrap onto the next row: then a row that is full up to its edge holds the
-        // start of it.
-        let wraps = end as usize + 1 >= row.cells.len();
+        // start of it. An agent wraps at words, short of the edge.
+        let wraps = self.indent > 0 || end as usize + 1 >= row.cells.len();
         if self.after.is_empty() {
             return right.is_empty();
         }
@@ -1250,5 +1437,242 @@ mod tests {
         // harmless, so they all go at once.
         assert_eq!(EraseJob::plan(&g, (15, 1), (18, 2), (15, 1), AGENT_INDENT), Some(Erase::Blind("delete", 16 + 2)));
         assert_eq!(EraseJob::plan(&g, (2, 0), (6, 1), (6, 1), AGENT_INDENT), Some(Erase::Blind("backspace", 14 + 4 + 2)));
+    }
+
+    /// Claude's window with the cursor on `line`, by the rule in docs/DECISIONS.md: centred on
+    /// the cursor's line, short of the text's ends.
+    fn on_line(text: &[String], height: usize, line: usize, col: u16) -> (Vec<RowData>, Pos) {
+        let first = line.saturating_sub(height / 2).min(text.len() - height);
+        let (g, c) = claude_window(text, first, height, (line - first) as u16);
+        (g, (col, c.1))
+    }
+
+    /// A selection from `line`, then `n` presses of `key` with a frame after each.
+    fn select(text: &[String], height: usize, line: usize, col: u16, key: &str, n: usize) -> (LongSel, usize) {
+        let (g, c) = on_line(text, height, line, col);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        let mut at = line;
+        for _ in 0..n {
+            sel.pressed(key);
+            at = if key == "up" { at - 1 } else { at + 1 };
+            let (g, c) = on_line(text, height, at, col);
+            sel.see(&g, c);
+        }
+        (sel, at)
+    }
+
+    fn lines(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("line {i:02}")).collect()
+    }
+
+    #[test]
+    fn a_selection_up_keeps_the_rows_that_scroll_away() {
+        let text = lines(40);
+        let (sel, _) = select(&text, 10, 39, 9, "up", 25);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), format!("{}\n{}", &text[14][7..], text[15..=38].join("\n")) + "\nline 39");
+    }
+
+    #[test]
+    fn a_selection_down_keeps_the_rows_that_scroll_away() {
+        let text = lines(40);
+        let (sel, _) = select(&text, 10, 3, 2, "down", 30);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), text[3..33].join("\n") + "\n");
+    }
+
+    #[test]
+    fn a_selection_can_turn_back_past_where_it_started() {
+        let text = lines(40);
+        let (mut sel, mut at) = select(&text, 10, 20, 2, "up", 12);
+        for _ in 0..17 {
+            sel.pressed("down");
+            at += 1;
+            let (g, c) = on_line(&text, 10, at, 2);
+            sel.see(&g, c);
+        }
+        assert!(sel.settled());
+        assert_eq!(sel.text(), text[20..25].join("\n") + "\n");
+    }
+
+    #[test]
+    fn a_selection_back_at_its_start_is_empty() {
+        let text = lines(40);
+        let (mut sel, at) = select(&text, 10, 20, 2, "up", 3);
+        assert!(!sel.is_empty());
+        for i in 1..=3 {
+            sel.pressed("down");
+            let (g, c) = on_line(&text, 10, at + i, 2);
+            sel.see(&g, c);
+        }
+        assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn an_arrow_on_its_way_counts_as_a_selection() {
+        let text = lines(40);
+        let (g, c) = on_line(&text, 10, 20, 2);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        sel.pressed("up");
+        sel.see(&g, c);
+        assert!(!sel.is_empty());
+        assert!(!sel.settled());
+    }
+
+    #[test]
+    fn rows_that_repeat_are_told_apart_by_the_arrows_pressed() {
+        // The window looks the same after each press, so no frame comes at all.
+        let text = vec!["same".to_string(); 40];
+        let (g, c) = on_line(&text, 10, 20, 2);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        for _ in 0..3 {
+            sel.pressed("up");
+        }
+        sel.see(&g, c);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), "same\n".repeat(3));
+    }
+
+    #[test]
+    fn a_frame_from_before_the_arrows_isnt_settled() {
+        let text = lines(40);
+        let (g, c) = on_line(&text, 10, 20, 2);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        sel.pressed("up");
+        sel.see(&g, c);
+        assert!(!sel.settled());
+        let (g, c) = on_line(&text, 10, 19, 2);
+        sel.see(&g, c);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), "line 19\n");
+    }
+
+    #[test]
+    fn a_key_from_before_the_selection_can_land_after_it_starts() {
+        let text = lines(40);
+        let (g, c) = on_line(&text, 10, 20, 2);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        sel.pressed("down");
+        let (g, c) = on_line(&text, 10, 19, 2);
+        sel.see(&g, c);
+        assert!(!sel.settled());
+        let (g, c) = on_line(&text, 10, 20, 2);
+        sel.see(&g, c);
+        assert!(sel.settled());
+        assert!(sel.is_empty());
+        sel.pressed("down");
+        let (g, c) = on_line(&text, 10, 21, 2);
+        sel.see(&g, c);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), "line 20\n");
+    }
+
+    #[test]
+    fn a_frame_caught_halfway_through_a_redraw_changes_nothing() {
+        let text = lines(40);
+        let (mut sel, at) = select(&text, 10, 20, 2, "up", 8);
+        let before = sel.text();
+        sel.pressed("up");
+        let mut torn = text.clone();
+        torn[at] = "line 99".into();
+        let (g, c) = on_line(&torn, 10, at - 1, 2);
+        sel.see(&g, c);
+        assert!(!sel.settled());
+        assert_eq!(sel.text(), before);
+        let (g, c) = on_line(&text, 10, at - 1, 2);
+        sel.see(&g, c);
+        assert!(sel.settled());
+        assert_eq!(sel.text(), format!("{}\n{before}", text[at - 1]));
+    }
+
+    #[test]
+    fn a_window_of_another_height_doesnt_fit() {
+        let text = lines(40);
+        let (mut sel, _) = select(&text, 10, 20, 2, "up", 2);
+        let (g, c) = on_line(&text, 12, 18, 2);
+        sel.see(&g, c);
+        assert!(!sel.settled());
+    }
+
+    #[test]
+    fn keys_never_run_past_the_rows_on_screen() {
+        let text = lines(40);
+        let (g, c) = on_line(&text, 10, 20, 2);
+        let mut sel = LongSel::start(&g, c).unwrap();
+        for _ in 0..20 {
+            sel.pressed("up");
+        }
+        let aimed = sel.aimed(&g, c);
+        assert_eq!(aimed.1, 2, "the box's top row");
+        assert_eq!(vertical("up", true, &g, aimed), Some(Send::Bytes(b"\x01")));
+    }
+
+    #[test]
+    fn the_selection_paints_from_the_edge_of_the_window() {
+        let text = lines(40);
+        let (sel, at) = select(&text, 10, 39, 9, "up", 25);
+        let (g, c) = on_line(&text, 10, at, 9);
+        assert_eq!(sel.anchor_on_screen(&g, c), Some((9, 11)), "below the window: its last row's end");
+        let (sel, at) = select(&text, 10, 3, 5, "down", 25);
+        let (g, c) = on_line(&text, 10, at, 5);
+        assert_eq!(sel.anchor_on_screen(&g, c), Some((AGENT_INDENT, 2)), "above: its first row's start");
+        let (sel, at) = select(&text, 10, 20, 5, "up", 2);
+        let (g, c) = on_line(&text, 10, at, 5);
+        assert_eq!(sel.anchor_on_screen(&g, c), Some((5, c.1 + 2)), "in view: where it is");
+    }
+
+    #[test]
+    fn a_selection_up_is_erased_forward_and_one_down_backward() {
+        let text = lines(40);
+        let (sel, _) = select(&text, 10, 30, 4, "up", 20);
+        let (job, n) = sel.erase();
+        assert_eq!((job.key, n, job.budget), ("delete", sel.text().chars().count(), 0));
+        let (sel, _) = select(&text, 10, 10, 4, "down", 20);
+        let (job, n) = sel.erase();
+        assert_eq!((job.key, n, job.budget), ("backspace", sel.text().chars().count(), 0));
+    }
+
+    #[test]
+    fn a_row_cut_inside_a_long_word_is_erased_one_key_at_a_time() {
+        // A URL, say. `selected_text` joins these with a space, which may have been a cut. The
+        // word fills its row, so the break after it gets a key of its own as well.
+        let mut text = lines(40);
+        text[20] = "see".into();
+        text[21] = "b".repeat(26);
+        let (sel, _) = select(&text, 10, 22, 2, "up", 2);
+        let (job, n) = sel.erase();
+        assert_eq!((job.budget, n), (2, sel.text().chars().count() - 1));
+    }
+
+    #[test]
+    fn a_full_row_may_hide_a_space_so_a_key_is_kept_for_it() {
+        let mut text = lines(40);
+        text[20] = "a".repeat(26);
+        let (sel, _) = select(&text, 10, 22, 2, "up", 2);
+        let (job, n) = sel.erase();
+        assert_eq!((job.budget, n), (1, sel.text().chars().count()));
+    }
+
+    #[test]
+    fn an_erase_past_the_window_ends_where_the_prompt_has_moved_to() {
+        let text = lines(40);
+        let (sel, _) = select(&text, 10, 30, 6, "up", 20);
+        let (job, _) = sel.erase();
+        assert_eq!((job.start_col, job.before.as_str(), job.after.as_str()), (6, "line", " 30"));
+        let mut left = text[..10].to_vec();
+        left.push("line 30".into());
+        left.extend_from_slice(&text[31..]);
+        for first in [5, 10] {
+            let (g, c) = claude_window(&left, first, 10, 10 - first as u16);
+            assert!(job.done(&g, (6, c.1)), "the row may be the window's top one: first {first}");
+        }
+    }
+
+    #[test]
+    fn only_a_full_box_starts_a_long_selection() {
+        let (g, c) = claude_window(&lines(4), 0, 4, 2);
+        let tall: Vec<RowData> = g.iter().cloned().chain((0..30).map(|_| row(""))).collect();
+        assert!(LongSel::start(&tall, c).is_none());
+        assert!(LongSel::start(&g, c).is_some());
     }
 }

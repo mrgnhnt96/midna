@@ -10,7 +10,7 @@
 use crate::actions::*;
 use crate::backend::{AttachRequest, Backend, TermStream};
 use crate::frame::*;
-use crate::term_edit::{self, AtEnd, EraseJob, KbdSel, MoveJob, Pending, ReadJob};
+use crate::term_edit::{self, AtEnd, EraseJob, KbdSel, LongSel, MoveJob, Pending, ReadJob, WithSel};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -160,6 +160,8 @@ pub struct TerminalView {
     marked: Option<String>,
     /// ⇧-arrow selection in the input line (`term_edit`).
     kbd_sel: Option<KbdSel>,
+    /// `kbd_sel` in Claude's long input, where its ends can scroll out of view.
+    long_sel: Option<LongSel>,
     /// Until when a redraw of an agent's input may renumber its list (`list_key`).
     list_watch: Option<Instant>,
     /// Bumped by each redraw while `list_watch` runs; a renumber waits for it to settle.
@@ -485,6 +487,7 @@ impl TerminalView {
             hover_cmd: false,
             preview: Default::default(),
             kbd_sel: None,
+            long_sel: None,
             list_watch: None,
             list_gen: 0,
             agent: None,
@@ -744,6 +747,9 @@ impl TerminalView {
                 self.kbd_sel = None;
                 self.send(b"\x15");
             }
+        }
+        if rows_changed || moved {
+            self.follow_long_sel();
         }
         if self.erasing.is_some() {
             // Check once the app has gone quiet, not between its redraws.
@@ -1044,12 +1050,12 @@ impl TerminalView {
         if cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
             let line_edge = term_edit::Send::Bytes(if key == "up" { b"\x01" } else { b"\x05" });
-            let moves = if self.is_agent() { term_edit::text_edge(key, &self.grid, c) } else { m.shift.then(|| vec![line_edge]) };
+            let moves = if self.is_agent() { term_edit::text_edge(key, &self.grid, self.aimed(c)) } else { m.shift.then(|| vec![line_edge]) };
             let Some(moves) = moves else { return false };
             if !m.shift {
                 self.kbd_sel = None;
-            } else if self.kbd_range().is_none() {
-                self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
+            } else if !self.selecting() {
+                self.select_from(c);
             }
             for mv in moves {
                 self.send_move(mv);
@@ -1058,9 +1064,9 @@ impl TerminalView {
         }
         if m.shift && !cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
-            let Some(mv) = term_edit::vertical(key, self.is_agent(), &self.grid, c) else { return false };
-            if self.kbd_range().is_none() {
-                self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
+            let Some(mv) = term_edit::vertical(key, self.is_agent(), &self.grid, self.aimed(c)) else { return false };
+            if !self.selecting() {
+                self.select_from(c);
             }
             self.send_move(mv);
             return true;
@@ -1077,8 +1083,8 @@ impl TerminalView {
                 .flatten();
             if m.shift {
                 let Some(c) = self.live_cursor() else { return false };
-                if self.kbd_range().is_none() {
-                    self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
+                if !self.selecting() {
+                    self.select_from(c);
                 }
                 for mv in row_edge.unwrap_or_else(|| vec![mv]) {
                     self.send_move(mv);
@@ -1154,6 +1160,44 @@ impl TerminalView {
         self.cursor.filter(|_| self.ext.at_bottom())
     }
 
+    /// Start a keyboard selection at the cursor.
+    fn select_from(&mut self, c: term_edit::Pos) {
+        self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
+        self.long_sel = if self.agent_kind() == Some("claude") { LongSel::start(&self.grid, c) } else { None };
+    }
+
+    /// There's a selection for ⇧ to extend. Mid-text the cursor stays put on screen as the window
+    /// slides, so one that looks empty may just be waiting for its arrows to show.
+    fn selecting(&self) -> bool {
+        self.kbd_range().is_some() || self.long_selected()
+    }
+
+    /// The keyboard selection is a [`LongSel`], with something in it.
+    fn long_selected(&self) -> bool {
+        self.kbd_sel.is_some_and(|k| !k.kill && !k.all) && self.long_sel.as_ref().is_some_and(|long| !long.is_empty())
+    }
+
+    /// A new frame: the window may have moved under the selection.
+    fn follow_long_sel(&mut self) {
+        if self.kbd_sel.is_none_or(|k| k.kill || k.all) {
+            self.long_sel = None;
+        }
+        let Some(c) = self.live_cursor() else { return };
+        let (Some(long), Some(k)) = (self.long_sel.as_mut(), self.kbd_sel.as_mut()) else { return };
+        long.see(&self.grid, c);
+        if long.settled()
+            && let Some(anchor) = long.anchor_on_screen(&self.grid, c)
+        {
+            k.anchor = anchor;
+        }
+    }
+
+    /// The cursor, for deciding on a key that goes by what's on screen: as it will be once the
+    /// arrows on their way have shown, so that fast keys can't run past the rows in view.
+    fn aimed(&self, c: term_edit::Pos) -> term_edit::Pos {
+        self.long_sel.as_ref().map_or(c, |long| long.aimed(&self.grid, c))
+    }
+
     /// The keyboard selection's ends in reading order.
     fn kbd_range(&self) -> Option<(term_edit::Pos, term_edit::Pos)> {
         let (k, c) = (self.kbd_sel?, self.live_cursor()?);
@@ -1172,13 +1216,21 @@ impl TerminalView {
     fn send_move(&mut self, mv: term_edit::Send) {
         match term_edit::for_agent(mv, self.agent_kind()) {
             term_edit::Send::Bytes(b) => self.send(b),
-            term_edit::Send::Arrow(k) => self.arrow(k),
+            term_edit::Send::Arrow(k) => {
+                if let Some(long) = self.long_sel.as_mut() {
+                    long.pressed(k);
+                }
+                self.arrow(k);
+            }
         }
         self.typed();
     }
 
     /// Erase the selection that typing replaces (`term_edit::replace_range`), if there is one.
     fn erase_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.long_selected() {
+            return self.use_long_sel(WithSel::Erase, cx);
+        }
         let kbd = self.kbd_sel.take();
         if !self.line_editing() || self.erasing.is_some() {
             return false;
@@ -1210,6 +1262,59 @@ impl TerminalView {
         self.ext.selection.clear();
         self.settle(None, cx);
         true
+    }
+
+    /// ⌘C, ⌘X, ⌫ or typing on a selection in Claude's long input: once the screen has caught up
+    /// with the keys that made it (`check_erase`).
+    fn use_long_sel(&mut self, then: WithSel, cx: &mut Context<Self>) -> bool {
+        match self.erasing {
+            None => {
+                self.settle(Some(Pending::Follow { tries: WALK_TRIES, then }), cx);
+                self.check_erase(cx);
+            }
+            Some((Some(Pending::Follow { .. }), _)) => {}
+            Some(_) => self.say_lost_sel(then, cx),
+        }
+        true
+    }
+
+    /// The screen has caught up: copy the selection, erase it or both.
+    fn finish_long_sel(&mut self, then: WithSel, cx: &mut Context<Self>) {
+        let Some(long) = self.long_sel.as_ref().filter(|long| !long.is_empty()) else { return self.finish_erase(cx) };
+        if then != WithSel::Erase {
+            Self::to_clipboard(long.text(), cx);
+        }
+        if then == WithSel::Copy {
+            return self.finish_erase(cx);
+        }
+        let (job, n) = long.erase();
+        self.kbd_sel = None;
+        self.long_sel = None;
+        for _ in 0..n {
+            self.arrow(job.key);
+        }
+        self.ext.selection.clear();
+        self.set_pending(Pending::Erase(job));
+        self.check_erase_later(250, cx);
+    }
+
+    /// The screen never caught up, so where the selection ends isn't known: leave the text alone.
+    fn lost_long_sel(&mut self, then: WithSel, cx: &mut Context<Self>) {
+        self.say_lost_sel(then, cx);
+        if then != WithSel::Copy {
+            self.kbd_sel = None;
+            self.long_sel = None;
+        }
+        self.finish_erase(cx);
+    }
+
+    fn say_lost_sel(&mut self, then: WithSel, cx: &mut Context<Self>) {
+        let what = match then {
+            WithSel::Copy => "copied",
+            WithSel::Cut => "cut",
+            WithSel::Erase => "erased",
+        };
+        self.say(format!("Couldn't follow the selection, so nothing was {what}."), cx);
     }
 
     /// A mouse selection off the cursor's row (in the same input): walk the cursor to its
@@ -1390,6 +1495,18 @@ impl TerminalView {
         }
         let Some((pending, _)) = self.erasing.as_mut() else { return };
         let job = match pending {
+            Some(Pending::Follow { tries, then }) => {
+                let (then, left) = (*then, *tries);
+                *tries = left.saturating_sub(1);
+                self.follow_long_sel();
+                if self.long_sel.as_ref().is_some_and(LongSel::settled) {
+                    return self.finish_long_sel(then, cx);
+                }
+                if left == 0 {
+                    return self.lost_long_sel(then, cx);
+                }
+                return self.check_erase_later(120, cx);
+            }
             Some(Pending::StartRead { cut, tries }) => {
                 let cut = *cut;
                 let start = self.cursor.filter(|_| self.ext.at_bottom()).and_then(|c| ReadJob::start(&self.grid, c, cut));
@@ -1742,6 +1859,10 @@ impl TerminalView {
         if self.read_all(true, cx) {
             return;
         }
+        if self.long_selected() {
+            self.use_long_sel(WithSel::Cut, cx);
+            return;
+        }
         if let Some((s, e)) = self.kbd_range() {
             Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
             self.erase_selection(cx);
@@ -1784,6 +1905,10 @@ impl TerminalView {
         if self.read_all(false, cx) {
             return;
         }
+        if self.long_selected() {
+            self.use_long_sel(WithSel::Copy, cx);
+            return;
+        }
         // A keyboard selection (⇧ moves, ⌘A in an agent's box) is ours, not the engine's.
         if let Some((s, e)) = self.kbd_range() {
             Self::to_clipboard(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
@@ -1822,6 +1947,7 @@ impl TerminalView {
         {
             let all = self.agent_kind() == Some("claude") && term_edit::box_is_full(&self.grid, c);
             self.kbd_sel = Some(KbdSel { anchor: start, kill: false, all });
+            self.long_sel = None;
             self.ext.selection.clear();
             if all {
                 // The window's last row may not be the text's: walk there.
