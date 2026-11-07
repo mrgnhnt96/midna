@@ -647,8 +647,7 @@ pub enum Pending {
     /// show the last ↓ pressed, from where it was then.
     ToEnd { from: Option<(Pos, String)>, tries: u8, then: AtEnd },
     /// Pressing ⌫ at the end of Claude's input until it's empty, `rounds` batches left. Extra
-    /// presses do nothing at its start. (Not ⌦: Claude splits a burst of its escape sequence
-    /// and types the pieces into the input.)
+    /// presses do nothing at its start.
     Clear { rounds: u8 },
 }
 
