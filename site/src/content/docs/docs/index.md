@@ -5,7 +5,7 @@ description: What midna is, how it fits together, and how to get started.
 
 midna is a macOS terminal for working with AI agents like Claude Code and Codex. You use it like any terminal: projects in a sidebar, tabs, splits. Agents can use it too. Through the `midna` CLI or its MCP server they can open terminals you can watch, read other terminals, add rules and draft triggers. The few decisions that stay yours, like approving a request or removing a rule, come to you in one queue called **Needs you**.
 
-![The midna window: projects and terminals in the sidebar, a Codex terminal asking to run a migration, and the approval along the bottom](../../../assets/screens/main.png)
+![The midna window: projects and terminals in the sidebar, a Claude Code terminal asking to run a migration, and the approval along the bottom](../../../assets/screens/main.png)
 
 ## How it fits together
 

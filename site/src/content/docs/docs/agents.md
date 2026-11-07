@@ -28,12 +28,12 @@ Anything only you can answer goes to **Needs you**. The terminal's row turns ora
 - The terminal you're looking at shows its approval along the bottom. <kbd>⌘</kbd> <kbd>↩</kbd> approves, <kbd>⌘</kbd> <kbd>⌫</kbd> denies.
 - <kbd>⌘</kbd> <kbd>J</kbd> goes through everything waiting, one card at a time, oldest first.
 
-![A Needs you card for an agent's question, with the remaining items listed below](../../../assets/screens/needs-you.png)
+![The Needs you screen: everything waiting listed on the left, with an agent's question open on the right](../../../assets/screens/needs-you.png)
 
 | Item | What it is | <kbd>⌘</kbd> <kbd>↩</kbd> | <kbd>⌘</kbd> <kbd>⌫</kbd> |
 | --- | --- | --- | --- |
 | Approval | A rule said **ask**, or an agent asked for a human-only action | Approve | Deny |
-| Permission prompt | Claude Code or Codex is showing its own permission dialog | Approve | Deny |
+| Permission prompt | Claude Code is showing its own permission dialog. Codex's approval prompts aren't queued yet: answer them in its terminal. | Approve | Deny |
 | Blocked | An agent can't continue without you (`midna attention`) | I've done it | Dismiss |
 | Failed | A monitor or agent exited with an error | Restart | Dismiss |
 | Rule removal | An agent asked you to remove a rule | Remove | Keep |

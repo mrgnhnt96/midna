@@ -91,9 +91,9 @@
   - `Frame` carries `decckm` / `bracketed_paste` but not the kitty flags, and Enter from the GUI as a bare `\r` won't submit to Claude.
   - Either add the flags to `Frame`, or use libghostty's key encoder with `Terminal::kitty_keyboard_flags`.
   - I didn't touch proto or the app.
-- **Codex approvals weren't exercised live.**
-  - The user's `~/.codex/config.toml` sets `approval_policy="never"`, and midna doesn't override it.
-  - The Codex prompt patterns come from the spike.
+- **Codex approvals don't reach Needs you.**
+  - Run live on 2026-11-06 with Codex 0.163.0 and `approval_policy="on-request"`: the prompt stayed in its terminal, the status stayed `working`, and `midna needs` stayed empty.
+  - midna starts Codex with `notify` only, and the screen check only settles prompts that were already raised.
   - Codex has no cost signal, and interrupted Codex turns count no message because no notify arrives.
 - **Startup dialogs aren't surfaced as needs-you.** Claude's folder trust and Codex's folder trust or hooks review leave the session `idle`.
 - **Native prompts won't appear for this user in normal use.** Their global `defaultMode` is `bypassPermissions`, so in practice only midna rules gate tools. I forced `default` for testing through the temp project's `.claude/settings.local.json`.
