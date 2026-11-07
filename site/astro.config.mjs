@@ -35,6 +35,8 @@ function lastChanged(pathname) {
 export default defineConfig({
   site: SITE,
   // Pages merged in the October 2026 docs rewrite.
+  // Inline the small stylesheets so they don't block the first paint. Other assets keep Vite's default.
+  vite: { build: { assetsInlineLimit: (file, content) => (file.endsWith('.css') ? content.length < 10240 : undefined) } },
   redirects: {
     '/docs/first-steps': '/docs/',
     '/docs/projects-and-terminals': '/docs/terminals/',

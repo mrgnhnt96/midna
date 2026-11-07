@@ -30,6 +30,8 @@ Checked 2026-11-06.
 | Privacy page: no account, analytics or crash reporting | Source search of `crates/` for sentry, telemetry, posthog, amplitude, crash reporting: nothing. `ureq` only in `updater.rs` |
 | Privacy page: update check every 6 hours | `CHECK_EVERY` in `crates/midna-app/src/updater.rs` |
 | Privacy page: what link previews, the network check, cleanup and webhooks send | `crates/midna-app/src/terminal/link_preview.rs`; `PROBE_HOST` in `crates/midnad/src/resume.rs`; `crates/midna-proto/src/cleanup.rs`; `webhooks.path` in `crates/midna-proto/src/settings.rs` (off by default). Cleanup is on by default |
+| Privacy page: how long data is kept | `summary.keep_days` default 7 in `crates/midna-proto/src/settings.rs`; `RUNS` 100 in `crates/midnad/src/cleanup.rs`; the event log's archives are never deleted (`crates/midnad/src/eventlog.rs`) |
+| Privacy page: what cleanup sends | `prompt` in `crates/midnad/src/cleanup.rs` |
 | Screenshots | Real renders of midna with the fake backend's sample data, made with the `snapshot` feature (`docs/DECISIONS.md:150`), not recreations. The hero is labelled "Example data". `main`, `main-light`, `approve-menu`, `command-bar`, `needs-you` and `composer` were rendered 2026-11-06 at 1280x800 @2x with `MIDNA_BACKEND=fake MIDNA_SELECT=a1f00002` |
 
 Structured data uses `Organization` for midna, because naming Morgan as a `Person` is their call.

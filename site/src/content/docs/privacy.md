@@ -13,6 +13,8 @@ midna is made by Morgan Hunt. If you have a question about this page, [open an i
 
 Projects, rules, triggers, settings, logs and the event log are kept in `~/Library/Application Support/com.mrgnhnt.midna`. Secrets are kept in the macOS Keychain. Nothing in that folder is uploaded by midna.
 
+midna keeps this until you delete it, with two limits: a project's Summary keeps closed terminals for 7 days (`summary.keep_days`), and cleanup keeps its last 100 runs.
+
 To remove all of it, follow [Uninstall](/docs/install/#uninstall) and delete the folder.
 
 ## What the app sends
@@ -23,7 +25,7 @@ To remove all of it, follow [Uninstall](/docs/install/#uninstall) and delete the
 | Link preview | The site you're pointing at | When the pointer rests on a web link in a terminal | A normal request for that page, to show its title and description. Never for local or private addresses |
 | Pull request details | GitHub, through your own `gh` | When a terminal's branch has a pull request, or the pointer rests on a pull request link | What `gh` sends when you run it yourself |
 | Network check | `api.anthropic.com` | While an agent is waiting for the network to come back | A connection attempt only. No data |
-| Cleanup after a terminal closes | Anthropic, through your own Claude account | When an agent terminal closes, if `cleanup.enabled` is on (it is by default) | midna runs Claude with `cleanup.model` to tidy up what the terminal left behind. Turn it off in Settings |
+| Cleanup after a terminal closes | Anthropic, through your own Claude account | When an agent terminal closes, if `cleanup.enabled` is on (it is by default) | The terminal's name and folder, the repo, the names of the branches and worktrees to remove, your cleanup rules and your own cleanup items, in a prompt to `cleanup.model`. Nothing runs when there's nothing to clean up. Turn it off in Settings |
 | Webhooks | Whichever path you set up | Only if you turn webhooks on (they're off by default) | Events arrive from GitHub or Bitbucket through the path you chose, such as Tailscale Funnel |
 | Report an issue | GitHub, in your browser | Only when you choose it | A prefilled issue with versions and hardware. Nothing is sent until you submit it. No paths, project names, terminal output or logs |
 
