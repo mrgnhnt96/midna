@@ -3,27 +3,54 @@ import { Image } from 'astro:assets';
 import '../styles/site.css';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
+import SeoHead from '../components/SeoHead.astro';
 import main from '../assets/screens/main.png';
 import approveMenu from '../assets/screens/approve-menu.png';
 import rules from '../assets/screens/rules.png';
 import triggers from '../assets/screens/triggers.png';
 import commandBar from '../assets/screens/command-bar.png';
-import { DOWNLOAD } from '../site';
+import { DOWNLOAD, REPO } from '../site';
 
 const title = 'midna: a macOS terminal for Claude Code and Codex';
 const description =
-  'midna is a native macOS terminal for working with AI agents. Agents can open and read terminals through a CLI and MCP server, approvals from every terminal land in one queue, and your shells keep running when the app restarts.';
+  'midna is a native macOS terminal for working with AI agents. Agents can open and read terminals through a CLI and MCP server, Claude Code approvals from every terminal land in one queue, and your shells keep running when the app restarts.';
+
+const siteUrl = Astro.site!.href;
+const structuredData = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    { '@type': 'WebSite', '@id': `${siteUrl}#website`, url: siteUrl, name: 'midna', publisher: { '@id': `${siteUrl}#organization` } },
+    {
+      '@type': 'Organization',
+      '@id': `${siteUrl}#organization`,
+      name: 'midna',
+      url: siteUrl,
+      logo: new URL('/icon.png', siteUrl).href,
+      sameAs: [REPO],
+    },
+    {
+      '@type': 'SoftwareApplication',
+      name: 'midna',
+      url: siteUrl,
+      description,
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'macOS 12 or later',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      publisher: { '@id': `${siteUrl}#organization` },
+    },
+  ],
+};
 
 const sections = [
   {
     id: 'approvals',
     title: 'Approvals from every terminal in one place',
     body: [
-      'When Claude Code or Codex shows a permission prompt, or a rule says to ask, the terminal is marked in the sidebar and the request shows along the bottom of it. ⌘↩ approves, ⌘⌫ denies, and ⌘J steps through everything that’s waiting across all projects.',
-      'Approving for 15 minutes, an hour, the session or always adds a rule, so you aren’t asked about the same thing again.',
+      'When Claude Code shows a permission prompt, or a rule says to ask, the terminal is marked in the sidebar and the request shows along the bottom of it. ⌘↩ approves, ⌘⌫ denies, and ⌘J steps through everything that’s waiting across all projects.',
+      'Approving for 15 minutes, an hour, the session or always adds a rule, so you aren’t asked about the same thing again. Codex’s own approval prompts stay in its terminal: midna doesn’t queue them yet.',
     ],
     image: approveMenu,
-    alt: 'An approval at the bottom of a Codex terminal with the menu open: approve once, for 15 minutes, for 1 hour, for this session, or always',
+    alt: 'An approval at the bottom of a Claude Code terminal with the menu open: approve once, for 15 minutes, for 1 hour, for this session, or always',
     href: '/docs/agents/',
   },
   {
@@ -93,14 +120,8 @@ const details = [
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title}</title>
-    <meta name="description" content={description} />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta property="og:title" content={title} />
-    <meta property="og:description" content={description} />
-    <meta property="og:image" content="https://midna.mrgnhnt.com/icon.png" />
-    <meta name="theme-color" content="#0f1117" />
+    <SeoHead title={title} description={description} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
   </head>
   <body>
     <Nav />
@@ -112,8 +133,8 @@ const details = [
           <p class="lede">
             Agents can open terminals, run commands you can watch and read each other’s output through the <code
               >midna</code
-            > CLI or its MCP server. Anything that needs your answer waits in one queue, and your shells
-            keep running when the app restarts or updates.
+            > CLI or its MCP server. Claude Code approvals and agents’ questions wait in one queue, and your
+            shells keep running when the app restarts or updates.
           </p>
           <div class="ctas">
             <a class="btn btn-accent" href={DOWNLOAD}>Download for Mac</a>
@@ -125,12 +146,14 @@ const details = [
           <figure class="shot hero-shot">
             <Image
               src={main}
-              alt="The midna window: projects and terminals in the sidebar with their status, a Codex terminal asking to run a migration, and the approval along the bottom"
-              widths={[1280, 1920, 2560]}
+              alt="The midna window: projects and terminals in the sidebar with their status, a Claude Code terminal asking to run a migration, and the approval along the bottom"
+              widths={[640, 828, 1280, 1920, 2560]}
               sizes="(max-width: 1200px) 100vw, 1160px"
               loading="eager"
+              fetchpriority="high"
             />
           </figure>
+          <p class="shot-note">Example data</p>
         </div>
       </section>
 
@@ -150,7 +173,7 @@ const details = [
                 </div>
               </div>
               <figure class="shot feature-shot">
-                <Image src={s.image} alt={s.alt} widths={[1280, 1920, 2560]} sizes="(max-width: 1200px) 100vw, 1112px" />
+                <Image src={s.image} alt={s.alt} widths={[640, 828, 1280, 1920, 2560]} sizes="(max-width: 1200px) 100vw, 1112px" />
               </figure>
             </div>
           </section>
@@ -185,7 +208,7 @@ to ask the human</span>
 
       <section class="details">
         <div class="wrap">
-          <h2>Also</h2>
+          <h2>What else midna does</h2>
           <div class="detail-grid">
             {
               details.map((d) => (
@@ -273,6 +296,13 @@ to ask the human</span>
 
   .hero-shot {
     border-radius: 14px;
+  }
+
+  .shot-note {
+    margin-top: 10px;
+    color: var(--ink-faint);
+    font-size: 0.85rem;
+    text-align: right;
   }
 
   .shot :global(img) {

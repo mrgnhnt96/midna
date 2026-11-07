@@ -1,5 +1,6 @@
 ---
 import '../styles/site.css';
+import SeoHead from '../components/SeoHead.astro';
 import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
 ---
 
@@ -8,10 +9,7 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Download midna</title>
-    <meta name="description" content="Download midna, the macOS terminal built for working with AI agents." />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <meta name="theme-color" content="#0f1117" />
+    <SeoHead title="Download midna for Mac" description="Download midna, the macOS terminal built for working with AI agents. For Macs with Apple Silicon and macOS 12 or later." />
   </head>
   <body>
     <main class="wrap page" data-api={REPO_API} data-releases={RELEASES}>
@@ -19,9 +17,9 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
 
       <img class="icon" src="/icon.png" alt="" width="104" height="104" />
 
-      <h1 data-title>Getting the latest midna…</h1>
+      <h1 data-title>Download midna for Mac</h1>
       <p class="lede" data-status>
-        Your download starts in a moment.
+        For Macs with Apple Silicon, macOS 12 or later.
         <noscript
           >This page needs JavaScript to find the newest version. <a href={RELEASES}>Download it from GitHub</a
           > instead.</noscript
@@ -156,6 +154,8 @@ import { NEW_ISSUE, RELEASES, REPO_API } from '../site';
     $('status').innerHTML = status;
     for (const step of page.querySelectorAll<HTMLElement>('[data-install]')) step.hidden = true;
   };
+
+  $('status').textContent = 'Getting the latest version. Your download starts in a moment.';
 
   fetch(`${page.dataset.api}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
     .then(async (response) => {

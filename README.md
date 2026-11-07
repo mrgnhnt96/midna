@@ -132,15 +132,14 @@ spikes/          proven prototypes the crates grew from
 **Known gaps:**
 - **Same-user limitation.** The human/agent boundary is a guardrail, not authentication against a hostile local process (`docs/SECURITY.md`).
 - **Not run for real:**
-  - Codex approval prompts. The user's config sets `approval_policy="never"`.
   - The Kass AX insert.
   - Turning Tailscale Funnel on.
   - The Keychain secret path.
   - `gh` recovery against GitHub.
-  - Notarization.
   - The `RequiresApproval` login-item flow.
   - The macOS 12 legacy LaunchAgent path.
 - **Startup dialogs aren't surfaced as needs-you:** Claude or Codex folder trust and the hooks review.
+- **Codex approval prompts aren't surfaced as needs-you.** Run live on 2026-11-06 with Codex 0.163.0: the prompt stays in its terminal and the status stays working.
 - **Relay webhook paths** (`self_relay`, `midna_relay`) aren't built.
 - **Trigger filters** are structured only (repo, branch, action, label). There are no expressions.
 - **Packaging gaps:**
@@ -167,7 +166,7 @@ These need you (credentials, your screen, or your accounts). Nothing in this lis
    1. Run `kass-probe … kass-sim 2`.
    2. Expect `role=AXTextArea … Inserted{exact:true}`.
    3. Better still, dictate with the real Kass.
-4. **Live-test Codex approvals.** Your `~/.codex/config.toml` sets `approval_policy="never"`. Use a temp `CODEX_HOME` with `on-request` (or a webhook-started Codex, which now runs `on-request`), and check that the prompt patterns and approve/deny from midna work.
+4. **Surface Codex approvals.** Live-tested on 2026-11-06 with Codex 0.163.0 and `approval_policy="on-request"`: the prompt stays in its terminal, and nothing reaches Needs you. midna starts Codex with `notify` only, which fires at the end of a turn, and the screen check only settles prompts that were already raised.
 5. **Enable Tailscale Funnel** for your tailnet. Then run `midna webhooks configure tailscale_funnel` from the GUI (human only), and point a GitHub webhook at the public URL that `midna webhooks status` shows.
 6. **Decide on `triggers.agent_mode`.** The default is `supervised`, which forces permission prompts on webhook-started agents even though your global Claude config bypasses them. Switch to `inherit` only if you accept that risk. Local triggers (schedules, hooks) use your normal config; to give one trigger's agents their own mode or tools, use `midna triggers update <id> --permission-mode auto --allow-tool <tool>`.
 7. **Grant Accessibility to Midna.app only after reading `docs/SECURITY.md` → "TCC responsibility".** Agents in midna terminals may inherit that grant.

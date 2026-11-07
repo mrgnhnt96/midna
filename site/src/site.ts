@@ -5,3 +5,8 @@ export const DOWNLOAD = '/download/';
 export const RELEASES = `${REPO}/releases/latest`;
 export const ISSUES = `${REPO}/issues`;
 export const NEW_ISSUE = `${REPO}/issues/new/choose`;
+// Shown when a page is shared. A versioned name, so a new image isn't hidden by caches.
+export const SHARE_IMAGE = '/share-v1.png';
+export const SHARE_IMAGE_WIDTH = 1200;
+export const SHARE_IMAGE_HEIGHT = 630;
+export const SHARE_IMAGE_ALT = 'The midna window with example data: projects and terminals in the sidebar, and a Claude Code terminal running a migration';
