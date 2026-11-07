@@ -10,7 +10,7 @@
 use crate::actions::*;
 use crate::backend::{AttachRequest, Backend, TermStream};
 use crate::frame::*;
-use crate::term_edit::{self, EraseJob, KbdSel, MoveJob, Pending, ReadJob};
+use crate::term_edit::{self, AtEnd, EraseJob, KbdSel, MoveJob, Pending, ReadJob};
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -48,8 +48,11 @@ const IDLE_PAINT: Duration = Duration::from_millis(250);
 const KITTY_REPORT_EVENTS: u8 = 2;
 /// Batches of ⌫ to empty a long input before giving up.
 const CLEAR_ROUNDS: u8 = 40;
-/// Checks of the screen for a walk's ↓ to show before giving up.
-const WALK_TRIES: u8 = 8;
+/// Checks of the screen, about five seconds, for a walk's ↓ to show or for a read to start
+/// before giving up: a busy Claude can take seconds to redraw.
+const WALK_TRIES: u8 = 40;
+/// How long a message stays over the terminal.
+const NOTICE_FOR: Duration = Duration::from_secs(5);
 /// How long after a deleting key (or a new list item) an agent's redraws may renumber its list.
 const LIST_WATCH: Duration = Duration::from_millis(800);
 /// How long the agent must go without a redraw (and the keyboard without a key) before the list
@@ -184,6 +187,8 @@ pub struct TerminalView {
     erasing: Option<(Option<term_edit::Pending>, Vec<ClientMsg>)>,
     /// Bumped per scheduled erase check, so only the latest one runs.
     erase_gen: u64,
+    /// A message over the terminal, and when it goes.
+    notice: Option<(String, Instant)>,
     /// Claude's input text before each ⌘Z, latest last: ⇧⌘Z / ⌘Y types it back (Claude Code
     /// has undo but no redo). Any other input empties it.
     redo: Vec<String>,
@@ -491,6 +496,7 @@ impl TerminalView {
             alt_probed: false,
             erasing: None,
             erase_gen: 0,
+            notice: None,
             redo: Vec::new(),
             menu: None,
             link_menu: Default::default(),
@@ -1256,13 +1262,46 @@ impl TerminalView {
 
     /// Read all of Claude's input for ⌘C or ⌘X (`check_erase` finishes the job). The cursor
     /// walks through it, so the selection is put back at the end of a copy.
-    fn read_input(&mut self, c: term_edit::Pos, cut: bool, cx: &mut Context<Self>) {
-        let Some((job, ups)) = ReadJob::start(&self.grid, c, cut) else { return };
+    fn read_input(&mut self, job: ReadJob, ups: u16, cx: &mut Context<Self>) {
         self.kbd_sel = None;
         for _ in 0..ups {
             self.arrow("up");
         }
-        self.settle(Some(Pending::Read(job)), cx);
+        self.set_pending(Pending::Read(job));
+        self.check_erase_later(250, cx);
+    }
+
+    /// The read gave up with the text intact: say so and go back to its end. Nothing stays
+    /// selected: the ↑ pressed may still be on their way, so the cursor may not stay there, and
+    /// ⌫ on a selection erases from the cursor. ↓ only ever follows those ↑, so it's safe.
+    fn read_failed(&mut self, cut: bool, cx: &mut Context<Self>) {
+        self.say_read_failed(cut, cx);
+        self.set_pending(Pending::ToEnd { from: None, tries: WALK_TRIES, then: AtEnd::Stay });
+        self.check_erase_later(250, cx);
+    }
+
+    fn say_read_failed(&mut self, cut: bool, cx: &mut Context<Self>) {
+        let what = if cut { "cut" } else { "copied" };
+        self.say(format!("Couldn't read all of the input, so nothing was {what}."), cx);
+    }
+
+    /// Show a message over the terminal for a moment.
+    fn say(&mut self, msg: String, cx: &mut Context<Self>) {
+        if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
+            eprintln!("midna-app debug-term: said {msg:?}");
+        }
+        self.notice = Some((msg, Instant::now() + NOTICE_FOR));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_FOR).await;
+            let _ = this.update(cx, |t, cx| {
+                if t.notice.as_ref().is_some_and(|n| n.1 <= Instant::now()) {
+                    t.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The text is read: copy it and return to its end, to erase it from there (⌘X) or leave
@@ -1275,7 +1314,7 @@ impl TerminalView {
             self.arrow("down");
         }
         let from = self.cursor.filter(|_| downs > 0).map(|c| (c, term_edit::box_row_at(&self.grid, c)));
-        self.set_pending(Pending::ToEnd { from, tries: WALK_TRIES, clear: cut });
+        self.set_pending(Pending::ToEnd { from, tries: WALK_TRIES, then: if cut { AtEnd::Clear } else { AtEnd::Select } });
         self.check_erase_later(250, cx);
     }
 
@@ -1285,16 +1324,36 @@ impl TerminalView {
         }
     }
 
-    /// At the text's last row: its end, then erase it all or select it all.
-    fn finish_to_end(&mut self, c: term_edit::Pos, clear: bool, cx: &mut Context<Self>) {
+    /// At the text's last row: its end, then what the walk was for.
+    fn finish_to_end(&mut self, c: term_edit::Pos, then: AtEnd, cx: &mut Context<Self>) {
         self.send_move(term_edit::Send::Bytes(b"\x05"));
-        if clear {
+        if then == AtEnd::Clear {
             self.press_clear();
             self.set_pending(Pending::Clear { rounds: CLEAR_ROUNDS });
             return self.check_erase_later(250, cx);
         }
+        if then == AtEnd::Stay {
+            return self.finish_erase(cx);
+        }
         if let Some((start, _)) = term_edit::select_all(&self.grid, c) {
             self.kbd_sel = Some(KbdSel { anchor: start, kill: false, all: true });
+        }
+        if let AtEnd::Read { cut } = then {
+            self.set_pending(Pending::StartRead { cut, tries: WALK_TRIES });
+            return self.check_erase_later(250, cx);
+        }
+        self.finish_erase(cx);
+    }
+
+    /// The walk never reached the end, so the cursor is somewhere in the text: nothing that
+    /// counts on it being at the end can go ahead, and the person hears about it.
+    fn walk_gave_up(&mut self, then: AtEnd, cx: &mut Context<Self>) {
+        self.kbd_sel = None;
+        match then {
+            AtEnd::Select => self.say("Couldn't reach the end of the input, so it isn't selected.".into(), cx),
+            AtEnd::Clear => self.say("Copied, but couldn't erase the input.".into(), cx),
+            AtEnd::Read { cut } => self.say_read_failed(cut, cx),
+            AtEnd::Stay => {}
         }
         self.finish_erase(cx);
     }
@@ -1331,11 +1390,21 @@ impl TerminalView {
         }
         let Some((pending, _)) = self.erasing.as_mut() else { return };
         let job = match pending {
+            Some(Pending::StartRead { cut, tries }) => {
+                let cut = *cut;
+                let start = self.cursor.filter(|_| self.ext.at_bottom()).and_then(|c| ReadJob::start(&self.grid, c, cut));
+                if let Some((job, ups)) = start {
+                    return self.read_input(job, ups, cx);
+                }
+                if *tries == 0 {
+                    self.say_read_failed(cut, cx);
+                    return self.finish_erase(cx);
+                }
+                *tries -= 1;
+                return self.check_erase_later(120, cx);
+            }
             Some(Pending::Read(job)) => {
-                let (read, cut, rows) = match self.cursor {
-                    Some(c) => (job.step(&self.grid, c), job.cut, job.rows()),
-                    None => (term_edit::Read::Failed, job.cut, job.rows()),
-                };
+                let (read, cut, rows) = (job.step(&self.grid, self.cursor), job.cut, job.rows());
                 match read {
                     term_edit::Read::Wait => self.check_erase_later(120, cx),
                     term_edit::Read::Up(n) => {
@@ -1345,25 +1414,25 @@ impl TerminalView {
                         self.check_erase_later(250, cx);
                     }
                     term_edit::Read::Done(text) => self.finish_read(text, rows, cut, cx),
-                    term_edit::Read::Failed => self.finish_erase(cx),
+                    term_edit::Read::Failed => self.read_failed(cut, cx),
                 }
                 return;
             }
-            Some(Pending::ToEnd { from, tries, clear }) => {
-                let Some(c) = self.cursor else { return self.finish_erase(cx) };
-                let Some(below) = term_edit::rows_below(&self.grid, c) else { return self.finish_erase(cx) };
-                let now = (c, term_edit::box_row_at(&self.grid, c));
-                if from.as_ref() == Some(&now) {
-                    // The last ↓ haven't shown yet: more now could run past the last row.
+            Some(Pending::ToEnd { from, tries, then }) => {
+                let then = *then;
+                let shown = self.cursor.and_then(|c| Some((c, term_edit::rows_below(&self.grid, c)?)));
+                let now = shown.map(|(c, _)| (c, term_edit::box_row_at(&self.grid, c)));
+                // A redraw caught halfway, or the last ↓ haven't shown yet: more now could run
+                // past the last row.
+                let Some(((c, below), now)) = shown.zip(now).filter(|(_, now)| from.as_ref() != Some(now)) else {
                     if *tries == 0 {
-                        return self.finish_erase(cx);
+                        return self.walk_gave_up(then, cx);
                     }
                     *tries -= 1;
                     return self.check_erase_later(120, cx);
-                }
+                };
                 if below == 0 {
-                    let clear = *clear;
-                    return self.finish_to_end(c, clear, cx);
+                    return self.finish_to_end(c, then, cx);
                 }
                 *from = Some(now);
                 *tries = WALK_TRIES;
@@ -1373,7 +1442,11 @@ impl TerminalView {
                 return self.check_erase_later(250, cx);
             }
             Some(Pending::Clear { rounds }) => {
-                if self.cursor.is_none_or(|c| term_edit::input_text(&self.grid, c).is_none_or(|t| t.is_empty())) || *rounds == 0 {
+                if self.cursor.is_none_or(|c| term_edit::input_text(&self.grid, c).is_none_or(|t| t.is_empty())) {
+                    return self.finish_erase(cx);
+                }
+                if *rounds == 0 {
+                    self.say("Couldn't erase all of the input.".into(), cx);
                     return self.finish_erase(cx);
                 }
                 *rounds -= 1;
@@ -1689,15 +1762,20 @@ impl TerminalView {
     }
 
     /// ⌘C or ⌘X with all of a box that may be a window on longer text selected: the screen
-    /// doesn't hold what's selected, so read it. True when that's underway, or one already is.
+    /// doesn't hold what's selected, so read it. True when this key was for that: the read is
+    /// underway, or will follow ⌘A's walk to the end, or the person has been told it can't.
     fn read_all(&mut self, cut: bool, cx: &mut Context<Self>) -> bool {
         if !self.kbd_sel.is_some_and(|k| k.all) {
             return false;
         }
-        if self.erasing.is_none()
-            && let Some(c) = self.live_cursor()
-        {
-            self.read_input(c, cut, cx);
+        match self.erasing.as_mut() {
+            None => {
+                self.settle(Some(Pending::StartRead { cut, tries: WALK_TRIES }), cx);
+                self.check_erase(cx);
+            }
+            Some((Some(Pending::ToEnd { then, .. }), _)) => *then = AtEnd::Read { cut },
+            Some((Some(Pending::StartRead { .. }), _)) => {}
+            Some(_) => self.say_read_failed(cut, cx),
         }
         true
     }
@@ -1748,7 +1826,7 @@ impl TerminalView {
             if all {
                 // The window's last row may not be the text's: walk there.
                 if self.erasing.is_none() {
-                    self.settle(Some(Pending::ToEnd { from: None, tries: WALK_TRIES, clear: false }), cx);
+                    self.settle(Some(Pending::ToEnd { from: None, tries: WALK_TRIES, then: AtEnd::Select }), cx);
                     self.check_erase(cx);
                 }
             } else {
@@ -2584,6 +2662,7 @@ impl Render for TerminalView {
             })
             .children(not_running)
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
+            .when_some(self.notice.as_ref().map(|n| n.0.clone()), |d, msg| d.child(crate::ui::toast(&theme, msg).bottom(px(12.))))
             .children(nav)
             .children(menu)
             .children(link_menu)

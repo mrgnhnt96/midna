@@ -25,7 +25,9 @@
 //! - A long input in Claude Code shows only a window on its text, with `❯` on the window's top
 //!   row whether or not that's where the text starts, so the screen alone can't say how much
 //!   there is. ⌘A there remembers it meant all of it: ⌘C and ⌘X read the rest with a
-//!   [`ReadJob`], and ⌫ or typing erases until the box is empty ([`Pending::Clear`]).
+//!   [`ReadJob`], and ⌫ or typing erases until the box is empty ([`Pending::Clear`]). Claude
+//!   can take seconds to redraw and can be caught halfway through one, so these wait out a
+//!   screen that doesn't fit, and say so when they give up.
 //!
 //! Full-screen apps (vim, less, htop) get their keys untouched.
 use crate::frame::{Cell, F_INPUT, F_SPACER, RowData};
@@ -636,15 +638,31 @@ impl MoveJob {
 pub enum Pending {
     Move(MoveJob),
     Erase(EraseJob),
+    /// ⌘C or ⌘X waiting for the screen to show Claude's box (it may be mid-redraw), `tries`
+    /// checks left.
+    StartRead { cut: bool, tries: u8 },
     /// Reading all of Claude's input for ⌘C or ⌘X.
     Read(ReadJob),
     /// Walking the cursor to the end of Claude's input, `tries` checks left for the screen to
-    /// show the last ↓ pressed, from where it was then. `clear`: then erase it all (⌘X).
-    ToEnd { from: Option<(Pos, String)>, tries: u8, clear: bool },
+    /// show the last ↓ pressed, from where it was then.
+    ToEnd { from: Option<(Pos, String)>, tries: u8, then: AtEnd },
     /// Pressing ⌫ at the end of Claude's input until it's empty, `rounds` batches left. Extra
     /// presses do nothing at its start. (Not ⌦: Claude splits a burst of its escape sequence
     /// and types the pieces into the input.)
     Clear { rounds: u8 },
+}
+
+/// What to do once the cursor has walked to the end of Claude's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtEnd {
+    /// Select it all (⌘A, or a ⌘C that has been read).
+    Select,
+    /// Erase it all (a ⌘X that has been read).
+    Clear,
+    /// Read it all: ⌘C or ⌘X pressed while ⌘A was still walking.
+    Read { cut: bool },
+    /// Nothing: a read gave up, and being at the end is all that's left to do.
+    Stay,
 }
 
 /// What a step of a [`ReadJob`] found.
@@ -678,8 +696,9 @@ pub struct ReadJob {
 }
 
 impl ReadJob {
-    /// Checks of the screen allowed between two batches of ↑.
-    const TRIES: u8 = 8;
+    /// Checks of the screen allowed between two batches of ↑, about five seconds: a busy
+    /// Claude can take seconds to redraw, and ↑ pressed meanwhile are still on their way.
+    const TRIES: u8 = 40;
 
     /// The job for the box around the cursor, and how many ↑ to press first.
     pub fn start(grid: &[RowData], cursor: Pos, cut: bool) -> Option<(ReadJob, u16)> {
@@ -693,17 +712,14 @@ impl ReadJob {
         self.rows.len()
     }
 
-    /// Take in the screen once the keys pressed have had time to show.
-    pub fn step(&mut self, grid: &[RowData], cursor: Pos) -> Read {
-        let Some((top, bottom)) = claude_box(grid, cursor) else { return Read::Failed };
+    /// Take in the screen once the keys pressed have had time to show. A screen that doesn't
+    /// fit may be a redraw caught halfway, so it only uses up a try.
+    pub fn step(&mut self, grid: &[RowData], cursor: Option<Pos>) -> Read {
+        let Some((cursor, (top, bottom))) = cursor.and_then(|c| Some((c, claude_box(grid, c)?))) else { return self.wait() };
         let window: Vec<String> = (top..=bottom).map(|y| box_row(grid, top, y)).collect();
         let new = (cursor.1 - top) as usize;
-        if window.len() != self.height {
-            return Read::Failed;
-        }
-        if window[new..] != self.rows[..self.height - new] {
-            self.tries = self.tries.saturating_sub(1);
-            return if self.tries == 0 { Read::Failed } else { Read::Wait };
+        if window.len() != self.height || window[new..] != self.rows[..self.height - new] {
+            return self.wait();
         }
         if new > 0 {
             self.rows.splice(0..0, window[..new].iter().cloned());
@@ -717,6 +733,11 @@ impl ReadJob {
             text.push_str(&pair[1]);
         }
         Read::Done(text)
+    }
+
+    fn wait(&mut self) -> Read {
+        self.tries = self.tries.saturating_sub(1);
+        if self.tries == 0 { Read::Failed } else { Read::Wait }
     }
 }
 
@@ -845,7 +866,7 @@ mod tests {
             first = line.saturating_sub(height / 2);
             at = (line - first) as u16;
             let (g, c) = claude_window(text, first, height, at);
-            match job.step(&g, c) {
+            match job.step(&g, Some(c)) {
                 Read::Up(n) => ups = n,
                 Read::Done(t) => return t,
                 other => panic!("{other:?}"),
@@ -874,20 +895,28 @@ mod tests {
     }
 
     #[test]
-    fn a_read_waits_for_the_redraw_and_stops_if_the_box_changes() {
+    fn a_read_waits_for_the_redraw_until_its_tries_run_out() {
         let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
         let (g, c) = claude_window(&text, 20, 10, 9);
         let (mut job, ups) = ReadJob::start(&g, c, true).unwrap();
         assert_eq!(ups, 9);
-        assert_eq!(job.step(&g, c), Read::Wait, "the screen hasn't moved yet");
-        let (shorter, c) = claude_window(&text, 20, 9, 4);
-        assert_eq!(job.step(&shorter, c), Read::Failed, "another height");
-        let (g, c) = claude_window(&text, 20, 10, 9);
-        let (mut job, _) = ReadJob::start(&g, c, true).unwrap();
         for _ in 0..ReadJob::TRIES - 1 {
-            assert_eq!(job.step(&g, c), Read::Wait);
+            assert_eq!(job.step(&g, Some(c)), Read::Wait, "the screen hasn't moved yet");
         }
-        assert_eq!(job.step(&g, c), Read::Failed, "it never moved");
+        assert_eq!(job.step(&g, Some(c)), Read::Failed, "it never moved");
+    }
+
+    #[test]
+    fn a_read_rides_out_a_redraw_caught_halfway() {
+        let text: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let (g, c) = claude_window(&text, 20, 10, 9);
+        let (mut job, _) = ReadJob::start(&g, c, false).unwrap();
+        assert_eq!(job.step(&g, None), Read::Wait, "no cursor");
+        assert_eq!(job.step(&g, Some((0, 0))), Read::Wait, "the cursor parked off the box");
+        let (shorter, at) = claude_window(&text, 20, 9, 4);
+        assert_eq!(job.step(&shorter, Some(at)), Read::Wait, "the box half drawn");
+        let (moved, at) = claude_window(&text, 15, 10, 5);
+        assert_eq!(job.step(&moved, Some(at)), Read::Up(5), "the redraw landed");
     }
 
     #[test]
