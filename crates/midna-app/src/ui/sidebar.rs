@@ -1443,11 +1443,11 @@ fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Opt
                         .when(!keys.is_empty(), |d| d.child(super::header::key_chip(t, keys.into()))),
                     )
                     .when(any, |d| {
-                        d.child(menu_item(t, "summary-clear", "Erase Summary history", "", cx.listener(move |m, _, _, cx| {
+                        // Takes the Summary out of the sidebar, as its ✕ does; the records stay.
+                        d.child(menu_item(t, "summary-clear", "Clear Summary", "", cx.listener(move |m, _, w, cx| {
                             m.menu = Menu::None;
                             if let Some(p) = p5.clone() {
-                                m.summary.closed.retain(|c| c.project_id != p);
-                                m.rpc("summary.remove", serde_json::json!({ "project_id": p }), cx, |_, _, _, _| {});
+                                crate::ui::summary::close_row(m, &p, w, cx);
                             }
                             cx.notify();
                         })))
