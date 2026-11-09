@@ -249,6 +249,26 @@ fn local_tm(secs: i64) -> libc::tm {
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/// "Saturday 7 Nov" (local).
+pub fn weekday_date(secs: i64) -> String {
+    let tm = local_tm(secs);
+    format!("{} {} {}", WEEKDAYS[tm.tm_wday.clamp(0, 6) as usize], tm.tm_mday, MONTHS[tm.tm_mon.clamp(0, 11) as usize])
+}
+
+/// "14:17" (local).
+pub fn hm(secs: i64) -> String {
+    let tm = local_tm(secs);
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
+/// Whether two times fall on the same local day.
+pub fn same_day(a: i64, b: i64) -> bool {
+    let (a, b) = (local_tm(a), local_tm(b));
+    a.tm_year == b.tm_year && a.tm_yday == b.tm_yday
+}
+
 /// "14:17:02" (local).
 pub fn clock(ts: &str) -> String {
     let Some(s) = parse_rfc3339(ts) else {

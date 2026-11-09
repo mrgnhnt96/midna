@@ -6,7 +6,7 @@
 //! The project's … menu opens it (`keys.project_summary`). A project whose terminals have all
 //! closed keeps its heading with a Summary row instead of leaving the sidebar; closing that row
 //! (its ✕, or ⌘W on the Summary) lets the project go until another terminal closes in it.
-use super::screen_kit::{clock, day_label};
+use super::screen_kit::{clock, day_label, hm, now_unix, same_day, weekday_date};
 use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
@@ -17,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::{ActorKind, AgentKind, ClosedTerminal, LinkKind, SessionKind, StatusState, SummaryListResult, SummaryPanel};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// A project whose Summary was on screen this recently gets no Summary row when its last
@@ -44,6 +44,12 @@ pub struct SummaryPage {
     /// record on its way is dismissed as it arrives (`apply`), and until then they keep no row.
     /// With when, and the newest record then.
     skip: HashMap<String, (Instant, Option<String>)>,
+    /// Sections the user folded, and sections older than a day the user opened (those start
+    /// folded). By `Section::key`.
+    folded: HashSet<String>,
+    opened: HashSet<String>,
+    /// The list, for the heading that sticks to its top.
+    scroll: ScrollHandle,
 }
 
 impl SummaryPage {
@@ -225,6 +231,82 @@ pub fn close_row(m: &mut MainWindow, pid: &str, window: &mut Window, cx: &mut Co
     cx.notify();
 }
 
+/// A time section of the list (design C on the Summary time dividers canvas,
+/// https://claude.ai/artifact/3ZwxbveCg9DZgQdDZQJWCG): the last hour, 1–3, 3–6 and 6–24 hours
+/// ago, then one per local day. Each takes only what the one before it left, so the labels name
+/// ranges.
+#[derive(Clone, Debug, PartialEq)]
+struct Section {
+    key: String,
+    label: String,
+    /// Older than a day: starts folded.
+    old: bool,
+}
+
+fn section(closed: i64, now: i64) -> Section {
+    let ago = (now - closed).max(0);
+    let label = match ago {
+        _ if ago < 3600 => "Last hour",
+        _ if ago < 3 * 3600 => "1–3 hours ago",
+        _ if ago < 6 * 3600 => "3–6 hours ago",
+        _ if ago < 24 * 3600 => "6–24 hours ago",
+        _ => {
+            let day = weekday_date(closed);
+            return Section { key: day.clone(), label: day, old: true };
+        }
+    };
+    Section { key: label.into(), label: label.into(), old: false }
+}
+
+fn closed_secs(c: &ClosedTerminal) -> i64 {
+    midna_proto::time::parse_rfc3339(&c.closed_at).unwrap_or(0)
+}
+
+/// The records (newest first) in their sections, in order; empty sections don't appear.
+fn sections<'a>(records: &[&'a ClosedTerminal], now: i64) -> Vec<(Section, Vec<&'a ClosedTerminal>)> {
+    let mut out: Vec<(Section, Vec<&ClosedTerminal>)> = vec![];
+    for c in records {
+        let s = section(closed_secs(c), now);
+        match out.last_mut() {
+            Some((last, rows)) if last.key == s.key => rows.push(c),
+            _ => out.push((s, vec![c])),
+        }
+    }
+    out
+}
+
+/// A row's time: the section already says the day, so only the clock, plus "Yesterday" when
+/// 6–24 hours ago crosses midnight.
+fn row_time(closed: i64, now: i64) -> String {
+    if now - closed < 24 * 3600 && !same_day(closed, now) { format!("Yesterday {}", hm(closed)) } else { hm(closed) }
+}
+
+impl SummaryPage {
+    fn is_folded(&self, s: &Section) -> bool {
+        self.folded.contains(&s.key) || (s.old && !self.opened.contains(&s.key))
+    }
+
+    fn set_folded(&mut self, s: &Section, fold: bool) {
+        if fold {
+            self.folded.insert(s.key.clone());
+            self.opened.remove(&s.key);
+        } else {
+            self.folded.remove(&s.key);
+            self.opened.insert(s.key.clone());
+        }
+    }
+}
+
+/// ← folds the open record's section, → unfolds it. The record stays in view either way.
+fn fold_current(m: &mut MainWindow, fold: bool, cx: &mut Context<MainWindow>) {
+    let Some(c) = current(m) else { return };
+    let s = section(closed_secs(&c), now_unix());
+    if m.summary.is_folded(&s) != fold {
+        m.summary.set_folded(&s, fold);
+        cx.notify();
+    }
+}
+
 fn list(m: &MainWindow) -> Vec<&ClosedTerminal> {
     m.summary.project.as_deref().map(|p| m.summary.records(p).collect()).unwrap_or_default()
 }
@@ -269,6 +351,8 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, _window: &mut Window, cx: &mut 
     match ev.keystroke.key.as_str() {
         "down" | "j" => step(m, 1, cx),
         "up" | "k" => step(m, -1, cx),
+        "left" | "h" => fold_current(m, true, cx),
+        "right" | "l" => fold_current(m, false, cx),
         _ => return,
     }
     cx.stop_propagation();
@@ -325,8 +409,8 @@ fn ran(c: &ClosedTerminal) -> String {
 }
 
 /// The list row's second line: the first app's `line` in its color, else how it ended.
-fn line(m: &MainWindow, t: &Theme, c: &ClosedTerminal) -> (String, Hsla) {
-    let at = when(&c.closed_at);
+fn line(m: &MainWindow, t: &Theme, c: &ClosedTerminal, now: i64) -> (String, Hsla) {
+    let at = row_time(closed_secs(c), now);
     if let Some(p) = c.line() {
         let color = p.color.as_deref().map_or(t.dim, |x| t.status_color(x));
         return (format!("{} · {at}", p.line.clone().unwrap_or_default()), color);
@@ -356,6 +440,66 @@ fn card(t: &Theme) -> Div {
     div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).overflow_hidden()
 }
 
+/// A section's heading: a small uppercase label at the rows' leading edge (never a row title's
+/// look, design lesson L1), the count with failures in words, and the fold chevron last.
+fn section_head(t: &Theme, sec: &Section, recs: &[&ClosedTerminal], folded: bool, rule: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let failed = recs.iter().filter(|c| c.state == StatusState::Failed).count();
+    let s = sec.clone();
+    div()
+        .id(SharedString::from(format!("sum-sec-{}", sec.key)))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .min_h(px(30.))
+        .px(px(14.))
+        .py(px(4.))
+        .bg(t.bg)
+        .when(rule, |d| d.border_t_1().border_color(t.line))
+        .cursor_pointer()
+        .hover(|d| d.bg(t.raised.opacity(0.4)))
+        .on_click(cx.listener(move |m, _, _, cx| {
+            let fold = !m.summary.is_folded(&s);
+            m.summary.set_folded(&s, fold);
+            cx.notify();
+        }))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(t.dim).child(sec.label.to_uppercase()))
+        .child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(recs.len().to_string()))
+        .when(failed > 0, |d| d.child(div().flex_none().text_size(px(12.)).text_color(t.err).child(format!("· {failed} failed"))))
+        .child(Icon::Chevron.el(12., t.dim).when(folded, |s| s.with_transformation(Transformation::rotate(radians(-std::f32::consts::FRAC_PI_2)))))
+}
+
+fn row(m: &MainWindow, t: &Theme, c: &ClosedTerminal, on: bool, now: i64, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let (text, color) = line(m, t, c, now);
+    let id = c.id.clone();
+    div()
+        .id(SharedString::from(format!("sum-row-{}", c.id)))
+        .relative()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .px(px(14.))
+        .py(px(8.))
+        .cursor_pointer()
+        .when(on, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
+        .when(!on, |d| d.hover(|s| s.bg(t.raised.opacity(0.5))))
+        .on_click(cx.listener(move |m, _, _, cx| {
+            m.summary.sel = Some(id.clone());
+            m.menu = Menu::None;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(9.))
+                .child(div().w(px(12.)).flex_none().flex().items_center().child(ring(state_color(t, c), 10.)))
+                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child(c.name.clone()))
+                .child(Icon::from_glyph(glyph(c)).el(14., t.dim)),
+        )
+        .child(div().pl(px(21.)).text_size(px(12.)).text_color(color).truncate().child(text))
+}
+
 pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let m = &*m;
     let pid = m.summary.project.clone().unwrap_or_default();
@@ -382,42 +526,35 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
         .child(div().flex_1())
         .child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(days.clone()));
 
-    let mut rows = div().id("sum-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll().py(px(6.));
-    for c in &records {
-        let on = cur.as_ref().is_some_and(|x| x.id == c.id);
-        let (text, color) = line(m, t, c);
-        let id = c.id.clone();
-        rows = rows.child(
-            div()
-                .id(SharedString::from(format!("sum-row-{}", c.id)))
-                .relative()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .px(px(14.))
-                .py(px(8.))
-                .cursor_pointer()
-                .when(on, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
-                .when(!on, |d| d.hover(|s| s.bg(t.raised.opacity(0.5))))
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    m.summary.sel = Some(id.clone());
-                    m.menu = Menu::None;
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .child(div().w(px(12.)).flex_none().flex().items_center().child(ring(state_color(t, c), 10.)))
-                        .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child(c.name.clone()))
-                        .child(Icon::from_glyph(glyph(c)).el(14., t.dim)),
-                )
-                .child(div().pl(px(21.)).text_size(px(12.)).text_color(color).truncate().child(text)),
-        );
+    let now = now_unix();
+    let groups = sections(&records, now);
+    let mut rows = div().id("sum-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll().track_scroll(&m.summary.scroll).pb(px(6.));
+    for (ix, (sec, recs)) in groups.iter().enumerate() {
+        let folded = m.summary.is_folded(sec);
+        let mut group = div().flex().flex_col().child(section_head(t, sec, recs, folded, ix > 0, cx));
+        for c in recs {
+            let on = cur.as_ref().is_some_and(|x| x.id == c.id);
+            // A folded section still shows the open record, so the selection never disappears.
+            if !folded || on {
+                group = group.child(row(m, t, c, on, now, cx));
+            }
+        }
+        rows = rows.child(group);
     }
+    // The heading of the section scrolled under the list's top edge sticks there.
+    let scroll = &m.summary.scroll;
+    let top = scroll.top_item();
+    let stuck = scroll.bounds_for_item(top).filter(|b| b.top() < scroll.bounds().top() - px(1.)).and_then(|_| groups.get(top));
+    let pane = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .child(rows)
+        .children(stuck.map(|(sec, recs)| div().absolute().top_0().left_0().right_0().border_b_1().border_color(t.line).child(section_head(t, sec, recs, m.summary.is_folded(sec), false, cx))));
 
-    let left = div().flex().flex_col().flex_none().w(px(330.)).h_full().border_r_1().border_color(t.line).child(header).child(rows);
+    let left = div().flex().flex_col().flex_none().w(px(330.)).h_full().border_r_1().border_color(t.line).child(header).child(pane);
 
     let right: AnyElement = match cur {
         Some(c) => detail(m, t, &c, cx).into_any_element(),
@@ -820,7 +957,8 @@ pub fn sidebar_row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut
 
 #[cfg(test)]
 mod tests {
-    use super::SummaryPage;
+    use super::{SummaryPage, row_time, section, sections};
+    use crate::ui::screen_kit::{hm, weekday_date};
     use midna_proto::{Actor, ClosedTerminal, SessionKind, StatusState};
 
     fn rec(project: &str, closed_at: &str) -> ClosedTerminal {
@@ -886,5 +1024,43 @@ mod tests {
         page.closed.push(rec("p1", "2026-10-27T12:00:00Z"));
         assert!(page.dismiss_skipped());
         assert!(!page.keeps("p1"));
+    }
+
+    #[test]
+    fn sections_name_ranges_that_do_not_overlap() {
+        let now = 1_800_000_000;
+        let label = |ago: i64| section(now - ago, now).label;
+        assert_eq!(label(0), "Last hour");
+        assert_eq!(label(3599), "Last hour");
+        assert_eq!(label(3600), "1–3 hours ago");
+        assert_eq!(label(3 * 3600), "3–6 hours ago");
+        assert_eq!(label(6 * 3600), "6–24 hours ago");
+        assert_eq!(label(24 * 3600 - 1), "6–24 hours ago");
+        let day = section(now - 30 * 3600, now);
+        assert_eq!(day.label, weekday_date(now - 30 * 3600));
+        assert!(day.old && !section(now - 3600, now).old);
+    }
+
+    #[test]
+    fn records_group_in_order_and_empty_sections_are_skipped() {
+        let now = 1_800_000_000;
+        let at = |ago: i64| midna_proto::time::format_unix(now - ago);
+        let recs = [rec("p", &at(60)), rec("p", &at(120)), rec("p", &at(7 * 3600)), rec("p", &at(50 * 3600))];
+        let refs: Vec<&_> = recs.iter().collect();
+        let groups = sections(&refs, now);
+        let got: Vec<(&str, usize)> = groups.iter().map(|(s, r)| (s.label.as_str(), r.len())).collect();
+        assert_eq!(got[..2], [("Last hour", 2), ("6–24 hours ago", 1)]);
+        assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn a_row_says_yesterday_only_when_its_range_crosses_midnight() {
+        let now = 1_800_000_000;
+        assert_eq!(row_time(now - 600, now), hm(now - 600));
+        // 30 hours back is always another day, but its section already names the day.
+        assert_eq!(row_time(now - 30 * 3600, now), hm(now - 30 * 3600));
+        let late = now - 20 * 3600;
+        let want = if crate::ui::screen_kit::same_day(late, now) { hm(late) } else { format!("Yesterday {}", hm(late)) };
+        assert_eq!(row_time(late, now), want);
     }
 }
