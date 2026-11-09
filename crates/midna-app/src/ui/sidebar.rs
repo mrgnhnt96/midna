@@ -505,6 +505,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             _ => group,
         });
     }
+    // Projects with no terminals that keep their Summary: one section at the end (`ui::shelf`).
+    if let Some(shelf) = crate::ui::shelf::section(m, t, compact, window, cx) {
+        list = list.child(wipe(line, 0., shelf));
+    }
     if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
         list = list
             .child(div().px(px(10.)).pt(px(8.)).child(open_project_button(m, t, "sidebar-open-project", cx)))
@@ -527,7 +531,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .children(crate::ui::fold_peek::card(m, t, window, cx))
         .child(top)
         .when(btn_look.shown, |d| d.child(need_btn))
-        .child(list)
+        .child(div().relative().flex().flex_col().flex_1().min_h_0().child(list).children(crate::ui::shelf::stuck(m, t, cx)))
         .children(background.map(|b| wipe(line, 0., b.into_any_element())))
         .child(wipe(line, 0., footer.into_any_element()))
         .into_any_element()
@@ -878,7 +882,7 @@ fn click_marks(m: &mut MainWindow, id: &str, ev: &ClickEvent, w: &mut Window, cx
 
 /// A run of rows under a group heading, clipped to `1 - fold` of its natural height (measured
 /// every prepaint, so a fold starts from the real height). Gone once fully folded.
-fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Option<Div> {
+pub(crate) fn fold_run(rows: Vec<AnyElement>, key: String, fold: f32, m: &MainWindow) -> Option<Div> {
     if rows.is_empty() || fold >= 1. {
         return None;
     }
@@ -1146,7 +1150,7 @@ fn ghost(m: &MainWindow, g: &crate::ui::close_anim::Ghost, t: &Theme, compact: b
 /// (`ui::close_anim::summary`): like a closed row's ghost, its content lifts and fades while
 /// its room closes. The highlight leaving the row for one further down is drawn here, so the
 /// rows below draw over it. It takes no clicks.
-fn fold_away(m: &MainWindow, l: &crate::ui::close_anim::SummaryLeave, t: &Theme, el: AnyElement) -> AnyElement {
+pub(crate) fn fold_away(m: &MainWindow, l: &crate::ui::close_anim::SummaryLeave, t: &Theme, el: AnyElement) -> AnyElement {
     let (fold, lift) = l.progress();
     let full = l.height();
     let measure = l.measure();
@@ -1174,7 +1178,7 @@ fn fold_away(m: &MainWindow, l: &crate::ui::close_anim::SummaryLeave, t: &Theme,
 
 /// `el`, a row, noting where it's laid out (`CloseAnim::rows`): ⌥⌘↑ / ⌥⌘↓ glide the highlight
 /// between rows from there.
-fn measured(m: &MainWindow, id: &str, el: AnyElement) -> AnyElement {
+pub(crate) fn measured(m: &MainWindow, id: &str, el: AnyElement) -> AnyElement {
     let (rows, id) = (m.close_anim.rows.clone(), id.to_string());
     div()
         .flex()
@@ -1214,7 +1218,7 @@ fn unfold(o: &crate::ui::close_anim::Opening, el: AnyElement, t: &Theme) -> AnyE
 
 /// A row or project group that turned up on its own (`ui::close_anim::arrive`): it unfolds
 /// like a row just opened, with no highlight (the selection stays where it was).
-fn arrive(a: &crate::ui::close_anim::Arrival, el: AnyElement) -> AnyElement {
+pub(crate) fn arrive(a: &crate::ui::close_anim::Arrival, el: AnyElement) -> AnyElement {
     grow_in(a.progress(), a.height(), a.measure(), el).into_any_element()
 }
 
@@ -1439,7 +1443,7 @@ fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Opt
                         .when(!keys.is_empty(), |d| d.child(super::header::key_chip(t, keys.into()))),
                     )
                     .when(any, |d| {
-                        d.child(menu_item(t, "summary-clear", "Clear summary", "", cx.listener(move |m, _, _, cx| {
+                        d.child(menu_item(t, "summary-clear", "Erase Summary history", "", cx.listener(move |m, _, _, cx| {
                             m.menu = Menu::None;
                             if let Some(p) = p5.clone() {
                                 m.summary.closed.retain(|c| c.project_id != p);

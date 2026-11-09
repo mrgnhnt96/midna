@@ -27,9 +27,13 @@
 //! row and the terminal's the same way. A Summary row that leaves the sidebar with it folds away
 //! like a closed row, and a project that goes with it folds away whole, heading and all.
 //!
-//! Closing a project's last terminal leaves its heading for a Summary row (`ui::summary`): the
-//! closed row folds away first, then the Summary row unfolds in its place. A project that keeps
-//! no row (its Summary was seen lately) folds away whole with its last row.
+//! Closing a project's last terminal: the project folds away whole with its last row, and its
+//! row in the Summaries section (`ui::shelf`) unfolds once that's done. A pinned project keeps
+//! its heading: the closed row folds away first, then its Summary row unfolds in its place.
+//!
+//! Moving between Summaries in the Summaries section, or between one and a terminal
+//! (`summary_slide`), slides the pane as ⌥⌘↑ / ⌥⌘↓ do: the section sits below every terminal.
+//! Clearing all of them (`shelf_leave`) folds the whole section away.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::terminal::TerminalView;
@@ -142,6 +146,29 @@ pub struct SummaryLeave {
     height: Rc<Cell<f32>>,
 }
 
+/// The Summaries section folding away whole, its rows (project ids) as they were.
+pub struct ShelfLeave {
+    pub pids: Vec<String>,
+    at: Instant,
+    height: Rc<Cell<f32>>,
+}
+
+impl ShelfLeave {
+    /// How far it has folded and its content lifted, 0..1 each.
+    pub fn progress(&self) -> (f32, f32) {
+        let t = ms(self.at);
+        (ease_out(t / SLIDE_MS), (t / LIFT_MS).clamp(0., 1.).powi(2))
+    }
+
+    pub fn height(&self) -> Option<f32> {
+        Some(self.height.get()).filter(|h| *h > 0.)
+    }
+
+    pub fn measure(&self) -> Rc<Cell<f32>> {
+        self.height.clone()
+    }
+}
+
 /// The key of `pid`'s Summary row in `CloseAnim::rows` and the highlight's moves.
 pub fn summary_key(pid: &str) -> String {
     format!("summary:{pid}")
@@ -164,6 +191,10 @@ pub struct CloseAnim {
     arrivals: Vec<Arrival>,
     step: Option<Step>,
     summary: Option<SummaryLeave>,
+    /// The pane sliding from a Summary (its project) or the terminal (`None`), and which way.
+    summary_pane: Option<(Option<String>, Dir, Instant)>,
+    /// The Summaries section folding away after Clear all.
+    shelf: Option<ShelfLeave>,
     /// Each sidebar row's top and height in the window, as last laid out (`sidebar::measured`).
     pub rows: Rc<std::cell::RefCell<std::collections::HashMap<String, (f32, f32)>>>,
 }
@@ -296,13 +327,17 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
     // The Summary row (and a pinned project's ghost row) waits for the closed row to fold, then
     // unfolds (its record turns up meanwhile); a project keeping neither folds away whole, its
     // last row folding inside.
+    // An unpinned one folds away whole either way; keeping its Summary, its row in the
+    // Summaries section unfolds after.
     let after = now + Duration::from_secs_f32(SLIDE_MS / 1000.);
     for (pid, keeps) in emptied {
-        if keeps || m.projects.iter().any(|p| p.id == pid && p.pinned) {
+        let pinned = m.projects.iter().any(|p| p.id == pid && p.pinned);
+        if keeps || pinned {
             let key = summary_key(&pid);
             a.arrivals.retain(|x| x.key != key);
             a.arrivals.push(Arrival { key, at: after, height: Rc::new(Cell::new(0.)) });
-        } else {
+        }
+        if !pinned {
             a.summary = Some(SummaryLeave { pid, whole: true, row: false, offset: 0., at: now, height: Rc::new(Cell::new(0.)) });
         }
     }
@@ -429,6 +464,53 @@ pub fn summary(m: &mut MainWindow, from: Option<String>, to: Option<String>, gon
     cx.notify();
 }
 
+/// The pane is moving from `old`'s Summary (or the terminal, `None`) to another Summary or the
+/// terminal, which sits `dir` from it.
+pub fn summary_slide(m: &mut MainWindow, old: Option<String>, dir: Dir, cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() || (old.is_none() && m.terminal.is_none()) {
+        return;
+    }
+    m.close_anim.summary_pane = Some((old, dir, Instant::now()));
+    m.close_anim.pane_due = None;
+    cx.notify();
+}
+
+/// The pane sliding from a Summary or the terminal (`summary_slide`): what slides out, which
+/// way, and how far along, 0..1.
+pub fn summary_sliding(m: &MainWindow, window: &mut Window) -> Option<(Option<String>, Dir, f32)> {
+    let (old, dir, at) = m.close_anim.summary_pane.as_ref().filter(|(_, _, at)| ms(*at) < SLIDE_MS)?;
+    window.request_animation_frame();
+    Some((old.clone(), *dir, ease_out(ms(*at) / SLIDE_MS)))
+}
+
+/// Clear all: the Summaries section, with `pids` its rows, folds away.
+pub fn shelf_leave(m: &mut MainWindow, pids: Vec<String>, cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        return;
+    }
+    m.close_anim.shelf = Some(ShelfLeave { pids, at: Instant::now(), height: Rc::new(Cell::new(0.)) });
+    cx.notify();
+}
+
+/// Rows in the Summaries section that came back (Undo): they unfold where they land.
+pub fn shelf_back(m: &mut MainWindow, pids: &[String], cx: &mut Context<MainWindow>) {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    if cx.reduce_motion() {
+        return;
+    }
+    let now = Instant::now();
+    let a = &mut m.close_anim;
+    a.shelf = None;
+    for p in pids {
+        let key = summary_key(p);
+        a.arrivals.retain(|x| x.key != key);
+        a.arrivals.push(Arrival { key, at: now, height: Rc::new(Cell::new(0.)) });
+    }
+    cx.notify();
+}
+
 /// The pane is about to show `next` in place of `old`: slide them if `old` was just closed.
 pub fn on_show(m: &mut MainWindow, old: &Entity<TerminalView>, next: &Entity<TerminalView>, cx: &App) {
     let Some((ids, dir, at)) = m.close_anim.pane_due.take() else { return };
@@ -458,17 +540,27 @@ impl CloseAnim {
         if self.summary.as_ref().is_some_and(|s| ms(s.at) >= SLIDE_MS) {
             self.summary = None;
         }
+        if self.summary_pane.as_ref().is_some_and(|(_, _, at)| ms(*at) >= SLIDE_MS) {
+            self.summary_pane = None;
+        }
+        if self.shelf.as_ref().is_some_and(|s| ms(s.at) >= SLIDE_MS) {
+            self.shelf = None;
+        }
+    }
+
+    /// The Summaries section folding away after Clear all.
+    pub fn shelf_leaving(&self) -> Option<&ShelfLeave> {
+        self.shelf.as_ref().filter(|s| ms(s.at) < SLIDE_MS)
+    }
+
+    /// The Summary row `pid` folding away from the Summaries section (not its whole project).
+    pub fn shelf_row_leaving(&self, pid: &str) -> Option<&SummaryLeave> {
+        self.summary_leaving(pid).filter(|l| !l.whole && l.row)
     }
 
     /// `pid`'s Summary row (or its whole group), when it's folding away.
     pub fn summary_leaving(&self, pid: &str) -> Option<&SummaryLeave> {
         self.summary.as_ref().filter(|s| s.pid == pid && ms(s.at) < SLIDE_MS)
-    }
-
-    /// `pid`'s Summary row is waiting for its project's last closed row to fold, or unfolding:
-    /// the project keeps its heading meanwhile, record or not.
-    pub fn summary_arriving(&self, pid: &str) -> bool {
-        self.arrival(&summary_key(pid)).is_some()
     }
 
     /// The sidebar is moving (it asks for the next frame).
@@ -479,6 +571,7 @@ impl CloseAnim {
             || self.step.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
             || self.arrivals.iter().any(|a| ms(a.at) < SLIDE_MS)
             || self.summary.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
+            || self.shelf.as_ref().is_some_and(|s| ms(s.at) < SLIDE_MS)
     }
 
     /// The row or group `key`, when it's unfolding after turning up on its own.
@@ -656,8 +749,12 @@ impl Opening {
 pub fn pane(m: &MainWindow, el: AnyElement, window: &mut Window) -> AnyElement {
     let Some((old, dir, at)) = m.close_anim.pane.as_ref().filter(|(_, _, at)| ms(*at) < SLIDE_MS) else { return el };
     window.request_animation_frame();
-    let e = ease_out(ms(*at) / SLIDE_MS);
-    // Next below: everything moves up. Next above: down.
+    slide(el, old.clone().into_any_element(), *dir, ease_out(ms(*at) / SLIDE_MS))
+}
+
+/// `el` coming in as `old` goes out, `e` (0..1) of the way: next below, everything moves up;
+/// next above, down.
+pub fn slide(el: AnyElement, old: AnyElement, dir: Dir, e: f32) -> AnyElement {
     let (old_top, new_top) = match dir {
         Dir::Below => (-e, 1. - e),
         Dir::Above => (e, e - 1.),
@@ -668,9 +765,10 @@ pub fn pane(m: &MainWindow, el: AnyElement, window: &mut Window) -> AnyElement {
         .flex_col()
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .overflow_hidden()
         .child(div().flex().flex_col().flex_1().min_h_0().relative().top(relative(new_top)).child(el))
-        .child(div().absolute().left_0().size_full().top(relative(old_top)).flex().flex_col().occlude().child(old.clone()))
+        .child(div().absolute().left_0().size_full().top(relative(old_top)).flex().flex_col().occlude().child(old))
         .into_any_element()
 }
 
