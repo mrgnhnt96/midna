@@ -261,6 +261,10 @@ pub struct MainWindow {
     pub dropped_at: Option<Instant>,
     pub restart_expected: bool,
     pending_refresh: u32,
+    /// Terminals whose row script runs in the next refresh, for events about them alone.
+    /// `refresh::ROWS` runs every terminal's. Each run reads git, so one per terminal on every
+    /// session event kept the sidebar's new status waiting most of a second.
+    pending_rows: std::collections::HashSet<String>,
     refresh_scheduled: bool,
     /// Refreshes started so far. Each one's `session.list` is only taken if it started at or
     /// after `sessions_floor`: refreshes overlap (header and row scripts can take a second),
@@ -472,6 +476,7 @@ impl MainWindow {
             ide: crate::ide::IdePanel::new(cx),
             restart_expected: false,
             pending_refresh: 0,
+            pending_rows: Default::default(),
             refresh_scheduled: false,
             refresh_seq: 0,
             sessions_floor: 0,
@@ -631,7 +636,11 @@ impl MainWindow {
                     sess.custom_status = e.data.get("custom_status").cloned().and_then(|v| serde_json::from_value(v).ok());
                 }
                 if k.starts_with("session.") {
-                    what |= refresh::SESSIONS | refresh::ROWS;
+                    what |= refresh::SESSIONS;
+                    match &e.session_id {
+                        Some(id) => _ = self.pending_rows.insert(id.clone()),
+                        None => what |= refresh::ROWS,
+                    }
                     if e.session_id.is_some() && e.session_id == self.selected {
                         what |= refresh::HEADER;
                     }
@@ -946,13 +955,14 @@ impl MainWindow {
             let _ = this.update(cx, |m, cx| {
                 m.refresh_scheduled = false;
                 let what = std::mem::take(&mut m.pending_refresh);
-                m.run_refresh(what, cx);
+                let rows = std::mem::take(&mut m.pending_rows);
+                m.run_refresh(what, rows, cx);
             });
         })
         .detach();
     }
 
-    fn run_refresh(&mut self, what: u32, cx: &mut Context<Self>) {
+    fn run_refresh(&mut self, what: u32, some_rows: std::collections::HashSet<String>, cx: &mut Context<Self>) {
         if self.conn != ConnState::Connected {
             return;
         }
@@ -1044,8 +1054,10 @@ impl MainWindow {
                         }
                         r.buttons = Some((sid.clone(), looks));
                     }
-                    if what & refresh::ROWS != 0 {
-                        let ids = r.sessions.as_ref().map(|s| s.iter().map(|s| s.id.clone()).collect()).unwrap_or(row_ids);
+                    r.rows_all = what & refresh::ROWS != 0;
+                    if r.rows_all || !some_rows.is_empty() {
+                        let live: Vec<String> = r.sessions.as_ref().map(|s| s.iter().map(|s| s.id.clone()).collect()).unwrap_or(row_ids);
+                        let ids = rows_to_run(live, r.rows_all, &some_rows);
                         let on = r
                             .settings
                             .as_ref()
@@ -1190,7 +1202,7 @@ impl MainWindow {
             self.header_buttons.insert(sid, looks);
         }
         if let Some(rows) = r.rows {
-            self.row_segments = rows;
+            merge_rows(&mut self.row_segments, rows, r.rows_all, &self.sessions);
         }
         if let Some(id) = fronted {
             self.front_terminal(id, window, cx);
@@ -2450,6 +2462,8 @@ struct RefreshResult {
     status: Option<(String, HashMap<String, Vec<Segment>>)>,
     buttons: Option<(String, HashMap<String, Vec<Segment>>)>,
     rows: Option<HashMap<String, Vec<Segment>>>,
+    /// `rows` holds every terminal's, not just those `pending_rows` named.
+    rows_all: bool,
 }
 
 pub struct Group<'a> {
@@ -2555,9 +2569,27 @@ fn listed(id: Option<String>, sessions: &[Session]) -> Option<String> {
     id.filter(|id| sessions.iter().any(|s| &s.id == id))
 }
 
+/// The terminals a refresh runs the row script for: every live one, or only the live ones
+/// an event named.
+fn rows_to_run(live: Vec<String>, all: bool, named: &std::collections::HashSet<String>) -> Vec<String> {
+    live.into_iter().filter(|id| all || named.contains(id)).collect()
+}
+
+/// A full run replaces every row's segments; a run for some terminals replaces only theirs,
+/// and drops terminals that are gone.
+fn merge_rows(rows: &mut HashMap<String, Vec<Segment>>, new: HashMap<String, Vec<Segment>>, all: bool, sessions: &[Session]) {
+    if all {
+        *rows = new;
+        return;
+    }
+    rows.extend(new);
+    rows.retain(|id, _| sessions.iter().any(|s| &s.id == id));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{background_note, busy_count_phrase, busy_phrase, listed, neighbour, RowGroup};
+    use super::{background_note, busy_count_phrase, busy_phrase, listed, merge_rows, neighbour, rows_to_run, RowGroup};
+    use crate::model::Segment;
     use crate::model::{Session, StatusState};
     use midna_proto::{AgentInfo, BackgroundTask};
 
@@ -2567,6 +2599,28 @@ mod tests {
         assert_eq!(listed(Some("s1".into()), &sessions).as_deref(), Some("s1"));
         assert_eq!(listed(Some("closed".into()), &sessions), None);
         assert_eq!(listed(None, &sessions), None);
+    }
+
+    #[test]
+    fn an_event_runs_only_its_terminals_row_script() {
+        let live = || vec!["s1".to_string(), "s2".into(), "s3".into()];
+        let named: std::collections::HashSet<String> = ["s2".to_string(), "closed".into()].into();
+        assert_eq!(rows_to_run(live(), false, &named), ["s2"], "only live terminals an event named");
+        assert_eq!(rows_to_run(live(), true, &named), ["s1", "s2", "s3"]);
+        assert!(rows_to_run(live(), false, &Default::default()).is_empty());
+    }
+
+    #[test]
+    fn rows_from_some_terminals_keep_the_others() {
+        let seg = |t: &str| vec![Segment { text: t.into(), ..Default::default() }];
+        let sessions: Vec<Session> = ["s1", "s2"].iter().map(|id| Session { id: (*id).into(), ..Default::default() }).collect();
+        let old = || -> std::collections::HashMap<String, Vec<Segment>> { [("s1".to_string(), seg("a")), ("s2".into(), seg("b")), ("gone".into(), seg("c"))].into() };
+        let mut rows = old();
+        merge_rows(&mut rows, [("s2".to_string(), seg("b2"))].into(), false, &sessions);
+        assert_eq!(rows, [("s1".to_string(), seg("a")), ("s2".into(), seg("b2"))].into(), "s1 kept, s2 replaced, a closed terminal dropped");
+        let mut rows = old();
+        merge_rows(&mut rows, [("s2".to_string(), seg("b2"))].into(), true, &sessions);
+        assert_eq!(rows, [("s2".to_string(), seg("b2"))].into(), "a full run replaces them all");
     }
 
     #[test]
