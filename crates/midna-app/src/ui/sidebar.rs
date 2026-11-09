@@ -934,6 +934,20 @@ fn drag_over(m: &mut MainWindow, dragged: &str, target: &str, y: Pixels, bounds:
 /// Each terminal row's hover group: its ✕ shows while the pointer is on the row.
 const ROW_GROUP: &str = "sidebar-row";
 
+/// A needs-you or failed row's second line. The terminal's status reason only says why it
+/// needs you when that status is what the row shows: an item raised on a busy terminal (the
+/// memory alert on the terminal using the most) leaves it Working with a hook's reason
+/// ("prompt", "tool Bash"), so the item's title goes there instead.
+fn attention_text(status: &Status, state: StatusState, need_title: Option<&str>) -> String {
+    status
+        .reason
+        .clone()
+        .filter(|r| !r.is_empty() && status.state == state)
+        .or_else(|| need_title.map(str::to_string).filter(|_| state == StatusState::NeedsYou))
+        .or_else(|| status.exit_code.map(|c| format!("exit {c}")))
+        .unwrap_or_else(|| if status.state == StatusState::Failed { "failed".into() } else { "needs you".into() })
+}
+
 fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let selected = m.selected.as_deref() == Some(&s.id);
     // Part of a multi-selection but not the terminal on screen.
@@ -957,14 +971,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let custom_icon = custom.as_ref().and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);
     let line2 = custom_line.or_else(|| (!compact && attention).then(|| {
         let need = m.need_for_session(&s.id);
-        let text = s
-            .status
-            .reason
-            .clone()
-            .filter(|r| !r.is_empty())
-            .or_else(|| need.map(|n| n.title.clone()).filter(|_| state == StatusState::NeedsYou))
-            .or_else(|| s.status.exit_code.map(|c| format!("exit {c}")))
-            .unwrap_or_else(|| if s.status.state == StatusState::Failed { "failed".into() } else { "needs you".into() });
+        let text = attention_text(&s.status, state, need.map(|n| n.title.as_str()));
         let since = need.filter(|_| state == StatusState::NeedsYou).map(|n| since_short(&n.created_at)).or_else(|| s.status.since.as_deref().map(since_short)).unwrap_or_default();
         let text = if since.is_empty() { text } else { format!("{text} · {since}") };
         (text, if state == StatusState::Failed { t.err } else { t.need })
@@ -1577,3 +1584,34 @@ pub fn menu_item(t: &Theme, id: &str, label: &str, hint: &str, on: impl Fn(&Clic
         .when(!hint.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child(hint.to_string())))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::attention_text;
+    use crate::model::{Status, StatusState};
+
+    fn status(state: StatusState, reason: &str) -> Status {
+        Status { state, reason: Some(reason.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn an_item_on_a_busy_terminal_shows_its_title_not_the_hook_reason() {
+        let title = "The Mac is short of memory (pressure warn)";
+        assert_eq!(attention_text(&status(StatusState::Working, "prompt"), StatusState::NeedsYou, Some(title)), title);
+        assert_eq!(attention_text(&status(StatusState::Working, "tool Bash"), StatusState::NeedsYou, Some(title)), title);
+    }
+
+    #[test]
+    fn a_terminal_that_needs_you_itself_keeps_its_reason() {
+        let s = status(StatusState::NeedsYou, "Bash: cargo test");
+        assert_eq!(attention_text(&s, StatusState::NeedsYou, Some("Claude needs your permission")), "Bash: cargo test");
+        assert_eq!(attention_text(&status(StatusState::Failed, "exited with code 1"), StatusState::Failed, None), "exited with code 1");
+    }
+
+    #[test]
+    fn falls_back_without_a_reason_or_title() {
+        assert_eq!(attention_text(&status(StatusState::Working, "prompt"), StatusState::NeedsYou, None), "needs you");
+        let failed = Status { state: StatusState::Failed, exit_code: Some(2), ..Default::default() };
+        assert_eq!(attention_text(&failed, StatusState::Failed, None), "exit 2");
+    }
+}
