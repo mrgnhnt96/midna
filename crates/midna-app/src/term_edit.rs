@@ -31,6 +31,7 @@
 //! - A ⇧ selection there runs past the window, so its ends can't be screen positions: the text
 //!   scrolls under them. A [`LongSel`] keeps the rows the window has shown and both ends as rows
 //!   of those. ⌘C and ⌘X copy from them, and ⌫ or typing erases the characters they count.
+//!   ⌘↑ and ⌘↓ there (⇧ too) go to the text's edge, not the window's, with an [`EdgeWalk`].
 //! - Codex's long input is a window too, but it keeps the cursor at the window's edge and
 //!   scrolls one row per ↑ or ↓, and on a recalled prompt ↑ or ↓ at the very start or end of
 //!   the text swap in another history entry. It does say what's hidden: `↑` ends the window's
@@ -243,7 +244,7 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
 
 /// How an agent wraps its input: at `cols - 4` in Claude Code and `cols - 3` in Codex. Codex also
 /// breaks after a `-` or `/` inside a word, dropping nothing there.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Wrap {
     width: usize,
     codex: bool,
@@ -755,7 +756,7 @@ impl MoveJob {
 }
 
 /// What a selection being erased is waiting on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
     Move(MoveJob),
     Erase(EraseJob),
@@ -773,6 +774,8 @@ pub enum Pending {
     Clear { rounds: u8 },
     /// Waiting for the screen to catch up with a [`LongSel`], `tries` checks left.
     Follow { tries: u8, then: WithSel },
+    /// ⌘↑ or ⌘↓ walking to the text's edge in Claude's long input.
+    ToEdge(EdgeWalk),
 }
 
 /// What to do with a [`LongSel`] once the screen has caught up with it.
@@ -950,7 +953,7 @@ impl ReadJob {
 ///
 /// Codex keeps the cursor at the window's edge and scrolls a row per ↑ or ↓, so ⇧↑ and ⇧↓ there
 /// go by [`LongSel::vertical`]: an arrow only onto a row known to be text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LongSel {
     /// The rows seen, in order, with the prompt glyph blanked: it's on whichever row is on top of
     /// the window.
@@ -1167,6 +1170,97 @@ impl LongSel {
             budget: counted + uncounted,
         };
         (job, self.text().chars().count() - counted)
+    }
+}
+
+/// ⌘↑ or ⌘↓ (with ⇧ or without) in Claude's long input: to the start or end of all its text,
+/// not just of the window. Each step presses as many arrows as there are rows on screen past the
+/// cursor, then waits for every one of them to show before the next, so none goes past a row
+/// on screen: ↑ past the text's first row recalls history, and ↓ past its last can replace a
+/// recalled prompt. The cursor rests on the window's edge only at the text's own edge, and
+/// there ctrl-a or ctrl-e takes it to the row's end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeWalk {
+    up: bool,
+    /// Lines the frames up, to tell when the arrows pressed have all shown.
+    track: LongSel,
+    /// The screen when the last arrows were pressed. One that hasn't changed since hasn't shown
+    /// them, even if a window of rows that repeat lines up as though it had.
+    from: Option<(Pos, Vec<String>)>,
+    edge_sent: bool,
+    tries: u8,
+    /// ⌘C, ⌘X or ⌫ on the selection, pressed while it was still walking.
+    pub then: Option<WithSel>,
+}
+
+/// What an [`EdgeWalk`] does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Walk {
+    Wait,
+    /// Press this arrow this many times.
+    Press(&'static str, u16),
+    /// ctrl-a or ctrl-e, on the text's first or last row.
+    Edge(&'static [u8]),
+    Done,
+    Failed,
+}
+
+impl EdgeWalk {
+    /// Checks of the screen to wait for a step to show: about five seconds.
+    const TRIES: u8 = 40;
+
+    /// From the cursor, in a box that may be a window on longer text (None in any other).
+    pub fn start(key: &str, grid: &[RowData], cursor: Pos) -> Option<EdgeWalk> {
+        let up = match key {
+            "up" => true,
+            "down" => false,
+            _ => return None,
+        };
+        Some(EdgeWalk { up, track: LongSel::start(grid, cursor)?, from: None, edge_sent: false, tries: Self::TRIES, then: None })
+    }
+
+    /// Up (true) or down.
+    pub fn up(&self) -> bool {
+        self.up
+    }
+
+    /// The next step for a frame. `settled`: any other arrows on their way (a ⇧ selection's,
+    /// pressed before the walk) have shown.
+    pub fn step(&mut self, grid: &[RowData], cursor: Option<Pos>, settled: bool) -> Walk {
+        let Some(c) = cursor else { return self.wait() };
+        self.track.see(grid, c);
+        let now = box_window(grid, c).map(|(_, rows)| (c, rows.iter().map(box_text).collect()));
+        let Some((top, bottom)) = claude_box(grid, c).filter(|_| settled && self.track.settled() && now.is_some()) else { return self.wait() };
+        if self.edge_sent {
+            return if self.at_edge(grid, c) { Walk::Done } else { self.wait() };
+        }
+        if self.from.is_some() && self.from == now {
+            return self.wait();
+        }
+        let (key, rows) = if self.up { ("up", c.1 - top) } else { ("down", bottom - c.1) };
+        self.tries = Self::TRIES;
+        if rows == 0 {
+            self.edge_sent = true;
+            return Walk::Edge(if self.up { b"\x01" } else { b"\x05" });
+        }
+        for _ in 0..rows {
+            self.track.pressed(key);
+        }
+        self.from = now;
+        Walk::Press(key, rows)
+    }
+
+    /// The cursor is where ctrl-a or ctrl-e takes it on the text's first or last row.
+    fn at_edge(&self, grid: &[RowData], c: Pos) -> bool {
+        if self.up {
+            return select_all(grid, c).is_some_and(|(start, _)| start == c);
+        }
+        rows_below(grid, c) == Some(0) && at_row_end(grid, c)
+    }
+
+    fn wait(&mut self) -> Walk {
+        self.tries = self.tries.saturating_sub(1);
+        if self.tries == 0 { Walk::Failed } else { Walk::Wait }
     }
 }
 
@@ -2316,5 +2410,110 @@ mod tests {
         let tall: Vec<RowData> = g.iter().cloned().chain((0..30).map(|_| row(""))).collect();
         assert!(LongSel::start(&tall, c).is_none());
         assert!(LongSel::start(&g, c).is_some());
+    }
+
+    /// Claude's window on `line` with the cursor at `col`, as a frame for a walk.
+    fn frame(text: &[String], line: usize, col: u16) -> (Vec<RowData>, Option<Pos>) {
+        let (g, c) = on_line(text, 10, line, col);
+        (g, Some(c))
+    }
+
+    /// Walk `key` from `line` the way Claude scrolls, with a frame once each batch has shown:
+    /// the batches pressed, and the line the walk finished on. Panics if an arrow goes past the
+    /// text's first or last row.
+    fn walk_from(text: &[String], line: usize, key: &str) -> (Vec<u16>, usize) {
+        let (g, c) = frame(text, line, 4);
+        let mut walk = EdgeWalk::start(key, &g, c.unwrap()).unwrap();
+        let (mut line, mut col, mut batches) = (line, 4, vec![]);
+        for _ in 0..100 {
+            let (g, c) = frame(text, line, col);
+            match walk.step(&g, c, true) {
+                Walk::Press(k, n) => {
+                    assert_eq!(k, key);
+                    line = if key == "up" { line.checked_sub(n as usize).expect("past the first row") } else { line + n as usize };
+                    assert!(line < text.len(), "past the last row");
+                    batches.push(n);
+                }
+                Walk::Edge(b) => col = if b == b"\x01" { 2 } else { 2 + text[line].len() as u16 },
+                Walk::Done => return (batches, line),
+                other => panic!("{other:?}"),
+            }
+        }
+        panic!("never got there");
+    }
+
+    #[test]
+    fn a_walk_up_reaches_the_texts_first_row() {
+        let (batches, line) = walk_from(&lines(40), 39, "up");
+        assert_eq!(line, 0);
+        assert_eq!(batches.iter().sum::<u16>(), 39);
+        assert!(batches.iter().all(|&n| n <= 9), "never more than the rows on screen: {batches:?}");
+    }
+
+    #[test]
+    fn a_walk_down_reaches_the_texts_last_row() {
+        let (batches, line) = walk_from(&lines(40), 3, "down");
+        assert_eq!(line, 39);
+        assert_eq!(batches.iter().sum::<u16>(), 36);
+    }
+
+    #[test]
+    fn a_walk_already_on_the_edge_row_only_goes_to_its_end() {
+        assert_eq!(walk_from(&lines(40), 0, "up"), (vec![], 0));
+        assert_eq!(walk_from(&lines(40), 39, "down"), (vec![], 39));
+    }
+
+    #[test]
+    fn a_walk_waits_for_its_arrows_to_show() {
+        let text = lines(40);
+        let (g, c) = frame(&text, 30, 4);
+        let mut walk = EdgeWalk::start("up", &g, c.unwrap()).unwrap();
+        assert_eq!(walk.step(&g, c, true), Walk::Press("up", 5));
+        assert_eq!(walk.step(&g, c, true), Walk::Wait, "nothing has shown yet");
+        let (part, pc) = frame(&text, 27, 4);
+        assert_eq!(walk.step(&part, pc, true), Walk::Wait, "3 of the 5");
+        let (g, c) = frame(&text, 25, 4);
+        assert_eq!(walk.step(&g, c, true), Walk::Press("up", 5));
+    }
+
+    #[test]
+    fn a_walk_waits_for_a_selections_arrows_and_a_readable_screen() {
+        let text = lines(40);
+        let (g, c) = frame(&text, 30, 4);
+        let mut walk = EdgeWalk::start("down", &g, c.unwrap()).unwrap();
+        assert_eq!(walk.step(&g, c, false), Walk::Wait);
+        assert_eq!(walk.step(&g, None, true), Walk::Wait);
+        assert_eq!(walk.step(&g, c, true), Walk::Press("down", 4));
+    }
+
+    #[test]
+    fn a_walk_over_rows_that_repeat_never_presses_on_an_unchanged_screen() {
+        let text = vec!["same".to_string(); 40];
+        let (g, c) = frame(&text, 30, 4);
+        let mut walk = EdgeWalk::start("up", &g, c.unwrap()).unwrap();
+        assert_eq!(walk.step(&g, c, true), Walk::Press("up", 5));
+        for _ in 0..EdgeWalk::TRIES - 1 {
+            assert_eq!(walk.step(&g, c, true), Walk::Wait);
+        }
+        assert_eq!(walk.step(&g, c, true), Walk::Failed);
+    }
+
+    #[test]
+    fn a_walk_waits_for_ctrl_a_to_show() {
+        let text = lines(40);
+        let (g, c) = frame(&text, 0, 6);
+        let mut walk = EdgeWalk::start("up", &g, c.unwrap()).unwrap();
+        assert_eq!(walk.step(&g, c, true), Walk::Edge(b"\x01"));
+        assert_eq!(walk.step(&g, c, true), Walk::Wait);
+        let (g, c) = frame(&text, 0, 2);
+        assert_eq!(walk.step(&g, c, true), Walk::Done);
+    }
+
+    #[test]
+    fn only_a_full_box_walks() {
+        let (g, c) = claude_window(&lines(4), 0, 4, 2);
+        let tall: Vec<RowData> = g.iter().cloned().chain((0..30).map(|_| row(""))).collect();
+        assert!(EdgeWalk::start("up", &tall, c).is_none());
+        assert!(EdgeWalk::start("left", &g, c).is_none());
     }
 }
