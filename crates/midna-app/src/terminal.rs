@@ -1053,6 +1053,9 @@ impl TerminalView {
         // line, so there ⇧⌘↑ ⇧⌘↓ select to its start or end and plain ⌘↑ ⌘↓ still scroll.
         if cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
+            if self.agent_kind() == Some("claude") && term_edit::box_is_full(&self.grid, c) {
+                return self.walk_to_edge(key, m.shift, c, cx);
+            }
             let line_edge = term_edit::Send::Bytes(if key == "up" { b"\x01" } else { b"\x05" });
             let moves = if self.is_agent() { term_edit::text_edge(key, &self.grid, self.aimed(c)) } else { m.shift.then(|| vec![line_edge]) };
             let Some(moves) = moves else { return false };
@@ -1168,6 +1171,59 @@ impl TerminalView {
     /// The cursor on the live screen (not while scrolled back, where rows don't line up).
     fn live_cursor(&self) -> Option<(u16, u16)> {
         self.cursor.filter(|_| self.ext.at_bottom())
+    }
+
+    /// ⌘↑ ⌘↓ in Claude's long input: walk to the text's edge, not the window's ([`term_edit::EdgeWalk`]).
+    /// Like ⌘A's walk, it waits for an erase or walk already underway rather than join it.
+    fn walk_to_edge(&mut self, key: &str, shift: bool, c: term_edit::Pos, cx: &mut Context<Self>) -> bool {
+        if self.erasing.is_some() {
+            return true;
+        }
+        let Some(walk) = term_edit::EdgeWalk::start(key, &self.grid, c) else { return false };
+        if !shift {
+            self.kbd_sel = None;
+        } else if !self.selecting() {
+            self.select_from(c);
+        }
+        self.settle(Some(Pending::ToEdge(walk)), cx);
+        self.check_erase(cx);
+        true
+    }
+
+    /// One step of a walk to the text's edge: arrows, then ctrl-a or ctrl-e, then what was
+    /// pressed on the selection meanwhile.
+    fn edge_walk_step(&mut self, step: term_edit::Walk, up: bool, then: Option<WithSel>, cx: &mut Context<Self>) {
+        match step {
+            term_edit::Walk::Wait => self.check_erase_later(120, cx),
+            term_edit::Walk::Press(key, n) => {
+                for _ in 0..n {
+                    self.send_move(term_edit::Send::Arrow(key));
+                }
+                self.check_erase_later(250, cx);
+            }
+            term_edit::Walk::Edge(bytes) => {
+                self.send_move(term_edit::Send::Bytes(bytes));
+                self.check_erase_later(250, cx);
+            }
+            term_edit::Walk::Done => match then {
+                Some(then) => {
+                    self.set_pending(Pending::Follow { tries: WALK_TRIES, then });
+                    self.check_erase_later(120, cx);
+                }
+                None => self.finish_erase(cx),
+            },
+            term_edit::Walk::Failed => {
+                let edge = if up { "start" } else { "end" };
+                let nothing = match then {
+                    Some(WithSel::Copy) => ", so nothing was copied",
+                    Some(WithSel::Cut) => ", so nothing was cut",
+                    Some(WithSel::Erase) => ", so nothing was erased",
+                    None => "",
+                };
+                self.say(format!("Couldn't reach the {edge} of the input{nothing}."), cx);
+                self.finish_erase(cx);
+            }
+        }
     }
 
     /// Start a keyboard selection at the cursor.
@@ -1299,6 +1355,9 @@ impl TerminalView {
                 self.check_erase(cx);
             }
             Some((Some(Pending::Follow { .. }), _)) => {}
+            Some((Some(Pending::ToEdge(ref mut walk)), _)) => {
+                walk.then.get_or_insert(then);
+            }
             Some(_) => self.say_lost_sel(then, cx),
         }
         true
@@ -1532,8 +1591,14 @@ impl TerminalView {
             return;
         }
         let codex = self.agent_kind() == Some("codex");
+        let (live, sel_settled) = (self.live_cursor(), self.long_sel.as_ref().is_none_or(LongSel::settled));
         let Some((pending, _)) = self.erasing.as_mut() else { return };
         let job = match pending {
+            Some(Pending::ToEdge(walk)) => {
+                let step = walk.step(&self.grid, live, sel_settled);
+                let (up, then) = (walk.up(), walk.then);
+                return self.edge_walk_step(step, up, then, cx);
+            }
             Some(Pending::Follow { tries, then }) => {
                 let (then, left) = (*then, *tries);
                 *tries = left.saturating_sub(1);
