@@ -6,6 +6,8 @@
 //! pane, keyboard input and resize can be exercised without the daemon.
 //!
 //! `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` overrides initial settings.
+//! `MIDNA_FAKE_MANY=N` adds N projects with three terminals each and N with only Summary
+//! records, for timing a long sidebar (`MIDNA_DEBUG_TERM=benchwheel:…`).
 use super::{AttachRequest, Backend, BackendEvent, ConnState, TermStream};
 use crate::frame::FrameSink;
 use crate::model::*;
@@ -176,7 +178,7 @@ impl FakeBackend {
         let p = |id: &str, name: &str, order: u32| Project { id: id.into(), name: name.into(), path: format!("~/Development/{name}"), order, ..Default::default() };
         // dotfiles: pinned with no terminals, so the sidebar shows its "New terminal" row.
         // taskboard: every terminal closed, so it stays for its Summary row (`fake_summary`).
-        let projects = vec![
+        let mut projects = vec![
             p("p_zonai1", "zonai", 0),
             p("p_drops1", "drops-app", 1),
             p("p_midna1", "midna", 2),
@@ -207,7 +209,7 @@ impl FakeBackend {
                 git: g,
                 ..Default::default()
             };
-        let sessions = {
+        let mut sessions = {
             use AgentKind::*;
             use SessionKind::*;
             use StatusState::*;
@@ -349,6 +351,22 @@ impl FakeBackend {
                 ..Default::default()
             },
         ];
+        for i in 0..many() {
+            projects.push(p(&format!("p_many{i:03}"), &format!("busy-{i:03}"), 10 + 2 * i as u32));
+            projects.push(p(&format!("p_gone{i:03}"), &format!("closed-{i:03}"), 11 + 2 * i as u32));
+            for (j, (name, kind, agent, state)) in [
+                ("agent", SessionKind::Agent, Some(AgentKind::Claude), StatusState::Working),
+                ("zsh", SessionKind::Shell, None, StatusState::Idle),
+                ("watch", SessionKind::Monitor, None, StatusState::Done),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let id = format!("m{i:03}{j:04}");
+                let g = git("main", 3, 1, 1, None);
+                sessions.push(s(&id, &format!("p_many{i:03}"), name, kind, agent, state, None, (i + j) as i64, g));
+            }
+        }
         let mut settings = settings_catalog();
         if let Ok(over) = crate::dev::var("MIDNA_FAKE_SETTINGS") {
             for kv in over.split(',') {
@@ -1213,8 +1231,29 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
     }
 }
 
-/// Closed terminals for the Summary (`ui/summary.rs`): taskboard's (all closed) and midna's.
+/// `MIDNA_FAKE_MANY`: how many extra projects of each kind.
+fn many() -> usize {
+    crate::dev::var("MIDNA_FAKE_MANY").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// Closed terminals for the Summary (`ui/summary.rs`): taskboard's (all closed) and midna's,
+/// and four for each `MIDNA_FAKE_MANY` project with only Summary records.
 fn fake_summary() -> Vec<Value> {
+    let mut out = fake_summary_base();
+    for i in 0..many() {
+        for j in 0..4 {
+            out.push(json!({
+                "id": format!("cm{i:03}{j:03}"), "project_id": format!("p_gone{i:03}"), "name": format!("task {j}"), "kind": "agent", "agent": "claude",
+                "cwd": "/tmp", "opened_at": ago(300 + 60 * j as i64), "closed_at": ago(20 + i as i64 * 7 + 60 * j as i64), "how": "close",
+                "by": {"kind": "human"}, "state": "done", "turns": 2,
+            }));
+        }
+    }
+    out.sort_by(|a, b| b["closed_at"].as_str().cmp(&a["closed_at"].as_str()));
+    out
+}
+
+fn fake_summary_base() -> Vec<Value> {
     let tb = |task: &str, title: &str, state: &str, color: &str| {
         json!({ "taskboard": {
             "app": "Taskboard", "title": format!("{task} {title}"), "url": format!("taskboard://task/{task}"),

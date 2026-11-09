@@ -173,6 +173,8 @@ pub struct MainWindow {
     pub need_anim: crate::ui::need_anim::NeedAnim,
     /// Closed rows folding away and the pane sliding to the next terminal (`ui::close_anim`).
     pub close_anim: crate::ui::close_anim::CloseAnim,
+    /// The sidebar's project list, whose scroll position says which groups it lays out (`ui::sidebar`).
+    pub sidebar_scroll: ScrollHandle,
     /// A sidebar row's ✕ and the confirm line it opens (`ui::row_close`).
     pub row_close: crate::ui::row_close::RowClose,
     /// Natural height of each foldable run of sidebar rows, measured at prepaint.
@@ -392,6 +394,7 @@ impl MainWindow {
             fold_shown: Default::default(),
             need_anim: Default::default(),
             close_anim: Default::default(),
+            sidebar_scroll: ScrollHandle::new(),
             row_close: Default::default(),
             fold_heights: Default::default(),
             webhooks: Value::Null,
