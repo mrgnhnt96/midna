@@ -1068,6 +1068,12 @@ impl TerminalView {
         }
         if m.shift && !cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
+            if let Some(long) = self.codex_long_sel(c) {
+                if let Some(mv) = long.vertical(key) {
+                    self.send_move(mv);
+                }
+                return true;
+            }
             let Some(mv) = term_edit::vertical(key, self.is_agent(), &self.grid, self.aimed(c)) else { return false };
             if !self.selecting() {
                 self.select_from(c);
@@ -1167,7 +1173,20 @@ impl TerminalView {
     /// Start a keyboard selection at the cursor.
     fn select_from(&mut self, c: term_edit::Pos) {
         self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
-        self.long_sel = if self.agent_kind() == Some("claude") { LongSel::start(&self.grid, c) } else { None };
+        self.long_sel = if self.is_agent() { LongSel::start(&self.grid, c) } else { None };
+    }
+
+    /// The selection in Codex's input, started here if there's none: Codex's window scrolls under a
+    /// cursor kept at its edge, so the selection picks each ⇧↑ / ⇧↓ by the rows it has seen.
+    fn codex_long_sel(&mut self, c: term_edit::Pos) -> Option<&mut LongSel> {
+        if !self.selecting()
+            && self.agent_kind() == Some("codex")
+            && let Some(long) = LongSel::start(&self.grid, c)
+        {
+            self.kbd_sel = Some(KbdSel { anchor: c, kill: false, all: false });
+            self.long_sel = Some(long);
+        }
+        self.long_sel.as_mut().filter(|long| long.codex())
     }
 
     /// There's a selection for ⇧ to extend. Mid-text the cursor stays put on screen as the window
@@ -1193,6 +1212,9 @@ impl TerminalView {
             && let Some(anchor) = long.anchor_on_screen(&self.grid, c)
         {
             k.anchor = anchor;
+        }
+        while let Some(mv) = self.long_sel.as_mut().and_then(LongSel::release) {
+            self.send_move(mv);
         }
     }
 
@@ -1268,7 +1290,7 @@ impl TerminalView {
         true
     }
 
-    /// ⌘C, ⌘X, ⌫ or typing on a selection in Claude's long input: once the screen has caught up
+    /// ⌘C, ⌘X, ⌫ or typing on a selection in Claude's or Codex's long input: once the screen has caught up
     /// with the keys that made it (`check_erase`).
     fn use_long_sel(&mut self, then: WithSel, cx: &mut Context<Self>) -> bool {
         match self.erasing {

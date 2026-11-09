@@ -243,7 +243,7 @@ pub fn input_text(grid: &[RowData], cursor: Pos) -> Option<String> {
 
 /// How an agent wraps its input: at `cols - 4` in Claude Code and `cols - 3` in Codex. Codex also
 /// breaks after a `-` or `/` inside a word, dropping nothing there.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Wrap {
     width: usize,
     codex: bool,
@@ -388,10 +388,16 @@ fn row_break(prev: &str, next: &str, wrap: Wrap) -> &'static str {
 /// In an agent's box rows are joined as [`input_text`] joins them; a shell's rows are one
 /// soft-wrapped line.
 pub fn selected_text(grid: &[RowData], s: Pos, e: Pos, agent: bool) -> String {
-    let indent = if agent { AGENT_INDENT } else { 0 };
-    let prompt = claude_box(grid, s).and_then(|(top, _)| grid.get(top as usize));
-    let row = prompt.or(grid.get(s.1 as usize));
-    let wrap = row.map_or(Wrap { width: 0, codex: false }, Wrap::of);
+    let wrap = agent.then(|| {
+        let prompt = claude_box(grid, s).and_then(|(top, _)| grid.get(top as usize));
+        prompt.or(grid.get(s.1 as usize)).map_or(Wrap { width: 0, codex: false }, Wrap::of)
+    });
+    join_selected(grid, s, e, if agent { AGENT_INDENT } else { 0 }, wrap)
+}
+
+/// The text from `s` to `e`, rows after the first past at most `indent` blank cells, joined as an
+/// agent wrapped them (`wrap`) or as one soft-wrapped line (None).
+fn join_selected(grid: &[RowData], s: Pos, e: Pos, indent: u16, wrap: Option<Wrap>) -> String {
     let mut text = String::new();
     let mut prev: Option<String> = None;
     for y in s.1..=e.1 {
@@ -399,7 +405,7 @@ pub fn selected_text(grid: &[RowData], s: Pos, e: Pos, agent: bool) -> String {
         let x0 = if y == s.1 { s.0 } else { leading_blanks(row).min(indent) };
         let x1 = if y == e.1 { e.0.min(text_end(row)) } else { text_end(row) };
         let whole = text_of(row, indent, text_end(row).max(indent));
-        if let (Some(p), true) = (&prev, agent) {
+        if let (Some(p), Some(wrap)) = (&prev, wrap) {
             text.push_str(row_break(p, &whole, wrap));
         }
         text.push_str(&text_of(row, x0, x1));
@@ -937,14 +943,21 @@ impl ReadJob {
     }
 }
 
-/// A ⇧ selection in Claude's long input. The window moves with the cursor, so each frame is
-/// lined up with the rows seen so far, which gives both ends as rows of the text. Only rows the
-/// window has shown are kept: the selection grew to its ends through them, so that's all it holds.
+/// A ⇧ selection in Claude's or Codex's long input. The window moves with the cursor, so each
+/// frame is lined up with the rows seen so far, which gives both ends as rows of the text. Only
+/// rows the window has shown are kept: the selection grew to its ends through them, so that's all
+/// it holds.
+///
+/// Codex keeps the cursor at the window's edge and scrolls a row per ↑ or ↓, so ⇧↑ and ⇧↓ there
+/// go by [`LongSel::vertical`]: an arrow only onto a row known to be text.
 #[derive(Clone, Debug)]
 pub struct LongSel {
-    /// The rows seen, in order, with `❯` blanked: it's on whichever row is on top of the window.
+    /// The rows seen, in order, with the prompt glyph blanked: it's on whichever row is on top of
+    /// the window.
     rows: Vec<RowData>,
     height: usize,
+    /// How the agent wraps, from the prompt row before its glyph was blanked.
+    wrap: Wrap,
     /// The row of `rows` on top of the window.
     first: usize,
     /// Where the selection started and where the cursor is: (column, row of `rows`).
@@ -957,6 +970,12 @@ pub struct LongSel {
     downs: u16,
     /// The last frame lined up. One that doesn't may be a redraw caught halfway.
     fits: bool,
+    /// Codex's marks: there's text above the first row seen, below the last.
+    more_above: bool,
+    more_below: bool,
+    /// ⇧↑ (negative) or ⇧↓ (positive) presses held back until a frame shows whether there's a row
+    /// for them in Codex's text (see [`LongSel::vertical`]).
+    held: i64,
 }
 
 impl LongSel {
@@ -966,8 +985,59 @@ impl LongSel {
             return None;
         }
         let (top, rows) = box_window(grid, cursor)?;
+        let wrap = Wrap::of(grid.get(top as usize)?);
         let at = (cursor.0, cursor.1 - top);
-        Some(LongSel { height: rows.len(), rows, first: 0, anchor: at, cursor: at, ups: 0, downs: 0, fits: true })
+        let (more_above, more_below) = (hides_rows_above(&rows[0]), rows.last().is_some_and(hides_rows_below));
+        Some(LongSel { height: rows.len(), rows, wrap, first: 0, anchor: at, cursor: at, ups: 0, downs: 0, fits: true, more_above, more_below, held: 0 })
+    }
+
+    /// The selection is in Codex's input.
+    pub fn codex(&self) -> bool {
+        self.wrap.codex
+    }
+
+    /// ⇧↑ or ⇧↓ in Codex's input: an arrow while the row it leads to is one seen or one Codex's
+    /// mark says is there. ↑ past the text's first row and ↓ past its last can recall history, so
+    /// there the line's start or end instead. A row beyond those is unknown until a frame shows
+    /// the arrows on their way, so the key is held back (None) for [`LongSel::release`]. A key
+    /// against held ones cancels one of them.
+    pub fn vertical(&mut self, key: &str) -> Option<Send> {
+        let dir = if key == "up" { -1 } else { 1 };
+        if self.held != 0 {
+            self.held += dir;
+            return None;
+        }
+        let mv = self.reach(dir);
+        if mv.is_none() {
+            self.held = dir;
+        }
+        mv
+    }
+
+    /// The next held key that can go now.
+    pub fn release(&mut self) -> Option<Send> {
+        let dir = self.held.signum();
+        if dir == 0 {
+            return None;
+        }
+        let mv = self.reach(dir)?;
+        self.held = if matches!(mv, Send::Arrow(_)) { self.held - dir } else { 0 };
+        Some(mv)
+    }
+
+    /// The move one row up (`dir` -1) or down from where the arrows on their way leave the
+    /// cursor, if it's known whether that row is text.
+    fn reach(&self, dir: i64) -> Option<Send> {
+        let at = self.cursor.1 as i64 + self.ahead();
+        let (last, to) = (self.rows.len() as i64 - 1, at + dir);
+        let (beyond, more) = if dir < 0 { (-1, self.more_above) } else { (last + 1, self.more_below) };
+        if (0..=last).contains(&to) || (to == beyond && more) {
+            Some(Send::Arrow(if dir < 0 { "up" } else { "down" }))
+        } else if (0..=last).contains(&at) {
+            Some(Send::Bytes(if dir < 0 { b"\x01" } else { b"\x05" }))
+        } else {
+            None
+        }
     }
 
     /// An arrow is on its way to Claude.
@@ -1000,6 +1070,12 @@ impl LongSel {
         }
         self.first = first.max(0) as usize;
         let known = self.rows.len() - self.first;
+        if self.first == 0 {
+            self.more_above = hides_rows_above(&window[0]);
+        }
+        if known <= window.len() {
+            self.more_below = window.last().is_some_and(hides_rows_below);
+        }
         self.rows.extend(window.into_iter().skip(known));
         let row = self.first as u16 + at as u16;
         self.answered(row as i64 - self.cursor.1 as i64);
@@ -1027,14 +1103,14 @@ impl LongSel {
         window.iter().zip(first..).all(|(row, y)| usize::try_from(y).ok().and_then(|y| self.rows.get(y)).is_none_or(|seen| box_text(seen) == box_text(row)))
     }
 
-    /// Every arrow pressed has shown, and the screen makes sense.
+    /// Every arrow pressed has shown, none is held back, and the screen makes sense.
     pub fn settled(&self) -> bool {
-        self.fits && self.ahead() == 0
+        self.fits && self.ahead() == 0 && self.held == 0
     }
 
     /// Nothing is selected, and no arrow is on its way to change that.
     pub fn is_empty(&self) -> bool {
-        self.anchor == self.cursor && self.ahead() == 0
+        self.anchor == self.cursor && self.ahead() == 0 && self.held == 0
     }
 
     /// Where the cursor would be on screen with every arrow pressed shown, kept in the box: the
@@ -1060,7 +1136,7 @@ impl LongSel {
 
     pub fn text(&self) -> String {
         let (s, e) = ordered(self.anchor, self.cursor);
-        selected_text(&self.rows, s, e, true)
+        join_selected(&self.rows, s, e, AGENT_INDENT, Some(self.wrap))
     }
 
     /// The erase for the selection and how many times to press its key. A burst that long
@@ -1071,7 +1147,7 @@ impl LongSel {
     /// Spaces at a line's end don't show, and aren't counted: they stay.
     pub fn erase(&self) -> (EraseJob, usize) {
         let (s, e) = ordered(self.anchor, self.cursor);
-        let wrap = Wrap::of(&self.rows[0]);
+        let wrap = self.wrap;
         let (mut counted, mut uncounted) = (0, 0);
         for y in s.1 as usize..e.1 as usize {
             let (row, next) = (box_text(&self.rows[y]), box_text(&self.rows[y + 1]));
@@ -1315,6 +1391,31 @@ mod tests {
             self.y -= 1;
             self.first = self.first.min(self.y);
             self.col = self.want.min(self.text[self.y].chars().count());
+        }
+
+        fn down(&mut self) {
+            assert!(!self.recalled || self.y + 1 < self.text.len(), "↓ recalls history at row {}", self.y);
+            if self.y + 1 == self.text.len() {
+                self.col = self.text[self.y].chars().count();
+                return;
+            }
+            self.y += 1;
+            self.first = self.first.max((self.y + 1).saturating_sub(self.height));
+            self.col = self.want.min(self.text[self.y].chars().count());
+        }
+
+        /// Codex taking a move the app sent.
+        fn take(&mut self, mv: Send) {
+            match for_agent(mv, Some("codex")) {
+                Send::Arrow("up") => self.up(),
+                Send::Arrow("down") => self.down(),
+                Send::Arrow("home") => self.col = 0,
+                Send::Arrow("end") => self.col = self.text[self.y].chars().count(),
+                other => panic!("{other:?}"),
+            }
+            if !matches!(mv, Send::Arrow("up" | "down")) {
+                self.want = self.col;
+            }
         }
 
         fn screen(&self) -> (Vec<RowData>, Pos) {
@@ -2075,6 +2176,138 @@ mod tests {
             let (g, c) = claude_window(&left, first, 10, 10 - first as u16);
             assert!(job.done(&g, (6, c.1)), "the row may be the window's top one: first {first}");
         }
+    }
+
+    fn codex_at(text: &[String], height: usize, y: usize, col: usize) -> CodexInput {
+        let first = y.saturating_sub(height - 1).min(text.len() - height);
+        CodexInput { text: text.to_vec(), first, height, y, col, want: col, recalled: false }
+    }
+
+    /// ⇧`key` pressed `n` times in Codex, each answered with a frame (`burst`: every press made
+    /// before Codex shows any of them, then a frame per key it takes).
+    fn codex_select(input: &mut CodexInput, key: &str, n: usize, burst: bool) -> LongSel {
+        let (g, c) = input.screen();
+        let mut sel = LongSel::start(&g, c).unwrap();
+        assert!(sel.codex());
+        let mut sent = std::collections::VecDeque::new();
+        let press = |sel: &mut LongSel, mv: Option<Send>, sent: &mut std::collections::VecDeque<Send>| {
+            if let Some(mv) = mv {
+                if let Send::Arrow(k) = mv {
+                    sel.pressed(k);
+                }
+                sent.push_back(mv);
+            }
+        };
+        for _ in 0..n {
+            let mv = sel.vertical(key);
+            press(&mut sel, mv, &mut sent);
+            if burst {
+                continue;
+            }
+            while let Some(mv) = sent.pop_front() {
+                input.take(mv);
+                let (g, c) = input.screen();
+                sel.see(&g, c);
+                while let Some(mv) = sel.release() {
+                    press(&mut sel, Some(mv), &mut sent);
+                }
+            }
+        }
+        while let Some(mv) = sent.pop_front() {
+            input.take(mv);
+            let (g, c) = input.screen();
+            sel.see(&g, c);
+            while let Some(mv) = sel.release() {
+                press(&mut sel, Some(mv), &mut sent);
+            }
+        }
+        sel
+    }
+
+    fn long_text(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("row {i:02} of the text")).collect()
+    }
+
+    #[test]
+    fn a_selection_up_past_codexs_window_keeps_the_rows_it_scrolls_past() {
+        // As found: 60 rows, an 18-row window, the cursor at the end, ⇧↑ 30 times.
+        let text = long_text(60);
+        for burst in [false, true] {
+            let mut input = CodexInput::at_end(&text, 18);
+            input.recalled = false;
+            let sel = codex_select(&mut input, "up", 30, burst);
+            assert!(sel.settled(), "burst {burst}");
+            assert_eq!(input.y, 29, "burst {burst}");
+            assert_eq!(sel.text(), format!("\n{}", text[30..].join("\n")), "burst {burst}");
+            let (job, n) = sel.erase();
+            assert_eq!((job.key, n, job.budget), ("delete", sel.text().chars().count(), 0));
+        }
+    }
+
+    #[test]
+    fn a_selection_down_past_codexs_window_keeps_the_rows_it_scrolls_past() {
+        let text = long_text(60);
+        for burst in [false, true] {
+            let mut input = codex_at(&text, 18, 3, 4);
+            let sel = codex_select(&mut input, "down", 40, burst);
+            assert!(sel.settled(), "burst {burst}");
+            assert_eq!(input.y, 43, "burst {burst}");
+            assert_eq!(sel.text(), format!("{}\n{}", &text[3][4..], text[4..43].join("\n")) + "\nrow ", "burst {burst}");
+            let (job, _) = sel.erase();
+            assert_eq!(job.key, "backspace");
+        }
+    }
+
+    #[test]
+    fn a_selection_in_codex_stops_at_the_texts_ends_without_pressing_past_them() {
+        // ↑ on the text's first row, ↓ on its last, could recall history: the line's ends instead.
+        let text = long_text(30);
+        for burst in [false, true] {
+            let mut input = codex_at(&text, 18, 20, 6);
+            input.recalled = true;
+            let sel = codex_select(&mut input, "up", 40, burst);
+            assert!(sel.settled());
+            assert_eq!((input.y, input.col), (0, 0), "burst {burst}");
+            assert_eq!(sel.text(), format!("{}\n{}", text[..20].join("\n"), &text[20][..6]));
+            let mut input = codex_at(&text, 18, 5, 6);
+            input.recalled = true;
+            let sel = codex_select(&mut input, "down", 40, burst);
+            assert!(sel.settled());
+            assert_eq!((input.y, input.col), (29, text[29].len()), "burst {burst}");
+            assert_eq!(sel.text(), format!("{}\n{}", &text[5][6..], text[6..].join("\n")));
+        }
+    }
+
+    #[test]
+    fn a_key_against_held_ones_takes_one_back() {
+        let text = long_text(60);
+        let mut input = codex_at(&text, 18, 59, 4);
+        let (g, c) = input.screen();
+        let mut sel = LongSel::start(&g, c).unwrap();
+        for _ in 0..18 {
+            let mv = sel.vertical("up").expect("rows in view, then the one the mark promises");
+            sel.pressed("up");
+            input.take(mv);
+        }
+        assert_eq!(sel.vertical("up"), None, "the row past that isn't known yet");
+        assert_eq!(sel.vertical("up"), None);
+        assert_eq!(sel.vertical("down"), None);
+        assert!(!sel.settled());
+        let (g, c) = input.screen();
+        sel.see(&g, c);
+        assert_eq!(sel.release(), Some(Send::Arrow("up")));
+        assert_eq!(sel.release(), None, "one was taken back");
+    }
+
+    #[test]
+    fn a_codex_selection_joins_rows_the_way_codex_wrapped_them() {
+        // Words that fill Codex's row exactly lose the space after them; Claude's rule would cut.
+        let mut text = long_text(40);
+        text[30] = "aaaa bbbb cccc dddd eeee ff".into();
+        text[31] = "gg".into();
+        let mut input = codex_at(&text, 18, 35, 2);
+        let sel = codex_select(&mut input, "up", 6, false);
+        assert!(sel.text().starts_with("w 29 of the text\naaaa bbbb cccc dddd eeee ff gg\nrow 32"), "{:?}", sel.text());
     }
 
     #[test]
