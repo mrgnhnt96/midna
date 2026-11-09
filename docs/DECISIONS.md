@@ -1351,3 +1351,13 @@ Why: the human runs a lot of work through Taskboard, and when every terminal in 
 - **Sidebar.** A project with no terminals stays while it has records, with a Summary row (and the usual New row) under its heading; a project with terminals shows the row only while its Summary is open. The project's … menu has Show summary (`keys.project_summary`, ⌥⌘Y) and Clear summary. Closing the row (its ✕, or ⌘W on the Summary of a project with nothing open, like closing its last tab) lets the project go; app-state `summary_closed` remembers the newest record then, and the row comes back when a newer terminal closes. The Summary doesn't open by itself when the last terminal closes; the row is there instead.
 - **Dev**: the fake backend's `taskboard` project has only closed terminals. `MIDNA_DEBUG_SCREEN=summary:p_taskboard1`, `summary:p_taskboard1+menu`, `project-menu:p_taskboard1`. `window open_screen summary` shows the current project's.
 - **Not done:** Taskboard doesn't annotate yet (its side is in its own repo). Panels can't run commands. The Summary is the same in every window.
+
+## Time sections in the Summary list (midna-app `ui/summary.rs`; canvas https://claude.ai/artifact/3ZwxbveCg9DZgQdDZQJWCG, design C; 2026-11-09)
+
+Why: a week of closed terminals made the list one long, busy stream, and it was easy to lose your place.
+
+- **Sections.** Last hour, 1–3 hours ago, 3–6 hours ago, 6–24 hours ago, then one per local day ("Sunday 8 Nov"). They don't overlap, so the labels name ranges. Empty sections are skipped.
+- **Headings** are small uppercase `dim` text at the status-dot edge, never a row title's look (design lesson L1 in `design/LESSONS.md`), with the count, "· N failed" in `err`, and the fold chevron last. The heading of the section scrolled under the top edge sticks there (drawn over the list from the scroll handle's top item).
+- **Folding.** Clicking a heading folds it; ← and → fold or open the open record's section. Days older than 24 hours start folded. A folded section still shows the open record, so ↑↓ (which step through every record) never select something hidden. Fold state isn't saved.
+- **Rows** show only the clock, since the heading gives the day; in 6–24 hours ago a row from before midnight says "Yesterday 23:24".
+- **Not built:** the canvas's "· N in review" on headings. The app only knows an app line's colour, not what it means, so it would be inferred.
