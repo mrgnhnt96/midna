@@ -281,10 +281,13 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .flex_col()
         .flex_1()
         .min_h_0()
-        .py(px(4.))
+        .py(px(LIST_PAD))
         .overflow_y_scroll()
+        .track_scroll(&m.sidebar_scroll)
         .on_scroll_wheel(cx.listener(|m, _, _, cx| crate::ui::fold_peek::close(m, cx)));
     let split_focused = crate::ui::split::focused(m, window, cx);
+    let gap = if compact { 2. } else { 8. };
+    let mut far = Far::new(m, gap, sb_anim.is_some() || cx.has_active_drag());
     for (gi, g) in m.groups().into_iter().enumerate() {
         let pid = g.project.map(|p| p.id.clone());
         let n = m.needs_in_project(pid.as_deref());
@@ -303,8 +306,19 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         let n_rows = g.sessions.iter().filter(|s| m.selected.as_deref() != Some(&s.id)).count();
         let anim = pid.as_ref().and_then(|p| m.fold_anim.get(p)).map(|at| at.elapsed());
         let lift = anim.filter(|_| collapsed).map_or(0., |_| crate::ui::badge::cascade_len(n_rows, true).as_secs_f32() * 1000.);
+        let folding = anim.is_some_and(|e| e.as_secs_f32() * 1000. < (lift + FOLD_MS).max(crate::ui::badge::cascade_len(n_rows, false).as_secs_f32() * 1000.));
+        let key = pid.clone().unwrap_or_else(|| "root".into());
+        let keep = folding
+            || menu_open
+            || new_menu_open
+            || g.sessions.iter().any(|s| m.selected.as_deref() == Some(&s.id) || m.renaming.as_ref().is_some_and(|r| r.session == s.id))
+            || m.fold_shown.borrow().contains_key(&key);
+        if let Some(h) = far.skip(m, &key, keep) {
+            list = list.child(div().flex_none().h(px(h)));
+            continue;
+        }
         let (fold, turn) = match anim {
-            Some(e) if e.as_secs_f32() * 1000. < (lift + FOLD_MS).max(crate::ui::badge::cascade_len(n_rows, false).as_secs_f32() * 1000.) => {
+            Some(e) if folding => {
                 window.request_animation_frame();
                 let ms = e.as_secs_f32() * 1000.;
                 if collapsed { (ease((ms - lift).max(0.)), ease(ms)) } else { (1. - ease(ms), 1. - ease(ms)) }
@@ -439,10 +453,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             None => summary_top.into_iter().chain(new_row).collect(),
         };
         // Root terminals belong to no project: no heading, just rows.
-        let mut group = div().flex().flex_col().mb(px(if compact { 2. } else { 8. })).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(top).when(g.project.is_none(), |d| d.pt(px(4.)));
+        let mut group = div().flex().flex_col().mb(px(gap)).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(top).when(g.project.is_none(), |d| d.pt(px(4.)));
         // A folded group keeps only the selected terminal, so the open one never disappears:
         // the rows around it fold as separate runs.
-        let key = pid.clone().unwrap_or_else(|| "root".into());
         let (mut run, mut ri, mut k) = (vec![], 0, 0);
         // Closed rows folding away sit where they were (only while the group isn't folding).
         let ghosts = |next: Option<&str>, cx: &mut Context<MainWindow>| -> Vec<AnyElement> {
@@ -518,6 +531,49 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .children(background.map(|b| wipe(line, 0., b.into_any_element())))
         .child(wipe(line, 0., footer.into_any_element()))
         .into_any_element()
+}
+
+/// The project list's padding above its first group and below its last.
+const LIST_PAD: f32 = 4.;
+
+/// Which groups the project list lays out: those within a screen of the part that shows. GPUI
+/// lays out the whole list on every scroll tick, which made a long one stutter, so a group further
+/// away keeps its room as blank space of its last measured height (`CloseAnim::rows`). Every
+/// group is laid out while anything in the sidebar moves, and on the first frames, before the
+/// list and its groups have been measured.
+struct Far {
+    /// The next group's top, from the top of the list's content.
+    top: f32,
+    /// The part of the content laid out: the visible part and a screen either side.
+    from: f32,
+    to: f32,
+    /// The room under each group.
+    gap: f32,
+    on: bool,
+}
+
+impl Far {
+    fn new(m: &MainWindow, gap: f32, busy: bool) -> Self {
+        let view = f32::from(m.sidebar_scroll.bounds().size.height);
+        let at = -f32::from(m.sidebar_scroll.offset().y);
+        let moving = m.close_anim.moving() || m.row_close.moving() || m.need_anim.moving();
+        Far { top: LIST_PAD, from: at - view, to: at + 2. * view, gap, on: view > 0. && !busy && !moving }
+    }
+
+    /// The room the group `key` takes when it's left out (`keep`: never), and steps past it.
+    fn skip(&mut self, m: &MainWindow, key: &str, keep: bool) -> Option<f32> {
+        if !self.on {
+            return None;
+        }
+        // An unmeasured group puts every group below it at an unknown height.
+        let Some(h) = m.close_anim.rows.borrow().get(&crate::ui::close_anim::group_key(key)).map(|r| r.1 + self.gap) else {
+            self.on = false;
+            return None;
+        };
+        let top = self.top;
+        self.top += h;
+        (!keep && (top + h < self.from || top > self.to)).then_some(h)
+    }
 }
 
 /// Key of the Background group in `fold_anim` / `fold_heights` (project ids start with `p_`).

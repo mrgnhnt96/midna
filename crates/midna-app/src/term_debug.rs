@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `switch:ROUNDS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `benchwheel:X,Y,MS[,TURN]` (trackpad scrolls at a window point, e.g. over the sidebar, each timed to its frame, turning every TURN deltas of 12px), `switch:ROUNDS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -54,6 +54,36 @@ pub fn start(steps: String, window: &mut Window, cx: &mut Context<MainWindow>) {
                     cx.background_executor().timer(Duration::from_millis(8)).await;
                 }
                 eprintln!("midna-app debug-term: benchpane {n} draws, mean {:.2} ms, max {:.2} ms", total / n.max(1) as f64, worst);
+                continue;
+            }
+            if verb == "benchwheel" {
+                // A trackpad scroll at window point X,Y, each delta followed by the frame it asks
+                // for: the cost of scrolling that spot. It turns every TURN deltas (20) to stay in range.
+                let nums: Vec<f32> = arg.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                let (x, y) = (nums.first().copied().unwrap_or(130.), nums.get(1).copied().unwrap_or(400.));
+                let until = std::time::Instant::now() + Duration::from_millis(nums.get(2).copied().unwrap_or(3000.) as u64);
+                let mut times = vec![];
+                let _ = cx.update(|window, cx| {
+                    // Scroll hit testing follows the pointer, not the event.
+                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: point(px(x), px(y)), pressed_button: None, modifiers: Modifiers::default() }), cx);
+                    window.draw(cx).clear(cx);
+                });
+                let turn = nums.get(3).map_or(20, |n| (*n as usize).max(1));
+                while std::time::Instant::now() < until {
+                    let dy = if (times.len() / turn) % 2 == 0 { -12. } else { 12. };
+                    let t0 = std::time::Instant::now();
+                    let _ = cx.update(|window, cx| {
+                        let ev = ScrollWheelEvent { position: point(px(x), px(y)), delta: ScrollDelta::Pixels(point(px(0.), px(dy))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved };
+                        window.dispatch_event(PlatformInput::ScrollWheel(ev), cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    times.push(t0.elapsed().as_secs_f64() * 1000.);
+                    cx.background_executor().timer(Duration::from_millis(8)).await;
+                }
+                times.sort_by(f64::total_cmp);
+                let pct = |p: f64| times.get(((times.len() as f64 - 1.) * p).round() as usize).copied().unwrap_or(0.);
+                let mean = times.iter().sum::<f64>() / times.len().max(1) as f64;
+                eprintln!("midna-app debug-term: benchwheel {} frames, mean {mean:.2} ms, median {:.2} ms, p90 {:.2} ms, max {:.2} ms", times.len(), pct(0.5), pct(0.9), pct(1.));
                 continue;
             }
             if verb == "switch" {
