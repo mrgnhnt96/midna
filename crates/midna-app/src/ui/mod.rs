@@ -36,6 +36,7 @@ pub mod setup_screen;
 pub mod settings;
 pub mod setting_change;
 pub mod sidebar;
+pub mod shelf;
 pub mod sidebar_anim;
 pub mod split;
 pub mod statusbar;
@@ -297,6 +298,11 @@ impl Render for MainWindow {
                                         let term = term.clone();
                                         let el = split::render(self, &term, &t, window, cx);
                                         let el = close_anim::pane(self, el, window);
+                                        // Back from a Summary in the Summaries section: it slides away up.
+                                        let el = match close_anim::summary_sliding(self, window) {
+                                            Some((Some(old), dir, e)) => close_anim::slide(el, summary::ghost_page(self, &t, &old, cx), dir, e),
+                                            _ => el,
+                                        };
                                         paused::over_pane(self, el, &t, cx)
                                     }
                                     None => screens::empty_terminal(self, &t, cx).into_any_element(),
@@ -312,7 +318,18 @@ impl Render for MainWindow {
             (_, Screen::Triggers) => triggers::render(self, window, cx),
             (_, Screen::Insights) => insights::render(self, window, cx),
             (_, Screen::Notifications) => notifications::render(self, &t, window, cx),
-            (_, Screen::Summary) => summary::render(self, &t, window, cx),
+            (_, Screen::Summary) => {
+                let el = summary::render(self, &t, window, cx);
+                // Opened from the Summaries section: the Summary or terminal before it slides away.
+                match close_anim::summary_sliding(self, window) {
+                    Some((Some(old), dir, e)) => close_anim::slide(el, summary::ghost_page(self, &t, &old, cx), dir, e),
+                    Some((None, dir, e)) => match &self.terminal {
+                        Some(term) => close_anim::slide(el, term.clone().into_any_element(), dir, e),
+                        None => el,
+                    },
+                    None => el,
+                }
+            }
         };
 
         let root = div()
@@ -363,6 +380,7 @@ impl Render for MainWindow {
             )
             .children(close_hold::render(self, &t, cx))
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(toast(&t, msg).bottom(px(40.))))
+            .children(shelf::undo_toast(self, &t, cx))
             // Setup's Twilight Tiles screen covers the whole window while setup is open.
             .children(setup_screen::render(self, &t, window, cx))
             .when(self.menu != Menu::None, |d| {

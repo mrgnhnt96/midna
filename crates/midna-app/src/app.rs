@@ -65,6 +65,10 @@ pub enum Menu {
     Footer,
     /// The Summary's ⋯ menu on the record on screen (`ui/summary.rs`).
     Summary,
+    /// A row's menu in the sidebar's Summaries section (its ⋯ or a right-click; `ui/shelf.rs`).
+    ShelfRow(String),
+    /// The Summaries heading's menu (its ⋯ or a right-click).
+    Shelf,
     /// The stat picker for one of the footer card's slots while customizing.
     FooterStat(usize),
     /// The footer's "Add a button" menu while customizing.
@@ -272,6 +276,7 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let summary_closed = crate::ui::statusbar::load_state(&backend, "summary_closed");
+        let summaries_folded = crate::ui::statusbar::load_state(&backend, "summaries_folded");
         let seen = crate::ui::statusbar::load_state(&backend, "seen");
         let mut collapsed: std::collections::HashSet<String> = crate::ui::statusbar::load_state(&backend, "collapsed");
         collapsed.extend(crate::ui::fold_peek::debug_folded());
@@ -450,7 +455,7 @@ impl MainWindow {
             overlay_focus: cx.focus_handle(),
             toast: None,
             inbox: Default::default(),
-            summary: crate::ui::summary::SummaryPage::new(summary_closed),
+            summary: crate::ui::summary::SummaryPage::new(summary_closed, summaries_folded),
             cards: Default::default(),
             rules_view: None,
             triggers_view: None,
@@ -1331,18 +1336,11 @@ impl MainWindow {
             }
         }
         // A project with no terminals is closed: it leaves the sidebar but keeps its rules
-        // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays, and so does
-        // one that keeps its Summary row (`ui::summary`).
-        // A project going with its Summary row folds away first (`ui::close_anim::summary`), and
-        // one whose last terminal just closed waits for its Summary row (`ui::close_anim::start`).
+        // and commands, and ⌘O / ⌘K "Go to project" reopen it. A pinned one stays; one that keeps
+        // its Summary has a row in the Summaries section instead (`ui::shelf`).
+        // A project whose last terminal just closed folds away first (`ui::close_anim::start`).
         groups.retain(|g| {
-            !g.sessions.is_empty()
-                || g.project.is_some_and(|p| {
-                    p.pinned
-                        || crate::ui::summary::row_wanted(self, &p.id, true)
-                        || self.close_anim.summary_leaving(&p.id).is_some_and(|l| l.whole)
-                        || self.close_anim.summary_arriving(&p.id)
-                })
+            !g.sessions.is_empty() || g.project.is_some_and(|p| p.pinned || self.close_anim.summary_leaving(&p.id).is_some_and(|l| l.whole))
         });
         let rank = |s: &Session| self.order.iter().position(|id| id == &s.id).unwrap_or(usize::MAX);
         for g in groups.iter_mut().chain(std::iter::once(&mut root)) {
@@ -2262,6 +2260,10 @@ impl MainWindow {
             return;
         }
         let order: Vec<String> = self.ordered_sessions().iter().map(|s| s.id.clone()).filter(|s| !crate::ui::popout::is_popped(s, cx)).collect();
+        // With rows in the Summaries section, they come after the terminals (`ui::shelf`).
+        if crate::ui::shelf::step(self, &order, step, window, cx) {
+            return;
+        }
         if order.is_empty() {
             return;
         }
