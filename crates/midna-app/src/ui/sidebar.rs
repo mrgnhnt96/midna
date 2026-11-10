@@ -412,30 +412,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             crate::ui::fold_peek::forget(m, p);
         }
         line += usize::from(g.project.is_some());
-        // Its Summary just closed: the row folds away, or the whole group does.
+        // Its last terminal just closed (unpinned): the whole group folds away. Its Summary row
+        // is in the Summaries section (`ui::shelf`), never here.
         let summary_leave = pid.as_deref().and_then(|p| m.close_anim.summary_leaving(p));
-        let summary_row = pid.as_deref().filter(|_| fold < 1.).and_then(|p| {
-            let row = |cx: &mut Context<MainWindow>| measured(m, &crate::ui::close_anim::summary_key(p), crate::ui::summary::sidebar_row(m, t, p, compact, cx));
-            let el = match summary_leave {
-                // In a project left with no terminals it unfolds with the ghost row (below).
-                _ if crate::ui::summary::row_wanted(m, p, empty) => match m.close_anim.arrival(&crate::ui::close_anim::summary_key(p)).filter(|_| !empty) {
-                    Some(a) => arrive(a, row(cx)),
-                    None => row(cx),
-                },
-                Some(l) if l.whole && l.row => row(cx),
-                // Its last terminal closed and it keeps no row: the group folds away without one.
-                Some(l) if l.whole => return None,
-                Some(l) => fold_away(m, l, t, row(cx)),
-                None => return None,
-            };
-            // Its room folds with the group's (as the rows' runs do), its content fading.
-            let el = div().flex_none().opacity(1. - fold).child(el).into_any_element();
-            let el = fold_run(vec![el], format!("{p}/summary"), fold, m)?;
-            let el = wipe(line, 26., el.into_any_element());
-            line += 1;
-            Some(el)
-        });
-        let (summary_top, summary_end) = if empty { (summary_row, None) } else { (None, summary_row) };
         // Folded, the ghost row goes with the fold (as the rows do).
         // A project folding away whole with its last terminal leaves without one.
         let going = summary_leave.is_some_and(|l| l.whole && !l.row);
@@ -446,11 +425,11 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             line += 1;
             el
         });
-        // Its last terminal just closed: the Summary row and the ghost row unfold together once
-        // the closed row has folded away (`close_anim::start`).
-        let top: Vec<AnyElement> = match pid.as_deref().filter(|_| empty).and_then(|p| m.close_anim.arrival(&crate::ui::close_anim::summary_key(p))) {
-            Some(a) => vec![arrive(a, div().flex().flex_col().children(summary_top).children(new_row).into_any_element())],
-            None => summary_top.into_iter().chain(new_row).collect(),
+        // Its last terminal just closed: the ghost row unfolds once the closed row has folded
+        // away (`close_anim::start`).
+        let top: Option<AnyElement> = match pid.as_deref().filter(|_| empty).and_then(|p| m.close_anim.arrival(&crate::ui::close_anim::summary_key(p))) {
+            Some(a) => new_row.map(|r| arrive(a, r)),
+            None => new_row,
         };
         // Root terminals belong to no project: no heading, just rows.
         let mut group = div().flex().flex_col().mb(px(gap)).when(g.project.is_some(), |d| d.child(header)).children(fold_bar).children(top).when(g.project.is_none(), |d| d.pt(px(4.)));
@@ -495,9 +474,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             }
         }
         run.extend(ghosts(None, cx));
-        group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m)).children(summary_end);
+        group = group.children(fold_run(run, format!("{key}/{ri}"), fold, m));
         // A project that just turned up (an agent opened its first terminal) unfolds whole, and
-        // one that went with its Summary row folds away whole.
+        // one whose last terminal closed folds away whole.
         let group = measured(m, &crate::ui::close_anim::group_key(&key), group.into_any_element());
         list = list.child(match (m.close_anim.arrival(&key), summary_leave.filter(|l| l.whole)) {
             (Some(a), _) => arrive(a, group),
