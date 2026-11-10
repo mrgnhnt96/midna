@@ -324,11 +324,9 @@ pub fn start(m: &mut MainWindow, ids: &[String], next: Option<&str>, cx: &mut Co
         a.glide = p.glide.map(|(id, d)| (id, d, now));
         a.pane_due = p.pane.map(|d| (ids.to_vec(), d, now));
     }
-    // The Summary row (and a pinned project's ghost row) waits for the closed row to fold, then
-    // unfolds (its record turns up meanwhile); a project keeping neither folds away whole, its
-    // last row folding inside.
-    // An unpinned one folds away whole either way; keeping its Summary, its row in the
-    // Summaries section unfolds after.
+    // The Summary row in the Summaries section (and a pinned project's ghost row) waits for the
+    // closed row to fold, then unfolds (its record turns up meanwhile). An unpinned project
+    // folds away whole, its last row folding inside.
     let after = now + Duration::from_secs_f32(SLIDE_MS / 1000.);
     for (pid, keeps) in emptied {
         let pinned = m.projects.iter().any(|p| p.id == pid && p.pinned);

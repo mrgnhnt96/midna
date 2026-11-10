@@ -5,7 +5,7 @@
 //! "Show N more".
 //!
 //! A row shows the project's name and when its last terminal closed. Under the pointer the age
-//! gives way to ⋯ (Open Summary, New agent, New terminal, Pin to sidebar, Clear Summary) and ✕
+//! gives way to ⋯ (Open Summary, New agent, New terminal, Pin to / Unpin from sidebar, Clear Summary) and ✕
 //! (Clear Summary), as a terminal row's ✕ does; a right-click opens the same menu. The heading
 //! folds the section (remembered in app-state.json), and its ⋯ or a right-click offers Clear all
 //! summaries. Clearing says so in a toast with Undo.
@@ -46,11 +46,6 @@ pub fn has_rows(m: &MainWindow, pid: &str) -> bool {
     m.sessions.iter().any(|s| s.project_id.as_deref() == Some(pid) && !s.background && m.shows(&s.id) && !crate::ui::split::is_split(m, &s.id))
 }
 
-/// Whether `pid`'s Summary row belongs in this section rather than under its own heading.
-pub fn in_shelf(m: &MainWindow, pid: &str) -> bool {
-    m.projects.iter().any(|p| p.id == pid && !p.pinned) && !has_rows(m, pid)
-}
-
 /// The section's rows, newest close first: projects that keep their Summary, and the one whose
 /// Summary is on screen.
 pub fn pids(m: &MainWindow) -> Vec<String> {
@@ -59,7 +54,7 @@ pub fn pids(m: &MainWindow) -> Vec<String> {
     let v: Vec<(i64, &str, &str)> = m
         .projects
         .iter()
-        .filter(|p| !p.pinned && !has_rows(m, &p.id) && (shown == Some(p.id.as_str()) || m.summary.keeps(&p.id)))
+        .filter(|p| shown == Some(p.id.as_str()) || (!has_rows(m, &p.id) && m.summary.keeps(&p.id)))
         .map(|p| (secs(&p.id), p.name.as_str(), p.id.as_str()))
         .collect();
     newest_first(v)
@@ -330,7 +325,7 @@ fn shelf_menu(t: &Theme, cx: &mut Context<MainWindow>) -> impl IntoElement + use
     .with_priority(1)
 }
 
-fn row_menu(t: &Theme, pid: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+fn row_menu(t: &Theme, pid: &str, pinned: bool, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let (p1, p2, p3, p4, p5) = (pid.to_string(), pid.to_string(), pid.to_string(), pid.to_string(), pid.to_string());
     let rule = || div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line);
     deferred(
@@ -355,9 +350,9 @@ fn row_menu(t: &Theme, pid: &str, cx: &mut Context<MainWindow>) -> impl IntoElem
                 })))
                 .child(rule())
                 .child(
-                    super::sidebar::menu_item(t, "shelf-pin", "Pin to sidebar", "", cx.listener(move |m, _, _, cx| {
+                    super::sidebar::menu_item(t, "shelf-pin", if pinned { "Unpin from sidebar" } else { "Pin to sidebar" }, "", cx.listener(move |m, _, _, cx| {
                         m.menu = Menu::None;
-                        m.rpc("project.update", serde_json::json!({"id": p4, "pinned": true}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::PROJECTS, cx));
+                        m.rpc("project.update", serde_json::json!({"id": p4, "pinned": !pinned}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::PROJECTS, cx));
                         cx.notify();
                     })),
                 )
@@ -386,6 +381,7 @@ fn row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut Context<Mai
     let group = SharedString::from(format!("shelf-row-{pid}"));
     let (open_id, menu_id, more_id, x_id) = (pid.to_string(), pid.to_string(), pid.to_string(), pid.to_string());
     let label = name(m, pid);
+    let pinned = m.projects.iter().any(|p| p.id == pid && p.pinned);
     let acts = div()
         .absolute()
         .top_0()
@@ -405,7 +401,7 @@ fn row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut Context<Mai
                     m.menu = if m.menu == k { Menu::None } else { k };
                     cx.notify();
                 }))
-                .when(menu_open, |d| d.child(row_menu(t, pid, cx))),
+                .when(menu_open, |d| d.child(row_menu(t, pid, pinned, cx))),
         )
         .child(
             icon_btn(t, format!("shelf-x-{pid}"), Icon::Cross, 10., "Clear Summary")

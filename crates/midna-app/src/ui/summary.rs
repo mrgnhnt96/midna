@@ -72,8 +72,8 @@ impl SummaryPage {
         self.closed.iter().find(|c| c.project_id == pid).map(|c| c.closed_at.as_str())
     }
 
-    /// A project with no terminals keeps its heading for its Summary row: it has records, and
-    /// none closed since the row was closed.
+    /// A project with no terminals keeps a Summary row in the Summaries section: it has
+    /// records, and none closed since the row was closed.
     pub fn keeps(&self, pid: &str) -> bool {
         if self.skipping(pid) {
             return false;
@@ -121,7 +121,7 @@ impl SummaryPage {
 }
 
 /// ⌘W is closing `ids`, still in `m.sessions`: the projects they leave with no terminals, and
-/// whether each keeps its heading for a Summary row (its record is on its way). One whose
+/// whether each keeps a Summary row (its record is on its way). One whose
 /// Summary was on screen in the last 30 minutes doesn't: it goes, its record dismissed. The
 /// project whose Summary is on screen counts as seen; its row is already there, so it's left
 /// out (it goes when its Summary does, `moved`).
@@ -148,17 +148,6 @@ pub fn closing(m: &mut MainWindow, ids: &[String]) -> Vec<(String, bool)> {
 /// The project on screen, when the Summary is.
 pub fn shown(m: &MainWindow) -> Option<&str> {
     m.summary.project.as_deref().filter(|_| m.screen == Screen::Summary)
-}
-
-/// Whether `pid`'s group shows a Summary row: its Summary is on screen while it has terminals,
-/// or it's pinned and either that or it has none and keeps one. An unpinned project with no
-/// terminals has its row in the Summaries section instead (`ui::shelf`).
-pub fn row_wanted(m: &MainWindow, pid: &str, empty: bool) -> bool {
-    if m.projects.iter().any(|p| p.id == pid && p.pinned) {
-        shown(m) == Some(pid) || (empty && m.summary.keeps(pid))
-    } else {
-        !empty && shown(m) == Some(pid)
-    }
 }
 
 pub fn fetch(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -199,7 +188,7 @@ pub fn moved(m: &mut MainWindow, from: Option<String>, was: Option<String>, cx: 
     // The Summaries section sits below every terminal: the pane slides that way.
     let shelf = crate::ui::shelf::pids(m);
     match (&was, shown(m)) {
-        (Some(w), None) if crate::ui::shelf::in_shelf(m, w) => close_anim::summary_slide(m, Some(w.clone()), close_anim::Dir::Above, cx),
+        (Some(w), None) => close_anim::summary_slide(m, Some(w.clone()), close_anim::Dir::Above, cx),
         (None, Some(p)) if shelf.iter().any(|x| x == p) => close_anim::summary_slide(m, None, close_anim::Dir::Below, cx),
         _ => {}
     }
@@ -208,18 +197,10 @@ pub fn moved(m: &mut MainWindow, from: Option<String>, was: Option<String>, cx: 
     close_anim::summary(m, from, to, gone, cx);
 }
 
-/// Whether `pid`'s Summary row is gone from the sidebar, and whether its project went with it.
-/// A row in the Summaries section leaves on its own (`whole` false).
+/// Whether `pid`'s Summary row is gone from the sidebar. Every Summary row is in the Summaries
+/// section, so it leaves on its own (`whole` false), never with its project's group.
 fn leaves(m: &MainWindow, pid: String) -> Option<(String, bool)> {
-    if crate::ui::shelf::pids(m).contains(&pid) {
-        return None;
-    }
-    let groups = m.groups();
-    match groups.iter().find(|g| g.project.is_some_and(|p| p.id == pid)) {
-        None => Some((pid, false)),
-        Some(g) if !row_wanted(m, &pid, g.sessions.is_empty()) => Some((pid, false)),
-        Some(_) => None,
-    }
+    (!crate::ui::shelf::pids(m).contains(&pid)).then_some((pid, false))
 }
 
 /// Show `pid`'s Summary (from the project's … menu, its Summary row or ⌥⌘Y).
@@ -941,75 +922,6 @@ fn panel(t: &Theme, owner: &str, p: &SummaryPanel) -> impl IntoElement + use<> {
                 })
                 .when(!p.buttons.is_empty(), |d| d.child(buttons)),
         )
-}
-
-/// The Summary row in a project's group: the list icon, "Summary", and when the last terminal
-/// closed where a terminal's icon sits (its ✕ on hover). A click shows it; its ✕ closes the
-/// row (`close_row`).
-pub fn sidebar_row(m: &MainWindow, t: &Theme, pid: &str, compact: bool, cx: &mut Context<MainWindow>) -> AnyElement {
-    let on = shown(m) == Some(pid);
-    // The highlight on its way to or from a terminal's row (`ui::close_anim::summary`); folding
-    // away, the fold draws it.
-    let hl = m.close_anim.highlight(&close_anim::summary_key(pid), on);
-    let own = on && hl == close_anim::Highlight::Own;
-    let moving = match hl {
-        close_anim::Highlight::At { top, h } if m.close_anim.summary_leaving(pid).is_none() => Some((top, h)),
-        _ => None,
-    };
-    let last = m.summary.newest(pid).map(|ts| super::screen_kit::ago(Some(ts)));
-    let (open_id, close_id) = (pid.to_string(), pid.to_string());
-    let group = SharedString::from(format!("sum-side-{pid}"));
-    div()
-        .id(SharedString::from(format!("summary-row-{pid}")))
-        .relative()
-        .flex()
-        .items_center()
-        .gap(px(9.))
-        .w_full()
-        .px(px(14.))
-        .py(px(if compact { 5. } else { 8. }))
-        .cursor_pointer()
-        .group(group.clone())
-        .when_some(moving, |d, (top, h)| d.child(super::sidebar::highlight(t).top(px(top)).h(px(h))))
-        .when(own, |d| d.bg(t.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(t.accent)))
-        .when(!on, |d| d.hover(|s| s.bg(t.raised.opacity(0.5))))
-        .tooltip(super::header::tip_keys("This project's closed terminals", "keys.project_summary"))
-        .on_click(cx.listener(move |m, _, w, cx| open(m, open_id.clone(), w, cx)))
-        .child(div().w(px(12.)).flex_none().flex().items_center().child(Icon::Summary.el(12., if on { t.accent } else { t.dim })))
-        .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).truncate().child("Summary"))
-        .child(
-            div()
-                .relative()
-                .flex_none()
-                .min_w(px(16.))
-                .h(px(16.))
-                .flex()
-                .items_center()
-                .justify_end()
-                .children(last.map(|a| div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().group_hover(group.clone(), |s| s.opacity(0.)).child(a)))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("summary-x-{pid}")))
-                        .absolute()
-                        .top_0()
-                        .right_0()
-                        .size(px(16.))
-                        .rounded(px(4.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .opacity(0.)
-                        .group_hover(group, |s| s.opacity(1.))
-                        .hover(|s| s.bg(t.line))
-                        .tooltip(super::header::tip("Clear Summary"))
-                        .on_click(cx.listener(move |m, _, w, cx| {
-                            cx.stop_propagation();
-                            close_row(m, &close_id, w, cx);
-                        }))
-                        .child(Icon::Cross.el(10., t.dim)),
-                ),
-        )
-        .into_any_element()
 }
 
 #[cfg(test)]
