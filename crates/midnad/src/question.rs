@@ -144,6 +144,12 @@ fn last_tab_bar(lines: &[String], before: usize) -> Option<(usize, Vec<Tab>)> {
     (0..before.min(lines.len())).rev().find_map(|i| tab_bar(&lines[i]).map(|t| (i, t)))
 }
 
+/// A line without the `│` bar Claude Code (2.1.322 on) draws left of the question.
+fn ungutter(l: &str) -> &str {
+    let t = l.trim();
+    t.strip_prefix('│').map_or(t, str::trim)
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -191,7 +197,7 @@ fn parse_question(lines: &[String]) -> Option<Picker> {
         } else if l.trim_start_matches('❯').trim() == "Submit" && !rows.is_empty() {
             submit = Some(l.starts_with('❯'));
         } else if rows.is_empty() && !l.trim().is_empty() {
-            question.push(l.trim());
+            question.push(ungutter(l));
         }
         // Anything else is an option's description (indented under its row).
     }
@@ -599,6 +605,17 @@ mod tests {
         assert_eq!(p.other, "Type something.");
         assert_eq!(p.cursor, Some(Row::Opt(0)));
         assert!(!p.text_mode);
+    }
+
+    #[test]
+    fn parses_a_question_behind_the_gutter_bar() {
+        let Screen::Question(p) = parse(&fixture("claude-2.1.322-question-1of2.screen.txt")) else { panic!("not a picker") };
+        let q = "Pick a color for the long test question that should wrap across more than one line of the \
+                 terminal because it keeps going and going and going?";
+        assert_eq!(p.question, q);
+        assert!(same_text(q, &p.question));
+        assert_eq!(p.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Red", "Green", "Blue"]);
+        assert_eq!(p.cursor, Some(Row::Opt(0)));
     }
 
     #[test]
