@@ -83,7 +83,7 @@ impl LinkPattern {
             if m.start() > at {
                 break;
             }
-            if at >= m.end() || m.is_empty() || !standalone(line, m.start(), m.end()) {
+            if at >= m.end() || m.is_empty() || !standalone(&self.re, line, m.start(), m.end()) {
                 continue;
             }
             return Some(caps);
@@ -136,13 +136,17 @@ pub fn parse_all(rules: &[String]) -> Vec<LinkPattern> {
 
 /// `line[a..b]` stands on its own: the word it's in (between spaces) isn't a URL or path, and
 /// it isn't glued to the text around it (`xT42`, `T42_x`, `T42.rs`, `T42:12`). Trailing
-/// punctuation before a space or the end (`T42.`, `T42:`) is fine.
-pub fn standalone(line: &str, a: usize, b: usize) -> bool {
+/// punctuation before a space or the end (`T42.`, `T42:`) is fine. A word of refs joined by `/`
+/// (`B123/B321`, `(T1/T2).`) isn't a path when `re` matches every piece of it whole.
+pub fn standalone(re: &Regex, line: &str, a: usize, b: usize) -> bool {
     let ws = |c: char| c.is_whitespace() || c == '\0';
     let start = line[..a].rfind(ws).map(|i| i + line[i..].chars().next().map_or(1, char::len_utf8)).unwrap_or(0);
     let end = line[b..].find(ws).map(|i| b + i).unwrap_or(line.len());
     let word = &line[start..end];
-    if word.contains("://") || word.contains('/') || word.contains('\\') {
+    if word.contains("://") || word.contains('\\') {
+        return false;
+    }
+    if word.contains('/') && !ref_list(re, word) {
         return false;
     }
     let glued = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | '#' | '$' | '%' | '~' | '=' | '+' | '&');
@@ -157,6 +161,13 @@ pub fn standalone(line: &str, a: usize, b: usize) -> bool {
         Some('.' | ':') => !after.next().is_some_and(|c| c.is_alphanumeric() || c == '_'),
         Some(_) => true,
     }
+}
+
+/// `word` (its outer brackets and punctuation aside) is refs joined by `/`, each a whole match
+/// of `re`: `B123/B321`, not `notes/T42` or `T42/T43.rs`.
+fn ref_list(re: &Regex, word: &str) -> bool {
+    let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
+    word.split('/').all(|piece| re.find(piece).is_some_and(|m| m.start() == 0 && m.end() == piece.len()))
 }
 
 #[cfg(test)]
@@ -212,9 +223,24 @@ mod tests {
             ("v1.T42", 4),
             ("--goal=T42", 8),
             ("user@T42", 6),
+            ("T42/T43.rs", 0),
+            ("src/T42/T43", 5),
+            ("/T42", 1),
         ] {
             assert_eq!(link(r"(T\d+) = taskboard://task/$1", line, at), None, "{line}");
         }
+    }
+
+    #[test]
+    fn refs_joined_by_slashes() {
+        let b = r"\b(B\d+)\b = taskboard://issue/$1";
+        assert_eq!(link(b, "B123/B321", 1), Some("taskboard://issue/B123".into()));
+        assert_eq!(link(b, "B123/B321", 6), Some("taskboard://issue/B321".into()));
+        assert_eq!(link(b, "see (B1/B2/B3).", 11), Some("taskboard://issue/B3".into()));
+        assert_eq!(LinkPattern::parse(b).unwrap().link_at("B123/B321", 6).map(|(s, _)| s), Some((5, 9)));
+        // A piece the rule doesn't match whole makes it a path again.
+        assert_eq!(link(b, "B123/notes", 1), None);
+        assert_eq!(link(b, "B123/B321x", 1), None);
     }
 
     #[test]
