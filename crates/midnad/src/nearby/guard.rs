@@ -98,6 +98,9 @@ fn ask(name: &str, payload: &SharePayload) -> (String, String) {
         SharePayload::Agent { title, agent, .. } => {
             (format!("Send {name} the {} conversation “{title}”?", super::session::agent_name(*agent)), super::session::describe(payload))
         }
+        SharePayload::AgentStart { agent, .. } => {
+            (format!("Start a {} agent on {name} with this prompt?", super::session::agent_name(*agent)), super::agent_start::describe(payload, SHOWN))
+        }
     }
 }
 
@@ -187,6 +190,22 @@ mod tests {
         let (title, what) = ask("Bravo", &agent);
         assert!(title.ends_with(" conversation “fix login”?"), "{title}");
         assert!(first_line(&what).contains("conversation c1: /w/app"), "{what}");
+    }
+
+    #[test]
+    fn an_agent_start_leads_with_its_prompts_first_line() {
+        let start = SharePayload::AgentStart {
+            title: "build".into(),
+            agent: midna_proto::AgentKind::Codex,
+            project: None,
+            cwd: "/w/app".into(),
+            prompt: "\nWhy does the build fail?\nIt worked yesterday.".into(),
+            want_reply: false,
+        };
+        let (title, what) = ask("Bravo", &start);
+        assert_eq!(title, "Start a Codex agent on Bravo with this prompt?");
+        assert_eq!(first_line(&what), "Prompt: Why does the build fail?");
+        assert!(what.contains("\n\nWhy does the build fail?\nIt worked yesterday.\n\nCodex in /w/app."), "{what}");
     }
 
     #[test]

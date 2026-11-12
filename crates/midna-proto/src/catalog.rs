@@ -679,12 +679,13 @@ fn build() -> Vec<MethodSpec> {
              Returns the device; event peers.changed. Human only: an agent can't promote a device. Keeping a device \
              as a contact turns off everything it auto-accepted."),
         m::<PeersSetAutoAcceptParams, PairedPeer>("peers.set_auto_accept").mutating().human().d(
-            "Nearby: accept one kind of share (message, snippet, link, file, tab or object) from one of my devices \
+            "Nearby: accept one kind of share (message, snippet, link, file, tab, object or agent_start) from one of my devices \
              without asking (on true), or ask again (on false). Everything is off by default. Only a device kept as \
              my_device can have any (a contact is refused), keeping it as a contact or forgetting it turns them all \
              off, and pairing again starts with none. Auto-accepting does what accepting would: a message is read, a \
              snippet kept in the inbox (never pasted), a link opened, a file saved into nearby.downloads, a tab opened \
-             as a fresh shell. An object is applied only when it's a Summary record or a theme: rules, triggers, \
+             as a fresh shell, an agent start's prompt run in a new agent terminal (supervised, as a trigger's \
+             agent would be). An object is applied only when it's a Summary record or a theme: rules, triggers, \
              settings and queued prompts always wait for the human's review. An agent session always asks (kind \
              agent is refused as bad params). If auto-accepting fails the share asks \
              as usual. Returns the device (auto_accept lists what is on); event peers.changed. Human only."),
@@ -698,7 +699,12 @@ fn build() -> Vec<MethodSpec> {
              environment), or an agent session (kind agent, `session` or the caller's agent terminal, optional title: \
              the agent (claude or codex), its conversation id, its repo and directory, and its transcript as it is \
              now, which the other Mac fetches in chunks only once accepted; never the agent's model, settings or \
-             environment). Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing \
+             environment), or an agent start (kind agent_start, `prompt`, optional agent claude|codex (default the \
+             sending terminal's, else claude), `session` or the caller's for the project and directory, optional \
+             title, want_reply): the other Mac's person accepting it opens a new agent terminal in their checkout of \
+             that project with the prompt as its first; with want_reply its first answer comes back as a message \
+             replying to the share (event share.answered; share.answer waits for it). \
+             Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing \
              runs on the other Mac: its person accepts or declines (share.accepted / share.declined fire here when \
              they do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
              connection; share.progress follows them. From an agent it asks the human first (an approval showing \
@@ -709,7 +715,8 @@ fn build() -> Vec<MethodSpec> {
              secrets, local paths, trust settings and anything tied to one terminal are refused. The receiver's \
              approval shows what would change there; rules, triggers and human-only settings apply only on its human's \
              accept, and triggers arrive disabled. Limits: message 4 KiB, snippet 256 KiB, URL 4 KiB, object 256 KiB \
-             or 200 items, 4000 files and folders per share, a tab's scrollback its newest 256 KiB, a transcript 256 MiB."),
+             or 200 items, 4000 files and folders per share, a tab's scrollback its newest 256 KiB, a transcript 256 MiB, \
+             a prompt 32 KiB."),
         m::<ShareAcceptParams, ShareItem>("share.accept").mutating().human().d(
             "Nearby: accept an incoming share. A message is marked read. A snippet is kept in the inbox, or with \
              `session` pasted into that terminal (never followed by Enter; multi-line text only into a terminal that \
@@ -723,10 +730,18 @@ fn build() -> Vec<MethodSpec> {
              transcript is fetched like a file, the sender's checkout and home paths in it are changed to this Mac's, \
              it is put where the agent keeps conversations for that folder (one already there is kept beside it as \
              .before-<id>), and a new agent terminal opens there (or in `cwd`) resuming the conversation, idle until \
-             prompted; refused while a terminal here runs that conversation. The sender gets share.accepted. Human only: agents can't accept what other devices send."),
+             prompted; refused while a terminal here runs that conversation. An agent start opens a new agent \
+             terminal where a tab would (or in `cwd`) with its prompt; with want_reply, the agent's last message when \
+             its first turn ends goes back to the sender (cut to 4 KiB), or a note if its terminal ends first. The \
+             sender gets share.accepted. Human only: agents can't accept what other devices send."),
         m::<ShareDeclineParams, ShareItem>("share.decline").mutating().human().d(
             "Nearby: decline an incoming share; the sender gets share.declined. The share stays in the inbox, \
              declined. Human only."),
+        m::<ShareAnswerParams, ShareAnswerResult>("share.answer").d(
+            "Nearby: the answer to an agent start this Mac sent with want_reply: the message the other Mac sent back \
+             once its agent's first turn ended (`answer`, its text in payload.text), with the share as it is now \
+             (declined: no answer will come). wait_secs (max 600) waits for it; call again to wait longer. The answer \
+             is also in inbox.list, marked read, and fires share.answered."),
         m::<InboxListParams, InboxListResult>("inbox.list").d(
             "Nearby: shares to and from paired devices, newest first, kept across restarts (the latest 500). \
              Incoming ones in state offered wait for the human (each has a needs-you approval: approving accepts it, \

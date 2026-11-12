@@ -1538,6 +1538,10 @@ pub mod kinds {
     pub const SHARE_ACCEPTED: &str = "share.accepted";
     /// Nearby: a share was declined, here or on the other device (data: `nearby::ShareItem`).
     pub const SHARE_DECLINED: &str = "share.declined";
+    /// Nearby: the other device's agent answered an agent start this Mac sent with
+    /// `want_reply` (data: `nearby::ShareItem`, the incoming message; its `reply_to` is the agent
+    /// start).
+    pub const SHARE_ANSWERED: &str = "share.answered";
     /// Nearby: an accepted file share's contents moved on (about once a second while they
     /// move), finished or failed; here or, for a share this Mac sent, as the other device fetches
     /// it (data: `nearby::ShareItem`, see its `transfer`).

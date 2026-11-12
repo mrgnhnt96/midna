@@ -75,8 +75,8 @@ fn main() {
     // `share` the other way round (`share send --agent`, `open --agent claude`).
     let args = match Args::parse(raw.clone()) {
         Ok(a) if a.pos.first().map(String::as_str) == Some("queue") => Args::parse_with(raw, queue::VALUE_FLAGS),
-        Ok(a) if matches!(a.pos.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_flags(raw, nearby::SHARE_VALUE_FLAGS, nearby::SHARE_BOOL_FLAGS),
-        Err(_) if matches!(raw.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_flags(raw, nearby::SHARE_VALUE_FLAGS, nearby::SHARE_BOOL_FLAGS),
+        Ok(a) if matches!(a.pos.first().map(String::as_str), Some("share" | "inbox")) => nearby::parse_args(raw),
+        Err(_) if matches!(raw.first().map(String::as_str), Some("share" | "inbox")) => nearby::parse_args(raw),
         r => r,
     };
     let args = match args {

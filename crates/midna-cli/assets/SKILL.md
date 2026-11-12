@@ -70,6 +70,7 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
 - `terminals`: an agent's prompts, processes and subagents, `restart --idle`, `replace`, plan
   usage, Claude's question picker, linking a terminal for the human.
 - `links`: pinning links for the human, link patterns, hover cards and link menus.
+- `nearby`: asking an agent on another of the human's Macs for help, and waiting for its answer.
 
 ## Terminals
 

@@ -8,6 +8,7 @@ pub const SKILL_TOPICS: &[(&str, &str)] = &[
     ("queue", include_str!("skill-queue.md")),
     ("terminals", include_str!("skill-terminals.md")),
     ("links", include_str!("skill-links.md")),
+    ("nearby", include_str!("skill-nearby.md")),
 ];
 
 // What a topic's file is called, in the assets and beside `$MIDNA_SKILL`.

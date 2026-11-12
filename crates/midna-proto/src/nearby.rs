@@ -439,11 +439,14 @@ pub const MAX_SHELL: usize = 64;
 pub const MAX_TRANSCRIPT: u64 = 256 * 1024 * 1024;
 /// … an agent's conversation id.
 pub const MAX_CONVERSATION: usize = 128;
+/// … the prompt an agent start carries.
+pub const MAX_PROMPT: usize = 32 * 1024;
 
 /// What a share carries. Nothing in it ever runs: it is data until the receiving person
 /// accepts it, and even then a snippet is pasted (never submitted), a link opened or pinned, a
 /// tab opened as a fresh shell under the sender's scrollback, and an agent session resumed idle,
-/// waiting for its new person's first prompt.
+/// waiting for its new person's first prompt. An agent start's prompt runs only once the
+/// receiving person accepts it (or set that device to auto-accept agent starts).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SharePayload {
@@ -528,6 +531,26 @@ pub enum SharePayload {
         /// The transcript: `<conversation>.jsonl` for Claude Code; for Codex its path under
         /// `sessions/` (`2026/11/12/rollout-…-<conversation>.jsonl`).
         transcript: ShareFile,
+    },
+    /// A new agent to start on the receiving Mac with a prompt: "ask the agent over there". Like
+    /// a tab it maps to the receiver's checkout of the same project. The prompt runs only when
+    /// the receiver accepts: then its midnad opens a new agent terminal there with it. With
+    /// `want_reply`, that midnad sends the agent's last message of its first turn back as a
+    /// message whose `reply_to` is this share.
+    AgentStart {
+        /// The new terminal's name.
+        title: String,
+        agent: AgentKind,
+        /// The git repo the sender was in, when it had a remote. None: `cwd` is all there is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<TabProject>,
+        /// The sender's directory (absolute).
+        cwd: String,
+        /// What to ask the agent: its first prompt, at most [`MAX_PROMPT`] bytes.
+        prompt: String,
+        /// Send the agent's answer back once its first turn ends.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        want_reply: bool,
     },
 }
 
@@ -871,6 +894,7 @@ impl SharePayload {
             SharePayload::Tab { .. } => ShareKind::Tab,
             SharePayload::Object { .. } => ShareKind::Object,
             SharePayload::Agent { .. } => ShareKind::Agent,
+            SharePayload::AgentStart { .. } => ShareKind::AgentStart,
         }
     }
 
@@ -893,6 +917,7 @@ impl SharePayload {
             SharePayload::Tab { scrollback, .. } => scrollback.len() as u64,
             SharePayload::Object { object } => serde_json::to_vec(object).map(|b| b.len() as u64).unwrap_or(0),
             SharePayload::Agent { transcript, .. } => transcript.size,
+            SharePayload::AgentStart { prompt, .. } => prompt.len() as u64,
         }
     }
 
@@ -985,6 +1010,24 @@ impl SharePayload {
                     return Err(format!("{} isn't where {} keeps conversation {conversation}", transcript.path, agent.as_str()));
                 }
             }
+            SharePayload::AgentStart { title, project, cwd, prompt, .. } => {
+                if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
+                    return Err(format!("an agent start's title is one line of at most {MAX_TITLE} bytes"));
+                }
+                if !cwd.starts_with('/') || cwd.len() > MAX_DIR || !plain(cwd) {
+                    return Err("an agent start's directory must be an absolute path".into());
+                }
+                check_project(project.as_ref())?;
+                if prompt.trim().is_empty() {
+                    return Err("the prompt is empty".into());
+                }
+                if prompt.len() > MAX_PROMPT {
+                    return Err(format!("a prompt may be at most {} KiB; send the rest as a file or snippet", MAX_PROMPT / 1024));
+                }
+                if prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+                    return Err("a prompt is plain text".into());
+                }
+            }
         }
         Ok(())
     }
@@ -1030,12 +1073,23 @@ pub enum ShareKind {
     Object,
     /// An agent's terminal (`session`): its conversation, resumed on the receiving Mac.
     Agent,
+    /// A new agent started on the receiving Mac with a prompt (`agent-start`).
+    AgentStart,
 }
 
 impl ShareKind {
     /// The kinds a device can auto-accept (`peers.set_auto_accept`). An agent session always
-    /// asks: accepting it starts an agent here.
-    pub const ALL: [ShareKind; 6] = [ShareKind::Message, ShareKind::Snippet, ShareKind::Link, ShareKind::File, ShareKind::Tab, ShareKind::Object];
+    /// asks (its transcript would replace what the agent remembers here); an agent start may be
+    /// auto-accepted from one of my devices, which then runs its prompt without asking.
+    pub const ALL: [ShareKind; 7] = [
+        ShareKind::Message,
+        ShareKind::Snippet,
+        ShareKind::Link,
+        ShareKind::File,
+        ShareKind::Tab,
+        ShareKind::Object,
+        ShareKind::AgentStart,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1046,12 +1100,14 @@ impl ShareKind {
             ShareKind::Tab => "tab",
             ShareKind::Object => "object",
             ShareKind::Agent => "agent",
+            ShareKind::AgentStart => "agent_start",
         }
     }
 
-    /// A kind by name; plurals (`links`) too.
+    /// A kind that may be auto-accepted, by name; plurals (`links`) and dashes (`agent-start`)
+    /// too.
     pub fn parse(s: &str) -> Option<ShareKind> {
-        let s = s.trim().to_lowercase();
+        let s = s.trim().to_lowercase().replace('-', "_");
         let s = s.strip_suffix('s').unwrap_or(&s);
         ShareKind::ALL.into_iter().find(|k| k.as_str() == s)
     }
@@ -1180,9 +1236,20 @@ pub struct ShareSendParams {
     pub path: Option<String>,
     /// A tab or an agent session only: the terminal to send (default the caller's). midnad reads
     /// its project and directory, and a tab's scrollback or an agent's conversation; `title`
-    /// names it instead of the terminal's name.
+    /// names it instead of the terminal's name. An agent start: the terminal whose project and
+    /// directory the new agent opens in (default the caller's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// An agent start: what to ask the new agent (its first prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// An agent start: which agent (default the sending terminal's, else claude).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
+    /// An agent start: have the other Mac send the agent's answer back when its first turn ends
+    /// (a message replying to this share; `share.answer` waits for it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub want_reply: bool,
     /// An object: which kind. midnad reads it from its stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<ObjectType>,
@@ -1207,8 +1274,11 @@ impl ShareSendParams {
         if self.path.is_some() != (self.kind == ShareKind::File) {
             return Err(if self.path.is_some() { "only a file has a `path`".into() } else { "a file needs `path`".into() });
         }
-        if self.session.is_some() && !matches!(self.kind, ShareKind::Tab | ShareKind::Agent) {
-            return Err("only a tab or an agent session takes a `session`".into());
+        if self.session.is_some() && !matches!(self.kind, ShareKind::Tab | ShareKind::Agent | ShareKind::AgentStart) {
+            return Err("only a tab, an agent session or an agent start takes a `session`".into());
+        }
+        if (self.prompt.is_some() || self.agent.is_some() || self.want_reply) && self.kind != ShareKind::AgentStart {
+            return Err("only an agent start takes a `prompt`, an `agent` or `want_reply`".into());
         }
         if self.object.is_some() != (self.kind == ShareKind::Object) {
             return Err(if self.object.is_some() { "only an object share names an `object`".into() } else { "an object share needs `object`".into() });
@@ -1235,6 +1305,7 @@ impl ShareSendParams {
             ShareKind::Tab => return Err("a tab is read from its terminal by midnad".into()),
             ShareKind::Object => return Err("an object share is read from midnad's stores".into()),
             ShareKind::Agent => return Err("an agent session is read from its terminal by midnad".into()),
+            ShareKind::AgentStart => return Err("an agent start's project and directory are read from its terminal by midnad".into()),
         };
         p.check()?;
         Ok(p)
@@ -1264,8 +1335,8 @@ pub struct ShareAcceptParams {
     /// A link: open it (default) or pin it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ShareLinkAction>,
-    /// A tab or an agent session: open it in this folder on this Mac instead of where its
-    /// project maps to.
+    /// A tab, an agent session or an agent start: open it in this folder on this Mac instead of
+    /// where its project maps to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 }
@@ -1300,6 +1371,31 @@ pub struct InboxListResult {
     pub items: Vec<ShareItem>,
     /// Incoming shares still waiting for this Mac's person.
     pub waiting: usize,
+}
+
+/// The most `share.answer` waits in one call.
+pub const MAX_ANSWER_WAIT_SECS: u64 = 600;
+
+/// `share.answer`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareAnswerParams {
+    /// An agent start this Mac sent with `want_reply` (`sh_…`).
+    pub id: String,
+    /// Wait up to this many seconds (at most [`MAX_ANSWER_WAIT_SECS`]) for the answer. Omitted:
+    /// answer at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_secs: Option<u64>,
+}
+
+/// `share.answer`: the agent start as it is now, and its answer once it came.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareAnswerResult {
+    /// The agent start (outgoing): offered, accepted or declined.
+    pub share: ShareItem,
+    /// The other Mac's agent's answer: the incoming message replying to it. None: not yet (or
+    /// not before `wait_secs` ran out, or it was declined).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<ShareItem>,
 }
 
 #[cfg(test)]
@@ -1444,6 +1540,48 @@ mod tests {
         }
         let p: ShareSendParams = serde_json::from_value(serde_json::json!({ "peer": "f", "kind": "agent", "session": "t1" })).unwrap();
         assert!(p.payload().is_err(), "midnad reads an agent session itself");
+    }
+
+    #[test]
+    fn agent_start_payloads() {
+        let check = |v: serde_json::Value| serde_json::from_value::<SharePayload>(v).unwrap().check();
+        let start = serde_json::json!({ "kind": "agent_start", "title": "ask", "agent": "codex", "project": { "remote": "github.com/a/b", "path": "" }, "cwd": "/w/b", "prompt": "Why does\n\tthe build fail?", "want_reply": true });
+        assert_eq!(check(start.clone()), Ok(()));
+        let p: SharePayload = serde_json::from_value(start.clone()).unwrap();
+        assert_eq!((p.kind(), p.size(), p.files().len()), (ShareKind::AgentStart, 25, 0));
+        let mut quiet = start.clone();
+        quiet.as_object_mut().unwrap().remove("want_reply");
+        let SharePayload::AgentStart { want_reply, .. } = serde_json::from_value(quiet).unwrap() else { unreachable!() };
+        assert!(!want_reply, "want_reply defaults off");
+        for (k, v) in [
+            ("prompt", serde_json::json!(" \n")),
+            ("prompt", serde_json::json!("x".repeat(MAX_PROMPT + 1))),
+            ("prompt", serde_json::json!("run\x1b[2Jthis")),
+            ("title", serde_json::json!("")),
+            ("cwd", serde_json::json!("w/b")),
+            ("project", serde_json::json!({ "remote": "", "path": "" })),
+        ] {
+            let mut bad = start.clone();
+            bad[k] = v;
+            assert!(check(bad.clone()).is_err(), "{bad}");
+        }
+
+        assert_eq!(ShareKind::parse("agent-start"), Some(ShareKind::AgentStart));
+        assert_eq!(ShareKind::parse("agent_starts"), Some(ShareKind::AgentStart));
+        assert_eq!(ShareKind::parse("agent"), None, "an agent session never auto-accepts");
+        assert_eq!(serde_json::to_value(ShareKind::AgentStart).unwrap(), "agent_start");
+        assert_eq!(ShareKind::AgentStart.as_str(), "agent_start");
+
+        let send = |v: serde_json::Value| serde_json::from_value::<ShareSendParams>(v).unwrap().payload();
+        let read_by_midnad = send(serde_json::json!({ "peer": "f", "kind": "agent_start", "prompt": "hi", "agent": "claude", "want_reply": true })).unwrap_err();
+        assert!(read_by_midnad.contains("read from its terminal by midnad"), "{read_by_midnad}");
+        for bad in [
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "prompt": "x" }),
+            serde_json::json!({ "peer": "f", "kind": "tab", "agent": "claude" }),
+            serde_json::json!({ "peer": "f", "kind": "snippet", "text": "hi", "want_reply": true }),
+        ] {
+            assert!(send(bad.clone()).unwrap_err().contains("only an agent start"), "{bad}");
+        }
     }
 
     #[test]

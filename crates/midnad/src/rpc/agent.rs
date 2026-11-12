@@ -66,6 +66,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
                 let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("");
                 crate::resume::on_failure(d, &sid, s("error"), s("error_details"), s("last_assistant_message"));
             }
+            // An agent started from a paired Mac that wants its answer back.
+            let failed = (ev == "StopFailure").then(|| payload.get("error").and_then(Value::as_str).unwrap_or("unknown error"));
+            crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last_assistant_message").and_then(Value::as_str), failed);
         }
         "agent-turn-complete" => {
             // Codex 0.160.0 also notifies for its internal title-generation turn (a separate
@@ -88,6 +91,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
                 start_turn(d, &sid, &project, &actor);
             }
             end_turn(d, &sid, &project, &actor, ev, payload.get("last-assistant-message").and_then(Value::as_str));
+            crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last-assistant-message").and_then(Value::as_str), None);
         }
         _ => {}
     }

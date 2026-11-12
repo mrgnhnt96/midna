@@ -254,7 +254,7 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             Ok(())
         }
         "auto-accept" | "auto" => {
-            const USAGE: &str = "peers auto-accept <name or id> <kinds|all> on|off (kinds: message, snippet, link, file, tab, object)";
+            const USAGE: &str = "peers auto-accept <name or id> <kinds|all> on|off (kinds: message, snippet, link, file, tab, object, agent-start)";
             let pos = a.pos.get(2..).unwrap_or_default();
             let [who @ .., kinds, on] = pos else { return Err(Fail::Usage(USAGE.into())) };
             let on = match on.as_str() {
@@ -303,10 +303,29 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
 }
 
 /// Flags `share` and `inbox` take a value from (`--link <url>`, `--file <path>`, `--object <type>`,
-/// `--into <terminal>`).
-pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "object", "into"];
+/// `--into <terminal>`, `--to <device>`).
+const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "object", "into", "to"];
 /// Flags that take a value elsewhere and none here.
-pub const SHARE_BOOL_FLAGS: &[&str] = &["agent"];
+const SHARE_BOOL_FLAGS: &[&str] = &["agent", "wait"];
+/// `share send agent-start`: `--agent claude|codex` picks the agent.
+const AGENT_START_BOOL_FLAGS: &[&str] = &["wait"];
+/// How long `share send agent-start --wait` waits for the answer without `--timeout`.
+const ANSWER_WAIT_DEFAULT: u64 = 30 * 60;
+
+/// The arguments of `share` and `inbox`, whose flags differ from other commands'.
+pub fn parse_args(raw: Vec<String>) -> Result<Args, crate::args::ArgError> {
+    let a = Args::parse_flags(raw.clone(), SHARE_VALUE_FLAGS, SHARE_BOOL_FLAGS)?;
+    if is_agent_start(&a) {
+        return Args::parse_flags(raw, SHARE_VALUE_FLAGS, AGENT_START_BOOL_FLAGS);
+    }
+    Ok(a)
+}
+
+fn is_agent_start(a: &Args) -> bool {
+    a.pos.first().map(String::as_str) == Some("share")
+        && a.pos.get(1).map(String::as_str) == Some("send")
+        && a.pos.get(2).is_some_and(|k| nb::ShareKind::parse(k) == Some(nb::ShareKind::AgentStart))
+}
 
 /// The paired device `who` names.
 fn paired(who: &str) -> Result<String, Fail> {
@@ -361,6 +380,9 @@ fn each_of(v: &Value) -> Vec<Value> {
 
 fn kind_word(item: &Value) -> String {
     let p = &item["payload"];
+    if p["kind"] == "agent_start" {
+        return format!("{} start “{}”", s(p, "agent"), s(p, "title"));
+    }
     if p["kind"] == "object" {
         return object_word(&p["object"]);
     }
@@ -392,6 +414,14 @@ fn preview(item: &Value) -> String {
             Some(n) if p["folder"] == true => format!("{size}, {n} file{}", if n == 1 { "" } else { "s" }),
             _ => size,
         };
+    }
+    if p["kind"] == "agent_start" {
+        let first = p["prompt"].as_str().unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let mut short: String = first.chars().take(60).collect();
+        if short.len() < first.len() {
+            short.push('…');
+        }
+        return short;
     }
     if p["kind"] == "tab" || p["kind"] == "agent" {
         let place = p["project"]["remote"].as_str().map(|r| match p["project"]["path"].as_str() {
@@ -451,6 +481,21 @@ fn share_line(item: &Value) -> String {
 }
 
 fn print_sent(v: &Value) {
+    if v["payload"]["kind"] == "agent_start" {
+        let back = if v["payload"]["want_reply"] == true {
+            format!("; its answer comes back when its first turn ends (midna share answer {})", s(v, "id"))
+        } else {
+            String::new()
+        };
+        println!(
+            "Offered {} to {} ({}). Nothing runs until they accept it on their Mac; then a new {} terminal there gets the prompt{back}.",
+            kind_word(v),
+            s(v, "peer_name"),
+            s(v, "id"),
+            s(&v["payload"], "agent")
+        );
+        return;
+    }
     if v["payload"]["kind"] == "agent" {
         println!(
             "Offered the conversation {} ({}) to {} ({}). Nothing moves until they accept it on their Mac; then their Mac \
@@ -499,6 +544,17 @@ fn print_item(v: &Value) {
     if let Some(r) = p["reply_to"].as_str() {
         println!("in reply to {r}");
     }
+    if p["kind"] == "agent_start" {
+        let place = match (p["project"]["remote"].as_str(), p["project"]["path"].as_str()) {
+            (Some(r), Some(path)) => format!("{r}/{path} (in {})", s(p, "cwd")),
+            (Some(r), None) => format!("{r} (in {})", s(p, "cwd")),
+            _ => s(p, "cwd"),
+        };
+        let back = if p["want_reply"] == true { ", answer wanted" } else { "" };
+        println!("{} in {place}{back}", s(p, "agent"));
+        println!("{}", p["prompt"].as_str().unwrap_or("").trim_end_matches('\n'));
+        return;
+    }
     if p["kind"] == "agent" {
         let t = &p["transcript"];
         println!("{} conversation {} in {}, transcript {}", s(p, "agent"), s(p, "conversation"), s(p, "cwd"), nb::size_label(t["size"].as_u64().unwrap_or(0)));
@@ -540,13 +596,16 @@ fn print_item(v: &Value) {
 /// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, a
 /// file or folder (`--file <path>`, or a single word that names one), a terminal tab (`--tab`), or
 /// an agent terminal's conversation (`--agent`), or one of Midna's own things (`--object <type> [ids…]`).
+/// `share send agent-start …` starts an agent there instead ([`agent_start`]).
 pub fn share(a: &Args, out: OutFn) -> Res {
-    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session"])?;
     match a.pos.get(1).map(String::as_str) {
+        Some("send") if is_agent_start(a) => return agent_start(a, out),
         Some("send") => {}
-        Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
+        Some("answer") => return answer(a, out),
+        Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send or answer; incoming shares: midna inbox)"))),
         None => return Err(Fail::Usage("share send <peer> [text…] (or text on stdin, or --link <url>)".into())),
     }
+    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session"])?;
     let who = a.need(2, "which paired device (midna peers lists them)")?;
     if let Some(object) = a.get("object") {
         if a.get("file").is_some() || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") {
@@ -616,6 +675,91 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     }
     let v = call("share.send", params)?;
     out(&v, &print_sent);
+    Ok(())
+}
+
+const AGENT_START_USAGE: &str =
+    "share send agent-start --to <device> --prompt <text> [--agent claude|codex] [--session <terminal>] [--title <t>] [--wait [--timeout 30m]]";
+
+/// `midna share send agent-start --to <device> --prompt <text>`: start an agent on a paired
+/// device, in its checkout of this terminal's project (or `--session`'s), with that prompt. The
+/// prompt may also come as words or on stdin. With `--wait`, wait for its answer and print it.
+fn agent_start(a: &Args, out: OutFn) -> Res {
+    a.check(&["to", "prompt", "agent", "session", "title", "wait", "timeout"])?;
+    let who = a.get("to").ok_or_else(|| Fail::Usage(format!("which device? --to <name or id> (midna peers lists them); {AGENT_START_USAGE}")))?;
+    let words = a.text(3);
+    let prompt = match a.get("prompt") {
+        Some(_) if !words.is_empty() => return Err(Fail::Usage(format!("give the prompt once: --prompt <text>, words or stdin; {AGENT_START_USAGE}"))),
+        Some(p) => p.to_string(),
+        None if !words.is_empty() => words,
+        None => {
+            use std::io::{IsTerminal, Read};
+            if std::io::stdin().is_terminal() {
+                return Err(Fail::Usage(format!("what should it ask? --prompt <text> (or pipe it on stdin); {AGENT_START_USAGE}")));
+            }
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t).map_err(|e| Fail::Usage(format!("reading stdin: {e}")))?;
+            t
+        }
+    };
+    let timeout = match a.get("timeout") {
+        Some(_) if !a.has("wait") => return Err(Fail::Usage("--timeout is for --wait".into())),
+        Some(t) => crate::triggers::parse_duration(t, 1).map_err(|e| Fail::Usage(format!("--timeout {e}")))?,
+        None => ANSWER_WAIT_DEFAULT,
+    };
+    let mut params = json!({ "peer": paired(who)?, "kind": "agent_start", "prompt": prompt, "want_reply": a.has("wait") });
+    for k in ["agent", "session", "title"] {
+        if let Some(v) = a.get(k) {
+            params[k] = json!(v);
+        }
+    }
+    let v = call("share.send", params)?;
+    if !a.has("wait") {
+        out(&v, &print_sent);
+        return Ok(());
+    }
+    let id = s(&v, "id");
+    eprintln!("Offered {} to {} ({id}); waiting for its answer…", kind_word(&v), s(&v, "peer_name"));
+    wait_for_answer(&id, timeout, out)
+}
+
+/// `midna share answer <id> [--wait] [--timeout 30m]`: the answer to an agent start sent with
+/// `--wait`, waiting for it with `--wait`.
+fn answer(a: &Args, out: OutFn) -> Res {
+    a.check(&["wait", "timeout"])?;
+    let id = a.need(2, "which agent start (sh_…; midna inbox --out lists them)")?;
+    let timeout = match a.get("timeout") {
+        Some(t) => crate::triggers::parse_duration(t, 1).map_err(|e| Fail::Usage(format!("--timeout {e}")))?,
+        None if a.has("wait") => ANSWER_WAIT_DEFAULT,
+        None => 0,
+    };
+    wait_for_answer(id, timeout, out)
+}
+
+/// Wait up to `timeout` seconds for agent start `id`'s answer and print it.
+fn wait_for_answer(id: &str, timeout: u64, out: OutFn) -> Res {
+    // The daemon waits at most MAX_ANSWER_WAIT_SECS per call; ask again until the timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let v = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now()).as_secs().min(nb::MAX_ANSWER_WAIT_SECS);
+        let v = call("share.answer", json!({ "id": id, "wait_secs": left }))?;
+        if !v["answer"].is_null() || v["share"]["state"] == "declined" || std::time::Instant::now() >= deadline {
+            break v;
+        }
+    };
+    out(&v, &|v| {
+        if let Some(text) = v["answer"]["payload"]["text"].as_str() {
+            println!("{}", text.trim_end_matches('\n'));
+        }
+    });
+    let share = &v["share"];
+    if share["state"] == "declined" {
+        return Err(Fail::Other(format!("{} declined {id}; nothing ran there", s(share, "peer_name"))));
+    }
+    if v["answer"].is_null() {
+        let at = if share["state"] == "offered" { "still waits for them to accept it" } else { "was accepted; its agent hasn't finished its first turn" };
+        return Err(Fail::Pending(format!("{id} {at}; ask again: midna share answer {id} --wait")));
+    }
     Ok(())
 }
 
