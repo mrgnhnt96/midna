@@ -20,6 +20,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "windows.close_with_terminals" => "When you close one main window while another is open.",
         "nearby.visibility" => "Everyone lasts 10 minutes, then it's paired devices only again.",
         "nearby.name" => "Empty uses this Mac's computer name.",
+        "nearby.downloads" => "Where files you accept are saved; empty is ~/Downloads/Midna.",
         "finder.quick_action" => "Right-click a folder in Finder to open it in midna.",
         // Appearance
         "theme" => "Colors for the app and its terminals.",

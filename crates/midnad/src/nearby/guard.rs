@@ -53,6 +53,18 @@ pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(
             let named = title.as_deref().map(|t| format!("{t}\n")).unwrap_or_default();
             (format!("Send {name} a link?"), format!("{named}{}", cut(url)))
         }
+        SharePayload::File { name: file, folder, files, .. } => {
+            let size = nb::size_label(payload.size());
+            let shown = nb::safe_name(file);
+            let listed = files.iter().take(20).map(|f| format!("  {}  {}", f.path, nb::size_label(f.size))).collect::<Vec<_>>().join("\n");
+            let more = if files.len() > 20 { format!("\n  … and {} more", files.len() - 20) } else { String::new() };
+            if *folder {
+                let n = files.len();
+                (format!("Send {name} the folder “{shown}”?"), format!("{shown} ({size}, {n} file{})\n{listed}{more}", if n == 1 { "" } else { "s" }))
+            } else {
+                (format!("Send {name} the file “{shown}”?"), format!("{shown} ({size})"))
+            }
+        }
     };
     let value = send_value(payload, fp);
     let detail = format!(

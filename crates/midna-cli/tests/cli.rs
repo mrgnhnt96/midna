@@ -559,6 +559,14 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
     assert_eq!(code(&midna(&s, &["inbox", "accept", "sh_abcdabcd", "--open"], None, None)), 2);
     let o = midna(&s, &["share", "send", "Bravo", "--link", "https://example.com", "--title", "t"], None, None);
     assert!(err(&o).contains("no paired device"), "--link takes a value: {}", err(&o));
+    // A file or folder goes on its own: `--file <path>`, or one word that names one.
+    assert_eq!(code(&midna(&s, &["share", "send", "Bravo", "--file"], None, None)), 2);
+    let o = midna(&s, &["share", "send", "Bravo", "--file", "/tmp", "and words"], None, None);
+    assert!(code(&o) == 2 && err(&o).contains("a file is sent on its own"), "{}", err(&o));
+    let o = midna(&s, &["share", "send", "Bravo", "--file", "/tmp", "--message"], None, None);
+    assert!(code(&o) == 2 && err(&o).contains("a file is sent on its own"), "{}", err(&o));
+    let o = midna(&s, &["share", "send", "Bravo", "/tmp"], None, None);
+    assert!(code(&o) == 2 && err(&o).contains("no paired device"), "{}", err(&o));
     let o = midna(&s, &["call", "share.send", r#"{"peer":"ab","kind":"link","url":"javascript:alert(1)"}"#], None, None);
     assert_eq!(code(&o), 2, "{o:?}");
 }

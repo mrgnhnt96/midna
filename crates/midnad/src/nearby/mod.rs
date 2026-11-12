@@ -28,6 +28,7 @@ pub mod link;
 pub mod pairing;
 pub mod share;
 pub mod store;
+pub mod transfer;
 pub mod transport;
 
 use crate::daemon::Daemon;
@@ -67,11 +68,13 @@ pub struct Setup {
     pub local_only: bool,
     /// How long `everyone` lasts before going back to `paired` (tests shorten it).
     pub everyone_secs: i64,
+    /// A pause after each file chunk this Mac sends (tests slow transfers down to cut them).
+    pub serve_delay: Duration,
 }
 
 impl Default for Setup {
     fn default() -> Setup {
-        Setup { mode: Mode::Off, local_only: false, everyone_secs: nb::EVERYONE_SECS }
+        Setup { mode: Mode::Off, local_only: false, everyone_secs: nb::EVERYONE_SECS, serve_delay: Duration::ZERO }
     }
 }
 
@@ -139,6 +142,8 @@ pub struct Runtime {
     conns: AtomicUsize,
     /// Set and notified when a share result is owed (`share.rs`'s delivery thread waits on it).
     wake: Arc<(Mutex<bool>, Condvar)>,
+    /// Set and notified when a file share is accepted (`transfer.rs`'s thread waits on it).
+    fetch: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Runtime {
@@ -268,6 +273,7 @@ pub fn start(d: &Arc<Daemon>) {
                 d.nearby.inner().port = Some(port);
                 link::listen(d, listener);
                 share::start(d);
+                transfer::start(d);
                 Ok(port)
             }
             Err(e) => Err(e),

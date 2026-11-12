@@ -8,13 +8,14 @@
 //! on it: a message is marked read, a snippet is pasted into the terminal they pick (never
 //! followed by Enter), a link is opened or pinned. Accepting or declining owes the sender a
 //! [`Wire::ShareResult`], delivered at once if it can be seen and retried while it can't.
+//! Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{identity, link};
+use super::{identity, link, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
-    self as nb, InboxListParams, InboxListResult, ShareAcceptParams, ShareDeclineParams, ShareDirection, ShareItem, ShareLinkAction,
-    SharePayload, ShareSendParams, ShareState, Tier,
+    self as nb, InboxListParams, InboxListResult, ShareAcceptParams, ShareDeclineParams, ShareDirection, ShareItem, ShareKind,
+    ShareLinkAction, SharePayload, ShareSendParams, ShareState, Tier,
 };
 use midna_proto::{ActionKind, Actor, ApprovalRequest, LinksAddParams, NeedsYou, NeedsYouKind, PolicyAction, RpcError, kinds, time};
 use serde::{Deserialize, Serialize};
@@ -39,11 +40,14 @@ pub const ACCEPT_METHOD: &str = "share.accept";
 pub const DECLINE_METHOD: &str = "share.decline";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Entry {
-    item: ShareItem,
+pub(super) struct Entry {
+    pub(super) item: ShareItem,
     /// Incoming and decided: the sender hasn't been told yet.
     #[serde(default)]
-    owe: bool,
+    pub(super) owe: bool,
+    /// An outgoing file share: the file or folder on this Mac it is served from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source: Option<PathBuf>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -55,7 +59,7 @@ struct File {
 /// `nearby/inbox.json`, oldest first.
 pub struct Inbox {
     path: PathBuf,
-    items: Vec<Entry>,
+    pub(super) items: Vec<Entry>,
 }
 
 pub fn path(home: &Path) -> PathBuf {
@@ -75,11 +79,11 @@ impl Inbox {
         Inbox { path, items: file.items }
     }
 
-    fn get(&self, id: &str) -> Option<&Entry> {
+    pub(super) fn get(&self, id: &str) -> Option<&Entry> {
         self.items.iter().find(|e| e.item.id == id)
     }
 
-    fn get_mut(&mut self, id: &str) -> Option<&mut Entry> {
+    pub(super) fn get_mut(&mut self, id: &str) -> Option<&mut Entry> {
         self.items.iter_mut().find(|e| e.item.id == id)
     }
 
@@ -88,16 +92,19 @@ impl Inbox {
         self.prune();
     }
 
-    /// Drop the oldest shares past the limits, decided ones (that owe nothing) before waiting ones.
+    /// Drop the oldest shares past the limits, decided ones (that owe nothing) before waiting
+    /// ones. A file share whose files are still moving is never dropped.
     fn prune(&mut self) {
-        let bytes = |items: &[Entry]| items.iter().map(|e| e.item.size).sum::<u64>();
+        let bytes = |items: &[Entry]| items.iter().map(|e| kept_bytes(&e.item)).sum::<u64>();
         while self.items.len() > MAX_KEPT || (self.items.len() > 1 && bytes(&self.items) > MAX_KEPT_BYTES) {
-            let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && !e.owe);
-            self.items.remove(done.unwrap_or(0));
+            let moving = |e: &Entry| e.item.transfer.as_ref().is_some_and(|t| !t.is_over());
+            let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && !e.owe && !moving(e));
+            let Some(at) = done.or_else(|| self.items.iter().position(|e| !moving(e))) else { return };
+            self.items.remove(at);
         }
     }
 
-    fn save(&self) -> Result<(), RpcError> {
+    pub(super) fn save(&self) -> Result<(), RpcError> {
         self.write().map_err(|e| RpcError::internal(format!("saving the inbox: {e}")))
     }
 
@@ -115,6 +122,14 @@ impl Inbox {
     }
 }
 
+/// What a share takes up in the inbox: a file share keeps only its list of files.
+fn kept_bytes(it: &ShareItem) -> u64 {
+    match &it.payload {
+        SharePayload::File { files, dirs, .. } => files.iter().map(|f| 80 + f.path.len() as u64).chain(dirs.iter().map(|d| d.len() as u64)).sum(),
+        _ => it.size,
+    }
+}
+
 fn peer_name(d: &Daemon, fp: &str) -> String {
     let mut i = d.nearby.inner();
     let stored = i.store(&d.cfg.home).get(fp).map(|s| s.name.clone());
@@ -127,7 +142,16 @@ fn emit(d: &Daemon, kind: &str, by: Actor, item: &ShareItem) {
 
 /// `share.send`: offer a paired device a share and wait until it is in its inbox.
 pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
-    let payload = p.payload().map_err(RpcError::bad_params)?;
+    let (payload, source) = if p.kind == ShareKind::File {
+        if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() {
+            return Err(RpcError::bad_params("a file takes only `path`"));
+        }
+        let path = p.path.as_deref().ok_or_else(|| RpcError::bad_params("a file needs `path`"))?;
+        let (payload, source) = transfer::prepare(path)?;
+        (payload, Some(source))
+    } else {
+        (p.payload().map_err(RpcError::bad_params)?, None)
+    };
     let fp = p.peer.trim().to_lowercase();
     super::guard::send(d, ctx, &payload, &fp)?;
     let mut ch = link::connect_peer(d, &fp)?;
@@ -154,11 +178,12 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
         decided_at: None,
         result: None,
         needs_you_id: None,
+        transfer: None,
     };
     {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
-        inbox.push(Entry { item: item.clone(), owe: false });
+        inbox.push(Entry { item: item.clone(), owe: false, source });
         inbox.save()?;
     }
     emit(d, kinds::SHARE_SENT, ctx.actor(), &item);
@@ -201,6 +226,7 @@ pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
         decided_at: None,
         result: None,
         needs_you_id: None,
+        transfer: None,
     };
     {
         let mut i = d.nearby.inner();
@@ -214,7 +240,7 @@ pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
         if waiting >= nb::MAX_PENDING_FROM {
             return refuse("inbox_full: too many of your shares are waiting on this Mac");
         }
-        inbox.push(Entry { item: item.clone(), owe: false });
+        inbox.push(Entry { item: item.clone(), owe: false, source: None });
         if let Err(e) = inbox.save() {
             inbox.items.retain(|e| e.item.id != id);
             return refuse(&e.message);
@@ -240,7 +266,7 @@ pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
 }
 
 /// The first `n` characters of `s`, with … when cut.
-fn cut(s: &str, n: usize) -> String {
+pub(super) fn cut(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n).collect();
     if out.len() < s.len() {
         out.push('…');
@@ -281,6 +307,20 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier) -> String {
             format!("{}\n\nApproving opens it in your browser. To pin it to a terminal's links instead: midna inbox accept {} --pin --into <terminal>", cut(url, 2000), it.id),
             json!({ "id": it.id, "action": "open" }),
         ),
+        SharePayload::File { name, folder, files, .. } => {
+            let what = if *folder { "folder" } else { "file" };
+            let count = if *folder { format!(", {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }) } else { String::new() };
+            let to = transfer::downloads(d).map(|p| p.display().to_string()).unwrap_or_else(|_| "your downloads folder".into());
+            (
+                format!("{name} sent a {what}: {} ({}{count})", cut(&nb::safe_name(name), 80), nb::size_label(it.size)),
+                format!(
+                    "{}{count}, {}.\n\nApproving saves it into {to}, marked as downloaded; nothing is opened or run.",
+                    nb::safe_name(name),
+                    nb::size_label(it.size)
+                ),
+                json!({ "id": it.id }),
+            )
+        }
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -360,6 +400,7 @@ pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
     if p.action.is_some() && !matches!(it.payload, SharePayload::Link { .. }) {
         return Err(RpcError::bad_params("only a link takes an action (open | pin)"));
     }
+    let file = matches!(it.payload, SharePayload::File { .. });
     let result = match &it.payload {
         SharePayload::Message { .. } => {
             if p.session.is_some() {
@@ -396,6 +437,12 @@ pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
                 format!("pinned to {sid}")
             }
         },
+        SharePayload::File { .. } => {
+            if p.session.is_some() {
+                return Err(RpcError::bad_params("a file isn't pasted; it is saved into nearby.downloads"));
+            }
+            transfer::accepting(d, &it)?
+        }
     };
     let (item, first, ny) = {
         let mut i = d.nearby.inner();
@@ -421,6 +468,10 @@ pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
     if first {
         emit(d, kinds::SHARE_ACCEPTED, ctx.actor(), &item);
         nudge(d);
+    }
+    if file {
+        transfer::begin(d, &item.id);
+        return ok(incoming_item(d, &item.id).unwrap_or(item));
     }
     ok(item)
 }
@@ -615,8 +666,10 @@ mod tests {
                 decided_at: None,
                 result: None,
                 needs_you_id: None,
+                transfer: None,
             },
             owe: false,
+            source: None,
         }
     }
 

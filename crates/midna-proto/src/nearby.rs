@@ -371,6 +371,14 @@ pub const MAX_URL: usize = 4096;
 pub const MAX_TITLE: usize = 200;
 /// Offers from one device that may wait in the inbox at once; more are refused ("inbox full").
 pub const MAX_PENDING_FROM: usize = 50;
+/// … the files (and folders) in one file share.
+pub const MAX_FILES: usize = 4000;
+/// … a path inside a file share, in bytes.
+pub const MAX_PATH: usize = 1024;
+/// … one name (a path component), in bytes.
+pub const MAX_NAME: usize = 255;
+/// … how deep a folder's tree goes.
+pub const MAX_DEPTH: usize = 64;
 
 /// What a share carries. Nothing in it ever runs: it is data until the receiving person
 /// accepts it, and even then a snippet is pasted (never submitted) and a link opened or pinned.
@@ -396,6 +404,119 @@ pub enum SharePayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
+    /// A file (an image is one too) or a folder. Only the list travels with the offer; once the
+    /// receiver accepts, its midnad fetches the contents in chunks, checks each file's SHA-256 and
+    /// saves them under its `nearby.downloads` folder, picking up where it left off when the
+    /// connection drops.
+    File {
+        /// The file's or the folder's name: one path component.
+        name: String,
+        /// A folder: `files` and `dirs` are paths inside it and keep its tree. Otherwise `files`
+        /// is the one file, whose path is `name`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        folder: bool,
+        files: Vec<ShareFile>,
+        /// A folder's folders that hold no files (the rest follow from the files' paths).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dirs: Vec<String>,
+    },
+}
+
+/// One file in a file share.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareFile {
+    /// Its path inside the share: relative, `/`-separated, no `.` or `..` parts.
+    pub path: String,
+    pub size: u64,
+    /// SHA-256 of the whole file, lowercase hex.
+    pub sha256: String,
+}
+
+/// Is `s` a name a share may use for a file or folder: not empty, `.` or `..`, no `/`, NUL or
+/// other control character, at most [`MAX_NAME`] bytes?
+pub fn valid_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= MAX_NAME && s != "." && s != ".." && !s.chars().any(|c| c == '/' || c.is_control())
+}
+
+/// Is `p` a path a share may use inside its folder: relative, `/`-separated [`valid_name`]s, at
+/// most [`MAX_PATH`] bytes and [`MAX_DEPTH`] deep? Nothing like it can point outside the folder.
+pub fn valid_path(p: &str) -> bool {
+    p.len() <= MAX_PATH && p.split('/').count() <= MAX_DEPTH && p.split('/').all(valid_name)
+}
+
+/// `name` made safe to use as one file name, whatever it is: `/`, `:` and control characters
+/// become `-`, an empty name, `.` or `..` becomes `untitled`, and it is cut to [`MAX_NAME`] bytes.
+pub fn safe_name(name: &str) -> String {
+    let mut out: String = name.chars().map(|c| if c == '/' || c == ':' || c.is_control() { '-' } else { c }).collect();
+    let mut end = out.len().min(MAX_NAME);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    if out.trim().is_empty() || out == "." || out == ".." { "untitled".into() } else { out }
+}
+
+/// Bytes for people: `512 B`, `4.2 KB`, `31.0 MB`, `2.4 GB`.
+pub fn size_label(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut v = bytes as f64 / 1024.;
+    let mut unit = 0;
+    while v >= 1024. && unit < UNITS.len() - 1 {
+        v /= 1024.;
+        unit += 1;
+    }
+    format!("{v:.1} {}", UNITS[unit])
+}
+
+fn valid_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A file share's list, well formed: valid names and paths, no path twice (ignoring case, as
+/// macOS does), no file where another entry needs a folder, and sizes that add up.
+fn check_files(name: &str, folder: bool, files: &[ShareFile], dirs: &[String]) -> Result<(), String> {
+    use std::collections::HashSet;
+    if !valid_name(name) {
+        return Err("a shared file's name must be one plain name (no / or control characters, not . or ..)".into());
+    }
+    if files.len() + dirs.len() > MAX_FILES {
+        return Err(format!("a share may hold at most {MAX_FILES} files and folders; zip the folder"));
+    }
+    for f in files {
+        if !valid_sha256(&f.sha256) {
+            return Err(format!("{}: the checksum isn't a SHA-256", f.path));
+        }
+    }
+    if files.iter().try_fold(0u64, |n, f| n.checked_add(f.size)).is_none() {
+        return Err("the sizes don't add up".into());
+    }
+    if !folder {
+        return match files {
+            [one] if one.path == name && dirs.is_empty() => Ok(()),
+            _ => Err("a single file's share holds that one file, by its name".into()),
+        };
+    }
+    let mut seen = HashSet::new();
+    let mut needed_dirs = HashSet::new();
+    for p in files.iter().map(|f| &f.path).chain(dirs) {
+        if !valid_path(p) {
+            return Err(format!("{p:?} isn't a path inside the folder"));
+        }
+        if !seen.insert(p.to_lowercase()) {
+            return Err(format!("{p} is in the share twice"));
+        }
+        let parts: Vec<&str> = p.split('/').collect();
+        for n in 1..parts.len() {
+            needed_dirs.insert(parts[..n].join("/").to_lowercase());
+        }
+    }
+    if let Some(f) = files.iter().find(|f| needed_dirs.contains(&f.path.to_lowercase())) {
+        return Err(format!("{} is a file and a folder", f.path));
+    }
+    Ok(())
 }
 
 impl SharePayload {
@@ -404,14 +525,16 @@ impl SharePayload {
             SharePayload::Message { .. } => ShareKind::Message,
             SharePayload::Snippet { .. } => ShareKind::Snippet,
             SharePayload::Link { .. } => ShareKind::Link,
+            SharePayload::File { .. } => ShareKind::File,
         }
     }
 
-    /// Its size in bytes (the text or URL).
+    /// Its size in bytes (the text, the URL, or every file's contents).
     pub fn size(&self) -> u64 {
         match self {
             SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.len() as u64,
             SharePayload::Link { url, .. } => url.len() as u64,
+            SharePayload::File { files, .. } => files.iter().fold(0u64, |n, f| n.saturating_add(f.size)),
         }
     }
 
@@ -453,6 +576,7 @@ impl SharePayload {
                     return Err(format!("a title may be at most {MAX_TITLE} bytes"));
                 }
             }
+            SharePayload::File { name, folder, files, dirs } => check_files(name, *folder, files, dirs)?,
         }
         Ok(())
     }
@@ -469,6 +593,8 @@ pub enum ShareKind {
     Message,
     Snippet,
     Link,
+    /// A file, an image or a folder.
+    File,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -517,6 +643,53 @@ pub struct ShareItem {
     /// Incoming and still offered: the needs-you approval that asks this Mac's person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you_id: Option<String>,
+    /// A file share once accepted: how far its contents got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<Transfer>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferState {
+    /// Accepted; waiting its turn, or for the other device to be reachable again (`error` says
+    /// what went wrong last). It resumes where it stopped.
+    Waiting,
+    /// The contents are coming in (incoming) or being fetched (outgoing).
+    Moving,
+    /// Every file arrived with the right checksum and was saved (`saved_to`).
+    Done,
+    /// Given up (`error`); accepting it again starts over.
+    Failed,
+}
+
+/// How far a file share's contents got (event `share.progress`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Transfer {
+    pub state: TransferState,
+    /// Bytes that arrived (incoming) or were sent (outgoing) so far.
+    pub done: u64,
+    pub total: u64,
+    /// Files finished, of `files`.
+    pub files_done: usize,
+    pub files: usize,
+    /// How many times it picked up part way through a file after the connection dropped.
+    #[serde(default)]
+    pub resumed: u32,
+    /// Incoming and done: where it was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Transfer {
+    pub fn new(total: u64, files: usize) -> Transfer {
+        Transfer { state: TransferState::Waiting, done: 0, total, files_done: 0, files, resumed: 0, saved_to: None, error: None }
+    }
+
+    pub fn is_over(&self) -> bool {
+        matches!(self.state, TransferState::Done | TransferState::Failed)
+    }
 }
 
 /// `share.send`.
@@ -537,6 +710,9 @@ pub struct ShareSendParams {
     /// A message only: the share (`sh_…`) it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// A file: the absolute path of the file or folder to send. midnad reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl ShareSendParams {
@@ -549,6 +725,9 @@ impl ShareSendParams {
         }
         if self.url.is_some() && self.kind != ShareKind::Link {
             return Err("only a link has a `url`".into());
+        }
+        if self.path.is_some() != (self.kind == ShareKind::File) {
+            return Err(if self.path.is_some() { "only a file has a `path`".into() } else { "a file needs `path`".into() });
         }
         let p = match self.kind {
             ShareKind::Message => {
@@ -565,6 +744,7 @@ impl ShareSendParams {
                 let url = self.url.as_deref().map(str::trim).ok_or("a link needs `url`")?.to_string();
                 SharePayload::Link { url, title }
             }
+            ShareKind::File => return Err("a file share is read from `path` by midnad".into()),
         };
         p.check()?;
         Ok(p)
@@ -704,5 +884,60 @@ mod tests {
             assert_eq!(serde_json::to_value(v).unwrap(), v.as_str());
         }
         assert_eq!(Visibility::default(), Visibility::Paired);
+    }
+
+    #[test]
+    fn file_share_names_and_paths_stay_inside_the_folder() {
+        for bad in ["", ".", "..", "a/b", "a\0b", "a\nb", &"x".repeat(MAX_NAME + 1)] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        assert!(valid_name("a:b") && valid_name(".hidden") && valid_name("héllo wörld.txt"));
+        for bad in ["/etc/passwd", "a/../../b", "../a", "a/./b", "a//b", "a/", "", &"a/".repeat(MAX_DEPTH).to_string()] {
+            assert!(!valid_path(bad), "{bad:?}");
+        }
+        assert!(valid_path("a/b/c.txt") && valid_path("x"));
+
+        assert_eq!(safe_name("../x/y:z"), "..-x-y-z");
+        assert_eq!(safe_name(".."), "untitled");
+        assert_eq!(safe_name("  "), "untitled");
+        assert_eq!(safe_name("a\tb"), "a-b");
+        let long = safe_name(&"é".repeat(MAX_NAME));
+        assert!(long.len() <= MAX_NAME && valid_name(&long));
+
+        assert_eq!(size_label(0), "0 B");
+        assert_eq!(size_label(1023), "1023 B");
+        assert_eq!(size_label(1536), "1.5 KB");
+        assert_eq!(size_label(3 << 30), "3.0 GB");
+        assert_eq!(size_label(u64::MAX), "16777216.0 TB");
+    }
+
+    #[test]
+    fn a_file_share_list_must_be_well_formed() {
+        let sum = "0".repeat(64);
+        let f = |path: &str, size: u64| ShareFile { path: path.into(), size, sha256: sum.clone() };
+        let dirs = |d: &[&str]| d.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(check_files("a.txt", false, &[f("a.txt", 3)], &[]).is_ok());
+        assert!(check_files("a.txt", false, &[f("b.txt", 3)], &[]).is_err());
+        assert!(check_files("a.txt", false, &[f("a.txt", 3), f("b", 1)], &[]).is_err());
+        assert!(check_files("a.txt", false, &[f("a.txt", 3)], &dirs(&["d"])).is_err());
+        assert!(check_files("../a", false, &[f("../a", 3)], &[]).is_err());
+        let bad_sum = ShareFile { path: "a.txt".into(), size: 1, sha256: "A".repeat(64) };
+        assert!(check_files("a.txt", false, &[bad_sum], &[]).is_err());
+
+        assert!(check_files("d", true, &[f("x/y.txt", 1), f("z", 2)], &dirs(&["empty", "x/deeper"])).is_ok());
+        assert!(check_files("d", true, &[], &[]).is_ok());
+        for (files, ds) in [
+            (vec![f("../out", 1)], vec![]),
+            (vec![f("/abs", 1)], vec![]),
+            (vec![f("a", 1), f("A", 1)], vec![]),
+            (vec![f("a", 1)], dirs(&["a"])),
+            (vec![f("a", 1), f("a/b", 1)], vec![]),
+            (vec![f("a", u64::MAX), f("b", 1)], vec![]),
+            (vec![], dirs(&["x/../.."])),
+        ] {
+            assert!(check_files("d", true, &files, &ds).is_err(), "{files:?} {ds:?}");
+        }
+        let many: Vec<ShareFile> = (0..=MAX_FILES).map(|i| f(&format!("f{i}"), 0)).collect();
+        assert!(check_files("d", true, &many, &[]).is_err());
     }
 }
