@@ -229,6 +229,21 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             out(&v, &|v| println!("{}", pairing_line(v)));
             Ok(())
         }
+        "tier" => {
+            let who = a.pos.get(2..).map(|p| p.join(" ")).unwrap_or_default();
+            let Some(t) = a.get("as") else { return Err(Fail::Usage("peers tier <name or id> --as contact|my-device".into())) };
+            let Some(t) = midna_proto::nearby::Tier::parse(t) else {
+                return Err(Fail::Usage(format!("`{t}`: keep the device as contact or my-device")));
+            };
+            if who.trim().is_empty() {
+                return Err(Fail::Usage("peers tier <name or id> --as contact|my-device: which paired device".into()));
+            }
+            let list = call("peers.list", json!({}))?;
+            let fingerprint = find(list["paired"].as_array().map(Vec::as_slice).unwrap_or_default(), &who, "paired device")?;
+            let v = call("peers.set_tier", json!({ "fingerprint": fingerprint, "as": t }))?;
+            out(&v, &|v| println!("{} (id {}) is now kept as {}.", s(v, "name"), short_fingerprint(v["fingerprint"].as_str().unwrap_or("")), s(v, "tier")));
+            Ok(())
+        }
         "forget" | "unpair" => {
             let who = a.pos.get(2..).map(|p| p.join(" ")).unwrap_or_default();
             if who.trim().is_empty() {
@@ -240,6 +255,6 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             out(&v, &print_forgot);
             Ok(())
         }
-        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, pair, confirm, forget, visibility or name)"))),
+        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, pair, confirm, tier, forget, visibility or name)"))),
     }
 }

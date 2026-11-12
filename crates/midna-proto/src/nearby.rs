@@ -295,6 +295,15 @@ pub struct PeersForgetParams {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersSetTierParams {
+    /// The paired device's fingerprint.
+    pub fingerprint: String,
+    /// How to keep it from now on.
+    #[serde(rename = "as")]
+    pub tier: Tier,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PeersForgetResult {
     /// The device that was forgotten.
     pub forgotten: PairedPeer,

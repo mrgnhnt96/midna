@@ -461,6 +461,18 @@ pub fn withdraw_stale(d: &Daemon) {
     }
 }
 
+/// `peers.set_tier` (human only).
+pub fn set_tier(d: &Daemon, p: nb::PeersSetTierParams) -> R {
+    let peer = {
+        let mut i = d.nearby.inner();
+        let s = i.store(&d.cfg.home).set_tier(&p.fingerprint, p.tier).map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
+        s.map(|s| s.paired(i.peers.contains_key(&s.fingerprint)))
+    };
+    let Some(peer) = peer else { return Err(RpcError::not_found("no paired device with that id")) };
+    d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
+    ok(peer)
+}
+
 /// `peers.forget` (human only).
 pub fn forget(d: &Daemon, p: PeersForgetParams) -> R {
     let gone = {
