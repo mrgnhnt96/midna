@@ -689,7 +689,11 @@ impl MainWindow {
                 }
                 if k == midna_proto::kinds::SESSION_QUEUE {
                     crate::ui::queue::on_event(self, &e, cx);
-                    if self.is_home() && e.data.get("action").and_then(|a| a.as_str()) == Some("sent") {
+                    // Only for a message you queued: trigger, resume and agent sends stay quiet.
+                    if self.is_home()
+                        && e.actor.kind == "human"
+                        && e.data.get("action").and_then(|a| a.as_str()) == Some("sent")
+                    {
                         crate::sounds::play("queue_sent");
                     }
                 }
