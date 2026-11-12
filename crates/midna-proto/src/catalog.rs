@@ -653,7 +653,24 @@ fn build() -> Vec<MethodSpec> {
              everyone; everyone goes back to paired after 10 minutes, at everyone_until), whether it is advertising \
              and browsing, and the Bonjour service type. `peers` are the Midnas it sees now. Events peers.appeared \
              (data: the peer) and peers.left ({fingerprint, name}) fire as they come and go. Changing visibility is \
-             human only."),
+             human only. `paired` lists every device paired with this one (tier contact or my_device, nearby or \
+             not) and `pairings` the pairings in progress. A peer with claims_name_of uses a paired device's name \
+             but has another key: it is not that device."),
+        m::<PeersPairParams, Pairing>("peers.pair").mutating().d(
+            "Nearby: ask a device in peers.list to pair (it must be visible to everyone, or already paired). The two \
+             daemons open an encrypted connection bound to their device keys and agree on a 6-digit code; returns the \
+             pairing (pr_…) once both screens show the code (state comparing). Each side's human then confirms that the \
+             codes match with peers.confirm (human only: agents can't confirm; each side gets a needs-you approval). \
+             Event peers.pairing fires with the code; peers.paired when both confirmed; peers.pairing_ended if it was \
+             declined, timed out (2 minutes) or failed."),
+        m::<PeersConfirmParams, Pairing>("peers.confirm").mutating().human().d(
+            "Nearby: the human confirms a pairing's code matches the one on the other device (accept true, the \
+             default) or says it doesn't / declines (accept false: the pairing ends on both sides). `as` is how this \
+             side keeps the other device: contact (default; whatever it sends asks first) or my_device. The devices \
+             are paired once both sides confirmed. Human only: an agent can't confirm a pairing."),
+        m::<PeersForgetParams, PeersForgetResult>("peers.forget").mutating().human().d(
+            "Nearby: forget a paired device. From then on it is unknown here: its connections may only ask to pair \
+             again, and it no longer finds this Mac while visibility is paired. Event peers.forgotten. Human only."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

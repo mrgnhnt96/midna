@@ -326,8 +326,15 @@ const TOPICS: &[(&str, &str)] = &[
         Bonjour at all), paired (default: it looks for others but only paired devices can find it) or everyone (every Midna \
         nearby sees it for 10 minutes, then it goes back to paired by itself; me.everyone_until says when). peers.list has \
         me (fingerprint, name, visibility, service, advertising, browsing, protocol, error) and peers (fingerprint, name, \
-        protocol, host, port, seen_since). Events peers.appeared and peers.left fire as peers come and go: subscribe to \
-        them instead of polling. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
+        protocol, host, port, seen_since, tier, claims_name_of). Events peers.appeared and peers.left fire as peers come and \
+        go: subscribe to them instead of polling. Pairing: peers.pair {fingerprint} (`midna peers pair <name|id>`) asks a \
+        device visible to everyone; both Macs then show the same 6-digit code (peers.pairing event, peers.list pairings) and \
+        raise a needs-you approval. peers.confirm {pairing, accept, as: contact|my_device} is human only: agents never \
+        confirm, and never tell the human the codes match; the human compares the two screens. Once both sides confirm, \
+        each keeps the other (peers.paired; peers.list paired) and paired devices find each other even while visibility is \
+        paired. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
+        keys; a device that isn't paired can only ask to pair, and one that uses a paired device's name with another key \
+        is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
         they never see each other."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
