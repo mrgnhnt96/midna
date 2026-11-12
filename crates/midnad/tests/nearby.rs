@@ -9,7 +9,7 @@
 //! its advertisement is flagged and can't pass for it.
 mod common;
 use common::*;
-use midna_proto::error::HUMAN_ONLY;
+use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
 use midna_proto::nearby as nb;
 use midna_proto::{Client, kinds};
 use midnad::nearby::identity::{self, Identity};
@@ -308,6 +308,15 @@ fn only_paired_keys_get_past_the_connection_and_forgetting_cuts_them_off() {
     assert_eq!(a_key.fingerprint, fa);
     let mut ch = transport::connect(&at, &Local::new(&a_key)).unwrap();
     assert_eq!(ask(&mut ch, &Wire::Ping), Wire::Pong);
+
+    // The tier changes by human only RPC and survives in the list.
+    assert_eq!(call_err(&mut b.agent(None), "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" })).code, HUMAN_ONLY);
+    assert_eq!(paired(&mut hb)[0]["tier"], "contact");
+    let changed = call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+    assert_eq!(changed["tier"], "my_device");
+    assert_eq!(paired(&mut hb)[0]["tier"], "my_device");
+    assert_eq!(events(&mut hb, kinds::PEERS_CHANGED).len(), 1);
+    assert_eq!(call_err(&mut hb, "peers.set_tier", json!({ "fingerprint": "nope", "as": "contact" })).code, NOT_FOUND);
 
     // Forgetting is human only; once B forgets A, the open connection is cut off too.
     let mut agent = b.agent(None);

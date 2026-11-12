@@ -671,6 +671,9 @@ fn build() -> Vec<MethodSpec> {
         m::<PeersForgetParams, PeersForgetResult>("peers.forget").mutating().human().d(
             "Nearby: forget a paired device. From then on it is unknown here: its connections may only ask to pair \
              again, and it no longer finds this Mac while visibility is paired. Event peers.forgotten. Human only."),
+        m::<PeersSetTierParams, PairedPeer>("peers.set_tier").mutating().human().d(
+            "Nearby: change how a paired device is kept: `as` contact (whatever it sends asks first) or my_device. \
+             Returns the device; event peers.changed. Human only: an agent can't promote a device."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

@@ -1520,6 +1520,8 @@ pub mod kinds {
     pub const PEERS_PAIRING_ENDED: &str = "peers.pairing_ended";
     /// Nearby: both people confirmed; the device is paired (data: `nearby::PairedPeer`).
     pub const PEERS_PAIRED: &str = "peers.paired";
+    /// Nearby: a paired device changed (its tier; data: `nearby::PairedPeer`).
+    pub const PEERS_CHANGED: &str = "peers.changed";
     /// Nearby: a paired device was forgotten (data: `nearby::PairedPeer`).
     pub const PEERS_FORGOTTEN: &str = "peers.forgotten";
     /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).

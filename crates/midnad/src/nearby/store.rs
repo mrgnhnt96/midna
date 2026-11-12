@@ -85,6 +85,15 @@ impl Store {
         self.save()
     }
 
+    /// Change a paired device's tier; None if it isn't paired.
+    pub fn set_tier(&mut self, fp: &str, tier: Tier) -> std::io::Result<Option<Stored>> {
+        let Some(s) = self.peers.get_mut(fp) else { return Ok(None) };
+        s.tier = tier;
+        let s = s.clone();
+        self.save()?;
+        Ok(Some(s))
+    }
+
     pub fn remove(&mut self, fp: &str) -> std::io::Result<Option<Stored>> {
         let gone = self.peers.remove(fp);
         if gone.is_some() {

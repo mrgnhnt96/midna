@@ -718,11 +718,13 @@ pub static VERBS: &[Verb] = &[
                   confirm     (human only) accept a pairing whose codes match, keeping the device as a contact\n\
                   \x20           (default) or --as my-device; --no declines. Each pairing also raises a needs-you\n\
                   \x20           approval that confirms as a contact. Agents can start a pairing but never confirm one.\n\
+                  tier        (human only) peers tier <name or id> --as contact|my-device: change how a paired\n\
+                  \x20           device is kept.\n\
                   forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
                   A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
                   another key is flagged. Events peers.appeared, peers.left, peers.pairing, peers.pairing_ended,\n\
-                  peers.paired and peers.forgotten (midna events --kind peers.) follow all of this.",
-        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.forget"],
+                  peers.paired, peers.changed and peers.forgotten (midna events --kind peers.) follow all of this.",
+        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.forget"],
     },
     Verb {
         name: "keep-awake",

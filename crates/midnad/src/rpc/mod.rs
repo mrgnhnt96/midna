@@ -410,6 +410,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "peers.list" => crate::nearby::list(d),
         "peers.pair" => crate::nearby::pairing::pair(d, parse(p)?),
         "peers.confirm" => crate::nearby::pairing::confirm(d, parse(p)?),
+        "peers.set_tier" => crate::nearby::pairing::set_tier(d, parse(p)?),
         "peers.forget" => crate::nearby::pairing::forget(d, parse(p)?),
         "keep_awake.set" => crate::keep_awake::set(d, ctx, parse(p)?),
         "keep_awake.wake_setup" => crate::wake::setup(d, ctx, parse(p)?),
