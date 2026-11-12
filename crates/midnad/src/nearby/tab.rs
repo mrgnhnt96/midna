@@ -245,7 +245,8 @@ pub fn preface(from: &str, payload: &SharePayload, here: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// For a tab's approval and the guard: what it is and the end of its scrollback.
+/// For a tab's approval and the guard: a one-line summary of where it was, then the end of its
+/// scrollback after a blank line.
 pub fn describe(payload: &SharePayload, shown: usize) -> String {
     let SharePayload::Tab { project, cwd, shell, scrollback, .. } = payload else { return String::new() };
     let tail: Vec<&str> = scrollback.rsplit('\n').take(30).collect();
@@ -264,7 +265,8 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
         Some(p) => format!("{}/{} (in {cwd}{shell})", p.remote, p.path),
         None => format!("{cwd}{}", shell.replacen(", ", " · ", 1)),
     };
-    format!("{tail}\n\nTab: {place}, {lines} line{} of scrollback.", if lines == 1 { "" } else { "s" })
+    let summary = format!("Tab: {place}, {lines} line{} of scrollback.", if lines == 1 { "" } else { "s" });
+    if tail.is_empty() { summary } else { format!("{summary}\n\n{tail}") }
 }
 
 /// Accept an incoming tab: open a new shell where it maps to (or `chosen`), under the sender's
@@ -335,7 +337,9 @@ mod tests {
     fn describing_a_tab_shows_where_it_was_and_its_last_lines() {
         let lines: Vec<String> = (0..40).map(|n| format!("line {n}")).collect();
         let text = describe(&tab(&lines.join("\n")), 2000);
-        assert!(text.starts_with("line 10\n") && text.contains("line 39\n\nTab: github.com/acme/widget/src (in /w/widget/src, zsh), 40 lines"), "{text}");
-        assert!(describe(&tab("x".repeat(100).as_str()), 10).starts_with('…'));
+        assert!(text.starts_with("Tab: github.com/acme/widget/src (in /w/widget/src, zsh), 40 lines of scrollback.\n\nline 10\n"), "{text}");
+        assert!(text.ends_with("\nline 39"), "{text}");
+        assert!(describe(&tab("x".repeat(100).as_str()), 10).ends_with("scrollback.\n\n…xxxxxxxxxx"));
+        assert_eq!(describe(&tab(""), 2000), "Tab: github.com/acme/widget/src (in /w/widget/src, zsh), 0 lines of scrollback.");
     }
 }

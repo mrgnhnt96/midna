@@ -10,17 +10,37 @@ use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+/// The banner's one line under the title: the action asked about, then the first line of the
+/// detail with text on it (a Nearby share's summary). Never more than one line: the needs-you
+/// views show the whole detail.
+fn line(action: Option<&str>, detail: &str) -> String {
+    let one = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let action = action.map(|a| one(&shown_action(a))).filter(|a| !a.is_empty());
+    let first = detail.lines().map(one).find(|l| !l.is_empty());
+    match (action, first) {
+        (Some(a), Some(d)) => format!("{a} · {d}"),
+        (Some(a), None) => a,
+        (None, d) => d.unwrap_or_default(),
+    }
+}
+
+/// A Nearby send's action (`share send <kind> <device fingerprint>`) with the device's id short.
+/// Only for showing: rules still match the whole fingerprint.
+fn shown_action(action: &str) -> String {
+    match action.strip_prefix("share send ").and_then(|rest| rest.split_once(' ')) {
+        Some((kind, fp)) if fp.len() == 64 && fp.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            format!("share send {kind} {}", midna_proto::nearby::short_fingerprint(fp))
+        }
+        _ => action.to_string(),
+    }
+}
+
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<impl IntoElement + use<>> {
     let need = m.approval_for_selected()?.clone();
     let session_name = m.selected_session().map(|s| s.name.clone()).unwrap_or_default();
     let approve_key = m.key_label("keys.approve");
     let deny_key = m.key_label("keys.deny");
-    let action = need.approval.as_ref().map(|a| a.action.value.clone()).filter(|v| !v.is_empty());
-    let sub = match (action, need.detail.is_empty()) {
-        (Some(a), false) => format!("{a} · {}", need.detail),
-        (Some(a), true) => a,
-        (None, _) => need.detail.clone(),
-    };
+    let sub = line(need.approval.as_ref().map(|a| a.action.value.as_str()), &need.detail);
     let menu_open = m.menu == Menu::Approve;
     let id_once = need.id.clone();
     let id_deny = need.id.clone();
@@ -130,4 +150,34 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
             .child(approve)
             .child(deny),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{line, shown_action};
+
+    #[test]
+    fn a_nearby_send_shows_one_line_and_a_short_device_id() {
+        let fp = "0123456789abcdef".repeat(4);
+        let detail = "Tab: github.com/acme/widget (in /w/widget, zsh), 412 lines of scrollback.\n\n$ ls\n\n\n· Vercel: Deployed";
+        assert_eq!(
+            line(Some(&format!("share send tab {fp}")), detail),
+            "share send tab 0123 4567 89ab cdef · Tab: github.com/acme/widget (in /w/widget, zsh), 412 lines of scrollback."
+        );
+    }
+
+    #[test]
+    fn the_line_is_never_more_than_one() {
+        assert_eq!(line(Some("git push"), "\n\n  first   line \r\nsecond"), "git push · first line");
+        assert_eq!(line(None, "only\nthis"), "only");
+        assert_eq!(line(Some("rm -rf\nbuild"), ""), "rm -rf build");
+        assert_eq!(line(Some(""), " \n "), "");
+    }
+
+    #[test]
+    fn other_actions_are_shown_as_they_are() {
+        assert_eq!(shown_action("share send tab not-a-fingerprint"), "share send tab not-a-fingerprint");
+        let sha = "a".repeat(64);
+        assert_eq!(shown_action(&format!("git checkout {sha}")), format!("git checkout {sha}"));
+    }
 }
