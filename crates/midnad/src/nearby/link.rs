@@ -2,10 +2,10 @@
 //! after the Noise handshake, gates every one on its device key: a pairing request goes to
 //! [`super::pairing`]; anything else from a device that isn't paired gets `refused`
 //! ([`transport::NOT_PAIRED`]) and the connection closes. Trust is checked again on every
-//! message, so forgetting a device cuts it off mid-connection. With visibility `off` nothing
-//! is served at all.
+//! message, so forgetting a device cuts it off mid-connection. Paired devices may ping and
+//! offer shares ([`super::share`]). With visibility `off` nothing is served at all.
 use super::transport::{self, Channel, Wire};
-use super::{local, pairing, visibility};
+use super::{local, pairing, share, visibility};
 use crate::daemon::Daemon;
 use midna_proto::RpcError;
 use midna_proto::nearby::Visibility;
@@ -105,11 +105,13 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
             let _ = ch.send(&Wire::Refused { reason: transport::NOT_PAIRED.into() });
             return ch.finish();
         }
-        drop(d);
         let reply = match msg {
             Wire::Ping => Wire::Pong,
+            Wire::ShareOffer { id, payload } => share::incoming(&d, &ch.fingerprint, id, payload),
+            Wire::ShareResult { id, state } => share::result(&d, &ch.fingerprint, id, &state),
             _ => Wire::Refused { reason: "unsupported".into() },
         };
+        drop(d);
         if ch.send(&reply).is_err() {
             return;
         }

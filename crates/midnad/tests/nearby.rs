@@ -7,6 +7,11 @@
 //! paired only; anything but a pairing request from a key that isn't paired is refused at the
 //! connection, forgetting cuts a device off, and a device using a paired one's name or copying
 //! its advertisement is flagged and can't pass for it.
+//!
+//! Shares (`share.send|accept|decline`, `inbox.list`): only paired devices can offer one; it
+//! waits in the receiver's inbox (kept across restarts) until a human there accepts or declines
+//! it, agents can't, a snippet is pasted only into the terminal the human picks and never with
+//! Enter, and the answer reaches the sender.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
@@ -30,6 +35,12 @@ fn service() -> String {
 fn nearby(svc: &str, everyone_secs: i64) -> TestDaemon {
     let svc = svc.to_string();
     TestDaemon::start_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs })
+}
+
+/// Restart `d` on the same Bonjour service.
+fn restart_nearby(d: &mut TestDaemon, svc: &str) {
+    let svc = svc.to_string();
+    d.restart_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs: 600 });
 }
 
 fn list(c: &mut Client) -> Value {
@@ -446,4 +457,199 @@ fn an_impostor_is_flagged_and_cant_pass_for_a_paired_device() {
     };
     assert!(err.message.contains("isn't it"), "{err:?}");
     answer.join().unwrap();
+}
+
+// ---- shares ----
+
+fn inbox(c: &mut Client) -> Value {
+    call(c, "inbox.list", json!({}))
+}
+
+/// The share `id` in this daemon's inbox.
+fn share(c: &mut Client, id: &str) -> Option<Value> {
+    inbox(c)["items"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned()
+}
+
+fn send(c: &mut Client, peer: &str, p: Value) -> Value {
+    let mut p = p;
+    p["peer"] = json!(peer);
+    call(c, "share.send", p)
+}
+
+/// The events of `kind` about share `id`.
+fn share_events(c: &mut Client, kind: &str, id: &str) -> Vec<Value> {
+    events(c, kind).into_iter().filter(|e| e["data"]["id"] == id).collect()
+}
+
+/// Two paired daemons that see each other.
+fn paired_pair(svc: &str) -> (TestDaemon, TestDaemon, String, String) {
+    let (a, b, fa, fb) = alpha_bravo(svc);
+    pair_both(&a, &b, &fa, &fb);
+    let mut hb = b.human();
+    wait_for(10, "B sees A", || peer(&mut hb, &fa));
+    (a, b, fa, fb)
+}
+
+#[test]
+fn a_share_lands_in_the_inbox_and_only_the_human_takes_it() {
+    let svc = service();
+    let (a, b, fa, fb) = alpha_bravo(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+
+    // Not paired yet: nothing gets through.
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "message", "text": "hi" }));
+    assert!(e.message.contains("isn't paired") || e.message.contains("not paired"), "{}", e.message);
+    assert!(inbox(&mut hb)["items"].as_array().unwrap().is_empty());
+    pair_both(&a, &b, &fa, &fb);
+
+    // A bad payload never leaves A.
+    for bad in [
+        json!({ "kind": "link", "url": "javascript:alert(1)" }),
+        json!({ "kind": "link", "url": "file:///etc/passwd" }),
+        json!({ "kind": "message", "text": "" }),
+        json!({ "kind": "snippet", "text": "x", "reply_to": "sh_abcdabcd" }),
+    ] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+
+    // An agent may send (the guard on that is another task's); B gets an offer and an approval.
+    let mut agent = a.agent(None);
+    let sent = send(&mut agent, &fb, json!({ "kind": "message", "text": "lunch?" }));
+    let id = sent["id"].as_str().unwrap().to_string();
+    assert_eq!((sent["direction"].as_str(), sent["state"].as_str(), sent["peer_name"].as_str()), (Some("outgoing"), Some("offered"), Some("Bravo")), "{sent}");
+    let got = share(&mut hb, &id).expect("B has the share as soon as send returns");
+    assert_eq!((got["direction"].as_str(), got["from"].as_str(), got["peer_name"].as_str()), (Some("incoming"), Some(fa.as_str()), Some("Alpha")), "{got}");
+    assert_eq!((got["payload"]["kind"].as_str(), got["payload"]["text"].as_str(), got["size"].as_u64()), (Some("message"), Some("lunch?"), Some(6)));
+    assert_eq!(inbox(&mut hb)["waiting"], 1);
+    assert_eq!(share_events(&mut ha, kinds::SHARE_SENT, &id).len(), 1);
+    assert_eq!(share_events(&mut hb, kinds::SHARE_OFFERED, &id).len(), 1);
+    let ny = got["needs_you_id"].as_str().unwrap().to_string();
+    let item = call(&mut hb, "needs_you.get", json!({ "id": ny }));
+    assert!(item["item"]["title"].as_str().unwrap().contains("Alpha"), "{item}");
+
+    // Agents on B can't accept or decline it, not by the methods and not by the approval.
+    let mut agent_b = b.agent(None);
+    for m in ["share.accept", "share.decline"] {
+        assert_eq!(call_err(&mut agent_b, m, json!({ "id": id })).code, HUMAN_ONLY, "{m}");
+    }
+    let approve = json!({ "id": ny, "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    assert_eq!(call_err(&mut agent_b, "needs_you.resolve", approve.clone()).code, HUMAN_ONLY);
+    assert_eq!(share(&mut hb, &id).unwrap()["state"], "offered");
+
+    // The inbox survives a restart.
+    let mut b = b;
+    restart_nearby(&mut b, &svc);
+    let mut hb = b.human();
+    wait_for(10, "B sees A again", || peer(&mut hb, &fa));
+    let kept = share(&mut hb, &id).expect("kept across the restart");
+    assert_eq!((kept["state"].as_str(), kept["needs_you_id"].as_str()), (Some("offered"), Some(ny.as_str())), "{kept}");
+    let mode = std::fs::metadata(b.home.join("nearby/inbox.json")).unwrap();
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode.permissions()) & 0o777, 0o600);
+
+    // The human approves: the message is read, the approval closes, and A hears it.
+    call(&mut hb, "needs_you.resolve", approve);
+    let read = wait_for(10, "accepted", || share(&mut hb, &id).filter(|s| s["state"] == "accepted"));
+    assert_eq!(read["result"], "read");
+    assert!(read["needs_you_id"].is_null(), "{read}");
+    assert_eq!(share_events(&mut hb, kinds::SHARE_ACCEPTED, &id).len(), 1);
+    let theirs = wait_for(20, "A hears B accepted", || share(&mut ha, &id).filter(|s| s["state"] == "accepted"));
+    assert!(theirs["decided_at"].is_string(), "{theirs}");
+    wait_for(10, "A's share.accepted", || {
+        share_events(&mut ha, kinds::SHARE_ACCEPTED, &id).first().filter(|e| e["data"]["direction"] == "outgoing").cloned()
+    });
+
+    // B replies; denying that one's approval on A declines it, and B hears that.
+    let reply = send(&mut hb, &fa, json!({ "kind": "message", "text": "yes", "reply_to": id }));
+    let rid = reply["id"].as_str().unwrap().to_string();
+    let on_a = share(&mut ha, &rid).unwrap();
+    assert_eq!(on_a["payload"]["reply_to"], id.as_str());
+    let deny = json!({ "id": on_a["needs_you_id"], "resolution": { "kind": "deny", "scope": { "kind": "once" } } });
+    call(&mut ha, "needs_you.resolve", deny);
+    assert_eq!(wait_for(10, "declined", || share(&mut ha, &rid).filter(|s| s["state"] == "declined"))["needs_you_id"], Value::Null);
+    wait_for(20, "B hears A declined", || share(&mut hb, &rid).filter(|s| s["state"] == "declined"));
+    assert_eq!(share_events(&mut hb, kinds::SHARE_DECLINED, &rid).len(), 1);
+    assert_eq!(call_err(&mut ha, "share.accept", json!({ "id": rid })).code, midna_proto::error::CONFLICT, "declined stays declined");
+
+    // Only incoming shares can be decided here.
+    assert_eq!(call_err(&mut hb, "share.accept", json!({ "id": rid })).code, midna_proto::error::NOT_FOUND);
+    let only_in = call(&mut ha, "inbox.list", json!({ "direction": "incoming" }));
+    assert!(only_in["items"].as_array().unwrap().iter().all(|s| s["direction"] == "incoming"), "{only_in}");
+}
+
+#[test]
+fn a_snippet_is_pasted_only_where_the_human_says_and_never_run() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let _ = fa;
+
+    // Nothing reaches a terminal on offer.
+    let term = call(&mut hb, "session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/cat"] }))["id"].as_str().unwrap().to_string();
+    let one = send(&mut ha, &fb, json!({ "kind": "snippet", "text": "echo pasted-7f3\n", "title": "try this" }))["id"].as_str().unwrap().to_string();
+    stays(1, "an offered snippet stays out of every terminal", || !read(&mut hb, &term).contains("pasted-7f3"));
+
+    // Accepting without a terminal keeps it in the inbox; accepting into one pastes it, without
+    // the Enter (cat would print the line a second time).
+    let kept = call(&mut hb, "share.accept", json!({ "id": one }));
+    assert_eq!((kept["state"].as_str(), kept["result"].as_str()), (Some("accepted"), Some("kept in the inbox")), "{kept}");
+    let pasted = call(&mut hb, "share.accept", json!({ "id": one, "session": term }));
+    assert_eq!(pasted["result"].as_str(), Some(format!("pasted into {term}").as_str()));
+    wait_for(10, "the paste shows", || read(&mut hb, &term).contains("echo pasted-7f3").then_some(()));
+    stays(1, "no Enter after the paste", || read(&mut hb, &term).matches("pasted-7f3").count() == 1);
+    assert_eq!(share_events(&mut hb, kinds::SHARE_ACCEPTED, &one).len(), 1, "accepting again is no new decision");
+
+    // Several lines where bracketed paste is off would run line by line: refused.
+    let two = send(&mut ha, &fb, json!({ "kind": "snippet", "text": "echo one\necho two" }))["id"].as_str().unwrap().to_string();
+    let e = call_err(&mut hb, "share.accept", json!({ "id": two, "session": term }));
+    assert!(e.message.contains("bracketed paste"), "{}", e.message);
+    assert_eq!(share(&mut hb, &two).unwrap()["state"], "offered");
+    stays(1, "nothing typed", || !read(&mut hb, &term).contains("echo one"));
+    let e = call_err(&mut hb, "share.accept", json!({ "id": two, "session": "t_nope" }));
+    assert_eq!(e.code, midna_proto::error::NOT_FOUND);
+
+    // A link the human pins goes to that terminal's links, never opened; a declined share is
+    // never pasted.
+    let url = "https://example.com/from-alpha";
+    let l = send(&mut ha, &fb, json!({ "kind": "link", "url": url, "title": "docs" }))["id"].as_str().unwrap().to_string();
+    let pinned = call(&mut hb, "share.accept", json!({ "id": l, "action": "pin", "session": term }));
+    assert_eq!(pinned["result"].as_str(), Some(format!("pinned to {term}").as_str()));
+    let links = call(&mut hb, "links.list", json!({ "session": term }));
+    assert!(links.to_string().contains(url), "{links}");
+    call(&mut hb, "share.decline", json!({ "id": two }));
+    assert_eq!(call_err(&mut hb, "share.accept", json!({ "id": two, "session": term })).code, midna_proto::error::CONFLICT);
+    for id in [&one, &l, &two] {
+        wait_for(20, "A hears every answer", || share(&mut ha, id).filter(|s| s["state"] != "offered"));
+    }
+}
+
+#[test]
+fn a_paired_device_cant_slip_a_bad_share_past_the_checks() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let mut hb = b.human();
+    let _ = (fa, fb);
+    // A's own key, straight at B's port, skipping A's checks.
+    let a_key = identity::load_or_create(&a.home);
+    let mut ch = transport::connect(&addr(port(&mut hb)), &Local::new(&a_key)).unwrap();
+    for (id, payload) in [
+        ("sh_bad1bad1", json!({ "kind": "link", "url": "file:///etc/passwd" })),
+        ("sh_bad2bad2", json!({ "kind": "command", "argv": ["rm", "-rf", "/"] })),
+        ("not-an-id", json!({ "kind": "message", "text": "hi" })),
+        ("sh_bad3bad3", json!({ "kind": "snippet", "text": "x".repeat(nb::MAX_SNIPPET + 1) })),
+    ] {
+        let got = ask(&mut ch, &Wire::ShareOffer { id: id.into(), payload: payload.clone() });
+        assert!(matches!(got, Wire::Refused { .. }), "{payload}: {got:?}");
+    }
+    assert!(inbox(&mut hb)["items"].as_array().unwrap().is_empty());
+    assert!(events(&mut hb, kinds::SHARE_OFFERED).is_empty());
+
+    // A share id another device used is taken; the same device sending it again is acked once.
+    let ok = ask(&mut ch, &Wire::ShareOffer { id: "sh_good1234".into(), payload: json!({ "kind": "message", "text": "hi" }) });
+    assert_eq!(ok, Wire::ShareAck { id: "sh_good1234".into() });
+    let again = ask(&mut ch, &Wire::ShareOffer { id: "sh_good1234".into(), payload: json!({ "kind": "message", "text": "hi" }) });
+    assert_eq!(again, Wire::ShareAck { id: "sh_good1234".into() });
+    assert_eq!(inbox(&mut hb)["items"].as_array().unwrap().len(), 1);
+    assert_eq!(events(&mut hb, kinds::SHARE_OFFERED).len(), 1);
 }

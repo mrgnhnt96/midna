@@ -412,6 +412,10 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "peers.confirm" => crate::nearby::pairing::confirm(d, parse(p)?),
         "peers.set_tier" => crate::nearby::pairing::set_tier(d, parse(p)?),
         "peers.forget" => crate::nearby::pairing::forget(d, parse(p)?),
+        "share.send" => crate::nearby::share::send(d, ctx, parse(p)?),
+        "share.accept" => crate::nearby::share::accept(d, ctx, parse(p)?),
+        "share.decline" => crate::nearby::share::decline(d, ctx, parse(p)?),
+        "inbox.list" => crate::nearby::share::list(d, parse(p)?),
         "keep_awake.set" => crate::keep_awake::set(d, ctx, parse(p)?),
         "keep_awake.wake_setup" => crate::wake::setup(d, ctx, parse(p)?),
         "window.list" => window::list(d),
@@ -497,6 +501,13 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
         return RpcError::human_only(
             "peers.confirm is human only: the human compares the codes on both Macs and confirms (each pairing raises a needs-you approval)",
         );
+    }
+    if method == "share.accept" || method == "share.decline" {
+        // What another device sent is the human's to take: each incoming share already raised
+        // its own approval, and an agent's request to accept one would only be a second.
+        return RpcError::human_only(format!(
+            "{method} is human only: agents can't accept or decline what other devices send (each incoming share has a needs-you approval for the human)"
+        ));
     }
     let cli = format!("{method} {}", summarize(method, params));
     defer_to_human(d, ctx, &format!("Agent asks to run {method}"), &cli, method, params)

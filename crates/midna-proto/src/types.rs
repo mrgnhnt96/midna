@@ -1524,6 +1524,17 @@ pub mod kinds {
     pub const PEERS_CHANGED: &str = "peers.changed";
     /// Nearby: a paired device was forgotten (data: `nearby::PairedPeer`).
     pub const PEERS_FORGOTTEN: &str = "peers.forgotten";
+    /// Nearby: a paired device offered this Mac a share; it waits in the inbox for the human
+    /// (data: `nearby::ShareItem`, direction incoming).
+    pub const SHARE_OFFERED: &str = "share.offered";
+    /// Nearby: this Mac's share reached the other device's inbox (data: `nearby::ShareItem`,
+    /// direction outgoing).
+    pub const SHARE_SENT: &str = "share.sent";
+    /// Nearby: a share was accepted: here (direction incoming, with `result`), or by the other
+    /// device's person (direction outgoing) (data: `nearby::ShareItem`).
+    pub const SHARE_ACCEPTED: &str = "share.accepted";
+    /// Nearby: a share was declined, here or on the other device (data: `nearby::ShareItem`).
+    pub const SHARE_DECLINED: &str = "share.declined";
     /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).
     pub const KEEP_AWAKE_CHANGED: &str = "keep_awake.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.

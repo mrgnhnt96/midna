@@ -25,6 +25,7 @@ pub mod dnssd;
 pub mod identity;
 pub mod link;
 pub mod pairing;
+pub mod share;
 pub mod store;
 pub mod transport;
 
@@ -37,7 +38,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 /// How long the thread waits on DNS-SD before checking the settings again.
@@ -113,11 +114,17 @@ struct Inner {
     pairings: BTreeMap<String, pairing::Slot>,
     /// The port Nearby connections come in on.
     port: Option<u16>,
+    /// Shares to and from paired devices (loaded the first time they're needed).
+    inbox: Option<share::Inbox>,
 }
 
 impl Inner {
     fn store(&mut self, home: &Path) -> &mut store::Store {
         self.store.get_or_insert_with(|| store::Store::load(home))
+    }
+
+    fn inbox(&mut self, home: &Path) -> &mut share::Inbox {
+        self.inbox.get_or_insert_with(|| share::Inbox::load(home))
     }
 }
 
@@ -129,6 +136,8 @@ pub struct Runtime {
     inner: Mutex<Inner>,
     /// Connections being served.
     conns: AtomicUsize,
+    /// Set and notified when a share result is owed (`share.rs`'s delivery thread waits on it).
+    wake: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Runtime {
@@ -257,6 +266,7 @@ pub fn start(d: &Arc<Daemon>) {
             Ok((listener, port)) => {
                 d.nearby.inner().port = Some(port);
                 link::listen(d, listener);
+                share::start(d);
                 Ok(port)
             }
             Err(e) => Err(e),

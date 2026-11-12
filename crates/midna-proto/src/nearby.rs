@@ -360,9 +360,301 @@ pub struct PeerLeft {
     pub name: String,
 }
 
+/// Sharing between paired devices (`share.*`, `inbox.list`): the most a message's text may be,
+/// in bytes.
+pub const MAX_MESSAGE_TEXT: usize = 4096;
+/// … a snippet's text.
+pub const MAX_SNIPPET: usize = 256 * 1024;
+/// … a link's URL.
+pub const MAX_URL: usize = 4096;
+/// … a title.
+pub const MAX_TITLE: usize = 200;
+/// Offers from one device that may wait in the inbox at once; more are refused ("inbox full").
+pub const MAX_PENDING_FROM: usize = 50;
+
+/// What a share carries. Nothing in it ever runs: it is data until the receiving person
+/// accepts it, and even then a snippet is pasted (never submitted) and a link opened or pinned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharePayload {
+    /// A note for the other person: shown as a notification they can reply to.
+    Message {
+        text: String,
+        /// The share (`sh_…`) this answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+    },
+    /// Text for the inbox, which the receiver can paste into a terminal of their choosing.
+    Snippet {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// An http(s) link the receiver can open or pin to a terminal's links.
+    Link {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+}
+
+impl SharePayload {
+    pub fn kind(&self) -> ShareKind {
+        match self {
+            SharePayload::Message { .. } => ShareKind::Message,
+            SharePayload::Snippet { .. } => ShareKind::Snippet,
+            SharePayload::Link { .. } => ShareKind::Link,
+        }
+    }
+
+    /// Its size in bytes (the text or URL).
+    pub fn size(&self) -> u64 {
+        match self {
+            SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.len() as u64,
+            SharePayload::Link { url, .. } => url.len() as u64,
+        }
+    }
+
+    /// Within the limits and well formed (both the sender and the receiver check).
+    pub fn check(&self) -> Result<(), String> {
+        let title_ok = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= MAX_TITLE);
+        match self {
+            SharePayload::Message { text, reply_to } => {
+                if text.trim().is_empty() {
+                    return Err("the message is empty".into());
+                }
+                if text.len() > MAX_MESSAGE_TEXT {
+                    return Err(format!("a message may be at most {MAX_MESSAGE_TEXT} bytes; send longer text as a snippet"));
+                }
+                if reply_to.as_deref().is_some_and(|r| !valid_share_id(r)) {
+                    return Err("reply_to isn't a share id (sh_…)".into());
+                }
+            }
+            SharePayload::Snippet { text, title } => {
+                if text.is_empty() {
+                    return Err("the snippet is empty".into());
+                }
+                if text.len() > MAX_SNIPPET {
+                    return Err(format!("a snippet may be at most {} KiB", MAX_SNIPPET / 1024));
+                }
+                if !title_ok(title) {
+                    return Err(format!("a title may be at most {MAX_TITLE} bytes"));
+                }
+            }
+            SharePayload::Link { url, title } => {
+                let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+                if rest.is_none_or(|r| r.is_empty()) || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                    return Err("a link must be an http(s) URL".into());
+                }
+                if url.len() > MAX_URL {
+                    return Err(format!("a link may be at most {MAX_URL} bytes"));
+                }
+                if !title_ok(title) {
+                    return Err(format!("a title may be at most {MAX_TITLE} bytes"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A share id: `sh_` and 4–32 letters or digits (the sender picks it; both sides use it).
+pub fn valid_share_id(id: &str) -> bool {
+    id.strip_prefix("sh_").is_some_and(|r| (4..=32).contains(&r.len()) && r.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareKind {
+    Message,
+    Snippet,
+    Link,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareDirection {
+    /// Another device sent it to this one.
+    Incoming,
+    /// This device sent it.
+    Outgoing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareState {
+    /// Waiting for the receiving person.
+    Offered,
+    /// The receiving person accepted it.
+    Accepted,
+    /// The receiving person declined it.
+    Declined,
+}
+
+/// One share, in either direction (`inbox.list`, `share.*`; events `share.*`). Both devices
+/// keep it under the same id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareItem {
+    /// `sh_…`.
+    pub id: String,
+    pub direction: ShareDirection,
+    /// The other device's fingerprint.
+    pub peer: String,
+    /// Its name (from the paired devices). Display only.
+    pub peer_name: String,
+    /// The sending device's fingerprint (for an incoming share, proven by the connection).
+    pub from: String,
+    /// Bytes of text or URL.
+    pub size: u64,
+    pub payload: SharePayload,
+    pub state: ShareState,
+    pub sent_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<Timestamp>,
+    /// What accepting did on this Mac: `pasted into t_…`, `opened`, `pinned to t_…`, `read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Incoming and still offered: the needs-you approval that asks this Mac's person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_id: Option<String>,
+}
+
+/// `share.send`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareSendParams {
+    /// The paired device: its fingerprint (`peers.list` `paired`). It must be on the network now.
+    pub peer: String,
+    pub kind: ShareKind,
+    /// A message's or a snippet's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A link's http(s) URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// A snippet's or a link's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// A message only: the share (`sh_…`) it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}
+
+impl ShareSendParams {
+    /// The payload these params describe, checked.
+    pub fn payload(&self) -> Result<SharePayload, String> {
+        let text = || self.text.clone().ok_or_else(|| format!("a {} needs `text`", serde_json::to_value(self.kind).unwrap_or_default().as_str().unwrap_or_default()));
+        let title = self.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        if self.reply_to.is_some() && self.kind != ShareKind::Message {
+            return Err("only a message can reply_to".into());
+        }
+        if self.url.is_some() && self.kind != ShareKind::Link {
+            return Err("only a link has a `url`".into());
+        }
+        let p = match self.kind {
+            ShareKind::Message => {
+                if title.is_some() {
+                    return Err("a message has no title".into());
+                }
+                SharePayload::Message { text: text()?, reply_to: self.reply_to.clone() }
+            }
+            ShareKind::Snippet => SharePayload::Snippet { text: text()?, title },
+            ShareKind::Link => {
+                if self.text.is_some() {
+                    return Err("a link has a `url`, not `text`".into());
+                }
+                let url = self.url.as_deref().map(str::trim).ok_or("a link needs `url`")?.to_string();
+                SharePayload::Link { url, title }
+            }
+        };
+        p.check()?;
+        Ok(p)
+    }
+}
+
+/// What accepting a link does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareLinkAction {
+    /// Open it in the default browser.
+    Open,
+    /// Pin it to a terminal's links (`session`, else the caller's terminal).
+    Pin,
+}
+
+/// `share.accept` (human only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareAcceptParams {
+    /// The incoming share (`sh_…`).
+    pub id: String,
+    /// A snippet: paste it into this terminal (never followed by Enter). A link with action
+    /// pin: pin it to this terminal (default the caller's). Without it a snippet is kept in the
+    /// inbox to paste later (accepting an accepted snippet again pastes it again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// A link: open it (default) or pin it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ShareLinkAction>,
+}
+
+/// `share.decline` (human only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ShareDeclineParams {
+    /// The incoming share (`sh_…`).
+    pub id: String,
+}
+
+/// `inbox.list`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InboxListParams {
+    /// Only incoming or only outgoing shares (default both).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<ShareDirection>,
+    /// Only shares in this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<ShareState>,
+    /// Only shares with this device (fingerprint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// At most this many, newest first (default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InboxListResult {
+    /// Newest first.
+    pub items: Vec<ShareItem>,
+    /// Incoming shares still waiting for this Mac's person.
+    pub waiting: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn share_payloads() {
+        let send = |v: serde_json::Value| serde_json::from_value::<ShareSendParams>(v).unwrap().payload();
+        let p = send(serde_json::json!({ "peer": "f", "kind": "snippet", "text": "ls\n", "title": " " })).unwrap();
+        assert_eq!(p, SharePayload::Snippet { text: "ls\n".into(), title: None });
+        assert_eq!((p.kind(), p.size()), (ShareKind::Snippet, 3));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "kind": "snippet", "text": "ls\n" }));
+        assert!(send(serde_json::json!({ "peer": "f", "kind": "link", "url": "https://x.dev/a" })).is_ok());
+        for bad in [
+            serde_json::json!({ "peer": "f", "kind": "link", "url": "file:///etc/passwd" }),
+            serde_json::json!({ "peer": "f", "kind": "link", "url": "https://" }),
+            serde_json::json!({ "peer": "f", "kind": "link", "url": "https://a b" }),
+            serde_json::json!({ "peer": "f", "kind": "link", "text": "https://x.dev" }),
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "  " }),
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "x".repeat(MAX_MESSAGE_TEXT + 1) }),
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "reply_to": "nope" }),
+            serde_json::json!({ "peer": "f", "kind": "snippet", "text": "hi", "reply_to": "sh_abcd" }),
+            serde_json::json!({ "peer": "f", "kind": "snippet" }),
+        ] {
+            assert!(send(bad.clone()).is_err(), "{bad}");
+        }
+        assert!(valid_share_id("sh_0a1b2c3d") && !valid_share_id("sh_") && !valid_share_id("sh_ab/cd") && !valid_share_id("pr_abcd"));
+    }
 
     #[test]
     fn service_types() {

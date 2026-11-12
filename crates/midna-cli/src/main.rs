@@ -74,6 +74,7 @@ fn main() {
     // `queue` gives a few flags values (`--idle 10m`) that are booleans elsewhere (`restart --idle`).
     let args = match Args::parse(raw.clone()) {
         Ok(a) if a.pos.first().map(String::as_str) == Some("queue") => Args::parse_with(raw, queue::VALUE_FLAGS),
+        Ok(a) if matches!(a.pos.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_with(raw, nearby::SHARE_VALUE_FLAGS),
         r => r,
     };
     let args = match args {
@@ -490,6 +491,8 @@ fn run(a: &Args) -> Res {
         "insights" => insights(a, &out),
         "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
         "peers" | "peer" | "nearby" => nearby::peers(a, &out),
+        "share" => nearby::share(a, &out),
+        "inbox" => nearby::inbox(a, &out),
         "system" | "load" => system(a, &out),
         "worktrees" | "worktree" => worktrees(a, &out),
         "cleanup" | "clean-up" => cleanup(a, &out),
