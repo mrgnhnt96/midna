@@ -3,9 +3,10 @@
 //! sheet over the window: Pair connects, both Macs show the same six digits, and each person
 //! confirms (as a contact or as one of their own Macs) or cancels. A request from another Mac
 //! opens the sheet when this section is showing; it's also a needs-you card (ui/nearby.rs).
+//! Under each of my devices, the kinds of share it may send without asking (all off at first).
 use super::*;
 use crate::ui::screen_kit::{btn, btn_primary, now_unix};
-use midna_proto::nearby::{self as nb, Pairing, PairingRole, PairingState, PeersListResult, Tier, Visibility};
+use midna_proto::nearby::{self as nb, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
 
 /// The `@` rows this section adds to `LAYOUT`.
 pub(super) const ROWS: [&str; 3] = ["@nearby_me", "@nearby_peers", "@nearby_paired"];
@@ -39,6 +40,8 @@ pub(super) enum Ctl {
     Pair { fingerprint: String, name: String, open: Option<String> },
     /// A paired device: its tier and Forget.
     Paired { fingerprint: String, tier: Tier },
+    /// One of my devices: the kinds of share accepted from it without asking.
+    AutoAccept { fingerprint: String, on: Vec<ShareKind> },
 }
 
 impl Ctl {
@@ -48,7 +51,37 @@ impl Ctl {
             Ctl::Visibility { .. } => VISIBILITY.iter().map(|(_, l)| ("Option", l.to_string())).collect(),
             Ctl::Pair { .. } => vec![("Button", "Pair".into())],
             Ctl::Paired { .. } => vec![("Option", "Contact".into()), ("Option", "My device".into()), ("Button", "Forget".into())],
+            Ctl::AutoAccept { .. } => ShareKind::ALL.iter().map(|k| ("Option", kind_label(*k).to_string())).collect(),
         }
+    }
+
+    /// It goes under the row's name, like chips.
+    pub(super) fn wide(&self) -> bool {
+        matches!(self, Ctl::AutoAccept { .. })
+    }
+}
+
+/// A kind of share as the auto-accept chips name it.
+fn kind_label(k: ShareKind) -> &'static str {
+    match k {
+        ShareKind::Message => "Messages",
+        ShareKind::Snippet => "Snippets",
+        ShareKind::Link => "Links",
+        ShareKind::File => "Files",
+        ShareKind::Tab => "Tabs",
+        ShareKind::Object => "Summaries & themes",
+    }
+}
+
+/// What accepting a kind without asking does, for its chip's tooltip.
+fn kind_tip(k: ShareKind) -> &'static str {
+    match k {
+        ShareKind::Message => "Marked read as it arrives",
+        ShareKind::Snippet => "Kept in your inbox; never pasted by itself",
+        ShareKind::Link => "Opened in your browser as it arrives",
+        ShareKind::File => "Saved into your downloads folder; nothing is opened or run",
+        ShareKind::Tab => "Opened as a new tab with a fresh shell; nothing they ran runs here",
+        ShareKind::Object => "Session summaries and themes are added. Rules, triggers, settings and queued prompts always ask",
     }
 }
 
@@ -259,9 +292,9 @@ impl SettingsWindow {
     /// A paired device's tier (`peers.set_tier`).
     fn set_tier(&mut self, fingerprint: String, tier: Tier, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
-        let cmd = format!("midna peers tier {} {}", id12(&fingerprint), tier_cli(tier));
+        let cmd = format!("midna peers tier {} --as {}", id12(&fingerprint), tier_cli(tier));
         cx.spawn(async move |this, cx| {
-            let params = json!({ "fingerprint": fingerprint, "tier": tier.as_str() });
+            let params = json!({ "fingerprint": fingerprint, "as": tier.as_str() });
             let r = cx.background_executor().spawn(async move { backend.call("peers.set_tier", params) }).await;
             let _ = this.update(cx, |s, cx| {
                 let result = match &r {
@@ -274,6 +307,12 @@ impl SettingsWindow {
             });
         })
         .detach();
+    }
+
+    /// Accept `kind` from one of my devices without asking, or ask again (`peers.set_auto_accept`).
+    fn set_auto_accept(&mut self, fingerprint: String, kind: ShareKind, on: bool, cx: &mut Context<Self>) {
+        let cmd = format!("midna peers auto-accept {} {} {}", id12(&fingerprint), kind.as_str(), if on { "on" } else { "off" });
+        self.kind_call("peers.set_auto_accept", json!({ "fingerprint": fingerprint, "kind": kind, "on": on }), cmd, cx);
     }
 
     /// Forget: armed by the first click, done by the second.
@@ -421,22 +460,29 @@ impl SettingsWindow {
                 rows
             }
             "@nearby_paired" => {
-                let mut rows: Vec<RowSpec> = list
-                    .paired
-                    .iter()
-                    .map(|p| {
-                        let when = crate::ui::screen_kit::day_label(&p.paired_at);
-                        let here = if p.nearby { "On this network" } else { "Not on this network" };
-                        RowSpec {
-                            label: p.name.clone(),
-                            note: note(format!("{here} · paired {when} · device {}", nb::short_fingerprint(&p.fingerprint))),
-                            control: Control::Nearby(Ctl::Paired { fingerprint: p.fingerprint.clone(), tier: p.tier }),
-                            cli: format!("midna peers forget {}", id12(&p.fingerprint)),
+                let mut rows: Vec<RowSpec> = vec![];
+                for p in &list.paired {
+                    let when = crate::ui::screen_kit::day_label(&p.paired_at);
+                    let here = if p.nearby { "On this network" } else { "Not on this network" };
+                    rows.push(RowSpec {
+                        label: p.name.clone(),
+                        note: note(format!("{here} · paired {when} · device {}", nb::short_fingerprint(&p.fingerprint))),
+                        control: Control::Nearby(Ctl::Paired { fingerprint: p.fingerprint.clone(), tier: p.tier }),
+                        cli: format!("midna peers forget {}", id12(&p.fingerprint)),
+                        who: Who::Human,
+                        warn: false,
+                    });
+                    if p.tier == Tier::MyDevice {
+                        rows.push(RowSpec {
+                            label: format!("Auto-accept from {}", p.name),
+                            note: note(auto_accept_note(&p.auto_accept)),
+                            control: Control::Nearby(Ctl::AutoAccept { fingerprint: p.fingerprint.clone(), on: p.auto_accept.clone() }),
+                            cli: format!("midna peers auto-accept {} <kinds|all> on|off", id12(&p.fingerprint)),
                             who: Who::Human,
                             warn: false,
-                        }
-                    })
-                    .collect();
+                        });
+                    }
+                }
                 if rows.is_empty() {
                     rows.push(status("No paired devices", t.dim, "None yet".into(), note("Pair with a Midna on this network to send things to it.".into()), "midna peers"));
                 }
@@ -444,6 +490,41 @@ impl SettingsWindow {
             }
             _ => vec![],
         }
+    }
+
+    /// Toggle chips like the settings' own lists: one per kind of share, on when it's accepted
+    /// without asking.
+    fn nearby_auto_chips(&self, t: &Theme, id: usize, fingerprint: String, on: Vec<ShareKind>, cx: &mut Context<Self>) -> Div {
+        let mut row = div().flex().flex_wrap().gap(px(6.)).w_full();
+        for (n, kind) in ShareKind::ALL.into_iter().enumerate() {
+            let is_on = on.contains(&kind);
+            let fp = fingerprint.clone();
+            let tip = format!("{}. Click to {}", kind_tip(kind), if is_on { "ask first again" } else { "accept without asking" });
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("nearby-auto-{id}-{n}")))
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(7.))
+                    .text_size(px(12.))
+                    .whitespace_nowrap()
+                    .border_1()
+                    .cursor_pointer()
+                    .map(|c| {
+                        if is_on {
+                            c.bg(t.accent).border_color(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD)
+                        } else {
+                            c.bg(t.raised).border_color(t.line).text_color(t.dim).hover(|s| s.text_color(t.fg).border_color(t.dim))
+                        }
+                    })
+                    .tooltip(crate::ui::header::tip(tip))
+                    .on_click(cx.listener(move |s, _, _, cx| s.set_auto_accept(fp.clone(), kind, !is_on, cx)))
+                    .child(kind_label(kind)),
+            );
+        }
+        row
     }
 
     /// A segmented choice like the settings' own (the picked one raised).
@@ -555,6 +636,7 @@ impl SettingsWindow {
                     )
                     .into_any_element()
             }
+            Ctl::AutoAccept { fingerprint, on } => self.nearby_auto_chips(t, id, fingerprint, on, cx).into_any_element(),
         }
     }
 
@@ -734,9 +816,27 @@ fn sentence(s: &str) -> String {
     out
 }
 
+/// What an auto-accept row says under its name.
+fn auto_accept_note(on: &[ShareKind]) -> String {
+    let always = "Rules, triggers, settings and queued prompts always ask.";
+    if on.is_empty() {
+        return format!("Off: everything it sends asks you first. Turn on a kind to accept it without asking. {always}");
+    }
+    let names: Vec<String> = on.iter().map(|k| kind_label(*k).to_lowercase()).collect();
+    format!("Accepted without asking: {}. Everything else asks first. {always}", names.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{mmss, sentence};
+    use super::{ShareKind, auto_accept_note, mmss, sentence};
+
+    #[test]
+    fn auto_accept_says_what_still_asks() {
+        assert!(auto_accept_note(&[]).starts_with("Off: everything it sends asks you first."));
+        let n = auto_accept_note(&[ShareKind::Message, ShareKind::Object]);
+        assert!(n.starts_with("Accepted without asking: messages, summaries & themes."), "{n}");
+        assert!(n.ends_with("Rules, triggers, settings and queued prompts always ask."), "{n}");
+    }
 
     #[test]
     fn countdown() {

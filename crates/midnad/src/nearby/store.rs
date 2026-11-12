@@ -2,9 +2,11 @@
 //! device's public key (its fingerprint must match, or the entry is skipped on load), the tier
 //! this side chose, and the pair's presence key, which makes the tags of paired-only
 //! advertisements. Only pairing (both people confirmed) adds an entry; `peers.forget` removes it.
+//! One of my devices also keeps the kinds of share its person set to auto-accept; a contact
+//! never keeps any.
 use super::transport::{hex, unhex};
 use hmac::{Hmac, Mac};
-use midna_proto::nearby::{PairedPeer, TAG_HEX, Tier};
+use midna_proto::nearby::{PairedPeer, ShareKind, TAG_HEX, Tier};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -22,11 +24,27 @@ pub struct Stored {
     pub paired_at: String,
     /// The pair's presence key, hex (both sides have the same one).
     pub presence: String,
+    /// The kinds of share accepted from it without asking (my devices only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_accept: Vec<ShareKind>,
 }
 
 impl Stored {
     pub fn paired(&self, nearby: bool) -> PairedPeer {
-        PairedPeer { fingerprint: self.fingerprint.clone(), name: self.name.clone(), tier: self.tier, paired_at: self.paired_at.clone(), nearby }
+        PairedPeer {
+            fingerprint: self.fingerprint.clone(),
+            name: self.name.clone(),
+            tier: self.tier,
+            paired_at: self.paired_at.clone(),
+            nearby,
+            auto_accept: ShareKind::ALL.into_iter().filter(|k| self.auto_accepts(*k)).collect(),
+        }
+    }
+
+    /// Shares of `kind` from it are accepted without asking: it is one of my devices and its
+    /// person turned that kind on.
+    pub fn auto_accepts(&self, kind: ShareKind) -> bool {
+        self.tier == Tier::MyDevice && self.auto_accept.contains(&kind)
     }
 
     /// This pair's tag for an advertisement with `salt` (the advertisement's salt followed by
@@ -72,7 +90,17 @@ impl Store {
             }),
             Err(_) => File::default(),
         };
-        let peers = file.peers.into_iter().filter(valid).map(|p| (p.fingerprint.clone(), p)).collect();
+        let peers = file
+            .peers
+            .into_iter()
+            .filter(valid)
+            .map(|mut p| {
+                if p.tier != Tier::MyDevice {
+                    p.auto_accept.clear();
+                }
+                (p.fingerprint.clone(), p)
+            })
+            .collect();
         Store { path, peers }
     }
 
@@ -85,10 +113,30 @@ impl Store {
         self.save()
     }
 
-    /// Change a paired device's tier; None if it isn't paired.
+    /// Change a paired device's tier; None if it isn't paired. A contact auto-accepts nothing.
     pub fn set_tier(&mut self, fp: &str, tier: Tier) -> std::io::Result<Option<Stored>> {
         let Some(s) = self.peers.get_mut(fp) else { return Ok(None) };
         s.tier = tier;
+        if tier != Tier::MyDevice {
+            s.auto_accept.clear();
+        }
+        let s = s.clone();
+        self.save()?;
+        Ok(Some(s))
+    }
+
+    /// Accept `kind` from one of my devices without asking (`on`), or ask again. None if it
+    /// isn't paired; the entry unchanged if it is a contact (the caller refuses that).
+    pub fn set_auto_accept(&mut self, fp: &str, kind: ShareKind, on: bool) -> std::io::Result<Option<Stored>> {
+        let Some(s) = self.peers.get_mut(fp) else { return Ok(None) };
+        if s.tier != Tier::MyDevice {
+            return Ok(Some(s.clone()));
+        }
+        s.auto_accept.retain(|k| *k != kind);
+        if on {
+            s.auto_accept.push(kind);
+        }
+        s.auto_accept.sort_by_key(|k| ShareKind::ALL.iter().position(|x| x == k));
         let s = s.clone();
         self.save()?;
         Ok(Some(s))
@@ -152,6 +200,7 @@ mod tests {
             tier: Tier::MyDevice,
             paired_at: "2026-11-12T00:00:00Z".into(),
             presence: hex(&[7u8; 32]),
+            auto_accept: vec![],
         };
         let mut s = Store::load(&h);
         assert!(s.peers.is_empty());
@@ -176,6 +225,55 @@ mod tests {
         let mut s = back;
         assert!(s.remove(&id.fingerprint).unwrap().is_some());
         assert!(Store::load(&h).peers.is_empty());
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn only_my_devices_auto_accept_and_demoting_clears_it() {
+        let h = std::env::temp_dir().join(format!("midna-store-auto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        let id = identity::load_or_create(&h.join("other"));
+        let fp = id.fingerprint.clone();
+        let contact = Stored {
+            fingerprint: fp.clone(),
+            public_key: hex(id.public_key().as_bytes()),
+            name: "Bravo".into(),
+            tier: Tier::Contact,
+            paired_at: "2026-11-12T00:00:00Z".into(),
+            presence: hex(&[7u8; 32]),
+            auto_accept: vec![],
+        };
+        let mut s = Store::load(&h);
+        s.insert(contact.clone()).unwrap();
+        assert!(s.get(&fp).unwrap().paired(false).auto_accept.is_empty());
+        let got = s.set_auto_accept(&fp, ShareKind::File, true).unwrap().unwrap();
+        assert!(got.auto_accept.is_empty() && !got.auto_accepts(ShareKind::File), "a contact can't");
+        assert!(s.set_auto_accept("nope", ShareKind::File, true).unwrap().is_none());
+
+        s.set_tier(&fp, Tier::MyDevice).unwrap();
+        assert!(!s.get(&fp).unwrap().auto_accepts(ShareKind::Message), "off by default");
+        s.set_auto_accept(&fp, ShareKind::Tab, true).unwrap();
+        s.set_auto_accept(&fp, ShareKind::Message, true).unwrap();
+        s.set_auto_accept(&fp, ShareKind::Message, true).unwrap();
+        let back = Store::load(&h);
+        assert_eq!(back.get(&fp).unwrap().auto_accept, vec![ShareKind::Message, ShareKind::Tab], "kept, once each, in order");
+        assert_eq!(back.get(&fp).unwrap().paired(true).auto_accept, vec![ShareKind::Message, ShareKind::Tab]);
+        s.set_auto_accept(&fp, ShareKind::Message, false).unwrap();
+        assert_eq!(s.get(&fp).unwrap().auto_accept, vec![ShareKind::Tab]);
+
+        // Kept as a contact again: everything is off, and stays off when promoted again.
+        s.set_tier(&fp, Tier::Contact).unwrap();
+        assert!(s.get(&fp).unwrap().auto_accept.is_empty());
+        s.set_tier(&fp, Tier::MyDevice).unwrap();
+        assert!(Store::load(&h).get(&fp).unwrap().auto_accept.is_empty());
+
+        // A contact edited by hand to auto-accept still can't.
+        let edited = Stored { auto_accept: vec![ShareKind::Link], ..contact };
+        std::fs::write(path(&h), serde_json::to_string(&File { peers: vec![edited.clone()] }).unwrap()).unwrap();
+        let loaded = Store::load(&h);
+        assert!(loaded.get(&fp).unwrap().auto_accept.is_empty());
+        assert!(!edited.auto_accepts(ShareKind::Link));
+        assert!(edited.paired(false).auto_accept.is_empty());
         let _ = std::fs::remove_dir_all(&h);
     }
 }

@@ -59,8 +59,10 @@ pub fn print_list(v: &Value) {
         println!("Paired ({}):", paired.len());
         for p in &paired {
             let here = if p["nearby"] == true { "  nearby now" } else { "" };
+            let auto: Vec<&str> = p["auto_accept"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let auto = if auto.is_empty() { String::new() } else { format!("  auto-accepts {}", auto.join(", ")) };
             println!(
-                "  {}  id {}  {}  since {}{here}",
+                "  {}  id {}  {}  since {}{here}{auto}",
                 s(p, "name"),
                 short_fingerprint(p["fingerprint"].as_str().unwrap_or("")),
                 tier(p["tier"].as_str()),
@@ -244,6 +246,40 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             out(&v, &|v| println!("{} (id {}) is now kept as {}.", s(v, "name"), short_fingerprint(v["fingerprint"].as_str().unwrap_or("")), s(v, "tier")));
             Ok(())
         }
+        "auto-accept" | "auto" => {
+            const USAGE: &str = "peers auto-accept <name or id> <kinds|all> on|off (kinds: message, snippet, link, file, tab, object)";
+            let pos = a.pos.get(2..).unwrap_or_default();
+            let [who @ .., kinds, on] = pos else { return Err(Fail::Usage(USAGE.into())) };
+            let on = match on.as_str() {
+                "on" | "yes" | "true" => true,
+                "off" | "no" | "false" => false,
+                _ => return Err(Fail::Usage(USAGE.into())),
+            };
+            let kinds: Vec<nb::ShareKind> = if kinds == "all" {
+                nb::ShareKind::ALL.to_vec()
+            } else {
+                kinds
+                    .split(',')
+                    .map(|k| nb::ShareKind::parse(k).ok_or_else(|| Fail::Usage(format!("`{k}` isn't a kind of share; {USAGE}"))))
+                    .collect::<Result<_, _>>()?
+            };
+            let who = who.join(" ");
+            if who.trim().is_empty() {
+                return Err(Fail::Usage(USAGE.into()));
+            }
+            let list = call("peers.list", json!({}))?;
+            let fingerprint = find(list["paired"].as_array().map(Vec::as_slice).unwrap_or_default(), &who, "paired device")?;
+            let mut v = Value::Null;
+            for kind in kinds {
+                v = call("peers.set_auto_accept", json!({ "fingerprint": fingerprint, "kind": kind, "on": on }))?;
+            }
+            out(&v, &|v| {
+                let auto: Vec<&str> = v["auto_accept"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let what = if auto.is_empty() { "nothing; every share asks first".to_string() } else { auto.join(", ") };
+                println!("{} (id {}) auto-accepts {what}.", s(v, "name"), short_fingerprint(v["fingerprint"].as_str().unwrap_or("")));
+            });
+            Ok(())
+        }
         "forget" | "unpair" => {
             let who = a.pos.get(2..).map(|p| p.join(" ")).unwrap_or_default();
             if who.trim().is_empty() {
@@ -255,7 +291,7 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             out(&v, &print_forgot);
             Ok(())
         }
-        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, pair, confirm, tier, forget, visibility or name)"))),
+        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, pair, confirm, tier, auto-accept, forget, visibility or name)"))),
     }
 }
 

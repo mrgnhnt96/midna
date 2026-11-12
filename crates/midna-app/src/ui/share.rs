@@ -459,11 +459,23 @@ pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
     }
     fetch(m, cx);
     if e.kind == midna_proto::kinds::SHARE_ACCEPTED || e.kind == midna_proto::kinds::SHARE_DECLINED {
-        let it = serde_json::from_value::<ShareItem>(e.data.clone()).ok().filter(|i| i.direction == ShareDirection::Outgoing);
-        if let Some(msg) = it.as_ref().and_then(answered) {
+        let it = serde_json::from_value::<ShareItem>(e.data.clone()).ok();
+        let said = |i: &ShareItem| if i.direction == ShareDirection::Outgoing { answered(i) } else { auto_accepted(i) };
+        if let Some(msg) = it.as_ref().and_then(said) {
             m.toast(msg, cx);
         }
     }
+}
+
+/// What to say when a share from one of your devices was accepted without asking.
+pub fn auto_accepted(it: &ShareItem) -> Option<String> {
+    (it.direction == ShareDirection::Incoming && it.auto && it.state == ShareState::Accepted).then_some(())?;
+    let what = match it.payload.kind() {
+        ShareKind::Object => noun(ShareKind::Object).to_string(),
+        k => format!("a {}", noun(k)),
+    };
+    let done = it.result.as_deref().map(|r| format!(": {r}")).unwrap_or_default();
+    Some(format!("Accepted {what} from {} without asking{done}.", it.peer_name))
 }
 
 /// `share.accept` an incoming share: paste a snippet into `session`, pin a link to it (`pin`),
@@ -852,6 +864,7 @@ fn state_badge(t: &Theme, it: &ShareItem) -> (&'static str, Hsla) {
     match (it.direction, it.state) {
         (ShareDirection::Incoming, ShareState::Offered) => ("Waiting", t.need),
         (ShareDirection::Outgoing, ShareState::Offered) => ("Sent", t.dim),
+        (ShareDirection::Incoming, ShareState::Accepted) if it.auto => ("Auto-accepted", t.ok),
         (_, ShareState::Accepted) if it.payload.kind() == ShareKind::Message => ("Read", t.ok),
         (_, ShareState::Accepted) => ("Accepted", t.ok),
         (_, ShareState::Declined) => ("Declined", t.err),
@@ -1055,7 +1068,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one.
-    use super::{Offer, answered, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, send_params};
+    use super::{Offer, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, send_params};
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
     use midna_proto::nearby::{PairedPeer, ShareDirection, ShareItem, ShareKind, SharePayload, ShareState, Tier};
 
@@ -1070,7 +1083,7 @@ mod tests {
     }
 
     fn peer(name: &str, c: char, nearby: bool) -> PairedPeer {
-        PairedPeer { fingerprint: c.to_string().repeat(64), name: name.into(), tier: Tier::Contact, paired_at: String::new(), nearby }
+        PairedPeer { fingerprint: c.to_string().repeat(64), name: name.into(), tier: Tier::Contact, paired_at: String::new(), nearby, auto_accept: vec![] }
     }
 
     #[test]
@@ -1193,9 +1206,14 @@ mod tests {
             result: None,
             needs_you_id: None,
             transfer: None,
+            auto: false,
         };
         let msg = SharePayload::Message { text: "hi".into(), reply_to: None };
         let snip = SharePayload::Snippet { text: "ls".into(), title: None };
+        let mut mine = ShareItem { direction: ShareDirection::Incoming, auto: true, result: Some("read".into()), ..it(msg.clone(), ShareState::Accepted) };
+        assert_eq!(auto_accepted(&mine).as_deref(), Some("Accepted a message from Studio without asking: read."));
+        mine.auto = false;
+        assert_eq!(auto_accepted(&mine), None, "a person accepted it");
         assert_eq!(answered(&it(msg.clone(), ShareState::Accepted)).as_deref(), Some("Studio read your message."));
         assert_eq!(answered(&it(snip, ShareState::Declined)).as_deref(), Some("Studio declined your snippet."));
         assert_eq!(answered(&it(msg, ShareState::Offered)), None);

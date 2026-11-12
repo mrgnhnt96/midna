@@ -673,7 +673,17 @@ fn build() -> Vec<MethodSpec> {
              again, and it no longer finds this Mac while visibility is paired. Event peers.forgotten. Human only."),
         m::<PeersSetTierParams, PairedPeer>("peers.set_tier").mutating().human().d(
             "Nearby: change how a paired device is kept: `as` contact (whatever it sends asks first) or my_device. \
-             Returns the device; event peers.changed. Human only: an agent can't promote a device."),
+             Returns the device; event peers.changed. Human only: an agent can't promote a device. Keeping a device \
+             as a contact turns off everything it auto-accepted."),
+        m::<PeersSetAutoAcceptParams, PairedPeer>("peers.set_auto_accept").mutating().human().d(
+            "Nearby: accept one kind of share (message, snippet, link, file, tab or object) from one of my devices \
+             without asking (on true), or ask again (on false). Everything is off by default. Only a device kept as \
+             my_device can have any (a contact is refused), keeping it as a contact or forgetting it turns them all \
+             off, and pairing again starts with none. Auto-accepting does what accepting would: a message is read, a \
+             snippet kept in the inbox (never pasted), a link opened, a file saved into nearby.downloads, a tab opened \
+             as a fresh shell. An object is applied only when it's a Summary record or a theme: rules, triggers, \
+             settings and queued prompts always wait for the human's review. If auto-accepting fails the share asks \
+             as usual. Returns the device (auto_accept lists what is on); event peers.changed. Human only."),
         m::<ShareSendParams, ShareItem>("share.send").mutating().d(
             "Nearby: offer a paired device that is on the network now a message (kind message, `text`, optional \
              reply_to: the sh_… it answers), a snippet (kind snippet, `text`, optional title: text the other person can \

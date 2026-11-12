@@ -705,6 +705,7 @@ pub static VERBS: &[Verb] = &[
         name: "peers",
         aliases: &["nearby"],
         usage: "peers [list] | pair <name|id> | confirm [<pairing>] [--as contact|my-device] [--no] | forget <name|id>\n\
+                \x20     | tier <name|id> --as contact|my-device | auto-accept <name|id> <kinds|all> on|off\n\
                 \x20     | visibility off|paired|everyone | name [<name>]",
         summary: "other Midnas on the same network (Nearby), and who can find this Mac",
         details: "list        this Mac's name, device id and visibility, then the Midnas it can see over Bonjour.\n\
@@ -719,12 +720,16 @@ pub static VERBS: &[Verb] = &[
                   \x20           (default) or --as my-device; --no declines. Each pairing also raises a needs-you\n\
                   \x20           approval that confirms as a contact. Agents can start a pairing but never confirm one.\n\
                   tier        (human only) peers tier <name or id> --as contact|my-device: change how a paired\n\
-                  \x20           device is kept.\n\
+                  \x20           device is kept. Keeping it as a contact turns off all its auto-accept.\n\
+                  auto-accept (human only) peers auto-accept <name or id> message,file on|off (or all): shares of\n\
+                  \x20           those kinds from one of your own devices are accepted without asking. All are off by\n\
+                  \x20           default, and a contact can't have any. Of Midna's own things only summaries and themes\n\
+                  \x20           are; rules, triggers, settings and queued prompts always ask.\n\
                   forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
                   A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
                   another key is flagged. Events peers.appeared, peers.left, peers.pairing, peers.pairing_ended,\n\
                   peers.paired, peers.changed and peers.forgotten (midna events --kind peers.) follow all of this.",
-        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.forget"],
+        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.forget"],
     },
     Verb {
         name: "share",
