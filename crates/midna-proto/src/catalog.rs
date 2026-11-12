@@ -686,8 +686,13 @@ fn build() -> Vec<MethodSpec> {
              they do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
              connection; share.progress follows them. From an agent it asks the human first (an approval showing \
              what would leave; error 1 with needs_you_id if they deny or don't answer) unless a rule the human gave \
-             allows `share send <kind> <device id>`. Limits: message 4 KiB, snippet 256 KiB, URL 4 KiB, 4000 files \
-             and folders per share, a tab's scrollback its newest 256 KiB."),
+             allows `share send <kind> <device id>`. Kind object sends midna's own things, read from this daemon's \
+             stores: `object` summary (one sm_… id), rules (r_… ids), triggers (t_… ids), theme (one custom theme id), \
+             settings (keys; none = every changed setting that may leave) or queue (q_… ids). Projects travel by name; \
+             secrets, local paths, trust settings and anything tied to one terminal are refused. The receiver's \
+             approval shows what would change there; rules, triggers and human-only settings apply only on its human's \
+             accept, and triggers arrive disabled. Limits: message 4 KiB, snippet 256 KiB, URL 4 KiB, object 256 KiB \
+             or 200 items, 4000 files and folders per share, a tab's scrollback its newest 256 KiB."),
         m::<ShareAcceptParams, ShareItem>("share.accept").mutating().human().d(
             "Nearby: accept an incoming share. A message is marked read. A snippet is kept in the inbox, or with \
              `session` pasted into that terminal (never followed by Enter; multi-line text only into a terminal that \

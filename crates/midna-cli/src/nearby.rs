@@ -259,8 +259,9 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
     }
 }
 
-/// Flags `share` and `inbox` take a value from (`--link <url>`, `--file <path>`, `--into <terminal>`).
-pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "into"];
+/// Flags `share` and `inbox` take a value from (`--link <url>`, `--file <path>`, `--object <type>`,
+/// `--into <terminal>`).
+pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "object", "into"];
 
 /// The paired device `who` names.
 fn paired(who: &str) -> Result<String, Fail> {
@@ -268,8 +269,56 @@ fn paired(who: &str) -> Result<String, Fail> {
     find(list["paired"].as_array().map(Vec::as_slice).unwrap_or_default(), who, "paired device")
 }
 
+/// What an object share holds: its type and how many.
+fn object_word(o: &Value) -> String {
+    let n = |k: &str, one: &str, many: &str| {
+        let n = o[k].as_array().map(Vec::len).or(o[k].as_object().map(|m| m.len())).unwrap_or(0);
+        format!("{n} {}", if n == 1 { one } else { many })
+    };
+    match o["type"].as_str().unwrap_or("") {
+        "summary" => format!("Summary “{}”", plain(&o["record"]["name"])),
+        "rules" => n("rules", "rule", "rules"),
+        "triggers" => n("triggers", "trigger", "triggers"),
+        "theme" => format!("theme “{}”", plain(&o["theme"]["name"])),
+        "settings" => n("values", "setting", "settings"),
+        "queue" => n("prompts", "queued prompt", "queued prompts"),
+        other => format!("object {other}"),
+    }
+}
+
+/// An object share's contents, one line each.
+fn object_lines(o: &Value) -> Vec<String> {
+    let each = |k: &str| o[k].as_array().cloned().unwrap_or_default();
+    match o["type"].as_str().unwrap_or("") {
+        "summary" => {
+            let r = &o["record"];
+            let head = format!("“{}” in {}, {} prompts, closed {}", plain(&r["name"]), plain(&o["project"]), r["turns"], plain(&r["closed_at"]));
+            std::iter::once(head).chain(each_of(&r["prompts"]).iter().map(|p| format!("  › {}", plain(&p["text"])))).collect()
+        }
+        "rules" => each("rules")
+            .iter()
+            .map(|r| {
+                let at = r["project"].as_str().map(|p| format!(" in {p}")).unwrap_or_default();
+                format!("{} {} `{}`{at}", plain(&r["effect"]), plain(&r["matcher"]["kind"]), plain(&r["matcher"]["pattern"]))
+            })
+            .collect(),
+        "triggers" => each("triggers").iter().map(|t| format!("“{}” on {} ({})", plain(&t["name"]), plain(&t["event"]), plain(&t["action"]["kind"]))).collect(),
+        "theme" => vec![format!("{} ({})", plain(&o["theme"]["id"]), if o["theme"]["dark"] == true { "dark" } else { "light" })],
+        "settings" => o["values"].as_object().into_iter().flatten().map(|(k, v)| format!("{k} = {}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect(),
+        "queue" => each("prompts").iter().map(|p| format!("› {}", plain(&p["text"]))).collect(),
+        _ => vec![],
+    }
+}
+
+fn each_of(v: &Value) -> Vec<Value> {
+    v.as_array().cloned().unwrap_or_default()
+}
+
 fn kind_word(item: &Value) -> String {
     let p = &item["payload"];
+    if p["kind"] == "object" {
+        return object_word(&p["object"]);
+    }
     if p["kind"] == "file" {
         let what = if p["folder"] == true { "folder" } else { "file" };
         return format!("{what} “{}”", nb::safe_name(p["name"].as_str().unwrap_or("")));
@@ -284,6 +333,14 @@ fn kind_word(item: &Value) -> String {
 /// The first line of a share's text or its URL, cut short; a file share's size.
 fn preview(item: &Value) -> String {
     let p = &item["payload"];
+    if p["kind"] == "object" {
+        let first = object_lines(&p["object"]).into_iter().next().unwrap_or_default();
+        let mut short: String = first.chars().take(60).collect();
+        if short.len() < first.len() {
+            short.push('…');
+        }
+        return short;
+    }
     if p["kind"] == "file" {
         let size = nb::size_label(item["size"].as_u64().unwrap_or(0));
         return match p["files"].as_array().map(Vec::len) {
@@ -398,6 +455,11 @@ fn print_item(v: &Value) {
         (None, Some(t)) => println!("{}", t.trim_end_matches('\n')),
         _ => {}
     }
+    if p["kind"] == "object" {
+        for line in object_lines(&p["object"]) {
+            println!("  {line}");
+        }
+    }
     let files = p["files"].as_array().cloned().unwrap_or_default();
     if p["folder"] == true {
         const SHOWN: usize = 50;
@@ -411,15 +473,25 @@ fn print_item(v: &Value) {
 }
 
 /// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, a
-/// file or folder (`--file <path>`, or a single word that names one), or a terminal tab (`--tab`).
+/// file or folder (`--file <path>`, or a single word that names one), a terminal tab (`--tab`), or
+/// one of Midna's own things (`--object <type> [ids…]`).
 pub fn share(a: &Args, out: OutFn) -> Res {
-    a.check(&["link", "file", "title", "snippet", "message", "tab", "session"])?;
+    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "session"])?;
     match a.pos.get(1).map(String::as_str) {
         Some("send") => {}
         Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
         None => return Err(Fail::Usage("share send <peer> [text…] (or text on stdin, or --link <url>)".into())),
     }
     let who = a.need(2, "which paired device (midna peers lists them)")?;
+    if let Some(object) = a.get("object") {
+        if a.get("file").is_some() || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") {
+            return Err(Fail::Usage("--object is sent on its own: share send <name|id> --object <type> [ids…]".into()));
+        }
+        let ids: Vec<String> = a.pos.iter().skip(3).cloned().collect();
+        let v = call("share.send", json!({ "peer": paired(&who)?, "kind": "object", "object": object, "ids": ids }))?;
+        out(&v, &print_sent);
+        return Ok(());
+    }
     let words = a.text(3);
     if a.has("tab") && (!words.is_empty() || a.has("link") || a.has("snippet") || a.has("message")) {
         return Err(Fail::Usage("--tab sends a terminal (this one, or --session <terminal>); nothing else goes with it".into()));

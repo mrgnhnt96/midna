@@ -79,7 +79,7 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message | ShareKind::File | ShareKind::Tab => SharePayload::Message { text: message.trim().to_string(), reply_to },
+        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object => SharePayload::Message { text: message.trim().to_string(), reply_to },
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
         ShareKind::Link => SharePayload::Link { url: text.trim().to_string(), title: None },
     }
@@ -91,9 +91,9 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         SharePayload::Message { text, reply_to } => (Some(text), None, None, reply_to),
         SharePayload::Snippet { text, title } => (Some(text), None, title, None),
         SharePayload::Link { url, title } => (None, Some(url), title, None),
-        SharePayload::File { .. } | SharePayload::Tab { .. } => (None, None, None, None),
+        SharePayload::File { .. } | SharePayload::Tab { .. } | SharePayload::Object { .. } => (None, None, None, None),
     };
-    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None, session: None }
+    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None, session: None, object: None, ids: Vec::new() }
 }
 
 /// Paired Macs on the network first, then by name.
@@ -115,6 +115,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Link => "link",
         ShareKind::File => "file",
         ShareKind::Tab => "tab",
+        ShareKind::Object => "Midna items",
     }
 }
 
@@ -125,6 +126,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Link => "Link",
         ShareKind::File => "File",
         ShareKind::Tab => "Tab",
+        ShareKind::Object => "Midna",
     }
 }
 
@@ -194,14 +196,17 @@ fn from_line(detail: &str) -> Option<(String, Option<Tier>, String)> {
     Some((name.to_string(), tier, dev.trim_end_matches(')').to_string()))
 }
 
-/// "X sent a snippet…", "X sent a link: …", "X sent a file: …", "X sent a terminal tab: …", else "X: …" (a message).
+/// "X sent a snippet…", "X sent a link: …", "X sent a file: …", "X sent a terminal tab: …", "X sent from Midna: …",
+/// else "X: …" (a message).
 fn kind_of_title(title: &str, name: &str) -> ShareKind {
     let rest = title.strip_prefix(name).filter(|_| !name.is_empty());
     let has = |s: &str| match rest {
         Some(r) => r.starts_with(s),
         None => title.contains(s),
     };
-    if has(" sent a file: ") || has(" sent a folder: ") {
+    if has(" sent from Midna: ") {
+        ShareKind::Object
+    } else if has(" sent a file: ") || has(" sent a folder: ") {
         ShareKind::File
     } else if has(" sent a terminal tab: ") {
         ShareKind::Tab
@@ -228,6 +233,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
             SharePayload::File { name, folder, files: Vec::new(), dirs: Vec::new() }
         }
         ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), shell: None, scrollback: o.body.clone() },
+        ShareKind::Object => SharePayload::Snippet { text: o.body.clone(), title: None },
     }
 }
 
@@ -258,6 +264,7 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         ShareKind::Link => "Open opens it in your browser. Pin adds it to a terminal's links instead.".into(),
         ShareKind::File => "Accept saves it into your Nearby downloads folder, marked as downloaded. Nothing is opened or run.".into(),
         ShareKind::Tab => "Open tab opens a new terminal in your checkout of its project (else your home folder) with their scrollback shown read-only above a fresh shell. Nothing they ran runs here, and no process or environment comes with it.".into(),
+        ShareKind::Object => "Approve makes only the changes marked +. Rules, triggers and human-only settings come in only through you, triggers arrive turned off, and queued prompts wait in your inbox until you pick a terminal.".into(),
     };
     let transfer = m.share.items.iter().find(|i| i.id == o.id).and_then(|i| i.transfer.clone());
     div()
@@ -266,9 +273,32 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         .gap(px(12.))
         .text_size(px(13.))
         .child(sender(t, &o.name, o.tier, &o.device))
-        .child(payload_box(t, &p))
+        .child(if o.kind == ShareKind::Object { review_box(t, &o.body) } else { payload_box(t, &p) })
         .children(transfer.map(|x| progress(t, &x)))
         .child(div().text_color(t.dim).child(note))
+}
+
+/// What accepting Midna items would change here, as midnad worked it out: `+` lines apply, `·` lines are skipped.
+fn review_box(t: &Theme, review: &str) -> Div {
+    const SHOWN: usize = 14;
+    let lines: Vec<&str> = review.lines().collect();
+    let more = lines.len().saturating_sub(SHOWN);
+    div()
+        .flex()
+        .flex_col()
+        .px(px(14.))
+        .py(px(10.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(t.line)
+        .bg(t.bg)
+        .font_family(t.mono_font.clone())
+        .text_size(px(12.))
+        .children(lines.iter().take(SHOWN).map(|l| {
+            let skipped = l.trim_start().starts_with('·');
+            div().text_color(if skipped { t.dim } else { t.fg }).child(if l.is_empty() { " ".to_string() } else { l.to_string() })
+        }))
+        .when(more > 0, |d| d.child(div().text_color(t.dim).child(format!("… {more} more line{}", if more == 1 { "" } else { "s" }))))
 }
 
 /// The sender line: name, tier and device.
@@ -372,6 +402,7 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                         .children(lines[lines.len().saturating_sub(SHOWN)..].iter().map(|l| div().whitespace_nowrap().overflow_hidden().child(if l.is_empty() { " ".to_string() } else { l.to_string() }))),
                 )
         }
+        SharePayload::Object { object } => frame().child(div().font_weight(FontWeight::BOLD).child(object.label())),
     }
 }
 
@@ -835,6 +866,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::Link { url, title } => title.clone().unwrap_or_else(|| url.clone()),
         SharePayload::File { name, .. } => nb::safe_name(name),
         SharePayload::Tab { title, .. } => title.clone(),
+        SharePayload::Object { object } => object.label(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -979,6 +1011,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         SharePayload::Link { url, .. } => url.clone(),
         SharePayload::File { name, .. } => it.transfer.as_ref().and_then(|x| x.saved_to.clone()).unwrap_or_else(|| name.clone()),
         SharePayload::Tab { scrollback, .. } => scrollback.clone(),
+        SharePayload::Object { object } => serde_json::to_string_pretty(object).unwrap_or_default(),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
@@ -1091,6 +1124,19 @@ mod tests {
         let o = offer_of(&n).unwrap();
         assert_eq!(o.kind, ShareKind::File);
         assert_eq!(file_of_body(&o.body), ("photos".to_string(), true));
+    }
+
+    #[test]
+    fn a_midna_items_offer_carries_its_review() {
+        let review = "+ rule: allow cargo test in midna (project)\n· rule: allow ls in widget: no project by that name\nOnly you can accept this: it changes policy, triggers or human-only settings.";
+        let n = need(
+            "Studio sent from Midna: 2 rules",
+            &format!("{review}\n\nApproving makes the changes marked +; nothing else changes.\nFrom Studio, one of your Macs (device aaaa aaaa aaaa aaaa). Deny to decline it."),
+            "midna inbox accept sh_obj00001",
+        );
+        let o = offer_of(&n).unwrap();
+        assert_eq!((o.kind, o.name.as_str()), (ShareKind::Object, "Studio"));
+        assert_eq!(o.body, review);
     }
 
     #[test]

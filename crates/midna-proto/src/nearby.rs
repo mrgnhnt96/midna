@@ -445,6 +445,11 @@ pub enum SharePayload {
         /// [`MAX_SCROLLBACK`] bytes.
         scrollback: String,
     },
+    /// One of Midna's own things: a Summary record, policy rules, triggers, a theme, settings or
+    /// queued prompts. The sending midnad builds it from its stores; secrets never travel. The
+    /// receiver's approval reviews what accepting would change on its Mac, and only the human's
+    /// accept applies it.
+    Object { object: MidnaObject },
 }
 
 /// Which project a tab was in, the same on every Mac that has a checkout of it.
@@ -484,6 +489,196 @@ pub fn remote_key(url: &str) -> Option<String> {
     let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
     let key = if host.is_empty() { format!("/{path}") } else { format!("{host}/{path}") };
     (!key.trim_matches('/').is_empty()).then(|| key.to_lowercase())
+}
+
+/// The Midna object kinds a share can carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectType {
+    /// One closed terminal's record from a project's Summary (`summary.list`).
+    Summary,
+    /// Policy rules (`rule.list`).
+    Rules,
+    /// Triggers (`trigger.list`). They arrive switched off, without a secret.
+    Triggers,
+    /// A custom theme (`themes.list`).
+    Theme,
+    /// Settings (`settings.list`); none named sends every changed one that may travel.
+    Settings,
+    /// Queued prompts (`queue.list`).
+    Queue,
+}
+
+/// What a [`SharePayload::Object`] carries. Project ids never travel: a project is named, and
+/// the receiver maps the name to its own project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MidnaObject {
+    /// A closed terminal's Summary record, without its conversation id or agent arguments.
+    Summary {
+        /// The sender's project name (`Root` for terminals in no project).
+        project: String,
+        record: crate::summary::ClosedTerminal,
+    },
+    Rules { rules: Vec<SharedRule> },
+    Triggers { triggers: Vec<SharedTrigger> },
+    Theme { theme: SharedTheme },
+    /// Setting key -> value.
+    Settings { values: std::collections::BTreeMap<String, serde_json::Value> },
+    /// Queued prompts, in order (text only).
+    Queue { prompts: Vec<SharedPrompt> },
+}
+
+/// A policy rule as it travels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedRule {
+    pub effect: crate::types::Effect,
+    pub matcher: crate::types::Matcher,
+    /// A project rule's project, by name; none for a global rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// What was left of its time when it was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_secs: Option<u64>,
+}
+
+/// A trigger as it travels: its definition only (no secret, state, history or hook id). The
+/// project ids in `filter.project` and the action's `project_id` are project names instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedTrigger {
+    pub name: String,
+    pub source: crate::types::TriggerSource,
+    pub event: String,
+    #[serde(default)]
+    pub filter: crate::types::TriggerFilter,
+    pub action: crate::types::TriggerAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_secs: Option<u64>,
+}
+
+/// A custom theme, every color spelled out (it extends nothing).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedTheme {
+    /// Its id, which names its file (`themes/<id>.json`).
+    pub id: String,
+    pub name: String,
+    pub dark: bool,
+    /// UI token -> `#RRGGBB` ([`crate::themes::UI_TOKENS`]).
+    pub colors: std::collections::BTreeMap<String, String>,
+    /// The 16 terminal colors, `#RRGGBB`.
+    pub ansi: Vec<String>,
+}
+
+/// A queued prompt as it travels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedPrompt {
+    pub text: String,
+    /// Press Enter after it.
+    pub enter: bool,
+}
+
+/// The most an object share may hold, serialized.
+pub const MAX_OBJECT: usize = 256 * 1024;
+/// … rules, triggers, settings or prompts in one object share.
+pub const MAX_OBJECT_ITEMS: usize = 200;
+
+impl ObjectType {
+    pub fn word(self) -> &'static str {
+        match self {
+            ObjectType::Summary => "summary",
+            ObjectType::Rules => "rules",
+            ObjectType::Triggers => "triggers",
+            ObjectType::Theme => "theme",
+            ObjectType::Settings => "settings",
+            ObjectType::Queue => "queue",
+        }
+    }
+}
+
+impl MidnaObject {
+    pub fn object_type(&self) -> ObjectType {
+        match self {
+            MidnaObject::Summary { .. } => ObjectType::Summary,
+            MidnaObject::Rules { .. } => ObjectType::Rules,
+            MidnaObject::Triggers { .. } => ObjectType::Triggers,
+            MidnaObject::Theme { .. } => ObjectType::Theme,
+            MidnaObject::Settings { .. } => ObjectType::Settings,
+            MidnaObject::Queue { .. } => ObjectType::Queue,
+        }
+    }
+
+    /// What it is, for people: `3 rules`, `the theme “My Night”`, `1 queued prompt`.
+    pub fn label(&self) -> String {
+        let n = |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+        match self {
+            MidnaObject::Summary { record, .. } => format!("the Summary of “{}”", record.name),
+            MidnaObject::Rules { rules } => n(rules.len(), "rule", "rules"),
+            MidnaObject::Triggers { triggers } => n(triggers.len(), "trigger", "triggers"),
+            MidnaObject::Theme { theme } => format!("the theme “{}”", theme.name),
+            MidnaObject::Settings { values } => n(values.len(), "setting", "settings"),
+            MidnaObject::Queue { prompts } => n(prompts.len(), "queued prompt", "queued prompts"),
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let count = |n: usize, what: &str| match n {
+            0 => Err(format!("no {what} to send")),
+            n if n > MAX_OBJECT_ITEMS => Err(format!("at most {MAX_OBJECT_ITEMS} {what} per share")),
+            _ => Ok(()),
+        };
+        match self {
+            MidnaObject::Summary { project, record } => {
+                if project.trim().is_empty() || project.len() > MAX_TITLE {
+                    return Err("a Summary record needs its project's name".into());
+                }
+                if record.name.len() > MAX_TITLE * 4 || record.id.is_empty() {
+                    return Err("a Summary record needs an id and a name".into());
+                }
+            }
+            MidnaObject::Rules { rules } => {
+                count(rules.len(), "rules")?;
+                if rules.iter().any(|r| r.matcher.pattern.trim().is_empty()) {
+                    return Err("a rule's pattern is empty".into());
+                }
+            }
+            MidnaObject::Triggers { triggers } => {
+                count(triggers.len(), "triggers")?;
+                if triggers.iter().any(|t| t.name.trim().is_empty()) {
+                    return Err("a trigger has no name".into());
+                }
+            }
+            MidnaObject::Theme { theme } => {
+                let hex = |c: &String| crate::themes::parse_hex(c).is_some();
+                let builtin = crate::themes::BUILTIN_IDS.contains(&theme.id.as_str());
+                if !crate::themes::valid_id(&theme.id) || builtin || theme.name.trim().is_empty() || theme.name.len() > MAX_TITLE {
+                    return Err("a theme needs an id (a-z 0-9 - _) that isn't a built-in one, and a name".into());
+                }
+                let tokens = crate::themes::UI_TOKENS.iter().all(|t| theme.colors.get(*t).is_some_and(hex));
+                if !tokens || theme.colors.len() != crate::themes::UI_TOKENS.len() || theme.ansi.len() != 16 || !theme.ansi.iter().all(hex) {
+                    return Err("a theme carries every UI color and 16 terminal colors, each #RRGGBB".into());
+                }
+            }
+            MidnaObject::Settings { values } => {
+                count(values.len(), "settings")?;
+                if values.keys().any(|k| k.is_empty() || k.len() > MAX_TITLE) {
+                    return Err("a setting's key is empty or too long".into());
+                }
+            }
+            MidnaObject::Queue { prompts } => {
+                count(prompts.len(), "queued prompts")?;
+                if prompts.iter().any(|p| p.text.is_empty()) {
+                    return Err("a queued prompt is empty".into());
+                }
+            }
+        }
+        let size = serde_json::to_vec(self).map(|b| b.len()).unwrap_or(usize::MAX);
+        if size > MAX_OBJECT {
+            return Err(format!("an object share may be at most {} KiB; send fewer", MAX_OBJECT / 1024));
+        }
+        Ok(())
+    }
 }
 
 fn plain(s: &str) -> bool {
@@ -595,6 +790,7 @@ impl SharePayload {
             SharePayload::Link { .. } => ShareKind::Link,
             SharePayload::File { .. } => ShareKind::File,
             SharePayload::Tab { .. } => ShareKind::Tab,
+            SharePayload::Object { .. } => ShareKind::Object,
         }
     }
 
@@ -605,6 +801,7 @@ impl SharePayload {
             SharePayload::Link { url, .. } => url.len() as u64,
             SharePayload::File { files, .. } => files.iter().fold(0u64, |n, f| n.saturating_add(f.size)),
             SharePayload::Tab { scrollback, .. } => scrollback.len() as u64,
+            SharePayload::Object { object } => serde_json::to_vec(object).map(|b| b.len() as u64).unwrap_or(0),
         }
     }
 
@@ -673,6 +870,7 @@ impl SharePayload {
                     return Err("a tab's scrollback is plain text".into());
                 }
             }
+            SharePayload::Object { object } => object.check()?,
         }
         Ok(())
     }
@@ -693,6 +891,8 @@ pub enum ShareKind {
     File,
     /// A terminal tab (`session`): its project, directory and scrollback.
     Tab,
+    /// One of Midna's own things ([`ObjectType`]).
+    Object,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -816,6 +1016,14 @@ pub struct ShareSendParams {
     /// directory and scrollback; `title` names it instead of the terminal's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// An object: which kind. midnad reads it from its stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<ObjectType>,
+    /// An object: what to send. One Summary record id (`summary.list`) or theme id; rule ids
+    /// (r_…), trigger ids (t_…) or queued prompt ids (q_…); setting keys (none: every changed
+    /// setting that may travel).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
 }
 
 impl ShareSendParams {
@@ -835,6 +1043,12 @@ impl ShareSendParams {
         if self.session.is_some() && self.kind != ShareKind::Tab {
             return Err("only a tab takes a `session`".into());
         }
+        if self.object.is_some() != (self.kind == ShareKind::Object) {
+            return Err(if self.object.is_some() { "only an object share names an `object`".into() } else { "an object share needs `object`".into() });
+        }
+        if !self.ids.is_empty() && self.kind != ShareKind::Object {
+            return Err("only an object share takes `ids`".into());
+        }
         let p = match self.kind {
             ShareKind::Message => {
                 if title.is_some() {
@@ -852,6 +1066,7 @@ impl ShareSendParams {
             }
             ShareKind::File => return Err("a file share is read from `path` by midnad".into()),
             ShareKind::Tab => return Err("a tab is read from its terminal by midnad".into()),
+            ShareKind::Object => return Err("an object share is read from midnad's stores".into()),
         };
         p.check()?;
         Ok(p)
@@ -983,6 +1198,45 @@ mod tests {
         }
         let p: ShareSendParams = serde_json::from_value(serde_json::json!({ "peer": "f", "kind": "snippet", "text": "x", "session": "t1" })).unwrap();
         assert!(p.payload().is_err(), "only a tab names a terminal");
+    }
+
+    #[test]
+    fn object_shares() {
+        let send = |v: serde_json::Value| serde_json::from_value::<ShareSendParams>(v).unwrap().payload();
+        assert!(send(serde_json::json!({ "peer": "f", "kind": "object", "object": "rules", "ids": ["r_1"] })).unwrap_err().contains("midnad's stores"));
+        for bad in [
+            serde_json::json!({ "peer": "f", "kind": "object" }),
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "object": "rules" }),
+            serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "ids": ["r_1"] }),
+        ] {
+            assert!(!send(bad.clone()).unwrap_err().contains("midnad's stores"), "{bad}");
+        }
+
+        let object = |v: serde_json::Value| SharePayload::Object { object: serde_json::from_value(v).unwrap() };
+        let rules = object(serde_json::json!({ "type": "rules", "rules": [{ "effect": "allow", "matcher": { "kind": "cli", "pattern": "git push*" }, "project": "web" }] }));
+        assert_eq!((rules.kind(), rules.check()), (ShareKind::Object, Ok(())));
+        let SharePayload::Object { object: o } = &rules else { unreachable!() };
+        assert_eq!((o.object_type(), o.label().as_str()), (ObjectType::Rules, "1 rule"));
+        let wire = serde_json::to_value(&rules).unwrap();
+        assert_eq!((wire["kind"].as_str(), wire["object"]["type"].as_str()), (Some("object"), Some("rules")), "{wire}");
+        assert_eq!(serde_json::from_value::<SharePayload>(wire).unwrap(), rules);
+
+        let ui: serde_json::Map<String, serde_json::Value> = crate::themes::UI_TOKENS.iter().map(|t| (t.to_string(), serde_json::json!("#112233"))).collect();
+        let theme = |id: &str, ansi: usize| object(serde_json::json!({ "type": "theme", "theme": { "id": id, "name": "Mine", "dark": true, "colors": ui, "ansi": vec!["#000000"; ansi] } }));
+        assert_eq!(theme("mine", 16).check(), Ok(()));
+        for bad in [
+            theme("twilight", 16),
+            theme("../mine", 16),
+            theme("mine", 15),
+            object(serde_json::json!({ "type": "rules", "rules": [] })),
+            object(serde_json::json!({ "type": "rules", "rules": [{ "effect": "allow", "matcher": { "kind": "cli", "pattern": " " } }] })),
+            object(serde_json::json!({ "type": "settings", "values": { "": 1 } })),
+            object(serde_json::json!({ "type": "queue", "prompts": [{ "text": "", "enter": true }] })),
+            object(serde_json::json!({ "type": "queue", "prompts": vec![serde_json::json!({ "text": "x", "enter": true }); MAX_OBJECT_ITEMS + 1] })),
+            object(serde_json::json!({ "type": "queue", "prompts": [{ "text": "x".repeat(MAX_OBJECT), "enter": true }] })),
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
     }
 
     #[test]
