@@ -3,8 +3,9 @@
 //! panels apps put on them (`summary.annotate`).
 //!
 //! The record is written in `rpc::session::close_inner`, before the terminal's links are
-//! forgotten. Terminals that aren't closed for good aren't recorded: a ⌘R replace, a reset, a
-//! removed project, a background terminal, one at root (no project to show it in).
+//! forgotten. A ⌘R replace is recorded too: the old session is gone even though a new one takes
+//! its place. Not recorded: a reset, a removed project, a background terminal, one at root (no
+//! project to show it in).
 //!
 //! An app may annotate a terminal while it runs: the panel waits in `live` and moves onto the
 //! record when it closes. Everything lives in `$MIDNA_HOME/summary.json`.
@@ -19,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// How a close is described in `session.closed`'s `how` when the terminal is gone for good.
-const RECORDED: &[&str] = &["close", "force_close", "exited"];
+const RECORDED: &[&str] = &["close", "force_close", "exited", "replace"];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Data {

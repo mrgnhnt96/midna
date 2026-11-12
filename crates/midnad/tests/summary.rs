@@ -49,14 +49,18 @@ fn a_closed_terminal_is_recorded_with_the_panel_an_app_put_on_it() {
 }
 
 #[test]
-fn a_replaced_terminal_is_not_recorded_and_a_resumed_one_leaves_the_summary() {
+fn a_replaced_terminal_is_recorded_and_a_resumed_one_leaves_the_summary() {
     let d = TestDaemon::start();
     let mut h = d.human();
     let dir = d.home.join("work");
     std::fs::create_dir_all(&dir).unwrap();
     let (old, _) = shell_in(&mut h, &dir);
     let new = call(&mut h, "session.replace", json!({ "id": old }))["id"].as_str().unwrap().to_string();
-    assert!(call(&mut h, "summary.list", json!({}))["closed"].as_array().unwrap().is_empty(), "a replace isn't a close");
+    let closed = call(&mut h, "summary.list", json!({}))["closed"].clone();
+    assert_eq!(closed.as_array().unwrap().len(), 1, "a replace ends the old session: {closed}");
+    assert_eq!(closed[0]["id"], old.as_str());
+    assert_eq!(closed[0]["how"], "replace");
+    assert_eq!(call(&mut h, "summary.remove", json!({ "id": old }))["removed"], 1);
 
     call(&mut h, "session.close", json!({ "id": new, "force": true }));
     let r = call(&mut h, "summary.resume", json!({ "id": new }));
