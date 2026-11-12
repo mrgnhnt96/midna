@@ -408,6 +408,9 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "clock.sleeps" => crate::clock::sleeps(d, parse(p)?),
         "keep_awake.status" => crate::keep_awake::status(d),
         "peers.list" => crate::nearby::list(d),
+        "peers.pair" => crate::nearby::pairing::pair(d, parse(p)?),
+        "peers.confirm" => crate::nearby::pairing::confirm(d, parse(p)?),
+        "peers.forget" => crate::nearby::pairing::forget(d, parse(p)?),
         "keep_awake.set" => crate::keep_awake::set(d, ctx, parse(p)?),
         "keep_awake.wake_setup" => crate::wake::setup(d, ctx, parse(p)?),
         "window.list" => window::list(d),
@@ -486,6 +489,13 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     }
     if method == "rule.remove" {
         return RpcError::human_only("rule.remove is human only; use rule.request_removal to ask the human");
+    }
+    if method == "peers.confirm" {
+        // The pairing raised its own approval; deferring would let an approval stand in for
+        // comparing the codes.
+        return RpcError::human_only(
+            "peers.confirm is human only: the human compares the codes on both Macs and confirms (each pairing raises a needs-you approval)",
+        );
     }
     let cli = format!("{method} {}", summarize(method, params));
     defer_to_human(d, ctx, &format!("Agent asks to run {method}"), &cli, method, params)

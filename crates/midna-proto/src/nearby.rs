@@ -5,6 +5,13 @@
 //! claim any name. midnad advertises and browses [`SERVICE`] (Midna Dev and every home other
 //! than the installed Midna's use [`DEV_SERVICE`], so they never see production) with a TXT
 //! record carrying [`TXT_PROTOCOL`], [`TXT_FINGERPRINT`] and [`TXT_NAME`].
+//!
+//! Devices pair once (`peers.pair`, then `peers.confirm` on both sides once both screens show
+//! the same code) and are kept as a [`Tier`]: a contact or one of my devices. While visibility is
+//! `paired`, a device advertises a nameless instance whose TXT carries [`TXT_SALT`] and tags
+//! ([`TXT_TAGS`]) only its paired devices can match. Every connection between Midnas is Noise
+//! (`Noise_XX_25519_ChaChaPoly_SHA256`) bound to the device keys; unpaired devices may only ask
+//! to pair.
 use crate::types::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,6 +30,17 @@ pub const EVERYONE_SECS: i64 = 600;
 pub const TXT_PROTOCOL: &str = "v";
 pub const TXT_FINGERPRINT: &str = "fp";
 pub const TXT_NAME: &str = "name";
+/// Paired-only advertisements: a random salt (hex) …
+pub const TXT_SALT: &str = "s";
+/// … and tags, [`TAG_HEX`] hex digits each, run together (keys `t`, `t2`, `t3`, …), one per
+/// paired device: the start of HMAC-SHA256(the pair's presence key, salt ‖ the advertising
+/// device's fingerprint), so a device's own tags never match its own entries.
+pub const TXT_TAGS: &str = "t";
+pub const TAG_HEX: usize = 8;
+/// Digits in a pairing code.
+pub const CODE_DIGITS: usize = 6;
+/// How long a pairing waits for both people to confirm.
+pub const PAIRING_SECS: i64 = 120;
 
 /// Who can find this Mac (setting `nearby.visibility`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -63,6 +81,11 @@ pub fn valid_service(s: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !name.starts_with('-')
         && !name.ends_with('-')
+}
+
+/// A pairing code for people: `123 456`.
+pub fn spaced_code(code: &str) -> String {
+    if code.len() == CODE_DIGITS { format!("{} {}", &code[..3], &code[3..]) } else { code.to_string() }
 }
 
 /// A device id shortened for people: the first 16 hex digits in groups of four.
@@ -124,6 +147,157 @@ pub struct Peer {
     pub port: Option<u16>,
     /// When this daemon first saw it (since it last appeared).
     pub seen_since: Timestamp,
+    /// Paired with this device, as this tier; none = not paired (it may only ask to pair).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+    /// Flagged: it uses the name of a paired device (this fingerprint) but has another key. It
+    /// isn't that device, whatever it's called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_name_of: Option<String>,
+}
+
+/// How much a paired device is trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Someone else's Midna: whatever it sends asks first.
+    #[default]
+    Contact,
+    /// One of my own Macs.
+    MyDevice,
+}
+
+impl Tier {
+    pub fn parse(s: &str) -> Option<Tier> {
+        match s.replace('-', "_").as_str() {
+            "contact" => Some(Tier::Contact),
+            "my_device" | "mine" => Some(Tier::MyDevice),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Contact => "contact",
+            Tier::MyDevice => "my_device",
+        }
+    }
+}
+
+/// A device this one paired with (`peers.list` `paired`; event `peers.paired` / `peers.forgotten`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PairedPeer {
+    pub fingerprint: String,
+    /// Its name when it paired, updated when it shows up under another one. Display only.
+    pub name: String,
+    pub tier: Tier,
+    pub paired_at: Timestamp,
+    /// It can be seen on the network now.
+    #[serde(default)]
+    pub nearby: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingRole {
+    /// This device asked (`peers.pair`).
+    Outgoing,
+    /// The other device asked.
+    Incoming,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingState {
+    /// Connecting and agreeing on the code.
+    Connecting,
+    /// Both sides show `code`; waiting for the people to confirm it matches.
+    Comparing,
+    /// Paired: both people confirmed.
+    Paired,
+    /// Someone said no or the codes didn't match (`error` says which side).
+    Declined,
+    /// Timed out, the connection broke, or the other device broke the protocol (`error`).
+    Failed,
+}
+
+impl PairingState {
+    pub fn is_over(self) -> bool {
+        matches!(self, PairingState::Paired | PairingState::Declined | PairingState::Failed)
+    }
+}
+
+/// A pairing in progress or just ended (`peers.pair`, `peers.confirm`, `peers.list` `pairings`;
+/// events `peers.pairing` and `peers.pairing_ended`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Pairing {
+    /// `pr_…`; what `peers.confirm` takes.
+    pub id: String,
+    pub role: PairingRole,
+    /// The other device's id (proven by the connection, not just advertised).
+    pub fingerprint: String,
+    /// The name it gave. Display only.
+    pub name: String,
+    /// It used the name of a paired device (this fingerprint) but has another key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_name_of: Option<String>,
+    pub state: PairingState,
+    /// The 6-digit code both screens show once state is `comparing`. Confirm only if the other
+    /// device shows the same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// This side's person confirmed the code.
+    pub confirmed: bool,
+    /// The other side's person confirmed it.
+    pub peer_confirmed: bool,
+    /// The tier this side keeps the other device as, once confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+    /// The approval asking this side's person to compare the codes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_id: Option<String>,
+    pub started_at: Timestamp,
+    /// When it gives up waiting for the people.
+    pub expires_at: Timestamp,
+    /// Why it was declined or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersPairParams {
+    /// The device to pair with: its fingerprint, as `peers.list` shows it. It must be visible to
+    /// everyone (or already paired).
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersConfirmParams {
+    /// The pairing (`pr_…`).
+    pub pairing: String,
+    /// true (default): the code on the other device matches. false: it doesn't, or no thanks;
+    /// the pairing ends on both sides.
+    #[serde(default = "yes")]
+    pub accept: bool,
+    /// How to keep the other device (default contact).
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersForgetParams {
+    /// The paired device's fingerprint.
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersForgetResult {
+    /// The device that was forgotten.
+    pub forgotten: PairedPeer,
 }
 
 /// This daemon's side of Nearby.
@@ -142,11 +316,14 @@ pub struct NearbyMe {
     /// in-process test daemon, or `MIDNA_NEARBY_SERVICE=off`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
-    /// Advertising itself right now (only while visibility is `everyone`, for now: paired-only
-    /// advertising comes with pairing).
+    /// Advertising itself right now: to everyone, or (visibility `paired`, with at least one
+    /// paired device) a nameless instance only paired devices recognise.
     pub advertising: bool,
     /// Looking for other Midnas right now (visibility isn't `off`).
     pub browsing: bool,
+    /// The TCP port it takes Nearby connections on, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     pub protocol: u32,
     /// Why Bonjour isn't working, when it isn't (midnad retries every few seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +336,12 @@ pub struct PeersListResult {
     /// Midnas this daemon can see now, by name. A peer that only shows itself to paired devices
     /// isn't listed until it is paired with this one.
     pub peers: Vec<Peer>,
+    /// Every device this one paired with, nearby or not.
+    #[serde(default)]
+    pub paired: Vec<PairedPeer>,
+    /// Pairings in progress.
+    #[serde(default)]
+    pub pairings: Vec<Pairing>,
 }
 
 /// Data of the `peers.left` event.
@@ -192,6 +375,19 @@ mod tests {
         assert!(back[2].1.len() <= 250 && long.starts_with(&back[2].1), "cut at a char boundary");
         assert_eq!(parse_txt(&[5, b'x', b'=', b'1']), vec![], "a truncated entry is dropped");
         assert_eq!(parse_txt(&[3, b'=', b'1', b'2', 3, b'K', b'=', b'v']), vec![("k".into(), "v".into())]);
+    }
+
+    #[test]
+    fn tiers_and_codes() {
+        for t in [Tier::Contact, Tier::MyDevice] {
+            assert_eq!(Tier::parse(t.as_str()), Some(t));
+            assert_eq!(serde_json::to_value(t).unwrap(), t.as_str());
+        }
+        assert_eq!(Tier::parse("my-device"), Some(Tier::MyDevice));
+        assert_eq!(spaced_code("012345"), "012 345");
+        let p: PeersConfirmParams = serde_json::from_value(serde_json::json!({ "pairing": "pr_1", "as": "my_device" })).unwrap();
+        assert!(p.accept);
+        assert_eq!(p.tier, Some(Tier::MyDevice));
     }
 
     #[test]

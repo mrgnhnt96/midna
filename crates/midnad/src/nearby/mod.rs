@@ -4,10 +4,18 @@
 //! Each home has a persistent Ed25519 device key (`identity.rs`); its fingerprint is the device's
 //! id. A `nearby` thread owns every DNS-SD ref (`dnssd.rs`) and, about three times a second,
 //! makes them match `nearby.visibility`: `off` neither browses nor advertises, `paired` browses
-//! only (advertising to paired devices comes with pairing), `everyone` browses and advertises
-//! the display name, fingerprint and protocol version in the TXT record. `everyone` goes back to
+//! and, once a device is paired, advertises a nameless instance only paired devices recognise
+//! (a random salt and one tag per paired device, HMAC(the pair's presence key, salt ‖ this
+//! device's fingerprint)), `everyone` browses and advertises the display name, fingerprint and
+//! protocol version in the TXT record. `everyone` goes back to
 //! `paired` on its own after `EVERYONE_SECS`; the deadline is in state.json so a restart doesn't
 //! extend it. Bonjour errors are kept for `peers.list` and retried every few seconds.
+//!
+//! The advertised port takes Noise connections bound to the device keys (`transport.rs`,
+//! `link.rs`): devices that aren't paired may only ask to pair (`pairing.rs`), and paired ones
+//! are kept in `nearby/peers.json` (`store.rs`). An advertisement is only a hint: whatever it
+//! claims, a connection proves the key, so a device that copies a paired one's name or tags
+//! still can't pass for it.
 //!
 //! The service type keeps installs apart: only the installed Midna on its own home uses
 //! `_midna._tcp`; Midna Dev and every other home use `_midna-dev._tcp`, `MIDNA_NEARBY_SERVICE`
@@ -15,6 +23,10 @@
 //! it on with a service of its own.
 pub mod dnssd;
 pub mod identity;
+pub mod link;
+pub mod pairing;
+pub mod store;
+pub mod transport;
 
 use crate::daemon::Daemon;
 use crate::rpc::{R, ok};
@@ -24,7 +36,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -95,13 +107,28 @@ struct Inner {
     error: Option<String>,
     /// By fingerprint.
     peers: BTreeMap<String, Peer>,
+    /// The paired devices (loaded the first time they're needed).
+    store: Option<store::Store>,
+    /// By id.
+    pairings: BTreeMap<String, pairing::Slot>,
+    /// The port Nearby connections come in on.
+    port: Option<u16>,
+}
+
+impl Inner {
+    fn store(&mut self, home: &Path) -> &mut store::Store {
+        self.store.get_or_insert_with(|| store::Store::load(home))
+    }
 }
 
 #[derive(Default)]
 pub struct Runtime {
     identity: OnceLock<identity::Identity>,
+    local: OnceLock<transport::Local>,
     computer_name: OnceLock<String>,
     inner: Mutex<Inner>,
+    /// Connections being served.
+    conns: AtomicUsize,
 }
 
 impl Runtime {
@@ -113,6 +140,11 @@ impl Runtime {
 /// This home's device identity (made the first time it's asked for).
 pub fn identity(d: &Daemon) -> &identity::Identity {
     d.nearby.identity.get_or_init(|| identity::load_or_create(&d.cfg.home))
+}
+
+/// This process's Noise key, signed by the device key.
+pub fn local(d: &Daemon) -> &transport::Local {
+    d.nearby.local.get_or_init(|| transport::Local::new(identity(d)))
 }
 
 pub fn visibility(d: &Daemon) -> Visibility {
@@ -137,9 +169,14 @@ pub fn list(d: &Daemon) -> R {
         _ => None,
     };
     let name = display_name(d);
-    let i = d.nearby.inner();
-    let mut peers: Vec<Peer> = i.peers.values().cloned().collect();
+    let mut i = d.nearby.inner();
+    pairing::prune(&mut i);
+    let store = i.store(&d.cfg.home).clone();
+    let mut peers: Vec<Peer> = i.peers.values().cloned().map(|p| annotate(p, &store)).collect();
     peers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.fingerprint.cmp(&b.fingerprint)));
+    let paired = store.peers.values().map(|s| s.paired(i.peers.contains_key(&s.fingerprint))).collect();
+    let mut pairings: Vec<_> = i.pairings.values().map(|s| s.info.clone()).collect();
+    pairings.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     ok(PeersListResult {
         me: NearbyMe {
             fingerprint,
@@ -149,11 +186,25 @@ pub fn list(d: &Daemon) -> R {
             service: i.service.clone(),
             advertising: i.advertising,
             browsing: i.browsing,
+            port: i.port,
             protocol: nb::PROTOCOL,
             error: i.error.clone(),
         },
         peers,
+        paired,
+        pairings,
     })
+}
+
+/// A seen peer as this device knows it: its tier if paired, and flagged if it isn't but uses a
+/// paired device's name.
+fn annotate(mut p: Peer, store: &store::Store) -> Peer {
+    p.tier = store.get(&p.fingerprint).map(|s| s.tier);
+    p.claims_name_of = match p.tier {
+        Some(_) => None,
+        None => store.named(&p.name, &p.fingerprint).map(|s| s.fingerprint.clone()),
+    };
+    p
 }
 
 /// `nearby.visibility` was set (to the same value too: picking `everyone` again restarts its
@@ -200,10 +251,22 @@ pub fn start(d: &Arc<Daemon>) {
     let service = d.cfg.nearby.service(&d.cfg.home);
     let iface = if d.cfg.nearby.local_only { dnssd::LOCAL_ONLY } else { dnssd::ANY };
     d.nearby.inner().service = service.clone();
+    pairing::withdraw_stale(d);
+    let port = match service {
+        Some(_) => match open_listener() {
+            Ok((listener, port)) => {
+                d.nearby.inner().port = Some(port);
+                link::listen(d, listener);
+                Ok(port)
+            }
+            Err(e) => Err(e),
+        },
+        None => Err("Nearby is off".into()),
+    };
     let w = Arc::downgrade(d);
     let _ = std::thread::Builder::new().name("nearby".into()).spawn(move || {
         // Dropped when the thread ends, which withdraws the advertisement.
-        let mut worker = service.map(|s| Worker::new(s, iface));
+        let mut worker = service.map(|s| Worker::new(s, iface, port));
         loop {
             let Some(d) = w.upgrade() else { return };
             if d.shutting_down.load(Ordering::Relaxed) {
@@ -237,6 +300,8 @@ struct Found {
     protocol: u32,
     host: String,
     port: u16,
+    /// It advertised its own fingerprint and name (visible to everyone), not paired-only tags.
+    named: bool,
 }
 
 struct Reg {
@@ -249,8 +314,10 @@ struct Reg {
 struct Worker {
     service: String,
     iface: u32,
-    /// The advertised port, held (bound, not listening) so nothing else takes it.
-    port: Result<(OwnedFd, u16), String>,
+    /// The advertised port (the listener's).
+    port: Result<u16, String>,
+    /// The salt of this daemon's paired-only advertisement.
+    salt: [u8; 16],
     browse: Option<dnssd::Ref>,
     reg: Option<Reg>,
     instances: HashMap<InstKey, Inst>,
@@ -260,11 +327,12 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(service: String, iface: u32) -> Worker {
+    fn new(service: String, iface: u32, port: Result<u16, String>) -> Worker {
         Worker {
             service,
             iface,
-            port: reserve_port(),
+            port,
+            salt: transport::random(),
             browse: None,
             reg: None,
             instances: HashMap::new(),
@@ -362,21 +430,42 @@ impl Worker {
                 Err(e) => self.fail("looking for other Midnas", dnssd::describe(e)),
             }
         }
-        if vis != Visibility::Everyone {
-            self.reg = None;
-            return;
-        }
         let me = identity(d).fingerprint.clone();
-        let name = display_name(d);
         let protocol = nb::PROTOCOL.to_string();
-        let txt = nb::txt_record(&[(nb::TXT_PROTOCOL, &protocol), (nb::TXT_FINGERPRINT, &me), (nb::TXT_NAME, &name)]);
-        let instance = instance_name(&name);
+        let (instance, txt) = match vis {
+            Visibility::Off => {
+                self.reg = None;
+                return;
+            }
+            Visibility::Everyone => {
+                let name = display_name(d);
+                let txt = nb::txt_record(&[(nb::TXT_PROTOCOL, &protocol), (nb::TXT_FINGERPRINT, &me), (nb::TXT_NAME, &name)]);
+                (instance_name(&name), txt)
+            }
+            Visibility::Paired => {
+                let mut salted = self.salt.to_vec();
+                salted.extend_from_slice(me.as_bytes());
+                let tags: Vec<String> = d.nearby.inner().store(&d.cfg.home).peers.values().filter_map(|p| p.tag(&salted)).collect();
+                if tags.is_empty() {
+                    self.reg = None;
+                    return;
+                }
+                let salt = transport::hex(&self.salt);
+                let mut pairs: Vec<(String, String)> = vec![(nb::TXT_PROTOCOL.into(), protocol.clone()), (nb::TXT_SALT.into(), salt.clone())];
+                for (n, chunk) in tags.chunks(TAGS_PER_STRING).enumerate() {
+                    let key = if n == 0 { nb::TXT_TAGS.to_string() } else { format!("{}{}", nb::TXT_TAGS, n + 1) };
+                    pairs.push((key, chunk.concat()));
+                }
+                let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                (format!("Midna {}", &salt[..4]), nb::txt_record(&pairs))
+            }
+        };
         if self.reg.as_ref().is_some_and(|r| r.name == instance && r.txt == txt) || !may_retry {
             return;
         }
         self.reg = None;
         let port = match &self.port {
-            Ok((_, port)) => *port,
+            Ok(port) => *port,
             Err(e) => {
                 let e = e.clone();
                 self.fail("showing this Mac", e);
@@ -428,17 +517,19 @@ impl Worker {
                     return;
                 }
                 let fields: HashMap<String, String> = nb::parse_txt(&txt).into_iter().collect();
-                let Some(fp) = fields.get(nb::TXT_FINGERPRINT).filter(|f| is_fingerprint(f)) else { return };
-                if *fp == identity(d).fingerprint {
+                let protocol = fields.get(nb::TXT_PROTOCOL).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let (fingerprint, name, named) = match fields.get(nb::TXT_FINGERPRINT) {
+                    Some(fp) if is_fingerprint(fp) => (fp.clone(), fields.get(nb::TXT_NAME).cloned().unwrap_or_default(), true),
+                    Some(_) => return,
+                    None => match paired_tag(d, &fields) {
+                        Some((fp, name)) => (fp, name, false),
+                        None => return,
+                    },
+                };
+                if fingerprint == identity(d).fingerprint {
                     return;
                 }
-                i.found = Some(Found {
-                    fingerprint: fp.clone(),
-                    name: fields.get(nb::TXT_NAME).cloned().unwrap_or_default(),
-                    protocol: fields.get(nb::TXT_PROTOCOL).and_then(|v| v.parse().ok()).unwrap_or(0),
-                    host,
-                    port,
-                });
+                i.found = Some(Found { fingerprint, name, protocol, host, port, named });
                 self.sync_peers(d);
             }
         }
@@ -460,6 +551,25 @@ impl Worker {
         let (mut appeared, mut left) = (vec![], vec![]);
         {
             let mut inner = d.nearby.inner();
+            let store = inner.store(&d.cfg.home);
+            // A paired device that shows itself under a new name: keep the new one.
+            let renamed: Vec<(String, String)> = seen
+                .values()
+                .filter(|f| f.named && !f.name.trim().is_empty())
+                .filter(|f| store.get(&f.fingerprint).is_some_and(|s| s.name != f.name.trim()))
+                .map(|f| (f.fingerprint.clone(), f.name.trim().to_string()))
+                .collect();
+            if !renamed.is_empty() {
+                for (fp, name) in renamed {
+                    if let Some(s) = store.peers.get_mut(&fp) {
+                        s.name = name;
+                    }
+                }
+                if let Err(e) = store.save() {
+                    eprintln!("midnad: nearby: saving the paired devices: {e}");
+                }
+            }
+            let store = store.clone();
             inner.peers.retain(|fp, p| {
                 let keep = seen.contains_key(fp);
                 if !keep {
@@ -476,13 +586,15 @@ impl Worker {
                     host: None,
                     port: None,
                     seen_since: time::now_rfc3339(),
+                    tier: None,
+                    claims_name_of: None,
                 });
                 peer.name = if f.name.is_empty() { "Midna".into() } else { f.name };
                 peer.protocol = f.protocol;
                 peer.host = Some(f.host).filter(|h| !h.is_empty());
                 peer.port = Some(f.port).filter(|p| *p != 0);
                 if new {
-                    appeared.push(peer.clone());
+                    appeared.push(annotate(peer.clone(), &store));
                 }
             }
         }
@@ -516,6 +628,34 @@ fn is_fingerprint(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Tags in one TXT string (each [`nb::TAG_HEX`] digits; a string holds 255 bytes).
+const TAGS_PER_STRING: usize = 30;
+
+/// The paired device a paired-only advertisement is from, if it's one of this device's:
+/// (fingerprint, name as stored).
+fn paired_tag(d: &Daemon, fields: &HashMap<String, String>) -> Option<(String, String)> {
+    let salt = transport::unhex(fields.get(nb::TXT_SALT)?)?;
+    let mut tags = std::collections::HashSet::new();
+    for (k, v) in fields {
+        let Some(rest) = k.strip_prefix(nb::TXT_TAGS) else { continue };
+        if !rest.is_empty() && !rest.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let mut s = v.as_str();
+        while s.len() >= nb::TAG_HEX && s.is_char_boundary(nb::TAG_HEX) {
+            tags.insert(s[..nb::TAG_HEX].to_string());
+            s = &s[nb::TAG_HEX..];
+        }
+    }
+    let mut i = d.nearby.inner();
+    let store = i.store(&d.cfg.home);
+    store.peers.values().find_map(|p| {
+        let mut salted = salt.clone();
+        salted.extend_from_slice(p.fingerprint.as_bytes());
+        p.tag(&salted).filter(|t| tags.contains(t)).map(|_| (p.fingerprint.clone(), p.name.clone()))
+    })
+}
+
 /// A DNS-SD instance name is at most 63 bytes.
 fn instance_name(name: &str) -> String {
     let mut end = name.len().min(63);
@@ -528,8 +668,17 @@ fn instance_name(name: &str) -> String {
     }
 }
 
-/// A TCP port held for Nearby connections: bound on every address but not listening, so
-/// nothing else takes it and nothing connects yet.
+/// The listener for Nearby connections, on every address (IPv6 and IPv4).
+fn open_listener() -> Result<(std::net::TcpListener, u16), String> {
+    let (fd, port) = reserve_port()?;
+    // SAFETY: listen on a socket this function owns.
+    if unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&fd), 16) } != 0 {
+        return Err(format!("can't take Nearby connections: {}", std::io::Error::last_os_error()));
+    }
+    Ok((std::net::TcpListener::from(fd), port))
+}
+
+/// A TCP port for Nearby connections: bound on every address, not listening yet.
 fn reserve_port() -> Result<(OwnedFd, u16), String> {
     // SAFETY: plain socket calls on a descriptor this function owns; `addr` and `len` are valid.
     unsafe {

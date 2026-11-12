@@ -704,7 +704,8 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "peers",
         aliases: &["nearby"],
-        usage: "peers [list] | visibility off|paired|everyone | name [<name>]",
+        usage: "peers [list] | pair <name|id> | confirm [<pairing>] [--as contact|my-device] [--no] | forget <name|id>\n\
+                \x20     | visibility off|paired|everyone | name [<name>]",
         summary: "other Midnas on the same network (Nearby), and who can find this Mac",
         details: "list        this Mac's name, device id and visibility, then the Midnas it can see over Bonjour.\n\
                   \x20           A device id (SHA-256 of the device's key) is what tells devices apart; names can repeat.\n\
@@ -712,8 +713,16 @@ pub static VERBS: &[Verb] = &[
                   \x20           off = no Bonjour at all; paired (default) = look for others, shown only to paired\n\
                   \x20           devices; everyone = every Midna nearby sees this Mac, for 10 minutes, then paired.\n\
                   name        setting nearby.name, the name others see; empty = the Mac's computer name.\n\
-                  Events peers.appeared and peers.left (midna events --kind peers.) follow peers coming and going.",
-        methods: &["peers.list"],
+                  pair        ask a nearby Midna (visible to everyone) to pair. Both Macs show the same 6-digit code;\n\
+                  \x20           both people compare it and confirm. A different code means someone is in the middle.\n\
+                  confirm     (human only) accept a pairing whose codes match, keeping the device as a contact\n\
+                  \x20           (default) or --as my-device; --no declines. Each pairing also raises a needs-you\n\
+                  \x20           approval that confirms as a contact. Agents can start a pairing but never confirm one.\n\
+                  forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
+                  A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
+                  another key is flagged. Events peers.appeared, peers.left, peers.pairing, peers.pairing_ended,\n\
+                  peers.paired and peers.forgotten (midna events --kind peers.) follow all of this.",
+        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.forget"],
     },
     Verb {
         name: "keep-awake",

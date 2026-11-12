@@ -1513,6 +1513,15 @@ pub mod kinds {
     pub const PEERS_APPEARED: &str = "peers.appeared";
     /// Nearby: a Midna this daemon saw went away or stopped showing itself (data: `nearby::PeerLeft`).
     pub const PEERS_LEFT: &str = "peers.left";
+    /// Nearby: a pairing reached its code; both screens show it (data: `nearby::Pairing`).
+    pub const PEERS_PAIRING: &str = "peers.pairing";
+    /// Nearby: a pairing ended without pairing: declined, codes differed, timed out or failed
+    /// (data: `nearby::Pairing`, with `state` and `error`).
+    pub const PEERS_PAIRING_ENDED: &str = "peers.pairing_ended";
+    /// Nearby: both people confirmed; the device is paired (data: `nearby::PairedPeer`).
+    pub const PEERS_PAIRED: &str = "peers.paired";
+    /// Nearby: a paired device was forgotten (data: `nearby::PairedPeer`).
+    pub const PEERS_FORGOTTEN: &str = "peers.forgotten";
     /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).
     pub const KEEP_AWAKE_CHANGED: &str = "keep_awake.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.

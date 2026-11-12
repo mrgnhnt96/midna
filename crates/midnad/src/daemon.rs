@@ -441,6 +441,7 @@ impl Daemon {
         }
         self.answered.lock().unwrap_or_else(|e| e.into_inner()).record(&item.id, &resolution, &by);
         crate::trust::closed(self, &item, &resolution);
+        crate::nearby::pairing::needs_you_closed(self, &item, &resolution);
         self.mark_dirty();
         self.emit(
             kinds::NEEDS_YOU_RESOLVED,
