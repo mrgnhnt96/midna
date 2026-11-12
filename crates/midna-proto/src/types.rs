@@ -1509,6 +1509,10 @@ pub mod kinds {
     /// started (`{agent, five_hour?, seven_day?: {used_percentage, resets_at}}`, the merged numbers
     /// `usage.get` returns). Insights charts it (`insights.detail` `usage`).
     pub const USAGE_SAMPLED: &str = "usage.sampled";
+    /// Nearby: another Midna showed up on the network (data: `nearby::Peer`); see `peers.list`.
+    pub const PEERS_APPEARED: &str = "peers.appeared";
+    /// Nearby: a Midna this daemon saw went away or stopped showing itself (data: `nearby::PeerLeft`).
+    pub const PEERS_LEFT: &str = "peers.left";
     /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).
     pub const KEEP_AWAKE_CHANGED: &str = "keep_awake.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.

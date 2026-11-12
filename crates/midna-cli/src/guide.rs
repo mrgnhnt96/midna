@@ -45,7 +45,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 `midna call <method> <json>`. Everything you do is logged (`midna events`).
 
 WHAT YOU CAN DO
-  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage | keep-awake
+  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage | keep-awake | peers
   terminals  midna open [--agent claude|codex --prompt T --resume ID -- agent-args | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
@@ -319,6 +319,16 @@ const TOPICS: &[(&str, &str)] = &[
         usage.limit_reached {agent, window, used_percentage, resets_at} fires once per window when it hits 100%: \
         subscribe to it (or a local trigger on it) instead of polling. usage.sampled {agent, five_hour?, seven_day?} logs \
         the numbers each time they move; `midna insights detail` (and the Insights widget Plan usage) charts them."),
+    ("nearby", "Nearby: Midnas on the same network find each other over Bonjour (`midna peers`, peers.list). Each \
+        midna home has its own Ed25519 device key; its fingerprint (SHA-256 of the public key, hex) is the device's real id, \
+        and the name (setting nearby.name, else the Mac's computer name) is display only, so never trust a name alone. \
+        Setting nearby.visibility (human only; an agent's change waits for the human) says who can find this Mac: off (no \
+        Bonjour at all), paired (default: it looks for others but only paired devices can find it) or everyone (every Midna \
+        nearby sees it for 10 minutes, then it goes back to paired by itself; me.everyone_until says when). peers.list has \
+        me (fingerprint, name, visibility, service, advertising, browsing, protocol, error) and peers (fingerprint, name, \
+        protocol, host, port, seen_since). Events peers.appeared and peers.left fire as peers come and go: subscribe to \
+        them instead of polling. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
+        they never see each other."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \

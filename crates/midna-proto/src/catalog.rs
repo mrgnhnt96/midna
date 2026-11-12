@@ -3,6 +3,7 @@
 use crate::cleanup::*;
 use crate::summary::*;
 use crate::methods::*;
+use crate::nearby::*;
 use crate::system::*;
 use crate::types::*;
 use schemars::JsonSchema;
@@ -644,6 +645,15 @@ fn build() -> Vec<MethodSpec> {
              administrator's password): a root-owned helper in /Library/PrivilegedHelperTools that can only schedule or \
              cancel this midna's own wakes, and a sudoers.d entry letting you run just that helper. Turns keep_awake.wake on. \
              With remove: cancel midna's wakes, remove both files and turn keep_awake.wake off. Human only."),
+        // nearby
+        m::<NoParams, PeersListResult>("peers.list").d(
+            "Nearby: other Midnas on the same network, found over Bonjour. `me` is this device: its id (fingerprint, \
+             the SHA-256 of its Ed25519 public key; names are display only and can repeat), the name others see \
+             (setting nearby.name, else the computer name), visibility (setting nearby.visibility: off | paired | \
+             everyone; everyone goes back to paired after 10 minutes, at everyone_until), whether it is advertising \
+             and browsing, and the Bonjour service type. `peers` are the Midnas it sees now. Events peers.appeared \
+             (data: the peer) and peers.left ({fingerprint, name}) fire as they come and go. Changing visibility is \
+             human only."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

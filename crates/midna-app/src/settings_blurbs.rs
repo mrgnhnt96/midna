@@ -18,6 +18,8 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",
         "summary.keep_days" => "Days a project's Summary keeps the terminals that closed in it.",
         "windows.close_with_terminals" => "When you close one main window while another is open.",
+        "nearby.visibility" => "Everyone lasts 10 minutes, then it's paired devices only again.",
+        "nearby.name" => "Empty uses this Mac's computer name.",
         "finder.quick_action" => "Right-click a folder in Finder to open it in midna.",
         // Appearance
         "theme" => "Colors for the app and its terminals.",

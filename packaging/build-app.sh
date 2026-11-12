@@ -120,6 +120,15 @@ $(env_dict)
   </dict>"
 fi
 
+# Nearby (midnad's Bonjour, crates/midnad/src/nearby): midnad runs from this bundle, so macOS asks
+# for Local Network access in its name and only lets it use the service types listed here. Midna
+# Dev only ever uses _midna-dev._tcp; the installed Midna uses _midna._tcp on its own home and
+# _midna-dev._tcp on any other (MIDNA_HOME).
+BONJOUR="<string>_midna-dev._tcp</string>"
+if [ -z "$DEV_HOME" ]; then
+  BONJOUR="<string>_midna._tcp</string>$BONJOUR"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,6 +167,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>© Morgan Hunt</string>
   <key>NSAccessibilityUsageDescription</key><string>Midna uses Accessibility so Kass dictation can read and edit what you type in a terminal, and so agents can arrange midna's windows when you allow it.</string>
   <key>NSAppleEventsUsageDescription</key><string>Programs you run in midna terminals may ask to control other apps; macOS asks on their behalf.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Midna looks for other Midnas on your network so you can send things between your Macs. You choose who can find this Mac in Settings › General › Nearby.</string>
+  <key>NSBonjourServices</key><array>$BONJOUR</array>
   <key>KassDictationHandshake</key><true/>
   <key>MidnaDaemonLabel</key><string>$LABEL</string>
 $LSENV

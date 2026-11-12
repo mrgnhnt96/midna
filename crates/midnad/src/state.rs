@@ -84,6 +84,9 @@ pub struct State {
     /// Today's keep-awake override (`keep_awake.set` today); dropped once its date is past.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_awake_today: Option<midna_proto::keep_awake::Today>,
+    /// While `nearby.visibility` is `everyone`: when it goes back to `paired` (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearby_everyone_until: Option<i64>,
     /// The last kernel panic report midnad handled (its file name), so it's reported once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panic_seen: Option<String>,
