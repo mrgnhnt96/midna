@@ -10,7 +10,7 @@
 //! [`Wire::ShareResult`], delivered at once if it can be seen and retried while it can't.
 //! Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{identity, link, tab, transfer};
+use super::{identity, link, objects, tab, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
@@ -143,6 +143,13 @@ fn emit(d: &Daemon, kind: &str, by: Actor, item: &ShareItem) {
 /// `share.send`: offer a paired device a share and wait until it is in its inbox.
 pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
     let (payload, source) = match p.kind {
+        ShareKind::Object => {
+            if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() || p.path.is_some() || p.session.is_some() {
+                return Err(RpcError::bad_params("an object share takes only `object` and `ids`"));
+            }
+            let kind = p.object.ok_or_else(|| RpcError::bad_params("an object share needs `object`"))?;
+            (SharePayload::Object { object: objects::build(d, kind, &p.ids)? }, None)
+        }
         ShareKind::File => {
             if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() {
                 return Err(RpcError::bad_params("a file takes only `path`"));
@@ -151,7 +158,12 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
             let (payload, source) = transfer::prepare(path)?;
             (payload, Some(source))
         }
-        ShareKind::Tab => (tab::snapshot(d, ctx, &p)?, None),
+        ShareKind::Tab => {
+            if p.object.is_some() || !p.ids.is_empty() {
+                return Err(RpcError::bad_params("only an object share takes `object` and `ids`"));
+            }
+            (tab::snapshot(d, ctx, &p)?, None)
+        }
         _ => (p.payload().map_err(RpcError::bad_params)?, None),
     };
     let fp = p.peer.trim().to_lowercase();
@@ -334,6 +346,17 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier) -> String {
             ),
             json!({ "id": it.id }),
         ),
+        SharePayload::Object { object } => {
+            let then = match object {
+                nb::MidnaObject::Queue { .. } => format!(
+                    "Approving keeps them in your inbox. To queue them in a terminal (each waits until its agent is idle): \
+                     midna inbox accept {} --into <terminal>",
+                    it.id
+                ),
+                _ => "Approving makes the changes marked +; nothing else changes.".into(),
+            };
+            (format!("{name} sent from Midna: {}", cut(&object.label(), 80)), format!("{}\n\n{then}", objects::review(d, object)), json!({ "id": it.id }))
+        }
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -464,6 +487,16 @@ pub fn accept(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams) -> R {
                 return Err(RpcError::bad_params("a tab opens as a new terminal; `cwd` picks its folder"));
             }
             tab::open(d, ctx, &it.peer_name, &it.payload, p.cwd.as_deref())?
+        }
+        SharePayload::Object { object } => {
+            if p.cwd.is_some() {
+                return Err(RpcError::bad_params("`cwd` is for a tab"));
+            }
+            let sid = match (object, p.session) {
+                (nb::MidnaObject::Queue { .. }, Some(sid)) => Some(session(Some(sid))?),
+                (_, sid) => sid,
+            };
+            objects::apply(d, ctx, object, sid.as_deref(), &it.peer_name)?
         }
     };
     let (item, first, ny) = {

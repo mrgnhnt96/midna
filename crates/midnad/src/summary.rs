@@ -155,6 +155,32 @@ pub fn record(d: &Daemon, mut rec: ClosedTerminal) {
     changed(d, Actor::system(), project, Some(id), "added");
 }
 
+/// A kept record by its id.
+pub fn get(d: &Daemon, id: &str) -> Option<ClosedTerminal> {
+    d.summary.with(&d.cfg.home, |data| (data.closed.iter().find(|c| c.id == id).cloned(), false))
+}
+
+/// Keep a record from another Mac (Nearby) in its place by when it closed. False when one with
+/// its id is kept already, or the limits drop it at once (`summary.keep_days`, the cap).
+pub fn import(d: &Daemon, rec: ClosedTerminal, by: Actor) -> bool {
+    let (days, now, running) = (keep_days(d), time::now_unix(), running(d));
+    let (id, project) = (rec.id.clone(), rec.project_id.clone());
+    let closed = time::parse_rfc3339(&rec.closed_at).unwrap_or(0);
+    let kept = d.summary.with(&d.cfg.home, |data| {
+        if data.closed.iter().any(|c| c.id == rec.id) {
+            return (false, false);
+        }
+        let at = data.closed.iter().position(|c| time::parse_rfc3339(&c.closed_at).unwrap_or(0) < closed).unwrap_or(data.closed.len());
+        data.closed.insert(at, rec);
+        prune(data, days, now, &running);
+        (data.closed.iter().any(|c| c.id == id), true)
+    });
+    if kept {
+        changed(d, by, project, Some(id), "added");
+    }
+    kept
+}
+
 fn changed(d: &Daemon, by: Actor, project: Id, id: Option<Id>, action: &str) {
     d.emit(kinds::SUMMARY_CHANGED, by, Some(project), None, json!({ "id": id, "action": action }));
 }

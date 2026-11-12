@@ -52,7 +52,7 @@ pub fn get(d: &Daemon, p: SettingKeyParams) -> R {
 /// is human only (an agent may still pick built-ins).
 /// `ui.status.items` and `ui.header.buttons` the same way: an agent may hide, show and reorder items, and keep script
 /// paths already there, but adding a new path asks the human.
-fn custom_script(s: &SettingSpec, value: &Value, current: &Value) -> bool {
+pub(crate) fn custom_script(s: &SettingSpec, value: &Value, current: &Value) -> bool {
     match s.key {
         "ui.header.script" | "ui.row.script" | "ui.status.script" => value.as_str().is_some_and(|v| !midna_proto::settings::is_builtin_script(v)),
         "ui.status.items" | "ui.header.buttons" => {

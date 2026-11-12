@@ -25,6 +25,7 @@ pub mod dnssd;
 pub mod guard;
 pub mod identity;
 pub mod link;
+pub mod objects;
 pub mod pairing;
 pub mod share;
 pub mod tab;

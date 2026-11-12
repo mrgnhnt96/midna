@@ -731,8 +731,9 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "share send <name|id> <text…> | share send <name|id> [--title T] < file | share send <name|id> --link <url> [--title T]\n\
                 \x20     | share send <name|id> <path> | share send <name|id> --file <path>   [--snippet | --message]\n\
-                \x20     | share send <name|id> --tab [--session <terminal>] [--title T]",
-        summary: "offer a paired device a message, a snippet, a link, a file or folder, or a terminal tab",
+                \x20     | share send <name|id> --tab [--session <terminal>] [--title T]\n\
+                \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]",
+        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, or midna's own things",
         details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
                   open or pin. A single word that names a file or folder (or --file <path>) offers it, with its size;\n\
@@ -742,6 +743,11 @@ pub static VERBS: &[Verb] = &[
                   --snippet / --message override the guess. --tab offers this terminal (or --session): its project,\n\
                   folder and scrollback; on their Mac it opens as a new shell in their checkout of the same repo, under\n\
                   your scrollback. Running programs stay here. The device must be paired and nearby now.\n\
+                  --object sends midna's own things: one summary (sm_…), rules (r_…), triggers (t_…), one custom theme,\n\
+                  settings (keys; none = every changed one that may leave this Mac) or queued prompts (q_…). Projects\n\
+                  travel by name; secrets, paths, trust and anything tied to one terminal never leave. Their Mac shows\n\
+                  what would change before anything applies: rules, triggers and human-only settings take the human's\n\
+                  ok, triggers arrive turned off, and queued prompts wait for `inbox accept <id> --into <terminal>`.\n\
                   Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
                   An agent's share asks the human here first (a needs-you approval showing what would leave) and waits.\n\
                   Their answer comes back as share.accepted or share.declined (midna events --kind share.).",
