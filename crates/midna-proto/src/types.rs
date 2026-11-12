@@ -1524,6 +1524,9 @@ pub mod kinds {
     pub const PEERS_CHANGED: &str = "peers.changed";
     /// Nearby: a paired device was forgotten (data: `nearby::PairedPeer`).
     pub const PEERS_FORGOTTEN: &str = "peers.forgotten";
+    /// Nearby: Local Network access changed as midnad sees it (data: `{local_network: ok | waiting |
+    /// denied}`, as in `peers.list` `me.local_network`).
+    pub const PEERS_LOCAL_NETWORK: &str = "peers.local_network";
     /// Nearby: a paired device offered this Mac a share; it waits in the inbox for the human
     /// (data: `nearby::ShareItem`, direction incoming).
     pub const SHARE_OFFERED: &str = "share.offered";

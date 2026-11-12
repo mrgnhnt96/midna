@@ -4,9 +4,11 @@
 //! confirms (as a contact or as one of their own Macs) or cancels. A request from another Mac
 //! opens the sheet when this section is showing; it's also a needs-you card (ui/nearby.rs).
 //! Under each of my devices, the kinds of share it may send without asking (all off at first).
+//! Until macOS lets Midna use the local network, the status and the sheet say so calmly: wait
+//! for the prompt, or (denied) a button to System Settings › Privacy & Security › Local Network.
 use super::*;
 use crate::ui::screen_kit::{btn, btn_primary, now_unix};
-use midna_proto::nearby::{self as nb, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
+use midna_proto::nearby::{self as nb, LocalNetwork, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
 
 /// The `@` rows this section adds to `LAYOUT`.
 pub(super) const ROWS: [&str; 3] = ["@nearby_me", "@nearby_peers", "@nearby_paired"];
@@ -114,6 +116,10 @@ fn tier_cli(t: Tier) -> &'static str {
         Tier::MyDevice => "my-device",
     }
 }
+
+/// The status and the sheet while macOS is likely asking about the local network.
+const WAITING_WHY: &str = "macOS is asking whether Midna may use the local network. Choose Allow in that prompt; Nearby carries on by itself.";
+const DENIED_WHY: &str = "Midna needs it to find and reach other Macs. Turn it on for Midna in System Settings › Privacy & Security › Local Network.";
 
 fn seconds_until(ts: &str) -> Option<i64> {
     midna_proto::time::parse_rfc3339(ts).map(|s| s - now_unix())
@@ -402,8 +408,14 @@ impl SettingsWindow {
         let me = &list.me;
         match name {
             "@nearby_me" => {
+                let mut action = None;
                 let (dot, text, why) = if me.service.is_none() {
                     (t.dim, "Off in this midnad".to_string(), "It was started without Nearby (MIDNA_NEARBY_SERVICE=off).".to_string())
+                } else if me.visibility != Visibility::Off && me.local_network == Some(LocalNetwork::Waiting) {
+                    (t.need, "Waiting for Local Network access".into(), WAITING_WHY.into())
+                } else if me.visibility != Visibility::Off && me.local_network == Some(LocalNetwork::Denied) {
+                    action = Some(("Open Settings".into(), Act::Url(nb::LOCAL_NETWORK_PANE.into()), false));
+                    (t.need, "Local Network access is off".into(), DENIED_WHY.into())
                 } else if let Some(e) = &me.error {
                     (t.err, "Bonjour isn't working".into(), format!("{e}. midnad tries again every few seconds."))
                 } else {
@@ -415,7 +427,11 @@ impl SettingsWindow {
                         _ => (t.need, "Starting…".into(), "Not on the network yet.".into()),
                     }
                 };
-                vec![status("Status", dot, text, note(format!("{why} Device ID {}.", nb::short_fingerprint(&me.fingerprint))), "midna peers")]
+                let mut row = status("Status", dot, text, note(format!("{why} Device ID {}.", nb::short_fingerprint(&me.fingerprint))), "midna peers");
+                if let Control::Text { action: a, .. } = &mut row.control {
+                    *a = action;
+                }
+                vec![row]
             }
             "@nearby_peers" => {
                 let open = |fp: &str| list.pairings.iter().find(|p| p.fingerprint == fp && !p.state.is_over()).map(|p| p.id.clone());
@@ -642,9 +658,15 @@ impl SettingsWindow {
         }
     }
 
+    /// Local Network access as the last `peers.list` said.
+    fn local_network(&self) -> Option<LocalNetwork> {
+        self.nearby.list.as_ref().and_then(|l| l.me.local_network)
+    }
+
     /// The pairing sheet, over the whole window.
     pub(super) fn pairing_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let sheet = self.nearby.sheet.as_ref()?;
+        let access = self.local_network();
         let title = |s: String| div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(s);
         let text = |s: String, c: Hsla| div().text_color(c).child(s);
         let code_box = |code: &str, size: f32, c: Hsla| {
@@ -661,9 +683,22 @@ impl SettingsWindow {
         let mut card = div().flex().flex_col().gap(px(14.));
         let mut buttons = div().flex().items_center().gap(px(8.)).child(div().flex_1());
         match sheet {
+            Sheet::Connecting { name, .. } if access == Some(LocalNetwork::Waiting) => {
+                card = card
+                    .child(title(format!("Pairing with {name}")))
+                    .child(text("Allow Local Network access in the macOS prompt to connect.".into(), t.fg))
+                    .child(text("Midna keeps trying for up to a minute, then you can try again.".into(), t.dim));
+                buttons = buttons.child(btn(t, "pair-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.hide_sheet(cx))));
+            }
             Sheet::Connecting { name, .. } => {
                 card = card.child(title(format!("Pairing with {name}"))).child(text("Connecting and agreeing on a code…".into(), t.dim));
                 buttons = buttons.child(btn(t, "pair-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.hide_sheet(cx))));
+            }
+            Sheet::Failed { name, .. } if access == Some(LocalNetwork::Denied) => {
+                card = card.child(title(format!("Couldn't pair with {name}"))).child(text(DENIED_WHY.into(), t.dim));
+                buttons = buttons
+                    .child(btn(t, "pair-done", "Done").on_click(cx.listener(|s, _, _, cx| s.hide_sheet(cx))))
+                    .child(btn_primary(t, "pair-open-settings", "Open Settings").on_click(|_, _, cx| cx.open_url(nb::LOCAL_NETWORK_PANE)));
             }
             Sheet::Failed { name, error } => {
                 card = card.child(title(format!("Couldn't pair with {name}"))).child(text(error.clone(), t.err));

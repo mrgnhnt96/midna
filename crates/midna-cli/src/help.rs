@@ -727,8 +727,11 @@ pub static VERBS: &[Verb] = &[
                   \x20           are; rules, triggers, settings and queued prompts always ask.\n\
                   forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
                   A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
-                  another key is flagged. Events peers.appeared, peers.left, peers.pairing, peers.pairing_ended,\n\
-                  peers.paired, peers.changed and peers.forgotten (midna events --kind peers.) follow all of this.",
+                  another key is flagged. Until macOS has Local Network access for Midna (the prompt is up, or\n\
+                  it's off in System Settings), peers shows waiting or denied, and pair and share send keep trying\n\
+                  for up to a minute while it's waiting. Events peers.appeared, peers.left, peers.pairing,\n\
+                  peers.pairing_ended, peers.paired, peers.changed, peers.forgotten and peers.local_network (midna\n\
+                  events --kind peers.) follow all of this.",
         methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.forget"],
     },
     Verb {

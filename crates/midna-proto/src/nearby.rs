@@ -326,6 +326,33 @@ pub struct PeersForgetResult {
     pub forgotten: PairedPeer,
 }
 
+/// Local Network access for Midna (`peers.list` `me.local_network`, event
+/// `peers.local_network`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalNetwork {
+    /// Nothing has been blocked.
+    Ok,
+    /// Blocked, but only just: macOS is likely asking whether Midna may use the local network.
+    /// Pairing and sending keep trying while it waits.
+    Waiting,
+    /// Still blocked a minute on: Local Network access is off for Midna in System Settings.
+    Denied,
+}
+
+impl LocalNetwork {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LocalNetwork::Ok => "ok",
+            LocalNetwork::Waiting => "waiting",
+            LocalNetwork::Denied => "denied",
+        }
+    }
+}
+
+/// System Settings › Privacy & Security › Local Network.
+pub const LOCAL_NETWORK_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork";
+
 /// This daemon's side of Nearby.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NearbyMe {
@@ -354,6 +381,12 @@ pub struct NearbyMe {
     /// Why Bonjour isn't working, when it isn't (midnad retries every few seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether macOS lets Midna use the local network (Privacy & Security › Local Network), as
+    /// far as midnad can tell; none = Nearby is off for this daemon. macOS has no way to ask, so
+    /// it's judged from what gets blocked: `waiting` for the first minute after Bonjour or a
+    /// connection was first blocked (the macOS prompt is likely up), `denied` after that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_network: Option<LocalNetwork>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

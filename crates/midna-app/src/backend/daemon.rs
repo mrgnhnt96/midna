@@ -29,6 +29,13 @@ pub struct DaemonBackend {
     idle: Mutex<Vec<Client>>,
 }
 
+/// How long a call may take before the app gives up on it.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Calls midnad may hold open longer: pairing and sending wait up to a minute while macOS asks
+/// about Local Network access, and a timed-out call is retried, which would start them twice.
+const SLOW_CALLS: &[&str] = &["peers.pair", "share.send"];
+const SLOW_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Idle control connections kept open; more are opened while calls overlap.
 const MAX_IDLE: usize = 4;
 
@@ -44,7 +51,7 @@ impl DaemonBackend {
         // If the daemon ever takes the GUI for an agent (launched from a midna terminal), a call
         // needing approval answers at once (PENDING) instead of freezing it until the human does.
         let c = c.no_wait();
-        c.set_read_timeout(Some(Duration::from_secs(30)))?;
+        c.set_read_timeout(Some(CALL_TIMEOUT))?;
         Ok(c)
     }
 
@@ -94,7 +101,15 @@ impl Backend for DaemonBackend {
                 }
                 Err(e) => return Err(e.into()),
             };
-            match c.call_value(method, params.clone()) {
+            let slow = SLOW_CALLS.contains(&method);
+            if slow {
+                let _ = c.set_read_timeout(Some(SLOW_CALL_TIMEOUT));
+            }
+            let r = c.call_value(method, params.clone());
+            if slow {
+                let _ = c.set_read_timeout(Some(CALL_TIMEOUT));
+            }
+            match r {
                 Ok(v) => {
                     self.give_back(c);
                     return Ok(v);

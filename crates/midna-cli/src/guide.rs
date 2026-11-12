@@ -325,7 +325,9 @@ const TOPICS: &[(&str, &str)] = &[
         Setting nearby.visibility (human only; an agent's change waits for the human) says who can find this Mac: off (no \
         Bonjour at all), paired (default: it looks for others but only paired devices can find it) or everyone (every Midna \
         nearby sees it for 10 minutes, then it goes back to paired by itself; me.everyone_until says when). peers.list has \
-        me (fingerprint, name, visibility, service, advertising, browsing, protocol, error) and peers (fingerprint, name, \
+        me (fingerprint, name, visibility, service, advertising, browsing, protocol, error, local_network: ok | waiting | \
+        denied, from macOS Local Network privacy; peers.pair and share.send wait up to a minute while it's waiting; event \
+        peers.local_network) and peers (fingerprint, name, \
         protocol, host, port, seen_since, tier, claims_name_of). Events peers.appeared and peers.left fire as peers come and \
         go: subscribe to them instead of polling. Pairing: peers.pair {fingerprint} (`midna peers pair <name|id>`) asks a \
         device visible to everyone; both Macs then show the same 6-digit code (peers.pairing event, peers.list pairings) and \

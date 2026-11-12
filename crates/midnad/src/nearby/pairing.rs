@@ -15,7 +15,7 @@
 //! or the connection breaking ends it on both sides with nothing stored.
 use super::store::Stored;
 use super::transport::{self, Channel, Wire, hex, random, unhex};
-use super::{Inner, display_name, identity, local, visibility};
+use super::{Inner, display_name, identity, visibility};
 use crate::daemon::Daemon;
 use crate::rpc::{R, ok};
 use midna_proto::nearby::{
@@ -165,7 +165,7 @@ pub fn pair(d: &Arc<Daemon>, p: PeersPairParams) -> R {
         )));
     }
     let addrs = addresses(d, peer.host.as_deref(), peer.port)?;
-    let mut ch = transport::connect(&addrs, local(d)).map_err(|e| RpcError::refused(format!("couldn't reach {}: {e}", peer.name)))?;
+    let mut ch = super::access::dial(d, &addrs, &peer.name, true)?;
     if ch.fingerprint != p.fingerprint {
         return Err(RpcError::refused(format!(
             "the device that answered at {}'s address has a different key ({}); it isn't the device listed",

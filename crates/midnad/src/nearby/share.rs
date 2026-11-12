@@ -195,7 +195,7 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
         e
     };
     super::guard::send(d, ctx, &payload, &fp).map_err(dropped)?;
-    let mut ch = link::connect_peer(d, &fp).map_err(dropped)?;
+    let mut ch = link::connect_peer_waiting(d, &fp).map_err(dropped)?;
     let offer = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
     let item = ShareItem {
         id: id.clone(),

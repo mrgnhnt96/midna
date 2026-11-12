@@ -41,6 +41,13 @@ pub fn print_list(v: &Value) {
             println!("  bonjour     {svc}, {looking}, {showing}");
         }
     }
+    match me["local_network"].as_str() {
+        Some("waiting") => println!("  network     waiting for Local Network access: choose Allow in the macOS prompt"),
+        Some("denied") => {
+            println!("  network     Local Network access is off for Midna: turn it on in System Settings › Privacy & Security › Local Network")
+        }
+        _ => {}
+    }
     if let Some(e) = me["error"].as_str() {
         println!("  error       {e}");
     }

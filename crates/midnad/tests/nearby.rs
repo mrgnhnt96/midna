@@ -128,6 +128,7 @@ fn two_daemons_find_each_other_as_visibility_allows() {
     let me = list(&mut ha)["me"].clone();
     assert_eq!(me["advertising"], true, "{me}");
     assert!(me["everyone_until"].is_string(), "{me}");
+    assert_eq!(me["local_network"], "ok", "this Mac only: Local Network privacy never blocks it: {me}");
     let appeared = events(&mut hb, kinds::PEERS_APPEARED);
     assert_eq!(appeared.iter().filter(|e| e["data"]["fingerprint"] == fa.as_str()).count(), 1, "{appeared:?}");
     // A still can't see B (B is paired only), and never lists itself.
@@ -160,6 +161,7 @@ fn everyone_reverts_and_only_the_human_picks_it() {
     let mut h = d.human();
     let me = list(&mut h)["me"].clone();
     assert!(me["service"].is_null(), "in-process daemons keep Bonjour off: {me}");
+    assert!(me["local_network"].is_null(), "no Nearby, no Local Network state: {me}");
     let fp = me["fingerprint"].as_str().unwrap().to_string();
 
     let mut a = d.agent(None);
