@@ -337,7 +337,9 @@ const TOPICS: &[(&str, &str)] = &[
         is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
         they never see each other. Shares: share.send {peer, kind: message|snippet|link, text|url, title?, reply_to?} \
         (`midna share send <name|id> <text>`, stdin = snippet, --link <url>) offers a paired device that's nearby now \
-        something small; it lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
+        something small. From an agent it first asks the human on this Mac (a needs-you approval showing what would \
+        leave; a rule the human gave can allow `share send <kind> <device id>`, an agent's own allow rule never does) and \
+        waits; denied or unanswered, nothing is sent. It lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
         needs-you approval. Nothing a share carries types into, runs in or opens anything until a person there accepts: \
         share.accept {id, session?, action?: open|pin} and share.decline {id} are human only, so agents never accept or \
         decline shares, and never paste a snippet or open a link for the human. The sender sees the answer as \

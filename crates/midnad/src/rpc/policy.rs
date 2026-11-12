@@ -37,6 +37,11 @@ fn check_now(d: &Daemon, a: &PolicyAction) -> CheckResult {
 /// (no rule matched) are logged as `policy.decided`, so the Rules feed can show them too.
 fn evaluate_and_fire(d: &Daemon, a: &PolicyAction, actor: &Actor) -> CheckResult {
     let res = check_now(d, a);
+    fire(d, a, actor, &res);
+    res
+}
+
+fn fire(d: &Daemon, a: &PolicyAction, actor: &Actor, res: &CheckResult) {
     if res.rule.is_none() {
         let setting = d.core().state.setting_str("policy.default");
         // An unmatched tool call has no midna opinion: the agent's own permission flow decides.
@@ -65,7 +70,6 @@ fn evaluate_and_fire(d: &Daemon, a: &PolicyAction, actor: &Actor) -> CheckResult
             json!({ "rule_id": r.id, "effect": r.effect, "action": a }),
         );
     }
-    res
 }
 
 pub fn check(d: &Daemon, ctx: &Ctx, p: PolicyCheckParams) -> R {
@@ -118,6 +122,21 @@ pub fn ask_human(d: &Daemon, ctx: &Ctx, a: &PolicyAction, matched_rule: Option<I
         ActionKind::Tool => format!("Allow {}?", a.value),
         _ => format!("Allow `{}`?", a.value),
     };
+    ask_human_titled(d, ctx, a, title, matched_rule, detail, timeout_secs, target)
+}
+
+/// [`ask_human`] with its own title.
+#[allow(clippy::too_many_arguments)]
+fn ask_human_titled(
+    d: &Daemon,
+    ctx: &Ctx,
+    a: &PolicyAction,
+    title: String,
+    matched_rule: Option<Id>,
+    detail: Option<String>,
+    timeout_secs: u64,
+    target: Option<Id>,
+) -> PolicyRequestResult {
     let mut item = d.new_needs_you(NeedsYouKind::Approval, title, ctx.actor(), a.session.clone());
     item.project_id = item.project_id.or(a.project.clone());
     item.detail = detail.unwrap_or_default();
@@ -239,6 +258,34 @@ pub fn gate_with(d: &Daemon, ctx: &Ctx, kind: ActionKind, value: &str, target: O
                 Ok(())
             } else {
                 Err(RpcError::refused(format!("`{value}`: {}", r.reason.unwrap_or_default()))
+                    .with_data(json!({ "needs_you_id": r.needs_you_id, "source": r.source })))
+            }
+        }
+    }
+}
+
+/// Policy gate for an agent sending something off this Mac (`value`, e.g. `share send message
+/// <device id>`): a deny refuses, an allow the human gave lets it through, and anything else
+/// asks the human with `title` and `detail` (what would leave) and waits. An agent's own allow
+/// rule never counts ([`crate::policy::evaluate_off_machine`]). Approving "always" remembers
+/// exactly `value`.
+pub fn gate_off_machine(d: &Daemon, ctx: &Ctx, value: &str, title: String, detail: String) -> Result<(), RpcError> {
+    let a = complete(d, ctx, PolicyAction { kind: ActionKind::Cli, value: value.to_string(), session: None, project: None });
+    let res = crate::policy::evaluate_off_machine(&d.core().state.rules, &a, time::now_unix());
+    fire(d, &a, &ctx.actor(), &res);
+    match res.decision {
+        Effect::Allow => Ok(()),
+        Effect::Deny => Err(RpcError::refused(format!(
+            "`{value}` denied by {}",
+            res.rule.map(|r| format!("rule {}", r.id)).unwrap_or_else(|| "policy".into())
+        ))),
+        Effect::Ask => {
+            let timeout = d.core().state.setting_i64("policy.request_timeout_secs").max(1) as u64;
+            let r = ask_human_titled(d, ctx, &a, title, res.rule.map(|r| r.id), Some(detail), timeout, None);
+            if r.decision == Effect::Allow {
+                Ok(())
+            } else {
+                Err(RpcError::refused(format!("nothing was sent: {}", r.reason.unwrap_or_default()))
                     .with_data(json!({ "needs_you_id": r.needs_you_id, "source": r.source })))
             }
         }

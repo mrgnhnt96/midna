@@ -36,6 +36,7 @@ const RETRY: Duration = Duration::from_secs(3);
 const LIST_DEFAULT: usize = 100;
 /// The deferred call an incoming share's approval runs.
 pub const ACCEPT_METHOD: &str = "share.accept";
+pub const DECLINE_METHOD: &str = "share.decline";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
@@ -128,6 +129,7 @@ fn emit(d: &Daemon, kind: &str, by: Actor, item: &ShareItem) {
 pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
     let payload = p.payload().map_err(RpcError::bad_params)?;
     let fp = p.peer.trim().to_lowercase();
+    super::guard::send(d, ctx, &payload, &fp)?;
     let mut ch = link::connect_peer(d, &fp)?;
     let name = peer_name(d, &fp);
     let id = format!("sh_{}", crate::state::hex_id(12));
@@ -323,6 +325,13 @@ pub fn result(d: &Daemon, from: &str, id: String, state: &str) -> Wire {
     }
     // Acked even when unknown (forgotten, pruned, said twice), so the other side stops retrying.
     Wire::ShareAck { id }
+}
+
+/// The needs-you approval incoming share `id` waits on, if it still waits.
+pub fn waiting_on(d: &Daemon, id: &str) -> Option<String> {
+    let mut i = d.nearby.inner();
+    let e = i.inbox(&d.cfg.home).get(id)?;
+    (e.item.direction == ShareDirection::Incoming && e.item.state == ShareState::Offered).then(|| e.item.needs_you_id.clone())?
 }
 
 /// An incoming share, or not_found.

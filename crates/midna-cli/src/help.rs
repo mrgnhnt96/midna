@@ -736,6 +736,7 @@ pub static VERBS: &[Verb] = &[
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
                   open or pin. --snippet / --message override the guess. The device must be paired and nearby now.\n\
                   Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
+                  An agent's share asks the human here first (a needs-you approval showing what would leave) and waits.\n\
                   Their answer comes back as share.accepted or share.declined (midna events --kind share.).",
         methods: &["share.send"],
     },
