@@ -737,8 +737,9 @@ pub static VERBS: &[Verb] = &[
         usage: "share send <name|id> <text…> | share send <name|id> [--title T] < file | share send <name|id> --link <url> [--title T]\n\
                 \x20     | share send <name|id> <path> | share send <name|id> --file <path>   [--snippet | --message]\n\
                 \x20     | share send <name|id> --tab [--session <terminal>] [--title T]\n\
+                \x20     | share send <name|id> --agent [--session <terminal>] [--title T]\n\
                 \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]",
-        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, or midna's own things",
+        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things",
         details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
                   open or pin. A single word that names a file or folder (or --file <path>) offers it, with its size;\n\
@@ -747,7 +748,10 @@ pub static VERBS: &[Verb] = &[
                   ~/Downloads/Midna; a folder keeps its tree, links in it are left out). Keep it in place until then.\n\
                   --snippet / --message override the guess. --tab offers this terminal (or --session): its project,\n\
                   folder and scrollback; on their Mac it opens as a new shell in their checkout of the same repo, under\n\
-                  your scrollback. Running programs stay here. The device must be paired and nearby now.\n\
+                  your scrollback. Running programs stay here. --agent offers this agent terminal's conversation (or\n\
+                  --session's; Claude Code or Codex): the whole transcript as it is now. On their Mac it is put where\n\
+                  the agent looks, with your checkout and home paths changed to theirs, and resumed in a new agent\n\
+                  terminal in their checkout. The device must be paired and nearby now.\n\
                   --object sends midna's own things: one summary (sm_…), rules (r_…), triggers (t_…), one custom theme,\n\
                   settings (keys; none = every changed one that may leave this Mac) or queued prompts (q_…). Projects\n\
                   travel by name; secrets, paths, trust and anything tied to one terminal never leave. Their Mac shows\n\
@@ -770,9 +774,10 @@ pub static VERBS: &[Verb] = &[
                   \x20        a link opens in the browser, or --pin pins it to --into <terminal> (default this one);\n\
                   \x20        a file or folder is fetched into nearby.downloads (accept again to retry one that failed);\n\
                   \x20        a tab opens as a new shell in your checkout of its repo (or --cwd <dir>, else your home\n\
-                  \x20        folder) with their scrollback shown read-only above it; nothing runs.\n\
+                  \x20        folder) with their scrollback shown read-only above it; nothing runs. An agent session\n\
+                  \x20        is fetched and resumed in a new agent terminal there (or --cwd <dir>), idle until prompted.\n\
                   decline  (human only) tell the sender no. Each offer also raises a needs-you approval: approving\n\
-                  \x20        accepts it (a link opens, a snippet stays in the inbox, a tab opens) and denying declines it.\n\
+                  \x20        accepts it (a link opens, a snippet stays in the inbox, a tab opens, an agent session resumes) and denying declines it.\n\
                   reply    answer a message with a message.\n\
                   The inbox keeps the last 500 shares across restarts. Events share.offered, share.sent,\n\
                   share.accepted, share.declined and share.progress (a file's transfer) follow it.",

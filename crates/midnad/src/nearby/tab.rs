@@ -27,12 +27,12 @@ fn git(cwd: &str, args: &[&str]) -> Option<String> {
 }
 
 /// `s` with control characters dropped (tabs kept).
-fn plain(s: &str) -> String {
+pub(super) fn plain(s: &str) -> String {
     s.chars().filter(|c| !c.is_control() || *c == '\t').collect()
 }
 
 /// `s` cut to at most `max` bytes, at a character boundary.
-fn cut_bytes(s: &str, max: usize) -> &str {
+pub(super) fn cut_bytes(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
     while !s.is_char_boundary(end) {
         end -= 1;
@@ -89,12 +89,7 @@ pub fn snapshot(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePaylo
     let rt = rt.ok_or_else(|| RpcError::conflict(format!("terminal {sid} isn't running")))?;
     let rows = rt.read(false).map(|(rows, _, _)| rows).ok_or_else(|| RpcError::conflict(format!("terminal {sid} isn't responding")))?;
     let cwd = crate::git::work_cwd(&s, Some(rt.pid));
-    let title = p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or(&s.name);
-    let title = plain(title).replace('\t', " ");
-    let title = match cut_bytes(title.trim(), nb::MAX_TITLE) {
-        "" => "terminal".to_string(),
-        t => t.to_string(),
-    };
+    let title = title_of(p, &s.name);
     let shell = (s.kind == SessionKind::Shell)
         .then(|| s.command.first().and_then(|c| c.rsplit('/').next()).map(|n| cut_bytes(&plain(n), nb::MAX_SHELL).to_string()))
         .flatten()
@@ -104,7 +99,25 @@ pub fn snapshot(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePaylo
     Ok(payload)
 }
 
-/// Where an incoming tab opens on this Mac.
+/// What a sent terminal is called: the `title` given, else its name; one plain line.
+pub(super) fn title_of(p: &ShareSendParams, name: &str) -> String {
+    let title = p.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or(name);
+    let title = plain(title).replace('\t', " ");
+    match cut_bytes(title.trim(), nb::MAX_TITLE) {
+        "" => "terminal".to_string(),
+        t => t.to_string(),
+    }
+}
+
+/// Where a tab or an agent session was on the sending Mac: its project and directory.
+fn origin(payload: &SharePayload) -> Option<(Option<&TabProject>, &str)> {
+    match payload {
+        SharePayload::Tab { project, cwd, .. } | SharePayload::Agent { project, cwd, .. } => Some((project.as_ref(), cwd)),
+        _ => None,
+    }
+}
+
+/// Where an incoming tab (or agent session) opens on this Mac.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
     /// In this project's checkout of the tab's repo, at `dir` (the tab's folder in it, or the
@@ -121,7 +134,7 @@ pub enum Place {
 impl Place {
     /// For people: where it opens.
     pub fn words(&self, payload: &SharePayload) -> String {
-        let SharePayload::Tab { project, cwd, .. } = payload else { return String::new() };
+        let Some((project, cwd)) = origin(payload) else { return String::new() };
         match self {
             Place::Project { name, dir, missing: None, .. } => format!("It opens in {dir} (project {name})."),
             Place::Project { name, dir, missing: Some(m), .. } => format!("It opens in {dir} (project {name}); {m} isn't in your checkout."),
@@ -134,10 +147,39 @@ impl Place {
         }
     }
 
-    fn dir(&self) -> Option<&str> {
+    pub(super) fn dir(&self) -> Option<&str> {
         match self {
             Place::Project { dir, .. } | Place::Same { dir } | Place::Chosen { dir } => Some(dir),
             Place::Unknown => None,
+        }
+    }
+
+    /// The folder the person picked (`share.accept` `cwd`): absolute, and a folder here.
+    pub(super) fn chosen(c: &str) -> Result<Place, RpcError> {
+        let c = c.trim();
+        if !c.starts_with('/') || !Path::new(c).is_dir() {
+            return Err(RpcError::bad_params(format!("{c} isn't a folder on this Mac (give an absolute path)")));
+        }
+        Ok(Place::Chosen { dir: c.to_string() })
+    }
+
+    /// The project a terminal opened here belongs to.
+    pub(super) fn project_id(&self, d: &Daemon) -> String {
+        match self {
+            Place::Project { id, .. } => id.clone(),
+            Place::Same { dir } | Place::Chosen { dir } => {
+                crate::rpc::project::containing(d, dir).map(|p| p.id).unwrap_or_else(|| midna_proto::ROOT_PROJECT_ID.to_string())
+            }
+            Place::Unknown => midna_proto::ROOT_PROJECT_ID.to_string(),
+        }
+    }
+
+    /// For the new terminal's first line and the share's result: `in <dir>`.
+    pub(super) fn here(&self) -> String {
+        match (self, self.dir()) {
+            (Place::Unknown, _) | (_, None) => "in your home folder (its project isn't on this Mac)".to_string(),
+            (Place::Project { missing: Some(m), .. }, Some(dir)) => format!("in {dir} ({m} isn't in your checkout)"),
+            (_, Some(dir)) => format!("in {dir}"),
         }
     }
 }
@@ -168,9 +210,10 @@ fn checkout_of(d: &Daemon, remote: &str) -> Option<(String, String, String)> {
     None
 }
 
-/// Where `payload` (a tab) opens on this Mac, unless its person picks a folder.
+/// Where `payload` (a tab or an agent session) opens on this Mac, unless its person picks a
+/// folder.
 pub fn place(d: &Daemon, payload: &SharePayload) -> Place {
-    let SharePayload::Tab { project, cwd, .. } = payload else { return Place::Unknown };
+    let Some((project, cwd)) = origin(payload) else { return Place::Unknown };
     match project {
         Some(p) => match checkout_of(d, &p.remote) {
             Some((id, name, top)) => {
@@ -183,7 +226,7 @@ pub fn place(d: &Daemon, payload: &SharePayload) -> Place {
             }
             None => Place::Unknown,
         },
-        None if Path::new(cwd).is_dir() => Place::Same { dir: cwd.clone() },
+        None if Path::new(cwd).is_dir() => Place::Same { dir: cwd.to_string() },
         None => Place::Unknown,
     }
 }
@@ -229,29 +272,12 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
 pub fn open(d: &Arc<Daemon>, ctx: &Ctx, from: &str, payload: &SharePayload, chosen: Option<&str>) -> Result<String, RpcError> {
     let SharePayload::Tab { title, .. } = payload else { return Err(RpcError::bad_params("not a tab")) };
     let place = match chosen {
-        Some(c) => {
-            let c = c.trim();
-            if !c.starts_with('/') || !Path::new(c).is_dir() {
-                return Err(RpcError::bad_params(format!("{c} isn't a folder on this Mac (give an absolute path)")));
-            }
-            Place::Chosen { dir: c.to_string() }
-        }
+        Some(c) => Place::chosen(c)?,
         None => place(d, payload),
     };
-    let project_id = match &place {
-        Place::Project { id, .. } => Some(id.clone()),
-        Place::Same { dir } | Place::Chosen { dir } => {
-            Some(crate::rpc::project::containing(d, dir).map(|p| p.id).unwrap_or_else(|| midna_proto::ROOT_PROJECT_ID.to_string()))
-        }
-        Place::Unknown => Some(midna_proto::ROOT_PROJECT_ID.to_string()),
-    };
-    let here = match (&place, place.dir()) {
-        (Place::Unknown, _) | (_, None) => "in your home folder (its project isn't on this Mac)".to_string(),
-        (Place::Project { missing: Some(m), .. }, Some(dir)) => format!("in {dir} ({m} isn't in your checkout)"),
-        (_, Some(dir)) => format!("in {dir}"),
-    };
+    let here = place.here();
     let params = SessionOpenParams {
-        project_id,
+        project_id: Some(place.project_id(d)),
         kind: SessionKind::Shell,
         agent: None,
         name: Some(title.clone()),

@@ -335,8 +335,8 @@ const TOPICS: &[(&str, &str)] = &[
         paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed); a contact auto-accepts nothing. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
         keys; a device that isn't paired can only ask to pair, and one that uses a paired device's name with another key \
         is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
-        they never see each other. Shares: share.send {peer, kind: message|snippet|link|file|tab, text|url|path|session, title?, reply_to?} \
-        (`midna share send <name|id> <text>`, stdin = snippet, --link <url>, a file or folder's path, --tab [--session <terminal>]) offers a \
+        they never see each other. Shares: share.send {peer, kind: message|snippet|link|file|tab|agent, text|url|path|session, title?, reply_to?} \
+        (`midna share send <name|id> <text>`, stdin = snippet, --link <url>, a file or folder's path, --tab or --agent [--session <terminal>]) offers a \
         paired device that's nearby now something. From an agent it first asks the human on this Mac (a needs-you approval showing what would \
         leave; a rule the human gave can allow `share send <kind> <device id>`, an agent's own allow rule never does) and \
         waits; denied or unanswered, nothing is sent. It lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
@@ -348,7 +348,9 @@ const TOPICS: &[(&str, &str)] = &[
         can). Of Midna's own things only summaries and themes are; rules, triggers, settings and queued prompts always ask. The sender sees the answer as \
         share.accepted or share.declined (direction outgoing). An accepted file or folder is fetched in checksummed \
         chunks that resume after a drop, with share.progress events (the item's transfer: state, done, total), and \
-        saved into the receiver's nearby.downloads (human only; default ~/Downloads/Midna)."),
+        saved into the receiver's nearby.downloads (human only; default ~/Downloads/Midna). An accepted agent session (kind agent: \
+        the whole conversation as it is now) is fetched the same way, its paths changed to the receiver's, and resumed in a new agent \
+        terminal there, idle until prompted."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \
