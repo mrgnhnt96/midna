@@ -40,6 +40,35 @@ fn ago(mins: i64) -> String {
     rfc3339_from_unix(now - mins * 60)
 }
 
+/// Settings › Nearby: this Mac visible to everyone for a few more minutes, two Midnas nearby
+/// (one using a paired device's name with another key), two paired devices, and a pairing
+/// waiting on this side's confirm.
+fn fake_peers() -> Value {
+    let now = midna_proto::time::now_unix();
+    let fp = |c: char| c.to_string().repeat(64);
+    json!({
+        "me": {
+            "fingerprint": fp('a'), "name": "Morgan's MacBook Pro", "visibility": "everyone",
+            "everyone_until": rfc3339_from_unix(now + 7 * 60 + 12), "service": "_midna._tcp",
+            "advertising": true, "browsing": true, "port": 52314, "protocol": midna_proto::nearby::PROTOCOL,
+        },
+        "peers": [
+            { "fingerprint": fp('b'), "name": "Ada's MacBook Air", "protocol": midna_proto::nearby::PROTOCOL, "seen_since": ago(3) },
+            { "fingerprint": fp('c'), "name": "Studio", "protocol": midna_proto::nearby::PROTOCOL, "seen_since": ago(1), "claims_name_of": fp('d') },
+            { "fingerprint": fp('d'), "name": "Studio", "protocol": midna_proto::nearby::PROTOCOL, "seen_since": ago(40), "tier": "my_device" },
+        ],
+        "paired": [
+            { "fingerprint": fp('d'), "name": "Studio", "tier": "my_device", "paired_at": ago(60 * 24 * 9), "nearby": true },
+            { "fingerprint": fp('e'), "name": "Sam's iMac", "tier": "contact", "paired_at": ago(60 * 24 * 30), "nearby": false },
+        ],
+        "pairings": [{
+            "id": "pr_7f3a19c2", "role": "outgoing", "fingerprint": fp('b'), "name": "Ada's MacBook Air", "state": "comparing",
+            "code": "482913", "confirmed": false, "peer_confirmed": false, "started_at": ago(0),
+            "expires_at": rfc3339_from_unix(now + 94),
+        }],
+    })
+}
+
 /// Local triggers for the Triggers screen: the built-in prompt-blocked status, an
 /// auto-compact one and a schedule.
 fn fake_triggers() -> Vec<midna_proto::Trigger> {
@@ -145,6 +174,9 @@ pub fn settings_catalog() -> Vec<SettingEntry> {
         let value = if s.key == "cleanup.items" { json!(["worktree", "branch", "remote_branch", "Stop any docker compose stack started in this folder"]) } else { s.default.to_json() };
         e(s.key, value, s.description, s.human_only)
     }));
+    // Nearby: who can find this Mac, and its name
+    let nearby = midna_proto::settings::SETTINGS.iter().filter(|s| s.key.starts_with("nearby."));
+    v.extend(nearby.map(|s| e(s.key, s.default.to_json(), s.description, s.human_only)));
     // every shortcut, so the Shortcuts tab and tooltips match the daemon
     let keys = midna_proto::settings::SETTINGS.iter().filter(|s| matches!(s.ty, midna_proto::settings::SettingKind::Keybinding));
     v.extend(keys.map(|s| e(s.key, s.default.to_json(), s.description, false)));
@@ -351,6 +383,23 @@ impl FakeBackend {
                 ..Default::default()
             },
         ];
+        let mut needs = needs;
+        if crate::dev::var("MIDNA_FAKE_PAIRING").is_ok() {
+            // dev (screenshots): an incoming Nearby pairing first in the inbox
+            needs.insert(0, NeedsYou {
+                id: "n_pair01".into(),
+                kind: NeedsYouKind::Approval,
+                title: "Pair with Ada's MacBook Air? Code 482 913".into(),
+                detail: "Ada's MacBook Air asked to pair with this Mac. Approve only if Ada's MacBook Air shows the same code: 482 913. Approving keeps it as a contact; to keep it as one of your own Macs instead run: midna peers confirm pr_7f3a19c2 --as my-device\nDevice bbbb bbbb bbbb bbbb".into(),
+                asked_by: Actor { kind: "midnad".into(), session: None, name: None },
+                created_at: ago(0),
+                approval: Some(ApprovalRequest {
+                    action: PolicyAction { kind: "cli".into(), value: "midna peers confirm pr_7f3a19c2".into(), session: None, project: None },
+                    matched_rule: None,
+                }),
+                ..Default::default()
+            });
+        }
         for i in 0..many() {
             projects.push(p(&format!("p_many{i:03}"), &format!("busy-{i:03}"), 10 + 2 * i as u32));
             projects.push(p(&format!("p_gone{i:03}"), &format!("closed-{i:03}"), 11 + 2 * i as u32));
@@ -577,6 +626,7 @@ impl Backend for FakeBackend {
                 json!({ "read_seq": 900, "unread": 0 })
             }
             "settings.list" => serde_json::to_value(&st.settings)?,
+            "peers.list" => fake_peers(),
             "notify.media" => {
                 // The repo's copies of midna's own sounds, so previews play in dev.
                 let twilight = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../midnad/assets/sounds/twilight");

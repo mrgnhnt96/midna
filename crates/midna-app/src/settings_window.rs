@@ -38,6 +38,8 @@ mod looks;
 mod folders;
 #[path = "settings_chips.rs"]
 mod chips;
+#[path = "settings_nearby.rs"]
+mod nearby;
 
 pub(crate) use chips::{KEYS as CHIP_KEYS, chip_label, is_script, moved, script_items, script_value, toggled};
 
@@ -98,11 +100,13 @@ enum Sec {
     Limits,
     Notifications,
     Sounds,
+    Nearby,
     Webhooks,
     System,
 }
 
-const SECS: [Sec; 10] = [Sec::General, Sec::Appearance, Sec::Terminal, Sec::Shortcuts, Sec::Agents, Sec::Limits, Sec::Notifications, Sec::Sounds, Sec::Webhooks, Sec::System];
+const SECS: [Sec; 11] =
+    [Sec::General, Sec::Appearance, Sec::Terminal, Sec::Shortcuts, Sec::Agents, Sec::Limits, Sec::Notifications, Sec::Sounds, Sec::Nearby, Sec::Webhooks, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -115,6 +119,7 @@ impl Sec {
             Sec::Limits => "Agent limits",
             Sec::Notifications => "Notifications",
             Sec::Sounds => "Sounds",
+            Sec::Nearby => "Nearby",
             Sec::Webhooks => "Webhooks",
             Sec::System => "System",
         }
@@ -130,6 +135,7 @@ impl Sec {
             Sec::Limits => "What agents may do without asking. Only you can change these.",
             Sec::Notifications => "What tells you, and how. A terminal can override any of these.",
             Sec::Sounds => "What each notification and action sounds like.",
+            Sec::Nearby => "Other Midnas on this network: who can find this Mac, and the devices it's paired with.",
             Sec::Webhooks => "How GitHub and Bitbucket events reach midna to start triggers.",
             Sec::System => "macOS permissions, the daemon, and starting over.",
         }
@@ -145,14 +151,15 @@ impl Sec {
             Sec::Limits => Icon::Rules,
             Sec::Notifications => Icon::Bell,
             Sec::Sounds => Icon::Play,
+            Sec::Nearby => Icon::Chain,
             Sec::Webhooks => Icon::Globe,
             Sec::System => Icon::Screen,
         }
     }
 
-    /// A gap above it in the sidebar: the agent sections, then the system ones.
+    /// A gap above it in the sidebar: the agent sections, then the network and system ones.
     fn gap(self) -> bool {
-        matches!(self, Sec::Agents | Sec::Webhooks)
+        matches!(self, Sec::Agents | Sec::Nearby)
     }
 
     /// For `MIDNA_SETTINGS_VIEW`.
@@ -168,7 +175,6 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::General, "Updates", &["@update", "updates.channel"]),
     (Sec::General, "⌘K Ask an agent", &["ui.ask.agent", "ui.ask.scope"]),
     (Sec::General, "Projects and windows", &["projects.roots", "projects.empty_opens", "projects.new_terminal_in", "projects.switch_to_main", "summary.keep_days", "ide.app", "ide.rules", "windows.close_with_terminals", "finder.quick_action"]),
-    (Sec::General, "Nearby", &["nearby.visibility", "nearby.name"]),
     (Sec::Appearance, "Theme", &["theme", "theme.dark", "theme.light", "theme.colors", "density", "ui.haptics"]),
     (Sec::Appearance, "Bars", &["ui.header.script", "ui.header.buttons", "ui.row.script", "ui.status.script", "ui.status.items", "ui.status.looks", "ui.status.background_ring", "git.refresh_secs"]),
     (Sec::Appearance, "Sidebar footer", &["sidebar.footer.stats", "sidebar.footer.range", "sidebar.footer.buttons", "sidebar.footer.compact"]),
@@ -217,6 +223,9 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Notifications, "Text", &["@texts"]),
     (Sec::Sounds, "", &["notify.sounds", "notify.sounds_in_app", "@sounds"]),
     (Sec::Sounds, "Sound effects", &["@effects"]),
+    (Sec::Nearby, "This Mac", &["@nearby_me", "nearby.visibility", "nearby.name"]),
+    (Sec::Nearby, "On this network", &["@nearby_peers"]),
+    (Sec::Nearby, "Paired devices", &["@nearby_paired"]),
     (Sec::Webhooks, "Delivery", &["webhooks.path", "webhooks.port", "webhooks.relay_url"]),
     (Sec::Webhooks, "Triggers", &["triggers.agent_mode"]),
     (Sec::System, "macOS", &["@accessibility", "@notifications", "@login"]),
@@ -299,6 +308,7 @@ pub struct SettingsWindow {
     /// "Reset midna" (daemon.reset) armed by its first click.
     armed_daemon_reset: bool,
     copied: Option<(String, Instant)>,
+    nearby: nearby::State,
     focus: FocusHandle,
     scroll: ScrollHandle,
     _subs: Vec<Subscription>,
@@ -372,12 +382,26 @@ impl SettingsWindow {
             armed_reset: false,
             armed_daemon_reset: false,
             copied: None,
+            nearby: nearby::State::default(),
             focus,
             scroll: ScrollHandle::new(),
             _subs: subs,
             _tasks: vec![task],
         };
         s.load(cx);
+        // Nearby's countdowns (Everyone's 10 minutes, a pairing's time to confirm)
+        s._tasks.push(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let Ok(()) = this.update(cx, |s, cx| {
+                    if s.nearby_ticking() {
+                        cx.notify();
+                    }
+                }) else {
+                    break;
+                };
+            }
+        }));
         if let Some(sc) = crate::dev::var("MIDNA_SETTINGS_EDIT").ok().and_then(|k| crate::actions::SHORTCUTS.iter().find(|s| s.setting == k)) {
             // dev (screenshots): start rebinding this shortcut
             cx.spawn_in(window, async move |this, cx| {
@@ -416,6 +440,7 @@ impl SettingsWindow {
                 self.load(cx);
             }
             BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED || e.kind == midna_proto::kinds::LINK_ACTIONS_CHANGED => self.load(cx),
+            BackendEvent::Event(e) if e.kind.starts_with("peers.") => self.peers_event(&e, cx),
             BackendEvent::Event(e) if e.kind == "hooks.changed" => {
                 self.hooks = e.data.clone();
                 cx.notify();
@@ -467,6 +492,7 @@ impl SettingsWindow {
     fn load(&mut self, cx: &mut Context<Self>) {
         // The answer lands before the rows below are fetched (Settings ▸ Permissions).
         crate::notify::refresh_permission();
+        self.load_peers(cx);
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
             let r = cx
@@ -559,6 +585,7 @@ impl SettingsWindow {
         }
         want.push(("agents.resume_after_sleep_prompt".into(), self.value("agents.resume_after_sleep_prompt").as_str().unwrap_or("").to_string(), "continue"));
         want.push(("webhooks.relay_url".into(), self.value("webhooks.relay_url").as_str().unwrap_or("").to_string(), "https://relay.example.com"));
+        want.push(("nearby.name".into(), self.value("nearby.name").as_str().unwrap_or("").to_string(), self.nearby_name_placeholder()));
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_subs.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_saves.retain(|key, _| want.iter().any(|(k, ..)| k == key));
@@ -881,6 +908,8 @@ enum Control {
     /// A list (or a script's `+` parts) as chips to toggle and drag (settings_chips.rs):
     /// `(item, label, on)`, on ones first in order.
     Chips { key: String, chips: Vec<(String, String, bool)> },
+    /// Settings › Nearby's own controls (settings_nearby.rs).
+    Nearby(nearby::Ctl),
 }
 
 #[derive(Clone)]
@@ -946,6 +975,7 @@ impl RowSpec {
             Control::Folders { list, .. } => out.extend(list.iter().map(|f| ("Folder", f.clone()))),
             Control::Chips { chips, .. } => out.extend(chips.iter().map(|(_, l, _)| ("Option", l.clone()))),
             Control::Hours => out.push(("Key", "keep_awake.start keep_awake.end".into())),
+            Control::Nearby(c) => out.extend(c.fields()),
             _ => {}
         }
         if let Some(k) = self.key() {
@@ -1484,6 +1514,7 @@ impl SettingsWindow {
             // only the self-hosted path uses it
             "webhooks.relay_url" if self.value("webhooks.path") != json!("self_relay") => return None,
             "agents.resume_after_sleep_prompt" | "webhooks.relay_url" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            "nearby.visibility" | "nearby.name" => self.nearby_key_row(t, key, &mut r),
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
                 if let Some(n) = url.or_else(|| self.webhooks.get("message").and_then(Value::as_str).map(str::to_string)) {
@@ -1869,6 +1900,7 @@ impl SettingsWindow {
             "@effects" => self.sound_effect_rows(t),
             "@shortcuts" => self.shortcut_specs(t, false),
             "@built_in" => self.shortcut_specs(t, true),
+            n if nearby::ROWS.contains(&n) => self.nearby_rows(t, n),
             _ => vec![],
         }
     }
@@ -1911,6 +1943,7 @@ impl SettingsWindow {
                             "How long each kind stays on screen" => Some("Until handled: until you answer, open or dismiss it."),
                             "Colors" => Some("In the badge, the in-app card and the notifications list."),
                             "Your kinds" => Some("Kinds agents and triggers can send as."),
+                            "Paired devices" => Some("A contact is someone else's Midna: what it sends asks you first. My device is one of your own Macs."),
                             _ => None,
                         },
                         rows: items.iter().flat_map(|i| if i.starts_with('@') { self.special_rows(t, i) } else { self.key_row(t, i).into_iter().collect() }).collect(),
@@ -2262,6 +2295,7 @@ impl Render for SettingsWindow {
                     .child(self.footer(&t)),
             )
             .children(self.shortcut_menu_el(&t, cx))
+            .children(self.pairing_sheet(&t, cx))
             .when(self.picker.is_some(), |d| {
                 // click-away layer under an open sound/image picker
                 d.child(
@@ -2362,6 +2396,10 @@ impl SettingsWindow {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
+        if !m.platform && !m.control && !m.alt && self.sheet_key(&ks.key, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if !m.platform || m.control || m.shift {
             return;
         }
@@ -3177,6 +3215,7 @@ impl SettingsWindow {
             Control::Looks => self.looks_control(t, window, cx),
             Control::Folders { key, list } => self.folders_control(t, key, list, cx),
             Control::Chips { key, chips } => self.chips_control(t, key, chips, words, cx),
+            Control::Nearby(c) => self.nearby_control(t, c, id, window, cx),
             Control::Text { dot, text, color, action } => {
                 let color = if color == Hsla::default() { t.fg } else { color };
                 div()
@@ -3560,7 +3599,7 @@ mod tests {
         ];
         for (_, _, items) in LAYOUT {
             for i in items.iter().filter(|i| i.starts_with('@')) {
-                assert!(known.contains(i), "{i} isn't handled by special_rows");
+                assert!(known.contains(i) || super::nearby::ROWS.contains(i), "{i} isn't handled by special_rows");
             }
         }
     }
