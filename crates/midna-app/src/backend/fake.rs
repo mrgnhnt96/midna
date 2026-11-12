@@ -79,9 +79,25 @@ fn fake_inbox() -> Value {
             "sent_at": ago(mins), "decided_at": (state != "offered").then(|| ago(mins.saturating_sub(1))), "result": result,
         })
     };
+    let mut file = item(
+        "sh_file0006",
+        "incoming",
+        'd',
+        "Studio",
+        json!({"kind": "file", "name": "screens", "folder": true, "files": [
+            {"path": "screens/home.png", "size": 812_000, "sha256": "0".repeat(64)},
+            {"path": "screens/settings.png", "size": 640_000, "sha256": "1".repeat(64)},
+        ]}),
+        "accepted",
+        12,
+        Some("saving"),
+    );
+    file["size"] = json!(1_452_000);
+    file["transfer"] = json!({"state": "moving", "done": 1_020_000, "total": 1_452_000, "files_done": 1, "files": 2});
     json!({
         "items": [
             item("sh_snip0001", "incoming", 'd', "Studio", json!({"kind": "snippet", "text": "cargo build --release\nscripts/test.sh -p midna-app", "title": "release build"}), "offered", 0, None),
+            file,
             item("sh_msg00002", "incoming", 'd', "Studio", json!({"kind": "message", "text": "Build's green on the Studio, pushing now."}), "accepted", 25, Some("read")),
             item("sh_link0003", "outgoing", 'e', "Sam's iMac", json!({"kind": "link", "url": "https://github.com/mrgnhnt96/midna/pull/183"}), "accepted", 60 * 3, Some("opened")),
             item("sh_msg00004", "outgoing", 'd', "Studio", json!({"kind": "message", "text": "Can you run the smoke test there?"}), "offered", 60 * 5, None),

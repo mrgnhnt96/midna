@@ -12,7 +12,7 @@ use crate::theme::Theme;
 use crate::ui::screen_kit::{LineInput, btn, btn_primary, clock, day_label};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use midna_proto::nearby::{self as nb, InboxListResult, PairedPeer, PeersListResult, ShareDirection, ShareItem, ShareKind, SharePayload, ShareSendParams, ShareState, Tier};
+use midna_proto::nearby::{self as nb, InboxListResult, PairedPeer, PeersListResult, ShareDirection, ShareItem, ShareKind, SharePayload, ShareSendParams, ShareState, Tier, Transfer, TransferState};
 use serde_json::{Value, json};
 
 /// Nearby sharing's state on `MainWindow.share`.
@@ -79,7 +79,7 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message => SharePayload::Message { text: message.trim().to_string(), reply_to },
+        ShareKind::Message | ShareKind::File => SharePayload::Message { text: message.trim().to_string(), reply_to },
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
         ShareKind::Link => SharePayload::Link { url: text.trim().to_string(), title: None },
     }
@@ -91,8 +91,9 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         SharePayload::Message { text, reply_to } => (Some(text), None, None, reply_to),
         SharePayload::Snippet { text, title } => (Some(text), None, title, None),
         SharePayload::Link { url, title } => (None, Some(url), title, None),
+        SharePayload::File { .. } => (None, None, None, None),
     };
-    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to }
+    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None }
 }
 
 /// Paired Macs on the network first, then by name.
@@ -112,6 +113,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Message => "message",
         ShareKind::Snippet => "snippet",
         ShareKind::Link => "link",
+        ShareKind::File => "file",
     }
 }
 
@@ -120,6 +122,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Message => "Message",
         ShareKind::Snippet => "Snippet",
         ShareKind::Link => "Link",
+        ShareKind::File => "File",
     }
 }
 
@@ -189,11 +192,16 @@ fn from_line(detail: &str) -> Option<(String, Option<Tier>, String)> {
     Some((name.to_string(), tier, dev.trim_end_matches(')').to_string()))
 }
 
-/// "X sent a snippet…", "X sent a link: …", else "X: …" (a message).
+/// "X sent a snippet…", "X sent a link: …", "X sent a file: …", else "X: …" (a message).
 fn kind_of_title(title: &str, name: &str) -> ShareKind {
-    let rest = if name.is_empty() { title } else { title.strip_prefix(name).unwrap_or(title) };
-    let has = |s: &str| if name.is_empty() { rest.contains(s) } else { rest.starts_with(s) };
-    if has(" sent a snippet") {
+    let rest = title.strip_prefix(name).filter(|_| !name.is_empty());
+    let has = |s: &str| match rest {
+        Some(r) => r.starts_with(s),
+        None => title.contains(s),
+    };
+    if has(" sent a file: ") || has(" sent a folder: ") {
+        ShareKind::File
+    } else if has(" sent a snippet") {
         ShareKind::Snippet
     } else if has(" sent a link: ") {
         ShareKind::Link
@@ -211,6 +219,21 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
         ShareKind::Message => SharePayload::Message { text: o.body.clone(), reply_to: None },
         ShareKind::Snippet => SharePayload::Snippet { text: o.body.clone(), title: None },
         ShareKind::Link => SharePayload::Link { url: o.body.clone(), title: None },
+        ShareKind::File => {
+            let (name, folder) = file_of_body(&o.body);
+            SharePayload::File { name, folder, files: Vec::new(), dirs: Vec::new() }
+        }
+    }
+}
+
+/// A file card's body, "report.pdf, 1.2 MB." or "photos, 3 files, 4.0 MB.": the name, and is it a folder.
+fn file_of_body(body: &str) -> (String, bool) {
+    let head = body.trim().trim_end_matches('.');
+    let head = head.rsplit_once(", ").map_or(head, |(h, _)| h);
+    let counted = |c: &str| c.split_once(' ').is_some_and(|(n, w)| n.parse::<usize>().is_ok() && (w == "file" || w == "files"));
+    match head.rsplit_once(", ") {
+        Some((name, c)) if counted(c) => (name.to_string(), true),
+        _ => (head.to_string(), false),
     }
 }
 
@@ -228,7 +251,9 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
             "Nothing runs: pasting never presses Enter, and several lines only go into a terminal at a prompt that takes them whole (bracketed paste). Keep it to paste later from Notifications › Nearby.".into()
         }
         ShareKind::Link => "Open opens it in your browser. Pin adds it to a terminal's links instead.".into(),
+        ShareKind::File => "Accept saves it into your Nearby downloads folder, marked as downloaded. Nothing is opened or run.".into(),
     };
+    let transfer = m.share.items.iter().find(|i| i.id == o.id).and_then(|i| i.transfer.clone());
     div()
         .flex()
         .flex_col()
@@ -236,6 +261,7 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         .text_size(px(13.))
         .child(sender(t, &o.name, o.tier, &o.device))
         .child(payload_box(t, &p))
+        .children(transfer.map(|x| progress(t, &x)))
         .child(div().text_color(t.dim).child(note))
 }
 
@@ -302,7 +328,39 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
             .gap(px(4.))
             .children(title.clone().map(|x| div().font_weight(FontWeight::BOLD).child(x)))
             .child(div().font_family(t.mono_font.clone()).text_size(px(12.5)).text_color(t.accent).child(url.clone())),
+        SharePayload::File { name, folder, files, .. } => {
+            const SHOWN: usize = 6;
+            let total = files.iter().fold(0u64, |n, f| n.saturating_add(f.size));
+            let count = if *folder { format!(" · {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }) } else { String::new() };
+            let head = format!("{}{} · {}{count}", nb::safe_name(name), if *folder { "/" } else { "" }, nb::size_label(total));
+            let more = files.len().saturating_sub(SHOWN);
+            frame()
+                .gap(px(4.))
+                .child(div().font_weight(FontWeight::BOLD).child(head))
+                .when(*folder, |d| {
+                    d.children(files.iter().take(SHOWN).map(|f| {
+                        div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).child(format!("{} · {}", nb::safe_name(&f.path), nb::size_label(f.size)))
+                    }))
+                    .when(more > 0, |d| d.child(div().text_color(t.dim).child(format!("… {more} more"))))
+                })
+        }
     }
+}
+
+/// A file share's transfer: a bar and where it is.
+fn progress(t: &Theme, x: &Transfer) -> Div {
+    let frac = if x.total == 0 { 1. } else { (x.done as f64 / x.total as f64).clamp(0., 1.) };
+    let (label, color) = match x.state {
+        TransferState::Done => (x.saved_to.as_ref().map(|p| format!("Saved to {p}")).unwrap_or_else(|| "Done".into()), t.ok),
+        TransferState::Failed => (format!("Failed: {}", x.error.as_deref().unwrap_or("the transfer stopped")), t.err),
+        _ => (format!("{} of {} · file {} of {}", nb::size_label(x.done), nb::size_label(x.total), (x.files_done + 1).min(x.files.max(1)), x.files.max(1)), t.accent),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(div().h(px(6.)).w_full().rounded(px(3.)).bg(t.line).child(div().h_full().w(relative(frac as f32)).rounded(px(3.)).bg(color)))
+        .child(div().text_size(px(11.5)).text_color(if x.state == TransferState::Failed { t.err } else { t.dim }).child(label))
 }
 
 // ------------------------------------------------------------------ RPCs
@@ -330,6 +388,16 @@ pub fn fetch(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 
 /// `share.*`: refresh the inbox; say so when the other Mac answered one of yours.
 pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
+    if e.kind == midna_proto::kinds::SHARE_PROGRESS {
+        if let Ok(it) = serde_json::from_value::<ShareItem>(e.data.clone()) {
+            match m.share.items.iter_mut().find(|i| i.id == it.id) {
+                Some(slot) => *slot = it,
+                None => fetch(m, cx),
+            }
+            cx.notify();
+        }
+        return;
+    }
     fetch(m, cx);
     if e.kind == midna_proto::kinds::SHARE_ACCEPTED || e.kind == midna_proto::kinds::SHARE_DECLINED {
         let it = serde_json::from_value::<ShareItem>(e.data.clone()).ok().filter(|i| i.direction == ShareDirection::Outgoing);
@@ -737,6 +805,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::Message { text, .. } => text.clone(),
         SharePayload::Snippet { text, title } => title.clone().unwrap_or_else(|| text.clone()),
         SharePayload::Link { url, title } => title.clone().unwrap_or_else(|| url.clone()),
+        SharePayload::File { name, .. } => nb::safe_name(name),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -879,6 +948,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
     let copy = match &it.payload {
         SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.clone(),
         SharePayload::Link { url, .. } => url.clone(),
+        SharePayload::File { name, .. } => it.transfer.as_ref().and_then(|x| x.saved_to.clone()).unwrap_or_else(|| name.clone()),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
@@ -914,6 +984,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(who(it)))
         .child(sender(t, &it.peer_name, None, &nb::short_fingerprint(&it.peer)))
         .child(payload_box(t, &it.payload))
+        .children(it.transfer.as_ref().map(|x| progress(t, x)))
         .children(it.result.clone().map(|r| div().text_color(t.dim).child(format!("On this Mac: {r}."))))
         .child(actions)
 }
@@ -921,7 +992,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one.
-    use super::{Offer, answered, first_choice, is_url, kinds, offer_of, order, payload, send_params};
+    use super::{Offer, answered, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, send_params};
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
     use midna_proto::nearby::{PairedPeer, ShareDirection, ShareItem, ShareKind, SharePayload, ShareState, Tier};
 
@@ -972,6 +1043,24 @@ mod tests {
         let n = need("Sam, Jo's iMac: hi", "hi\n\nMessage.\nFrom Sam, Jo's iMac, a contact (device eeee). Deny to decline it.", "midna inbox accept sh_c0ffee");
         let o = offer_of(&n).unwrap();
         assert_eq!((o.name.as_str(), o.kind), ("Sam, Jo's iMac", ShareKind::Message));
+    }
+
+    #[test]
+    fn a_file_offer_is_read() {
+        let from = "From Studio, one of your Macs (device aaaa aaaa aaaa aaaa). Deny to decline it.";
+        let n = need(
+            "Studio sent a file: report, final.pdf (1.2 MB)",
+            &format!("report, final.pdf, 1.2 MB.\n\nApproving saves it into ~/Downloads/Nearby, marked as downloaded; nothing is opened or run.\n{from}"),
+            "midna inbox accept sh_file0001",
+        );
+        let o = offer_of(&n).unwrap();
+        assert_eq!((o.kind, o.name.as_str(), o.tier), (ShareKind::File, "Studio", Some(Tier::MyDevice)));
+        assert_eq!(file_of_body(&o.body), ("report, final.pdf".to_string(), false));
+        // a title that doesn't start with the sender's name still reads as a file
+        let n = need("photos sent a folder: photos (4.0 MB, 3 files)", &format!("photos, 3 files, 4.0 MB.\n\nApproving saves it.\n{from}"), "midna inbox accept sh_file0002");
+        let o = offer_of(&n).unwrap();
+        assert_eq!(o.kind, ShareKind::File);
+        assert_eq!(file_of_body(&o.body), ("photos".to_string(), true));
     }
 
     #[test]
@@ -1027,6 +1116,7 @@ mod tests {
             decided_at: None,
             result: None,
             needs_you_id: None,
+            transfer: None,
         };
         let msg = SharePayload::Message { text: "hi".into(), reply_to: None };
         let snip = SharePayload::Snippet { text: "ls".into(), title: None };
