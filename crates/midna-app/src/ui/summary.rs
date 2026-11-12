@@ -3,10 +3,10 @@
 //! (`summary.list`), a list on the left and the one you pick on the right, with apps' panels
 //! (`summary.annotate`) beside it.
 //!
-//! The project's … menu opens it (`keys.project_summary`). A project whose terminals have all
-//! closed leaves its group for a row in the sidebar's Summaries section (`ui::shelf`); clearing
-//! that row (its ✕, its menu, or Clear on the Summary) lets it go until another terminal closes
-//! in it. A pinned project keeps its group, with the Summary row under its heading.
+//! The project's … menu opens it (`keys.project_summary`), and so does its row in the sidebar's
+//! Summaries section (`ui::shelf`), there while it has records, terminals open or not. Root
+//! (terminals in no project) has one too. Clearing that row (its ✕, its menu, or Clear on the
+//! Summary) lets it go until another terminal closes there.
 use super::screen_kit::{clock, day_label, hm, now_unix, same_day, weekday_date};
 use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu, Screen};
@@ -19,13 +19,6 @@ use gpui_kit::*;
 use midna_proto::{ActorKind, AgentKind, ClosedTerminal, LinkKind, SessionKind, StatusState, SummaryListResult, SummaryPanel};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
-
-/// A project whose Summary was on screen this recently gets no Summary row when its last
-/// terminal closes: it leaves the sidebar instead, as if the row was closed.
-const SEEN_FOR: Duration = Duration::from_secs(30 * 60);
-/// How long a close waits for its record (`summary.changed`) to dismiss it (`skip`).
-const SKIP_FOR: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct SummaryPage {
@@ -39,12 +32,6 @@ pub struct SummaryPage {
     /// Projects whose Summary row was closed, with the newest record then (`app-state.json`
     /// `summary_closed`). The row comes back once a newer one closes.
     pub dismissed: HashMap<String, String>,
-    /// When each project's Summary last left the screen.
-    seen: HashMap<String, Instant>,
-    /// Projects whose last terminal just closed within `SEEN_FOR` of seeing their Summary: the
-    /// record on its way is dismissed as it arrives (`apply`), and until then they keep no row.
-    /// With when, and the newest record then.
-    skip: HashMap<String, (Instant, Option<String>)>,
     /// Sections the user folded, and sections older than a day the user opened (those start
     /// folded). By `Section::key`.
     folded: HashSet<String>,
@@ -72,77 +59,28 @@ impl SummaryPage {
         self.closed.iter().find(|c| c.project_id == pid).map(|c| c.closed_at.as_str())
     }
 
-    /// A project with no terminals keeps a Summary row in the Summaries section: it has
-    /// records, and none closed since the row was closed.
+    /// A project keeps a Summary row in the Summaries section: it has records, and none closed
+    /// since the row was closed.
     pub fn keeps(&self, pid: &str) -> bool {
-        if self.skipping(pid) {
-            return false;
-        }
         let Some(newest) = self.newest(pid) else { return false };
         let seconds = |ts: &str| midna_proto::time::parse_rfc3339(ts).unwrap_or(0);
         self.dismissed.get(pid).is_none_or(|d| seconds(newest) > seconds(d))
     }
 
-    fn skipping(&self, pid: &str) -> bool {
-        self.skip.get(pid).is_some_and(|(at, _)| at.elapsed() < SKIP_FOR)
-    }
-
-    /// `pid`'s Summary just left the screen.
-    fn saw(&mut self, pid: &str) {
-        self.seen.insert(pid.to_string(), Instant::now());
-    }
-
-    /// `pid`'s last terminal is closing: whether it keeps a Summary row. Not when its Summary
-    /// was on screen within `SEEN_FOR`: then the record on its way is skipped.
-    fn last_closed(&mut self, pid: &str) -> bool {
-        if self.seen.get(pid).is_none_or(|at| at.elapsed() >= SEEN_FOR) {
-            return true;
-        }
-        let newest = self.newest(pid).map(str::to_string);
-        self.skip.insert(pid.to_string(), (Instant::now(), newest));
-        false
-    }
-
-    /// Skipped projects whose record turned up: dismiss it, as closing their row would.
-    /// Whether any was (`dismissed` changed).
-    fn dismiss_skipped(&mut self) -> bool {
-        self.skip.retain(|_, (at, _)| at.elapsed() < SKIP_FOR);
-        let arrived: Vec<(String, String)> = self
-            .skip
-            .iter()
-            .filter_map(|(p, (_, before))| self.newest(p).filter(|n| before.as_deref() != Some(*n)).map(|n| (p.clone(), n.to_string())))
-            .collect();
-        for (pid, newest) in &arrived {
-            self.skip.remove(pid);
-            self.dismissed.insert(pid.clone(), newest.clone());
-        }
-        !arrived.is_empty()
-    }
 }
 
 /// ⌘W is closing `ids`, still in `m.sessions`: the projects they leave with no terminals, and
-/// whether each keeps a Summary row (its record is on its way). One whose
-/// Summary was on screen in the last 30 minutes doesn't: it goes, its record dismissed. The
-/// project whose Summary is on screen counts as seen; its row is already there, so it's left
-/// out (it goes when its Summary does, `moved`).
-pub fn closing(m: &mut MainWindow, ids: &[String]) -> Vec<(String, bool)> {
+/// whether each gets a new Summary row (its record is on its way), which it doesn't when its row
+/// is already there.
+pub fn closing(m: &MainWindow, ids: &[String]) -> Vec<(String, bool)> {
     let emptied: Vec<String> = m
         .groups()
         .iter()
         .filter(|g| !g.sessions.is_empty() && g.sessions.iter().all(|s| ids.contains(&s.id)))
         .filter_map(|g| g.project.map(|p| p.id.clone()))
         .collect();
-    let on_screen = shown(m).map(str::to_string);
-    let mut out = vec![];
-    for pid in emptied {
-        if on_screen.as_deref() == Some(pid.as_str()) {
-            m.summary.saw(&pid);
-            m.summary.last_closed(&pid);
-        } else {
-            out.push((pid.clone(), m.summary.last_closed(&pid)));
-        }
-    }
-    out
+    let shelf = crate::ui::shelf::pids(m);
+    emptied.into_iter().map(|p| (p.clone(), !shelf.contains(&p))).collect()
 }
 
 /// The project on screen, when the Summary is.
@@ -160,9 +98,6 @@ pub fn fetch(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 pub fn apply(m: &mut MainWindow, r: SummaryListResult, cx: &mut Context<MainWindow>) {
     m.summary.closed = r.closed;
     m.summary.keep_days = r.keep_days;
-    if m.summary.dismiss_skipped() {
-        crate::ui::statusbar::save_state(m);
-    }
     if m.summary.sel.as_ref().is_some_and(|s| !m.summary.closed.iter().any(|c| &c.id == s)) {
         m.summary.sel = None;
     }
@@ -182,9 +117,6 @@ pub fn lit_row(m: &MainWindow) -> Option<String> {
 /// and `was` is the project whose Summary was on screen. Its row glides the highlight, and folds
 /// away when it leaves the sidebar (with its whole project, when that goes too).
 pub fn moved(m: &mut MainWindow, from: Option<String>, was: Option<String>, cx: &mut Context<MainWindow>) {
-    if let Some(p) = &was {
-        m.summary.saw(p);
-    }
     // The Summaries section sits below every terminal: the pane slides that way.
     let shelf = crate::ui::shelf::pids(m);
     match (&was, shown(m)) {
@@ -234,7 +166,7 @@ pub fn open(m: &mut MainWindow, pid: String, window: &mut Window, cx: &mut Conte
 pub fn close_row(m: &mut MainWindow, pid: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
     let shelf = crate::ui::shelf::pids(m);
     let next = shelf.iter().position(|p| p == pid).and_then(|i| shelf.get(i + 1).or(i.checked_sub(1).and_then(|j| shelf.get(j)))).cloned();
-    let name = m.projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default();
+    let name = crate::ui::shelf::name(m, pid);
     let before = m.summary.dismissed.get(pid).cloned();
     if let Some(newest) = m.summary.newest(pid).map(str::to_string) {
         m.summary.dismissed.insert(pid.to_string(), newest);
@@ -564,16 +496,16 @@ pub fn ghost_page(m: &MainWindow, t: &Theme, pid: &str, cx: &mut Context<MainWin
 
 /// The page itself: `live` is the one on screen (its scroll, its stuck heading, its pick).
 fn page(m: &MainWindow, t: &Theme, pid: &str, live: bool, cx: &mut Context<MainWindow>) -> Div {
-    let project = m.projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default();
+    let project = crate::ui::shelf::name(m, pid);
     let records: Vec<&ClosedTerminal> = m.summary.records(pid).collect();
     let cur = if live { current(m) } else { records.first().map(|c| (*c).clone()) };
-    // A project with no terminals keeps a row in the sidebar for this page: Clear takes it out.
-    let clear = (!crate::ui::shelf::has_rows(m, pid)).then(|| {
+    // Its row in the Summaries section: Clear takes it out.
+    let clear = {
         let p = pid.to_string();
         super::screen_kit::btn(t, "sum-clear", "Clear")
             .tooltip(super::header::tip("Take this Summary out of the sidebar. It comes back when another terminal closes here."))
             .on_click(cx.listener(move |m, _, w, cx| close_row(m, &p, w, cx)))
-    });
+    };
     let days = match m.summary.keep_days {
         0 | 1 => "today".to_string(),
         n => format!("last {n} days"),
@@ -593,7 +525,7 @@ fn page(m: &MainWindow, t: &Theme, pid: &str, live: bool, cx: &mut Context<MainW
         .child(div().text_color(t.dim).truncate().child(project))
         .child(div().flex_1())
         .child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(days.clone()))
-        .children(clear);
+        .child(clear);
 
     let now = now_unix();
     let groups = sections(&records, now);
@@ -966,33 +898,6 @@ mod tests {
         assert!(!page.keeps("p1"));
         page.closed.insert(0, rec("p1", "2026-10-27T13:00:00Z"));
         assert!(page.keeps("p1"));
-    }
-
-    #[test]
-    fn closing_the_last_terminal_keeps_a_row_unless_the_summary_was_just_seen() {
-        let mut page = SummaryPage { closed: vec![rec("p1", "2026-10-27T12:00:00Z")], ..Default::default() };
-        assert!(page.last_closed("p1"), "never seen");
-        assert!(!page.dismiss_skipped());
-        page.saw("p1");
-        assert!(!page.last_closed("p1"), "seen just now");
-        assert!(!page.keeps("p1"), "no row while its record is on its way");
-        assert!(!page.dismiss_skipped(), "its record hasn't turned up yet");
-        page.closed.insert(0, rec("p1", "2026-10-27T13:00:00Z"));
-        assert!(page.dismiss_skipped());
-        assert_eq!(page.dismissed.get("p1").map(String::as_str), Some("2026-10-27T13:00:00Z"));
-        assert!(!page.keeps("p1"), "dismissed");
-        page.closed.insert(0, rec("p1", "2026-10-27T14:00:00Z"));
-        assert!(page.keeps("p1"), "a later close brings the row back");
-    }
-
-    #[test]
-    fn a_project_never_closed_before_skips_its_first_record_too() {
-        let mut page = SummaryPage::default();
-        page.saw("p1");
-        assert!(!page.last_closed("p1"));
-        page.closed.push(rec("p1", "2026-10-27T12:00:00Z"));
-        assert!(page.dismiss_skipped());
-        assert!(!page.keeps("p1"));
     }
 
     #[test]

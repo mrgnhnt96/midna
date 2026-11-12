@@ -4,8 +4,8 @@
 //!
 //! The record is written in `rpc::session::close_inner`, before the terminal's links are
 //! forgotten. A ⌘R replace is recorded too: the old session is gone even though a new one takes
-//! its place. Not recorded: a reset, a removed project, a background terminal, one at root (no
-//! project to show it in).
+//! its place, and so is a terminal at root (the app lists it under Root). Not recorded: a reset,
+//! a removed project, a background terminal.
 //!
 //! An app may annotate a terminal while it runs: the panel waits in `live` and moves onto the
 //! record when it closes. Everything lives in `$MIDNA_HOME/summary.json`.
@@ -36,6 +36,14 @@ struct Data {
 #[derive(Default)]
 pub struct Summary {
     data: Mutex<Option<Data>>,
+}
+
+/// A project's id from a name, path or id; root (terminals in no project) is its own.
+fn project_id(d: &Daemon, id: &str) -> Result<Id, RpcError> {
+    if id == ROOT_PROJECT_ID {
+        return Ok(ROOT_PROJECT_ID.into());
+    }
+    Ok(crate::rpc::project::resolve(d, id)?.id)
 }
 
 fn file(home: &Path) -> PathBuf {
@@ -97,7 +105,7 @@ pub fn capture(d: &Daemon, sid: &str, how: &str, by: Actor) -> Option<ClosedTerm
         return None;
     }
     let s = d.core().state.session(sid).cloned()?;
-    if s.background || s.project_id == ROOT_PROJECT_ID {
+    if s.background {
         return None;
     }
     let marks = crate::prompts::list(d, sid);
@@ -153,7 +161,7 @@ fn changed(d: &Daemon, by: Actor, project: Id, id: Option<Id>, action: &str) {
 
 /// `summary.list`.
 pub fn list(d: &Daemon, p: SummaryListParams) -> R {
-    let project = p.project_id.as_deref().map(|id| crate::rpc::project::resolve(d, id)).transpose()?.map(|p| p.id);
+    let project = p.project_id.as_deref().map(|id| project_id(d, id)).transpose()?;
     let (days, now, running) = (keep_days(d), time::now_unix(), running(d));
     let closed = d.summary.with(&d.cfg.home, |data| {
         let pruned = prune(data, days, now, &running);
@@ -165,7 +173,7 @@ pub fn list(d: &Daemon, p: SummaryListParams) -> R {
 
 /// `summary.remove`: one record, or a project's whole Summary.
 pub fn remove(d: &Daemon, ctx: &Ctx, p: SummaryRemoveParams) -> R {
-    let project = p.project_id.as_deref().map(|id| crate::rpc::project::resolve(d, id)).transpose()?.map(|p| p.id);
+    let project = p.project_id.as_deref().map(|id| project_id(d, id)).transpose()?;
     let (id, project) = match (p.id, project) {
         (Some(id), project) => (Some(id), project),
         (None, Some(project)) => (None, Some(project)),

@@ -1,8 +1,9 @@
 //! The sidebar's Summaries section (the Summaries shelf canvas,
-//! https://claude.ai/artifact/1iUQRLfUEtSGkfLSXW5Cuf): every unpinned project with no terminals
-//! that keeps its Summary (`ui::summary`) gets one row here, at the end of the list, rather than
-//! its own heading. The newest close comes first; past `CAP` rows the rest wait behind
-//! "Show N more".
+//! https://claude.ai/artifact/1iUQRLfUEtSGkfLSXW5Cuf, and option A on the root Summary canvas,
+//! https://claude.ai/artifact/1a6eDhjcZq4DKccbsH1s3X): every project that keeps its Summary
+//! (`ui::summary`) gets one row here, at the end of the list, whether or not it has terminals
+//! open, and so does Root (terminals in no project). The section shows whenever it has a row.
+//! The newest close comes first; past `CAP` rows the rest wait behind "Show N more".
 //!
 //! A row shows the project's name and when its last terminal closed. Under the pointer the age
 //! gives way to ⋯ (Open Summary, New agent, New terminal, Pin to / Unpin from sidebar, Clear Summary) and ✕
@@ -21,7 +22,11 @@ use crate::ui::close_anim::{self, Highlight};
 use crate::ui::summary;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use midna_proto::ROOT_PROJECT_ID;
 use std::time::{Duration, Instant};
+
+/// Root's row: the terminals that were in no project.
+const ROOT_NAME: &str = "Root";
 
 /// Rows shown before "Show N more".
 const CAP: usize = 5;
@@ -41,27 +46,23 @@ pub struct Undo {
     at: Instant,
 }
 
-/// Whether `pid` has terminals with rows in the sidebar (as `MainWindow::groups` counts them).
-pub fn has_rows(m: &MainWindow, pid: &str) -> bool {
-    m.sessions.iter().any(|s| s.project_id.as_deref() == Some(pid) && !s.background && m.shows(&s.id) && !crate::ui::split::is_split(m, &s.id))
+/// Everything that can have a row: each project, then Root.
+fn candidates(m: &MainWindow) -> impl Iterator<Item = (&str, &str)> {
+    m.projects.iter().map(|p| (p.id.as_str(), p.name.as_str())).chain(std::iter::once((ROOT_PROJECT_ID, ROOT_NAME)))
 }
 
-/// The section's rows, newest close first: projects that keep their Summary, and the one whose
-/// Summary is on screen.
+/// The section's rows, newest close first: projects (and Root) that keep their Summary, and
+/// the one whose Summary is on screen.
 pub fn pids(m: &MainWindow) -> Vec<String> {
     let shown = summary::shown(m);
     let secs = |p: &str| m.summary.newest(p).and_then(midna_proto::time::parse_rfc3339).unwrap_or(0);
-    let v: Vec<(i64, &str, &str)> = m
-        .projects
-        .iter()
-        .filter(|p| shown == Some(p.id.as_str()) || (!has_rows(m, &p.id) && m.summary.keeps(&p.id)))
-        .map(|p| (secs(&p.id), p.name.as_str(), p.id.as_str()))
-        .collect();
+    let v: Vec<(i64, &str, &str)> = candidates(m).filter(|(id, _)| shown == Some(*id) || m.summary.keeps(id)).map(|(id, n)| (secs(id), n, id)).collect();
     newest_first(v)
 }
 
-fn name(m: &MainWindow, pid: &str) -> String {
-    m.projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default()
+/// What a row (and its Summary) is called: the project's name, or Root.
+pub fn name(m: &MainWindow, pid: &str) -> String {
+    candidates(m).find(|(id, _)| *id == pid).map(|(_, n)| n.to_string()).unwrap_or_default()
 }
 
 /// The rows ⌥⌘↑ / ⌥⌘↓ reach: the unfolded section's (only the one on screen when folded).
@@ -348,14 +349,14 @@ fn row_menu(t: &Theme, pid: &str, pinned: bool, cx: &mut Context<MainWindow>) ->
                     m.open_session(Some(p3.clone()), None, cx);
                     cx.notify();
                 })))
-                .child(rule())
-                .child(
-                    super::sidebar::menu_item(t, "shelf-pin", if pinned { "Unpin from sidebar" } else { "Pin to sidebar" }, "", cx.listener(move |m, _, _, cx| {
+                // Root has no group to pin.
+                .when(p4 != ROOT_PROJECT_ID, |d| {
+                    d.child(rule()).child(super::sidebar::menu_item(t, "shelf-pin", if pinned { "Unpin from sidebar" } else { "Pin to sidebar" }, "", cx.listener(move |m, _, _, cx| {
                         m.menu = Menu::None;
                         m.rpc("project.update", serde_json::json!({"id": p4, "pinned": !pinned}), cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::PROJECTS, cx));
                         cx.notify();
-                    })),
-                )
+                    })))
+                })
                 .child(rule())
                 .child(super::sidebar::menu_item(t, "shelf-clear", "Clear Summary", "", cx.listener(move |m, _, w, cx| {
                     m.menu = Menu::None;
@@ -478,7 +479,7 @@ pub fn section(m: &MainWindow, t: &Theme, compact: bool, window: &mut Window, cx
     }
     let mut list = pids(m);
     // A row just cleared folds away where it was.
-    let leaving = m.projects.iter().find(|p| m.close_anim.shelf_row_leaving(&p.id).is_some() && !list.contains(&p.id)).map(|p| p.id.clone());
+    let leaving = candidates(m).map(|(id, _)| id).find(|id| m.close_anim.shelf_row_leaving(id).is_some() && !list.iter().any(|x| x == id)).map(str::to_string);
     if let Some(gone) = &leaving {
         let secs = |p: &str| m.summary.newest(p).and_then(midna_proto::time::parse_rfc3339).unwrap_or(0);
         let at = list.iter().position(|p| secs(p) < secs(gone)).unwrap_or(list.len());
