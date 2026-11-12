@@ -59,6 +59,9 @@ pub enum Run {
     /// Name and store a secret in the Keychain from the focused terminal's sheet
     /// (`terminal/secret_paste.rs`).
     AddSecret,
+    /// Open the Share picker (`ui/share.rs`): `selection` (the focused terminal's),
+    /// `clipboard`, or `message` (one you type).
+    Share { what: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +636,18 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
             .kw("secret new store keychain token api key password credential env")
             .cli("<command> | midna secret save NAME"),
     );
+    for (what, title, sub) in [
+        ("selection", "Share selection with a nearby Mac…", "sends the focused terminal's selected text to one of your paired Macs"),
+        ("clipboard", "Share clipboard with a nearby Mac…", "sends the text or link you copied to one of your paired Macs"),
+        ("message", "Send a message to a nearby Mac…", "a short note to one of your paired Macs"),
+    ] {
+        out.push(
+            Command::new(&format!("share.{what}"), CmdIcon::Run, title, Run::Share { what: what.into() })
+                .sub(sub)
+                .kw("nearby share send mac peer airdrop snippet link message paired device")
+                .cli("midna share send <name> <text>"),
+        );
+    }
     out.push(
         Command::new("notify.clear", CmdIcon::Deny, "Clear notifications", Run::Rpc { method: "notify.clear".into(), params: json!({}) })
             .sub("removes every midna notification from Notification Center")

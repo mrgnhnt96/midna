@@ -22,6 +22,8 @@ pub enum Tab {
     Failed,
     Sent,
     Other,
+    /// Shares to and from your other Macs (`inbox.list`, `ui/share.rs`), not notifications.
+    Nearby,
 }
 
 const TABS: [(Tab, &str); 6] = [(Tab::All, "All"), (Tab::Needs, "Needs you"), (Tab::Finished, "Finished"), (Tab::Failed, "Failed"), (Tab::Sent, "Sent to you"), (Tab::Other, "Other")];
@@ -127,8 +129,11 @@ pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
 pub fn opened(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     m.inbox.new_after = Some(m.inbox.read_seq);
     m.inbox.sel = None;
+    m.share.sel = None;
+    m.share.chooser = false;
     mark_read(m, cx);
     fetch(m, cx);
+    crate::ui::share::fetch(m, cx);
 }
 
 pub fn closed(m: &mut MainWindow) {
@@ -172,6 +177,9 @@ fn go_to(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut Cont
 }
 
 fn step(m: &mut MainWindow, by: isize, cx: &mut Context<MainWindow>) {
+    if m.inbox.tab == Tab::Nearby {
+        return crate::ui::share::step_inbox(m, by, cx);
+    }
     let list = shown(m);
     if list.is_empty() {
         return;
@@ -186,6 +194,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
     match ev.keystroke.key.as_str() {
         "down" | "j" => step(m, 1, cx),
         "up" | "k" => step(m, -1, cx),
+        "enter" if m.inbox.tab == Tab::Nearby => return,
         "enter" => {
             let list = shown(m);
             let Some(cur) = m.inbox.sel.and_then(|s| list.iter().copied().find(|i| i.seq == s)).or(list.first().copied()) else { return };
@@ -204,7 +213,8 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
     let m = &*m;
     let list = shown(m);
     let cur = m.inbox.sel.and_then(|s| list.iter().copied().find(|i| i.seq == s)).or(list.first().copied()).cloned();
-    let hint = if cur.as_ref().is_some_and(|c| terminal(m, c).is_some()) { "↑↓ move · ↵ go to terminal · esc back" } else { "↑↓ move · esc back" };
+    let nearby = m.inbox.tab == Tab::Nearby;
+    let hint = if !nearby && cur.as_ref().is_some_and(|c| terminal(m, c).is_some()) { "↑↓ move · ↵ go to terminal · esc back" } else { "↑↓ move · esc back" };
     let new_n = m.inbox.items.iter().filter(|i| is_new(m, i)).count();
     let subtitle = match new_n {
         0 => "Everything midna told you, newest first".to_string(),
@@ -212,8 +222,8 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
     };
 
     let mut tabs = div().flex().flex_none().flex_wrap().gap(px(4.)).px(px(14.)).py(px(8.)).border_b_1().border_color(t.line);
-    for (tab, label) in TABS {
-        let n = m.inbox.items.iter().filter(|i| tab == Tab::All || tab_of(&i.notification.category) == tab).count();
+    let counts = TABS.into_iter().map(|(tab, label)| (tab, label, m.inbox.items.iter().filter(|i| tab == Tab::All || tab_of(&i.notification.category) == tab).count()));
+    for (tab, label, n) in counts.chain([(Tab::Nearby, "Nearby", m.share.items.len())]) {
         if tab != Tab::All && n == 0 {
             continue;
         }
@@ -236,6 +246,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
                 .on_click(cx.listener(move |m, _, _, cx| {
                     m.inbox.tab = tab;
                     m.inbox.sel = None;
+                    m.share.chooser = false;
                     cx.notify();
                 })),
         );
@@ -256,7 +267,16 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
         .child(div().flex_1())
         .child(div().text_color(t.dim).text_size(px(11.5)).child(hint));
 
-    let body: AnyElement = if m.inbox.items.is_empty() {
+    let body: AnyElement = if nearby && !m.share.items.is_empty() {
+        let it = crate::ui::share::current(m).cloned();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .child(crate::ui::share::inbox_rows(m, t, cx))
+            .child(div().flex_1().min_w_0().h_full().children(it.map(|it| crate::ui::share::inbox_detail(m, t, &it, cx))))
+            .into_any_element()
+    } else if m.inbox.items.is_empty() {
         div()
             .flex_1()
             .flex()

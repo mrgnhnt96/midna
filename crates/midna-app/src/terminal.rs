@@ -2044,6 +2044,29 @@ impl TerminalView {
         });
     }
 
+    /// Share the selection with a nearby Mac: hands its text to the home window's Share
+    /// picker (`ui/share.rs`), once this window's update is over. False when nothing is selected.
+    pub fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let share = |text: String, cx: &mut Context<Self>| {
+            if !text.is_empty() {
+                cx.defer(move |cx| crate::ui::share::open_in_home(text, cx));
+            }
+        };
+        if let Some((s, e)) = self.kbd_range() {
+            share(term_edit::selected_text(&self.grid, s, e, self.is_agent()), cx);
+            return true;
+        }
+        if self.ext.selection.is_empty() {
+            return false;
+        }
+        self.call("session.selection", json!({ "id": self.session_id, "agent": self.is_agent() }), window, cx, move |_, r, _, cx| {
+            if let Some(text) = r.ok().and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string)) {
+                share(text, cx);
+            }
+        });
+        true
+    }
+
     fn to_clipboard(text: String, cx: &mut Context<Self>) {
         if text.is_empty() {
             return;
@@ -2390,6 +2413,11 @@ impl TerminalView {
                 }
             }
             "paste_secret" => return self.paste_as_secret(window, cx),
+            // the picker takes focus
+            "share" => {
+                self.share_selection(window, cx);
+                return cx.notify();
+            }
             "select_all" => self.call("session.select_all", json!({ "id": self.session_id }), window, cx, |_, _, _, _| {}),
             "clear" => self.call("session.clear", json!({ "id": self.session_id }), window, cx, |_, _, _, _| {}),
             _ => {}
@@ -2401,6 +2429,7 @@ impl TerminalView {
     fn render_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pos = self.menu?;
         let has_sel = !self.ext.selection.is_empty();
+        let can_share = has_sel || self.kbd_range().is_some();
         let clear_keys = crate::actions::label(cx, "keys.clear");
         let item = |id: &'static str, label: &'static str, keys: &str, enabled: bool, cx: &mut Context<Self>| {
             div()
@@ -2437,6 +2466,7 @@ impl TerminalView {
             .child(item("copy", "Copy", "⌘C", has_sel, cx))
             .child(item("paste", "Paste", "⌘V", true, cx))
             .child(item("paste_secret", "Paste as Secret", "⌥⌘V", true, cx))
+            .child(item("share", "Share with a Nearby Mac…", "", can_share, cx))
             .child(sep())
             .child(item("select_all", "Select All", "⌘A", true, cx))
             .child(item("clear", "Clear", &clear_keys, true, cx));

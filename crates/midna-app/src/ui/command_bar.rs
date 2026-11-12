@@ -450,6 +450,20 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                 None => m.toast("Open a terminal first to add a secret", cx),
             }
         }
+        Run::Share { what } => match what.as_str() {
+            "selection" => {
+                let split = m.split.as_ref().map(|s| s.view.clone()).filter(|v| v.read(cx).focus_handle().contains_focused(window, cx));
+                let shared = split.or_else(|| m.terminal.clone()).is_some_and(|view| view.update(cx, |t, cx| t.share_selection(window, cx)));
+                if !shared {
+                    m.toast("Select some text in a terminal first", cx);
+                }
+            }
+            "clipboard" => match cx.read_from_clipboard().and_then(|c| c.text()).filter(|t| !t.trim().is_empty()) {
+                Some(text) => crate::ui::share::open(m, text, window, cx),
+                None => m.toast("There's no text on the clipboard to share", cx),
+            },
+            _ => crate::ui::share::open_message(m, None, None, None, window, cx),
+        },
         Run::Resolve { need, resolution } => {
             m.resolve(need, resolution, cx);
             m.toast(format!("✓ {title}"), cx);

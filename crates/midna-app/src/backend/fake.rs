@@ -69,6 +69,44 @@ fn fake_peers() -> Value {
     })
 }
 
+/// `inbox.list`: shares to and from the paired Macs in `fake_peers`, newest first.
+fn fake_inbox() -> Value {
+    let fp = |c: char| c.to_string().repeat(64);
+    let item = |id: &str, dir: &str, peer: char, name: &str, payload: Value, state: &str, mins: i64, result: Option<&str>| {
+        let size = payload.get("text").or(payload.get("url")).and_then(Value::as_str).map_or(0, str::len);
+        json!({
+            "id": id, "direction": dir, "peer": fp(peer), "peer_name": name, "from": name, "size": size, "payload": payload, "state": state,
+            "sent_at": ago(mins), "decided_at": (state != "offered").then(|| ago(mins.saturating_sub(1))), "result": result,
+        })
+    };
+    let mut file = item(
+        "sh_file0006",
+        "incoming",
+        'd',
+        "Studio",
+        json!({"kind": "file", "name": "screens", "folder": true, "files": [
+            {"path": "screens/home.png", "size": 812_000, "sha256": "0".repeat(64)},
+            {"path": "screens/settings.png", "size": 640_000, "sha256": "1".repeat(64)},
+        ]}),
+        "accepted",
+        12,
+        Some("saving"),
+    );
+    file["size"] = json!(1_452_000);
+    file["transfer"] = json!({"state": "moving", "done": 1_020_000, "total": 1_452_000, "files_done": 1, "files": 2});
+    json!({
+        "items": [
+            item("sh_snip0001", "incoming", 'd', "Studio", json!({"kind": "snippet", "text": "cargo build --release\nscripts/test.sh -p midna-app", "title": "release build"}), "offered", 0, None),
+            file,
+            item("sh_msg00002", "incoming", 'd', "Studio", json!({"kind": "message", "text": "Build's green on the Studio, pushing now."}), "accepted", 25, Some("read")),
+            item("sh_link0003", "outgoing", 'e', "Sam's iMac", json!({"kind": "link", "url": "https://github.com/mrgnhnt96/midna/pull/183"}), "accepted", 60 * 3, Some("opened")),
+            item("sh_msg00004", "outgoing", 'd', "Studio", json!({"kind": "message", "text": "Can you run the smoke test there?"}), "offered", 60 * 5, None),
+            item("sh_snip0005", "incoming", 'e', "Sam's iMac", json!({"kind": "snippet", "text": "rm -rf ~/Library/Caches/midna"}), "declined", 60 * 26, None),
+        ],
+        "waiting": 1,
+    })
+}
+
 /// Local triggers for the Triggers screen: the built-in prompt-blocked status, an
 /// auto-compact one and a schedule.
 fn fake_triggers() -> Vec<midna_proto::Trigger> {
@@ -400,6 +438,22 @@ impl FakeBackend {
                 ..Default::default()
             });
         }
+        if crate::dev::var("MIDNA_FAKE_SHARE").is_ok() {
+            // dev (screenshots): a snippet from one of your Macs first in the inbox
+            needs.insert(0, NeedsYou {
+                id: "n_share01".into(),
+                kind: NeedsYouKind::Approval,
+                title: "Studio sent a snippet: release build (2 lines)".into(),
+                detail: "cargo build --release\nscripts/test.sh -p midna-app\n\nApproving keeps it in your inbox; nothing runs. To paste it into a terminal (never followed by Enter): midna inbox accept sh_snip0001 --into <terminal>\nFrom Studio, one of your Macs (device dddd dddd dddd dddd). Deny to decline it.".into(),
+                asked_by: Actor { kind: "midnad".into(), session: None, name: None },
+                created_at: ago(0),
+                approval: Some(ApprovalRequest {
+                    action: PolicyAction { kind: "cli".into(), value: "midna inbox accept sh_snip0001".into(), session: None, project: None },
+                    matched_rule: None,
+                }),
+                ..Default::default()
+            });
+        }
         for i in 0..many() {
             projects.push(p(&format!("p_many{i:03}"), &format!("busy-{i:03}"), 10 + 2 * i as u32));
             projects.push(p(&format!("p_gone{i:03}"), &format!("closed-{i:03}"), 11 + 2 * i as u32));
@@ -627,6 +681,18 @@ impl Backend for FakeBackend {
             }
             "settings.list" => serde_json::to_value(&st.settings)?,
             "peers.list" => fake_peers(),
+            "inbox.list" => fake_inbox(),
+            "share.send" => {
+                let peer = p("peer").unwrap_or_default();
+                let name = fake_peers()["paired"].as_array().into_iter().flatten().find(|x| x["fingerprint"].as_str() == Some(&peer)).and_then(|x| x["name"].as_str().map(str::to_string)).unwrap_or_default();
+                json!({ "id": "sh_sent0001", "direction": "outgoing", "peer": peer, "peer_name": name, "state": "offered", "sent_at": ago(0) })
+            }
+            "share.accept" | "share.decline" => {
+                let id = p("id").unwrap_or_default();
+                let mut it = fake_inbox()["items"].as_array().into_iter().flatten().find(|x| x["id"].as_str() == Some(&id)).cloned().unwrap_or(json!({ "id": id }));
+                it["state"] = json!(if method == "share.accept" { "accepted" } else { "declined" });
+                it
+            }
             "notify.media" => {
                 // The repo's copies of midna's own sounds, so previews play in dev.
                 let twilight = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../midnad/assets/sounds/twilight");
