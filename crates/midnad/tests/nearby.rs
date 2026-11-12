@@ -12,11 +12,15 @@
 //! waits in the receiver's inbox (kept across restarts) until a human there accepts or declines
 //! it, agents can't, a snippet is pasted only into the terminal the human picks and never with
 //! Enter, and the answer reaches the sender.
+//!
+//! The guard: what an agent sends leaves only with the human's OK (an approval, or a rule the
+//! human gave; an agent's own allow doesn't count), and an agent asking to confirm a pairing or
+//! take a share is pointed at the needs-you item that waits for the human.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
 use midna_proto::nearby as nb;
-use midna_proto::{Client, kinds};
+use midna_proto::{Client, ClientError, RpcError, kinds};
 use midnad::nearby::identity::{self, Identity};
 use midnad::nearby::transport::{self, Channel, Local, Wire};
 use midnad::nearby::{Mode, Setup, dnssd, pairing};
@@ -255,7 +259,10 @@ fn both_screens_show_the_code_and_only_the_human_confirms() {
 
     // Agents can't confirm: not by the method, not by approving the item.
     let mut agent_b = b.agent(None);
-    assert_eq!(call_err(&mut agent, "peers.confirm", json!({ "pairing": mine["id"] })).code, HUMAN_ONLY);
+    let e = call_err(&mut agent, "peers.confirm", json!({ "pairing": mine["id"] }));
+    let on_a = approval(&mut ha, &mine);
+    assert_eq!((e.code, waits_on(&e)), (HUMAN_ONLY, on_a["id"].as_str().map(str::to_string)), "{}", e.message);
+    assert!(e.message.contains(on_a["id"].as_str().unwrap()), "{}", e.message);
     let res = json!({ "id": item["id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
     assert_eq!(call_err(&mut agent_b, "needs_you.resolve", res.clone()).code, HUMAN_ONLY);
     assert_eq!(pairings(&mut ha)[0]["confirmed"], false);
@@ -481,6 +488,11 @@ fn share_events(c: &mut Client, kind: &str, id: &str) -> Vec<Value> {
     events(c, kind).into_iter().filter(|e| e["data"]["id"] == id).collect()
 }
 
+/// The needs-you item a refusal points at.
+fn waits_on(e: &RpcError) -> Option<String> {
+    e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).map(str::to_string)
+}
+
 /// Two paired daemons that see each other.
 fn paired_pair(svc: &str) -> (TestDaemon, TestDaemon, String, String) {
     let (a, b, fa, fb) = alpha_bravo(svc);
@@ -514,9 +526,8 @@ fn a_share_lands_in_the_inbox_and_only_the_human_takes_it() {
         assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
     }
 
-    // An agent may send (the guard on that is another task's); B gets an offer and an approval.
-    let mut agent = a.agent(None);
-    let sent = send(&mut agent, &fb, json!({ "kind": "message", "text": "lunch?" }));
+    // The human sends; B gets an offer and an approval.
+    let sent = send(&mut ha, &fb, json!({ "kind": "message", "text": "lunch?" }));
     let id = sent["id"].as_str().unwrap().to_string();
     assert_eq!((sent["direction"].as_str(), sent["state"].as_str(), sent["peer_name"].as_str()), (Some("outgoing"), Some("offered"), Some("Bravo")), "{sent}");
     let got = share(&mut hb, &id).expect("B has the share as soon as send returns");
@@ -532,8 +543,11 @@ fn a_share_lands_in_the_inbox_and_only_the_human_takes_it() {
     // Agents on B can't accept or decline it, not by the methods and not by the approval.
     let mut agent_b = b.agent(None);
     for m in ["share.accept", "share.decline"] {
-        assert_eq!(call_err(&mut agent_b, m, json!({ "id": id })).code, HUMAN_ONLY, "{m}");
+        let e = call_err(&mut agent_b, m, json!({ "id": id }));
+        assert_eq!((e.code, waits_on(&e)), (HUMAN_ONLY, Some(ny.clone())), "{m}: {}", e.message);
     }
+    let e = call_err(&mut agent_b, "share.accept", json!({ "id": "sh_nothere1" }));
+    assert_eq!((e.code, waits_on(&e)), (HUMAN_ONLY, None), "{}", e.message);
     let approve = json!({ "id": ny, "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
     assert_eq!(call_err(&mut agent_b, "needs_you.resolve", approve.clone()).code, HUMAN_ONLY);
     assert_eq!(share(&mut hb, &id).unwrap()["state"], "offered");
@@ -652,4 +666,95 @@ fn a_paired_device_cant_slip_a_bad_share_past_the_checks() {
     assert_eq!(again, Wire::ShareAck { id: "sh_good1234".into() });
     assert_eq!(inbox(&mut hb)["items"].as_array().unwrap().len(), 1);
     assert_eq!(events(&mut hb, kinds::SHARE_OFFERED).len(), 1);
+}
+
+/// The open approvals for agents' shares.
+fn share_asks(c: &mut Client) -> Vec<Value> {
+    let items = call(c, "needs_you.list", json!({}));
+    items.as_array().unwrap().iter().filter(|n| n["approval"]["action"]["value"].as_str().is_some_and(|v| v.starts_with("share send "))).cloned().collect()
+}
+
+fn answer(c: &mut Client, item: &Value, resolution: Value) {
+    call(c, "needs_you.resolve", json!({ "id": item["id"], "resolution": resolution }));
+}
+
+fn refused(r: Result<Value, ClientError>) -> RpcError {
+    match r {
+        Err(ClientError::Rpc(e)) => e,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// Texts B has received.
+fn received(c: &mut Client) -> Vec<String> {
+    inbox(c)["items"].as_array().unwrap().iter().filter(|s| s["direction"] == "incoming").filter_map(|s| s["payload"]["text"].as_str().map(str::to_string)).collect()
+}
+
+#[test]
+fn an_agents_share_leaves_only_with_the_humans_ok() {
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb, mut agent) = (a.human(), b.human(), a.agent(None));
+    let in_background = |kind: &str, text: &str| {
+        let mut c = a.agent(None);
+        let p = json!({ "peer": fb, "kind": kind, "text": text });
+        std::thread::spawn(move || c.call_value("share.send", p))
+    };
+
+    // The human's own sends don't ask.
+    send(&mut ha, &fb, json!({ "kind": "message", "text": "from the human" }));
+    assert!(share_asks(&mut ha).is_empty());
+
+    // An agent's send waits for the human, who sees what would leave and where; denying keeps it here.
+    let t = in_background("message", "the secret plans");
+    let item = wait_for(10, "A asks", || share_asks(&mut ha).into_iter().next());
+    assert_eq!(item["approval"]["action"]["value"], format!("share send message {fb}"));
+    assert!(item["title"].as_str().unwrap().contains("Bravo"), "{item}");
+    assert!(item["detail"].as_str().unwrap().contains("the secret plans"), "{item}");
+    assert!(received(&mut hb).iter().all(|t| t != "the secret plans"), "nothing left before the answer");
+    answer(&mut ha, &item, json!({ "kind": "deny" }));
+    let e = refused(t.join().unwrap());
+    assert_eq!((e.code, waits_on(&e)), (midna_proto::error::REFUSED, item["id"].as_str().map(str::to_string)), "{}", e.message);
+    assert!(!received(&mut hb).contains(&"the secret plans".to_string()));
+
+    // An agent's own allow rule doesn't let it through; approving once does, for that share only.
+    call(&mut agent, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": "share send*" } }));
+    let t = in_background("message", "approved once");
+    let item = wait_for(10, "A asks despite the agent's rule", || share_asks(&mut ha).into_iter().next());
+    answer(&mut ha, &item, json!({ "kind": "approve", "scope": { "kind": "once" } }));
+    let sent = t.join().unwrap().expect("sent once approved");
+    assert!(share(&mut hb, sent["id"].as_str().unwrap()).is_some(), "B has it");
+
+    // Approving "always" lets agents send this device this kind without asking again; another kind still asks.
+    let t = in_background("message", "first");
+    let item = wait_for(10, "A asks", || share_asks(&mut ha).into_iter().next());
+    answer(&mut ha, &item, json!({ "kind": "approve", "scope": { "kind": "always" } }));
+    t.join().unwrap().expect("sent");
+    send(&mut agent, &fb, json!({ "kind": "message", "text": "second" }));
+    assert!(share_asks(&mut ha).is_empty());
+    let t = in_background("snippet", "rm -rf ~");
+    let item = wait_for(10, "a snippet still asks", || share_asks(&mut ha).into_iter().next());
+    assert_eq!(item["approval"]["action"]["value"], format!("share send snippet {fb}"));
+    answer(&mut ha, &item, json!({ "kind": "deny" }));
+    refused(t.join().unwrap());
+    let got = received(&mut hb);
+    assert!(got.contains(&"second".to_string()) && !got.contains(&"rm -rf ~".to_string()), "{got:?}");
+
+    // No answer in time: nothing is sent.
+    call(&mut ha, "settings.set", json!({ "key": "policy.request_timeout_secs", "value": 1 }));
+    let e = call_err(&mut agent, "share.send", json!({ "peer": fb, "kind": "snippet", "text": "late" }));
+    assert!(e.code == midna_proto::error::REFUSED && e.message.contains("no answer"), "{}", e.message);
+    assert!(!received(&mut hb).contains(&"late".to_string()));
+
+    // A deny (anyone may add one) beats the human's "always", without asking.
+    call(&mut agent, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "cli", "pattern": "share send message*" } }));
+    let e = call_err(&mut agent, "share.send", json!({ "peer": fb, "kind": "message", "text": "third" }));
+    assert!(e.code == midna_proto::error::REFUSED && e.message.contains("denied by rule"), "{}", e.message);
+    assert!(share_asks(&mut ha).is_empty());
+
+    // A device that isn't paired is refused before anyone is asked.
+    let e = call_err(&mut agent, "share.send", json!({ "peer": "ab".repeat(32), "kind": "snippet", "text": "x" }));
+    assert!(e.code == midna_proto::error::REFUSED && e.message.contains("isn't paired"), "{}", e.message);
+    assert!(share_asks(&mut ha).is_empty());
+    assert!(!received(&mut hb).contains(&"third".to_string()));
 }

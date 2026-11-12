@@ -547,6 +547,7 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
     for verb in ["accept", "decline"] {
         let o = midna(&s, &["inbox", verb, "sh_abcdabcd"], None, None);
         assert_eq!(code(&o), 1, "{verb}: {o:?}");
+        assert!(err(&o).contains("human only") && err(&o).contains("can't accept or decline"), "{verb}: {}", err(&o));
     }
     // The peer has to be paired; flags and text are checked before anything is sent.
     let o = midna(&s, &["share", "send", "Bravo", "hi"], None, None);

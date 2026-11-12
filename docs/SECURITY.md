@@ -64,6 +64,8 @@ The audit entry and the `session.input_by_agent` event carry the matched entry a
 - `trigger.set_enabled`, `trigger.remove` (enabled triggers), and `trigger.update` (back to draft)
 - `session.close` / `restart` (policy-gated)
 - `window.command` (`agents.may_move_windows`)
+- `share.send` (Nearby): anything an agent sends to another device is checked as the `cli` action `share send <kind> <device id>` (`nearby::guard`). With no rule it asks the human, whatever `policy.default` says; the approval shows the text or link and the device. Only an allow the human gave (approving "always", or a rule added in the app) lets it through without asking. An agent may add rules, so its own allow never counts; its deny or ask does. The device must be paired and nearby before anyone is asked. **Test:** `nearby::an_agents_share_leaves_only_with_the_humans_ok`
+- `peers.confirm`, `share.accept`, `share.decline` (Nearby): refused outright, never deferred; the refusal names the needs-you approval the pairing or incoming share already raised (`needs_you_id`), and agents can't approve that item either (it is deferred). **Test:** `nearby::a_share_lands_in_the_inbox_and_only_the_human_takes_it`
 
 **Fixes:**
 

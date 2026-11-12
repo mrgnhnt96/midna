@@ -495,19 +495,10 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     if method == "rule.remove" {
         return RpcError::human_only("rule.remove is human only; use rule.request_removal to ask the human");
     }
-    if method == "peers.confirm" {
-        // The pairing raised its own approval; deferring would let an approval stand in for
-        // comparing the codes.
-        return RpcError::human_only(
-            "peers.confirm is human only: the human compares the codes on both Macs and confirms (each pairing raises a needs-you approval)",
-        );
-    }
-    if method == "share.accept" || method == "share.decline" {
-        // What another device sent is the human's to take: each incoming share already raised
-        // its own approval, and an agent's request to accept one would only be a second.
-        return RpcError::human_only(format!(
-            "{method} is human only: agents can't accept or decline what other devices send (each incoming share has a needs-you approval for the human)"
-        ));
+    // A pairing and an incoming share each raised their own approval; deferring would add a
+    // second one, and approving it would stand in for comparing the codes.
+    if let Some(e) = crate::nearby::guard::refusal(d, method, params) {
+        return e;
     }
     let cli = format!("{method} {}", summarize(method, params));
     defer_to_human(d, ctx, &format!("Agent asks to run {method}"), &cli, method, params)

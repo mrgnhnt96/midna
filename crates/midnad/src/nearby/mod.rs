@@ -22,6 +22,7 @@
 //! picks another (or `off`), and in-process daemons (tests) have Nearby off unless the test turns
 //! it on with a service of its own.
 pub mod dnssd;
+pub mod guard;
 pub mod identity;
 pub mod link;
 pub mod pairing;

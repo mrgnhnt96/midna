@@ -205,6 +205,14 @@ pub fn evaluate(rules: &[Rule], a: &PolicyAction, now: i64, default_setting: &st
     }
 }
 
+/// [`evaluate`] for an agent sending something off this Mac: only an allow the human gave
+/// counts (agents may add rules, so an agent's own allow would let it send anything), and with
+/// no rule it asks, whatever `policy.default` says. An agent's deny or ask still applies.
+pub fn evaluate_off_machine(rules: &[Rule], a: &PolicyAction, now: i64) -> CheckResult {
+    let kept: Vec<Rule> = rules.iter().filter(|r| r.effect != Effect::Allow || r.added_by.kind == ActorKind::Human).cloned().collect();
+    evaluate(&kept, a, now, "ask")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +283,23 @@ mod tests {
         assert!(!launch_allows(&args(&["mcp__claude_ai_Slack__slack_send"]), slack));
         assert!(!launch_allows(&args(&["Bash(git status:*)"]), "Bash(git status)"));
         assert!(!launch_allows(&args(&["Bash"]), slack));
+    }
+
+    #[test]
+    fn off_machine_needs_the_humans_allow() {
+        let a = PolicyAction { kind: ActionKind::Cli, value: "share send message ab12".into(), session: None, project: Some("p_1".into()) };
+        let now = time::now_unix();
+        let cli = |id: &str, effect: Effect, by: Actor| Rule { matcher: Matcher { kind: ActionKind::Cli, pattern: "share send*".into() }, added_by: by, ..rule(id, effect, "", RuleScope::Global) };
+        // No rule: ask, even when policy.default would allow.
+        let r = evaluate_off_machine(&[], &a, now);
+        assert_eq!((r.decision, r.source), (Effect::Ask, DecisionSource::Default));
+        assert_eq!(evaluate(&[], &a, now, "allow").decision, Effect::Allow);
+        // An agent's allow doesn't count; the human's does.
+        assert_eq!(evaluate_off_machine(&[cli("r_agent", Effect::Allow, Actor::agent(None))], &a, now).decision, Effect::Ask);
+        assert_eq!(evaluate_off_machine(&[cli("r_human", Effect::Allow, Actor::human())], &a, now).decision, Effect::Allow);
+        // An agent may still make it stricter.
+        let rules = [cli("r_human", Effect::Allow, Actor::human()), cli("r_deny", Effect::Deny, Actor::agent(None))];
+        assert_eq!(evaluate_off_machine(&rules, &a, now).decision, Effect::Deny);
     }
 
     #[test]
