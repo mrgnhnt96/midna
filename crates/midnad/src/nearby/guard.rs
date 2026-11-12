@@ -65,6 +65,7 @@ pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(
                 (format!("Send {name} the file “{shown}”?"), format!("{shown} ({size})"))
             }
         }
+        SharePayload::Tab { title, .. } => (format!("Send {name} the terminal tab {title}?"), super::tab::describe(payload, SHOWN)),
     };
     let value = send_value(payload, fp);
     let detail = format!(

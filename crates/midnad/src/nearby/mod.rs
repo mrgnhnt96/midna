@@ -27,6 +27,7 @@ pub mod identity;
 pub mod link;
 pub mod pairing;
 pub mod share;
+pub mod tab;
 pub mod store;
 pub mod transfer;
 pub mod transport;

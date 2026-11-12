@@ -21,6 +21,10 @@
 //! fetches the files in chunks with `share.progress`, picks up where it stopped after the sender
 //! drops out, and lands them (folders with their tree) in `nearby.downloads`; a file that changed
 //! fails cleanly, and offers or fetches that reach outside their folder or share are refused.
+//!
+//! Tabs (`share.send` kind tab): the receiver opens a new shell in its own checkout of the
+//! sender's repo (or the folder the human picks, or home), the sender's scrollback shown above
+//! it and nothing of theirs run; a tab whose scrollback carries control sequences is refused.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
@@ -1044,4 +1048,133 @@ fn a_peer_cant_reach_outside_the_folder_or_its_own_shares() {
     assert!(matches!(done, Wire::ShareAck { .. }));
     assert!(share(&mut hb, "sh_colon0001").unwrap()["transfer"].is_null());
     assert!(!dl.exists());
+}
+
+// ---- tabs ----
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A checkout of `remote` at `dir`, with a `src` folder in it.
+fn checkout(dir: &std::path::Path, remote: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    git(dir, &["init", "-q"]);
+    git(dir, &["remote", "add", "origin", remote]);
+    std::fs::canonicalize(dir).unwrap()
+}
+
+/// The terminal a tab share's result names (`opened as t_… in …`).
+fn opened(result: &Value) -> String {
+    let r = result["result"].as_str().unwrap();
+    r.strip_prefix("opened as ").and_then(|r| r.split(' ').next()).unwrap_or_else(|| panic!("{result}")).to_string()
+}
+
+#[test]
+fn a_tab_opens_in_the_receivers_checkout_with_its_scrollback_and_nothing_runs() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let _ = fa;
+
+    // A's terminal sits in src of its checkout, cloned over ssh; B has the same repo, cloned
+    // over https, as a project somewhere else.
+    let theirs = checkout(&a.home.join("w/widget"), "git@github.com:Acme/widget.git");
+    let ours = checkout(&b.home.join("code/widget-clone"), "https://github.com/acme/widget");
+    let pid = call(&mut hb, "project.add", json!({ "path": ours, "name": "widget" }))["id"].as_str().unwrap().to_string();
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": theirs.join("src"), "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    call(&mut ha, "session.input", json!({ "id": t, "text": "echo tab-$((6*7))-marker; touch ran-here", "enter": true }));
+    wait_for(10, "A's terminal shows the marker", || read(&mut ha, &t).contains("tab-42-marker").then_some(()));
+
+    // Kinds that aren't tabs can't name a terminal; a tab can't carry text.
+    for bad in [json!({ "kind": "message", "text": "hi", "session": t }), json!({ "kind": "tab", "text": "hi", "session": t })] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+
+    let sent = send(&mut ha, &fb, json!({ "kind": "tab", "session": t, "title": "widget api" }));
+    let id = sent["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    let p = &got["payload"];
+    assert_eq!((p["kind"].as_str(), p["title"].as_str(), p["shell"].as_str()), (Some("tab"), Some("widget api"), Some("sh")), "{got}");
+    assert_eq!((p["project"]["remote"].as_str(), p["project"]["path"].as_str()), (Some("github.com/acme/widget"), Some("src")), "{got}");
+    assert!(p["scrollback"].as_str().unwrap().contains("tab-42-marker"), "{got}");
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    let detail = ny["item"]["detail"].as_str().unwrap();
+    assert!(ny["item"]["title"].as_str().unwrap().contains("widget api"), "{ny}");
+    assert!(detail.contains(&format!("It opens in {} (project widget)", ours.join("src").display())), "{detail}");
+
+    // An agent on B can't take it; the human's approval opens a new tab in B's checkout.
+    assert_eq!(call_err(&mut b.agent(None), "share.accept", json!({ "id": id })).code, HUMAN_ONLY);
+    let before = call(&mut hb, "session.list", json!({})).as_array().map_or(0, Vec::len);
+    let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    call(&mut hb, "needs_you.resolve", approve);
+    let done = wait_for(10, "accepted", || share(&mut hb, &id).filter(|s| s["state"] == "accepted"));
+    let sid = opened(&done);
+    let s = call(&mut hb, "session.get", json!({ "id": sid }));
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str(), s["name"].as_str()), (ours.join("src").to_str(), Some(pid.as_str()), Some("widget api")), "{s}");
+    assert_eq!(s["kind"], "shell");
+    let shown = read(&mut hb, &sid);
+    assert!(shown.contains("sent from Alpha") && shown.contains("tab-42-marker"), "{shown}");
+    assert_eq!(call(&mut hb, "session.list", json!({})).as_array().map_or(0, Vec::len), before + 1);
+    stays(1, "nothing from A's terminal ran on B", || !ours.join("src/ran-here").exists());
+    wait_for(20, "A hears B accepted", || share(&mut ha, &id).filter(|s| s["state"] == "accepted"));
+
+    // A repo B doesn't have opens in home with the scrollback; the human can pick the folder.
+    let other = checkout(&a.home.join("w/gadget"), "https://github.com/acme/gadget.git");
+    let t2 = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": other, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    call(&mut ha, "session.input", json!({ "id": t2, "text": "echo gadget-$((2+3))", "enter": true }));
+    wait_for(10, "A's second terminal", || read(&mut ha, &t2).contains("gadget-5").then_some(()));
+    let unknown = send(&mut ha, &fb, json!({ "kind": "tab", "session": t2 }))["id"].as_str().unwrap().to_string();
+    let ny = share(&mut hb, &unknown).unwrap()["needs_you_id"].clone();
+    let item = call(&mut hb, "needs_you.get", json!({ "id": ny }));
+    assert!(item["item"]["detail"].as_str().unwrap().contains("github.com/acme/gadget isn't checked out"), "{item}");
+    let e = call_err(&mut hb, "share.accept", json!({ "id": unknown, "cwd": "relative/dir" }));
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
+    let e = call_err(&mut hb, "share.accept", json!({ "id": unknown, "session": sid }));
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
+    let picked = std::fs::canonicalize(b.home.join("code")).unwrap();
+    let r = call(&mut hb, "share.accept", json!({ "id": unknown, "cwd": picked }));
+    let s2 = call(&mut hb, "session.get", json!({ "id": opened(&r) }));
+    assert_eq!(s2["cwd"].as_str(), picked.to_str(), "{s2}");
+    wait_for(10, "the scrollback shows", || read(&mut hb, &opened(&r)).contains("gadget-5").then_some(()));
+    let home = send(&mut ha, &fb, json!({ "kind": "tab", "session": t2 }))["id"].as_str().unwrap().to_string();
+    let r = call(&mut hb, "share.accept", json!({ "id": home }));
+    assert!(r["result"].as_str().unwrap().contains("home folder"), "{r}");
+    assert_eq!(call(&mut hb, "session.get", json!({ "id": opened(&r) }))["project_id"], midna_proto::ROOT_PROJECT_ID);
+
+    // `cwd` is for tabs only.
+    let m = send(&mut ha, &fb, json!({ "kind": "message", "text": "hi" }))["id"].as_str().unwrap().to_string();
+    assert_eq!(call_err(&mut hb, "share.accept", json!({ "id": m, "cwd": picked })).code, midna_proto::error::BAD_PARAMS);
+}
+
+#[test]
+fn a_tab_whose_scrollback_could_drive_the_terminal_is_refused() {
+    let svc = service();
+    let (a, b, _fa, _fb) = paired_pair(&svc);
+    let mut hb = b.human();
+    let a_key = identity::load_or_create(&a.home);
+    let mut ch = transport::connect(&addr(port(&mut hb)), &Local::new(&a_key)).unwrap();
+    let tab = |scrollback: &str, cwd: &str, remote: &str| {
+        json!({ "kind": "tab", "title": "t", "cwd": cwd, "shell": "zsh", "scrollback": scrollback,
+                "project": { "remote": remote, "path": "src" } })
+    };
+    for (n, payload) in [
+        tab("ok\x1b[6n", "/w", "github.com/a/b"),
+        tab("ok\x1b]52;c;cm0gLXJmIC8=\x07", "/w", "github.com/a/b"),
+        tab("ok", "relative", "github.com/a/b"),
+        tab("ok", "/w", "github.com/a/b\nx"),
+        tab(&"x".repeat(nb::MAX_SCROLLBACK + 1), "/w", "github.com/a/b"),
+        json!({ "kind": "tab", "title": "t", "cwd": "/w", "scrollback": "", "project": { "remote": "github.com/a/b", "path": "../.." } }),
+        json!({ "kind": "tab", "title": "t", "cwd": "/w", "shell": "/bin/rm", "scrollback": "" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let got = ask(&mut ch, &Wire::ShareOffer { id: format!("sh_badtab{n:02}"), payload: payload.clone() });
+        assert!(matches!(got, Wire::Refused { .. }), "{payload}: {got:?}");
+    }
+    assert!(inbox(&mut hb)["items"].as_array().unwrap().is_empty());
 }

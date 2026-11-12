@@ -379,9 +379,16 @@ pub const MAX_PATH: usize = 1024;
 pub const MAX_NAME: usize = 255;
 /// … how deep a folder's tree goes.
 pub const MAX_DEPTH: usize = 64;
+/// … a tab's scrollback snapshot (its newest lines are kept).
+pub const MAX_SCROLLBACK: usize = 256 * 1024;
+/// … a tab's directory, or its path inside its repo.
+pub const MAX_DIR: usize = 4096;
+/// … the name of a tab's shell.
+pub const MAX_SHELL: usize = 64;
 
 /// What a share carries. Nothing in it ever runs: it is data until the receiving person
-/// accepts it, and even then a snippet is pasted (never submitted) and a link opened or pinned.
+/// accepts it, and even then a snippet is pasted (never submitted), a link opened or pinned, and
+/// a tab opened as a fresh shell under the sender's scrollback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SharePayload {
@@ -420,6 +427,67 @@ pub enum SharePayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dirs: Vec<String>,
     },
+    /// A terminal tab: where it was and what it showed, never its processes or environment.
+    /// The receiver opens a new idle shell in its own checkout of the same project (or where its
+    /// person says), with this scrollback shown read-only above it.
+    Tab {
+        /// The terminal's name on the sending Mac.
+        title: String,
+        /// The git repo it was in, when it had a remote. None: `cwd` is all there is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<TabProject>,
+        /// Its directory on the sending Mac (absolute).
+        cwd: String,
+        /// The shell's program name (`zsh`), when it was a shell. Display only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
+        /// Its scrollback and screen as plain text (no escape sequences), the newest
+        /// [`MAX_SCROLLBACK`] bytes.
+        scrollback: String,
+    },
+}
+
+/// Which project a tab was in, the same on every Mac that has a checkout of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TabProject {
+    /// The repo's remote (`origin`, else its first), as [`remote_key`] gives it: host and path,
+    /// no scheme, user or password (`github.com/acme/widget`).
+    pub remote: String,
+    /// Where the tab was inside the repo: relative, `/`-separated, empty at its top.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+}
+
+/// A git remote URL as a key two checkouts of one repo share, whichever URL each cloned:
+/// `git@github.com:acme/widget.git`, `https://me:token@github.com/acme/widget` and
+/// `ssh://git@github.com:22/acme/widget/` all give `github.com/acme/widget`. A credential in the
+/// URL never survives. Lowercase. None for an empty URL.
+pub fn remote_key(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (host, path) = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+            let host = match host.rsplit_once(':') {
+                Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+                _ => host,
+            };
+            if scheme == "file" { ("", rest) } else { (host, path) }
+        }
+        // scp-like `user@host:path` (a `:` before any `/`); anything else is a local path.
+        None => match url.split_once(':') {
+            Some((auth, path)) if !auth.contains('/') && !auth.is_empty() => (auth.rsplit_once('@').map_or(auth, |(_, h)| h), path),
+            _ => ("", url),
+        },
+    };
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
+    let key = if host.is_empty() { format!("/{path}") } else { format!("{host}/{path}") };
+    (!key.trim_matches('/').is_empty()).then(|| key.to_lowercase())
+}
+
+fn plain(s: &str) -> bool {
+    !s.chars().any(|c| c.is_control())
 }
 
 /// One file in a file share.
@@ -526,15 +594,17 @@ impl SharePayload {
             SharePayload::Snippet { .. } => ShareKind::Snippet,
             SharePayload::Link { .. } => ShareKind::Link,
             SharePayload::File { .. } => ShareKind::File,
+            SharePayload::Tab { .. } => ShareKind::Tab,
         }
     }
 
-    /// Its size in bytes (the text, the URL, or every file's contents).
+    /// Its size in bytes (the text, the URL, every file's contents or the scrollback).
     pub fn size(&self) -> u64 {
         match self {
             SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.len() as u64,
             SharePayload::Link { url, .. } => url.len() as u64,
             SharePayload::File { files, .. } => files.iter().fold(0u64, |n, f| n.saturating_add(f.size)),
+            SharePayload::Tab { scrollback, .. } => scrollback.len() as u64,
         }
     }
 
@@ -577,6 +647,32 @@ impl SharePayload {
                 }
             }
             SharePayload::File { name, folder, files, dirs } => check_files(name, *folder, files, dirs)?,
+            SharePayload::Tab { title, project, cwd, shell, scrollback } => {
+                if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
+                    return Err(format!("a tab's title is one line of at most {MAX_TITLE} bytes"));
+                }
+                if !cwd.starts_with('/') || cwd.len() > MAX_DIR || !plain(cwd) {
+                    return Err("a tab's directory must be an absolute path".into());
+                }
+                if shell.as_ref().is_some_and(|s| s.is_empty() || s.len() > MAX_SHELL || s.contains('/') || !plain(s)) {
+                    return Err("a tab's shell is a program name".into());
+                }
+                if let Some(TabProject { remote, path }) = project {
+                    if remote.is_empty() || remote.len() > MAX_URL || remote.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                        return Err("a tab's project needs its remote".into());
+                    }
+                    let bad_part = |p: &str| p.is_empty() || p == "." || p == "..";
+                    if path.len() > MAX_DIR || !plain(path) || (!path.is_empty() && path.split('/').any(bad_part)) {
+                        return Err("a tab's path in its repo must be relative, without . or .. parts".into());
+                    }
+                }
+                if scrollback.len() > MAX_SCROLLBACK {
+                    return Err(format!("a tab's scrollback may be at most {} KiB", MAX_SCROLLBACK / 1024));
+                }
+                if scrollback.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+                    return Err("a tab's scrollback is plain text".into());
+                }
+            }
         }
         Ok(())
     }
@@ -595,6 +691,8 @@ pub enum ShareKind {
     Link,
     /// A file, an image or a folder.
     File,
+    /// A terminal tab (`session`): its project, directory and scrollback.
+    Tab,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -637,7 +735,8 @@ pub struct ShareItem {
     pub sent_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<Timestamp>,
-    /// What accepting did on this Mac: `pasted into t_…`, `opened`, `pinned to t_…`, `read`.
+    /// What accepting did on this Mac: `pasted into t_…`, `opened`, `pinned to t_…`, `read`,
+    /// `opened as t_… in <dir>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
     /// Incoming and still offered: the needs-you approval that asks this Mac's person.
@@ -713,6 +812,10 @@ pub struct ShareSendParams {
     /// A file: the absolute path of the file or folder to send. midnad reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// A tab only: the terminal to send (default the caller's). midnad reads its project,
+    /// directory and scrollback; `title` names it instead of the terminal's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl ShareSendParams {
@@ -728,6 +831,9 @@ impl ShareSendParams {
         }
         if self.path.is_some() != (self.kind == ShareKind::File) {
             return Err(if self.path.is_some() { "only a file has a `path`".into() } else { "a file needs `path`".into() });
+        }
+        if self.session.is_some() && self.kind != ShareKind::Tab {
+            return Err("only a tab takes a `session`".into());
         }
         let p = match self.kind {
             ShareKind::Message => {
@@ -745,6 +851,7 @@ impl ShareSendParams {
                 SharePayload::Link { url, title }
             }
             ShareKind::File => return Err("a file share is read from `path` by midnad".into()),
+            ShareKind::Tab => return Err("a tab is read from its terminal by midnad".into()),
         };
         p.check()?;
         Ok(p)
@@ -774,6 +881,9 @@ pub struct ShareAcceptParams {
     /// A link: open it (default) or pin it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ShareLinkAction>,
+    /// A tab: open it in this folder on this Mac instead of where its project maps to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// `share.decline` (human only).
@@ -834,6 +944,45 @@ mod tests {
             assert!(send(bad.clone()).is_err(), "{bad}");
         }
         assert!(valid_share_id("sh_0a1b2c3d") && !valid_share_id("sh_") && !valid_share_id("sh_ab/cd") && !valid_share_id("pr_abcd"));
+    }
+
+    #[test]
+    fn remote_keys() {
+        for u in [
+            "git@github.com:Acme/widget.git",
+            "https://github.com/acme/widget",
+            "https://me:s3cret@github.com/acme/widget.git/",
+            "ssh://git@github.com:22/acme/widget",
+            "github.com:acme/widget",
+        ] {
+            assert_eq!(remote_key(u).as_deref(), Some("github.com/acme/widget"), "{u}");
+        }
+        assert_eq!(remote_key("/srv/git/widget.git").as_deref(), Some("/srv/git/widget"));
+        assert_eq!(remote_key("file:///srv/git/widget").as_deref(), Some("/srv/git/widget"));
+        assert_eq!(remote_key("  "), None);
+    }
+
+    #[test]
+    fn tab_payloads() {
+        let tab = |v: serde_json::Value| serde_json::from_value::<SharePayload>(v).unwrap().check();
+        let good = serde_json::json!({ "kind": "tab", "title": "api", "project": { "remote": "github.com/a/b", "path": "src/x" }, "cwd": "/w/b/src/x", "shell": "zsh", "scrollback": "$ ls\n\tfile" });
+        assert_eq!(tab(good.clone()), Ok(()));
+        for (k, v) in [
+            ("title", serde_json::json!(" ")),
+            ("cwd", serde_json::json!("relative")),
+            ("shell", serde_json::json!("/bin/zsh")),
+            ("project", serde_json::json!({ "remote": "github.com/a/b", "path": "../etc" })),
+            ("project", serde_json::json!({ "remote": "github.com/a/b", "path": "/etc" })),
+            ("project", serde_json::json!({ "remote": "", "path": "" })),
+            ("scrollback", serde_json::json!("ok\u{1b}]52;c;aGk=\u{7}")),
+            ("scrollback", serde_json::json!("x".repeat(MAX_SCROLLBACK + 1))),
+        ] {
+            let mut bad = good.clone();
+            bad[k] = v;
+            assert!(tab(bad.clone()).is_err(), "{bad}");
+        }
+        let p: ShareSendParams = serde_json::from_value(serde_json::json!({ "peer": "f", "kind": "snippet", "text": "x", "session": "t1" })).unwrap();
+        assert!(p.payload().is_err(), "only a tab names a terminal");
     }
 
     #[test]

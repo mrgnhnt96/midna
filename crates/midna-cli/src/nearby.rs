@@ -291,6 +291,13 @@ fn preview(item: &Value) -> String {
             _ => size,
         };
     }
+    if p["kind"] == "tab" {
+        let place = p["project"]["remote"].as_str().map(|r| match p["project"]["path"].as_str() {
+            Some(path) => format!("{r}/{path}"),
+            None => r.to_string(),
+        });
+        return place.unwrap_or_else(|| s(p, "cwd"));
+    }
     let text = p["url"].as_str().or(p["text"].as_str()).unwrap_or("");
     let first = text.lines().next().unwrap_or("").trim();
     let mut short: String = first.chars().take(60).collect();
@@ -378,6 +385,14 @@ fn print_item(v: &Value) {
     if let Some(r) = p["reply_to"].as_str() {
         println!("in reply to {r}");
     }
+    if let Some(sb) = p["scrollback"].as_str() {
+        println!("in {}{}", s(p, "cwd"), p["shell"].as_str().map(|sh| format!(" ({sh})")).unwrap_or_default());
+        let lines: Vec<&str> = sb.lines().collect();
+        for l in &lines[lines.len().saturating_sub(20)..] {
+            println!("  {l}");
+        }
+        return;
+    }
     match (p["url"].as_str(), p["text"].as_str()) {
         (Some(u), _) => println!("{u}"),
         (None, Some(t)) => println!("{}", t.trim_end_matches('\n')),
@@ -395,10 +410,10 @@ fn print_item(v: &Value) {
     }
 }
 
-/// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, or a
-/// file or folder (`--file <path>`, or a single word that names one).
+/// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, a
+/// file or folder (`--file <path>`, or a single word that names one), or a terminal tab (`--tab`).
 pub fn share(a: &Args, out: OutFn) -> Res {
-    a.check(&["link", "file", "title", "snippet", "message"])?;
+    a.check(&["link", "file", "title", "snippet", "message", "tab", "session"])?;
     match a.pos.get(1).map(String::as_str) {
         Some("send") => {}
         Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
@@ -406,11 +421,17 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     }
     let who = a.need(2, "which paired device (midna peers lists them)")?;
     let words = a.text(3);
+    if a.has("tab") && (!words.is_empty() || a.has("link") || a.has("snippet") || a.has("message")) {
+        return Err(Fail::Usage("--tab sends a terminal (this one, or --session <terminal>); nothing else goes with it".into()));
+    }
+    if !a.has("tab") && a.get("session").is_some() {
+        return Err(Fail::Usage("--session picks the terminal for --tab".into()));
+    }
     let lone_path = (a.pos.len() == 4 && !a.has("message") && !a.has("snippet") && !a.has("title") && a.get("link").is_none())
         .then(|| a.pos[3].clone())
         .filter(|w| std::path::Path::new(w).exists());
     if let Some(path) = a.get("file").map(str::to_string).or(lone_path) {
-        if a.pos.len() > 4 || (a.get("file").is_some() && a.pos.len() > 3) || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") {
+        if a.pos.len() > 4 || (a.get("file").is_some() && a.pos.len() > 3) || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") || a.has("tab") {
             return Err(Fail::Usage("a file is sent on its own: share send <name|id> <path>".into()));
         }
         let abs = std::path::absolute(&path).map_err(|e| Fail::Usage(format!("{path}: {e}")))?;
@@ -422,7 +443,12 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     if let Some(t) = a.get("title") {
         params["title"] = json!(t);
     }
-    if let Some(url) = a.get("link") {
+    if a.has("tab") {
+        params["kind"] = json!("tab");
+        if let Some(t) = a.get("session") {
+            params["session"] = json!(t);
+        }
+    } else if let Some(url) = a.get("link") {
         if !words.is_empty() || a.has("snippet") || a.has("message") {
             return Err(Fail::Usage("--link sends just the link (give it a --title instead of text)".into()));
         }
@@ -492,8 +518,12 @@ pub fn inbox(a: &Args, out: OutFn) -> Res {
             Ok(())
         }
         "accept" => {
-            a.check(&["into", "pin"])?;
+            a.check(&["into", "pin", "cwd"])?;
             let mut params = json!({ "id": id()? });
+            if let Some(dir) = a.get("cwd") {
+                let dir = std::path::absolute(dir).map_err(|e| Fail::Usage(format!("--cwd {dir}: {e}")))?;
+                params["cwd"] = json!(dir.to_string_lossy());
+            }
             if let Some(t) = a.get("into") {
                 params["session"] = json!(t);
             }

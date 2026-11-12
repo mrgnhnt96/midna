@@ -912,6 +912,7 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
             ShareKind::Snippet => actions.child(chooser("ny-share-into", "Paste into…", false)).child(primary_btn("Keep in inbox")),
             ShareKind::Link => actions.child(primary_btn("Open")).child(chooser("ny-share-pin", "Pin to…", true)),
             ShareKind::File => actions.child(primary_btn("Save")),
+            ShareKind::Tab => actions.child(primary_btn("Open tab")),
         };
         actions = actions.child(button("ny-deny", format!("Decline {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
     } else if mt.approve {
