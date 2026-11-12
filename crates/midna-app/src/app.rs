@@ -892,7 +892,7 @@ impl MainWindow {
                     "triggers" => Screen::Triggers,
                     "insights" => Screen::Insights,
                     "notifications" => Screen::Notifications,
-                    "summary" => match self.current_project_id().filter(|p| p != ROOT_PROJECT_ID) {
+                    "summary" => match self.current_project_id() {
                         Some(p) => {
                             self.summary.project = Some(p);
                             Screen::Summary
@@ -2433,7 +2433,7 @@ impl MainWindow {
                 // On the Summary already: back to the terminal, as the screens' own keys do.
                 if m.screen == Screen::Summary {
                     m.set_screen(Screen::Terminal, w, cx);
-                } else if let Some(p) = m.current_project_id().filter(|p| p != ROOT_PROJECT_ID) {
+                } else if let Some(p) = m.current_project_id() {
                     crate::ui::summary::open(m, p, w, cx);
                 }
             }))

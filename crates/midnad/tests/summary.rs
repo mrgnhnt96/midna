@@ -75,3 +75,19 @@ fn a_replaced_terminal_is_recorded_and_a_resumed_one_leaves_the_summary() {
     let project = call(&mut h, "summary.list", json!({}))["closed"][0]["project_id"].as_str().unwrap().to_string();
     assert_eq!(call(&mut h, "summary.remove", json!({ "project_id": project }))["removed"], 1);
 }
+
+#[test]
+fn a_terminal_at_root_is_recorded_under_root() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let s = call(&mut h, "session.open", json!({ "kind": "shell", "project_id": "root", "command": ["/bin/sh"], "name": "scratch" }));
+    let sid = s["id"].as_str().unwrap().to_string();
+    assert_eq!(s["project_id"], "root");
+    call(&mut h, "session.close", json!({ "id": sid, "force": true }));
+
+    let closed = call(&mut h, "summary.list", json!({ "project_id": "root" }))["closed"].clone();
+    assert_eq!(closed.as_array().unwrap().len(), 1, "{closed}");
+    assert_eq!(closed[0]["id"], sid.as_str());
+    assert_eq!(closed[0]["project_id"], "root");
+    assert_eq!(call(&mut h, "summary.remove", json!({ "project_id": "root" }))["removed"], 1);
+}
