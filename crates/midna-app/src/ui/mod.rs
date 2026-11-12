@@ -20,6 +20,7 @@ pub mod links;
 pub mod paused;
 pub mod queue;
 pub mod need_anim;
+pub mod nearby;
 pub mod needs_you;
 pub mod notifications;
 pub mod summary;

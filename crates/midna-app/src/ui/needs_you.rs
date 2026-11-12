@@ -147,7 +147,11 @@ fn meta(t: &Theme, n: &NeedsYou) -> Meta {
         NeedsYouKind::SecretNeeded => ("Secret needed", t.accent),
         NeedsYouKind::Other => ("Needs you", t.need),
     };
-    let label = if n.setting.is_some() { "Setting change" } else { label };
+    let (label, color) = match () {
+        _ if n.setting.is_some() => ("Setting change", color),
+        _ if super::nearby::pairing_of(n).is_some() => ("Pairing", t.accent),
+        _ => (label, color),
+    };
     Meta { label, color, approve: approves(n) }
 }
 
@@ -194,6 +198,10 @@ fn project_name(m: &MainWindow, pid: Option<&str>) -> String {
 
 /// Its terminal's name (the project is in the list row), else its project.
 fn terminal_of(m: &MainWindow, n: &NeedsYou) -> String {
+    // a pairing comes from another Mac, not from a terminal or project here
+    if super::nearby::pairing_of(n).is_some() {
+        return "Nearby".into();
+    }
     match session_of(m, n) {
         Some(s) => match crate::windows::name_note(m, s) {
             Some(w) => format!("{} ({w})", s.name),
@@ -204,6 +212,10 @@ fn terminal_of(m: &MainWindow, n: &NeedsYou) -> String {
 }
 
 fn where_of(m: &MainWindow, n: &NeedsYou) -> String {
+    // a pairing comes from another Mac, not from a terminal or project here
+    if super::nearby::pairing_of(n).is_some() {
+        return "Nearby".into();
+    }
     match session_of(m, n) {
         Some(s) => match crate::windows::name_note(m, s) {
             Some(w) => format!("{} › {} ({w})", project_name(m, s.project_id.as_deref()), s.name),
@@ -274,6 +286,24 @@ fn secondary(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     if let Some((_, res)) = other_actions(&n).1 {
         resolve_cur(m, res, cx);
     }
+}
+
+/// A pairing card's "Pair as my device": confirm it keeping the other Mac as one of yours
+/// (`peers.confirm` closes the needs-you item itself).
+fn pair_as_mine(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(n) = current(m) else { return };
+    let Some(ask) = super::nearby::pairing_of(&n) else { return };
+    let order = ordered(m);
+    m.stack.pos = current_index(m, &order).unwrap_or(0);
+    m.stack.cur = None;
+    m.stack.menu = false;
+    m.stack.log.push((n.title.clone(), Outcome::Approved));
+    m.stack.gone.insert(n.id.clone(), std::time::Instant::now());
+    m.needs.retain(|x| x.id != n.id);
+    crate::sounds::play("approved");
+    let params = serde_json::json!({ "pairing": ask.id, "accept": true, "as": "my_device" });
+    m.rpc("peers.confirm", params, cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::NEEDS, cx));
+    cx.notify();
 }
 
 fn approve_all(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -765,11 +795,14 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
                         .when(clicked, |d| d.child(div().text_size(px(11.)).text_color(t.dim.opacity(0.7)).child("from your notification"))),
                 )
         )
-        .map(|d| match n.setting.is_some() {
-            true => d
+        .map(|d| match (n.setting.is_some(), super::nearby::pairing_of(n)) {
+            (true, _) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("{who} wants to change a setting")))
                 .child(super::setting_change::panel(m, t, n, cx)),
-            false => d
+            (false, Some(ask)) => d
+                .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("Pair with {}?", ask.name)))
+                .child(super::nearby::panel(t, &ask, &n.detail)),
+            (false, None) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
                 .child(grid)
                 .children(long)
@@ -783,7 +816,33 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
     let mt = meta(t, n);
     let sess = session_of(m, n);
     let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
-    if mt.approve {
+    let pairing = super::nearby::pairing_of(n).is_some();
+    let button = |id: &'static str, label: String| {
+        div().id(id).flex().items_center().h(px(38.)).px(px(16.)).rounded(px(7.)).border_1().border_color(t.line).text_size(px(14.)).cursor_pointer().hover(|s| s.bg(t.raised)).child(label)
+    };
+    if pairing {
+        // no scopes: each pairing is confirmed once, as a contact or as one of your Macs
+        actions = actions
+            .child(
+                div()
+                    .id("ny-approve")
+                    .flex()
+                    .items_center()
+                    .h(px(38.))
+                    .px(px(16.))
+                    .rounded(px(7.))
+                    .bg(t.accent)
+                    .text_color(t.accent_fg)
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(14.))
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.92))
+                    .on_click(cx.listener(|m, _, _, cx| resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx)))
+                    .child(format!("Pair as contact {approve_key}")),
+            )
+            .child(button("ny-pair-mine", "Pair as my device".into()).on_click(cx.listener(|m, _, _, cx| pair_as_mine(m, cx))))
+            .child(button("ny-deny", format!("Codes differ {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
+    } else if mt.approve {
         let start = n.kind == NeedsYouKind::TriggerWaiting;
         let session_name = sess.map(|s| s.name.clone()).unwrap_or_else(|| "it".into());
         let scope_hint = if start { "this trigger" } else { "this command" };
