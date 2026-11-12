@@ -220,6 +220,20 @@ pub fn reveal(session: String, cx: &mut App) {
     reveal_need(session, None, cx)
 }
 
+/// Run `f` on the home window (the main window focused last), brought to the front.
+pub fn on_home(cx: &mut App, f: impl FnOnce(&mut MainWindow, &mut Window, &mut Context<MainWindow>) + 'static) {
+    let target = {
+        let reg = shared(cx);
+        let r = reg.borrow();
+        r.home().and_then(|id| r.main(id))
+    };
+    let Some(t) = target else { return };
+    let _ = t.handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        let _ = t.entity.update(cx, |m, cx| f(m, window, cx));
+    });
+}
+
 /// `reveal`, for a clicked notification: about a needs-you item (`need`), open the stack on
 /// that card, or its terminal when the card can't show the whole question (`needs_you::too_long`).
 pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {

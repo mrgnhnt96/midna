@@ -11,6 +11,7 @@ use crate::model::*;
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use midna_proto::nearby::ShareKind;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +151,7 @@ fn meta(t: &Theme, n: &NeedsYou) -> Meta {
     let (label, color) = match () {
         _ if n.setting.is_some() => ("Setting change", color),
         _ if super::nearby::pairing_of(n).is_some() => ("Pairing", t.accent),
+        _ if super::share::offer_of(n).is_some() => ("Nearby share", t.accent),
         _ => (label, color),
     };
     Meta { label, color, approve: approves(n) }
@@ -198,8 +200,8 @@ fn project_name(m: &MainWindow, pid: Option<&str>) -> String {
 
 /// Its terminal's name (the project is in the list row), else its project.
 fn terminal_of(m: &MainWindow, n: &NeedsYou) -> String {
-    // a pairing comes from another Mac, not from a terminal or project here
-    if super::nearby::pairing_of(n).is_some() {
+    // a pairing or a share comes from another Mac, not from a terminal or project here
+    if super::nearby::pairing_of(n).is_some() || super::share::offer_of(n).is_some() {
         return "Nearby".into();
     }
     match session_of(m, n) {
@@ -212,8 +214,8 @@ fn terminal_of(m: &MainWindow, n: &NeedsYou) -> String {
 }
 
 fn where_of(m: &MainWindow, n: &NeedsYou) -> String {
-    // a pairing comes from another Mac, not from a terminal or project here
-    if super::nearby::pairing_of(n).is_some() {
+    // a pairing or a share comes from another Mac, not from a terminal or project here
+    if super::nearby::pairing_of(n).is_some() || super::share::offer_of(n).is_some() {
         return "Nearby".into();
     }
     match session_of(m, n) {
@@ -304,6 +306,27 @@ fn pair_as_mine(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     let params = serde_json::json!({ "pairing": ask.id, "accept": true, "as": "my_device" });
     m.rpc("peers.confirm", params, cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::NEEDS, cx));
     cx.notify();
+}
+
+/// A share card's paste-into / pin-to: accept it into terminal `sid` (`share.accept` closes the
+/// needs-you item itself). The card leaves the stack once it worked.
+fn offer_into(m: &mut MainWindow, sid: String, pin: bool, cx: &mut Context<MainWindow>) {
+    let Some(n) = current(m) else { return };
+    let Some(offer) = super::share::offer_of(&n) else { return };
+    m.stack.menu = false;
+    cx.notify();
+    super::share::accept(m, offer.id, Some(sid), pin, cx, move |m, cx| {
+        let order = ordered(m);
+        if current_index(m, &order).is_some_and(|i| order[i].id == n.id) {
+            m.stack.pos = current_index(m, &order).unwrap_or(0);
+            m.stack.cur = None;
+        }
+        m.stack.log.push((n.title.clone(), Outcome::Approved));
+        m.stack.gone.insert(n.id.clone(), std::time::Instant::now());
+        m.needs.retain(|x| x.id != n.id);
+        crate::sounds::play("approved");
+        cx.notify();
+    });
 }
 
 fn approve_all(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
@@ -795,14 +818,17 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
                         .when(clicked, |d| d.child(div().text_size(px(11.)).text_color(t.dim.opacity(0.7)).child("from your notification"))),
                 )
         )
-        .map(|d| match (n.setting.is_some(), super::nearby::pairing_of(n)) {
-            (true, _) => d
+        .map(|d| match (n.setting.is_some(), super::nearby::pairing_of(n), super::share::offer_of(n)) {
+            (true, _, _) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("{who} wants to change a setting")))
                 .child(super::setting_change::panel(m, t, n, cx)),
-            (false, Some(ask)) => d
+            (false, Some(ask), _) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("Pair with {}?", ask.name)))
                 .child(super::nearby::panel(t, &ask, &n.detail)),
-            (false, None) => d
+            (false, None, Some(offer)) => d
+                .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
+                .child(super::share::panel(m, t, &offer)),
+            (false, None, None) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
                 .child(grid)
                 .children(long)
@@ -842,6 +868,51 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
             )
             .child(button("ny-pair-mine", "Pair as my device".into()).on_click(cx.listener(|m, _, _, cx| pair_as_mine(m, cx))))
             .child(button("ny-deny", format!("Codes differ {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
+    } else if let Some(offer) = super::share::offer_of(n) {
+        // approve accepts the share, deny declines it; a snippet can also go into a terminal
+        // and a link onto one's links, from the chooser
+        let primary_btn = |label: &str| {
+            div()
+                .id("ny-approve")
+                .flex()
+                .items_center()
+                .h(px(38.))
+                .px(px(16.))
+                .rounded(px(7.))
+                .bg(t.accent)
+                .text_color(t.accent_fg)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(14.))
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.92))
+                .on_click(cx.listener(|m, _, _, cx| resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx)))
+                .child(format!("{label} {approve_key}"))
+        };
+        let chooser = |id: &'static str, label: &str, pin: bool| {
+            let menu = m.stack.menu.then(|| {
+                let pick = move |m: &mut MainWindow, sid: String, cx: &mut Context<MainWindow>| offer_into(m, sid, pin, cx);
+                div().absolute().left_0().bottom(px(44.)).child(deferred(super::share::chooser(m, t, id, pick, cx)).with_priority(3))
+            });
+            div()
+                .relative()
+                .child(button(id, label.to_string()).on_click(cx.listener(|m, _, _, cx| {
+                    m.stack.menu = !m.stack.menu;
+                    cx.notify();
+                })))
+                .children(menu)
+        };
+        actions = match offer.kind {
+            ShareKind::Message => {
+                let (id, peer, need) = (offer.id.clone(), super::share::offer_peer(m, &offer), n.id.clone());
+                actions.child(primary_btn("Mark read")).child(
+                    button("ny-share-reply", "Reply…".into())
+                        .on_click(cx.listener(move |m, _, w, cx| super::share::open_message(m, Some(id.clone()), Some(peer.clone()), Some(need.clone()), w, cx))),
+                )
+            }
+            ShareKind::Snippet => actions.child(chooser("ny-share-into", "Paste into…", false)).child(primary_btn("Keep in inbox")),
+            ShareKind::Link => actions.child(primary_btn("Open")).child(chooser("ny-share-pin", "Pin to…", true)),
+        };
+        actions = actions.child(button("ny-deny", format!("Decline {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
     } else if mt.approve {
         let start = n.kind == NeedsYouKind::TriggerWaiting;
         let session_name = sess.map(|s| s.name.clone()).unwrap_or_else(|| "it".into());

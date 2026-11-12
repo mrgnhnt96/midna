@@ -37,6 +37,7 @@ pub mod setup_screen;
 pub mod settings;
 pub mod setting_change;
 pub mod sidebar;
+pub mod share;
 pub mod shelf;
 pub mod sidebar_anim;
 pub mod split;
@@ -375,6 +376,7 @@ impl Render for MainWindow {
             .children(quit_hold::render(self, &t))
             .children(close_window::render(self, &t, cx))
             .children(hooks::render(self, &t, cx))
+            .children(share::render(self, &t, window, cx))
             .child(
                 // Cards over the terminal pane's top-right corner: Kass's Accessibility ask, then the setup step.
                 div().absolute().top(px(56.)).right(px(12.)).flex().flex_col().items_end().gap(px(10.)).children(ax_prompt::render(self, &t, cx)).children(toast::render(self, &t, cx)),

@@ -117,6 +117,8 @@ pub struct MainWindow {
     /// A Resume or Stop from the paused card in flight, for this terminal.
     pub pause_busy: Option<String>,
     pub hooks_sheet: Option<crate::ui::hooks::HooksSheet>,
+    /// Nearby sharing: the Share picker and the inbox (`ui::share`).
+    pub share: crate::ui::share::Share,
     /// The Accessibility card Kass's first dictation raises (`ui/ax_prompt.rs`).
     pub ax_prompt: bool,
     pub onboarding: crate::ui::onboarding::Onboarding,
@@ -414,6 +416,7 @@ impl MainWindow {
             pause_confirm: None,
             pause_busy: None,
             hooks_sheet: None,
+            share: Default::default(),
             ax_prompt: false,
             onboarding,
             twilight_seq: 0,
@@ -591,6 +594,7 @@ impl MainWindow {
                         self.restart_expected = false;
                         crate::ui::command_bar::reload_user_commands(self, cx);
                         crate::ui::notifications::fetch(self, cx);
+                        crate::ui::share::fetch(self, cx);
                         crate::ui::summary::fetch(self, cx);
                         if !was_connected {
                             // re-attach after a reconnect (the split pane and pop-outs
@@ -701,6 +705,9 @@ impl MainWindow {
                     && let Some(sid) = e.session_id.clone().filter(|s| self.selected.as_ref() == Some(s))
                 {
                     crate::ui::links::fetch(self, sid, cx);
+                }
+                if k.starts_with("share.") {
+                    crate::ui::share::on_event(self, &e, cx);
                 }
                 if k == midna_proto::kinds::SUMMARY_CHANGED {
                     crate::ui::summary::fetch(self, cx);
