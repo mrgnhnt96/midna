@@ -195,6 +195,11 @@ pub struct PairedPeer {
     /// It can be seen on the network now.
     #[serde(default)]
     pub nearby: bool,
+    /// What this Mac accepts from it without asking (`peers.set_auto_accept`), all off by
+    /// default. Only one of my devices can have any; a contact never does. Even then, Midna
+    /// objects that change rules, triggers or settings (and queued prompts) still ask.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_accept: Vec<ShareKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -301,6 +306,18 @@ pub struct PeersSetTierParams {
     /// How to keep it from now on.
     #[serde(rename = "as")]
     pub tier: Tier,
+}
+
+/// `peers.set_auto_accept` (human only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersSetAutoAcceptParams {
+    /// The paired device's fingerprint. It must be kept as my_device.
+    pub fingerprint: String,
+    /// The kind of share to accept from it without asking.
+    pub kind: ShareKind,
+    /// true: accept that kind from it without asking. false (default): ask, as for any device.
+    #[serde(default)]
+    pub on: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -895,6 +912,28 @@ pub enum ShareKind {
     Object,
 }
 
+impl ShareKind {
+    pub const ALL: [ShareKind; 6] = [ShareKind::Message, ShareKind::Snippet, ShareKind::Link, ShareKind::File, ShareKind::Tab, ShareKind::Object];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShareKind::Message => "message",
+            ShareKind::Snippet => "snippet",
+            ShareKind::Link => "link",
+            ShareKind::File => "file",
+            ShareKind::Tab => "tab",
+            ShareKind::Object => "object",
+        }
+    }
+
+    /// A kind by name; plurals (`links`) too.
+    pub fn parse(s: &str) -> Option<ShareKind> {
+        let s = s.trim().to_lowercase();
+        let s = s.strip_suffix('s').unwrap_or(&s);
+        ShareKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ShareDirection {
@@ -945,6 +984,10 @@ pub struct ShareItem {
     /// A file share once accepted: how far its contents got.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<Transfer>,
+    /// Incoming and accepted without asking: it came from one of my devices whose kind this
+    /// Mac's person set to auto-accept (`peers.set_auto_accept`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

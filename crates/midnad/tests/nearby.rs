@@ -22,12 +22,17 @@
 //! drops out, and lands them (folders with their tree) in `nearby.downloads`; a file that changed
 //! fails cleanly, and offers or fetches that reach outside their folder or share are refused.
 //!
+//! Auto-accept (`peers.set_auto_accept`): only the human turns it on, per kind, for one of their
+//! own devices (never a contact); those shares are accepted as they arrive (`auto`), while rules,
+//! triggers, settings and queued prompts still wait for review; keeping the device as a contact
+//! or forgetting it turns it all off.
+//!
 //! Tabs (`share.send` kind tab): the receiver opens a new shell in its own checkout of the
 //! sender's repo (or the folder the human picks, or home), the sender's scrollback shown above
 //! it and nothing of theirs run; a tab whose scrollback carries control sequences is refused.
 mod common;
 use common::*;
-use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
+use midna_proto::error::{HUMAN_ONLY, NOT_FOUND, REFUSED};
 use midna_proto::nearby as nb;
 use midna_proto::{Client, ClientError, RpcError, kinds};
 use midnad::nearby::identity::{self, Identity};
@@ -1177,4 +1182,105 @@ fn a_tab_whose_scrollback_could_drive_the_terminal_is_refused() {
         assert!(matches!(got, Wire::Refused { .. }), "{payload}: {got:?}");
     }
     assert!(inbox(&mut hb)["items"].as_array().unwrap().is_empty());
+}
+
+/// The kinds this Mac auto-accepts from paired device `fp`.
+fn auto_accepts(c: &mut Client, fp: &str) -> Vec<String> {
+    let p = paired(c).into_iter().find(|p| p["fingerprint"] == fp).unwrap_or_else(|| panic!("{fp} isn't paired"));
+    p["auto_accept"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect()
+}
+
+/// Send from B and wait until A has it; the share as A has it.
+fn offered(hb: &mut Client, ha: &mut Client, fa: &str, p: Value) -> Value {
+    let id = send(hb, fa, p)["id"].as_str().unwrap().to_string();
+    wait_for(10, "A has it", || share(ha, &id))
+}
+
+/// Wait until A has decided share `id` by itself, or raised its approval.
+fn settled(ha: &mut Client, id: &str) -> Value {
+    wait_for(10, "accepted or asked", || share(ha, id).filter(|s| s["state"] != "offered" || s["needs_you_id"].is_string()))
+}
+
+#[test]
+fn only_my_devices_auto_accept_and_never_rules_or_settings() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+    wait_for(10, "A sees B", || peer(&mut ha, &fb));
+    // A keeps B as one of its own devices; B keeps A as a contact.
+    let set = |c: &mut Client, fp: &str, kind: &str, on: bool| call(c, "peers.set_auto_accept", json!({ "fingerprint": fp, "kind": kind, "on": on }));
+    assert!(auto_accepts(&mut ha, &fb).is_empty(), "all off by default");
+
+    // Only the human turns it on, only for a paired device, never for a contact.
+    let e = call_err(&mut a.agent(None), "peers.set_auto_accept", json!({ "fingerprint": fb, "kind": "message", "on": true }));
+    assert_eq!(e.code, HUMAN_ONLY, "{}", e.message);
+    assert_eq!(call_err(&mut ha, "peers.set_auto_accept", json!({ "fingerprint": "nope", "kind": "message", "on": true })).code, NOT_FOUND);
+    let e = call_err(&mut hb, "peers.set_auto_accept", json!({ "fingerprint": fa, "kind": "message", "on": true }));
+    assert_eq!(e.code, REFUSED, "{}", e.message);
+    assert!(e.message.contains("contact"), "{}", e.message);
+    assert!(auto_accepts(&mut hb, &fa).is_empty());
+
+    // Off: a message from B waits for A's person.
+    let first = offered(&mut hb, &mut ha, &fa, json!({ "kind": "message", "text": "ask me" }));
+    let first = settled(&mut ha, first["id"].as_str().unwrap());
+    assert_eq!(first["state"], "offered", "{first}");
+
+    // On for messages: one is read as it arrives, with no approval, and B hears it.
+    let changed = set(&mut ha, &fb, "message", true);
+    assert_eq!(changed["auto_accept"], json!(["message"]), "{changed}");
+    assert!(!events(&mut ha, kinds::PEERS_CHANGED).is_empty());
+    let got = offered(&mut hb, &mut ha, &fa, json!({ "kind": "message", "text": "just read it" }));
+    let id = got["id"].as_str().unwrap().to_string();
+    let done = wait_for(10, "auto-accepted", || share(&mut ha, &id).filter(|s| s["state"] == "accepted"));
+    assert_eq!((done["result"].as_str(), done["auto"].as_bool()), (Some("read"), Some(true)), "{done}");
+    assert!(done["needs_you_id"].is_null(), "{done}");
+    let asks = call(&mut ha, "needs_you.list", json!({}));
+    assert!(!asks.to_string().contains(&id), "nothing asked: {asks}");
+    assert_eq!(share_events(&mut ha, kinds::SHARE_ACCEPTED, &id).len(), 1);
+    assert_eq!(inbox(&mut ha)["waiting"], 1, "only the first one waits");
+    let theirs = wait_for(20, "B hears A read it", || share(&mut hb, &id).filter(|s| s["state"] == "accepted"));
+    assert!(theirs["auto"].is_null(), "the sender's copy isn't marked: {theirs}");
+
+    // A kind that isn't on still asks (a link is never opened by itself here).
+    let link = offered(&mut hb, &mut ha, &fa, json!({ "kind": "link", "url": "https://example.com/never-opened" }));
+    let link = settled(&mut ha, link["id"].as_str().unwrap());
+    assert_eq!(link["state"], "offered", "{link}");
+
+    // Midna's own things: a theme is taken; rules and settings wait, even ones anyone may change.
+    set(&mut ha, &fb, "object", true);
+    std::fs::create_dir_all(b.home.join("themes")).unwrap();
+    std::fs::write(b.home.join("themes/pinky.json"), r##"{"name":"Pinky","extends":"nord","colors":{"accent":"#FF79C6"}}"##).unwrap();
+    let theme = offered(&mut hb, &mut ha, &fa, json!({ "kind": "object", "object": "theme", "ids": ["pinky"] }));
+    let theme = wait_for(10, "theme auto-accepted", || share(&mut ha, theme["id"].as_str().unwrap()).filter(|s| s["state"] == "accepted"));
+    assert_eq!((theme["result"].as_str(), theme["auto"].as_bool()), (Some("added 1 (theme)"), Some(true)), "{theme}");
+    assert!(a.home.join("themes/pinky.json").exists());
+
+    let rule = call(&mut hb, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": "deploy prod*" } }));
+    call(&mut hb, "settings.set", json!({ "key": "summary.keep_days", "value": 30 }));
+    for object in [json!({ "object": "rules", "ids": [rule["id"]] }), json!({ "object": "settings", "ids": ["summary.keep_days"] })] {
+        let mut p = object.clone();
+        p["kind"] = json!("object");
+        let got = offered(&mut hb, &mut ha, &fa, p);
+        let got = settled(&mut ha, got["id"].as_str().unwrap());
+        assert_eq!(got["state"], "offered", "{object}: {got}");
+        let item = call(&mut ha, "needs_you.get", json!({ "id": got["needs_you_id"] }))["item"].clone();
+        assert!(item["detail"].as_str().unwrap().contains("always ask"), "{item}");
+    }
+    let rules = call(&mut ha, "rule.list", json!({}));
+    assert!(!rules.to_string().contains("deploy prod"), "{rules}");
+    assert_eq!(call(&mut ha, "settings.get", json!({ "key": "summary.keep_days" }))["value"], 7);
+
+    // Kept as a contact: all of it is off, and stays off when it's one of my devices again.
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "contact" }));
+    assert!(auto_accepts(&mut ha, &fb).is_empty());
+    assert_eq!(call_err(&mut ha, "peers.set_auto_accept", json!({ "fingerprint": fb, "kind": "message", "on": true })).code, REFUSED);
+    let back = call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "my_device" }));
+    assert_eq!(back["auto_accept"], Value::Null, "{back}");
+    let after = offered(&mut hb, &mut ha, &fa, json!({ "kind": "message", "text": "ask again" }));
+    assert_eq!(settled(&mut ha, after["id"].as_str().unwrap())["state"], "offered");
+
+    // Forgotten: nothing to set.
+    set(&mut ha, &fb, "message", true);
+    call(&mut ha, "peers.forget", json!({ "fingerprint": fb }));
+    assert_eq!(call_err(&mut ha, "peers.set_auto_accept", json!({ "fingerprint": fb, "kind": "message", "on": true })).code, NOT_FOUND);
 }

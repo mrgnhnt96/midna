@@ -363,6 +363,7 @@ fn complete(d: &Daemon, ch: &Channel, info: &Pairing, agreed: &Agreed) {
         tier: info.tier.unwrap_or_default(),
         paired_at: time::now_rfc3339(),
         presence: hex(&agreed.presence),
+        auto_accept: vec![],
     };
     let saved = d.nearby.inner().store(&d.cfg.home).insert(stored.clone());
     if let Err(e) = saved {
@@ -469,6 +470,28 @@ pub fn set_tier(d: &Daemon, p: nb::PeersSetTierParams) -> R {
         s.map(|s| s.paired(i.peers.contains_key(&s.fingerprint)))
     };
     let Some(peer) = peer else { return Err(RpcError::not_found("no paired device with that id")) };
+    d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
+    ok(peer)
+}
+
+/// `peers.set_auto_accept` (human only): one of my devices' shares of one kind are accepted
+/// without asking, or ask again. A contact never auto-accepts.
+pub fn set_auto_accept(d: &Daemon, p: nb::PeersSetAutoAcceptParams) -> R {
+    let peer = {
+        let mut i = d.nearby.inner();
+        let s = i
+            .store(&d.cfg.home)
+            .set_auto_accept(&p.fingerprint, p.kind, p.on)
+            .map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
+        s.map(|s| (s.tier, s.paired(i.peers.contains_key(&s.fingerprint))))
+    };
+    let Some((tier, peer)) = peer else { return Err(RpcError::not_found("no paired device with that id")) };
+    if tier != Tier::MyDevice {
+        return Err(RpcError::refused(format!(
+            "{} is kept as a contact, and only your own devices can auto-accept; keep it as your device first",
+            peer.name
+        )));
+    }
     d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
     ok(peer)
 }

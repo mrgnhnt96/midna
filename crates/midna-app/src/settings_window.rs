@@ -2797,6 +2797,7 @@ impl SettingsWindow {
         // too long to sit beside the name without squeezing its description into a narrow column, go under it
         let wide = match &r.control {
             Control::Theme { .. } | Control::CleanupItems | Control::CleanupKeep | Control::CleanupRuns | Control::Looks | Control::Folders { .. } | Control::Chips { .. } => true,
+            Control::Nearby(c) if c.wide() => true,
             Control::Seg { options, .. } => options.len() <= 5 && options.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() > 60,
             Control::Number { presets, .. } => presets.iter().map(|(_, l)| l.chars().count() + 3).sum::<usize>() + 14 > 60,
             _ => false,

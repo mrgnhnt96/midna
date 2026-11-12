@@ -171,19 +171,12 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
     let mut ch = link::connect_peer(d, &fp)?;
     let name = peer_name(d, &fp);
     let id = format!("sh_{}", crate::state::hex_id(12));
-    let sent = ch.send(&Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() }).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
-    let failed = |why: String| RpcError::refused(format!("{name} didn't take it: {why}"));
-    match sent {
-        Ok(Wire::ShareAck { id: got }) if got == id => ch.finish(),
-        Ok(Wire::Refused { reason }) => return Err(failed(refusal_words(&reason))),
-        Ok(other) => return Err(failed(format!("it answered {other:?}"))),
-        Err(e) => return Err(failed(e)),
-    }
+    let offer = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
     let item = ShareItem {
-        id,
+        id: id.clone(),
         direction: ShareDirection::Outgoing,
         peer: fp,
-        peer_name: name,
+        peer_name: name.clone(),
         from: identity(d).fingerprint.clone(),
         size: payload.size(),
         payload,
@@ -193,13 +186,30 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
         result: None,
         needs_you_id: None,
         transfer: None,
+        auto: false,
     };
+    // Kept before it is offered: a device that auto-accepts answers (and fetches a file) at once.
     {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
         inbox.push(Entry { item: item.clone(), owe: false, source });
         inbox.save()?;
     }
+    let sent = ch.send(&offer).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
+    let failed = |why: String| {
+        let mut i = d.nearby.inner();
+        let inbox = i.inbox(&d.cfg.home);
+        inbox.items.retain(|e| e.item.id != id);
+        let _ = inbox.save();
+        RpcError::refused(format!("{name} didn't take it: {why}"))
+    };
+    match sent {
+        Ok(Wire::ShareAck { id: got }) if got == id => ch.finish(),
+        Ok(Wire::Refused { reason }) => return Err(failed(refusal_words(&reason))),
+        Ok(other) => return Err(failed(format!("it answered {other:?}"))),
+        Err(e) => return Err(failed(e)),
+    }
+    let item = d.nearby.inner().inbox(&d.cfg.home).get(&id).map(|e| e.item.clone()).unwrap_or(item);
     emit(d, kinds::SHARE_SENT, ctx.actor(), &item);
     ok(item)
 }
@@ -213,8 +223,22 @@ fn refusal_words(reason: &str) -> String {
     }
 }
 
+/// Shares like `payload` from `from` are accepted without asking: it is one of my devices, its
+/// person turned that kind on, and (for Midna's own things) it is a summary or a theme that
+/// changes nothing only the human may change. Rules, triggers, settings and queued prompts
+/// always wait for review.
+fn auto_accepts(d: &Daemon, from: &str, payload: &SharePayload) -> bool {
+    let on = d.nearby.inner().store(&d.cfg.home).get(from).is_some_and(|s| s.auto_accepts(payload.kind()));
+    on && match payload {
+        SharePayload::Object { object } => {
+            matches!(object, nb::MidnaObject::Summary { .. } | nb::MidnaObject::Theme { .. }) && !objects::needs_human(d, object)
+        }
+        _ => true,
+    }
+}
+
 /// A paired device (`from`, proven by the connection) offers a share.
-pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
+pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire {
     let refuse = |reason: &str| Wire::Refused { reason: reason.into() };
     if !nb::valid_share_id(&id) {
         return refuse("that isn't a share id");
@@ -241,6 +265,7 @@ pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
         result: None,
         needs_you_id: None,
         transfer: None,
+        auto: false,
     };
     {
         let mut i = d.nearby.inner();
@@ -260,23 +285,62 @@ pub fn incoming(d: &Daemon, from: &str, id: String, payload: Value) -> Wire {
             return refuse(&e.message);
         }
     }
-    let tier = d.nearby.inner().store(&d.cfg.home).get(from).map(|s| s.tier).unwrap_or_default();
-    let ny = ask(d, &item, tier);
-    let item = {
-        let mut i = d.nearby.inner();
-        let inbox = i.inbox(&d.cfg.home);
-        match inbox.get_mut(&id) {
-            Some(e) => {
-                e.item.needs_you_id = Some(ny);
-                let item = e.item.clone();
-                let _ = inbox.save();
-                item
-            }
-            None => item,
-        }
-    };
+    if auto_accepts(d, from, &item.payload) {
+        // Accepted once the sender has its ack, so it hears the answer (and serves a file) then.
+        emit(d, kinds::SHARE_OFFERED, Actor::system(), &item);
+        let (d, share) = (d.clone(), id.clone());
+        let _ = std::thread::Builder::new().name("nearby-auto-accept".into()).spawn(move || auto_accept(&d, &share));
+        return Wire::ShareAck { id };
+    }
+    let on = d.nearby.inner().store(&d.cfg.home).get(from).is_some_and(|s| s.auto_accepts(item.payload.kind()));
+    let note = on.then_some("Rules, triggers, settings and queued prompts always ask, even from a device set to auto-accept.");
+    let item = ask_about(d, &id, note).unwrap_or(item);
     emit(d, kinds::SHARE_OFFERED, Actor::system(), &item);
     Wire::ShareAck { id }
+}
+
+/// Raise the approval for incoming share `id` if it still waits and nothing asks yet (with
+/// `note` saying why it wasn't auto-accepted). Returns the share as it is now.
+fn ask_about(d: &Daemon, id: &str, note: Option<&str>) -> Option<ShareItem> {
+    let (it, tier) = {
+        let mut i = d.nearby.inner();
+        let it = i.inbox(&d.cfg.home).get(id).map(|e| e.item.clone())?;
+        let tier = i.store(&d.cfg.home).get(&it.from).map(|s| s.tier).unwrap_or_default();
+        (it, tier)
+    };
+    if it.state != ShareState::Offered || it.needs_you_id.is_some() {
+        return Some(it);
+    }
+    let ny = ask(d, &it, tier, note);
+    let mut i = d.nearby.inner();
+    let inbox = i.inbox(&d.cfg.home);
+    let e = inbox.get_mut(id)?;
+    e.item.needs_you_id = Some(ny);
+    let it = e.item.clone();
+    let _ = inbox.save();
+    Some(it)
+}
+
+/// Accept incoming share `id` without asking, at an agent's level: whatever only the human may
+/// accept is refused there too. If it can't be, it waits for its person like any other.
+fn auto_accept(d: &Arc<Daemon>, id: &str) {
+    let Ok(it) = incoming_item(d, id) else { return };
+    if it.state != ShareState::Offered || it.needs_you_id.is_some() {
+        return;
+    }
+    if !auto_accepts(d, &it.from, &it.payload) {
+        ask_about(d, id, None);
+        return;
+    }
+    let ctx = Ctx::internal_trigger(Actor::system());
+    let p = ShareAcceptParams { id: id.to_string(), session: None, action: None, cwd: None };
+    if let Err(e) = accept_as(d, &ctx, p, true) {
+        eprintln!("midnad: nearby: auto-accepting {id} failed ({}); asking instead", e.message);
+        let note = format!("It is set to be accepted automatically, but that failed: {}", e.message);
+        if let Some(it) = ask_about(d, id, Some(&note)).filter(|it| it.state == ShareState::Offered) {
+            emit(d, kinds::SHARE_OFFERED, Actor::system(), &it);
+        }
+    }
 }
 
 /// The first `n` characters of `s`, with … when cut.
@@ -290,7 +354,7 @@ pub(super) fn cut(s: &str, n: usize) -> String {
 
 /// The needs-you approval that asks this Mac's person about an incoming share. Approving it
 /// accepts the share (a link is opened); denying it declines it.
-fn ask(d: &Daemon, it: &ShareItem, tier: Tier) -> String {
+fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
     let name = &it.peer_name;
     let first_line = |t: &str| cut(t.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim(), 80);
     let (title, body, approve) = match &it.payload {
@@ -364,6 +428,9 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier) -> String {
     };
     let mut item = d.new_needs_you(NeedsYouKind::Approval, title, Actor::system(), None);
     item.detail = format!("{body}\nFrom {name}, {who} (device {}). Deny to decline it.", nb::short_fingerprint(&it.from));
+    if let Some(note) = note {
+        item.detail.push_str(&format!("\n{note}"));
+    }
     item.approval = Some(ApprovalRequest {
         action: PolicyAction { kind: ActionKind::Cli, value: format!("midna inbox accept {}", it.id), session: None, project: None },
         matched_rule: None,
@@ -422,7 +489,16 @@ fn incoming_item(d: &Daemon, id: &str) -> Result<ShareItem, RpcError> {
 
 /// `share.accept` (human only).
 pub fn accept(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams) -> R {
+    accept_as(d, ctx, p, false)
+}
+
+/// Accept an incoming share; `auto` when no one was asked (it came from one of my devices set
+/// to auto-accept its kind).
+fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R {
     let it = incoming_item(d, &p.id)?;
+    if auto && (it.state != ShareState::Offered || it.needs_you_id.is_some()) {
+        return Err(RpcError::conflict(format!("{} was decided or waits for its person", p.id)));
+    }
     if it.state == ShareState::Declined {
         return Err(RpcError::conflict(format!("{} was declined", p.id)));
     }
@@ -505,9 +581,15 @@ pub fn accept(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams) -> R {
         let e = inbox.get_mut(&p.id).ok_or_else(|| RpcError::not_found(format!("no incoming share {}", p.id)))?;
         let first = e.item.state == ShareState::Offered;
         if first {
+            if auto && e.item.needs_you_id.is_some() {
+                return Err(RpcError::conflict(format!("{} waits for its person now", p.id)));
+            }
             e.item.state = ShareState::Accepted;
             e.item.decided_at = Some(time::now_rfc3339());
+            e.item.auto = auto;
             e.owe = true;
+        } else if auto {
+            return Err(RpcError::conflict(format!("{} was already decided", p.id)));
         } else if e.item.state == ShareState::Declined {
             return Err(RpcError::conflict(format!("{} was declined", p.id)));
         }
@@ -722,6 +804,7 @@ mod tests {
                 result: None,
                 needs_you_id: None,
                 transfer: None,
+                auto: false,
             },
             owe: false,
             source: None,

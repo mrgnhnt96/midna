@@ -411,6 +411,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "peers.pair" => crate::nearby::pairing::pair(d, parse(p)?),
         "peers.confirm" => crate::nearby::pairing::confirm(d, parse(p)?),
         "peers.set_tier" => crate::nearby::pairing::set_tier(d, parse(p)?),
+        "peers.set_auto_accept" => crate::nearby::pairing::set_auto_accept(d, parse(p)?),
         "peers.forget" => crate::nearby::pairing::forget(d, parse(p)?),
         "share.send" => crate::nearby::share::send(d, ctx, parse(p)?),
         "share.accept" => crate::nearby::share::accept(d, ctx, parse(p)?),
