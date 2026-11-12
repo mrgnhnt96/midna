@@ -1141,6 +1141,7 @@ pub fn on_exit(d: &Arc<Daemon>, sid: &str, generation: u64, code: Option<i32>, s
     };
     d.emit(kinds::SESSION_EXITED, Actor::system(), Some(project), Some(sid.to_string()), json!({ "exit_code": code, "signal": signal, "state": state, "reason": reason }));
     crate::rpc::agent::end_turn_if_open(d, sid, "process exited");
+    crate::nearby::agent_start::ended(d, sid);
     d.set_status(sid, state, Some(reason.clone()), code, Actor::system());
     d.clear_session_needs_you(sid, NeedsYouKind::PermissionPrompt);
     if close_on_exit && state == StatusState::Exited {

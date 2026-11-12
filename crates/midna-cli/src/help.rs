@@ -32,7 +32,7 @@ pub static VERBS: &[Verb] = &[
         summary: "print the bundled agent guide (SKILL.md) or one of its topics",
         details: "Prints the guide's core: when to use which verb, attention etiquette, what is human only, and\n\
                   never routing around a denial. It lists its topics, and `midna skill <topic>` prints one:\n\
-                  triggers, keep-awake, load, secrets, queue, terminals, links. In a midna terminal the core is\n\
+                  triggers, keep-awake, load, secrets, queue, terminals, links, nearby. In a midna terminal the core is\n\
                   at $MIDNA_SKILL and each topic's file sits beside it.\n\
                   `--path` prints that path instead.",
         methods: &[],
@@ -724,7 +724,8 @@ pub static VERBS: &[Verb] = &[
                   auto-accept (human only) peers auto-accept <name or id> message,file on|off (or all): shares of\n\
                   \x20           those kinds from one of your own devices are accepted without asking. All are off by\n\
                   \x20           default, and a contact can't have any. Of Midna's own things only summaries and themes\n\
-                  \x20           are; rules, triggers, settings and queued prompts always ask.\n\
+                  \x20           are; rules, triggers, settings and queued prompts always ask. Agent sessions always ask;\n\
+                  \x20           agent starts (agent-start) can be auto-accepted and run supervised.\n\
                   forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
                   A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
                   another key is flagged. Until macOS has Local Network access for Midna (the prompt is up, or\n\
@@ -741,8 +742,11 @@ pub static VERBS: &[Verb] = &[
                 \x20     | share send <name|id> <path> | share send <name|id> --file <path>   [--snippet | --message]\n\
                 \x20     | share send <name|id> --tab [--session <terminal>] [--title T]\n\
                 \x20     | share send <name|id> --agent [--session <terminal>] [--title T]\n\
-                \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]",
-        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things",
+                \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]\n\
+                \x20     | share send agent-start --to <name|id> --prompt <text> [--agent claude|codex] [--session <terminal>] [--title T]\n\
+                \x20         [--wait [--timeout 30m]]\n\
+                \x20     | share answer <id> [--wait] [--timeout 30m]",
+        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things, or start an agent there",
         details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
                   open or pin. A single word that names a file or folder (or --file <path>) offers it, with its size;\n\
@@ -760,10 +764,15 @@ pub static VERBS: &[Verb] = &[
                   travel by name; secrets, paths, trust and anything tied to one terminal never leave. Their Mac shows\n\
                   what would change before anything applies: rules, triggers and human-only settings take the human's\n\
                   ok, triggers arrive turned off, and queued prompts wait for `inbox accept <id> --into <terminal>`.\n\
+                  agent-start asks their Mac to start a new agent (Claude by default, or this terminal's agent) in its\n\
+                  checkout of this terminal's project (or --session's), with --prompt (or words, or stdin) as its first\n\
+                  prompt; nothing runs until they accept. With --wait it waits for that agent's first turn to end and\n\
+                  prints its last message (cut to 4 KiB; exit 4 if --timeout runs out first; `share answer <id> --wait`\n\
+                  waits again). The answer also arrives in the inbox as a message in reply to it (share.answered).\n\
                   Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
                   An agent's share asks the human here first (a needs-you approval showing what would leave) and waits.\n\
                   Their answer comes back as share.accepted or share.declined (midna events --kind share.).",
-        methods: &["share.send"],
+        methods: &["share.send", "share.answer"],
     },
     Verb {
         name: "inbox",
@@ -779,6 +788,8 @@ pub static VERBS: &[Verb] = &[
                   \x20        a tab opens as a new shell in your checkout of its repo (or --cwd <dir>, else your home\n\
                   \x20        folder) with their scrollback shown read-only above it; nothing runs. An agent session\n\
                   \x20        is fetched and resumed in a new agent terminal there (or --cwd <dir>), idle until prompted.\n\
+                  \x20        An agent start opens a new agent terminal there (or --cwd <dir>) and gives it the prompt;\n\
+                  \x20        if the sender asked for its answer, its first turn's last message goes back to them.\n\
                   decline  (human only) tell the sender no. Each offer also raises a needs-you approval: approving\n\
                   \x20        accepts it (a link opens, a snippet stays in the inbox, a tab opens, an agent session resumes) and denying declines it.\n\
                   reply    answer a message with a message.\n\

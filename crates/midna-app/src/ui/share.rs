@@ -80,7 +80,9 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent => SharePayload::Message { text: message.trim().to_string(), reply_to },
+        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent | ShareKind::AgentStart => {
+            SharePayload::Message { text: message.trim().to_string(), reply_to }
+        }
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
         ShareKind::Link => SharePayload::Link { url: text.trim().to_string(), title: None },
     }
@@ -92,9 +94,25 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         SharePayload::Message { text, reply_to } => (Some(text), None, None, reply_to),
         SharePayload::Snippet { text, title } => (Some(text), None, title, None),
         SharePayload::Link { url, title } => (None, Some(url), title, None),
-        SharePayload::File { .. } | SharePayload::Tab { .. } | SharePayload::Object { .. } | SharePayload::Agent { .. } => (None, None, None, None),
+        SharePayload::File { .. } | SharePayload::Tab { .. } | SharePayload::Object { .. } | SharePayload::Agent { .. } | SharePayload::AgentStart { .. } => {
+            (None, None, None, None)
+        }
     };
-    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None, session: None, object: None, ids: Vec::new() }
+    ShareSendParams {
+        peer: peer.to_string(),
+        kind,
+        text,
+        url,
+        title,
+        reply_to,
+        path: None,
+        session: None,
+        object: None,
+        ids: Vec::new(),
+        prompt: None,
+        agent: None,
+        want_reply: false,
+    }
 }
 
 /// Paired Macs on the network first, then by name.
@@ -118,6 +136,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Tab => "tab",
         ShareKind::Object => "Midna items",
         ShareKind::Agent => "agent session",
+        ShareKind::AgentStart => "agent start",
     }
 }
 
@@ -130,6 +149,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Tab => "Tab",
         ShareKind::Object => "Midna",
         ShareKind::Agent => "Agent session",
+        ShareKind::AgentStart => "Agent start",
     }
 }
 
@@ -216,6 +236,8 @@ fn kind_of_title(title: &str, name: &str) -> ShareKind {
         ShareKind::Tab
     } else if has(" sent an agent session: ") {
         ShareKind::Agent
+    } else if has(" asks Claude Code here: ") || has(" asks Codex here: ") {
+        ShareKind::AgentStart
     } else if has(" sent a snippet") {
         ShareKind::Snippet
     } else if has(" sent a link: ") {
@@ -241,7 +263,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
         ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), shell: None, scrollback: o.body.clone() },
         ShareKind::Object => SharePayload::Snippet { text: o.body.clone(), title: None },
         // Only the card's words: what it is and where it opens.
-        ShareKind::Agent => SharePayload::Message { text: o.body.clone(), reply_to: None },
+        ShareKind::Agent | ShareKind::AgentStart => SharePayload::Message { text: o.body.clone(), reply_to: None },
     }
 }
 
@@ -273,6 +295,10 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         ShareKind::File => "Accept saves it into your Nearby downloads folder, marked as downloaded. Nothing is opened or run.".into(),
         ShareKind::Tab => "Open tab opens a new terminal in your checkout of its project (else your home folder) with their scrollback shown read-only above a fresh shell. Nothing they ran runs here, and no process or environment comes with it.".into(),
         ShareKind::Object => "Approve makes only the changes marked +. Rules, triggers and human-only settings come in only through you, triggers arrive turned off, and queued prompts wait in your inbox until you pick a terminal.".into(),
+        ShareKind::AgentStart => format!(
+            "Start agent opens a new agent terminal in your checkout of its project (else your home folder) and gives it this prompt. If {} asked for its answer, the agent's first reply goes back to them. Nothing runs before you accept.",
+            o.name
+        ),
         ShareKind::Agent => "Resume fetches the conversation, puts it where the agent keeps its conversations here (with their paths changed to yours), and opens a tab in your checkout of its project resuming it, idle until you prompt it. Nothing runs before you accept.".into(),
     };
     let transfer = m.share.items.iter().find(|i| i.id == o.id).and_then(|i| i.transfer.clone());
@@ -427,6 +453,23 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .child(div().font_weight(FontWeight::BOLD).child(format!("{title} · {place}")))
                 .child(div().text_color(t.dim).child(format!("{who} conversation · transcript {}", nb::size_label(transcript.size))))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).child(conversation.clone()))
+        }
+        SharePayload::AgentStart { title, agent, project, cwd, prompt, want_reply } => {
+            let place = match project {
+                Some(p) if p.path.is_empty() => p.remote.clone(),
+                Some(p) => format!("{}/{}", p.remote, p.path),
+                None => cwd.clone(),
+            };
+            let who = match agent {
+                AgentKind::Claude => "Claude Code",
+                AgentKind::Codex => "Codex",
+            };
+            let back = if *want_reply { " · its answer goes back" } else { "" };
+            frame()
+                .gap(px(4.))
+                .child(div().font_weight(FontWeight::BOLD).child(format!("{title} · {place}")))
+                .child(div().text_color(t.dim).child(format!("A new {who} terminal with this prompt{back}")))
+                .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).child(prompt.clone()))
         }
     }
 }
@@ -905,6 +948,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::File { name, .. } => nb::safe_name(name),
         SharePayload::Tab { title, .. } | SharePayload::Agent { title, .. } => title.clone(),
         SharePayload::Object { object } => object.label(),
+        SharePayload::AgentStart { prompt, .. } => prompt.clone(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -1051,6 +1095,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         SharePayload::Tab { scrollback, .. } => scrollback.clone(),
         SharePayload::Object { object } => serde_json::to_string_pretty(object).unwrap_or_default(),
         SharePayload::Agent { conversation, .. } => conversation.clone(),
+        SharePayload::AgentStart { prompt, .. } => prompt.clone(),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));

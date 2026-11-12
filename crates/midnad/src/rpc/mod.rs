@@ -416,6 +416,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "share.send" => crate::nearby::share::send(d, ctx, parse(p)?),
         "share.accept" => crate::nearby::share::accept(d, ctx, parse(p)?),
         "share.decline" => crate::nearby::share::decline(d, ctx, parse(p)?),
+        "share.answer" => crate::nearby::agent_start::answer(d, parse(p)?),
         "inbox.list" => crate::nearby::share::list(d, parse(p)?),
         "keep_awake.set" => crate::keep_awake::set(d, ctx, parse(p)?),
         "keep_awake.wake_setup" => crate::wake::setup(d, ctx, parse(p)?),

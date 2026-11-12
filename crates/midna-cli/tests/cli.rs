@@ -585,6 +585,26 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
         let o = midna(&s, ok, None, None);
         assert!(err(&o).contains("no paired device"), "{ok:?} parses: {}", err(&o));
     }
+    // An agent start goes --to a device with one prompt; --agent names the agent there, and
+    // --timeout only goes with --wait.
+    for ok in [
+        &["share", "send", "agent-start", "--to", "Bravo", "--prompt", "why?"][..],
+        &["share", "send", "agent-start", "--to", "Bravo", "--agent", "codex", "--wait", "--timeout", "5m", "why", "now?"],
+    ] {
+        let o = midna(&s, ok, None, None);
+        assert!(err(&o).contains("no paired device"), "{ok:?} parses: {}", err(&o));
+    }
+    for bad in [
+        &["share", "send", "agent-start", "--prompt", "why?"][..],
+        &["share", "send", "agent-start", "--to", "Bravo", "--prompt", "why?", "and words"],
+        &["share", "send", "agent-start", "--to", "Bravo", "--timeout", "5m", "why?"],
+        &["share", "answer"],
+    ] {
+        let o = midna(&s, bad, None, None);
+        assert!(code(&o) == 2 && !err(&o).contains("no paired device"), "{bad:?}: {}", err(&o));
+    }
+    let o = midna(&s, &["share", "answer", "sh_abcdabcd"], None, None);
+    assert!(code(&o) != 0 && err(&o).contains("no share sh_abcdabcd"), "{}", err(&o));
     let o = midna(&s, &["inbox", "accept", "sh_abcdabcd", "--cwd", "/tmp"], None, None);
     assert!(err(&o).contains("human only"), "--cwd takes a value: {}", err(&o));
     let o = midna(&s, &["call", "share.send", r#"{"peer":"ab","kind":"link","url":"javascript:alert(1)"}"#], None, None);

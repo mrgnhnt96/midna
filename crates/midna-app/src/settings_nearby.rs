@@ -73,6 +73,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Tab => "Tabs",
         ShareKind::Object => "Summaries & themes",
         ShareKind::Agent => "Agent sessions",
+        ShareKind::AgentStart => "Agent starts",
     }
 }
 
@@ -86,6 +87,7 @@ fn kind_tip(k: ShareKind) -> &'static str {
         ShareKind::Tab => "Opened as a new tab with a fresh shell; nothing they ran runs here",
         ShareKind::Object => "Session summaries and themes are added. Rules, triggers, settings and queued prompts always ask",
         ShareKind::Agent => "Agent sessions always ask",
+        ShareKind::AgentStart => "A new agent terminal opens in your checkout and runs their prompt, supervised like any agent here",
     }
 }
 

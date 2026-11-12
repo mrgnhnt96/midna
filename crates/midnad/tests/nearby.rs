@@ -37,6 +37,12 @@
 //! transcript, with the sender's checkout paths turned into the receiver's, goes where Claude Code
 //! or Codex looks for it and a new agent terminal resumes it; accepting is refused while a
 //! terminal here runs that conversation.
+//!
+//! Agent starts (`share.send` kind agent_start, `share.answer`): an agent's start leaves only with
+//! its human's OK, the receiver's human sees the prompt and nothing runs until they accept; then a
+//! new agent terminal in the receiver's checkout gets the prompt, accepting again is refused, and
+//! with `want_reply` the agent's last message when its first turn ends comes back (cut to the
+//! message limit) as a read reply that `share.answer` waits for; later turns send nothing.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND, REFUSED};
@@ -1475,5 +1481,122 @@ fn a_codex_session_resumes_in_the_folder_the_human_picks() {
     assert_eq!((s["kind"].as_str(), s["agent"].as_str(), s["cwd"].as_str()), (Some("agent"), Some("codex"), picked.to_str()), "{s}");
     let args = agent_args(&mut hb, &sid);
     assert_eq!((args.first().map(String::as_str), args.last().map(String::as_str)), (Some("resume"), Some(conv)), "{args:?}");
+    let _ = std::fs::remove_file(bin);
+}
+
+/// The answers to agent start `id` in this inbox.
+fn answers_to(c: &mut Client, id: &str) -> Vec<Value> {
+    inbox(c)["items"].as_array().unwrap().iter().filter(|s| s["direction"] == "incoming" && s["payload"]["reply_to"] == id).cloned().collect()
+}
+
+#[test]
+fn an_agent_start_runs_only_once_accepted_and_its_answer_comes_back() {
+    let bin = fake_agent("start");
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let theirs = checkout(&a.home.join("w/widget"), "git@github.com:Acme/widget.git");
+    let ours = checkout(&b.home.join("code/widget-clone"), "https://github.com/acme/widget");
+    let pid = call(&mut hb, "project.add", json!({ "path": ours, "name": "widget" }))["id"].as_str().unwrap().to_string();
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": theirs.join("src"), "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let prompt = "Why does the widget build fail on this Mac?";
+
+    // A start needs a prompt and carries no text.
+    for bad in [json!({ "kind": "agent_start", "session": t }), json!({ "kind": "agent_start", "session": t, "prompt": prompt, "text": "hi" })] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+
+    // An agent's start leaves only with A's human's OK, who sees the prompt.
+    let mut c = a.agent(Some(&t));
+    let p = json!({ "peer": fb, "kind": "agent_start", "session": t, "prompt": prompt, "want_reply": true });
+    let bg = std::thread::spawn(move || c.call_value("share.send", p));
+    let item = wait_for(10, "A asks", || share_asks(&mut ha).into_iter().next());
+    assert_eq!(item["approval"]["action"]["value"], format!("share send agent_start {fb}"));
+    assert!(item["title"].as_str().unwrap().contains("Start a Claude Code agent on Bravo"), "{item}");
+    assert!(item["detail"].as_str().unwrap().contains(prompt), "{item}");
+    answer(&mut ha, &item, json!({ "kind": "approve", "scope": { "kind": "once" } }));
+    let id = bg.join().unwrap().expect("sent once approved")["id"].as_str().unwrap().to_string();
+
+    // B's human sees the prompt and where it would run; nothing runs before they accept.
+    let got = wait_for(10, "B has it", || share(&mut hb, &id));
+    let p = &got["payload"];
+    assert_eq!((p["kind"].as_str(), p["agent"].as_str(), p["prompt"].as_str()), (Some("agent_start"), Some("claude"), Some(prompt)), "{got}");
+    assert_eq!((p["want_reply"].as_bool(), p["project"]["remote"].as_str(), p["project"]["path"].as_str()), (Some(true), Some("github.com/acme/widget"), Some("src")), "{got}");
+    assert_eq!(got["state"], "offered", "{got}");
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    assert!(ny["item"]["title"].as_str().unwrap().contains("asks Claude Code here"), "{ny}");
+    let detail = ny["item"]["detail"].as_str().unwrap();
+    assert!(detail.contains(prompt) && detail.contains(&ours.join("src").display().to_string()), "{detail}");
+    stays(1, "nothing starts before accepting", || agents(&mut hb).is_empty());
+    assert_eq!(call_err(&mut b.agent(None), "share.accept", json!({ "id": id })).code, HUMAN_ONLY);
+    let none = call(&mut ha, "share.answer", json!({ "id": id }));
+    assert!(none["answer"].is_null() && none["share"]["id"] == id, "{none}");
+
+    // Accepting opens a new agent terminal in B's checkout with the prompt.
+    let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    call(&mut hb, "needs_you.resolve", approve);
+    let done = wait_for(20, "the agent starts", || share(&mut hb, &id).filter(|s| s["result"].as_str().is_some_and(|r| r.starts_with("opened as"))));
+    let sid = opened(&done);
+    let s = call(&mut hb, "session.get", json!({ "id": sid }));
+    assert_eq!((s["kind"].as_str(), s["agent"].as_str()), (Some("agent"), Some("claude")), "{s}");
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str()), (ours.join("src").to_str(), Some(pid.as_str())), "{s}");
+    let args = agent_args(&mut hb, &sid);
+    assert!(args.iter().any(|a| a == prompt), "{args:?}");
+    wait_for(20, "A hears B accepted", || share(&mut ha, &id).filter(|s| s["state"] == "accepted"));
+
+    // Accepting it again would run the prompt again: refused.
+    let e = call_err(&mut hb, "share.accept", json!({ "id": id }));
+    assert_eq!(e.code, midna_proto::error::CONFLICT, "{}", e.message);
+    assert_eq!(agents(&mut hb).len(), 1);
+
+    // The first turn ends: its last message goes back, cut to the message limit, read at once.
+    let long = format!("The build needs Zig 0.15.2. {}", "x".repeat(nb::MAX_MESSAGE_TEXT));
+    let mut w = a.human();
+    let wid = id.clone();
+    let waiter = std::thread::spawn(move || call(&mut w, "share.answer", json!({ "id": wid, "wait_secs": 30 })));
+    let stop = json!({ "agent": "claude", "event": "Stop", "payload": { "last_assistant_message": long } });
+    call(&mut b.agent(Some(&sid)), "agent.hook", stop);
+    let r = waiter.join().unwrap();
+    let ans = &r["answer"];
+    let text = ans["payload"]["text"].as_str().unwrap_or_else(|| panic!("{r}"));
+    assert!(text.starts_with("The build needs Zig 0.15.2.") && text.ends_with('…') && text.len() <= nb::MAX_MESSAGE_TEXT, "{} bytes", text.len());
+    assert_eq!((ans["payload"]["reply_to"].as_str(), ans["direction"].as_str()), (Some(id.as_str()), Some("incoming")), "{r}");
+    assert_eq!((ans["state"].as_str(), ans["auto"].as_bool()), (Some("accepted"), Some(true)), "{r}");
+    assert!(ans["needs_you_id"].is_null(), "an answer asks nothing: {r}");
+    let heard = events(&mut ha, kinds::SHARE_ANSWERED);
+    assert!(heard.iter().any(|e| e["data"]["payload"]["reply_to"] == id), "{heard:?}");
+
+    // Later turns send nothing more.
+    let again = json!({ "agent": "claude", "event": "Stop", "payload": { "last_assistant_message": "a second answer" } });
+    call(&mut b.agent(Some(&sid)), "agent.hook", again);
+    stays(2, "one answer only", || answers_to(&mut ha, &id).len() == 1);
+
+    // Only agent starts sent with want_reply have an answer to wait for.
+    let msg = send(&mut ha, &fb, json!({ "kind": "message", "text": "hi" }))["id"].as_str().unwrap().to_string();
+    assert_eq!(call_err(&mut ha, "share.answer", json!({ "id": msg })).code, midna_proto::error::BAD_PARAMS);
+    assert_eq!(call_err(&mut ha, "share.answer", json!({ "id": "sh_nope" })).code, NOT_FOUND);
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
+fn an_agent_start_whose_terminal_ends_first_still_answers() {
+    // A stand-in agent that exits at once, before any turn ends.
+    let bin = std::path::PathBuf::from(format!("/tmp/midna-nb-{}-quits.sh", std::process::id()));
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair_with(&svc, Some(bin.to_string_lossy().into_owned()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": a.home, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let p = json!({ "kind": "agent_start", "session": t, "prompt": "hello", "agent": "codex", "want_reply": true });
+    let id = send(&mut ha, &fb, p)["id"].as_str().unwrap().to_string();
+    let got = wait_for(10, "B has it", || share(&mut hb, &id));
+    assert_eq!(got["payload"]["agent"], "codex", "{got}");
+    call(&mut hb, "share.accept", json!({ "id": id }));
+    let r = call(&mut ha, "share.answer", json!({ "id": id, "wait_secs": 30 }));
+    let text = r["answer"]["payload"]["text"].as_str().unwrap_or_else(|| panic!("{r}"));
+    assert!(text.contains("ended before it answered"), "{text}");
     let _ = std::fs::remove_file(bin);
 }

@@ -112,7 +112,9 @@ pub(super) fn title_of(p: &ShareSendParams, name: &str) -> String {
 /// Where a tab or an agent session was on the sending Mac: its project and directory.
 fn origin(payload: &SharePayload) -> Option<(Option<&TabProject>, &str)> {
     match payload {
-        SharePayload::Tab { project, cwd, .. } | SharePayload::Agent { project, cwd, .. } => Some((project.as_ref(), cwd)),
+        SharePayload::Tab { project, cwd, .. } | SharePayload::Agent { project, cwd, .. } | SharePayload::AgentStart { project, cwd, .. } => {
+            Some((project.as_ref(), cwd))
+        }
         _ => None,
     }
 }
