@@ -651,7 +651,10 @@ fn build() -> Vec<MethodSpec> {
              the SHA-256 of its Ed25519 public key; names are display only and can repeat), the name others see \
              (setting nearby.name, else the computer name), visibility (setting nearby.visibility: off | paired | \
              everyone; everyone goes back to paired after 10 minutes, at everyone_until), whether it is advertising \
-             and browsing, and the Bonjour service type. `peers` are the Midnas it sees now. Events peers.appeared \
+             and browsing, the Bonjour service type, and local_network: ok, waiting (macOS is likely asking whether \
+             Midna may use the local network; pairing and sending keep trying for up to a minute) or denied (Local \
+             Network access is off in System Settings; event peers.local_network when it changes). `peers` are the \
+             Midnas it sees now. Events peers.appeared \
              (data: the peer) and peers.left ({fingerprint, name}) fire as they come and go. Changing visibility is \
              human only. `paired` lists every device paired with this one (tier contact or my_device, nearby or \
              not) and `pairings` the pairings in progress. A peer with claims_name_of uses a paired device's name \

@@ -6,7 +6,7 @@
 //! shares ([`super::share`]) and fetch the files of shares offered to them
 //! ([`super::transfer`]). With visibility `off` nothing is served at all.
 use super::transport::{self, Channel, Wire};
-use super::{local, pairing, share, transfer, visibility};
+use super::{access, local, pairing, share, transfer, visibility};
 use crate::daemon::Daemon;
 use midna_proto::RpcError;
 use midna_proto::nearby::Visibility;
@@ -126,12 +126,22 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
 
 /// An authenticated connection to a paired device that can be seen now (for sending to it).
 pub fn connect_peer(d: &Daemon, fp: &str) -> Result<Channel, RpcError> {
+    reach(d, fp, false)
+}
+
+/// [`connect_peer`] for a send a person is waiting on: a connection macOS blocks while it asks
+/// about Local Network access is tried again until they answer (`access::dial`).
+pub fn connect_peer_waiting(d: &Daemon, fp: &str) -> Result<Channel, RpcError> {
+    reach(d, fp, true)
+}
+
+fn reach(d: &Daemon, fp: &str, patient: bool) -> Result<Channel, RpcError> {
     if !trusted(d, fp) {
         return Err(RpcError::refused("that device isn't paired with this Mac"));
     }
     let peer = d.nearby.inner().peers.get(fp).cloned().ok_or_else(|| RpcError::not_found("that device can't be seen on the network now"))?;
     let addrs = pairing::addresses(d, peer.host.as_deref(), peer.port)?;
-    let ch = transport::connect(&addrs, local(d)).map_err(|e| RpcError::refused(format!("couldn't reach {}: {e}", peer.name)))?;
+    let ch = access::dial(d, &addrs, &peer.name, patient)?;
     if ch.fingerprint != fp {
         return Err(RpcError::refused(format!("the device that answered at {}'s address isn't it (another key)", peer.name)));
     }

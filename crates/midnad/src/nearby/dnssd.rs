@@ -154,6 +154,16 @@ pub fn resolve(tag: usize, iface: u32, name: &str, regtype: &str, domain: &str) 
     Ref::made(sd, err)
 }
 
+/// `kDNSServiceErr_PolicyDenied`: Local Network privacy refused it (not yet answered, or off).
+pub const POLICY_DENIED: i32 = -65570;
+/// `kDNSServiceErr_NotPermitted`.
+pub const NOT_PERMITTED: i32 = -65571;
+
+/// Local Network privacy refused the call (`access.rs` turns this into a state, not an error).
+pub fn is_policy_denied(err: i32) -> bool {
+    matches!(err, POLICY_DENIED | NOT_PERMITTED)
+}
+
 /// A DNS-SD error code in words.
 pub fn describe(err: i32) -> String {
     let what = match err {
@@ -164,7 +174,7 @@ pub fn describe(err: i32) -> String {
         -65555 => "no auth",
         -65563 => "mDNSResponder isn't running",
         -65569 => "lost the connection to mDNSResponder",
-        -65570 | -65571 => "denied (is Local Network access off for Midna in System Settings › Privacy & Security?)",
+        POLICY_DENIED | NOT_PERMITTED => "macOS didn't allow it (Local Network access for Midna)",
         _ => "DNS-SD error",
     };
     format!("{what} ({err})")

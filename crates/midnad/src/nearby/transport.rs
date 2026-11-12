@@ -188,16 +188,46 @@ pub struct Channel {
     partial: Vec<u8>,
 }
 
+/// Why [`connect`] failed.
+#[derive(Debug)]
+pub struct ConnectError {
+    /// The connection was refused by this Mac, not the network: what macOS does while Local
+    /// Network access is off or not yet answered (`EHOSTUNREACH`, `EPERM`). See `access.rs`.
+    pub blocked: bool,
+    pub message: String,
+}
+
 /// Open a connection to `addr` and run the handshake as the initiator.
-pub fn connect(addrs: &[SocketAddr], local: &Local) -> Result<Channel, String> {
-    let mut last = "no address to connect to".to_string();
+pub fn connect(addrs: &[SocketAddr], local: &Local) -> Result<Channel, ConnectError> {
+    let mut last = ConnectError { blocked: false, message: "no address to connect to".into() };
+    let mut blocked = false;
     for a in addrs {
         match TcpStream::connect_timeout(a, CONNECT_TIMEOUT) {
-            Ok(s) => return handshake(s, local, true),
-            Err(e) => last = format!("connecting to {a}: {e}"),
+            Ok(s) => return handshake(s, local, true).map_err(|message| ConnectError { blocked: false, message }),
+            Err(e) => {
+                blocked |= is_blocked(&e);
+                last = ConnectError { blocked, message: connect_words(&e) };
+            }
         }
     }
     Err(last)
+}
+
+/// What macOS answers a connection Local Network privacy stops.
+pub fn is_blocked(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::EHOSTUNREACH | libc::EPERM))
+}
+
+/// Why a TCP connection failed, in words.
+pub fn connect_words(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(libc::EHOSTUNREACH) => "macOS found no way to it (Local Network access off for Midna, or not on this network)".into(),
+        Some(libc::EPERM) => "macOS didn't allow the connection (Local Network access is off for Midna)".into(),
+        Some(libc::ECONNREFUSED) => "it isn't taking connections (is Midna running there with Nearby on?)".into(),
+        Some(libc::ENETUNREACH | libc::ENETDOWN) => "this Mac isn't on a network".into(),
+        _ if e.kind() == ErrorKind::TimedOut => "it didn't answer (is it still on this network?)".into(),
+        _ => e.to_string(),
+    }
 }
 
 /// Run the handshake as the responder on an accepted connection.
@@ -344,7 +374,7 @@ mod tests {
         let addr = l.local_addr().unwrap();
         let lb = Local::new(b);
         let t = std::thread::spawn(move || accept(l.accept().unwrap().0, &lb));
-        let ca = connect(&[addr], &Local::new(a));
+        let ca = connect(&[addr], &Local::new(a)).map_err(|e| e.message);
         (ca, t.join().unwrap())
     }
 
@@ -380,6 +410,20 @@ mod tests {
         assert!(device_key(&la.payload, Some(&kp.public)).is_err());
         assert!(device_key(&la.payload[..50], Some(&kp.public)).is_err());
         assert!(device_key(&la.payload, None).is_err());
+    }
+
+    #[test]
+    fn connect_errors_in_words() {
+        let e = |n| std::io::Error::from_raw_os_error(n);
+        assert!(is_blocked(&e(libc::EHOSTUNREACH)) && is_blocked(&e(libc::EPERM)));
+        assert!(!is_blocked(&e(libc::ECONNREFUSED)));
+        assert!(connect_words(&e(libc::EHOSTUNREACH)).contains("Local Network"));
+        assert!(!connect_words(&e(libc::ECONNREFUSED)).contains("os error"));
+        // Nothing listening: refused, not blocked.
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let err = connect(&[port], &Local::new(&ident("refused"))).err().unwrap();
+        assert!(!err.blocked);
+        assert!(err.message.contains("isn't taking connections"), "{}", err.message);
     }
 
     #[test]

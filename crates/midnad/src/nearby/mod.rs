@@ -9,7 +9,8 @@
 //! device's fingerprint)), `everyone` browses and advertises the display name, fingerprint and
 //! protocol version in the TXT record. `everyone` goes back to
 //! `paired` on its own after `EVERYONE_SECS`; the deadline is in state.json so a restart doesn't
-//! extend it. Bonjour errors are kept for `peers.list` and retried every few seconds.
+//! extend it. Bonjour errors are kept for `peers.list` and retried every few seconds, except
+//! macOS's Local Network privacy refusing it, which is a state of its own (`access.rs`).
 //!
 //! The advertised port takes Noise connections bound to the device keys (`transport.rs`,
 //! `link.rs`): devices that aren't paired may only ask to pair (`pairing.rs`), and paired ones
@@ -21,6 +22,7 @@
 //! `_midna._tcp`; Midna Dev and every other home use `_midna-dev._tcp`, `MIDNA_NEARBY_SERVICE`
 //! picks another (or `off`), and in-process daemons (tests) have Nearby off unless the test turns
 //! it on with a service of its own.
+pub mod access;
 pub mod dnssd;
 pub mod guard;
 pub mod identity;
@@ -50,6 +52,10 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_millis(300);
 /// After a Bonjour error, how long until it tries again.
 const RETRY: Duration = Duration::from_secs(5);
+/// After Local Network privacy refused Bonjour: sooner, so allowing it in the prompt shows.
+const RETRY_BLOCKED: Duration = Duration::from_secs(2);
+/// A browse running this long without being refused means Bonjour is allowed.
+const BROWSE_SETTLED: Duration = Duration::from_secs(3);
 const BROWSE_TAG: usize = 1;
 const REGISTER_TAG: usize = 2;
 
@@ -147,6 +153,8 @@ pub struct Runtime {
     wake: Arc<(Mutex<bool>, Condvar)>,
     /// Set and notified when a file share is accepted (`transfer.rs`'s thread waits on it).
     fetch: Arc<(Mutex<bool>, Condvar)>,
+    /// Local Network access as far as it can be told.
+    access: Mutex<access::Access>,
 }
 
 impl Runtime {
@@ -187,6 +195,7 @@ pub fn list(d: &Daemon) -> R {
         _ => None,
     };
     let name = display_name(d);
+    let local_network = access::state(d);
     let mut i = d.nearby.inner();
     pairing::prune(&mut i);
     let store = i.store(&d.cfg.home).clone();
@@ -207,6 +216,7 @@ pub fn list(d: &Daemon) -> R {
             port: i.port,
             protocol: nb::PROTOCOL,
             error: i.error.clone(),
+            local_network,
         },
         peers,
         paired,
@@ -339,6 +349,10 @@ struct Worker {
     /// The salt of this daemon's paired-only advertisement.
     salt: [u8; 16],
     browse: Option<dnssd::Ref>,
+    /// When the browse started.
+    browse_since: Option<Instant>,
+    /// Local Network privacy refused Bonjour (and nothing has gone through since).
+    blocked: bool,
     reg: Option<Reg>,
     instances: HashMap<InstKey, Inst>,
     next_tag: usize,
@@ -354,12 +368,28 @@ impl Worker {
             port,
             salt: transport::random(),
             browse: None,
+            browse_since: None,
+            blocked: false,
             reg: None,
             instances: HashMap::new(),
             next_tag: REGISTER_TAG + 1,
             retry_at: None,
             error: None,
         }
+    }
+
+    /// A DNS-SD call failed with `code`: Local Network privacy is a state, anything else an error.
+    fn fail_dnssd(&mut self, d: &Daemon, what: &str, code: i32) {
+        if dnssd::is_policy_denied(code) {
+            if !self.blocked {
+                eprintln!("midnad: nearby: {what}: macOS Local Network privacy refused it; waiting for access");
+            }
+            self.blocked = true;
+            access::bonjour(d, true);
+            self.retry_at = Some(Instant::now() + RETRY_BLOCKED);
+            return;
+        }
+        self.fail(what, dnssd::describe(code));
     }
 
     fn fail(&mut self, what: &str, err: String) {
@@ -417,13 +447,13 @@ impl Worker {
             BROWSE_TAG => {
                 if let Some(Err(e)) = self.browse.as_ref().map(dnssd::Ref::process) {
                     self.stop_browse(d);
-                    self.fail("looking for other Midnas", dnssd::describe(e));
+                    self.fail_dnssd(d, "looking for other Midnas", e);
                 }
             }
             REGISTER_TAG => {
                 if let Some(Err(e)) = self.reg.as_ref().map(|r| r.r.process()) {
                     self.reg = None;
-                    self.fail("showing this Mac", dnssd::describe(e));
+                    self.fail_dnssd(d, "showing this Mac", e);
                 }
             }
             tag => {
@@ -446,8 +476,11 @@ impl Worker {
             }
         } else if self.browse.is_none() && may_retry {
             match dnssd::browse(BROWSE_TAG, self.iface, &self.service) {
-                Ok(r) => self.browse = Some(r),
-                Err(e) => self.fail("looking for other Midnas", dnssd::describe(e)),
+                Ok(r) => {
+                    self.browse = Some(r);
+                    self.browse_since = Some(Instant::now());
+                }
+                Err(e) => self.fail_dnssd(d, "looking for other Midnas", e),
             }
         }
         let me = identity(d).fingerprint.clone();
@@ -494,7 +527,7 @@ impl Worker {
         };
         match dnssd::register(REGISTER_TAG, self.iface, &instance, &self.service, port, &txt) {
             Ok(r) => self.reg = Some(Reg { r, name: instance, txt, up: false }),
-            Err(e) => self.fail("showing this Mac", dnssd::describe(e)),
+            Err(e) => self.fail_dnssd(d, "showing this Mac", e),
         }
     }
 
@@ -507,12 +540,12 @@ impl Worker {
                     }
                 } else {
                     self.reg = None;
-                    self.fail("showing this Mac", dnssd::describe(err));
+                    self.fail_dnssd(d, "showing this Mac", err);
                 }
             }
             dnssd::Ev::Browsed { err, .. } if err != 0 => {
                 self.stop_browse(d);
-                self.fail("looking for other Midnas", dnssd::describe(err));
+                self.fail_dnssd(d, "looking for other Midnas", err);
             }
             dnssd::Ev::Browsed { add: true, iface, name, regtype, domain, .. } => {
                 let key = (name, iface, domain);
@@ -557,6 +590,7 @@ impl Worker {
 
     fn stop_browse(&mut self, d: &Daemon) {
         self.browse = None;
+        self.browse_since = None;
         self.instances.clear();
         self.sync_peers(d);
     }
@@ -633,6 +667,14 @@ impl Worker {
             self.error = None;
             self.retry_at = None;
         }
+        // Allowed once a browse runs a while unrefused or an advertisement is up; with Nearby
+        // off nothing asks, so nothing is blocked.
+        let settled = self.browse_since.is_some_and(|t| t.elapsed() >= BROWSE_SETTLED) || self.reg.as_ref().is_some_and(|r| r.up);
+        if self.blocked && (settled || vis == Visibility::Off) {
+            self.blocked = false;
+            access::bonjour(d, false);
+        }
+        access::announce(d);
         let mut i = d.nearby.inner();
         i.browsing = self.browse.is_some();
         i.advertising = self.reg.as_ref().is_some_and(|r| r.up);
