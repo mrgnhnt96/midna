@@ -258,3 +258,208 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
         other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, pair, confirm, tier, forget, visibility or name)"))),
     }
 }
+
+/// Flags `share` and `inbox` take a value from (`--link <url>`, `--into <terminal>`).
+pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "into"];
+
+/// The paired device `who` names.
+fn paired(who: &str) -> Result<String, Fail> {
+    let list = call("peers.list", json!({}))?;
+    find(list["paired"].as_array().map(Vec::as_slice).unwrap_or_default(), who, "paired device")
+}
+
+fn kind_word(item: &Value) -> String {
+    let p = &item["payload"];
+    match (p["kind"].as_str(), p["title"].as_str()) {
+        (Some(k), Some(t)) => format!("{k} “{t}”"),
+        (Some(k), None) => k.to_string(),
+        _ => "share".into(),
+    }
+}
+
+/// The first line of a share's text or its URL, cut short.
+fn preview(item: &Value) -> String {
+    let p = &item["payload"];
+    let text = p["url"].as_str().or(p["text"].as_str()).unwrap_or("");
+    let first = text.lines().next().unwrap_or("").trim();
+    let mut short: String = first.chars().take(60).collect();
+    if short.len() < first.len() || text.trim_end().contains('\n') {
+        short.push('…');
+    }
+    short
+}
+
+fn share_line(item: &Value) -> String {
+    let dir = if item["direction"] == "incoming" { "from" } else { "to" };
+    let state = match (item["state"].as_str().unwrap_or(""), item["result"].as_str()) {
+        ("offered", _) if item["direction"] == "incoming" => "waiting for you".to_string(),
+        ("offered", _) => "waiting for them".to_string(),
+        (st, Some(r)) => format!("{st}: {r}"),
+        (st, None) => st.to_string(),
+    };
+    format!(
+        "{}  {} {dir} {}  {}  {state}  {}",
+        s(item, "id"),
+        kind_word(item),
+        s(item, "peer_name"),
+        crate::guide::ago(item["sent_at"].as_str().unwrap_or("")),
+        preview(item)
+    )
+}
+
+fn print_sent(v: &Value) {
+    println!("Offered {} to {} ({}); they accept or decline it on their Mac.", kind_word(v), s(v, "peer_name"), s(v, "id"));
+}
+
+fn print_inbox(v: &Value) {
+    let items = v["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        println!("The inbox is empty.");
+        return;
+    }
+    for it in &items {
+        println!("{}", share_line(it));
+    }
+    match v["waiting"].as_u64().unwrap_or(0) {
+        0 => {}
+        n => println!("{n} waiting for you: midna inbox accept <id> (a snippet: --into <terminal>), or midna inbox decline <id>"),
+    }
+}
+
+fn print_item(v: &Value) {
+    println!("{}", share_line(v));
+    let p = &v["payload"];
+    if let Some(r) = p["reply_to"].as_str() {
+        println!("in reply to {r}");
+    }
+    match (p["url"].as_str(), p["text"].as_str()) {
+        (Some(u), _) => println!("{u}"),
+        (None, Some(t)) => println!("{}", t.trim_end_matches('\n')),
+        _ => {}
+    }
+}
+
+/// `midna share send <peer> [text…]`: offer a paired device a message, a snippet or a link.
+pub fn share(a: &Args, out: OutFn) -> Res {
+    a.check(&["link", "title", "snippet", "message"])?;
+    match a.pos.get(1).map(String::as_str) {
+        Some("send") => {}
+        Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
+        None => return Err(Fail::Usage("share send <peer> [text…] (or text on stdin, or --link <url>)".into())),
+    }
+    let who = a.need(2, "which paired device (midna peers lists them)")?;
+    let words = a.text(3);
+    let mut params = json!({ "peer": paired(&who)? });
+    if let Some(t) = a.get("title") {
+        params["title"] = json!(t);
+    }
+    if let Some(url) = a.get("link") {
+        if !words.is_empty() || a.has("snippet") || a.has("message") {
+            return Err(Fail::Usage("--link sends just the link (give it a --title instead of text)".into()));
+        }
+        params["kind"] = json!("link");
+        params["url"] = json!(url);
+    } else {
+        let text = if words.is_empty() {
+            use std::io::{IsTerminal, Read};
+            if std::io::stdin().is_terminal() {
+                return Err(Fail::Usage("nothing to send: give text, pipe it on stdin, or use --link <url>".into()));
+            }
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t).map_err(|e| Fail::Usage(format!("reading stdin: {e}")))?;
+            t
+        } else {
+            words.clone()
+        };
+        // Words are a message and stdin is a snippet, unless a flag says otherwise.
+        let snippet = a.has("snippet") || (words.is_empty() && !a.has("message"));
+        params["kind"] = json!(if snippet { "snippet" } else { "message" });
+        params["text"] = json!(text);
+    }
+    let v = call("share.send", params)?;
+    out(&v, &print_sent);
+    Ok(())
+}
+
+fn item(id: &str) -> Result<Value, Fail> {
+    let v = call("inbox.list", json!({ "limit": 100000 }))?;
+    v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|it| it["id"] == id)
+        .cloned()
+        .ok_or_else(|| Fail::Usage(format!("no share {id} in the inbox (midna inbox lists them)")))
+}
+
+/// `midna inbox …`: shares from and to paired devices.
+pub fn inbox(a: &Args, out: OutFn) -> Res {
+    let id = || a.need(2, "which share (sh_…; midna inbox lists them)");
+    match a.pos.get(1).map(String::as_str).unwrap_or("list") {
+        "list" | "ls" => {
+            a.check(&["in", "out", "waiting", "limit"])?;
+            let mut params = json!({});
+            match (a.has("in"), a.has("out")) {
+                (true, false) => params["direction"] = json!("incoming"),
+                (false, true) => params["direction"] = json!("outgoing"),
+                _ => {}
+            }
+            if a.has("waiting") {
+                params["direction"] = json!("incoming");
+                params["state"] = json!("offered");
+            }
+            if let Some(n) = a.get("limit") {
+                let n: usize = n.parse().map_err(|_| Fail::Usage(format!("--limit {n}: a number")))?;
+                params["limit"] = json!(n);
+            }
+            let v = call("inbox.list", params)?;
+            out(&v, &print_inbox);
+            Ok(())
+        }
+        "show" => {
+            a.check(&[])?;
+            let v = item(&id()?)?;
+            out(&v, &print_item);
+            Ok(())
+        }
+        "accept" => {
+            a.check(&["into", "pin"])?;
+            let mut params = json!({ "id": id()? });
+            if let Some(t) = a.get("into") {
+                params["session"] = json!(t);
+            }
+            if a.has("pin") {
+                params["action"] = json!("pin");
+            }
+            let v = call("share.accept", params)?;
+            out(&v, &|v| println!("{}", share_line(v)));
+            Ok(())
+        }
+        "decline" => {
+            a.check(&[])?;
+            let v = call("share.decline", json!({ "id": id()? }))?;
+            out(&v, &|v| println!("{}", share_line(v)));
+            Ok(())
+        }
+        "reply" => {
+            a.check(&[])?;
+            let id = id()?;
+            let text = a.text(3);
+            if text.trim().is_empty() {
+                return Err(Fail::Usage("inbox reply <id> <text…>".into()));
+            }
+            let it = item(&id)?;
+            if it["direction"] != "incoming" || it["payload"]["kind"] != "message" {
+                return Err(Fail::Usage(format!("{id} isn't a message to this Mac")));
+            }
+            // Replying reads the message.
+            if it["state"] == "offered" {
+                call("share.accept", json!({ "id": id }))?;
+            }
+            let v = call("share.send", json!({ "peer": it["peer"], "kind": "message", "text": text, "reply_to": id }))?;
+            out(&v, &print_sent);
+            Ok(())
+        }
+        other => Err(Fail::Usage(format!("unknown inbox subcommand `{other}` (list, show, accept, decline or reply)"))),
+    }
+}

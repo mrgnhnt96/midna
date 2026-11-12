@@ -674,6 +674,27 @@ fn build() -> Vec<MethodSpec> {
         m::<PeersSetTierParams, PairedPeer>("peers.set_tier").mutating().human().d(
             "Nearby: change how a paired device is kept: `as` contact (whatever it sends asks first) or my_device. \
              Returns the device; event peers.changed. Human only: an agent can't promote a device."),
+        m::<ShareSendParams, ShareItem>("share.send").mutating().d(
+            "Nearby: offer a paired device that is on the network now a message (kind message, `text`, optional \
+             reply_to: the sh_… it answers), a snippet (kind snippet, `text`, optional title: text the other person can \
+             paste into a terminal) or a link (kind link, an http(s) `url`, optional title). Returns the share (sh_…) \
+             once it is in the other device's inbox; event share.sent. Nothing runs on the other Mac: its person \
+             accepts or declines (share.accepted / share.declined fire here when they do). Limits: message 4 KiB, \
+             snippet 256 KiB, URL 4 KiB."),
+        m::<ShareAcceptParams, ShareItem>("share.accept").mutating().human().d(
+            "Nearby: accept an incoming share. A message is marked read. A snippet is kept in the inbox, or with \
+             `session` pasted into that terminal (never followed by Enter; multi-line text only into a terminal that \
+             takes bracketed paste, so no line runs); accept it again to paste it again. A link is opened (action \
+             open, the default) or pinned to a terminal's links (action pin, `session` or the caller's). The sender \
+             gets share.accepted. Human only: agents can't accept what other devices send."),
+        m::<ShareDeclineParams, ShareItem>("share.decline").mutating().human().d(
+            "Nearby: decline an incoming share; the sender gets share.declined. The share stays in the inbox, \
+             declined. Human only."),
+        m::<InboxListParams, InboxListResult>("inbox.list").d(
+            "Nearby: shares to and from paired devices, newest first, kept across restarts (the latest 500). \
+             Incoming ones in state offered wait for the human (each has a needs-you approval: approving accepts it, \
+             denying declines it). Event share.offered fires as one arrives. Filters: direction (incoming | \
+             outgoing), state (offered | accepted | declined), peer (fingerprint), limit (default 100)."),
         // usage
         m::<NoParams, UsageGetResult>("usage.get").d(
             "Claude's plan usage limits (account-wide): the 5-hour and weekly windows {used_percentage 0-100, resets_at}, \

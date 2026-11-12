@@ -727,6 +727,36 @@ pub static VERBS: &[Verb] = &[
         methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.forget"],
     },
     Verb {
+        name: "share",
+        aliases: &[],
+        usage: "share send <name|id> <text…> | share send <name|id> [--title T] < file | share send <name|id> --link <url> [--title T]\n\
+                \x20     [--snippet | --message]",
+        summary: "offer a paired device a message, a snippet or a link",
+        details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
+                  pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
+                  open or pin. --snippet / --message override the guess. The device must be paired and nearby now.\n\
+                  Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
+                  Their answer comes back as share.accepted or share.declined (midna events --kind share.).",
+        methods: &["share.send"],
+    },
+    Verb {
+        name: "inbox",
+        aliases: &[],
+        usage: "inbox [list] [--in | --out | --waiting] [--limit N] | show <id> | accept <id> [--into <terminal>] [--pin]\n\
+                \x20     | decline <id> | reply <id> <text…>",
+        summary: "shares from and to paired devices",
+        details: "list     newest first, both directions; --waiting = offers waiting for you.\n\
+                  accept   (human only) a message is marked read; a snippet is pasted into --into <terminal> (never\n\
+                  \x20        followed by Enter; without --into it stays in the inbox, and accepting again pastes again);\n\
+                  \x20        a link opens in the browser, or --pin pins it to --into <terminal> (default this one).\n\
+                  decline  (human only) tell the sender no. Each offer also raises a needs-you approval: approving\n\
+                  \x20        accepts it (a link opens, a snippet stays in the inbox) and denying declines it.\n\
+                  reply    answer a message with a message.\n\
+                  The inbox keeps the last 500 shares across restarts. Events share.offered, share.sent,\n\
+                  share.accepted and share.declined follow it.",
+        methods: &["inbox.list", "share.accept", "share.decline"],
+    },
+    Verb {
         name: "keep-awake",
         aliases: &["awake"],
         usage: "keep-awake [status] | on | off\n       \

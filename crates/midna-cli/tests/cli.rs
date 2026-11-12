@@ -533,3 +533,31 @@ fn status_sets_shows_and_clears_a_label() {
     }
     assert_eq!(code(&midna(&s, &["status", "set", "x"], None, None)), 2, "no terminal outside midna");
 }
+
+#[test]
+fn share_and_inbox_parse_and_agents_cant_decide() {
+    let d = D::start();
+    let s = d.sock();
+    let err = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    let o = midna(&s, &["inbox"], None, None);
+    assert_eq!((code(&o), stdout(&o).trim()), (0, "The inbox is empty."), "{o:?}");
+    let o = midna(&s, &["inbox", "--waiting", "--json"], None, None);
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&o)).unwrap(), json!({ "items": [], "waiting": 0 }));
+    // Deciding is the human's.
+    for verb in ["accept", "decline"] {
+        let o = midna(&s, &["inbox", verb, "sh_abcdabcd"], None, None);
+        assert_eq!(code(&o), 1, "{verb}: {o:?}");
+    }
+    // The peer has to be paired; flags and text are checked before anything is sent.
+    let o = midna(&s, &["share", "send", "Bravo", "hi"], None, None);
+    assert_eq!(code(&o), 2, "{o:?}");
+    assert!(err(&o).contains("no paired device called or with id `Bravo`"), "{}", err(&o));
+    assert_eq!(code(&midna(&s, &["share", "send"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["share", "send", "Bravo", "--link"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["share", "Bravo", "hi"], None, None)), 2);
+    assert_eq!(code(&midna(&s, &["inbox", "accept", "sh_abcdabcd", "--open"], None, None)), 2);
+    let o = midna(&s, &["share", "send", "Bravo", "--link", "https://example.com", "--title", "t"], None, None);
+    assert!(err(&o).contains("no paired device"), "--link takes a value: {}", err(&o));
+    let o = midna(&s, &["call", "share.send", r#"{"peer":"ab","kind":"link","url":"javascript:alert(1)"}"#], None, None);
+    assert_eq!(code(&o), 2, "{o:?}");
+}

@@ -52,6 +52,13 @@ pub enum Wire {
     /// Paired devices only: are you there?
     Ping,
     Pong,
+    /// Paired devices only: a share for your inbox (`payload` is a `nearby::SharePayload`; kept
+    /// as JSON so a kind this build doesn't know is refused rather than breaking the message).
+    ShareOffer { id: String, payload: serde_json::Value },
+    /// My person accepted or declined your share `id` (`state`: accepted | declined).
+    ShareResult { id: String, state: String },
+    /// Got share message `id` (an offer is in the inbox; a result is recorded).
+    ShareAck { id: String },
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).

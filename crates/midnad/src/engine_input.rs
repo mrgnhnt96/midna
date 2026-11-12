@@ -321,6 +321,11 @@ impl Engine {
         out
     }
 
+    /// The app turned on bracketed paste (mode 2004): a paste can't run anything by itself.
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.mode(Mode::BRACKETED_PASTE).unwrap_or(false)
+    }
+
     /// Paste: unsafe control bytes become spaces; bracketed when the app enabled 2004,
     /// otherwise newlines become CR.
     pub fn paste(&mut self, text: &str) -> Vec<u8> {

@@ -45,7 +45,7 @@ watches the GUI. You can drive almost all of it: CLI `midna <verb>`, MCP tools (
 `midna call <method> <json>`. Everything you do is logged (`midna events`).
 
 WHAT YOU CAN DO
-  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage | keep-awake | peers
+  see        midna list | get <id> | projects | needs [get <n_id>] | read <id> | explain <id> | events | insights | usage | keep-awake | peers | inbox
   terminals  midna open [--agent claude|codex --prompt T --resume ID -- agent-args | --monitor CMD | -- argv] [--background] · background · send · key · rename · restart · close
   queue      midna queue add <text> [--after <id> | --idle 10m | --at 18:00] (typed once the agent is ready) · list · rm
   attention  midna attention \"<one line>\" (blocked) | --note (FYI)      [MCP needs_you_raise]
@@ -335,7 +335,13 @@ const TOPICS: &[(&str, &str)] = &[
         paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed). peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
         keys; a device that isn't paired can only ask to pair, and one that uses a paired device's name with another key \
         is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
-        they never see each other."),
+        they never see each other. Shares: share.send {peer, kind: message|snippet|link, text|url, title?, reply_to?} \
+        (`midna share send <name|id> <text>`, stdin = snippet, --link <url>) offers a paired device that's nearby now \
+        something small; it lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
+        needs-you approval. Nothing a share carries types into, runs in or opens anything until a person there accepts: \
+        share.accept {id, session?, action?: open|pin} and share.decline {id} are human only, so agents never accept or \
+        decline shares, and never paste a snippet or open a link for the human. The sender sees the answer as \
+        share.accepted or share.declined (direction outgoing)."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \
