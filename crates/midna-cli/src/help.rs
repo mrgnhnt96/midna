@@ -702,6 +702,20 @@ pub static VERBS: &[Verb] = &[
         methods: &["worktrees.list", "worktrees.clean"],
     },
     Verb {
+        name: "peers",
+        aliases: &["nearby"],
+        usage: "peers [list] | visibility off|paired|everyone | name [<name>]",
+        summary: "other Midnas on the same network (Nearby), and who can find this Mac",
+        details: "list        this Mac's name, device id and visibility, then the Midnas it can see over Bonjour.\n\
+                  \x20           A device id (SHA-256 of the device's key) is what tells devices apart; names can repeat.\n\
+                  visibility  setting nearby.visibility (human only; an agent's change waits for the human):\n\
+                  \x20           off = no Bonjour at all; paired (default) = look for others, shown only to paired\n\
+                  \x20           devices; everyone = every Midna nearby sees this Mac, for 10 minutes, then paired.\n\
+                  name        setting nearby.name, the name others see; empty = the Mac's computer name.\n\
+                  Events peers.appeared and peers.left (midna events --kind peers.) follow peers coming and going.",
+        methods: &["peers.list"],
+    },
+    Verb {
         name: "keep-awake",
         aliases: &["awake"],
         usage: "keep-awake [status] | on | off\n       \

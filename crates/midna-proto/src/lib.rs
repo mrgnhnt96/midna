@@ -12,6 +12,7 @@ pub mod keep_awake;
 pub mod link_actions;
 pub mod link_patterns;
 pub mod methods;
+pub mod nearby;
 pub mod notify;
 pub mod openrpc;
 pub mod paths;

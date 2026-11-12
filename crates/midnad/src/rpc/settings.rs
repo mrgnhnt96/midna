@@ -119,5 +119,8 @@ fn apply(d: &Daemon, by: Actor, key: &str, s: &SettingSpec, value: Value) -> R {
             crate::auto_name::refresh_all(d);
         }
     }
+    if key == "nearby.visibility" {
+        crate::nearby::visibility_set(d, &value);
+    }
     ok(entry(key, s, value))
 }

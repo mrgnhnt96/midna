@@ -5,6 +5,7 @@ mod guide;
 mod help;
 mod hook;
 mod mcp;
+mod nearby;
 mod print;
 mod queue;
 mod secret;
@@ -488,6 +489,7 @@ fn run(a: &Args) -> Res {
         "events" => events(a),
         "insights" => insights(a, &out),
         "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
+        "peers" | "peer" | "nearby" => nearby::peers(a, &out),
         "system" | "load" => system(a, &out),
         "worktrees" | "worktree" => worktrees(a, &out),
         "cleanup" | "clean-up" => cleanup(a, &out),

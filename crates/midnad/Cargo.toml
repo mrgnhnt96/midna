@@ -20,6 +20,7 @@ libghostty-vt.workspace = true
 tiny_http = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+ed25519-dalek = "2"
 security-framework = "3"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"

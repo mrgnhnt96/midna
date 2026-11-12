@@ -407,6 +407,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "usage.get" => ok(crate::usage::get(d)),
         "clock.sleeps" => crate::clock::sleeps(d, parse(p)?),
         "keep_awake.status" => crate::keep_awake::status(d),
+        "peers.list" => crate::nearby::list(d),
         "keep_awake.set" => crate::keep_awake::set(d, ctx, parse(p)?),
         "keep_awake.wake_setup" => crate::wake::setup(d, ctx, parse(p)?),
         "window.list" => window::list(d),

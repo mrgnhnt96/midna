@@ -42,6 +42,8 @@ pub struct Config {
     pub codex_dir: PathBuf,
     /// Where macOS writes kernel panic reports (`panic.rs`). Tests point it inside their home.
     pub panic_dirs: Vec<PathBuf>,
+    /// Nearby's Bonjour service type and timings (`nearby/mod.rs`). Off in `for_home`.
+    pub nearby: crate::nearby::Setup,
 }
 
 impl Config {
@@ -61,6 +63,7 @@ impl Config {
             claude_dir: agent_dir("CLAUDE_CONFIG_DIR", ".claude"),
             codex_dir: agent_dir("CODEX_HOME", ".codex"),
             panic_dirs: crate::panic::report_dirs(),
+            nearby: crate::nearby::Setup::from_env(),
         }
     }
 
@@ -76,6 +79,7 @@ impl Config {
             claude_dir: home.join("agent-config/claude"),
             codex_dir: home.join("agent-config/codex"),
             panic_dirs: vec![home.join("diagnostic-reports")],
+            nearby: Default::default(),
             home,
         }
     }
@@ -205,6 +209,8 @@ pub struct Daemon {
     pub clock: crate::clock::Clock,
     /// The keep-awake power assertion (`keep_awake.rs`). Lock after `core`, never before it.
     pub keep_awake: crate::keep_awake::Runtime,
+    /// Nearby's device identity and the peers its thread sees (`nearby/`). Lock after `core`.
+    pub nearby: crate::nearby::Runtime,
     /// The wakes midnad has asked macOS for (`wake.rs`). Lock after `core` and `keep_awake`.
     pub wake: crate::wake::Runtime,
     /// Load, CPU per terminal and paused terminals (`guard.rs`). Lock after `core`, never before it.
@@ -273,6 +279,7 @@ impl Daemon {
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),
             keep_awake: Default::default(),
+            nearby: Default::default(),
             wake: Default::default(),
             guard: Default::default(),
             worktrees: Default::default(),
