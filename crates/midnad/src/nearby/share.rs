@@ -6,11 +6,11 @@
 //! device key, never anything the message says. An incoming share is data only: it raises a
 //! needs-you approval and waits. Only the human's `share.accept` (or approving that item) acts
 //! on it: a message is marked read, a snippet is pasted into the terminal they pick (never
-//! followed by Enter), a link is opened or pinned. Accepting or declining owes the sender a
+//! followed by Enter), a link is opened or pinned, a tab opens as a new shell (`tab.rs`). Accepting or declining owes the sender a
 //! [`Wire::ShareResult`], delivered at once if it can be seen and retried while it can't.
 //! Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{identity, link, transfer};
+use super::{identity, link, tab, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
@@ -142,15 +142,17 @@ fn emit(d: &Daemon, kind: &str, by: Actor, item: &ShareItem) {
 
 /// `share.send`: offer a paired device a share and wait until it is in its inbox.
 pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
-    let (payload, source) = if p.kind == ShareKind::File {
-        if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() {
-            return Err(RpcError::bad_params("a file takes only `path`"));
+    let (payload, source) = match p.kind {
+        ShareKind::File => {
+            if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() {
+                return Err(RpcError::bad_params("a file takes only `path`"));
+            }
+            let path = p.path.as_deref().ok_or_else(|| RpcError::bad_params("a file needs `path`"))?;
+            let (payload, source) = transfer::prepare(path)?;
+            (payload, Some(source))
         }
-        let path = p.path.as_deref().ok_or_else(|| RpcError::bad_params("a file needs `path`"))?;
-        let (payload, source) = transfer::prepare(path)?;
-        (payload, Some(source))
-    } else {
-        (p.payload().map_err(RpcError::bad_params)?, None)
+        ShareKind::Tab => (tab::snapshot(d, ctx, &p)?, None),
+        _ => (p.payload().map_err(RpcError::bad_params)?, None),
     };
     let fp = p.peer.trim().to_lowercase();
     super::guard::send(d, ctx, &payload, &fp)?;
@@ -321,6 +323,17 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier) -> String {
                 json!({ "id": it.id }),
             )
         }
+        SharePayload::Tab { title, .. } => (
+            format!("{name} sent a terminal tab: {}", cut(title, 80)),
+            format!(
+                "{}\n\n{} Approving opens a new tab with their scrollback shown above a fresh shell; nothing they ran \
+                 runs here, and no process or environment comes with it. To open it in another folder: midna inbox accept {} --cwd <dir>",
+                tab::describe(&it.payload, 2000),
+                tab::place(d, &it.payload).words(&it.payload),
+                it.id
+            ),
+            json!({ "id": it.id }),
+        ),
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -385,7 +398,7 @@ fn incoming_item(d: &Daemon, id: &str) -> Result<ShareItem, RpcError> {
 }
 
 /// `share.accept` (human only).
-pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
+pub fn accept(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams) -> R {
     let it = incoming_item(d, &p.id)?;
     if it.state == ShareState::Declined {
         return Err(RpcError::conflict(format!("{} was declined", p.id)));
@@ -401,6 +414,9 @@ pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
         return Err(RpcError::bad_params("only a link takes an action (open | pin)"));
     }
     let file = matches!(it.payload, SharePayload::File { .. });
+    if p.cwd.is_some() && !matches!(it.payload, SharePayload::Tab { .. }) {
+        return Err(RpcError::bad_params("only a tab takes a `cwd`"));
+    }
     let result = match &it.payload {
         SharePayload::Message { .. } => {
             if p.session.is_some() {
@@ -442,6 +458,12 @@ pub fn accept(d: &Daemon, ctx: &Ctx, p: ShareAcceptParams) -> R {
                 return Err(RpcError::bad_params("a file isn't pasted; it is saved into nearby.downloads"));
             }
             transfer::accepting(d, &it)?
+        }
+        SharePayload::Tab { .. } => {
+            if p.session.is_some() {
+                return Err(RpcError::bad_params("a tab opens as a new terminal; `cwd` picks its folder"));
+            }
+            tab::open(d, ctx, &it.peer_name, &it.payload, p.cwd.as_deref())?
         }
     };
     let (item, first, ny) = {

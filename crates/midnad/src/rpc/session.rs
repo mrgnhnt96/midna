@@ -184,6 +184,12 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
 }
 
 fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Session, RpcError> {
+    open_session_with(d, ctx, p, None)
+}
+
+/// `session.open`, with `preface` shown before anything the new process prints
+/// ([`term::start_with_preface`]).
+pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, preface: Option<Vec<u8>>) -> Result<Session, RpcError> {
     // Resolve the project: explicit, the caller's, the one containing cwd, or a new one for cwd.
     // With none of those the terminal opens at root: no project, starting in $HOME.
     let root = || Project { id: ROOT_PROJECT_ID.into(), name: "root".into(), path: home_dir(), icon: None, order: 0, commands: vec![], last_opened_at: None, auto_created: false, pinned: false };
@@ -243,7 +249,11 @@ fn open_session(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> Result<Sess
     let now = time::now_rfc3339();
     let (cols, rows) = (p.cols.unwrap_or(100).max(2), p.rows.unwrap_or(30).max(2));
     let launch = Launch { sid: sid.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: cwd.clone(), env, cols, rows };
-    let rt = term::start(d, launch).map_err(|e| RpcError::bad_params(format!("could not start {}: {e}", command[0])))?;
+    let started = match preface {
+        Some(text) => term::start_with_preface(d, launch, text),
+        None => term::start(d, launch),
+    };
+    let rt = started.map_err(|e| RpcError::bad_params(format!("could not start {}: {e}", command[0])))?;
     let session = Session {
         id: sid.clone(),
         project_id: project.id.clone(),

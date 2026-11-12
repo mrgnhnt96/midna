@@ -567,6 +567,15 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
     assert!(code(&o) == 2 && err(&o).contains("a file is sent on its own"), "{}", err(&o));
     let o = midna(&s, &["share", "send", "Bravo", "/tmp"], None, None);
     assert!(code(&o) == 2 && err(&o).contains("no paired device"), "{}", err(&o));
+    // A tab is a terminal and nothing else; --session only goes with --tab.
+    for bad in [&["share", "send", "Bravo", "--tab", "hi"][..], &["share", "send", "Bravo", "--tab", "--link", "https://x.y"], &["share", "send", "Bravo", "--session", "t_x", "hi"]] {
+        let o = midna(&s, bad, None, None);
+        assert!(code(&o) == 2 && !err(&o).contains("no paired device"), "{bad:?}: {}", err(&o));
+    }
+    let o = midna(&s, &["share", "send", "Bravo", "--tab", "--session", "t_x", "--title", "api"], None, None);
+    assert!(err(&o).contains("no paired device"), "--tab parses: {}", err(&o));
+    let o = midna(&s, &["inbox", "accept", "sh_abcdabcd", "--cwd", "/tmp"], None, None);
+    assert!(err(&o).contains("human only"), "--cwd takes a value: {}", err(&o));
     let o = midna(&s, &["call", "share.send", r#"{"peer":"ab","kind":"link","url":"javascript:alert(1)"}"#], None, None);
     assert_eq!(code(&o), 2, "{o:?}");
 }

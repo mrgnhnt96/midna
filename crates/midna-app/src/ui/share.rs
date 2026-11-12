@@ -79,7 +79,7 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message | ShareKind::File => SharePayload::Message { text: message.trim().to_string(), reply_to },
+        ShareKind::Message | ShareKind::File | ShareKind::Tab => SharePayload::Message { text: message.trim().to_string(), reply_to },
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
         ShareKind::Link => SharePayload::Link { url: text.trim().to_string(), title: None },
     }
@@ -91,9 +91,9 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         SharePayload::Message { text, reply_to } => (Some(text), None, None, reply_to),
         SharePayload::Snippet { text, title } => (Some(text), None, title, None),
         SharePayload::Link { url, title } => (None, Some(url), title, None),
-        SharePayload::File { .. } => (None, None, None, None),
+        SharePayload::File { .. } | SharePayload::Tab { .. } => (None, None, None, None),
     };
-    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None }
+    ShareSendParams { peer: peer.to_string(), kind, text, url, title, reply_to, path: None, session: None }
 }
 
 /// Paired Macs on the network first, then by name.
@@ -114,6 +114,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Snippet => "snippet",
         ShareKind::Link => "link",
         ShareKind::File => "file",
+        ShareKind::Tab => "tab",
     }
 }
 
@@ -123,6 +124,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Snippet => "Snippet",
         ShareKind::Link => "Link",
         ShareKind::File => "File",
+        ShareKind::Tab => "Tab",
     }
 }
 
@@ -192,7 +194,7 @@ fn from_line(detail: &str) -> Option<(String, Option<Tier>, String)> {
     Some((name.to_string(), tier, dev.trim_end_matches(')').to_string()))
 }
 
-/// "X sent a snippet…", "X sent a link: …", "X sent a file: …", else "X: …" (a message).
+/// "X sent a snippet…", "X sent a link: …", "X sent a file: …", "X sent a terminal tab: …", else "X: …" (a message).
 fn kind_of_title(title: &str, name: &str) -> ShareKind {
     let rest = title.strip_prefix(name).filter(|_| !name.is_empty());
     let has = |s: &str| match rest {
@@ -201,6 +203,8 @@ fn kind_of_title(title: &str, name: &str) -> ShareKind {
     };
     if has(" sent a file: ") || has(" sent a folder: ") {
         ShareKind::File
+    } else if has(" sent a terminal tab: ") {
+        ShareKind::Tab
     } else if has(" sent a snippet") {
         ShareKind::Snippet
     } else if has(" sent a link: ") {
@@ -223,6 +227,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
             let (name, folder) = file_of_body(&o.body);
             SharePayload::File { name, folder, files: Vec::new(), dirs: Vec::new() }
         }
+        ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), shell: None, scrollback: o.body.clone() },
     }
 }
 
@@ -252,6 +257,7 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         }
         ShareKind::Link => "Open opens it in your browser. Pin adds it to a terminal's links instead.".into(),
         ShareKind::File => "Accept saves it into your Nearby downloads folder, marked as downloaded. Nothing is opened or run.".into(),
+        ShareKind::Tab => "Open tab opens a new terminal in your checkout of its project (else your home folder) with their scrollback shown read-only above a fresh shell. Nothing they ran runs here, and no process or environment comes with it.".into(),
     };
     let transfer = m.share.items.iter().find(|i| i.id == o.id).and_then(|i| i.transfer.clone());
     div()
@@ -343,6 +349,28 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                     }))
                     .when(more > 0, |d| d.child(div().text_color(t.dim).child(format!("… {more} more"))))
                 })
+        }
+        SharePayload::Tab { title, project, cwd, scrollback, .. } => {
+            const SHOWN: usize = 14;
+            let lines: Vec<&str> = scrollback.lines().collect();
+            let place = match project {
+                Some(p) if p.path.is_empty() => p.remote.clone(),
+                Some(p) => format!("{}/{}", p.remote, p.path),
+                None => cwd.clone(),
+            };
+            let head = if place.is_empty() { title.clone() } else { format!("{title} · {place}") };
+            frame()
+                .gap(px(4.))
+                .child(div().font_weight(FontWeight::BOLD).child(head))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .font_family(t.mono_font.clone())
+                        .text_size(px(12.))
+                        .text_color(t.dim)
+                        .children(lines[lines.len().saturating_sub(SHOWN)..].iter().map(|l| div().whitespace_nowrap().overflow_hidden().child(if l.is_empty() { " ".to_string() } else { l.to_string() }))),
+                )
         }
     }
 }
@@ -806,6 +834,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::Snippet { text, title } => title.clone().unwrap_or_else(|| text.clone()),
         SharePayload::Link { url, title } => title.clone().unwrap_or_else(|| url.clone()),
         SharePayload::File { name, .. } => nb::safe_name(name),
+        SharePayload::Tab { title, .. } => title.clone(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -949,6 +978,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.clone(),
         SharePayload::Link { url, .. } => url.clone(),
         SharePayload::File { name, .. } => it.transfer.as_ref().and_then(|x| x.saved_to.clone()).unwrap_or_else(|| name.clone()),
+        SharePayload::Tab { scrollback, .. } => scrollback.clone(),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));

@@ -677,15 +677,17 @@ fn build() -> Vec<MethodSpec> {
         m::<ShareSendParams, ShareItem>("share.send").mutating().d(
             "Nearby: offer a paired device that is on the network now a message (kind message, `text`, optional \
              reply_to: the sh_… it answers), a snippet (kind snippet, `text`, optional title: text the other person can \
-             paste into a terminal), a link (kind link, an http(s) `url`, optional title) or a file, image or folder \
+             paste into a terminal), a link (kind link, an http(s) `url`, optional title), a file, image or folder \
              (kind file, the absolute `path`; midnad reads it, and the offer lists each file with its size and \
-             SHA-256). Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing runs \
-             on the other Mac: its person accepts or declines (share.accepted / share.declined fire here when they \
-             do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
+             SHA-256) or a terminal tab (kind tab, `session` or the caller's, optional title: its git remote and path \
+             in the repo, its directory, its shell's name and its scrollback as plain text; never its processes or \
+             environment). Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing \
+             runs on the other Mac: its person accepts or declines (share.accepted / share.declined fire here when \
+             they do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
              connection; share.progress follows them. From an agent it asks the human first (an approval showing \
              what would leave; error 1 with needs_you_id if they deny or don't answer) unless a rule the human gave \
              allows `share send <kind> <device id>`. Limits: message 4 KiB, snippet 256 KiB, URL 4 KiB, 4000 files \
-             and folders per share."),
+             and folders per share, a tab's scrollback its newest 256 KiB."),
         m::<ShareAcceptParams, ShareItem>("share.accept").mutating().human().d(
             "Nearby: accept an incoming share. A message is marked read. A snippet is kept in the inbox, or with \
              `session` pasted into that terminal (never followed by Enter; multi-line text only into a terminal that \
@@ -693,8 +695,10 @@ fn build() -> Vec<MethodSpec> {
              open, the default) or pinned to a terminal's links (action pin, `session` or the caller's). A file or \
              folder is fetched into the nearby.downloads folder (default ~/Downloads/Midna), each file checked against \
              its SHA-256 and nothing opened or run; `transfer` and event share.progress show how far it got, and \
-             accepting a failed one again starts it over. The sender gets share.accepted. Human only: agents can't \
-             accept what other devices send."),
+             accepting a failed one again starts it over. A tab opens as a new idle shell in this Mac's checkout of \
+             its repo (a project whose remote matches, at the same path inside it), or in `cwd`, or else in the home \
+             folder, with the sender's scrollback shown read-only above it; nothing runs. The sender gets \
+             share.accepted. Human only: agents can't accept what other devices send."),
         m::<ShareDeclineParams, ShareItem>("share.decline").mutating().human().d(
             "Nearby: decline an incoming share; the sender gets share.declined. The share stays in the inbox, \
              declined. Human only."),

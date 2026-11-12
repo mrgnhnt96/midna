@@ -211,6 +211,24 @@ pub fn start_on(d: &Arc<Daemon>, mut l: Launch, snap: Option<crate::engine::Term
     Ok(run(d, &l.sid, sp.master, pid, true, make, String::new()))
 }
 
+/// `start`, with `preface` on the screen before anything the new process prints (a tab sent
+/// from another Mac: its scrollback above a fresh shell). The engine takes it as output, so it
+/// must be text and plain SGR only: anything that asks the terminal a question would have its
+/// answer typed into the new process.
+pub fn start_with_preface(d: &Arc<Daemon>, mut l: Launch, preface: Vec<u8>) -> std::io::Result<RtHandle> {
+    (l.cols, l.rows) = clamp_size(l.cols, l.rows);
+    let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows)?;
+    let pid = sp.child.id() as i32;
+    drop(sp.child);
+    let (m, cols, rows) = (sp.master, l.cols, l.rows);
+    let make: MakeEngine = Box::new(move || {
+        let mut e = Engine::new(cols, rows, Some(m));
+        e.feed(&preface, crate::engine::now_ns());
+        e
+    });
+    Ok(run(d, &l.sid, sp.master, pid, true, make, String::new()))
+}
+
 /// Re-adopt a session whose PTY master fd and child survived a daemon upgrade (same PID
 /// execv) or were handed to the watchdog fallback (then the child isn't ours: exit tracking
 /// falls back to kqueue, without an exit code).
