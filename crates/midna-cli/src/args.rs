@@ -44,6 +44,11 @@ impl Args {
 
     /// `parse`, with `extra` also taking a value (flags one verb uses differently, e.g. `queue --idle 10m`).
     pub fn parse_with(raw: impl IntoIterator<Item = String>, extra: &[&str]) -> Result<Args, ArgError> {
+        Args::parse_flags(raw, extra, &[])
+    }
+
+    /// `parse_with`, with `boolean` taking no value (`share send --agent` vs `open --agent claude`).
+    pub fn parse_flags(raw: impl IntoIterator<Item = String>, extra: &[&str], boolean: &[&str]) -> Result<Args, ArgError> {
         let raw: Vec<String> = raw.into_iter().collect();
         let mut a = Args { raw: raw.clone(), ..Args::default() };
         let mut it = raw.into_iter().peekable();
@@ -60,7 +65,7 @@ impl Args {
                 let optional = OPTIONAL_VALUE_FLAGS.contains(&name.as_str());
                 let v = if optional && inline.is_none() {
                     it.next_if(|next| !next.starts_with('-'))
-                } else if VALUE_FLAGS.contains(&name.as_str()) || extra.contains(&name.as_str()) {
+                } else if (VALUE_FLAGS.contains(&name.as_str()) || extra.contains(&name.as_str())) && !boolean.contains(&name.as_str()) {
                     Some(match inline {
                         Some(v) => v,
                         None => it.next().ok_or_else(|| ArgError(format!("--{name} needs a value")))?,

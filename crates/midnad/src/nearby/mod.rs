@@ -27,6 +27,7 @@ pub mod identity;
 pub mod link;
 pub mod objects;
 pub mod pairing;
+pub mod session;
 pub mod share;
 pub mod tab;
 pub mod store;

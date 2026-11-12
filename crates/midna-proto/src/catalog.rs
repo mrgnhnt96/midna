@@ -682,7 +682,8 @@ fn build() -> Vec<MethodSpec> {
              off, and pairing again starts with none. Auto-accepting does what accepting would: a message is read, a \
              snippet kept in the inbox (never pasted), a link opened, a file saved into nearby.downloads, a tab opened \
              as a fresh shell. An object is applied only when it's a Summary record or a theme: rules, triggers, \
-             settings and queued prompts always wait for the human's review. If auto-accepting fails the share asks \
+             settings and queued prompts always wait for the human's review. An agent session always asks (kind \
+             agent is refused as bad params). If auto-accepting fails the share asks \
              as usual. Returns the device (auto_accept lists what is on); event peers.changed. Human only."),
         m::<ShareSendParams, ShareItem>("share.send").mutating().d(
             "Nearby: offer a paired device that is on the network now a message (kind message, `text`, optional \
@@ -691,6 +692,9 @@ fn build() -> Vec<MethodSpec> {
              (kind file, the absolute `path`; midnad reads it, and the offer lists each file with its size and \
              SHA-256) or a terminal tab (kind tab, `session` or the caller's, optional title: its git remote and path \
              in the repo, its directory, its shell's name and its scrollback as plain text; never its processes or \
+             environment), or an agent session (kind agent, `session` or the caller's agent terminal, optional title: \
+             the agent (claude or codex), its conversation id, its repo and directory, and its transcript as it is \
+             now, which the other Mac fetches in chunks only once accepted; never the agent's model, settings or \
              environment). Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing \
              runs on the other Mac: its person accepts or declines (share.accepted / share.declined fire here when \
              they do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
@@ -702,7 +706,7 @@ fn build() -> Vec<MethodSpec> {
              secrets, local paths, trust settings and anything tied to one terminal are refused. The receiver's \
              approval shows what would change there; rules, triggers and human-only settings apply only on its human's \
              accept, and triggers arrive disabled. Limits: message 4 KiB, snippet 256 KiB, URL 4 KiB, object 256 KiB \
-             or 200 items, 4000 files and folders per share, a tab's scrollback its newest 256 KiB."),
+             or 200 items, 4000 files and folders per share, a tab's scrollback its newest 256 KiB, a transcript 256 MiB."),
         m::<ShareAcceptParams, ShareItem>("share.accept").mutating().human().d(
             "Nearby: accept an incoming share. A message is marked read. A snippet is kept in the inbox, or with \
              `session` pasted into that terminal (never followed by Enter; multi-line text only into a terminal that \
@@ -712,8 +716,11 @@ fn build() -> Vec<MethodSpec> {
              its SHA-256 and nothing opened or run; `transfer` and event share.progress show how far it got, and \
              accepting a failed one again starts it over. A tab opens as a new idle shell in this Mac's checkout of \
              its repo (a project whose remote matches, at the same path inside it), or in `cwd`, or else in the home \
-             folder, with the sender's scrollback shown read-only above it; nothing runs. The sender gets \
-             share.accepted. Human only: agents can't accept what other devices send."),
+             folder, with the sender's scrollback shown read-only above it; nothing runs. An agent session's \
+             transcript is fetched like a file, the sender's checkout and home paths in it are changed to this Mac's, \
+             it is put where the agent keeps conversations for that folder (one already there is kept beside it as \
+             .before-<id>), and a new agent terminal opens there (or in `cwd`) resuming the conversation, idle until \
+             prompted; refused while a terminal here runs that conversation. The sender gets share.accepted. Human only: agents can't accept what other devices send."),
         m::<ShareDeclineParams, ShareItem>("share.decline").mutating().human().d(
             "Nearby: decline an incoming share; the sender gets share.declined. The share stays in the inbox, \
              declined. Human only."),

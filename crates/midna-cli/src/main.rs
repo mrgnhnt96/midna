@@ -71,10 +71,12 @@ fn main() {
     if raw.first().map(String::as_str) == Some("shim") {
         shim::run(&raw[1..]);
     }
-    // `queue` gives a few flags values (`--idle 10m`) that are booleans elsewhere (`restart --idle`).
+    // `queue` gives a few flags values (`--idle 10m`) that are booleans elsewhere (`restart --idle`);
+    // `share` the other way round (`share send --agent`, `open --agent claude`).
     let args = match Args::parse(raw.clone()) {
         Ok(a) if a.pos.first().map(String::as_str) == Some("queue") => Args::parse_with(raw, queue::VALUE_FLAGS),
-        Ok(a) if matches!(a.pos.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_with(raw, nearby::SHARE_VALUE_FLAGS),
+        Ok(a) if matches!(a.pos.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_flags(raw, nearby::SHARE_VALUE_FLAGS, nearby::SHARE_BOOL_FLAGS),
+        Err(_) if matches!(raw.first().map(String::as_str), Some("share" | "inbox")) => Args::parse_flags(raw, nearby::SHARE_VALUE_FLAGS, nearby::SHARE_BOOL_FLAGS),
         r => r,
     };
     let args = match args {

@@ -298,6 +298,8 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
 /// Flags `share` and `inbox` take a value from (`--link <url>`, `--file <path>`, `--object <type>`,
 /// `--into <terminal>`).
 pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "object", "into"];
+/// Flags that take a value elsewhere and none here.
+pub const SHARE_BOOL_FLAGS: &[&str] = &["agent"];
 
 /// The paired device `who` names.
 fn paired(who: &str) -> Result<String, Fail> {
@@ -384,7 +386,7 @@ fn preview(item: &Value) -> String {
             _ => size,
         };
     }
-    if p["kind"] == "tab" {
+    if p["kind"] == "tab" || p["kind"] == "agent" {
         let place = p["project"]["remote"].as_str().map(|r| match p["project"]["path"].as_str() {
             Some(path) => format!("{r}/{path}"),
             None => r.to_string(),
@@ -442,6 +444,18 @@ fn share_line(item: &Value) -> String {
 }
 
 fn print_sent(v: &Value) {
+    if v["payload"]["kind"] == "agent" {
+        println!(
+            "Offered the conversation {} ({}) to {} ({}). Nothing moves until they accept it on their Mac; then their Mac \
+             fetches the transcript as it was when you sent it and resumes it there (midna inbox show {}).",
+            kind_word(v),
+            preview(v),
+            s(v, "peer_name"),
+            s(v, "id"),
+            s(v, "id")
+        );
+        return;
+    }
     if v["payload"]["kind"] == "file" {
         println!(
             "Offered {} ({}) to {} ({}). Nothing moves until they accept it on their Mac; then their Mac fetches it \
@@ -478,6 +492,14 @@ fn print_item(v: &Value) {
     if let Some(r) = p["reply_to"].as_str() {
         println!("in reply to {r}");
     }
+    if p["kind"] == "agent" {
+        let t = &p["transcript"];
+        println!("{} conversation {} in {}, transcript {}", s(p, "agent"), s(p, "conversation"), s(p, "cwd"), nb::size_label(t["size"].as_u64().unwrap_or(0)));
+        if let Some(m) = moving(v) {
+            println!("{m}");
+        }
+        return;
+    }
     if let Some(sb) = p["scrollback"].as_str() {
         println!("in {}{}", s(p, "cwd"), p["shell"].as_str().map(|sh| format!(" ({sh})")).unwrap_or_default());
         let lines: Vec<&str> = sb.lines().collect();
@@ -510,9 +532,9 @@ fn print_item(v: &Value) {
 
 /// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, a
 /// file or folder (`--file <path>`, or a single word that names one), a terminal tab (`--tab`), or
-/// one of Midna's own things (`--object <type> [ids…]`).
+/// an agent terminal's conversation (`--agent`), or one of Midna's own things (`--object <type> [ids…]`).
 pub fn share(a: &Args, out: OutFn) -> Res {
-    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "session"])?;
+    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session"])?;
     match a.pos.get(1).map(String::as_str) {
         Some("send") => {}
         Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
@@ -529,17 +551,23 @@ pub fn share(a: &Args, out: OutFn) -> Res {
         return Ok(());
     }
     let words = a.text(3);
-    if a.has("tab") && (!words.is_empty() || a.has("link") || a.has("snippet") || a.has("message")) {
-        return Err(Fail::Usage("--tab sends a terminal (this one, or --session <terminal>); nothing else goes with it".into()));
+    if a.has("tab") && a.has("agent") {
+        return Err(Fail::Usage("--tab or --agent, not both".into()));
     }
-    if !a.has("tab") && a.get("session").is_some() {
-        return Err(Fail::Usage("--session picks the terminal for --tab".into()));
+    let terminal = if a.has("agent") { Some("agent") } else if a.has("tab") { Some("tab") } else { None };
+    if let Some(k) = terminal
+        && (!words.is_empty() || a.has("link") || a.has("snippet") || a.has("message"))
+    {
+        return Err(Fail::Usage(format!("--{k} sends a terminal (this one, or --session <terminal>); nothing else goes with it")));
+    }
+    if terminal.is_none() && a.get("session").is_some() {
+        return Err(Fail::Usage("--session picks the terminal for --tab or --agent".into()));
     }
     let lone_path = (a.pos.len() == 4 && !a.has("message") && !a.has("snippet") && !a.has("title") && a.get("link").is_none())
         .then(|| a.pos[3].clone())
         .filter(|w| std::path::Path::new(w).exists());
     if let Some(path) = a.get("file").map(str::to_string).or(lone_path) {
-        if a.pos.len() > 4 || (a.get("file").is_some() && a.pos.len() > 3) || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") || a.has("tab") {
+        if a.pos.len() > 4 || (a.get("file").is_some() && a.pos.len() > 3) || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") || terminal.is_some() {
             return Err(Fail::Usage("a file is sent on its own: share send <name|id> <path>".into()));
         }
         let abs = std::path::absolute(&path).map_err(|e| Fail::Usage(format!("{path}: {e}")))?;
@@ -551,8 +579,8 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     if let Some(t) = a.get("title") {
         params["title"] = json!(t);
     }
-    if a.has("tab") {
-        params["kind"] = json!("tab");
+    if let Some(k) = terminal {
+        params["kind"] = json!(k);
         if let Some(t) = a.get("session") {
             params["session"] = json!(t);
         }

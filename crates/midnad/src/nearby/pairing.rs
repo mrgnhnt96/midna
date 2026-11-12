@@ -477,6 +477,9 @@ pub fn set_tier(d: &Daemon, p: nb::PeersSetTierParams) -> R {
 /// `peers.set_auto_accept` (human only): one of my devices' shares of one kind are accepted
 /// without asking, or ask again. A contact never auto-accepts.
 pub fn set_auto_accept(d: &Daemon, p: nb::PeersSetAutoAcceptParams) -> R {
+    if !nb::ShareKind::ALL.contains(&p.kind) {
+        return Err(RpcError::bad_params(format!("a {} share always asks; it can't be auto-accepted", p.kind.as_str())));
+    }
     let peer = {
         let mut i = d.nearby.inner();
         let s = i

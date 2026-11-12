@@ -70,6 +70,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::File => "Files",
         ShareKind::Tab => "Tabs",
         ShareKind::Object => "Summaries & themes",
+        ShareKind::Agent => "Agent sessions",
     }
 }
 
@@ -82,6 +83,7 @@ fn kind_tip(k: ShareKind) -> &'static str {
         ShareKind::File => "Saved into your downloads folder; nothing is opened or run",
         ShareKind::Tab => "Opened as a new tab with a fresh shell; nothing they ran runs here",
         ShareKind::Object => "Session summaries and themes are added. Rules, triggers, settings and queued prompts always ask",
+        ShareKind::Agent => "Agent sessions always ask",
     }
 }
 

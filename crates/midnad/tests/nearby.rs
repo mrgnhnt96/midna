@@ -24,12 +24,19 @@
 //!
 //! Auto-accept (`peers.set_auto_accept`): only the human turns it on, per kind, for one of their
 //! own devices (never a contact); those shares are accepted as they arrive (`auto`), while rules,
-//! triggers, settings and queued prompts still wait for review; keeping the device as a contact
+//! triggers, settings and queued prompts still wait for review and an agent session can't be set
+//! to; keeping the device as a contact
 //! or forgetting it turns it all off.
 //!
 //! Tabs (`share.send` kind tab): the receiver opens a new shell in its own checkout of the
 //! sender's repo (or the folder the human picks, or home), the sender's scrollback shown above
 //! it and nothing of theirs run; a tab whose scrollback carries control sequences is refused.
+//!
+//! Agent sessions (`share.send` kind agent): the offer carries the agent's conversation and its
+//! transcript (whole lines only); nothing is placed or resumed until the human accepts, then the
+//! transcript, with the sender's checkout paths turned into the receiver's, goes where Claude Code
+//! or Codex looks for it and a new agent terminal resumes it; accepting is refused while a
+//! terminal here runs that conversation.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND, REFUSED};
@@ -51,8 +58,16 @@ fn service() -> String {
 }
 
 fn nearby(svc: &str, everyone_secs: i64) -> TestDaemon {
+    nearby_with(svc, everyone_secs, None)
+}
+
+/// Like `nearby`, launching `agent_bin` for agent terminals.
+fn nearby_with(svc: &str, everyone_secs: i64, agent_bin: Option<String>) -> TestDaemon {
     let svc = svc.to_string();
-    TestDaemon::start_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs, ..Setup::default() })
+    TestDaemon::start_with(move |cfg| {
+        cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs, ..Setup::default() };
+        cfg.agent_bin = agent_bin;
+    })
 }
 
 /// Restart `d` on the same Bonjour service.
@@ -229,7 +244,11 @@ fn advertise(svc: &str, name: &str, fp: &str, port: u16) -> dnssd::Ref {
 
 /// Two daemons, Alpha and Bravo, with B visible to everyone and A seeing it.
 fn alpha_bravo(svc: &str) -> (TestDaemon, TestDaemon, String, String) {
-    let (a, b) = (nearby(svc, 600), nearby(svc, 600));
+    alpha_bravo_with(svc, None)
+}
+
+fn alpha_bravo_with(svc: &str, agent_bin: Option<String>) -> (TestDaemon, TestDaemon, String, String) {
+    let (a, b) = (nearby_with(svc, 600, agent_bin.clone()), nearby_with(svc, 600, agent_bin));
     let (mut ha, mut hb) = (a.human(), b.human());
     set(&mut ha, "nearby.name", "Alpha");
     set(&mut hb, "nearby.name", "Bravo");
@@ -509,7 +528,12 @@ fn waits_on(e: &RpcError) -> Option<String> {
 
 /// Two paired daemons that see each other.
 fn paired_pair(svc: &str) -> (TestDaemon, TestDaemon, String, String) {
-    let (a, b, fa, fb) = alpha_bravo(svc);
+    paired_pair_with(svc, None)
+}
+
+/// Like `paired_pair`, launching `agent_bin` for agent terminals.
+fn paired_pair_with(svc: &str, agent_bin: Option<String>) -> (TestDaemon, TestDaemon, String, String) {
+    let (a, b, fa, fb) = alpha_bravo_with(svc, agent_bin);
     pair_both(&a, &b, &fa, &fb);
     let mut hb = b.human();
     wait_for(10, "B sees A", || peer(&mut hb, &fa));
@@ -1219,6 +1243,9 @@ fn only_my_devices_auto_accept_and_never_rules_or_settings() {
     assert_eq!(e.code, REFUSED, "{}", e.message);
     assert!(e.message.contains("contact"), "{}", e.message);
     assert!(auto_accepts(&mut hb, &fa).is_empty());
+    // An agent session always asks: accepting it starts an agent here.
+    let e = call_err(&mut ha, "peers.set_auto_accept", json!({ "fingerprint": fb, "kind": "agent", "on": true }));
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
 
     // Off: a message from B waits for A's person.
     let first = offered(&mut hb, &mut ha, &fa, json!({ "kind": "message", "text": "ask me" }));
@@ -1283,4 +1310,168 @@ fn only_my_devices_auto_accept_and_never_rules_or_settings() {
     set(&mut ha, &fb, "message", true);
     call(&mut ha, "peers.forget", json!({ "fingerprint": fb }));
     assert_eq!(call_err(&mut ha, "peers.set_auto_accept", json!({ "fingerprint": fb, "kind": "message", "on": true })).code, NOT_FOUND);
+}
+
+/// A stand-in agent that prints the arguments it was started with and waits.
+fn fake_agent(tag: &str) -> String {
+    let bin = std::path::PathBuf::from(format!("/tmp/midna-nb-{}-{tag}.sh", std::process::id()));
+    std::fs::write(&bin, "#!/bin/sh\nfor a; do echo \"ARG:$a\"; done\necho ARGS-END\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    bin.to_string_lossy().into_owned()
+}
+
+/// The arguments the stand-in agent in terminal `sid` got.
+fn agent_args(c: &mut Client, sid: &str) -> Vec<String> {
+    let text = wait_for(10, "the agent's arguments", || Some(read(c, sid)).filter(|t| t.contains("ARGS-END")));
+    text.lines().filter_map(|l| l.trim().strip_prefix("ARG:")).map(str::to_string).collect()
+}
+
+/// Claude Code's folder under `projects/` for directory `dir`.
+fn claude_folder(dir: &std::path::Path) -> String {
+    dir.to_str().unwrap().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// Fixture transcript `name` with its checkout `@CWD@` and conversation `@CONV@` filled in.
+fn fixture(name: &str, cwd: &std::path::Path, conv: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    std::fs::read_to_string(path).unwrap().replace("@CWD@", cwd.to_str().unwrap()).replace("@CONV@", conv)
+}
+
+/// The JSON lines of a transcript.
+fn lines_of(text: &str) -> Vec<Value> {
+    text.lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect()
+}
+
+fn agents(c: &mut Client) -> Vec<Value> {
+    call(c, "session.list", json!({})).as_array().unwrap().iter().filter(|s| s["kind"] == "agent").cloned().collect()
+}
+
+/// Wait for agent share `id` to be resumed here; its share.
+fn resumed(c: &mut Client, id: &str) -> Value {
+    wait_for(20, "the agent session is resumed", || {
+        share(c, id).filter(|s| s["result"].as_str().is_some_and(|r| r.starts_with("opened as")) || s["transfer"]["state"] == "failed")
+    })
+}
+
+#[test]
+fn an_agent_session_resumes_on_the_receiver_only_once_the_human_accepts() {
+    let bin = fake_agent("claude");
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let theirs = checkout(&a.home.join("w/widget"), "git@github.com:Acme/widget.git");
+    let ours = checkout(&b.home.join("code/widget-clone"), "https://github.com/acme/widget");
+    let pid = call(&mut hb, "project.add", json!({ "path": ours, "name": "widget" }))["id"].as_str().unwrap().to_string();
+    let conv = "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f";
+    let t = call(&mut ha, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": theirs.join("src") }))["id"].as_str().unwrap().to_string();
+
+    // Until the agent says which conversation it's in, there is nothing to send.
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent", "session": t }));
+    assert_eq!(e.code, midna_proto::error::CONFLICT, "{}", e.message);
+    let folder = a.home.join("agent-config/claude/projects").join(claude_folder(&theirs.join("src")));
+    std::fs::create_dir_all(&folder).unwrap();
+    let transcript = folder.join(format!("{conv}.jsonl"));
+    let text = fixture("nearby-claude-session.jsonl", &theirs, conv);
+    std::fs::write(&transcript, &text).unwrap();
+    let start = json!({ "session_id": conv, "transcript_path": transcript, "cwd": theirs.join("src") });
+    call(&mut a.agent(Some(&t)), "agent.hook", json!({ "agent": "claude", "event": "SessionStart", "payload": start }));
+
+    // A shell isn't an agent session, and an agent session carries no text.
+    let sh = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": theirs, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    for bad in [json!({ "kind": "agent", "session": sh }), json!({ "kind": "agent", "session": t, "text": "hi" })] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+
+    // The offer names the conversation and carries the transcript's whole lines.
+    let sent = send(&mut ha, &fb, json!({ "kind": "agent", "session": t, "title": "widget api" }));
+    let id = sent["id"].as_str().unwrap().to_string();
+    let whole = &text[..=text.rfind('\n').unwrap()];
+    let got = share(&mut hb, &id).unwrap();
+    let p = &got["payload"];
+    assert_eq!((p["kind"].as_str(), p["agent"].as_str(), p["title"].as_str()), (Some("agent"), Some("claude"), Some("widget api")), "{got}");
+    assert_eq!((p["conversation"].as_str(), p["cwd"].as_str()), (Some(conv), theirs.join("src").to_str()), "{got}");
+    assert_eq!((p["project"]["remote"].as_str(), p["project"]["path"].as_str()), (Some("github.com/acme/widget"), Some("src")), "{got}");
+    assert_eq!(p["transcript"]["size"].as_u64(), Some(whole.len() as u64), "{got}");
+    assert_eq!(p["transcript"]["path"].as_str(), Some(format!("{conv}.jsonl").as_str()), "{got}");
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    assert!(ny["item"]["title"].as_str().unwrap().contains("sent an agent session: widget api"), "{ny}");
+    let detail = ny["item"]["detail"].as_str().unwrap();
+    assert!(detail.contains("every prompt") && detail.contains(&ours.join("src").display().to_string()), "{detail}");
+
+    // Nothing lands or starts before the human says so, and an agent on B can't say so.
+    let placed = b.home.join("agent-config/claude/projects").join(claude_folder(&ours.join("src"))).join(format!("{conv}.jsonl"));
+    stays(1, "nothing placed or resumed before accepting", || !placed.exists() && agents(&mut hb).is_empty());
+    assert_eq!(call_err(&mut b.agent(None), "share.accept", json!({ "id": id })).code, HUMAN_ONLY);
+    let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    call(&mut hb, "needs_you.resolve", approve);
+    let done = resumed(&mut hb, &id);
+    let sid = opened(&done);
+
+    // The transcript sits where Claude Code looks for B's checkout, its paths made B's (a
+    // sibling folder's left alone), and a new agent terminal resumes the conversation.
+    let want = fixture("nearby-claude-session.jsonl", &ours, conv).replace(&format!("{}-old", ours.display()), &format!("{}-old", theirs.display()));
+    let want = lines_of(&want[..=want.rfind('\n').unwrap()]);
+    assert_eq!(lines_of(&std::fs::read_to_string(&placed).unwrap()), want);
+    let s = call(&mut hb, "session.get", json!({ "id": sid }));
+    assert_eq!((s["kind"].as_str(), s["agent"].as_str(), s["name"].as_str()), (Some("agent"), Some("claude"), Some("widget api")), "{s}");
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str()), (ours.join("src").to_str(), Some(pid.as_str())), "{s}");
+    let args = agent_args(&mut hb, &sid);
+    let at = args.iter().position(|a| a == "--resume").unwrap_or_else(|| panic!("{args:?}"));
+    assert_eq!(args.get(at + 1).map(String::as_str), Some(conv), "{args:?}");
+    assert!(read(&mut hb, &sid).contains("conversation sent from Alpha"));
+    assert_eq!(agents(&mut hb).len(), 1);
+
+    // A hears it went, and drops its copy of the transcript.
+    wait_for(20, "A hears B accepted", || share(&mut ha, &id).filter(|s| s["state"] == "accepted" && s["transfer"]["state"] == "done"));
+    wait_for(10, "A drops its copy", || (!a.home.join("nearby/outgoing").join(&id).exists()).then_some(()));
+
+    // The same conversation again can't be taken while B's terminal runs it.
+    let again = send(&mut ha, &fb, json!({ "kind": "agent", "session": t }))["id"].as_str().unwrap().to_string();
+    let e = call_err(&mut hb, "share.accept", json!({ "id": again }));
+    assert!(e.code == midna_proto::error::CONFLICT && e.message.contains(&sid), "{}", e.message);
+    assert_eq!(agents(&mut hb).len(), 1);
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
+fn a_codex_session_resumes_in_the_folder_the_human_picks() {
+    let bin = fake_agent("codex");
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    std::fs::create_dir_all(a.home.join("w/notes")).unwrap();
+    let theirs = std::fs::canonicalize(a.home.join("w/notes")).unwrap();
+    let conv = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    let t = call(&mut ha, "session.open", json!({ "kind": "agent", "agent": "codex", "cwd": theirs }))["id"].as_str().unwrap().to_string();
+    let rel = format!("2026/11/12/rollout-2026-11-12T10-00-00-{conv}.jsonl");
+    let rollout = a.home.join("agent-config/codex/sessions").join(&rel);
+    std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    std::fs::write(&rollout, fixture("nearby-codex-rollout.jsonl", &theirs, conv)).unwrap();
+    call(&mut a.agent(Some(&t)), "agent.hook", json!({ "agent": "codex", "event": "agent-turn-complete", "payload": { "thread-id": conv, "cwd": theirs } }));
+
+    let id = send(&mut ha, &fb, json!({ "kind": "agent", "session": t }))["id"].as_str().unwrap().to_string();
+    let p = share(&mut hb, &id).unwrap()["payload"].clone();
+    assert_eq!((p["agent"].as_str(), p["conversation"].as_str(), p["transcript"]["path"].as_str()), (Some("codex"), Some(conv), Some(rel.as_str())), "{p}");
+    assert!(p["project"].is_null(), "{p}");
+
+    // B already has a file there: it's kept beside the new one.
+    let placed = b.home.join("agent-config/codex/sessions").join(&rel);
+    std::fs::create_dir_all(placed.parent().unwrap()).unwrap();
+    std::fs::write(&placed, "old\n").unwrap();
+    std::fs::create_dir_all(b.home.join("picked")).unwrap();
+    let picked = std::fs::canonicalize(b.home.join("picked")).unwrap();
+    assert_eq!(call_err(&mut hb, "share.accept", json!({ "id": id, "cwd": "relative" })).code, midna_proto::error::BAD_PARAMS);
+    let r = call(&mut hb, "share.accept", json!({ "id": id, "cwd": picked }));
+    assert!(r["result"].as_str().unwrap().starts_with("receiving the transcript"), "{r}");
+    let sid = opened(&resumed(&mut hb, &id));
+    assert_eq!(lines_of(&std::fs::read_to_string(&placed).unwrap()), lines_of(&fixture("nearby-codex-rollout.jsonl", &picked, conv)));
+    let kept = placed.with_file_name(format!("{}.before-{id}", placed.file_name().unwrap().to_str().unwrap()));
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "old\n");
+    let s = call(&mut hb, "session.get", json!({ "id": sid }));
+    assert_eq!((s["kind"].as_str(), s["agent"].as_str(), s["cwd"].as_str()), (Some("agent"), Some("codex"), picked.to_str()), "{s}");
+    let args = agent_args(&mut hb, &sid);
+    assert_eq!((args.first().map(String::as_str), args.last().map(String::as_str)), (Some("resume"), Some(conv)), "{args:?}");
+    let _ = std::fs::remove_file(bin);
 }

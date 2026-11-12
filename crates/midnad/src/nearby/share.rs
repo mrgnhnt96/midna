@@ -10,12 +10,12 @@
 //! [`Wire::ShareResult`], delivered at once if it can be seen and retried while it can't.
 //! Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{identity, link, objects, tab, transfer};
+use super::{identity, link, objects, session, tab, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
     self as nb, InboxListParams, InboxListResult, ShareAcceptParams, ShareDeclineParams, ShareDirection, ShareItem, ShareKind,
-    ShareLinkAction, SharePayload, ShareSendParams, ShareState, Tier,
+    ShareLinkAction, SharePayload, ShareSendParams, ShareState, Tier, TransferState,
 };
 use midna_proto::{ActionKind, Actor, ApprovalRequest, LinksAddParams, NeedsYou, NeedsYouKind, PolicyAction, RpcError, kinds, time};
 use serde::{Deserialize, Serialize};
@@ -45,9 +45,13 @@ pub(super) struct Entry {
     /// Incoming and decided: the sender hasn't been told yet.
     #[serde(default)]
     pub(super) owe: bool,
-    /// An outgoing file share: the file or folder on this Mac it is served from.
+    /// An outgoing file share: the file or folder on this Mac it is served from. An outgoing
+    /// agent session: its transcript snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) source: Option<PathBuf>,
+    /// An incoming agent session accepted into a folder its person chose (`--cwd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) open_in: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -100,7 +104,14 @@ impl Inbox {
             let moving = |e: &Entry| e.item.transfer.as_ref().is_some_and(|t| !t.is_over());
             let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && !e.owe && !moving(e));
             let Some(at) = done.or_else(|| self.items.iter().position(|e| !moving(e))) else { return };
-            self.items.remove(at);
+            let gone = self.items.remove(at);
+            // An agent session's transcript snapshot goes with it.
+            if gone.item.direction == ShareDirection::Outgoing
+                && matches!(gone.item.payload, SharePayload::Agent { .. })
+                && let Some(home) = self.path.parent().and_then(Path::parent)
+            {
+                super::session::forget(home, &gone.item.id);
+            }
         }
     }
 
@@ -126,6 +137,8 @@ impl Inbox {
 fn kept_bytes(it: &ShareItem) -> u64 {
     match &it.payload {
         SharePayload::File { files, dirs, .. } => files.iter().map(|f| 80 + f.path.len() as u64).chain(dirs.iter().map(|d| d.len() as u64)).sum(),
+        // The transcript isn't kept here, only what names it.
+        SharePayload::Agent { .. } => 1024,
         _ => it.size,
     }
 }
@@ -142,6 +155,7 @@ fn emit(d: &Daemon, kind: &str, by: Actor, item: &ShareItem) {
 
 /// `share.send`: offer a paired device a share and wait until it is in its inbox.
 pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
+    let id = format!("sh_{}", crate::state::hex_id(12));
     let (payload, source) = match p.kind {
         ShareKind::Object => {
             if p.text.is_some() || p.url.is_some() || p.title.is_some() || p.reply_to.is_some() || p.path.is_some() || p.session.is_some() {
@@ -164,13 +178,24 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
             }
             (tab::snapshot(d, ctx, &p)?, None)
         }
+        ShareKind::Agent => {
+            if p.object.is_some() || !p.ids.is_empty() {
+                return Err(RpcError::bad_params("only an object share takes `object` and `ids`"));
+            }
+            let (payload, copy) = session::snapshot(d, ctx, &p, &id)?;
+            (payload, Some(copy))
+        }
         _ => (p.payload().map_err(RpcError::bad_params)?, None),
     };
     let fp = p.peer.trim().to_lowercase();
-    super::guard::send(d, ctx, &payload, &fp)?;
-    let mut ch = link::connect_peer(d, &fp)?;
     let name = peer_name(d, &fp);
-    let id = format!("sh_{}", crate::state::hex_id(12));
+    // An agent session's transcript snapshot goes if the offer does.
+    let dropped = |e: RpcError| {
+        session::forget(&d.cfg.home, &id);
+        e
+    };
+    super::guard::send(d, ctx, &payload, &fp).map_err(dropped)?;
+    let mut ch = link::connect_peer(d, &fp).map_err(dropped)?;
     let offer = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
     let item = ShareItem {
         id: id.clone(),
@@ -192,8 +217,8 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
     {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
-        inbox.push(Entry { item: item.clone(), owe: false, source });
-        inbox.save()?;
+        inbox.push(Entry { item: item.clone(), owe: false, source, open_in: None });
+        inbox.save().map_err(dropped)?;
     }
     let sent = ch.send(&offer).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
     let failed = |why: String| {
@@ -201,7 +226,7 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
         let inbox = i.inbox(&d.cfg.home);
         inbox.items.retain(|e| e.item.id != id);
         let _ = inbox.save();
-        RpcError::refused(format!("{name} didn't take it: {why}"))
+        dropped(RpcError::refused(format!("{name} didn't take it: {why}")))
     };
     match sent {
         Ok(Wire::ShareAck { id: got }) if got == id => ch.finish(),
@@ -225,14 +250,15 @@ fn refusal_words(reason: &str) -> String {
 
 /// Shares like `payload` from `from` are accepted without asking: it is one of my devices, its
 /// person turned that kind on, and (for Midna's own things) it is a summary or a theme that
-/// changes nothing only the human may change. Rules, triggers, settings and queued prompts
-/// always wait for review.
+/// changes nothing only the human may change. Rules, triggers, settings, queued prompts and
+/// agent sessions always wait for review.
 fn auto_accepts(d: &Daemon, from: &str, payload: &SharePayload) -> bool {
     let on = d.nearby.inner().store(&d.cfg.home).get(from).is_some_and(|s| s.auto_accepts(payload.kind()));
     on && match payload {
         SharePayload::Object { object } => {
             matches!(object, nb::MidnaObject::Summary { .. } | nb::MidnaObject::Theme { .. }) && !objects::needs_human(d, object)
         }
+        SharePayload::Agent { .. } => false,
         _ => true,
     }
 }
@@ -279,7 +305,7 @@ pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire
         if waiting >= nb::MAX_PENDING_FROM {
             return refuse("inbox_full: too many of your shares are waiting on this Mac");
         }
-        inbox.push(Entry { item: item.clone(), owe: false, source: None });
+        inbox.push(Entry { item: item.clone(), owe: false, source: None, open_in: None });
         if let Err(e) = inbox.save() {
             inbox.items.retain(|e| e.item.id != id);
             return refuse(&e.message);
@@ -421,6 +447,18 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
             };
             (format!("{name} sent from Midna: {}", cut(&object.label(), 80)), format!("{}\n\n{then}", objects::review(d, object)), json!({ "id": it.id }))
         }
+        SharePayload::Agent { title, agent, .. } => (
+            format!("{name} sent an agent session: {}", cut(title, 80)),
+            format!(
+                "{}\n\n{} Approving fetches the transcript, puts it where {} keeps its conversations, and opens a tab \
+                 resuming it, idle until you prompt it; nothing runs before. To open it in another folder: midna inbox accept {} --cwd <dir>",
+                session::describe(&it.payload),
+                tab::place(d, &it.payload).words(&it.payload),
+                session::agent_name(*agent),
+                it.id
+            ),
+            json!({ "id": it.id }),
+        ),
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -462,6 +500,9 @@ pub fn result(d: &Daemon, from: &str, id: String, state: &str) -> Wire {
             None => None,
         }
     };
+    if state == ShareState::Declined && changed.is_some() {
+        session::forget(&d.cfg.home, &id);
+    }
     if let Some(item) = changed {
         let kind = if state == ShareState::Accepted { kinds::SHARE_ACCEPTED } else { kinds::SHARE_DECLINED };
         emit(d, kind, Actor::system(), &item);
@@ -513,8 +554,9 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         return Err(RpcError::bad_params("only a link takes an action (open | pin)"));
     }
     let file = matches!(it.payload, SharePayload::File { .. });
-    if p.cwd.is_some() && !matches!(it.payload, SharePayload::Tab { .. }) {
-        return Err(RpcError::bad_params("only a tab takes a `cwd`"));
+    let agent = matches!(it.payload, SharePayload::Agent { .. });
+    if p.cwd.is_some() && !matches!(it.payload, SharePayload::Tab { .. } | SharePayload::Agent { .. }) {
+        return Err(RpcError::bad_params("only a tab or an agent session takes a `cwd`"));
     }
     let result = match &it.payload {
         SharePayload::Message { .. } => {
@@ -574,6 +616,12 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
             };
             objects::apply(d, ctx, object, sid.as_deref(), &it.peer_name)?
         }
+        SharePayload::Agent { .. } => {
+            if p.session.is_some() {
+                return Err(RpcError::bad_params("an agent session opens as a new terminal; `cwd` picks its folder"));
+            }
+            session::accepting(d, &it, p.cwd.as_deref())?
+        }
     };
     let (item, first, ny) = {
         let mut i = d.nearby.inner();
@@ -593,6 +641,9 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         } else if e.item.state == ShareState::Declined {
             return Err(RpcError::conflict(format!("{} was declined", p.id)));
         }
+        if agent && e.item.transfer.as_ref().is_none_or(|t| t.state == TransferState::Failed) {
+            e.open_in = p.cwd.clone();
+        }
         e.item.result = Some(result);
         let ny = e.item.needs_you_id.take();
         let item = e.item.clone();
@@ -606,7 +657,7 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         emit(d, kinds::SHARE_ACCEPTED, ctx.actor(), &item);
         nudge(d);
     }
-    if file {
+    if file || agent {
         transfer::begin(d, &item.id);
         return ok(incoming_item(d, &item.id).unwrap_or(item));
     }
@@ -808,6 +859,7 @@ mod tests {
             },
             owe: false,
             source: None,
+            open_in: None,
         }
     }
 

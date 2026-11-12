@@ -12,7 +12,7 @@
 //! ([`TXT_TAGS`]) only its paired devices can match. Every connection between Midnas is Noise
 //! (`Noise_XX_25519_ChaChaPoly_SHA256`) bound to the device keys; unpaired devices may only ask
 //! to pair.
-use crate::types::Timestamp;
+use crate::types::{AgentKind, Timestamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -402,10 +402,15 @@ pub const MAX_SCROLLBACK: usize = 256 * 1024;
 pub const MAX_DIR: usize = 4096;
 /// … the name of a tab's shell.
 pub const MAX_SHELL: usize = 64;
+/// … an agent session's transcript (it is fetched in chunks after accept, like a file).
+pub const MAX_TRANSCRIPT: u64 = 256 * 1024 * 1024;
+/// … an agent's conversation id.
+pub const MAX_CONVERSATION: usize = 128;
 
 /// What a share carries. Nothing in it ever runs: it is data until the receiving person
-/// accepts it, and even then a snippet is pasted (never submitted), a link opened or pinned, and
-/// a tab opened as a fresh shell under the sender's scrollback.
+/// accepts it, and even then a snippet is pasted (never submitted), a link opened or pinned, a
+/// tab opened as a fresh shell under the sender's scrollback, and an agent session resumed idle,
+/// waiting for its new person's first prompt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SharePayload {
@@ -467,6 +472,30 @@ pub enum SharePayload {
     /// receiver's approval reviews what accepting would change on its Mac, and only the human's
     /// accept applies it.
     Object { object: MidnaObject },
+    /// An agent's conversation (Claude Code or Codex), to carry on on the receiving Mac. Like a
+    /// tab it maps to the receiver's checkout of the same project. Only its id and where it was
+    /// travel with the offer; once the receiver accepts, its midnad fetches the transcript in
+    /// chunks (like a file), rewrites the sending Mac's paths in it to its own, puts it where
+    /// the agent looks for it and opens a tab resuming the conversation. Never the agent's model,
+    /// permission mode or anything else it ran with: the receiver's own settings apply.
+    Agent {
+        /// The terminal's name on the sending Mac.
+        title: String,
+        agent: AgentKind,
+        /// The git repo it was in, when it had a remote. None: `cwd` is all there is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<TabProject>,
+        /// The agent's directory on the sending Mac (absolute).
+        cwd: String,
+        /// The sending person's home folder (absolute): its paths in the transcript become the
+        /// receiver's.
+        home: String,
+        /// The agent's id for the conversation (Claude Code's session id, Codex's thread id).
+        conversation: String,
+        /// The transcript: `<conversation>.jsonl` for Claude Code; for Codex its path under
+        /// `sessions/` (`2026/11/12/rollout-…-<conversation>.jsonl`).
+        transcript: ShareFile,
+    },
 }
 
 /// Which project a tab was in, the same on every Mac that has a checkout of it.
@@ -808,10 +837,21 @@ impl SharePayload {
             SharePayload::File { .. } => ShareKind::File,
             SharePayload::Tab { .. } => ShareKind::Tab,
             SharePayload::Object { .. } => ShareKind::Object,
+            SharePayload::Agent { .. } => ShareKind::Agent,
         }
     }
 
-    /// Its size in bytes (the text, the URL, every file's contents or the scrollback).
+    /// The files fetched after accept: a file share's, or an agent session's transcript.
+    pub fn files(&self) -> &[ShareFile] {
+        match self {
+            SharePayload::File { files, .. } => files,
+            SharePayload::Agent { transcript, .. } => std::slice::from_ref(transcript),
+            _ => &[],
+        }
+    }
+
+    /// Its size in bytes (the text, the URL, every file's contents, the scrollback or the
+    /// transcript).
     pub fn size(&self) -> u64 {
         match self {
             SharePayload::Message { text, .. } | SharePayload::Snippet { text, .. } => text.len() as u64,
@@ -819,6 +859,7 @@ impl SharePayload {
             SharePayload::File { files, .. } => files.iter().fold(0u64, |n, f| n.saturating_add(f.size)),
             SharePayload::Tab { scrollback, .. } => scrollback.len() as u64,
             SharePayload::Object { object } => serde_json::to_vec(object).map(|b| b.len() as u64).unwrap_or(0),
+            SharePayload::Agent { transcript, .. } => transcript.size,
         }
     }
 
@@ -871,15 +912,7 @@ impl SharePayload {
                 if shell.as_ref().is_some_and(|s| s.is_empty() || s.len() > MAX_SHELL || s.contains('/') || !plain(s)) {
                     return Err("a tab's shell is a program name".into());
                 }
-                if let Some(TabProject { remote, path }) = project {
-                    if remote.is_empty() || remote.len() > MAX_URL || remote.chars().any(|c| c.is_whitespace() || c.is_control()) {
-                        return Err("a tab's project needs its remote".into());
-                    }
-                    let bad_part = |p: &str| p.is_empty() || p == "." || p == "..";
-                    if path.len() > MAX_DIR || !plain(path) || (!path.is_empty() && path.split('/').any(bad_part)) {
-                        return Err("a tab's path in its repo must be relative, without . or .. parts".into());
-                    }
-                }
+                check_project(project.as_ref())?;
                 if scrollback.len() > MAX_SCROLLBACK {
                     return Err(format!("a tab's scrollback may be at most {} KiB", MAX_SCROLLBACK / 1024));
                 }
@@ -888,9 +921,61 @@ impl SharePayload {
                 }
             }
             SharePayload::Object { object } => object.check()?,
+            SharePayload::Agent { title, agent, project, cwd, home, conversation, transcript } => {
+                if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
+                    return Err(format!("an agent session's title is one line of at most {MAX_TITLE} bytes"));
+                }
+                for (what, dir) in [("directory", cwd), ("home", home)] {
+                    if !dir.starts_with('/') || dir.len() > MAX_DIR || !plain(dir) {
+                        return Err(format!("an agent session's {what} must be an absolute path"));
+                    }
+                }
+                check_project(project.as_ref())?;
+                if !valid_conversation(conversation) {
+                    return Err("an agent's conversation id is letters, digits, - and _".into());
+                }
+                if !valid_sha256(&transcript.sha256) {
+                    return Err("the transcript's sha256 must be 64 lowercase hex digits".into());
+                }
+                if transcript.size == 0 || transcript.size > MAX_TRANSCRIPT {
+                    return Err(format!("a transcript is 1 byte to {} MiB", MAX_TRANSCRIPT / 1024 / 1024));
+                }
+                let file = format!("{conversation}.jsonl");
+                let ok = match agent {
+                    AgentKind::Claude => transcript.path == file,
+                    AgentKind::Codex => {
+                        let last = transcript.path.rsplit('/').next().unwrap_or_default();
+                        valid_path(&transcript.path) && transcript.path.split('/').count() <= 4 && last.starts_with("rollout-") && last.ends_with(&format!("-{file}"))
+                    }
+                };
+                if !ok {
+                    return Err(format!("{} isn't where {} keeps conversation {conversation}", transcript.path, agent.as_str()));
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// A tab's or an agent session's project: its remote, and a relative path inside it.
+fn check_project(project: Option<&TabProject>) -> Result<(), String> {
+    if let Some(TabProject { remote, path }) = project {
+        if remote.is_empty() || remote.len() > MAX_URL || remote.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err("a tab's project needs its remote".into());
+        }
+        let bad_part = |p: &str| p.is_empty() || p == "." || p == "..";
+        if path.len() > MAX_DIR || !plain(path) || (!path.is_empty() && path.split('/').any(bad_part)) {
+            return Err("a tab's path in its repo must be relative, without . or .. parts".into());
+        }
+    }
+    Ok(())
+}
+
+/// An agent's conversation id: 1 to [`MAX_CONVERSATION`] letters, digits, `-` and `_` (what
+/// Claude Code's session ids and Codex's thread ids are). It names the transcript's file, so
+/// nothing else may be in it.
+pub fn valid_conversation(id: &str) -> bool {
+    (1..=MAX_CONVERSATION).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// A share id: `sh_` and 4–32 letters or digits (the sender picks it; both sides use it).
@@ -910,9 +995,13 @@ pub enum ShareKind {
     Tab,
     /// One of Midna's own things ([`ObjectType`]).
     Object,
+    /// An agent's terminal (`session`): its conversation, resumed on the receiving Mac.
+    Agent,
 }
 
 impl ShareKind {
+    /// The kinds a device can auto-accept (`peers.set_auto_accept`). An agent session always
+    /// asks: accepting it starts an agent here.
     pub const ALL: [ShareKind; 6] = [ShareKind::Message, ShareKind::Snippet, ShareKind::Link, ShareKind::File, ShareKind::Tab, ShareKind::Object];
 
     pub fn as_str(self) -> &'static str {
@@ -923,6 +1012,7 @@ impl ShareKind {
             ShareKind::File => "file",
             ShareKind::Tab => "tab",
             ShareKind::Object => "object",
+            ShareKind::Agent => "agent",
         }
     }
 
@@ -1055,8 +1145,9 @@ pub struct ShareSendParams {
     /// A file: the absolute path of the file or folder to send. midnad reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// A tab only: the terminal to send (default the caller's). midnad reads its project,
-    /// directory and scrollback; `title` names it instead of the terminal's name.
+    /// A tab or an agent session only: the terminal to send (default the caller's). midnad reads
+    /// its project and directory, and a tab's scrollback or an agent's conversation; `title`
+    /// names it instead of the terminal's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     /// An object: which kind. midnad reads it from its stores.
@@ -1083,8 +1174,8 @@ impl ShareSendParams {
         if self.path.is_some() != (self.kind == ShareKind::File) {
             return Err(if self.path.is_some() { "only a file has a `path`".into() } else { "a file needs `path`".into() });
         }
-        if self.session.is_some() && self.kind != ShareKind::Tab {
-            return Err("only a tab takes a `session`".into());
+        if self.session.is_some() && !matches!(self.kind, ShareKind::Tab | ShareKind::Agent) {
+            return Err("only a tab or an agent session takes a `session`".into());
         }
         if self.object.is_some() != (self.kind == ShareKind::Object) {
             return Err(if self.object.is_some() { "only an object share names an `object`".into() } else { "an object share needs `object`".into() });
@@ -1110,6 +1201,7 @@ impl ShareSendParams {
             ShareKind::File => return Err("a file share is read from `path` by midnad".into()),
             ShareKind::Tab => return Err("a tab is read from its terminal by midnad".into()),
             ShareKind::Object => return Err("an object share is read from midnad's stores".into()),
+            ShareKind::Agent => return Err("an agent session is read from its terminal by midnad".into()),
         };
         p.check()?;
         Ok(p)
@@ -1139,7 +1231,8 @@ pub struct ShareAcceptParams {
     /// A link: open it (default) or pin it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ShareLinkAction>,
-    /// A tab: open it in this folder on this Mac instead of where its project maps to.
+    /// A tab or an agent session: open it in this folder on this Mac instead of where its
+    /// project maps to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 }
@@ -1280,6 +1373,44 @@ mod tests {
         ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn agent_payloads() {
+        let check = |v: serde_json::Value| serde_json::from_value::<SharePayload>(v).unwrap().check();
+        let sha = "a".repeat(64);
+        let conv = "4f1c2b9e-0d3a-4c51-9a77-3e1f0b2c8d40";
+        let claude = serde_json::json!({ "kind": "agent", "title": "api", "agent": "claude", "project": { "remote": "github.com/a/b", "path": "src" }, "cwd": "/w/b/src", "home": "/Users/me", "conversation": conv, "transcript": { "path": format!("{conv}.jsonl"), "size": 10, "sha256": sha } });
+        assert_eq!(check(claude.clone()), Ok(()));
+        let p: SharePayload = serde_json::from_value(claude.clone()).unwrap();
+        assert_eq!((p.kind(), p.size(), p.files().len()), (ShareKind::Agent, 10, 1));
+        let mut codex = claude.clone();
+        codex["agent"] = "codex".into();
+        codex["transcript"]["path"] = format!("2026/11/12/rollout-2026-11-12T10-00-00-{conv}.jsonl").into();
+        assert_eq!(check(codex.clone()), Ok(()));
+        for (base, k, v) in [
+            (&claude, "title", serde_json::json!("two\nlines")),
+            (&claude, "cwd", serde_json::json!("relative")),
+            (&claude, "home", serde_json::json!("")),
+            (&claude, "conversation", serde_json::json!("../../etc/x")),
+            (&claude, "conversation", serde_json::json!("")),
+            (&claude, "project", serde_json::json!({ "remote": "github.com/a/b", "path": "../x" })),
+            (&claude, "transcript", serde_json::json!({ "path": "other.jsonl", "size": 10, "sha256": sha })),
+            (&claude, "transcript", serde_json::json!({ "path": format!("../{conv}.jsonl"), "size": 10, "sha256": sha })),
+            (&claude, "transcript", serde_json::json!({ "path": format!("{conv}.jsonl"), "size": 0, "sha256": sha })),
+            (&claude, "transcript", serde_json::json!({ "path": format!("{conv}.jsonl"), "size": MAX_TRANSCRIPT + 1, "sha256": sha })),
+            (&claude, "transcript", serde_json::json!({ "path": format!("{conv}.jsonl"), "size": 10, "sha256": "x" })),
+            (&codex, "transcript", serde_json::json!({ "path": format!("2026/11/12/{conv}.jsonl"), "size": 10, "sha256": sha })),
+            (&codex, "transcript", serde_json::json!({ "path": format!("../12/rollout-x-{conv}.jsonl"), "size": 10, "sha256": sha })),
+            (&codex, "transcript", serde_json::json!({ "path": format!("/abs/rollout-x-{conv}.jsonl"), "size": 10, "sha256": sha })),
+            (&codex, "transcript", serde_json::json!({ "path": format!("a/b/c/d/rollout-x-{conv}.jsonl"), "size": 10, "sha256": sha })),
+        ] {
+            let mut bad = base.clone();
+            bad[k] = v;
+            assert!(check(bad.clone()).is_err(), "{bad}");
+        }
+        let p: ShareSendParams = serde_json::from_value(serde_json::json!({ "peer": "f", "kind": "agent", "session": "t1" })).unwrap();
+        assert!(p.payload().is_err(), "midnad reads an agent session itself");
     }
 
     #[test]
