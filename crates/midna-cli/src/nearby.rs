@@ -2,7 +2,7 @@
 use crate::args::Args;
 use crate::print::plain;
 use crate::{Fail, OutFn, Res, call};
-use midna_proto::nearby::short_fingerprint;
+use midna_proto::nearby::{self as nb, short_fingerprint};
 use midna_proto::time;
 use serde_json::{Value, json};
 
@@ -259,8 +259,8 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
     }
 }
 
-/// Flags `share` and `inbox` take a value from (`--link <url>`, `--into <terminal>`).
-pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "into"];
+/// Flags `share` and `inbox` take a value from (`--link <url>`, `--file <path>`, `--into <terminal>`).
+pub const SHARE_VALUE_FLAGS: &[&str] = &["link", "file", "into"];
 
 /// The paired device `who` names.
 fn paired(who: &str) -> Result<String, Fail> {
@@ -270,6 +270,10 @@ fn paired(who: &str) -> Result<String, Fail> {
 
 fn kind_word(item: &Value) -> String {
     let p = &item["payload"];
+    if p["kind"] == "file" {
+        let what = if p["folder"] == true { "folder" } else { "file" };
+        return format!("{what} “{}”", nb::safe_name(p["name"].as_str().unwrap_or("")));
+    }
     match (p["kind"].as_str(), p["title"].as_str()) {
         (Some(k), Some(t)) => format!("{k} “{t}”"),
         (Some(k), None) => k.to_string(),
@@ -277,9 +281,16 @@ fn kind_word(item: &Value) -> String {
     }
 }
 
-/// The first line of a share's text or its URL, cut short.
+/// The first line of a share's text or its URL, cut short; a file share's size.
 fn preview(item: &Value) -> String {
     let p = &item["payload"];
+    if p["kind"] == "file" {
+        let size = nb::size_label(item["size"].as_u64().unwrap_or(0));
+        return match p["files"].as_array().map(Vec::len) {
+            Some(n) if p["folder"] == true => format!("{size}, {n} file{}", if n == 1 { "" } else { "s" }),
+            _ => size,
+        };
+    }
     let text = p["url"].as_str().or(p["text"].as_str()).unwrap_or("");
     let first = text.lines().next().unwrap_or("").trim();
     let mut short: String = first.chars().take(60).collect();
@@ -289,13 +300,36 @@ fn preview(item: &Value) -> String {
     short
 }
 
+/// Where a file share's transfer is, in a few words; None before it starts.
+fn moving(item: &Value) -> Option<String> {
+    let t = &item["transfer"];
+    let (done, total) = (t["done"].as_u64()?, t["total"].as_u64().unwrap_or(0));
+    let pct = (done * 100).checked_div(total).unwrap_or(100);
+    let files = match (t["files_done"].as_u64(), t["files"].as_u64()) {
+        (Some(d), Some(n)) if n > 1 => format!(", {d}/{n} files"),
+        _ => String::new(),
+    };
+    let why = t["error"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
+    Some(match t["state"].as_str()? {
+        "done" if item["direction"] == "incoming" => match t["saved_to"].as_str() {
+            Some(to) => format!("saved to {to}"),
+            None => "saved".into(),
+        },
+        "done" => "they have it".into(),
+        "failed" => format!("failed{why}"),
+        "moving" => format!("moving {pct}% ({} of {}{files})", nb::size_label(done), nb::size_label(total)),
+        _ => format!("waiting at {pct}%{why}"),
+    })
+}
+
 fn share_line(item: &Value) -> String {
     let dir = if item["direction"] == "incoming" { "from" } else { "to" };
-    let state = match (item["state"].as_str().unwrap_or(""), item["result"].as_str()) {
-        ("offered", _) if item["direction"] == "incoming" => "waiting for you".to_string(),
-        ("offered", _) => "waiting for them".to_string(),
-        (st, Some(r)) => format!("{st}: {r}"),
-        (st, None) => st.to_string(),
+    let state = match (item["state"].as_str().unwrap_or(""), item["result"].as_str(), moving(item)) {
+        ("offered", _, _) if item["direction"] == "incoming" => "waiting for you".to_string(),
+        ("offered", _, _) => "waiting for them".to_string(),
+        (st, _, Some(m)) => format!("{st}: {m}"),
+        (st, Some(r), None) => format!("{st}: {r}"),
+        (st, None, None) => st.to_string(),
     };
     format!(
         "{}  {} {dir} {}  {}  {state}  {}",
@@ -308,6 +342,18 @@ fn share_line(item: &Value) -> String {
 }
 
 fn print_sent(v: &Value) {
+    if v["payload"]["kind"] == "file" {
+        println!(
+            "Offered {} ({}) to {} ({}). Nothing moves until they accept it on their Mac; then their Mac fetches it \
+             from this one, so leave it where it is until it's done (midna inbox show {}).",
+            kind_word(v),
+            preview(v),
+            s(v, "peer_name"),
+            s(v, "id"),
+            s(v, "id")
+        );
+        return;
+    }
     println!("Offered {} to {} ({}); they accept or decline it on their Mac.", kind_word(v), s(v, "peer_name"), s(v, "id"));
 }
 
@@ -337,11 +383,22 @@ fn print_item(v: &Value) {
         (None, Some(t)) => println!("{}", t.trim_end_matches('\n')),
         _ => {}
     }
+    let files = p["files"].as_array().cloned().unwrap_or_default();
+    if p["folder"] == true {
+        const SHOWN: usize = 50;
+        for f in files.iter().take(SHOWN) {
+            println!("  {}  {}", plain(&f["path"]), nb::size_label(f["size"].as_u64().unwrap_or(0)));
+        }
+        if files.len() > SHOWN {
+            println!("  … and {} more", files.len() - SHOWN);
+        }
+    }
 }
 
-/// `midna share send <peer> [text…]`: offer a paired device a message, a snippet or a link.
+/// `midna share send <peer> [text…]`: offer a paired device a message, a snippet, a link, or a
+/// file or folder (`--file <path>`, or a single word that names one).
 pub fn share(a: &Args, out: OutFn) -> Res {
-    a.check(&["link", "title", "snippet", "message"])?;
+    a.check(&["link", "file", "title", "snippet", "message"])?;
     match a.pos.get(1).map(String::as_str) {
         Some("send") => {}
         Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send; incoming shares: midna inbox)"))),
@@ -349,6 +406,18 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     }
     let who = a.need(2, "which paired device (midna peers lists them)")?;
     let words = a.text(3);
+    let lone_path = (a.pos.len() == 4 && !a.has("message") && !a.has("snippet") && !a.has("title") && a.get("link").is_none())
+        .then(|| a.pos[3].clone())
+        .filter(|w| std::path::Path::new(w).exists());
+    if let Some(path) = a.get("file").map(str::to_string).or(lone_path) {
+        if a.pos.len() > 4 || (a.get("file").is_some() && a.pos.len() > 3) || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") {
+            return Err(Fail::Usage("a file is sent on its own: share send <name|id> <path>".into()));
+        }
+        let abs = std::path::absolute(&path).map_err(|e| Fail::Usage(format!("{path}: {e}")))?;
+        let v = call("share.send", json!({ "peer": paired(&who)?, "kind": "file", "path": abs.to_string_lossy() }))?;
+        out(&v, &print_sent);
+        return Ok(());
+    }
     let mut params = json!({ "peer": paired(&who)? });
     if let Some(t) = a.get("title") {
         params["title"] = json!(t);

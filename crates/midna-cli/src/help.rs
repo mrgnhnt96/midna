@@ -730,11 +730,15 @@ pub static VERBS: &[Verb] = &[
         name: "share",
         aliases: &[],
         usage: "share send <name|id> <text…> | share send <name|id> [--title T] < file | share send <name|id> --link <url> [--title T]\n\
-                \x20     [--snippet | --message]",
-        summary: "offer a paired device a message, a snippet or a link",
+                \x20     | share send <name|id> <path> | share send <name|id> --file <path>   [--snippet | --message]",
+        summary: "offer a paired device a message, a snippet, a link, or a file or folder",
         details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
-                  open or pin. --snippet / --message override the guess. The device must be paired and nearby now.\n\
+                  open or pin. A single word that names a file or folder (or --file <path>) offers it, with its size;\n\
+                  once they accept, their Mac fetches it from this one in chunks, checks each file's SHA-256, picks up\n\
+                  where it stopped if the connection drops, and saves it into their nearby.downloads folder (default\n\
+                  ~/Downloads/Midna; a folder keeps its tree, links in it are left out). Keep it in place until then.\n\
+                  --snippet / --message override the guess. The device must be paired and nearby now.\n\
                   Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
                   An agent's share asks the human here first (a needs-you approval showing what would leave) and waits.\n\
                   Their answer comes back as share.accepted or share.declined (midna events --kind share.).",
@@ -749,12 +753,13 @@ pub static VERBS: &[Verb] = &[
         details: "list     newest first, both directions; --waiting = offers waiting for you.\n\
                   accept   (human only) a message is marked read; a snippet is pasted into --into <terminal> (never\n\
                   \x20        followed by Enter; without --into it stays in the inbox, and accepting again pastes again);\n\
-                  \x20        a link opens in the browser, or --pin pins it to --into <terminal> (default this one).\n\
+                  \x20        a link opens in the browser, or --pin pins it to --into <terminal> (default this one);\n\
+                  \x20        a file or folder is fetched into nearby.downloads (accept again to retry one that failed).\n\
                   decline  (human only) tell the sender no. Each offer also raises a needs-you approval: approving\n\
                   \x20        accepts it (a link opens, a snippet stays in the inbox) and denying declines it.\n\
                   reply    answer a message with a message.\n\
                   The inbox keeps the last 500 shares across restarts. Events share.offered, share.sent,\n\
-                  share.accepted and share.declined follow it.",
+                  share.accepted, share.declined and share.progress (a file's transfer) follow it.",
         methods: &["inbox.list", "share.accept", "share.decline"],
     },
     Verb {

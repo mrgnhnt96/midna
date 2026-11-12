@@ -223,7 +223,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Notifications, "Text", &["@texts"]),
     (Sec::Sounds, "", &["notify.sounds", "notify.sounds_in_app", "@sounds"]),
     (Sec::Sounds, "Sound effects", &["@effects"]),
-    (Sec::Nearby, "This Mac", &["@nearby_me", "nearby.visibility", "nearby.name"]),
+    (Sec::Nearby, "This Mac", &["@nearby_me", "nearby.visibility", "nearby.name", "nearby.downloads"]),
     (Sec::Nearby, "On this network", &["@nearby_peers"]),
     (Sec::Nearby, "Paired devices", &["@nearby_paired"]),
     (Sec::Webhooks, "Delivery", &["webhooks.path", "webhooks.port", "webhooks.relay_url"]),
@@ -586,6 +586,7 @@ impl SettingsWindow {
         want.push(("agents.resume_after_sleep_prompt".into(), self.value("agents.resume_after_sleep_prompt").as_str().unwrap_or("").to_string(), "continue"));
         want.push(("webhooks.relay_url".into(), self.value("webhooks.relay_url").as_str().unwrap_or("").to_string(), "https://relay.example.com"));
         want.push(("nearby.name".into(), self.value("nearby.name").as_str().unwrap_or("").to_string(), self.nearby_name_placeholder()));
+        want.push(("nearby.downloads".into(), self.value("nearby.downloads").as_str().unwrap_or("").to_string(), "~/Downloads/Midna"));
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_subs.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_saves.retain(|key, _| want.iter().any(|(k, ..)| k == key));
@@ -1089,6 +1090,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "agents.mcp" => "Give agents the midna MCP tools",
         "nearby.visibility" => "Who can find this Mac",
         "nearby.name" => "Name other Midnas see",
+        "nearby.downloads" => "Save received files in",
         "keep_awake.enabled" => "Keep the Mac awake for agents",
         "keep_awake.mode" => "When",
         "keep_awake.start" => "From",
@@ -1513,7 +1515,7 @@ impl SettingsWindow {
             }
             // only the self-hosted path uses it
             "webhooks.relay_url" if self.value("webhooks.path") != json!("self_relay") => return None,
-            "agents.resume_after_sleep_prompt" | "webhooks.relay_url" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            "agents.resume_after_sleep_prompt" | "webhooks.relay_url" | "nearby.downloads" => r.control = Control::Edit { key: key.into(), actions: vec![] },
             "nearby.visibility" | "nearby.name" => self.nearby_key_row(t, key, &mut r),
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));

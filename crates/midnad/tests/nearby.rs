@@ -16,6 +16,11 @@
 //! The guard: what an agent sends leaves only with the human's OK (an approval, or a rule the
 //! human gave; an agent's own allow doesn't count), and an agent asking to confirm a pairing or
 //! take a share is pointed at the needs-you item that waits for the human.
+//!
+//! Files (`share.send` kind file): the offer carries the size and each file's checksum; accepting
+//! fetches the files in chunks with `share.progress`, picks up where it stopped after the sender
+//! drops out, and lands them (folders with their tree) in `nearby.downloads`; a file that changed
+//! fails cleanly, and offers or fetches that reach outside their folder or share are refused.
 mod common;
 use common::*;
 use midna_proto::error::{HUMAN_ONLY, NOT_FOUND};
@@ -38,13 +43,13 @@ fn service() -> String {
 
 fn nearby(svc: &str, everyone_secs: i64) -> TestDaemon {
     let svc = svc.to_string();
-    TestDaemon::start_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs })
+    TestDaemon::start_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs, ..Setup::default() })
 }
 
 /// Restart `d` on the same Bonjour service.
 fn restart_nearby(d: &mut TestDaemon, svc: &str) {
     let svc = svc.to_string();
-    d.restart_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs: 600 });
+    d.restart_with(move |cfg| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs: 600, ..Setup::default() });
 }
 
 fn list(c: &mut Client) -> Value {
@@ -757,4 +762,286 @@ fn an_agents_share_leaves_only_with_the_humans_ok() {
     assert!(e.code == midna_proto::error::REFUSED && e.message.contains("isn't paired"), "{}", e.message);
     assert!(share_asks(&mut ha).is_empty());
     assert!(!received(&mut hb).contains(&"third".to_string()));
+}
+
+// ---- files ----
+
+/// A fresh folder for a test's files.
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("midna-files-{}-{}-{tag}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::canonicalize(&p).unwrap()
+}
+
+/// `n` bytes that differ from one test file to the next.
+fn bytes(n: usize, seed: u8) -> Vec<u8> {
+    (0..n).map(|i| (i as u32).wrapping_mul(2654435761).rotate_left(seed as u32 % 31) as u8 ^ seed).collect()
+}
+
+/// B lands accepted files in its own scratch folder.
+fn downloads_into(hb: &mut Client, tag: &str) -> std::path::PathBuf {
+    let dl = scratch(tag).join("Downloads");
+    set(hb, "nearby.downloads", dl.to_str().unwrap());
+    dl
+}
+
+/// Send `path` from A to B and accept it on B; the share id.
+fn send_file(ha: &mut Client, hb: &mut Client, fb: &str, path: &std::path::Path) -> String {
+    let sent = send(ha, fb, json!({ "kind": "file", "path": path.to_str().unwrap() }));
+    let id = sent["id"].as_str().unwrap().to_string();
+    call(hb, "share.accept", json!({ "id": id }));
+    id
+}
+
+fn transfer(c: &mut Client, id: &str) -> Value {
+    share(c, id).map(|s| s["transfer"].clone()).unwrap_or_default()
+}
+
+/// Wait for share `id`'s transfer on this side to be over; it.
+fn over(c: &mut Client, id: &str, secs: u64) -> Value {
+    wait_for(secs, "the transfer is over", || Some(transfer(c, id)).filter(|t| t["state"] == "done" || t["state"] == "failed"))
+}
+
+#[test]
+fn files_and_folders_land_whole_in_downloads() {
+    let svc = service();
+    let (a, b, _fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let dl = downloads_into(&mut hb, "dl");
+    let src = scratch("src");
+
+    // One file, several chunks: the offer shows its size and checksum; nothing moves until
+    // the human accepts.
+    let big = bytes(3 * 192 * 1024 + 7, 1);
+    std::fs::write(src.join("photo.raw"), &big).unwrap();
+    let sent = send(&mut ha, &fb, json!({ "kind": "file", "path": src.join("photo.raw").to_str().unwrap() }));
+    let id = sent["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    assert_eq!((got["payload"]["kind"].as_str(), got["payload"]["name"].as_str(), got["size"].as_u64()), (Some("file"), Some("photo.raw"), Some(big.len() as u64)), "{got}");
+    assert_eq!(got["payload"]["files"][0]["sha256"].as_str().unwrap().len(), 64);
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    assert!(ny["item"]["title"].as_str().unwrap().contains(&nb::size_label(big.len() as u64)), "{ny}");
+    assert!(ny["item"]["detail"].as_str().unwrap().contains(dl.to_str().unwrap()), "{ny}");
+    stays(1, "nothing lands before accepting", || !dl.exists() && got["transfer"].is_null());
+    let e = call_err(&mut b.agent(None), "share.accept", json!({ "id": id }));
+    assert_eq!(e.code, HUMAN_ONLY);
+
+    // An agent's file share asks A's human first, naming the file and its size; denied, B gets nothing.
+    let before = inbox(&mut hb)["items"].as_array().unwrap().len();
+    let mut agent = a.agent(None);
+    let p = json!({ "peer": fb, "kind": "file", "path": src.join("photo.raw").to_str().unwrap() });
+    let t = std::thread::spawn(move || agent.call_value("share.send", p));
+    let item = wait_for(10, "A asks about the file", || share_asks(&mut ha).into_iter().next());
+    assert_eq!(item["approval"]["action"]["value"], format!("share send file {fb}"));
+    assert!(item["title"].as_str().unwrap().contains("the file “photo.raw”"), "{item}");
+    assert!(item["detail"].as_str().unwrap().contains(&nb::size_label(big.len() as u64)), "{item}");
+    answer(&mut ha, &item, json!({ "kind": "deny" }));
+    assert_eq!(refused(t.join().unwrap()).code, midna_proto::error::REFUSED);
+    assert_eq!(inbox(&mut hb)["items"].as_array().unwrap().len(), before);
+
+    // Approving the needs-you item accepts it: the file arrives, checked, marked downloaded and
+    // not executable, with progress on both sides.
+    call(&mut hb, "needs_you.resolve", json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    let t = over(&mut hb, &id, 30);
+    assert_eq!((t["state"].as_str(), t["done"].as_u64(), t["files_done"].as_u64()), (Some("done"), Some(big.len() as u64), Some(1)), "{t}");
+    let landed = std::path::PathBuf::from(t["saved_to"].as_str().unwrap());
+    assert_eq!(landed, dl.join("photo.raw"));
+    assert_eq!(std::fs::read(&landed).unwrap(), big);
+    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&landed).unwrap().permissions()) & 0o777;
+    assert_eq!(mode, 0o644);
+    let q = std::process::Command::new("/usr/bin/xattr").arg("-p").arg("com.apple.quarantine").arg(&landed).output().unwrap();
+    assert!(String::from_utf8_lossy(&q.stdout).contains("Midna"), "{q:?}");
+    assert_eq!(share(&mut hb, &id).unwrap()["result"].as_str(), Some(format!("saved to {}", landed.display()).as_str()));
+    assert!(!share_events(&mut hb, kinds::SHARE_PROGRESS, &id).is_empty());
+    let mine = wait_for(10, "A hears it was saved", || Some(transfer(&mut ha, &id)).filter(|t| t["state"] == "done"));
+    assert_eq!(mine["done"].as_u64(), Some(big.len() as u64));
+    assert!(share_events(&mut ha, kinds::SHARE_PROGRESS, &id).iter().any(|e| e["data"]["transfer"]["state"] == "done"));
+    assert!(!b.home.join("nearby/incoming").join(&id).exists(), "staging is cleaned up");
+
+    // The same name again doesn't replace the first.
+    let again = send_file(&mut ha, &mut hb, &fb, &src.join("photo.raw"));
+    assert_eq!(over(&mut hb, &again, 30)["saved_to"].as_str(), Some(dl.join("photo 2.raw").to_str().unwrap()));
+    assert_eq!(std::fs::read(dl.join("photo.raw")).unwrap(), big);
+
+    // A folder keeps its tree, empty folders included; links in it aren't followed.
+    let proj = src.join("proj");
+    std::fs::create_dir_all(proj.join("src/deep")).unwrap();
+    std::fs::create_dir_all(proj.join("empty")).unwrap();
+    std::fs::write(proj.join("README.md"), b"# hi\n").unwrap();
+    std::fs::write(proj.join("src/main.rs"), bytes(200_000, 2)).unwrap();
+    std::fs::write(proj.join("src/deep/zero"), b"").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", proj.join("src/passwd")).unwrap();
+    let fid = send_file(&mut ha, &mut hb, &fb, &proj);
+    let offered = share(&mut hb, &fid).unwrap();
+    assert_eq!(offered["payload"]["folder"], true);
+    assert_eq!(offered["payload"]["files"].as_array().unwrap().len(), 3, "{offered}");
+    let t = over(&mut hb, &fid, 30);
+    assert_eq!(t["state"], "done", "{t}");
+    let root = dl.join("proj");
+    assert_eq!(t["saved_to"].as_str(), Some(root.to_str().unwrap()));
+    assert_eq!(std::fs::read(root.join("README.md")).unwrap(), b"# hi\n");
+    assert_eq!(std::fs::read(root.join("src/main.rs")).unwrap(), bytes(200_000, 2));
+    assert_eq!(std::fs::read(root.join("src/deep/zero")).unwrap(), b"");
+    assert!(root.join("empty").is_dir());
+    assert!(!root.join("src/passwd").exists());
+
+    // A file that changes after the offer (same size, other bytes) fails cleanly: nothing
+    // lands, and accepting again after it changes back fetches it whole.
+    let doc = src.join("doc.txt");
+    std::fs::write(&doc, b"version one").unwrap();
+    let sent = send(&mut ha, &fb, json!({ "kind": "file", "path": doc.to_str().unwrap() }));
+    let cid = sent["id"].as_str().unwrap().to_string();
+    std::fs::write(&doc, b"version two").unwrap();
+    call(&mut hb, "share.accept", json!({ "id": cid }));
+    let t = over(&mut hb, &cid, 30);
+    assert_eq!(t["state"], "failed", "{t}");
+    assert!(t["error"].as_str().unwrap().contains("checksum"), "{t}");
+    assert!(!dl.join("doc.txt").exists());
+    assert!(share(&mut hb, &cid).unwrap()["result"].as_str().unwrap().starts_with("failed"));
+    wait_for(10, "A hears it failed", || Some(transfer(&mut ha, &cid)).filter(|t| t["state"] == "failed"));
+    std::fs::write(&doc, b"version one").unwrap();
+    call(&mut hb, "share.accept", json!({ "id": cid }));
+    assert_eq!(over(&mut hb, &cid, 30)["state"], "done");
+    assert_eq!(std::fs::read(dl.join("doc.txt")).unwrap(), b"version one");
+
+    // Bad sends never leave A.
+    for bad in [
+        json!({ "kind": "file", "path": "relative/file" }),
+        json!({ "kind": "file", "path": src.join("missing").to_str().unwrap() }),
+        json!({ "kind": "file" }),
+        json!({ "kind": "file", "path": doc.to_str().unwrap(), "text": "x" }),
+        json!({ "kind": "message", "text": "x", "path": doc.to_str().unwrap() }),
+    ] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+}
+
+#[test]
+fn a_transfer_picks_up_where_it_stopped_when_the_sender_drops_out() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let mut hb = b.human();
+    let dl = downloads_into(&mut hb, "dl");
+    let src = scratch("src");
+    let data = bytes(40 * 192 * 1024 + 123, 3);
+    std::fs::write(src.join("big.bin"), &data).unwrap();
+    let mut a = a;
+    let slow = |svc: String| move |cfg: &mut midnad::Config| cfg.nearby = Setup { mode: Mode::Service(svc), local_only: true, everyone_secs: 600, serve_delay: Duration::from_millis(100) };
+    a.restart_with(slow(svc.clone()));
+    let mut ha = a.human();
+    wait_for(20, "B sees A again", || peer(&mut hb, &fa));
+    wait_for(20, "A sees B again", || peer(&mut ha, &fb));
+    let id = send_file(&mut ha, &mut hb, &fb, &src.join("big.bin"));
+
+    // Partway through, A's midna stops; B keeps what it has and waits.
+    let part = wait_for(30, "some of it arrived", || Some(transfer(&mut hb, &id)).filter(|t| t["done"].as_u64().unwrap_or(0) >= 5 * 192 * 1024));
+    assert_eq!(part["state"], "moving", "{part}");
+    a.restart_with(slow(svc.clone()));
+    let waiting = wait_for(30, "B is waiting", || Some(transfer(&mut hb, &id)).filter(|t| t["state"] == "waiting" || t["resumed"].as_u64() > Some(0)));
+    let staged = b.home.join("nearby/incoming").join(&id).join("root/big.bin");
+    let _ = waiting;
+
+    // A is back: B carries on from what it staged (not from the start), and the whole file
+    // checks out.
+    let t = over(&mut hb, &id, 60);
+    assert_eq!(t["state"], "done", "{t}");
+    assert!(t["resumed"].as_u64().unwrap() >= 1, "{t}");
+    assert_eq!(std::fs::read(dl.join("big.bin")).unwrap(), data);
+    assert!(!staged.exists());
+    let mut ha = a.human();
+    wait_for(20, "A hears it was saved", || Some(transfer(&mut ha, &id)).filter(|t| t["state"] == "done"));
+}
+
+#[test]
+fn a_transfer_carries_on_after_the_receiver_restarts() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let mut a = a;
+    let slow = Setup { mode: Mode::Service(svc.clone()), local_only: true, everyone_secs: 600, serve_delay: Duration::from_millis(100) };
+    a.restart_with(move |cfg| cfg.nearby = slow);
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let dl = downloads_into(&mut hb, "dl");
+    let src = scratch("src");
+    let data = bytes(30 * 192 * 1024, 4);
+    std::fs::write(src.join("movie.mov"), &data).unwrap();
+    wait_for(20, "A sees B again", || peer(&mut ha, &fb));
+    wait_for(20, "B sees A again", || peer(&mut hb, &fa));
+    let id = send_file(&mut ha, &mut hb, &fb, &src.join("movie.mov"));
+    wait_for(30, "some of it arrived", || Some(transfer(&mut hb, &id)).filter(|t| t["done"].as_u64().unwrap_or(0) >= 4 * 192 * 1024));
+
+    let mut b = b;
+    restart_nearby(&mut b, &svc);
+    let mut hb = b.human();
+    let t = over(&mut hb, &id, 60);
+    assert_eq!(t["state"], "done", "{t}");
+    assert!(t["resumed"].as_u64().unwrap() >= 1, "{t}");
+    assert_eq!(std::fs::read(dl.join("movie.mov")).unwrap(), data);
+}
+
+#[test]
+fn a_peer_cant_reach_outside_the_folder_or_its_own_shares() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let _ = fb;
+    let mut hb = b.human();
+    let dl = downloads_into(&mut hb, "dl");
+    let a_key = identity::load_or_create(&a.home);
+    let mut ch = transport::connect(&addr(port(&mut hb)), &Local::new(&a_key)).unwrap();
+    let sha = "0".repeat(64);
+    let file = |path: &str| json!({ "path": path, "size": 1, "sha256": sha });
+    let offers = [
+        json!({ "kind": "file", "name": "..", "files": [file("..")] }),
+        json!({ "kind": "file", "name": "../x", "files": [file("../x")] }),
+        json!({ "kind": "file", "name": "x", "files": [file("../../x")] }),
+        json!({ "kind": "file", "name": "x", "files": [file("x"), file("y")] }),
+        json!({ "kind": "file", "name": "x", "files": [] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("../../.ssh/authorized_keys")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("/etc/passwd")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("a//b")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("a/./b")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("a\nb")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("Read"), file("read")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("a"), file("a/b")] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [file("a")], "dirs": ["../up"] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [{ "path": "a", "size": 1, "sha256": "zz" }] }),
+        json!({ "kind": "file", "name": "d", "folder": true, "files": [{ "path": "a", "size": u64::MAX, "sha256": sha }, file("b")] }),
+    ];
+    for (n, payload) in offers.iter().enumerate() {
+        let got = ask(&mut ch, &Wire::ShareOffer { id: format!("sh_bad{n:07}"), payload: payload.clone() });
+        assert!(matches!(got, Wire::Refused { .. }), "{payload}: {got:?}");
+    }
+    assert!(inbox(&mut hb)["items"].as_array().unwrap().is_empty());
+
+    // A file named to look like a path still lands inside the folder, under a safe name.
+    let ok = json!({ "kind": "file", "name": "a:b", "files": [file("a:b")] });
+    assert_eq!(ask(&mut ch, &Wire::ShareOffer { id: "sh_colon0001".into(), payload: ok }), Wire::ShareAck { id: "sh_colon0001".into() });
+    let ny = share(&mut hb, "sh_colon0001").unwrap();
+    assert!(ny["needs_you_id"].is_string());
+
+    // Fetching: only the files of a share this Mac offered that device, in range.
+    let mut hb2 = b.human();
+    let src = scratch("src");
+    std::fs::write(src.join("secret.txt"), b"for A only").unwrap();
+    let mine = send(&mut hb2, &fa, json!({ "kind": "file", "path": src.join("secret.txt").to_str().unwrap() }))["id"].as_str().unwrap().to_string();
+    for (id, file) in [("sh_colon0001", 0), ("sh_nothere01", 0), (mine.as_str(), 1), (mine.as_str(), usize::MAX)] {
+        let got = ask(&mut ch, &Wire::FileGet { id: id.into(), file, offset: 0 });
+        assert!(matches!(got, Wire::Refused { .. }), "{id} {file}: {got:?}");
+    }
+    let past = ask(&mut ch, &Wire::FileGet { id: mine.clone(), file: 0, offset: 1000 });
+    assert!(matches!(past, Wire::Refused { .. }), "{past:?}");
+    ch.send(&Wire::FileGet { id: mine.clone(), file: 0, offset: 4 }).unwrap();
+    let Wire::FileChunk { data, offset, .. } = ch.expect(Duration::from_secs(10)).unwrap() else { panic!("no chunk") };
+    assert_eq!(offset, 4);
+    assert_eq!(data, "QSBvbmx5", "from the offset on");
+    assert_eq!(ch.expect(Duration::from_secs(10)).unwrap(), Wire::FileEnd { id: mine.clone(), file: 0 });
+
+    // A FileDone for a share A never got changes nothing on B.
+    let done = ask(&mut ch, &Wire::FileDone { id: "sh_colon0001".into(), ok: true, error: None });
+    assert!(matches!(done, Wire::ShareAck { .. }));
+    assert!(share(&mut hb, "sh_colon0001").unwrap()["transfer"].is_null());
+    assert!(!dl.exists());
 }

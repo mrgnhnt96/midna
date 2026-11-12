@@ -1535,6 +1535,10 @@ pub mod kinds {
     pub const SHARE_ACCEPTED: &str = "share.accepted";
     /// Nearby: a share was declined, here or on the other device (data: `nearby::ShareItem`).
     pub const SHARE_DECLINED: &str = "share.declined";
+    /// Nearby: an accepted file share's contents moved on (about once a second while they
+    /// move), finished or failed; here or, for a share this Mac sent, as the other device fetches
+    /// it (data: `nearby::ShareItem`, see its `transfer`).
+    pub const SHARE_PROGRESS: &str = "share.progress";
     /// midnad took or released its keep-awake power assertion, or why changed (data: `keep_awake.status`).
     pub const KEEP_AWAKE_CHANGED: &str = "keep_awake.changed";
     /// midnad decided to notify the human (data: `notify::Posted`); the app shows it.

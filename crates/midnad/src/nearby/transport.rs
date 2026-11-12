@@ -59,6 +59,20 @@ pub enum Wire {
     ShareResult { id: String, state: String },
     /// Got share message `id` (an offer is in the inbox; a result is recorded).
     ShareAck { id: String },
+    /// Receiver of an accepted file share: send me file `file` (its index in the offer) from
+    /// byte `offset`. The sender answers with [`Wire::FileChunk`]s, then [`Wire::FileEnd`].
+    FileGet { id: String, file: usize, offset: u64 },
+    /// Bytes of file `file` at `offset` (base64).
+    FileChunk { id: String, file: usize, offset: u64, data: String },
+    /// That was the end of file `file`.
+    FileEnd { id: String, file: usize },
+    /// Receiver: the share's files are saved (`ok`), or it gave up (`error` says why).
+    FileDone {
+        id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).
