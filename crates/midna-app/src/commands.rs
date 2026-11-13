@@ -649,6 +649,12 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
         );
     }
     out.push(
+        Command::new("share.agent", CmdIcon::Run, "Ask an agent on a nearby Mac…", Run::Share { what: "agent".into() })
+            .sub("starts an agent on one of your paired Macs in its checkout of this terminal's project; its answer comes back")
+            .kw("nearby share agent start prompt claude codex ask remote mac peer paired device answer")
+            .cli("midna share send agent-start --to <name> --prompt <text> --wait"),
+    );
+    out.push(
         Command::new("notify.clear", CmdIcon::Deny, "Clear notifications", Run::Rpc { method: "notify.clear".into(), params: json!({}) })
             .sub("removes every midna notification from Notification Center")
             .kw("notifications banners dismiss remove clear all notification center")

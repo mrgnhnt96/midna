@@ -398,7 +398,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
                         // New terminal opens in the current project, so its keys belong on this menu only there
                         let keys = (m.current_project_id() == pid).then(|| m.key_label("keys.new_terminal")).filter(|k| !k.is_empty());
                         let summary = pid.as_deref().map(|p| (m.summary.records(p).next().is_some(), m.key_label("keys.project_summary")));
-                        d.child(project_menu(t, pid.clone(), pinned, keys, summary, cx))
+                        // Ask an agent on a nearby Mac: from the selected terminal here, else the newest running one.
+                        let running = g.sessions.iter().filter(|s| s.status.state != crate::model::StatusState::Exited);
+                        let ask = running.clone().find(|s| m.selected.as_deref() == Some(&s.id)).or_else(|| running.max_by(|a, b| a.created_at.cmp(&b.created_at))).map(|s| s.id.clone());
+                        d.child(project_menu(t, pid.clone(), pinned, keys, summary, ask, cx))
                     }),
             );
         let header = wipe(line, 0., header.into_any_element());
@@ -1383,7 +1386,17 @@ fn new_menu(t: &Theme, pid: Option<String>, cx: &mut Context<MainWindow>) -> imp
 }
 
 /// `summary`: whether the project's Summary has records, and its shortcut's keys (root has none).
-fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Option<String>, summary: Option<(bool, String)>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// `ask`: a terminal of the project to start an agent on a nearby Mac from.
+#[allow(clippy::too_many_arguments)]
+fn project_menu(
+    t: &Theme,
+    pid: Option<String>,
+    pinned: bool,
+    terminal_keys: Option<String>,
+    summary: Option<(bool, String)>,
+    ask: Option<String>,
+    cx: &mut Context<MainWindow>,
+) -> impl IntoElement + use<> {
     let p1 = pid.clone();
     let p2 = pid.clone();
     let p3 = pid.clone();
@@ -1418,6 +1431,12 @@ fn project_menu(t: &Theme, pid: Option<String>, pinned: bool, terminal_keys: Opt
                         cx.notify();
                     }),
                 ))
+                .when_some(ask, |d, sid| {
+                    d.child(menu_item(t, "ask-nearby", "Ask an agent on a nearby Mac…", "", cx.listener(move |m, _, w, cx| {
+                        m.menu = Menu::None;
+                        crate::ui::share::open_agent_start(m, Some(sid.clone()), w, cx);
+                    })))
+                })
                 .when_some(summary, |d, (any, keys)| {
                     d.child(
                         menu_item(t, "summary", "Show summary", "", cx.listener(move |m, _, w, cx| {
