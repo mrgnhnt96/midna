@@ -357,7 +357,14 @@ const TOPICS: &[(&str, &str)] = &[
         open a new agent terminal in its checkout of the sending terminal's project with that prompt; it runs only once a person \
         there accepts (or their device auto-accepts agent starts from this Mac, off by default). With want_reply its first turn's \
         last message comes back as a message whose reply_to is the agent start, read at once (share.answered); share.answer {id, \
-        wait_secs?} returns it, waiting up to 600 s per call. `midna skill nearby` has the how-to."),
+        wait_secs?} returns it, waiting up to 600 s per call. An agent ask (kind agent_ask: share.send {peer, kind: agent_ask, \
+        session, prompt, want_reply?}, `midna share send agent-ask --to <name|id> --session <name|id> --prompt <text> [--wait]`) asks an \
+        agent terminal already open on one of the human's own devices instead: peers.sessions {peer} (`midna peers sessions <name|id>`) \
+        lists that Mac's agent terminals (id, name, agent, project, busy), names and ids only, for my-device peers only. session is \
+        one of their ids or names. Once a person there accepts (or auto-accept for agent asks, off by default), the prompt is queued \
+        in that terminal and typed when its agent is idle, never into a busy prompt; with want_reply the end of that turn comes back \
+        the same way. A session that isn't there or isn't an agent refuses the offer, or declines it with the reason (the item's \
+        result) if it went before it was accepted. `midna skill nearby` has the how-to."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \

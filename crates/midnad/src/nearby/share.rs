@@ -7,11 +7,12 @@
 //! needs-you approval and waits. Only the human's `share.accept` (or approving that item) acts
 //! on it: a message is marked read, a snippet is pasted into the terminal they pick (never
 //! followed by Enter), a link is opened or pinned, a tab opens as a new shell (`tab.rs`), an
-//! agent start opens a new agent terminal with its prompt (`agent_start.rs`). Accepting or
+//! agent start opens a new agent terminal with its prompt (`agent_start.rs`), an agent ask
+//! queues its prompt in the agent terminal it names (`agent_ask.rs`). Accepting or
 //! declining owes the sender a [`Wire::ShareResult`], delivered at once if it can be seen and
 //! retried while it can't. Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{agent_start, identity, link, objects, session, tab, transfer};
+use super::{agent_ask, agent_start, identity, link, objects, session, tab, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
@@ -53,21 +54,25 @@ pub(super) struct Entry {
     /// An incoming agent session accepted into a folder its person chose (`--cwd`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) open_in: Option<String>,
-    /// An incoming agent start accepted with `want_reply`: the agent terminal whose first turn
+    /// An incoming agent start or ask accepted with `want_reply`: the agent terminal whose turn
     /// answers it, until it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) watch: Option<String>,
-    /// An incoming agent start: its answer, owed to the sender until it took it.
+    /// An incoming agent ask: its prompt's message in that terminal's queue, until it is typed.
+    /// A turn that ends before then isn't its answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) queued: Option<String>,
+    /// An incoming agent start or ask: its answer, owed to the sender until it took it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) reply: Option<Reply>,
-    /// An outgoing agent start: the incoming message that answered it.
+    /// An outgoing agent start or ask: the incoming message that answered it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) answered_by: Option<String>,
 }
 
 impl Entry {
     pub(super) fn new(item: ShareItem, source: Option<PathBuf>) -> Entry {
-        Entry { item, owe: false, source, open_in: None, watch: None, reply: None, answered_by: None }
+        Entry { item, owe: false, source, open_in: None, watch: None, queued: None, reply: None, answered_by: None }
     }
 }
 
@@ -287,7 +292,8 @@ fn refusal_words(reason: &str) -> String {
 /// person turned that kind on, and (for Midna's own things) it is a summary or a theme that
 /// changes nothing only the human may change. Rules, triggers, settings, queued prompts and
 /// agent sessions always wait for review; an agent start may be auto-accepted (it runs
-/// supervised, like an agent's own `session.open` with a prompt).
+/// supervised, like an agent's own `session.open` with a prompt), and so may an agent ask (its
+/// prompt is queued, like an agent's own `queue.add`).
 fn auto_accepts(d: &Daemon, from: &str, payload: &SharePayload) -> bool {
     let on = d.nearby.inner().store(&d.cfg.home).get(from).is_some_and(|s| s.auto_accepts(payload.kind()));
     on && match payload {
@@ -310,6 +316,9 @@ pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire
         Err(_) => return refuse("this Midna can't take that kind of share; update it"),
     };
     if let Err(e) = payload.check() {
+        return refuse(&e);
+    }
+    if let Err(e) = agent_ask::admit(d, from, &payload) {
         return refuse(&e);
     }
     let name = peer_name(d, from);
@@ -523,6 +532,10 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
                 json!({ "id": it.id }),
             )
         }
+        SharePayload::AgentAsk { prompt, .. } => {
+            let (tab, then) = agent_ask::approval(d, it);
+            (format!("{name} asks {tab} here: {}", first_line(prompt)), format!("{}\n\n{then}", cut(prompt, 2000)), json!({ "id": it.id }))
+        }
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -542,8 +555,9 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
     d.raise_needs_you(item).id
 }
 
-/// A paired device (`from`) says its person accepted or declined a share this Mac sent.
-pub fn result(d: &Daemon, from: &str, id: String, state: &str) -> Wire {
+/// A paired device (`from`) says its person accepted or declined a share this Mac sent;
+/// `reason` is why it was declined, when it says.
+pub fn result(d: &Daemon, from: &str, id: String, state: &str, reason: Option<String>) -> Wire {
     let state = match state {
         "accepted" => ShareState::Accepted,
         "declined" => ShareState::Declined,
@@ -557,6 +571,11 @@ pub fn result(d: &Daemon, from: &str, id: String, state: &str) -> Wire {
             Some(e) => {
                 e.item.state = state;
                 e.item.decided_at = Some(time::now_rfc3339());
+                if state == ShareState::Declined
+                    && let Some(why) = reason.as_deref().map(str::trim).filter(|r| !r.is_empty())
+                {
+                    e.item.result = Some(cut(why, 500));
+                }
                 let item = e.item.clone();
                 let _ = inbox.save();
                 Some(item)
@@ -622,8 +641,11 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
     if p.cwd.is_some() && !matches!(it.payload, SharePayload::Tab { .. } | SharePayload::Agent { .. } | SharePayload::AgentStart { .. }) {
         return Err(RpcError::bad_params("only a tab, an agent session or an agent start takes a `cwd`"));
     }
-    // An agent start that wants its answer back: the terminal that will give it.
+    // An agent start or ask that wants its answer back: the terminal that will give it.
     let mut watch = None;
+    // An agent ask: its prompt in that terminal's queue, and that terminal.
+    let mut queued = None;
+    let mut asked_in = None;
     let result = match &it.payload {
         SharePayload::Message { .. } => {
             if p.session.is_some() {
@@ -696,6 +718,24 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
             watch = want_reply.then_some(sid);
             result
         }
+        SharePayload::AgentAsk { want_reply, .. } => {
+            if p.session.is_some() {
+                return Err(RpcError::bad_params("an agent ask goes to the terminal it names"));
+            }
+            match agent_ask::queue(d, ctx, &it)? {
+                agent_ask::Queued::In { result, sid, id } => {
+                    watch = want_reply.then(|| sid.clone());
+                    queued = Some(id);
+                    asked_in = Some(sid);
+                    result
+                }
+                agent_ask::Queued::Gone(why) => {
+                    // Nothing to ask any more: the sender hears why.
+                    let item = decline_offered(d, &p.id, ctx.actor(), Some(&why));
+                    return ok(item.unwrap_or(it));
+                }
+            }
+        }
     };
     let (item, first, ny) = {
         let mut i = d.nearby.inner();
@@ -711,6 +751,7 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
             e.item.auto = auto;
             e.owe = true;
             e.watch = watch;
+            e.queued = queued.clone();
         } else if auto {
             return Err(RpcError::conflict(format!("{} was already decided", p.id)));
         } else if e.item.state == ShareState::Declined {
@@ -725,6 +766,10 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         inbox.save()?;
         (item, first, ny)
     };
+    if let (Some(sid), Some(id)) = (&asked_in, &queued) {
+        // The queue may have typed it before the entry above said it waits there.
+        agent_ask::recorded(d, sid, id);
+    }
     if let Some(ny) = ny {
         d.close_needs_you(&ny, json!({ "kind": "approve", "scope": { "kind": "once" } }), ctx.actor());
     }
@@ -745,18 +790,22 @@ pub fn decline(d: &Daemon, ctx: &Ctx, p: ShareDeclineParams) -> R {
     match it.state {
         ShareState::Accepted => Err(RpcError::conflict(format!("{} was already accepted", p.id))),
         ShareState::Declined => ok(it),
-        ShareState::Offered => ok(decline_offered(d, &p.id, ctx.actor()).unwrap_or(it)),
+        ShareState::Offered => ok(decline_offered(d, &p.id, ctx.actor(), None).unwrap_or(it)),
     }
 }
 
-/// Decline a share that is still offered; None if it isn't.
-fn decline_offered(d: &Daemon, id: &str, by: Actor) -> Option<ShareItem> {
+/// Decline a share that is still offered, with `reason` (kept as its result and sent back)
+/// when there is one; None if it isn't offered.
+fn decline_offered(d: &Daemon, id: &str, by: Actor, reason: Option<&str>) -> Option<ShareItem> {
     let (item, ny) = {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
         let e = inbox.get_mut(id).filter(|e| e.item.direction == ShareDirection::Incoming && e.item.state == ShareState::Offered)?;
         e.item.state = ShareState::Declined;
         e.item.decided_at = Some(time::now_rfc3339());
+        if let Some(why) = reason {
+            e.item.result = Some(why.to_string());
+        }
         e.owe = true;
         let ny = e.item.needs_you_id.take();
         let item = e.item.clone();
@@ -787,7 +836,7 @@ pub fn needs_you_closed(d: &Daemon, item: &NeedsYou, resolution: &Value) {
         id
     };
     if resolution.get("kind").and_then(Value::as_str) == Some("deny") {
-        decline_offered(d, &id, Actor::human());
+        decline_offered(d, &id, Actor::human(), None);
     }
 }
 
@@ -880,15 +929,24 @@ pub fn start(d: &Arc<Daemon>) {
 
 fn deliver(d: &Daemon) {
     let seen: Vec<String> = d.nearby.inner().peers.keys().cloned().collect();
-    let owed: Vec<(String, String, ShareState)> = {
+    let owed: Vec<(String, String, ShareState, Option<String>)> = {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
-        inbox.items.iter().filter(|e| e.owe && seen.contains(&e.item.peer)).map(|e| (e.item.id.clone(), e.item.peer.clone(), e.item.state)).collect()
+        inbox
+            .items
+            .iter()
+            .filter(|e| e.owe && seen.contains(&e.item.peer))
+            .map(|e| {
+                // Why it was declined, when midnad declined it (an agent ask whose terminal went).
+                let reason = e.item.result.clone().filter(|_| e.item.state == ShareState::Declined);
+                (e.item.id.clone(), e.item.peer.clone(), e.item.state, reason)
+            })
+            .collect()
     };
-    for (id, fp, state) in owed {
+    for (id, fp, state, reason) in owed {
         let state_word = if state == ShareState::Accepted { "accepted" } else { "declined" };
         let Ok(mut ch) = link::connect_peer(d, &fp) else { continue };
-        let answer = ch.send(&Wire::ShareResult { id: id.clone(), state: state_word.into() }).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
+        let answer = ch.send(&Wire::ShareResult { id: id.clone(), state: state_word.into(), reason }).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
         if !matches!(&answer, Ok(Wire::ShareAck { id: got }) if *got == id) {
             continue;
         }

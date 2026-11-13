@@ -121,17 +121,28 @@ fn message_text(text: &str) -> String {
     format!("{}…", tab::cut_bytes(text, nb::MAX_MESSAGE_TEXT - '…'.len_utf8()))
 }
 
-/// Keep `text` as the answer owed for the agent start terminal `sid` was opened for, if it still
-/// waits for one; the delivery thread sends it.
-fn owe(d: &Daemon, sid: &str, text: String) {
+/// Keep `text` as the answer owed for the first incoming share `pick` chooses (every one with
+/// `all`) that still waits for one: an agent start, or an agent ask (it stops waiting in its
+/// queue too). The delivery thread sends it.
+pub(super) fn owe_where(d: &Daemon, pick: impl Fn(&Entry) -> bool, all: bool, text: &str) {
     let owed = {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
-        let Some(e) = inbox.items.iter_mut().find(|e| e.item.direction == ShareDirection::Incoming && e.watch.as_deref() == Some(sid)) else { return };
-        e.watch = None;
-        e.reply = Some(Reply { id: format!("sh_{}", crate::state::hex_id(12)), text: message_text(&text) });
-        let _ = inbox.save();
-        true
+        let mut owed = false;
+        for e in inbox.items.iter_mut().filter(|e| e.item.direction == ShareDirection::Incoming && pick(e)) {
+            e.queued = None;
+            if e.watch.take().is_some() {
+                e.reply = Some(Reply { id: format!("sh_{}", crate::state::hex_id(12)), text: message_text(text) });
+                owed = true;
+            }
+            if !all {
+                break;
+            }
+        }
+        if owed {
+            let _ = inbox.save();
+        }
+        owed
     };
     if owed {
         share::nudge(d);
@@ -140,7 +151,8 @@ fn owe(d: &Daemon, sid: &str, text: String) {
 
 /// An agent's turn ended (its Stop hook, or Codex's turn-complete notify) with `message`, its
 /// last one; `failed` says why when the turn failed. The first turn of an agent start that wants
-/// a reply sends that message back.
+/// a reply sends that message back, and so does the turn an agent ask's prompt started (not one
+/// that ended while it still waited in the queue).
 pub fn turn_ended(d: &Daemon, sid: &str, message: Option<&str>, failed: Option<&str>) {
     let message = message.map(str::trim).filter(|m| !m.is_empty());
     let text = match (failed, message) {
@@ -149,13 +161,13 @@ pub fn turn_ended(d: &Daemon, sid: &str, message: Option<&str>, failed: Option<&
         (None, Some(m)) => m.to_string(),
         (None, None) => "(The agent finished its turn without a message.)".to_string(),
     };
-    owe(d, sid, text);
+    owe_where(d, |e| e.watch.as_deref() == Some(sid) && e.queued.is_none(), false, &text);
 }
 
-/// Terminal `sid`'s process ended. An agent start still waiting for its answer gets a note
-/// instead, so its sender stops waiting.
+/// Terminal `sid`'s process ended. An agent start or ask still waiting for its answer gets a
+/// note instead, so its sender stops waiting.
 pub fn ended(d: &Daemon, sid: &str) {
-    owe(d, sid, "(The agent's terminal ended before it answered.)".to_string());
+    owe_where(d, |e| e.watch.as_deref() == Some(sid), true, "(The agent's terminal ended before it answered.)");
 }
 
 /// Offer the answers owed to devices that can be seen now. Each keeps its share id, so an offer
@@ -186,13 +198,13 @@ pub fn deliver(d: &Daemon, seen: &[String]) {
     }
 }
 
-/// An incoming message from `from` (proven by the connection): if it answers an agent start
-/// this Mac sent it with `want_reply` and no answer came yet, mark it read and the agent start
+/// An incoming message from `from` (proven by the connection): if it answers an agent start or
+/// ask this Mac sent it with `want_reply` and no answer came yet, mark it read and the share
 /// answered. True if it did; the caller then fires `share.answered`.
 pub(super) fn answered(inbox: &mut share::Inbox, from: &str, msg: &mut Entry) -> bool {
     let SharePayload::Message { reply_to: Some(to), .. } = &msg.item.payload else { return false };
     let Some(start) = inbox.get_mut(to) else { return false };
-    let wanted = matches!(start.item.payload, SharePayload::AgentStart { want_reply: true, .. });
+    let wanted = start.item.payload.wants_reply();
     if start.item.direction != ShareDirection::Outgoing || start.item.peer != from || !wanted || start.answered_by.is_some() {
         return false;
     }
@@ -205,7 +217,7 @@ pub(super) fn answered(inbox: &mut share::Inbox, from: &str, msg: &mut Entry) ->
     true
 }
 
-/// `share.answer`: an agent start this Mac sent, and its answer once it came, waiting up to
+/// `share.answer`: an agent start or ask this Mac sent, and its answer once it came, waiting up to
 /// `wait_secs` for it.
 pub fn answer(d: &Daemon, p: ShareAnswerParams) -> R {
     let deadline = Instant::now() + Duration::from_secs(p.wait_secs.unwrap_or(0).min(nb::MAX_ANSWER_WAIT_SECS));
@@ -217,8 +229,8 @@ pub fn answer(d: &Daemon, p: ShareAnswerParams) -> R {
                 .get(&p.id)
                 .filter(|e| e.item.direction == ShareDirection::Outgoing)
                 .ok_or_else(|| RpcError::not_found(format!("no share {} sent from this Mac (inbox.list)", p.id)))?;
-            if !matches!(e.item.payload, SharePayload::AgentStart { want_reply: true, .. }) {
-                return Err(RpcError::bad_params(format!("{} isn't an agent start sent with want_reply; nothing answers it", p.id)));
+            if !e.item.payload.wants_reply() {
+                return Err(RpcError::bad_params(format!("{} isn't an agent start or ask sent with want_reply; nothing answers it", p.id)));
             }
             let answer = e.answered_by.as_deref().and_then(|a| inbox.get(a)).map(|a| a.item.clone());
             (e.item.clone(), answer)

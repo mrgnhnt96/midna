@@ -1600,3 +1600,150 @@ fn an_agent_start_whose_terminal_ends_first_still_answers() {
     assert!(text.contains("ended before it answered"), "{text}");
     let _ = std::fs::remove_file(bin);
 }
+
+/// Keep A and B as each other's own devices.
+fn both_mine(ha: &mut Client, hb: &mut Client, fa: &str, fb: &str) {
+    call(ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "my_device" }));
+    call(hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+}
+
+/// Open an agent terminal named `name` (running the stand-in agent).
+fn agent_terminal(c: &mut Client, cwd: &std::path::Path, name: &str) -> String {
+    call(c, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": cwd, "name": name }))["id"].as_str().unwrap().to_string()
+}
+
+fn hook(c: &mut Client, event: &str, payload: Value) {
+    call(c, "agent.hook", json!({ "agent": "claude", "event": event, "payload": payload }));
+}
+
+fn queued(c: &mut Client, sid: &str) -> Vec<Value> {
+    call(c, "queue.list", json!({ "session": sid }))["items"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn an_agent_ask_queues_in_my_other_macs_tab_and_its_answer_comes_back() {
+    let bin = fake_agent("ask");
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let sid = agent_terminal(&mut hb, &b.home, "api tests");
+    let shell = call(&mut hb, "session.open", json!({ "kind": "shell", "cwd": b.home, "command": ["/bin/sh"], "name": "plain shell" }))["id"].as_str().unwrap().to_string();
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": a.home, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let prompt = "Did the migration pass?";
+
+    // A keeps B as its own, but B keeps A as a contact: B shows A nothing and takes no asks.
+    let e = call_err(&mut ha, "peers.sessions", json!({ "peer": fb }));
+    assert!(e.message.contains("only your own devices"), "B keeps A as a contact: {}", e.message);
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent_ask", "session": "api tests", "prompt": prompt }));
+    assert!(e.message.contains("only your own devices"), "{}", e.message);
+    // And a contact isn't even asked.
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "contact" }));
+    let e = call_err(&mut ha, "peers.sessions", json!({ "peer": fb }));
+    assert_eq!(e.code, REFUSED, "{}", e.message);
+    assert!(e.message.contains("kept as a contact"), "{}", e.message);
+    both_mine(&mut ha, &mut hb, &fa, &fb);
+
+    // Mine both ways: B's agent terminals, names and ids only; shells aren't listed.
+    let v = call(&mut a.agent(Some(&t)), "peers.sessions", json!({ "peer": fb }));
+    assert_eq!(v["peer_name"], "Bravo", "{v}");
+    let listed = v["sessions"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{v}");
+    let s = &listed[0];
+    assert_eq!((s["id"].as_str(), s["name"].as_str(), s["agent"].as_str(), s["busy"].as_bool()), (Some(sid.as_str()), Some("api tests"), Some("claude"), Some(false)), "{v}");
+    assert!(s.get("scrollback").is_none() && s.get("text").is_none(), "{v}");
+
+    // An ask naming no agent terminal there is refused with the reason, before anything waits.
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent_ask", "session": "nope", "prompt": prompt }));
+    assert!(e.message.contains("no agent terminal here is called “nope”"), "{}", e.message);
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent_ask", "session": shell, "prompt": prompt }));
+    assert!(e.message.contains("isn't an agent terminal"), "{}", e.message);
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent_ask", "prompt": prompt }));
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
+    assert!(inbox(&mut hb)["items"].as_array().unwrap().iter().all(|s| s["payload"]["kind"] != "agent_ask"), "nothing was offered");
+
+    // B's agent is busy with something else.
+    hook(&mut b.agent(Some(&sid)), "UserPromptSubmit", json!({ "prompt": "earlier work" }));
+
+    // An agent's ask leaves only with A's human's OK, whose title names the tab and the question.
+    let mut c = a.agent(Some(&t));
+    let p = json!({ "peer": fb, "kind": "agent_ask", "session": "API Tests", "prompt": prompt, "want_reply": true });
+    let bg = std::thread::spawn(move || c.call_value("share.send", p));
+    let item = wait_for(10, "A asks", || share_asks(&mut ha).into_iter().next());
+    assert_eq!(item["approval"]["action"]["value"], format!("share send agent_ask {fb}"));
+    assert_eq!(item["title"], "Ask “API Tests” on Bravo: Did the migration pass?", "{item}");
+    assert!(item["detail"].as_str().unwrap().contains(prompt), "{item}");
+    answer(&mut ha, &item, json!({ "kind": "approve", "scope": { "kind": "once" } }));
+    let id = bg.join().unwrap().expect("sent once approved")["id"].as_str().unwrap().to_string();
+
+    // B's human sees which terminal and the prompt; nothing is queued before they accept.
+    let got = wait_for(10, "B has it", || share(&mut hb, &id));
+    assert_eq!((got["payload"]["kind"].as_str(), got["state"].as_str()), (Some("agent_ask"), Some("offered")), "{got}");
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    assert_eq!(ny["item"]["title"], "Alpha asks “api tests” here: Did the migration pass?", "{ny}");
+    assert!(ny["item"]["detail"].as_str().unwrap().contains(&sid), "{ny}");
+    stays(1, "nothing queued before accepting", || queued(&mut hb, &sid).is_empty());
+    assert_eq!(call_err(&mut b.agent(None), "share.accept", json!({ "id": id })).code, HUMAN_ONLY);
+
+    // Accepting queues it in that terminal, held while its agent works.
+    call(&mut hb, "needs_you.resolve", json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    let done = wait_for(10, "accepted", || share(&mut hb, &id).filter(|s| s["state"] == "accepted"));
+    assert!(done["result"].as_str().unwrap().starts_with(&format!("queued in {sid}")), "{done}");
+    let q = queued(&mut hb, &sid);
+    assert_eq!((q.len(), q[0]["text"].as_str()), (1, Some(prompt)), "{q:?}");
+    stays(2, "never typed into a busy agent", || !read(&mut hb, &sid).contains(prompt));
+    assert_eq!(call_err(&mut hb, "share.accept", json!({ "id": id })).code, midna_proto::error::CONFLICT, "accepting again would ask again");
+
+    // The busy turn ends: that isn't the answer. Then the queue types the prompt.
+    hook(&mut b.agent(Some(&sid)), "Stop", json!({ "last_assistant_message": "earlier work done" }));
+    wait_for(20, "the prompt is typed", || read(&mut hb, &sid).contains(prompt).then_some(()));
+    wait_for(10, "the queue is empty", || queued(&mut hb, &sid).is_empty().then_some(()));
+    stays(2, "no answer from the earlier turn", || answers_to(&mut ha, &id).is_empty());
+
+    // The turn the prompt started ends: its last message goes back.
+    let mut w = a.human();
+    let wid = id.clone();
+    let waiter = std::thread::spawn(move || call(&mut w, "share.answer", json!({ "id": wid, "wait_secs": 30 })));
+    hook(&mut b.agent(Some(&sid)), "UserPromptSubmit", json!({ "prompt": prompt }));
+    hook(&mut b.agent(Some(&sid)), "Stop", json!({ "last_assistant_message": "Yes: all 12 steps passed." }));
+    let r = waiter.join().unwrap();
+    assert_eq!(r["answer"]["payload"]["text"], "Yes: all 12 steps passed.", "{r}");
+    assert_eq!(r["answer"]["payload"]["reply_to"], id.as_str(), "{r}");
+    hook(&mut b.agent(Some(&sid)), "Stop", json!({ "last_assistant_message": "later" }));
+    stays(2, "one answer only", || answers_to(&mut ha, &id).len() == 1);
+    let _ = std::fs::remove_file(bin);
+}
+
+#[test]
+fn an_agent_ask_that_cant_be_asked_any_more_tells_the_sender_why() {
+    let bin = fake_agent("ask-gone");
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    both_mine(&mut ha, &mut hb, &fa, &fb);
+    let sid = agent_terminal(&mut hb, &b.home, "worker");
+    hook(&mut b.agent(Some(&sid)), "UserPromptSubmit", json!({ "prompt": "busy" }));
+    let ask = |ha: &mut Client, text: &str| send(ha, &fb, json!({ "kind": "agent_ask", "session": "work", "prompt": text, "want_reply": true }))["id"].as_str().unwrap().to_string();
+
+    // Taken out of the queue before it was typed: the sender hears so.
+    let id = ask(&mut ha, "first question");
+    wait_for(10, "B has it", || share(&mut hb, &id));
+    call(&mut hb, "share.accept", json!({ "id": id }));
+    let q = wait_for(10, "queued", || queued(&mut hb, &sid).first().cloned());
+    call(&mut hb, "queue.remove", json!({ "session": sid, "id": q["id"] }));
+    let r = call(&mut ha, "share.answer", json!({ "id": id, "wait_secs": 30 }));
+    let text = r["answer"]["payload"]["text"].as_str().unwrap_or_else(|| panic!("{r}"));
+    assert!(text.contains("taken out of worker's queue"), "{text}");
+
+    // The terminal closed before the ask was accepted: accepting declines it, with the reason.
+    let id = ask(&mut ha, "second question");
+    wait_for(10, "B has it", || share(&mut hb, &id));
+    call(&mut hb, "session.close", json!({ "id": sid, "force": true }));
+    wait_for(10, "closed", || call(&mut hb, "session.list", json!({})).as_array().unwrap().iter().all(|s| s["id"] != sid).then_some(()));
+    let item = call(&mut hb, "share.accept", json!({ "id": id }));
+    assert_eq!(item["state"], "declined", "{item}");
+    let r = call(&mut ha, "share.answer", json!({ "id": id, "wait_secs": 30 }));
+    assert_eq!(r["share"]["state"], "declined", "{r}");
+    assert!(r["answer"].is_null(), "{r}");
+    assert!(r["share"]["result"].as_str().is_some_and(|w| w.contains("no agent terminal here is called “work”")), "the reason travels back: {r}");
+    let _ = std::fs::remove_file(bin);
+}

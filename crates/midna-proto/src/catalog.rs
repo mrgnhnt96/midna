@@ -659,6 +659,11 @@ fn build() -> Vec<MethodSpec> {
              human only. `paired` lists every device paired with this one (tier contact or my_device, nearby or \
              not) and `pairings` the pairings in progress. A peer with claims_name_of uses a paired device's name \
              but has another key: it is not that device."),
+        m::<PeersSessionsParams, PeersSessionsResult>("peers.sessions").d(
+            "Nearby: the agent terminals open on one of my devices (a device kept as my_device, on the network now): \
+             each one's id there, name, agent, project name, state and busy (in a turn or waiting on its human). Names \
+             and ids only, never what is on their screens. A contact is refused. Use it to pick the `session` for a \
+             share.send of kind agent_ask."),
         m::<PeersPairParams, Pairing>("peers.pair").mutating().d(
             "Nearby: ask a device in peers.list to pair (it must be visible to everyone, or already paired). The two \
              daemons open an encrypted connection bound to their device keys and agree on a 6-digit code; returns the \
@@ -679,13 +684,13 @@ fn build() -> Vec<MethodSpec> {
              Returns the device; event peers.changed. Human only: an agent can't promote a device. Keeping a device \
              as a contact turns off everything it auto-accepted."),
         m::<PeersSetAutoAcceptParams, PairedPeer>("peers.set_auto_accept").mutating().human().d(
-            "Nearby: accept one kind of share (message, snippet, link, file, tab, object or agent_start) from one of my devices \
+            "Nearby: accept one kind of share (message, snippet, link, file, tab, object, agent_start or agent_ask) from one of my devices \
              without asking (on true), or ask again (on false). Everything is off by default. Only a device kept as \
              my_device can have any (a contact is refused), keeping it as a contact or forgetting it turns them all \
              off, and pairing again starts with none. Auto-accepting does what accepting would: a message is read, a \
              snippet kept in the inbox (never pasted), a link opened, a file saved into nearby.downloads, a tab opened \
              as a fresh shell, an agent start's prompt run in a new agent terminal (supervised, as a trigger's \
-             agent would be). An object is applied only when it's a Summary record or a theme: rules, triggers, \
+             agent would be), an agent ask's prompt queued in its terminal. An object is applied only when it's a Summary record or a theme: rules, triggers, \
              settings and queued prompts always wait for the human's review. An agent session always asks (kind \
              agent is refused as bad params). If auto-accepting fails the share asks \
              as usual. Returns the device (auto_accept lists what is on); event peers.changed. Human only."),
@@ -703,7 +708,11 @@ fn build() -> Vec<MethodSpec> {
              sending terminal's, else claude), `session` or the caller's for the project and directory, optional \
              title, want_reply): the other Mac's person accepting it opens a new agent terminal in their checkout of \
              that project with the prompt as its first; with want_reply its first answer comes back as a message \
-             replying to the share (event share.answered; share.answer waits for it). \
+             replying to the share (event share.answered; share.answer waits for it), \
+             or an agent ask (kind agent_ask, `session`: the id or name of an agent terminal open on the other Mac, \
+             from peers.sessions; `prompt`; want_reply; to one of my devices only): accepted, the prompt is queued in \
+             that terminal and typed once its agent is idle, and with want_reply the agent's last message when that \
+             turn ends comes back the same way. An ask whose terminal isn't there is refused with the reason. \
              Returns the share (sh_…) once it is in the other device's inbox; event share.sent. Nothing \
              runs on the other Mac: its person accepts or declines (share.accepted / share.declined fire here when \
              they do). An accepted file's contents are fetched by the other Mac in chunks, resuming after a dropped \
@@ -732,15 +741,17 @@ fn build() -> Vec<MethodSpec> {
              .before-<id>), and a new agent terminal opens there (or in `cwd`) resuming the conversation, idle until \
              prompted; refused while a terminal here runs that conversation. An agent start opens a new agent \
              terminal where a tab would (or in `cwd`) with its prompt; with want_reply, the agent's last message when \
-             its first turn ends goes back to the sender (cut to 4 KiB), or a note if its terminal ends first. The \
-             sender gets share.accepted. Human only: agents can't accept what other devices send."),
+             its first turn ends goes back to the sender (cut to 4 KiB), or a note if its terminal ends first. An \
+             agent ask queues its prompt in its terminal (sent once the agent is idle, never typed into a busy \
+             prompt); with want_reply the agent's last message when that turn ends goes back. If the terminal is gone \
+             or no longer an agent, accepting declines it, with the reason sent back. The sender gets share.accepted. Human only: agents can't accept what other devices send."),
         m::<ShareDeclineParams, ShareItem>("share.decline").mutating().human().d(
             "Nearby: decline an incoming share; the sender gets share.declined. The share stays in the inbox, \
              declined. Human only."),
         m::<ShareAnswerParams, ShareAnswerResult>("share.answer").d(
-            "Nearby: the answer to an agent start this Mac sent with want_reply: the message the other Mac sent back \
-             once its agent's first turn ended (`answer`, its text in payload.text), with the share as it is now \
-             (declined: no answer will come). wait_secs (max 600) waits for it; call again to wait longer. The answer \
+            "Nearby: the answer to an agent start or ask this Mac sent with want_reply: the message the other Mac \
+             sent back once its agent's turn ended (`answer`, its text in payload.text), with the share as it is now \
+             (declined: no answer will come; `result` may say why). wait_secs (max 600) waits for it; call again to wait longer. The answer \
              is also in inbox.list, marked read, and fires share.answered."),
         m::<InboxListParams, InboxListResult>("inbox.list").d(
             "Nearby: shares to and from paired devices, newest first, kept across restarts (the latest 500). \

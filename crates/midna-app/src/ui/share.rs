@@ -132,7 +132,7 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent | ShareKind::AgentStart => {
+        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk => {
             SharePayload::Message { text: message.trim().to_string(), reply_to }
         }
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
@@ -146,9 +146,12 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         SharePayload::Message { text, reply_to } => (Some(text), None, None, reply_to),
         SharePayload::Snippet { text, title } => (Some(text), None, title, None),
         SharePayload::Link { url, title } => (None, Some(url), title, None),
-        SharePayload::File { .. } | SharePayload::Tab { .. } | SharePayload::Object { .. } | SharePayload::Agent { .. } | SharePayload::AgentStart { .. } => {
-            (None, None, None, None)
-        }
+        SharePayload::File { .. }
+        | SharePayload::Tab { .. }
+        | SharePayload::Object { .. }
+        | SharePayload::Agent { .. }
+        | SharePayload::AgentStart { .. }
+        | SharePayload::AgentAsk { .. } => (None, None, None, None),
     };
     ShareSendParams {
         peer: peer.to_string(),
@@ -189,6 +192,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Object => "Midna items",
         ShareKind::Agent => "agent session",
         ShareKind::AgentStart => "agent start",
+        ShareKind::AgentAsk => "agent ask",
     }
 }
 
@@ -202,6 +206,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Object => "Midna",
         ShareKind::Agent => "Agent session",
         ShareKind::AgentStart => "Agent start",
+        ShareKind::AgentAsk => "Agent ask",
     }
 }
 
@@ -308,7 +313,7 @@ fn from_line(detail: &str) -> Option<(String, Option<Tier>, String)> {
 }
 
 /// "X sent a snippet…", "X sent a link: …", "X sent a file: …", "X sent a terminal tab: …", "X sent from Midna: …",
-/// "X sent an agent session: …",
+/// "X sent an agent session: …", "X asks Claude Code here: …", "X asks “tab” here: …",
 /// else "X: …" (a message).
 fn kind_of_title(title: &str, name: &str) -> ShareKind {
     let rest = title.strip_prefix(name).filter(|_| !name.is_empty());
@@ -326,6 +331,8 @@ fn kind_of_title(title: &str, name: &str) -> ShareKind {
         ShareKind::Agent
     } else if has(" asks Claude Code here: ") || has(" asks Codex here: ") {
         ShareKind::AgentStart
+    } else if has(" asks “") {
+        ShareKind::AgentAsk
     } else if has(" sent a snippet") {
         ShareKind::Snippet
     } else if has(" sent a link: ") {
@@ -351,7 +358,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
         ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), shell: None, scrollback: o.body.clone() },
         ShareKind::Object => SharePayload::Snippet { text: o.body.clone(), title: None },
         // Only the card's words: what it is and where it opens.
-        ShareKind::Agent | ShareKind::AgentStart => SharePayload::Message { text: o.body.clone(), reply_to: None },
+        ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk => SharePayload::Message { text: o.body.clone(), reply_to: None },
     }
 }
 
@@ -388,6 +395,10 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
             o.name
         ),
         ShareKind::Agent => "Resume fetches the conversation, puts it where the agent keeps its conversations here (with their paths changed to yours), and opens a tab in your checkout of its project resuming it, idle until you prompt it. Nothing runs before you accept.".into(),
+        ShareKind::AgentAsk => format!(
+            "Queue prompt puts this prompt in the queue of the agent terminal {} named; it is typed once that agent is idle, never into a busy prompt. If they asked for its answer, the agent's reply when that turn ends goes back to them.",
+            o.name
+        ),
     };
     let transfer = m.share.items.iter().find(|i| i.id == o.id).and_then(|i| i.transfer.clone());
     div()
@@ -558,6 +569,14 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .gap(px(4.))
                 .child(div().font_weight(FontWeight::BOLD).child(format!("{title} · {place}")))
                 .child(div().text_color(t.dim).child(format!("A new {who} terminal with this prompt{back}")))
+                .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).child(prompt.clone()))
+        }
+        SharePayload::AgentAsk { session, prompt, want_reply } => {
+            let back = if *want_reply { " · its answer goes back" } else { "" };
+            frame()
+                .gap(px(4.))
+                .child(div().font_weight(FontWeight::BOLD).child(format!("Ask “{session}”")))
+                .child(div().text_color(t.dim).child(format!("Queued in that agent terminal, typed once it's idle{back}")))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).child(prompt.clone()))
         }
     }
@@ -1200,7 +1219,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::File { name, .. } => nb::safe_name(name),
         SharePayload::Tab { title, .. } | SharePayload::Agent { title, .. } => title.clone(),
         SharePayload::Object { object } => object.label(),
-        SharePayload::AgentStart { prompt, .. } => prompt.clone(),
+        SharePayload::AgentStart { prompt, .. } | SharePayload::AgentAsk { prompt, .. } => prompt.clone(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -1375,7 +1394,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         SharePayload::Tab { scrollback, .. } => scrollback.clone(),
         SharePayload::Object { object } => serde_json::to_string_pretty(object).unwrap_or_default(),
         SharePayload::Agent { conversation, .. } => conversation.clone(),
-        SharePayload::AgentStart { prompt, .. } => prompt.clone(),
+        SharePayload::AgentStart { prompt, .. } | SharePayload::AgentAsk { prompt, .. } => prompt.clone(),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
@@ -1532,6 +1551,13 @@ mod tests {
         // a message has no place, whatever it says
         let m = need("Studio: x", "It opens in /tmp. Approving it\n\nMessage from Studio. Approving marks it read.\nFrom Studio, a contact (device a). Deny to decline it.", "midna inbox accept sh_m002");
         assert_eq!(offer_of(&m).unwrap().place, "");
+        let ask = need(
+            "Studio asks “api tests” here: Did it pass?",
+            "Did it pass?\n\nApproving queues this prompt in api tests (s_1): it is typed once that agent is idle, never into a busy prompt. Nothing else is typed or run.\nFrom Studio, one of your Macs (device a). Deny to decline it.",
+            "midna inbox accept sh_ask001",
+        );
+        let o = offer_of(&ask).unwrap();
+        assert_eq!((o.kind, o.body.as_str()), (ShareKind::AgentAsk, "Did it pass?"));
     }
 
     #[test]

@@ -109,7 +109,8 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
         let reply = match msg {
             Wire::Ping => Wire::Pong,
             Wire::ShareOffer { id, payload } => share::incoming(&d, &ch.fingerprint, id, payload),
-            Wire::ShareResult { id, state } => share::result(&d, &ch.fingerprint, id, &state),
+            Wire::ShareResult { id, state, reason } => share::result(&d, &ch.fingerprint, id, &state, reason),
+            Wire::SessionsGet => super::agent_ask::listing(&d, &ch.fingerprint),
             Wire::FileGet { id, file, offset } => {
                 let from = ch.fingerprint.clone();
                 transfer::serve(&d, &mut ch, &from, &id, file, offset)
