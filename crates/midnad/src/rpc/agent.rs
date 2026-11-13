@@ -61,14 +61,16 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             crate::resume::on_turn_started(d, &sid);
         }
         "Stop" | "StopFailure" => {
+            // An agent started or asked from a paired Mac that wants its answer back. Before the
+            // turn ends here: once it has, the queue may type an agent ask's prompt, and this
+            // turn's message isn't that prompt's answer.
+            let failed = (ev == "StopFailure").then(|| payload.get("error").and_then(Value::as_str).unwrap_or("unknown error"));
+            crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last_assistant_message").and_then(Value::as_str), failed);
             end_turn(d, &sid, &project, &actor, ev, payload.get("last_assistant_message").and_then(Value::as_str));
             if ev == "StopFailure" {
                 let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("");
                 crate::resume::on_failure(d, &sid, s("error"), s("error_details"), s("last_assistant_message"));
             }
-            // An agent started from a paired Mac that wants its answer back.
-            let failed = (ev == "StopFailure").then(|| payload.get("error").and_then(Value::as_str).unwrap_or("unknown error"));
-            crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last_assistant_message").and_then(Value::as_str), failed);
         }
         "agent-turn-complete" => {
             // Codex 0.160.0 also notifies for its internal title-generation turn (a separate
@@ -90,8 +92,8 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             if !title_just_ended {
                 start_turn(d, &sid, &project, &actor);
             }
-            end_turn(d, &sid, &project, &actor, ev, payload.get("last-assistant-message").and_then(Value::as_str));
             crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last-assistant-message").and_then(Value::as_str), None);
+            end_turn(d, &sid, &project, &actor, ev, payload.get("last-assistant-message").and_then(Value::as_str));
         }
         _ => {}
     }

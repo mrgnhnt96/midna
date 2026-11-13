@@ -55,8 +55,14 @@ pub enum Wire {
     /// Paired devices only: a share for your inbox (`payload` is a `nearby::SharePayload`; kept
     /// as JSON so a kind this build doesn't know is refused rather than breaking the message).
     ShareOffer { id: String, payload: serde_json::Value },
-    /// My person accepted or declined your share `id` (`state`: accepted | declined).
-    ShareResult { id: String, state: String },
+    /// My person accepted or declined your share `id` (`state`: accepted | declined); `reason`
+    /// says why it was declined, when midnad declined it.
+    ShareResult {
+        id: String,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Got share message `id` (an offer is in the inbox; a result is recorded).
     ShareAck { id: String },
     /// Receiver of an accepted file share: send me file `file` (its index in the offer) from
@@ -73,6 +79,11 @@ pub enum Wire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// One of my devices: which agent terminals are open on you? Answered with
+    /// [`Wire::Sessions`] (names and ids only), or refused to anyone else.
+    SessionsGet,
+    /// The agent terminals open here.
+    Sessions { sessions: Vec<midna_proto::nearby::PeerSession> },
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).

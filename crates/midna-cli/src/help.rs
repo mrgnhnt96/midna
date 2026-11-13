@@ -704,12 +704,15 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "peers",
         aliases: &["nearby"],
-        usage: "peers [list] | pair <name|id> | confirm [<pairing>] [--as contact|my-device] [--no] | forget <name|id>\n\
+        usage: "peers [list] | sessions <name|id> | pair <name|id> | confirm [<pairing>] [--as contact|my-device] [--no] | forget <name|id>\n\
                 \x20     | tier <name|id> --as contact|my-device | auto-accept <name|id> <kinds|all> on|off\n\
                 \x20     | visibility off|paired|everyone | name [<name>]",
         summary: "other Midnas on the same network (Nearby), and who can find this Mac",
         details: "list        this Mac's name, device id and visibility, then the Midnas it can see over Bonjour.\n\
                   \x20           A device id (SHA-256 of the device's key) is what tells devices apart; names can repeat.\n\
+                  sessions    the agent terminals open on one of your own devices (kept as my-device): id, name,\n\
+                  \x20           agent, project, busy or idle. Names and ids only, never what is on screen. Ask one\n\
+                  \x20           with share send agent-ask.\n\
                   visibility  setting nearby.visibility (human only; an agent's change waits for the human):\n\
                   \x20           off = no Bonjour at all; paired (default) = look for others, shown only to paired\n\
                   \x20           devices; everyone = every Midna nearby sees this Mac, for 10 minutes, then paired.\n\
@@ -725,7 +728,7 @@ pub static VERBS: &[Verb] = &[
                   \x20           those kinds from one of your own devices are accepted without asking. All are off by\n\
                   \x20           default, and a contact can't have any. Of Midna's own things only summaries and themes\n\
                   \x20           are; rules, triggers, settings and queued prompts always ask. Agent sessions always ask;\n\
-                  \x20           agent starts (agent-start) can be auto-accepted and run supervised.\n\
+                  \x20           agent starts (agent-start) and asks (agent-ask) can be auto-accepted.\n\
                   forget      (human only) unpair: the device can't connect or send anything until paired again.\n\
                   A device that isn't paired can only ask to pair; a nearby one using a paired device's name with\n\
                   another key is flagged. Until macOS has Local Network access for Midna (the prompt is up, or\n\
@@ -733,7 +736,7 @@ pub static VERBS: &[Verb] = &[
                   for up to a minute while it's waiting. Events peers.appeared, peers.left, peers.pairing,\n\
                   peers.pairing_ended, peers.paired, peers.changed, peers.forgotten and peers.local_network (midna\n\
                   events --kind peers.) follow all of this.",
-        methods: &["peers.list", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.forget"],
+        methods: &["peers.list", "peers.sessions", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.forget"],
     },
     Verb {
         name: "share",
@@ -745,8 +748,9 @@ pub static VERBS: &[Verb] = &[
                 \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]\n\
                 \x20     | share send agent-start --to <name|id> --prompt <text> [--agent claude|codex] [--session <terminal>] [--title T]\n\
                 \x20         [--wait [--timeout 30m]]\n\
+                \x20     | share send agent-ask --to <name|id> --session <name|id there> --prompt <text> [--wait [--timeout 30m]]\n\
                 \x20     | share answer <id> [--wait] [--timeout 30m]",
-        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things, or start an agent there",
+        summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things, or start or ask an agent there",
         details: "Words are a message (a notification on their Mac); text on stdin is a snippet (kept in their inbox,\n\
                   pasted into a terminal they choose, never followed by Enter); --link offers an http(s) link they can\n\
                   open or pin. A single word that names a file or folder (or --file <path>) offers it, with its size;\n\
@@ -769,6 +773,10 @@ pub static VERBS: &[Verb] = &[
                   prompt; nothing runs until they accept. With --wait it waits for that agent's first turn to end and\n\
                   prints its last message (cut to 4 KiB; exit 4 if --timeout runs out first; `share answer <id> --wait`\n\
                   waits again). The answer also arrives in the inbox as a message in reply to it (share.answered).\n\
+                  agent-ask asks an agent terminal already open on one of your own devices (`peers sessions <device>`\n\
+                  lists them; --session takes an id or a name there). Once they accept, the prompt is queued in that\n\
+                  terminal and typed when its agent is idle; with --wait the end of that turn is the answer. A terminal\n\
+                  that isn't there (or isn't an agent) refuses it, or declines it with the reason if it went since.\n\
                   Nothing a share carries types into, runs in or opens anything until a person on that Mac accepts it.\n\
                   An agent's share asks the human here first (a needs-you approval showing what would leave) and waits.\n\
                   Their answer comes back as share.accepted or share.declined (midna events --kind share.).",

@@ -101,6 +101,10 @@ fn ask(name: &str, payload: &SharePayload) -> (String, String) {
         SharePayload::AgentStart { agent, .. } => {
             (format!("Start a {} agent on {name} with this prompt?", super::session::agent_name(*agent)), super::agent_start::describe(payload, SHOWN))
         }
+        SharePayload::AgentAsk { session, prompt, .. } => {
+            let tab = headline(session).0;
+            (format!("Ask “{tab}” on {name}: {}?", headline(prompt).0.trim_end_matches('?')), super::agent_ask::describe(payload, SHOWN))
+        }
     }
 }
 
@@ -206,6 +210,15 @@ mod tests {
         assert_eq!(title, "Start a Codex agent on Bravo with this prompt?");
         assert_eq!(first_line(&what), "Prompt: Why does the build fail?");
         assert!(what.contains("\n\nWhy does the build fail?\nIt worked yesterday.\n\nCodex in /w/app."), "{what}");
+    }
+
+    #[test]
+    fn an_agent_ask_names_the_tab_and_the_question() {
+        let ask_it = SharePayload::AgentAsk { session: "api tests".into(), prompt: "Did the migration pass?\nAnd the seeds?".into(), want_reply: true };
+        let (title, what) = ask("roon", &ask_it);
+        assert_eq!(title, "Ask “api tests” on roon: Did the migration pass?");
+        assert_eq!(first_line(&what), "Prompt: Did the migration pass?");
+        assert!(what.contains("Queued in the agent terminal “api tests” there") && what.contains("answer comes back"), "{what}");
     }
 
     #[test]
