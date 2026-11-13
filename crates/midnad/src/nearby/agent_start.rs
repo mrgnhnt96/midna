@@ -11,6 +11,9 @@
 //! back as a message whose `reply_to` is the agent start ([`deliver`]). On the sender that
 //! message is read at once, fires `share.answered`, and `share.answer` returns it ([`answered`],
 //! [`answer`]).
+//!
+//! With `project` the sender names the receiver's project instead, and needs no terminal: the
+//! agent starts in that project's folder wherever the sender is (see `tab.rs`).
 use super::share::{self, Entry, Reply};
 use super::tab::{self, Place};
 use crate::daemon::Daemon;
@@ -26,27 +29,42 @@ const TITLE_FROM_PROMPT: usize = 48;
 const POLL: Duration = Duration::from_millis(200);
 
 /// `share.send` kind `agent_start`: the payload, with the project and directory of terminal
-/// `session` (default the caller's).
+/// `session` (default the caller's), or the receiver's project named `project`.
 pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePayload, RpcError> {
     if p.text.is_some() || p.url.is_some() || p.reply_to.is_some() || p.path.is_some() || p.object.is_some() || !p.ids.is_empty() {
-        return Err(RpcError::bad_params("an agent start takes a `prompt` (and `agent`, `session`, `title`, `want_reply`), not text, a url, a path or an object"));
+        return Err(RpcError::bad_params(
+            "an agent start takes a `prompt` (and `agent`, `session` or `project`, `title`, `want_reply`), not text, a url, a path or an object",
+        ));
     }
     let prompt = p.prompt.clone().filter(|t| !t.trim().is_empty()).ok_or_else(|| RpcError::bad_params("an agent start needs a `prompt`"))?;
-    let sid = p
-        .session
-        .clone()
-        .or_else(|| ctx.session.clone())
-        .ok_or_else(|| RpcError::bad_params("which project? pass `session` (a terminal in it), or send from inside a midna terminal"))?;
-    let (s, pid) = {
-        let core = d.core();
-        let s = core.state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no terminal {sid}")))?;
-        (s, core.rt.get(&sid).map(|rt| rt.pid))
-    };
-    let cwd = crate::git::work_cwd(&s, pid);
-    let agent = p.agent.or(s.agent).unwrap_or(AgentKind::Claude);
+    let named = tab::named_project(p)?;
+    if named.is_some() && p.session.is_some() {
+        return Err(RpcError::bad_params("an agent start opens in a terminal's project (`session`) or in a named one (`project`), not both"));
+    }
     let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
     let title = tab::title_of(p, &share::cut(first, TITLE_FROM_PROMPT));
-    let payload = SharePayload::AgentStart { title, agent, project: tab::project_of(&cwd), cwd, prompt, want_reply: p.want_reply };
+    let payload = match named {
+        Some(name) => {
+            let mine = ctx.session.as_deref().and_then(|sid| d.core().state.session(sid).and_then(|s| s.agent));
+            let agent = p.agent.or(mine).unwrap_or(AgentKind::Claude);
+            SharePayload::AgentStart { title, agent, project: None, cwd: String::new(), project_name: Some(name), prompt, want_reply: p.want_reply }
+        }
+        None => {
+            let sid = p
+                .session
+                .clone()
+                .or_else(|| ctx.session.clone())
+                .ok_or_else(|| RpcError::bad_params("which project? pass `project` (its name on the other Mac) or `session` (a terminal in it here)"))?;
+            let (s, pid) = {
+                let core = d.core();
+                let s = core.state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no terminal {sid}")))?;
+                (s, core.rt.get(&sid).map(|rt| rt.pid))
+            };
+            let cwd = crate::git::work_cwd(&s, pid);
+            let agent = p.agent.or(s.agent).unwrap_or(AgentKind::Claude);
+            SharePayload::AgentStart { title, agent, project: tab::project_of(&cwd), cwd, project_name: None, prompt, want_reply: p.want_reply }
+        }
+    };
     payload.check().map_err(RpcError::bad_params)?;
     Ok(payload)
 }
@@ -54,8 +72,9 @@ pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePayload,
 /// For an agent start's guard and approval: a one-line summary (the prompt's first line), then
 /// the whole prompt and where it would work and whether its answer comes back.
 pub fn describe(payload: &SharePayload, shown: usize) -> String {
-    let SharePayload::AgentStart { agent, project, cwd, prompt, want_reply, .. } = payload else { return String::new() };
+    let SharePayload::AgentStart { agent, project, cwd, project_name, prompt, want_reply, .. } = payload else { return String::new() };
     let place = match project {
+        _ if project_name.is_some() => format!("project {}", project_name.as_deref().unwrap_or_default()),
         Some(p) if p.path.is_empty() => format!("{} (in {cwd})", p.remote),
         Some(p) => format!("{}/{} (in {cwd})", p.remote, p.path),
         None => cwd.clone(),
@@ -83,6 +102,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) ->
         Some(c) => Place::chosen(c)?,
         None => tab::place(d, &it.payload),
     };
+    place.usable()?;
     let here = place.here();
     let params = SessionOpenParams {
         project_id: Some(place.project_id(d)),
@@ -263,6 +283,7 @@ mod tests {
             agent: AgentKind::Claude,
             project: Some(nb::TabProject { remote: "github.com/a/b".into(), path: "src".into() }),
             cwd: "/w/b/src".into(),
+            project_name: None,
             prompt: "Why?".into(),
             want_reply: true,
         };

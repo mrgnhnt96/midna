@@ -10,6 +10,12 @@
 //! character, so nothing in it can ask the terminal a question whose answer would be typed into
 //! the shell. A repo this Mac has no checkout of still opens, in the home folder, with the
 //! scrollback alone.
+//!
+//! A tab (or an agent start) may instead name the receiver's project (`project`): then it opens
+//! in that project's folder wherever the sending terminal was, and a tab sent that way without a
+//! terminal is a new, empty shell. Only the sender's own devices may name a project, and the
+//! receiver refuses the offer when it has none of that name ([`admit`]), so the sender learns
+//! nothing about the receiver's projects but whether that one name is there.
 use crate::daemon::Daemon;
 use crate::rpc::Ctx;
 use midna_proto::nearby::{self as nb, SharePayload, ShareSendParams, TabProject};
@@ -71,10 +77,30 @@ pub fn project_of(cwd: &str) -> Option<TabProject> {
     Some(TabProject { remote, path })
 }
 
-/// `share.send` kind `tab`: the payload for terminal `session` (default the caller's).
+/// Why a device that isn't one of mine can't name this Mac's projects.
+const ONLY_MINE: &str = "only your own devices can open a tab or start an agent in one of this Mac's projects by name";
+
+/// The `project` a tab or an agent start names, checked.
+pub(super) fn named_project(p: &ShareSendParams) -> Result<Option<String>, RpcError> {
+    match p.project.as_deref().map(str::trim) {
+        None => Ok(None),
+        Some(name) if nb::valid_project_name(name) => Ok(Some(name.to_string())),
+        Some(_) => Err(RpcError::bad_params(format!("`project` is a project's name: one line of at most {} bytes", nb::MAX_TITLE))),
+    }
+}
+
+/// `share.send` kind `tab`: the payload for terminal `session` (default the caller's). With
+/// `project` it opens in the receiver's project of that name instead, and without `session` it
+/// is a new, empty shell there.
 pub fn snapshot(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePayload, RpcError> {
     if p.text.is_some() || p.url.is_some() || p.reply_to.is_some() || p.path.is_some() {
         return Err(RpcError::bad_params("a tab is read from its terminal: give `session` (and a `title` if you like), not text, a url or a path"));
+    }
+    let named = named_project(p)?;
+    if let Some(name) = named.clone().filter(|_| p.session.is_none()) {
+        let payload = SharePayload::Tab { title: title_of(p, &name), project: None, cwd: String::new(), project_name: Some(name), shell: None, scrollback: String::new() };
+        payload.check().map_err(RpcError::bad_params)?;
+        return Ok(payload);
     }
     let sid = p
         .session
@@ -94,7 +120,11 @@ pub fn snapshot(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePaylo
         .then(|| s.command.first().and_then(|c| c.rsplit('/').next()).map(|n| cut_bytes(&plain(n), nb::MAX_SHELL).to_string()))
         .flatten()
         .filter(|n| !n.is_empty());
-    let payload = SharePayload::Tab { title, project: project_of(&cwd), cwd, shell, scrollback: scrollback_text(&rows) };
+    let scrollback = scrollback_text(&rows);
+    let payload = match named {
+        Some(name) => SharePayload::Tab { title, project: None, cwd: String::new(), project_name: Some(name), shell, scrollback },
+        None => SharePayload::Tab { title, project: project_of(&cwd), cwd, project_name: None, shell, scrollback },
+    };
     payload.check().map_err(RpcError::bad_params)?;
     Ok(payload)
 }
@@ -131,6 +161,8 @@ pub enum Place {
     Chosen { dir: String },
     /// Its repo isn't checked out here: the home folder, with the scrollback alone.
     Unknown,
+    /// It names a project this Mac has no folder for (any more): it opens nowhere.
+    Gone { name: String },
 }
 
 impl Place {
@@ -142,6 +174,7 @@ impl Place {
             Place::Project { name, dir, missing: Some(m), .. } => format!("It opens in {dir} (project {name}); {m} isn't in your checkout."),
             Place::Same { dir } => format!("It opens in {dir}."),
             Place::Chosen { dir } => format!("It opens in {dir}."),
+            Place::Gone { name } => format!("There's no project named “{name}” on this Mac any more; pick a folder to open it in."),
             Place::Unknown => match project {
                 Some(p) => format!("{} isn't checked out in any of your projects, so it opens in your home folder.", p.remote),
                 None => format!("{cwd} isn't on this Mac, so it opens in your home folder."),
@@ -152,7 +185,15 @@ impl Place {
     pub(super) fn dir(&self) -> Option<&str> {
         match self {
             Place::Project { dir, .. } | Place::Same { dir } | Place::Chosen { dir } => Some(dir),
-            Place::Unknown => None,
+            Place::Unknown | Place::Gone { .. } => None,
+        }
+    }
+
+    /// Err when it can't open: the project it names isn't here.
+    pub(super) fn usable(&self) -> Result<(), RpcError> {
+        match self {
+            Place::Gone { name } => Err(RpcError::conflict(format!("there's no project named “{name}” here any more; accept it with a folder (cwd) to open it elsewhere"))),
+            _ => Ok(()),
         }
     }
 
@@ -172,7 +213,7 @@ impl Place {
             Place::Same { dir } | Place::Chosen { dir } => {
                 crate::rpc::project::containing(d, dir).map(|p| p.id).unwrap_or_else(|| midna_proto::ROOT_PROJECT_ID.to_string())
             }
-            Place::Unknown => midna_proto::ROOT_PROJECT_ID.to_string(),
+            Place::Unknown | Place::Gone { .. } => midna_proto::ROOT_PROJECT_ID.to_string(),
         }
     }
 
@@ -215,6 +256,9 @@ fn checkout_of(d: &Daemon, remote: &str) -> Option<(String, String, String)> {
 /// Where `payload` (a tab or an agent session) opens on this Mac, unless its person picks a
 /// folder.
 pub fn place(d: &Daemon, payload: &SharePayload) -> Place {
+    if let Some(name) = payload.project_name() {
+        return named(d, name);
+    }
     let Some((project, cwd)) = origin(payload) else { return Place::Unknown };
     match project {
         Some(p) => match checkout_of(d, &p.remote) {
@@ -233,11 +277,38 @@ pub fn place(d: &Daemon, payload: &SharePayload) -> Place {
     }
 }
 
+/// This Mac's project called `name` (exactly, else ignoring case), at its folder.
+fn named(d: &Daemon, name: &str) -> Place {
+    let gone = || Place::Gone { name: name.to_string() };
+    let Some(id) = super::objects::project_named(d, name) else { return gone() };
+    let Some((pname, dir)) = d.core().state.project(&id).map(|p| (p.name.clone(), p.path.clone())) else { return gone() };
+    if !Path::new(&dir).is_dir() {
+        return gone();
+    }
+    Place::Project { id, name: pname, dir, missing: None }
+}
+
+/// An incoming share from `from` (proven by the connection) that names a project: only from one
+/// of my devices, and only a project that is here. Err is the reason the offer is refused with.
+pub(super) fn admit(d: &Daemon, from: &str, payload: &SharePayload) -> Result<(), String> {
+    let Some(name) = payload.project_name() else { return Ok(()) };
+    if !super::agent_ask::mine(d, from) {
+        return Err(ONLY_MINE.into());
+    }
+    match named(d, name) {
+        Place::Gone { .. } => Err(format!("no project named “{name}” here")),
+        _ => Ok(()),
+    }
+}
+
 /// The new terminal's first screenful: a line saying whose tab it is, their scrollback (dimmed),
 /// and a line saying the shell below is new. Plain text and SGR only.
 pub fn preface(from: &str, payload: &SharePayload, here: &str) -> Vec<u8> {
     let SharePayload::Tab { title, scrollback, .. } = payload else { return Vec::new() };
     let (from, title, here) = (plain(from), plain(title), plain(here));
+    if scrollback.is_empty() {
+        return format!("\x1b[1m── {title} · opened from {from} · a new shell {here} ──\x1b[0m\r\n").into_bytes();
+    }
     let mut out = format!("\x1b[1m── {title} · sent from {from} · read-only: nothing here ran on this Mac ──\x1b[0m\r\n\x1b[2m");
     for line in scrollback.split('\n') {
         out.push_str(&plain(line));
@@ -250,7 +321,10 @@ pub fn preface(from: &str, payload: &SharePayload, here: &str) -> Vec<u8> {
 /// For a tab's approval and the guard: a one-line summary of where it was, then the end of its
 /// scrollback after a blank line.
 pub fn describe(payload: &SharePayload, shown: usize) -> String {
-    let SharePayload::Tab { project, cwd, shell, scrollback, .. } = payload else { return String::new() };
+    let SharePayload::Tab { project, cwd, project_name, shell, scrollback, .. } = payload else { return String::new() };
+    if let Some(name) = project_name.as_deref().filter(|_| scrollback.is_empty()) {
+        return format!("Tab: a new shell in project {name}.");
+    }
     let tail: Vec<&str> = scrollback.rsplit('\n').take(30).collect();
     let mut tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
     if tail.len() > shown {
@@ -263,6 +337,7 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
     let lines = if scrollback.is_empty() { 0 } else { scrollback.split('\n').count() };
     let shell = shell.as_deref().map(|s| format!(", {s}")).unwrap_or_default();
     let place = match project {
+        _ if project_name.is_some() => format!("project {}{shell}", project_name.as_deref().unwrap_or_default()),
         Some(p) if p.path.is_empty() => format!("{} (in {cwd}{shell})", p.remote),
         Some(p) => format!("{}/{} (in {cwd}{shell})", p.remote, p.path),
         None => format!("{cwd}{}", shell.replacen(", ", " · ", 1)),
@@ -279,6 +354,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, from: &str, payload: &SharePayload, chos
         Some(c) => Place::chosen(c)?,
         None => place(d, payload),
     };
+    place.usable()?;
     let here = place.here();
     let params = SessionOpenParams {
         project_id: Some(place.project_id(d)),
@@ -310,6 +386,7 @@ mod tests {
             title: "api".into(),
             project: Some(TabProject { remote: "github.com/acme/widget".into(), path: "src".into() }),
             cwd: "/w/widget/src".into(),
+            project_name: None,
             shell: Some("zsh".into()),
             scrollback: scrollback.into(),
         }

@@ -167,6 +167,7 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         prompt: None,
         agent: None,
         want_reply: false,
+        project: None,
     }
 }
 
@@ -355,7 +356,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
             let (name, folder) = file_of_body(&o.body);
             SharePayload::File { name, folder, files: Vec::new(), dirs: Vec::new() }
         }
-        ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), shell: None, scrollback: o.body.clone() },
+        ShareKind::Tab => SharePayload::Tab { title: "Terminal tab".into(), project: None, cwd: String::new(), project_name: None, shell: None, scrollback: o.body.clone() },
         ShareKind::Object => SharePayload::Snippet { text: o.body.clone(), title: None },
         // Only the card's words: what it is and where it opens.
         ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk => SharePayload::Message { text: o.body.clone(), reply_to: None },
@@ -515,10 +516,11 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                     .when(more > 0, |d| d.child(div().text_color(t.dim).child(format!("… {more} more"))))
                 })
         }
-        SharePayload::Tab { title, project, cwd, scrollback, .. } => {
+        SharePayload::Tab { title, project, cwd, project_name, scrollback, .. } => {
             const SHOWN: usize = 14;
             let lines: Vec<&str> = scrollback.lines().collect();
             let place = match project {
+                _ if project_name.is_some() => format!("project {}", project_name.as_deref().unwrap_or_default()),
                 Some(p) if p.path.is_empty() => p.remote.clone(),
                 Some(p) => format!("{}/{}", p.remote, p.path),
                 None => cwd.clone(),
@@ -554,8 +556,9 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .child(div().text_color(t.dim).child(format!("{who} conversation · transcript {}", nb::size_label(transcript.size))))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).child(conversation.clone()))
         }
-        SharePayload::AgentStart { title, agent, project, cwd, prompt, want_reply } => {
+        SharePayload::AgentStart { title, agent, project, cwd, project_name, prompt, want_reply } => {
             let place = match project {
+                _ if project_name.is_some() => format!("project {}", project_name.as_deref().unwrap_or_default()),
                 Some(p) if p.path.is_empty() => p.remote.clone(),
                 Some(p) => format!("{}/{}", p.remote, p.path),
                 None => cwd.clone(),
@@ -1633,7 +1636,7 @@ mod tests {
         assert_eq!(answered(&it(msg.clone(), ShareState::Accepted)).as_deref(), Some("Studio read your message."));
         assert_eq!(answered(&it(snip, ShareState::Declined)).as_deref(), Some("Studio declined your snippet."));
         assert_eq!(answered(&it(msg.clone(), ShareState::Offered)), None);
-        let start = SharePayload::AgentStart { title: "t".into(), agent: AgentKind::Claude, project: None, cwd: "/w".into(), prompt: "why?".into(), want_reply: true };
+        let start = SharePayload::AgentStart { title: "t".into(), agent: AgentKind::Claude, project: None, cwd: "/w".into(), project_name: None, prompt: "why?".into(), want_reply: true };
         assert_eq!(answered(&it(start, ShareState::Accepted)).as_deref(), Some("Studio started your agent. Its answer comes back here."));
         let reply = SharePayload::Message { text: "\nThe build fails on zig.\nmore".into(), reply_to: Some("sh_start".into()) };
         let answer = ShareItem { direction: ShareDirection::Incoming, ..it(reply, ShareState::Accepted) };

@@ -1747,3 +1747,84 @@ fn an_agent_ask_that_cant_be_asked_any_more_tells_the_sender_why() {
     assert!(r["share"]["result"].as_str().is_some_and(|w| w.contains("no agent terminal here is called “work”")), "the reason travels back: {r}");
     let _ = std::fs::remove_file(bin);
 }
+
+#[test]
+fn a_tab_or_an_agent_start_opens_in_a_project_named_wherever_the_sender_is() {
+    let bin = fake_agent("named");
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let dir = b.home.join("code/mudora");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let pid = call(&mut hb, "project.add", json!({ "path": dir, "name": "mudora" }))["id"].as_str().unwrap().to_string();
+    let tab = |project: &str| json!({ "kind": "tab", "project": project });
+
+    // Only a tab or an agent start names a project, and an agent start names one place.
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    for bad in [
+        json!({ "kind": "message", "text": "hi", "project": "mudora" }),
+        json!({ "kind": "agent_start", "prompt": "hi", "project": "mudora", "session": t }),
+        json!({ "kind": "tab", "project": "two\nlines" }),
+    ] {
+        let mut p = bad.clone();
+        p["peer"] = json!(fb);
+        assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
+    }
+
+    // A contact can't name a project: not from this side, and not on the other (B keeps A as a
+    // contact).
+    let mut p = tab("mudora");
+    p["peer"] = json!(fb);
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "contact" }));
+    let e = call_err(&mut ha, "share.send", p.clone());
+    assert!(e.code == REFUSED && e.message.contains("contact"), "{}", e.message);
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "my_device" }));
+    let e = call_err(&mut ha, "share.send", p);
+    assert!(e.code == REFUSED && e.message.contains("only your own devices"), "{}", e.message);
+    call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+
+    // A name the other Mac has no project for is refused at once, saying only that.
+    let mut p = tab("nope");
+    p["peer"] = json!(fb);
+    let e = call_err(&mut ha, "share.send", p);
+    assert!(e.code == REFUSED && e.message.contains("no project named “nope” here"), "{}", e.message);
+    assert!(!e.message.contains("mudora"), "{}", e.message);
+
+    // A new tab, sent from no terminal, opens as an empty shell in that project (any case).
+    let id = send(&mut ha, &fb, tab("Mudora"))["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    let p = &got["payload"];
+    assert_eq!((p["project_name"].as_str(), p["cwd"].as_str(), p["scrollback"].as_str()), (Some("Mudora"), Some(""), Some("")), "{got}");
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    let detail = ny["item"]["detail"].as_str().unwrap();
+    assert!(ny["item"]["title"].as_str().unwrap().contains("opens a new tab here"), "{ny}");
+    assert!(detail.contains(&format!("It opens in {} (project mudora)", dir.display())), "{detail}");
+    let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    call(&mut hb, "needs_you.resolve", approve);
+    let done = wait_for(10, "accepted", || share(&mut hb, &id).filter(|s| s["state"] == "accepted"));
+    let s = call(&mut hb, "session.get", json!({ "id": opened(&done) }));
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str(), s["kind"].as_str()), (dir.to_str(), Some(pid.as_str()), Some("shell")), "{s}");
+    assert!(read(&mut hb, &opened(&done)).contains("opened from Alpha"));
+
+    // An agent start needs no terminal here either.
+    let prompt = "Put the report in docs/";
+    let id = send(&mut ha, &fb, json!({ "kind": "agent_start", "project": "mudora", "prompt": prompt }))["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    let r = call(&mut hb, "share.accept", json!({ "id": id }));
+    let s = call(&mut hb, "session.get", json!({ "id": opened(&r) }));
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str(), s["kind"].as_str()), (dir.to_str(), Some(pid.as_str()), Some("agent")), "{got}");
+    assert!(agent_args(&mut hb, &opened(&r)).iter().any(|a| a == prompt));
+
+    // A project removed after the offer: accepting refuses, unless the human picks a folder.
+    let gone = b.home.join("code/gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    let gid = call(&mut hb, "project.add", json!({ "path": gone, "name": "gone" }))["id"].as_str().unwrap().to_string();
+    let id = send(&mut ha, &fb, tab("gone"))["id"].as_str().unwrap().to_string();
+    call(&mut hb, "project.remove", json!({ "id": gid }));
+    let e = call_err(&mut hb, "share.accept", json!({ "id": id }));
+    assert!(e.code == midna_proto::error::CONFLICT && e.message.contains("no project named “gone”"), "{}", e.message);
+    let r = call(&mut hb, "share.accept", json!({ "id": id, "cwd": dir }));
+    assert_eq!(call(&mut hb, "session.get", json!({ "id": opened(&r) }))["cwd"].as_str(), dir.to_str());
+    let _ = std::fs::remove_file(bin);
+}

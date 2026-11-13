@@ -525,8 +525,13 @@ pub enum SharePayload {
         /// The git repo it was in, when it had a remote. None: `cwd` is all there is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<TabProject>,
-        /// Its directory on the sending Mac (absolute).
+        /// Its directory on the sending Mac (absolute); empty when `project_name` says where.
         cwd: String,
+        /// Open it in the receiver's project of this name (one of the sender's own devices
+        /// only), wherever the sending terminal was. The receiver refuses the offer when it has
+        /// no such project. Sent with an empty `cwd`, so an older receiver refuses it too.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_name: Option<String>,
         /// The shell's program name (`zsh`), when it was a shell. Display only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shell: Option<String>,
@@ -575,8 +580,13 @@ pub enum SharePayload {
         /// The git repo the sender was in, when it had a remote. None: `cwd` is all there is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<TabProject>,
-        /// The sender's directory (absolute).
+        /// The sender's directory (absolute); empty when `project_name` says where.
         cwd: String,
+        /// Start it in the receiver's project of this name (one of the sender's own devices
+        /// only), wherever the sender is. The receiver refuses the offer when it has no such
+        /// project. Sent with an empty `cwd`, so an older receiver refuses it too.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_name: Option<String>,
         /// What to ask the agent: its first prompt, at most [`MAX_PROMPT`] bytes.
         prompt: String,
         /// Send the agent's answer back once its first turn ends.
@@ -1006,17 +1016,14 @@ impl SharePayload {
                 }
             }
             SharePayload::File { name, folder, files, dirs } => check_files(name, *folder, files, dirs)?,
-            SharePayload::Tab { title, project, cwd, shell, scrollback } => {
+            SharePayload::Tab { title, project, cwd, project_name, shell, scrollback } => {
                 if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
                     return Err(format!("a tab's title is one line of at most {MAX_TITLE} bytes"));
                 }
-                if !cwd.starts_with('/') || cwd.len() > MAX_DIR || !plain(cwd) {
-                    return Err("a tab's directory must be an absolute path".into());
-                }
+                check_place("a tab", project.as_ref(), cwd, project_name.as_deref())?;
                 if shell.as_ref().is_some_and(|s| s.is_empty() || s.len() > MAX_SHELL || s.contains('/') || !plain(s)) {
                     return Err("a tab's shell is a program name".into());
                 }
-                check_project(project.as_ref())?;
                 if scrollback.len() > MAX_SCROLLBACK {
                     return Err(format!("a tab's scrollback may be at most {} KiB", MAX_SCROLLBACK / 1024));
                 }
@@ -1056,14 +1063,11 @@ impl SharePayload {
                     return Err(format!("{} isn't where {} keeps conversation {conversation}", transcript.path, agent.as_str()));
                 }
             }
-            SharePayload::AgentStart { title, project, cwd, prompt, .. } => {
+            SharePayload::AgentStart { title, project, cwd, project_name, prompt, .. } => {
                 if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
                     return Err(format!("an agent start's title is one line of at most {MAX_TITLE} bytes"));
                 }
-                if !cwd.starts_with('/') || cwd.len() > MAX_DIR || !plain(cwd) {
-                    return Err("an agent start's directory must be an absolute path".into());
-                }
-                check_project(project.as_ref())?;
+                check_place("an agent start", project.as_ref(), cwd, project_name.as_deref())?;
                 check_prompt(prompt)?;
             }
             SharePayload::AgentAsk { session, prompt, .. } => {
@@ -1080,6 +1084,14 @@ impl SharePayload {
     pub fn wants_reply(&self) -> bool {
         matches!(self, SharePayload::AgentStart { want_reply: true, .. } | SharePayload::AgentAsk { want_reply: true, .. })
     }
+
+    /// A tab or an agent start sent to the receiver's project of this name.
+    pub fn project_name(&self) -> Option<&str> {
+        match self {
+            SharePayload::Tab { project_name, .. } | SharePayload::AgentStart { project_name, .. } => project_name.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// A prompt for an agent: not empty, at most [`MAX_PROMPT`] bytes, plain text.
@@ -1094,6 +1106,34 @@ fn check_prompt(prompt: &str) -> Result<(), String> {
         return Err("a prompt is plain text".into());
     }
     Ok(())
+}
+
+/// Where a tab or an agent start opens: the sender's directory (absolute) and maybe its repo,
+/// or only a project's name (with an empty directory: an older receiver refuses that, instead of
+/// opening it somewhere else).
+fn check_place(what: &str, project: Option<&TabProject>, cwd: &str, project_name: Option<&str>) -> Result<(), String> {
+    match project_name {
+        Some(name) => {
+            if !valid_project_name(name) {
+                return Err(format!("a project's name is one line of at most {MAX_TITLE} bytes"));
+            }
+            if project.is_some() || !cwd.is_empty() {
+                return Err(format!("{what} named by its project carries no repo or directory"));
+            }
+            Ok(())
+        }
+        None => {
+            if !cwd.starts_with('/') || cwd.len() > MAX_DIR || !plain(cwd) {
+                return Err(format!("{what}'s directory must be an absolute path"));
+            }
+            check_project(project)
+        }
+    }
+}
+
+/// A project's name as a share may carry it: one plain line, not blank, at most [`MAX_TITLE`].
+pub fn valid_project_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= MAX_TITLE && plain(name)
 }
 
 /// A tab's or an agent session's project: its remote, and a relative path inside it.
@@ -1320,6 +1360,12 @@ pub struct ShareSendParams {
     /// prompt starts ends (a message replying to this share; `share.answer` waits for it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub want_reply: bool,
+    /// A tab or an agent start: open it in the receiving Mac's project of this name, wherever
+    /// the sending terminal is (one of your own devices only; it refuses the offer when it has no
+    /// such project). A tab without `session` opens as a new, empty shell there; an agent start
+    /// needs no terminal here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// An object: which kind. midnad reads it from its stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<ObjectType>,
@@ -1349,6 +1395,9 @@ impl ShareSendParams {
         }
         if (self.prompt.is_some() || self.want_reply) && !matches!(self.kind, ShareKind::AgentStart | ShareKind::AgentAsk) {
             return Err("only an agent start or ask takes a `prompt` or `want_reply`".into());
+        }
+        if self.project.is_some() && !matches!(self.kind, ShareKind::Tab | ShareKind::AgentStart) {
+            return Err("only a tab or an agent start takes a `project`".into());
         }
         if self.agent.is_some() && self.kind != ShareKind::AgentStart {
             return Err("only an agent start takes an `agent`".into());
@@ -1622,6 +1671,34 @@ mod tests {
         }
         let p: ShareSendParams = serde_json::from_value(serde_json::json!({ "peer": "f", "kind": "agent", "session": "t1" })).unwrap();
         assert!(p.payload().is_err(), "midnad reads an agent session itself");
+    }
+
+    #[test]
+    fn a_tab_or_an_agent_start_may_name_the_receivers_project_instead() {
+        let check = |v: serde_json::Value| serde_json::from_value::<SharePayload>(v).unwrap().check();
+        let tab = serde_json::json!({ "kind": "tab", "title": "mudora", "cwd": "", "project_name": "mudora", "scrollback": "" });
+        let start = serde_json::json!({ "kind": "agent_start", "title": "ask", "agent": "claude", "cwd": "", "project_name": "mudora", "prompt": "hi" });
+        for good in [&tab, &start] {
+            assert_eq!(check(good.clone()), Ok(()), "{good}");
+            assert_eq!(serde_json::from_value::<SharePayload>(good.clone()).unwrap().project_name(), Some("mudora"));
+            for (k, v) in [
+                ("project_name", serde_json::json!("")),
+                ("project_name", serde_json::json!("two\nlines")),
+                ("project_name", serde_json::json!("x".repeat(MAX_TITLE + 1))),
+                ("cwd", serde_json::json!("/w/b")),
+                ("project", serde_json::json!({ "remote": "github.com/a/b" })),
+            ] {
+                let mut bad = good.clone();
+                bad[k] = v;
+                assert!(check(bad.clone()).is_err(), "{bad}");
+            }
+            // An older receiver, which doesn't know project_name, sees an empty directory: refused.
+            let mut old = good.clone();
+            old.as_object_mut().unwrap().remove("project_name");
+            assert!(check(old).unwrap_err().ends_with("directory must be an absolute path"));
+        }
+        let p = |v: serde_json::Value| serde_json::from_value::<ShareSendParams>(v).unwrap().payload();
+        assert!(p(serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "project": "x" })).unwrap_err().contains("only a tab or an agent start"));
     }
 
     #[test]
