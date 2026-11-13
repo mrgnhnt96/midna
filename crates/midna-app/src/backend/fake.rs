@@ -79,6 +79,7 @@ fn fake_inbox() -> Value {
             "sent_at": ago(mins), "decided_at": (state != "offered").then(|| ago(mins.saturating_sub(1))), "result": result,
         })
     };
+    let start = |prompt: &str| json!({"kind": "agent_start", "title": prompt.chars().take(40).collect::<String>(), "agent": "claude", "project": {"remote": "github.com/mrgnhnt96/midna", "path": ""}, "cwd": "/Users/me/Development/rust/midna", "prompt": prompt, "want_reply": true});
     let mut file = item(
         "sh_file0006",
         "incoming",
@@ -96,6 +97,9 @@ fn fake_inbox() -> Value {
     file["transfer"] = json!({"state": "moving", "done": 1_020_000, "total": 1_452_000, "files_done": 1, "files": 2});
     json!({
         "items": [
+            item("sh_start010", "incoming", 'd', "Studio", start("Why does the release build fail on this Mac? Run scripts/smoke.sh and tell me what breaks."), "offered", 0, None),
+            item("sh_answ0008", "incoming", 'd', "Studio", json!({"kind": "message", "text": "The zig toolchain isn't pinned there: env.sh points at 0.14. With .toolchain/zig 0.15.2 the smoke test passes.", "reply_to": "sh_start007"}), "accepted", 2, Some("read: the answer to sh_start007")),
+            item("sh_start007", "outgoing", 'd', "Studio", start("Does the smoke test pass on the Studio?"), "accepted", 8, Some("opened as s_9")),
             item("sh_snip0001", "incoming", 'd', "Studio", json!({"kind": "snippet", "text": "cargo build --release\nscripts/test.sh -p midna-app", "title": "release build"}), "offered", 0, None),
             file,
             item("sh_msg00002", "incoming", 'd', "Studio", json!({"kind": "message", "text": "Build's green on the Studio, pushing now."}), "accepted", 25, Some("read")),
@@ -103,7 +107,7 @@ fn fake_inbox() -> Value {
             item("sh_msg00004", "outgoing", 'd', "Studio", json!({"kind": "message", "text": "Can you run the smoke test there?"}), "offered", 60 * 5, None),
             item("sh_snip0005", "incoming", 'e', "Sam's iMac", json!({"kind": "snippet", "text": "rm -rf ~/Library/Caches/midna"}), "declined", 60 * 26, None),
         ],
-        "waiting": 1,
+        "waiting": 2,
     })
 }
 
@@ -438,7 +442,22 @@ impl FakeBackend {
                 ..Default::default()
             });
         }
-        if crate::dev::var("MIDNA_FAKE_SHARE").is_ok() {
+        if crate::dev::var("MIDNA_FAKE_SHARE").is_ok_and(|v| v == "agent") {
+            // dev (screenshots): an agent start from one of your Macs first in the inbox
+            needs.insert(0, NeedsYou {
+                id: "n_share02".into(),
+                kind: NeedsYouKind::Approval,
+                title: "Studio asks Claude Code here: Why does the release build fail on this Mac?".into(),
+                detail: "Why does the release build fail on this Mac? Run scripts/smoke.sh and tell me what breaks.\n\nIt opens in ~/Development/rust/midna (project midna). Approving opens a new Claude Code terminal there and gives it this prompt, and sends Studio its answer when its first turn ends; nothing runs before. To open it in another folder: midna inbox accept sh_start010 --cwd <dir>\nFrom Studio, one of your Macs (device dddd dddd dddd dddd). Deny to decline it.".into(),
+                asked_by: Actor { kind: "midnad".into(), session: None, name: None },
+                created_at: ago(0),
+                approval: Some(ApprovalRequest {
+                    action: PolicyAction { kind: "cli".into(), value: "midna inbox accept sh_start010".into(), session: None, project: None },
+                    matched_rule: None,
+                }),
+                ..Default::default()
+            });
+        } else if crate::dev::var("MIDNA_FAKE_SHARE").is_ok() {
             // dev (screenshots): a snippet from one of your Macs first in the inbox
             needs.insert(0, NeedsYou {
                 id: "n_share01".into(),

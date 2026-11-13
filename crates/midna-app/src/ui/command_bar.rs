@@ -462,6 +462,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                 Some(text) => crate::ui::share::open(m, text, window, cx),
                 None => m.toast("There's no text on the clipboard to share", cx),
             },
+            "agent" => crate::ui::share::open_agent_start(m, None, window, cx),
             _ => crate::ui::share::open_message(m, None, None, None, window, cx),
         },
         Run::Resolve { need, resolution } => {

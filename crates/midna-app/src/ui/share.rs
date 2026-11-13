@@ -37,6 +37,15 @@ pub struct Picker {
     /// What it was opened with: a snippet's text, a link's URL. Empty for a message.
     text: String,
     message: LineInput,
+    /// An agent start: what to ask (wraps; ⇧↩ starts a new line).
+    prompt: LineInput,
+    /// An agent start: the terminal whose project and folder the new agent works in, mapped to
+    /// the other Mac's checkout. None: no terminal to start from, so no agent start.
+    session: Option<String>,
+    /// An agent start: which agent.
+    agent: AgentKind,
+    /// An agent start: have its first answer sent back here.
+    want_reply: bool,
     /// A reply: the share it answers.
     reply_to: Option<String>,
     /// A reply from a message's card: that card, marked read once the reply is sent.
@@ -68,6 +77,49 @@ pub fn kinds(text: &str) -> Vec<ShareKind> {
     }
     v.push(ShareKind::Message);
     v
+}
+
+/// The kinds the picker offers: what `text` can be sent as, then an agent start when there's a
+/// terminal to start it from. A reply is only ever a message.
+pub fn picker_kinds(text: &str, replying: bool, can_start: bool) -> Vec<ShareKind> {
+    if replying {
+        return vec![ShareKind::Message];
+    }
+    let mut v = kinds(text);
+    if can_start {
+        v.push(ShareKind::AgentStart);
+    }
+    v
+}
+
+/// `share.send` for an agent start: midnad reads the project and folder from terminal
+/// `session`. Errs with what to fix first.
+pub fn start_params(peer: &str, session: &str, agent: AgentKind, prompt: &str, want_reply: bool) -> Result<ShareSendParams, String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("Write what to ask the agent.".into());
+    }
+    if prompt.len() > nb::MAX_PROMPT {
+        return Err(format!("A prompt may be at most {} KiB; send the rest as a snippet.", nb::MAX_PROMPT / 1024));
+    }
+    if prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err("A prompt is plain text.".into());
+    }
+    let mut p = send_params(peer, SharePayload::Message { text: String::new(), reply_to: None });
+    p.kind = ShareKind::AgentStart;
+    p.text = None;
+    p.session = Some(session.to_string());
+    p.prompt = Some(prompt.to_string());
+    p.agent = Some(agent);
+    p.want_reply = want_reply;
+    Ok(p)
+}
+
+pub fn agent_label(a: AgentKind) -> &'static str {
+    match a {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex",
+    }
 }
 
 /// One http(s) URL and nothing else.
@@ -170,6 +222,10 @@ pub fn answered(it: &ShareItem) -> Option<String> {
     let what = noun(it.payload.kind());
     match (it.state, it.payload.kind()) {
         (ShareState::Accepted, ShareKind::Message) => Some(format!("{} read your message.", it.peer_name)),
+        (ShareState::Accepted, ShareKind::AgentStart) => {
+            let back = if matches!(it.payload, SharePayload::AgentStart { want_reply: true, .. }) { " Its answer comes back here." } else { "" };
+            Some(format!("{} started your agent.{back}", it.peer_name))
+        }
         (ShareState::Accepted, _) => Some(format!("{} accepted your {what}.", it.peer_name)),
         (ShareState::Declined, _) => Some(format!("{} declined your {what}.", it.peer_name)),
         (ShareState::Offered, _) => None,
@@ -177,6 +233,20 @@ pub fn answered(it: &ShareItem) -> Option<String> {
 }
 
 // ------------------------------------------------------------------ offers (Needs you)
+
+/// The toast for the other Mac's agent answering an agent start you sent (`share.answered`):
+/// `it` is the answer, a message replying to it.
+pub fn agent_answered(it: &ShareItem) -> Option<String> {
+    let SharePayload::Message { text, reply_to: Some(_) } = &it.payload else { return None };
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let first = if first.chars().count() > 80 { format!("{}…", first.chars().take(79).collect::<String>()) } else { first.to_string() };
+    Some(format!("{}'s agent answered: {first} (Notifications › Nearby)", it.peer_name))
+}
+
+/// The answer an agent start you sent got: the incoming message replying to it.
+fn answer_to<'a>(m: &'a MainWindow, start: &str) -> Option<&'a ShareItem> {
+    m.share.items.iter().find(|i| i.direction == ShareDirection::Incoming && matches!(&i.payload, SharePayload::Message { reply_to: Some(r), .. } if r == start))
+}
 
 /// What a share card needs from its needs-you item (midnad's `nearby/share.rs` `ask`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +261,9 @@ pub struct Offer {
     pub kind: ShareKind,
     /// The text or URL, as the item carries it (long ones cut).
     pub body: String,
+    /// A tab, agent session or agent start: where it would open on this Mac, in midnad's words
+    /// ("It opens in ~/w/b (project b)."). Empty for the rest.
+    pub place: String,
 }
 
 /// The share a needs-you item offers, if it's one.
@@ -201,8 +274,23 @@ pub fn offer_of(n: &NeedsYou) -> Option<Offer> {
         return None;
     }
     let (name, tier, device) = from_line(&n.detail).unwrap_or_default();
-    let body = n.detail.rsplit_once("\n\n").map(|(b, _)| b).unwrap_or("").to_string();
-    Some(Offer { id: id.to_string(), kind: kind_of_title(&n.title, &name), name, tier, device, body })
+    let (body, tail) = n.detail.rsplit_once("\n\n").unwrap_or(("", ""));
+    let kind = kind_of_title(&n.title, &name);
+    let place = match kind {
+        ShareKind::Tab | ShareKind::Agent | ShareKind::AgentStart => place_of(tail),
+        _ => String::new(),
+    };
+    Some(Offer { id: id.to_string(), kind, name, tier, device, body: body.to_string(), place })
+}
+
+/// The words before " Approving …" in the last paragraph of a tab's, agent session's or agent
+/// start's card: where it opens.
+fn place_of(tail: &str) -> String {
+    let line = tail.lines().next().unwrap_or("");
+    match line.split_once(" Approving ") {
+        Some((place, _)) => place.trim().to_string(),
+        None => String::new(),
+    }
 }
 
 /// "From Ada's MacBook, a contact (device bbbb bbbb bbbb bbbb). Deny to decline it."
@@ -309,6 +397,7 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         .text_size(px(13.))
         .child(sender(t, &o.name, o.tier, &o.device))
         .child(if o.kind == ShareKind::Object { review_box(t, &o.body) } else { payload_box(t, &p) })
+        .when(!o.place.is_empty(), |d| d.child(div().text_color(t.fg).child(o.place.clone())))
         .children(transfer.map(|x| progress(t, &x)))
         .child(div().text_color(t.dim).child(note))
 }
@@ -526,6 +615,16 @@ pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
         return;
     }
     fetch(m, cx);
+    if e.kind == midna_proto::kinds::SHARE_ANSWERED {
+        if let Ok(it) = serde_json::from_value::<ShareItem>(e.data.clone()) {
+            if let Some(msg) = agent_answered(&it) {
+                m.toast(msg, cx);
+            }
+            // The Nearby tab opens on it.
+            m.share.sel = Some(it.id);
+        }
+        return;
+    }
     if e.kind == midna_proto::kinds::SHARE_ACCEPTED || e.kind == midna_proto::kinds::SHARE_DECLINED {
         let it = serde_json::from_value::<ShareItem>(e.data.clone()).ok();
         let said = |i: &ShareItem| if i.direction == ShareDirection::Outgoing { answered(i) } else { auto_accepted(i) };
@@ -626,10 +725,58 @@ pub fn open_message(m: &mut MainWindow, reply_to: Option<String>, peer: Option<S
     start(m, ShareKind::Message, String::new(), reply_to, peer, resolves, window, cx);
 }
 
+/// Open the picker to start an agent on a nearby Mac, working in the project and folder of
+/// terminal `session` (default the selected one) as they map to that Mac's checkout.
+pub fn open_agent_start(m: &mut MainWindow, session: Option<String>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(session) = session.or_else(|| live(m, m.selected.as_deref())) else {
+        return m.toast("Select a terminal in the project the agent should work in first", cx);
+    };
+    start(m, ShareKind::AgentStart, String::new(), None, None, None, window, cx);
+    let agent = start_agent(m, &session);
+    if let Some(p) = m.share.picker.as_mut() {
+        p.session = Some(session);
+        p.agent = agent;
+    }
+    cx.notify();
+}
+
+/// `id` when it's a terminal still running.
+fn live(m: &MainWindow, id: Option<&str>) -> Option<String> {
+    m.sessions.iter().find(|s| Some(s.id.as_str()) == id && s.status.state != StatusState::Exited).map(|s| s.id.clone())
+}
+
+/// The agent to suggest for a start from terminal `session`: its own, else the project's last.
+fn start_agent(m: &MainWindow, session: &str) -> AgentKind {
+    let s = m.sessions.iter().find(|s| s.id == session);
+    let a = s.and_then(|s| s.agent).unwrap_or_else(|| m.last_agent(s.and_then(|s| s.project_id.as_deref())));
+    if a == crate::model::AgentKind::Codex { AgentKind::Codex } else { AgentKind::Claude }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start(m: &mut MainWindow, kind: ShareKind, text: String, reply_to: Option<String>, prefer: Option<String>, resolves: Option<String>, window: &mut Window, cx: &mut Context<MainWindow>) {
     let message = LineInput::new(cx, false, if reply_to.is_some() { "Write a reply" } else { "Write a message" });
-    m.share.picker = Some(Picker { kind, text, message, reply_to, resolves, prefer, peers: None, unpaired: 0, sel: 0, busy: false, error: None, focus: cx.focus_handle() });
+    let prompt = LineInput::new(cx, false, "What should the agent there do?");
+    prompt.field.update(cx, |f, _| f.wrap = true);
+    let session = live(m, m.selected.as_deref());
+    let agent = session.as_deref().map(|s| start_agent(m, s)).unwrap_or(AgentKind::Claude);
+    m.share.picker = Some(Picker {
+        kind,
+        text,
+        message,
+        prompt,
+        session,
+        agent,
+        want_reply: true,
+        reply_to,
+        resolves,
+        prefer,
+        peers: None,
+        unpaired: 0,
+        sel: 0,
+        busy: false,
+        error: None,
+        focus: cx.focus_handle(),
+    });
     set_kind(m, kind, window, cx);
     call(m, "peers.list", json!({}), cx, |m, r, _, cx| {
         let Some(p) = m.share.picker.as_mut() else { return };
@@ -660,6 +807,13 @@ fn set_kind(m: &mut MainWindow, kind: ShareKind, window: &mut Window, cx: &mut C
             p.message.set_text(&text, cx);
         }
         p.message.focus.focus(window, cx);
+    } else if kind == ShareKind::AgentStart {
+        // The selection, as a start of what to ask.
+        if p.prompt.is_empty(cx) && !p.text.trim().is_empty() {
+            let text = p.text.trim().to_string();
+            p.prompt.set_text(&text, cx);
+        }
+        p.prompt.focus.focus(window, cx);
     } else {
         p.focus.focus(window, cx);
     }
@@ -705,23 +859,41 @@ fn send(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
         p.error = Some(format!("{} isn't on the network right now.", peer.name));
         return cx.notify();
     }
-    let body = payload(p.kind, &p.text, &p.message.text(cx), p.reply_to.clone());
-    if let Err(e) = body.check() {
-        p.error = Some(format!("Can't send that: {e}."));
-        return cx.notify();
-    }
+    let (params, sent) = if p.kind == ShareKind::AgentStart {
+        let Some(session) = p.session.clone() else {
+            p.error = Some("Select a terminal in the project the agent should work in first.".into());
+            return cx.notify();
+        };
+        match start_params(&peer.fingerprint, &session, p.agent, &p.prompt.text(cx), p.want_reply) {
+            Ok(x) => {
+                let back = if p.want_reply { " Its answer comes back here." } else { "" };
+                (x, format!("Asked {} on {}.{back}", agent_label(p.agent), peer.name))
+            }
+            Err(e) => {
+                p.error = Some(e);
+                return cx.notify();
+            }
+        }
+    } else {
+        let body = payload(p.kind, &p.text, &p.message.text(cx), p.reply_to.clone());
+        if let Err(e) = body.check() {
+            p.error = Some(format!("Can't send that: {e}."));
+            return cx.notify();
+        }
+        let sent = format!("Sent your {} to {}. It waits there until they accept it.", noun(body.kind()), peer.name);
+        (send_params(&peer.fingerprint, body), sent)
+    };
     p.busy = true;
     p.error = None;
-    let what = noun(body.kind());
     let resolves = p.resolves.clone();
-    let params = serde_json::to_value(send_params(&peer.fingerprint, body)).unwrap_or_default();
+    let params = serde_json::to_value(params).unwrap_or_default();
     call(m, "share.send", params, cx, move |m, r, w, cx| match r {
         Ok(_) => {
             close(m, w, cx);
             if let Some(n) = resolves.filter(|n| m.needs.iter().any(|x| &x.id == n)) {
                 m.resolve(n, Resolution::Approve { scope: ApprovalScope::Once }, cx);
             }
-            m.toast(format!("Sent your {what} to {}. It waits there until they accept it.", peer.name), cx);
+            m.toast(sent, cx);
             fetch(m, cx);
         }
         Err(e) => {
@@ -738,9 +910,16 @@ fn send(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let p = m.share.picker.as_ref()?;
     let replying = p.reply_to.is_some();
-    let title = if replying { "Reply" } else { "Share with a nearby Mac" };
+    let starting = p.kind == ShareKind::AgentStart;
+    let title = if replying {
+        "Reply"
+    } else if starting {
+        "Ask an agent on a nearby Mac"
+    } else {
+        "Share with a nearby Mac"
+    };
 
-    let kinds = if replying { vec![ShareKind::Message] } else { kinds(&p.text) };
+    let kinds = picker_kinds(&p.text, replying, p.session.is_some());
     let switch = (kinds.len() > 1).then(|| {
         div().flex().gap(px(6.)).children(kinds.into_iter().map(|k| {
             let on = p.kind == k;
@@ -758,12 +937,13 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
                 .cursor_pointer()
                 .hover(|s| s.bg(t.accent_soft))
                 .on_click(cx.listener(move |m, _, w, cx| set_kind(m, k, w, cx)))
-                .child(kind_label(k))
+                .child(if k == ShareKind::AgentStart { "Agent" } else { kind_label(k) })
         }))
     });
 
     let preview: AnyElement = match p.kind {
         ShareKind::Message => p.message.render(t, "share-message", window).into_any_element(),
+        ShareKind::AgentStart => start_form(m, p, t, window, cx).into_any_element(),
         k => payload_box(t, &payload(k, &p.text, "", None)).into_any_element(),
     };
 
@@ -857,7 +1037,9 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     let chosen = p.peers.as_ref().and_then(|v| v.get(p.sel)).filter(|x| x.nearby);
     let send_label = match (p.busy, chosen) {
         (true, _) => "Sending…".to_string(),
+        (false, Some(x)) if starting => format!("Start an agent on {}  ↩", x.name),
         (false, Some(x)) => format!("Send to {}  ↩", x.name),
+        (false, None) if starting => "Start agent  ↩".to_string(),
         (false, None) => "Send  ↩".to_string(),
     };
     let paired_none = p.peers.as_ref().is_some_and(|v| v.is_empty());
@@ -886,7 +1068,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(div().flex_1().text_size(px(11.5)).text_color(t.dim).child("↑↓ choose · ↩ send · esc cancel"))
+                .child(div().flex_1().text_size(px(11.5)).text_color(t.dim).child(if starting { "⇧↩ new line · ↩ send · esc cancel" } else { "↑↓ choose · ↩ send · esc cancel" }))
                 .child(btn(t, "share-cancel", "Cancel").on_click(cx.listener(|m, _, w, cx| close(m, w, cx))))
                 .when(paired_none, |d| {
                     d.child(btn_primary(t, "share-settings", "Open Settings").on_click(cx.listener(|m, _, w, cx| {
@@ -926,6 +1108,76 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     )
 }
 
+/// The agent start's middle: what to ask, which agent, where it works, and whether its answer
+/// comes back.
+fn start_form(m: &MainWindow, p: &Picker, t: &Theme, window: &Window, cx: &mut Context<MainWindow>) -> Div {
+    let focused = p.prompt.focus.is_focused(window);
+    let field = div()
+        .id("share-prompt")
+        .flex()
+        .flex_col()
+        .min_h(px(64.))
+        .max_h(px(180.))
+        .overflow_y_scroll()
+        .px(px(10.))
+        .py(px(8.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(if focused { t.accent } else { t.line })
+        .bg(t.bg)
+        .text_size(px(13.))
+        .text_color(t.fg)
+        .cursor_text()
+        .child(p.prompt.field.clone());
+    let chip = |id: &str, label: &str, on: bool| {
+        div()
+            .id(SharedString::from(id.to_string()))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(24.))
+            .px(px(10.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(if on { t.accent } else { t.line })
+            .when(on, |d| d.bg(t.accent_soft).text_color(t.accent))
+            .text_size(px(12.))
+            .cursor_pointer()
+            .hover(|s| s.bg(t.accent_soft))
+            .child(label.to_string())
+    };
+    let agents = [AgentKind::Claude, AgentKind::Codex].into_iter().map(|a| {
+        chip(&format!("share-agent-{}", a.as_str()), agent_label(a), p.agent == a).on_click(cx.listener(move |m, _, _, cx| {
+            if let Some(p) = m.share.picker.as_mut() {
+                p.agent = a;
+            }
+            cx.notify();
+        }))
+    });
+    let back = chip("share-want-reply", if p.want_reply { "✓ Send its answer back" } else { "Send its answer back" }, p.want_reply).on_click(cx.listener(|m, _, _, cx| {
+        if let Some(p) = m.share.picker.as_mut() {
+            p.want_reply = !p.want_reply;
+        }
+        cx.notify();
+    }));
+    let from = p.session.as_deref().and_then(|id| m.sessions.iter().find(|s| s.id == id));
+    let place = match from {
+        Some(s) => {
+            let project = s.project_id.as_deref().and_then(|id| m.projects.iter().find(|x| x.id == id)).map(|x| x.name.clone());
+            let what = project.map(|n| format!("project {n}")).unwrap_or_else(|| crate::commands::tilde(&s.cwd));
+            format!("Works in their checkout of {what} (from {}), else their home folder. Nothing runs until they accept.", s.name)
+        }
+        None => "Select a terminal in the project the agent should work in first.".into(),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(field)
+        .child(div().flex().flex_wrap().items_center().gap(px(6.)).children(agents).child(div().w(px(6.))).child(back))
+        .child(div().text_size(px(12.)).text_color(t.dim).child(place))
+}
+
 // ------------------------------------------------------------------ Notifications › Nearby
 
 fn state_badge(t: &Theme, it: &ShareItem) -> (&'static str, Hsla) {
@@ -951,6 +1203,34 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::AgentStart { prompt, .. } => prompt.clone(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+}
+
+/// An item's kind in the Nearby tab; the answer to an agent start you sent says so.
+fn row_label(m: &MainWindow, it: &ShareItem) -> &'static str {
+    match &it.payload {
+        SharePayload::Message { reply_to: Some(r), .. } if it.direction == ShareDirection::Incoming && is_my_start(m, r) => "Agent answer",
+        p => kind_label(p.kind()),
+    }
+}
+
+/// `id` is an agent start this Mac sent.
+fn is_my_start(m: &MainWindow, id: &str) -> bool {
+    m.share.items.iter().any(|i| i.id == id && i.direction == ShareDirection::Outgoing && i.payload.kind() == ShareKind::AgentStart)
+}
+
+/// Under an agent start you sent with `want_reply`: its answer, or where it is.
+fn answer_box(m: &MainWindow, t: &Theme, it: &ShareItem) -> Option<Div> {
+    let wanted = matches!(it.payload, SharePayload::AgentStart { want_reply: true, .. }) && it.direction == ShareDirection::Outgoing;
+    if !wanted || it.state == ShareState::Declined {
+        return None;
+    }
+    let head = div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim);
+    let col = div().flex().flex_col().gap(px(6.));
+    Some(match answer_to(m, &it.id) {
+        Some(a) => col.child(head.child(format!("ANSWER · {}", clock(&a.sent_at).chars().take(5).collect::<String>()))).child(payload_box(t, &a.payload)),
+        None if it.state == ShareState::Accepted => col.child(head.child("ANSWER")).child(div().text_color(t.dim).child("Waiting for the agent to finish its first turn…")),
+        None => col.child(head.child("ANSWER")).child(div().text_color(t.dim).child(format!("Comes back here once {} accepts and the agent finishes its first turn.", it.peer_name))),
+    })
 }
 
 fn who(it: &ShareItem) -> String {
@@ -1020,7 +1300,7 @@ pub fn inbox_rows(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> St
                                 .items_center()
                                 .gap(px(6.))
                                 .child(div().font_weight(FontWeight::BOLD).truncate().child(who(it)))
-                                .child(div().flex_none().text_size(px(11.5)).text_color(t.dim).child(kind_label(it.payload.kind())))
+                                .child(div().flex_none().text_size(px(11.5)).text_color(t.dim).child(row_label(m, it)))
                                 .child(div().flex_none().px(px(5.)).rounded(px(4.)).bg(color.opacity(0.14)).text_color(color).text_size(px(10.5)).font_weight(FontWeight::BOLD).child(badge)),
                         )
                         .child(div().text_size(px(12.5)).text_color(t.dim).truncate().child(gist(it))),
@@ -1131,6 +1411,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(who(it)))
         .child(sender(t, &it.peer_name, None, &nb::short_fingerprint(&it.peer)))
         .child(payload_box(t, &it.payload))
+        .children(answer_box(m, t, it))
         .children(it.transfer.as_ref().map(|x| progress(t, x)))
         .children(it.result.clone().map(|r| div().text_color(t.dim).child(format!("On this Mac: {r}."))))
         .child(actions)
@@ -1139,7 +1420,8 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one.
-    use super::{Offer, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, send_params};
+    use super::{Offer, agent_answered, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, picker_kinds, send_params, start_params};
+    use midna_proto::AgentKind;
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
     use midna_proto::nearby::{PairedPeer, ShareDirection, ShareItem, ShareKind, SharePayload, ShareState, Tier};
 
@@ -1171,6 +1453,7 @@ mod tests {
             device: "bbbb bbbb bbbb bbbb".into(),
             kind: ShareKind::Snippet,
             body: "cargo build\ncargo test".into(),
+            place: String::new(),
         };
         assert_eq!(offer_of(&n), Some(want));
     }
@@ -1232,6 +1515,42 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_start_offer_says_where_it_opens() {
+        let n = need(
+            "Studio asks Claude Code here: Why does the build fail?",
+            "Why does the build fail?\n\nLook at CI too.\n\nIt opens in /Users/me/w/b (project b). Approving opens a new Claude Code terminal there and gives it this prompt, and sends Studio its answer when its first turn ends; nothing runs before. To open it in another folder: midna inbox accept sh_start001 --cwd <dir>\nFrom Studio, one of your Macs (device aaaa aaaa aaaa aaaa). Deny to decline it.",
+            "midna inbox accept sh_start001",
+        );
+        let o = offer_of(&n).unwrap();
+        assert_eq!((o.kind, o.name.as_str()), (ShareKind::AgentStart, "Studio"));
+        assert_eq!(o.body, "Why does the build fail?\n\nLook at CI too.");
+        assert_eq!(o.place, "It opens in /Users/me/w/b (project b).");
+        let codex = need("Studio asks Codex here: hi", "hi\n\ngithub.com/a/b isn't checked out in any of your projects, so it opens in your home folder. Approving opens…\nFrom Studio, a contact (device a). Deny to decline it.", "midna inbox accept sh_start002");
+        let o = offer_of(&codex).unwrap();
+        assert_eq!(o.kind, ShareKind::AgentStart);
+        assert!(o.place.ends_with("so it opens in your home folder."), "{}", o.place);
+        // a message has no place, whatever it says
+        let m = need("Studio: x", "It opens in /tmp. Approving it\n\nMessage from Studio. Approving marks it read.\nFrom Studio, a contact (device a). Deny to decline it.", "midna inbox accept sh_m002");
+        assert_eq!(offer_of(&m).unwrap().place, "");
+    }
+
+    #[test]
+    fn the_picker_starts_an_agent_from_a_terminal() {
+        assert_eq!(picker_kinds("ls", false, true), vec![ShareKind::Snippet, ShareKind::Message, ShareKind::AgentStart]);
+        assert_eq!(picker_kinds("", false, false), vec![ShareKind::Message], "no terminal: no agent start");
+        assert_eq!(picker_kinds("x", true, true), vec![ShareKind::Message], "a reply is a message");
+        let p = start_params("fp", "s_1", AgentKind::Codex, "  why?\n\tsee log ", true).unwrap();
+        assert_eq!((p.kind, p.session.as_deref(), p.prompt.as_deref(), p.agent, p.want_reply), (ShareKind::AgentStart, Some("s_1"), Some("why?\n\tsee log"), Some(AgentKind::Codex), true));
+        assert_eq!((&p.text, &p.url, &p.reply_to), (&None, &None, &None));
+        // what midnad's checks take
+        let v: midna_proto::nearby::ShareSendParams = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert!(v.payload().unwrap_err().contains("read from its terminal by midnad"));
+        assert!(start_params("fp", "s_1", AgentKind::Claude, " \n", true).is_err());
+        assert!(start_params("fp", "s_1", AgentKind::Claude, "a\x1b[2Jb", true).is_err());
+        assert!(start_params("fp", "s_1", AgentKind::Claude, &"x".repeat(midna_proto::nearby::MAX_PROMPT + 1), false).is_err());
+    }
+
+    #[test]
     fn what_text_can_be_sent_as() {
         assert_eq!(kinds("https://midna.dev/docs "), vec![ShareKind::Link, ShareKind::Snippet, ShareKind::Message]);
         assert_eq!(kinds("ls -la\npwd"), vec![ShareKind::Snippet, ShareKind::Message]);
@@ -1287,6 +1606,12 @@ mod tests {
         assert_eq!(auto_accepted(&mine), None, "a person accepted it");
         assert_eq!(answered(&it(msg.clone(), ShareState::Accepted)).as_deref(), Some("Studio read your message."));
         assert_eq!(answered(&it(snip, ShareState::Declined)).as_deref(), Some("Studio declined your snippet."));
-        assert_eq!(answered(&it(msg, ShareState::Offered)), None);
+        assert_eq!(answered(&it(msg.clone(), ShareState::Offered)), None);
+        let start = SharePayload::AgentStart { title: "t".into(), agent: AgentKind::Claude, project: None, cwd: "/w".into(), prompt: "why?".into(), want_reply: true };
+        assert_eq!(answered(&it(start, ShareState::Accepted)).as_deref(), Some("Studio started your agent. Its answer comes back here."));
+        let reply = SharePayload::Message { text: "\nThe build fails on zig.\nmore".into(), reply_to: Some("sh_start".into()) };
+        let answer = ShareItem { direction: ShareDirection::Incoming, ..it(reply, ShareState::Accepted) };
+        assert_eq!(agent_answered(&answer).as_deref(), Some("Studio's agent answered: The build fails on zig. (Notifications › Nearby)"));
+        assert_eq!(agent_answered(&it(msg, ShareState::Accepted)), None, "not a reply");
     }
 }
