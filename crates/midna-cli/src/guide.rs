@@ -353,8 +353,8 @@ const TOPICS: &[(&str, &str)] = &[
         saved into the receiver's nearby.downloads (human only; default ~/Downloads/Midna). An accepted agent session (kind agent: \
         the whole conversation as it is now) is fetched the same way, its paths changed to the receiver's, and resumed in a new agent \
         terminal there, idle until prompted. An agent start (kind agent_start: share.send {peer, kind: agent_start, prompt, agent?, \
-        session?, title?, want_reply?}, `midna share send agent-start --to <name|id> --prompt <text> [--wait]`) asks the other Mac to \
-        open a new agent terminal in its checkout of the sending terminal's project with that prompt; it runs only once a person \
+        session?, project?, title?, want_reply?}, `midna share send agent-start --to <name|id> --prompt <text> [--project <name>] [--wait]`) \
+        asks the other Mac to open a new agent terminal in its checkout of the sending terminal's project with that prompt; it runs only once a person \
         there accepts (or their device auto-accepts agent starts from this Mac, off by default). With want_reply its first turn's \
         last message comes back as a message whose reply_to is the agent start, read at once (share.answered); share.answer {id, \
         wait_secs?} returns it, waiting up to 600 s per call. An agent ask (kind agent_ask: share.send {peer, kind: agent_ask, \

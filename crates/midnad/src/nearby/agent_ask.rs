@@ -57,7 +57,7 @@ pub fn listing(d: &Daemon, from: &str) -> Wire {
     Wire::Sessions { sessions: agent_terminals(d).into_iter().take(MAX_LISTED).collect() }
 }
 
-fn mine(d: &Daemon, fp: &str) -> bool {
+pub(super) fn mine(d: &Daemon, fp: &str) -> bool {
     d.nearby.inner().store(&d.cfg.home).get(fp).is_some_and(|s| s.tier == Tier::MyDevice)
 }
 

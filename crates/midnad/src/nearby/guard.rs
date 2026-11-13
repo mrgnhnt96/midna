@@ -91,6 +91,9 @@ fn ask(name: &str, payload: &SharePayload) -> (String, String) {
                 (format!("Send {name} the file “{shown}”?"), format!("File: {shown} ({size})"))
             }
         }
+        SharePayload::Tab { scrollback, project_name: Some(project), .. } if scrollback.is_empty() => {
+            (format!("Open a new tab on {name} in its project “{project}”?"), super::tab::describe(payload, SHOWN))
+        }
         SharePayload::Tab { title, .. } => (format!("Send {name} the terminal tab “{title}”?"), super::tab::describe(payload, SHOWN)),
         SharePayload::Object { object } => {
             (format!("Send {name} {}?", object.label()), format!("From Midna: {}\n\n{}", object.label(), cut(&super::objects::listing(object))))
@@ -171,6 +174,7 @@ mod tests {
             title: "widget api".into(),
             project: Some(TabProject { remote: "github.com/acme/widget".into(), path: String::new() }),
             cwd: "/w/widget".into(),
+            project_name: None,
             shell: Some("zsh".into()),
             scrollback: rows.join("\n"),
         };
@@ -178,6 +182,21 @@ mod tests {
         assert_eq!(title, "Send Bravo the terminal tab “widget api”?");
         assert_eq!(first_line(&what), "Tab: github.com/acme/widget (in /w/widget, zsh), 412 lines of scrollback.");
         assert!(what.contains("\n\nrow 382\n") && what.ends_with("row 411"), "{what}");
+    }
+
+    #[test]
+    fn a_new_tab_in_a_named_project_says_so() {
+        let tab = SharePayload::Tab {
+            title: "mudora".into(),
+            project: None,
+            cwd: String::new(),
+            project_name: Some("mudora".into()),
+            shell: None,
+            scrollback: String::new(),
+        };
+        let (title, what) = ask("Bravo", &tab);
+        assert_eq!(title, "Open a new tab on Bravo in its project “mudora”?");
+        assert_eq!(what, "Tab: a new shell in project mudora.");
     }
 
     #[test]
@@ -203,6 +222,7 @@ mod tests {
             agent: midna_proto::AgentKind::Codex,
             project: None,
             cwd: "/w/app".into(),
+            project_name: None,
             prompt: "\nWhy does the build fail?\nIt worked yesterday.".into(),
             want_reply: false,
         };

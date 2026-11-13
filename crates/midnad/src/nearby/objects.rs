@@ -54,7 +54,7 @@ fn project_name(d: &Daemon, id: &str) -> Option<String> {
 }
 
 /// This Mac's project of that name (exactly, else ignoring case).
-fn project_named(d: &Daemon, name: &str) -> Option<Id> {
+pub(super) fn project_named(d: &Daemon, name: &str) -> Option<Id> {
     let core = d.core();
     let ps = &core.state.projects;
     ps.iter().find(|p| p.name == name).or_else(|| ps.iter().find(|p| p.name.eq_ignore_ascii_case(name))).map(|p| p.id.clone())

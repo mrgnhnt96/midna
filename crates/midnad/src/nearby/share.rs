@@ -220,6 +220,12 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
         _ => (p.payload().map_err(RpcError::bad_params)?, None),
     };
     let fp = p.peer.trim().to_lowercase();
+    if payload.project_name().is_some() {
+        let tier = d.nearby.inner().store(&d.cfg.home).get(&fp).map(|s| (s.tier, s.name.clone()));
+        if let Some((Tier::Contact, name)) = tier {
+            return Err(RpcError::refused(format!("{name} is kept as a contact: only your own devices open things in a project by name")));
+        }
+    }
     // An agent session's transcript snapshot goes if the offer does.
     let dropped = |e: RpcError| {
         session::forget(&d.cfg.home, &id);
@@ -235,6 +241,7 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
 pub(super) fn offer(d: &Daemon, fp: &str, id: String, payload: SharePayload, source: Option<PathBuf>, by: Actor, patient: bool) -> Result<ShareItem, RpcError> {
     let fp = fp.to_string();
     let name = peer_name(d, &fp);
+    let named = payload.project_name().is_some();
     let mut ch = if patient { link::connect_peer_waiting(d, &fp)? } else { link::connect_peer(d, &fp)? };
     let offer = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
     let item = ShareItem {
@@ -270,6 +277,10 @@ pub(super) fn offer(d: &Daemon, fp: &str, id: String, payload: SharePayload, sou
     };
     match sent {
         Ok(Wire::ShareAck { id: got }) if got == id => ch.finish(),
+        // An older Midna doesn't know `project_name`, and refuses the empty directory sent with it.
+        Ok(Wire::Refused { reason }) if named && reason.ends_with("directory must be an absolute path") => {
+            return Err(failed("it runs an older Midna that can't open things in a project by name; update it".into()));
+        }
         Ok(Wire::Refused { reason }) => return Err(failed(refusal_words(&reason))),
         Ok(other) => return Err(failed(format!("it answered {other:?}"))),
         Err(e) => return Err(failed(e)),
@@ -319,6 +330,9 @@ pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire
         return refuse(&e);
     }
     if let Err(e) = agent_ask::admit(d, from, &payload) {
+        return refuse(&e);
+    }
+    if let Err(e) = tab::admit(d, from, &payload) {
         return refuse(&e);
     }
     let name = peer_name(d, from);
@@ -482,6 +496,16 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
                 json!({ "id": it.id }),
             )
         }
+        SharePayload::Tab { title, scrollback, project_name: Some(_), .. } if scrollback.is_empty() => (
+            format!("{name} opens a new tab here: {}", cut(title, 80)),
+            format!(
+                "{}\n\n{} Approving opens a new shell there; nothing runs in it. To open it in another folder: midna inbox accept {} --cwd <dir>",
+                tab::describe(&it.payload, 2000),
+                tab::place(d, &it.payload).words(&it.payload),
+                it.id
+            ),
+            json!({ "id": it.id }),
+        ),
         SharePayload::Tab { title, .. } => (
             format!("{name} sent a terminal tab: {}", cut(title, 80)),
             format!(

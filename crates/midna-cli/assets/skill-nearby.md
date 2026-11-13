@@ -19,7 +19,10 @@ Mac has: its hardware, a device plugged into it, its own checkout or login):
 
    It starts a new agent there (`--agent claude|codex`; default this terminal's agent) in its
    checkout of this terminal's project (`--session <terminal>` for another one's), with your
-   prompt as its first. `--title` names its tab. Write the prompt for someone with no context:
+   prompt as its first. When the human names a project on that Mac ("in the mudora project"),
+   add `--project mudora`: it starts in that Mac's project of that name, wherever you are. That
+   Mac refuses it at once when it has no such project; ask the human for the name it goes by
+   there. It works only with devices the human keeps as their own. `--title` names its tab. Write the prompt for someone with no context:
    that agent has never seen this conversation, so say what you need, where, and what the
    answer should contain.
 3. First the human here approves sending it (the call waits for that), then a person on that Mac
@@ -27,6 +30,12 @@ Mac has: its hardware, a device plugged into it, its own checkout or login):
    then waits (default 30m, `--timeout 2h`) until that agent's first turn ends and prints its
    last message, cut to 4 KiB. The answer also lands in `midna inbox` as a message in reply to
    the agent start.
+
+### Opening a tab in a project on another Mac
+
+`midna share send roon --tab --project mudora` opens a new, empty shell in roon's project named
+mudora (add `--session <terminal>` to bring that terminal's scrollback along). It needs the
+human's ok on both Macs like any share, and works only with their own devices.
 
 ### Asking an agent tab that is already open on another Mac
 

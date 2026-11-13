@@ -743,11 +743,11 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "share send <name|id> <text…> | share send <name|id> [--title T] < file | share send <name|id> --link <url> [--title T]\n\
                 \x20     | share send <name|id> <path> | share send <name|id> --file <path>   [--snippet | --message]\n\
-                \x20     | share send <name|id> --tab [--session <terminal>] [--title T]\n\
+                \x20     | share send <name|id> --tab [--session <terminal>] [--project <its name there>] [--title T]\n\
                 \x20     | share send <name|id> --agent [--session <terminal>] [--title T]\n\
                 \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]\n\
-                \x20     | share send agent-start --to <name|id> --prompt <text> [--agent claude|codex] [--session <terminal>] [--title T]\n\
-                \x20         [--wait [--timeout 30m]]\n\
+                \x20     | share send agent-start --to <name|id> --prompt <text> [--agent claude|codex] [--project <its name there> | --session <terminal>]\n\
+                \x20         [--title T] [--wait [--timeout 30m]]\n\
                 \x20     | share send agent-ask --to <name|id> --session <name|id there> --prompt <text> [--wait [--timeout 30m]]\n\
                 \x20     | share answer <id> [--wait] [--timeout 30m]",
         summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things, or start or ask an agent there",
@@ -759,7 +759,10 @@ pub static VERBS: &[Verb] = &[
                   ~/Downloads/Midna; a folder keeps its tree, links in it are left out). Keep it in place until then.\n\
                   --snippet / --message override the guess. --tab offers this terminal (or --session): its project,\n\
                   folder and scrollback; on their Mac it opens as a new shell in their checkout of the same repo, under\n\
-                  your scrollback. Running programs stay here. --agent offers this agent terminal's conversation (or\n\
+                  your scrollback. Running programs stay here. --project <name> opens it in their project of that name\n\
+                  instead, wherever this terminal is; without --session that's a new, empty shell there. Only your own\n\
+                  devices take --project, and theirs refuses it at once when it has no project of that name.\n\
+                  --agent offers this agent terminal's conversation (or\n\
                   --session's; Claude Code or Codex): the whole transcript as it is now. On their Mac it is put where\n\
                   the agent looks, with your checkout and home paths changed to theirs, and resumed in a new agent\n\
                   terminal in their checkout. The device must be paired and nearby now.\n\
@@ -769,7 +772,8 @@ pub static VERBS: &[Verb] = &[
                   what would change before anything applies: rules, triggers and human-only settings take the human's\n\
                   ok, triggers arrive turned off, and queued prompts wait for `inbox accept <id> --into <terminal>`.\n\
                   agent-start asks their Mac to start a new agent (Claude by default, or this terminal's agent) in its\n\
-                  checkout of this terminal's project (or --session's), with --prompt (or words, or stdin) as its first\n\
+                  checkout of this terminal's project (or --session's, or in its project named --project, from anywhere),\n\
+                  with --prompt (or words, or stdin) as its first\n\
                   prompt; nothing runs until they accept. With --wait it waits for that agent's first turn to end and\n\
                   prints its last message (cut to 4 KiB; exit 4 if --timeout runs out first; `share answer <id> --wait`\n\
                   waits again). The answer also arrives in the inbox as a message in reply to it (share.answered).\n\

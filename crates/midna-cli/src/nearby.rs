@@ -657,7 +657,7 @@ pub fn share(a: &Args, out: OutFn) -> Res {
         Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send or answer; incoming shares: midna inbox)"))),
         None => return Err(Fail::Usage("share send <peer> [text…] (or text on stdin, or --link <url>)".into())),
     }
-    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session"])?;
+    a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session", "project"])?;
     let who = a.need(2, "which paired device (midna peers lists them)")?;
     if let Some(object) = a.get("object") {
         if a.get("file").is_some() || a.get("link").is_some() || a.has("message") || a.has("snippet") || a.has("title") {
@@ -677,6 +677,9 @@ pub fn share(a: &Args, out: OutFn) -> Res {
         && (!words.is_empty() || a.has("link") || a.has("snippet") || a.has("message"))
     {
         return Err(Fail::Usage(format!("--{k} sends a terminal (this one, or --session <terminal>); nothing else goes with it")));
+    }
+    if a.get("project").is_some() && terminal != Some("tab") {
+        return Err(Fail::Usage("--project goes with --tab: share send <device> --tab --project <its name there> [--session <terminal>]".into()));
     }
     if terminal.is_none() && a.get("session").is_some() {
         return Err(Fail::Usage("--session picks the terminal for --tab or --agent".into()));
@@ -699,8 +702,10 @@ pub fn share(a: &Args, out: OutFn) -> Res {
     }
     if let Some(k) = terminal {
         params["kind"] = json!(k);
-        if let Some(t) = a.get("session") {
-            params["session"] = json!(t);
+        for f in ["session", "project"] {
+            if let Some(v) = a.get(f) {
+                params[f] = json!(v);
+            }
         }
     } else if let Some(url) = a.get("link") {
         if !words.is_empty() || a.has("snippet") || a.has("message") {
@@ -731,12 +736,13 @@ pub fn share(a: &Args, out: OutFn) -> Res {
 }
 
 const AGENT_START_USAGE: &str =
-    "share send agent-start --to <device> --prompt <text> [--agent claude|codex] [--session <terminal>] [--title <t>] [--wait [--timeout 30m]]";
+    "share send agent-start --to <device> --prompt <text> [--agent claude|codex] [--project <its name there> | --session <terminal>] [--title <t>] [--wait [--timeout 30m]]";
 const AGENT_ASK_USAGE: &str =
     "share send agent-ask --to <device> --session <name or id there> --prompt <text> [--wait [--timeout 30m]] (midna peers sessions <device> lists them)";
 
 /// `midna share send agent-start --to <device> --prompt <text>`: start an agent on a paired
-/// device, in its checkout of this terminal's project (or `--session`'s), with that prompt.
+/// device, in its checkout of this terminal's project (or `--session`'s, or in its project named
+/// `--project`), with that prompt.
 /// `midna share send agent-ask --to <device> --session <terminal> --prompt <text>`: ask one of the
 /// agent terminals open there instead. The prompt may also come as words or on stdin. With
 /// `--wait`, wait for its answer and print it.
@@ -746,7 +752,7 @@ fn agent_start(a: &Args, out: OutFn) -> Res {
     if ask {
         a.check(&["to", "prompt", "session", "wait", "timeout"])?;
     } else {
-        a.check(&["to", "prompt", "agent", "session", "title", "wait", "timeout"])?;
+        a.check(&["to", "prompt", "agent", "session", "project", "title", "wait", "timeout"])?;
     }
     let who = a.get("to").ok_or_else(|| Fail::Usage(format!("which device? --to <name or id> (midna peers lists them); {usage}")))?;
     if ask && a.get("session").is_none_or(|t| t.trim().is_empty()) {
@@ -774,7 +780,7 @@ fn agent_start(a: &Args, out: OutFn) -> Res {
     };
     let kind = if ask { "agent_ask" } else { "agent_start" };
     let mut params = json!({ "peer": paired(who)?, "kind": kind, "prompt": prompt, "want_reply": a.has("wait") });
-    for k in ["agent", "session", "title"] {
+    for k in ["agent", "session", "project", "title"] {
         if let Some(v) = a.get(k) {
             params[k] = json!(v);
         }
