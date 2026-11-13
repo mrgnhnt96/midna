@@ -143,13 +143,14 @@ pub fn serve(d: &Daemon, ch: &mut Channel, from: &str, id: &str, file: usize, of
     };
     let files = item.payload.files();
     let Some(f) = files.get(file) else { return refuse(format!("{id} has no file {file}")) };
-    // A folder's files are under it; a file, or an agent session's transcript snapshot, is it.
+    // A folder's files are under it; a file, an agent session's transcript snapshot or an agent
+    // start's notes is it.
     let path = match &item.payload {
         SharePayload::File { folder: true, .. } => match safe_join(&source, &f.path) {
             Some(p) => p,
             None => return refuse(format!("{id}: bad path")),
         },
-        SharePayload::File { .. } | SharePayload::Agent { .. } => source.clone(),
+        SharePayload::File { .. } | SharePayload::Agent { .. } | SharePayload::AgentStart { .. } => source.clone(),
         _ => return refuse(format!("{id} has no files")),
     };
     let changed = || refuse(format!("changed: {} changed on this Mac since it was offered; send it again", f.path));
@@ -267,9 +268,7 @@ impl<'a> Progress<'a> {
         let mut i = self.d.nearby.inner();
         let inbox = i.inbox(&self.d.cfg.home);
         if let Some(e) = inbox.get_mut(&self.id) {
-            let t = e.item.transfer.get_or_insert_with(|| {
-                Transfer::new(e.item.size, e.item.payload.files().len())
-            });
+            let t = e.item.transfer.get_or_insert_with(|| fresh(&e.item.payload));
             f(t);
         }
     }
@@ -367,28 +366,34 @@ pub fn accepting(d: &Daemon, it: &ShareItem) -> Result<String, RpcError> {
     Ok(format!("receiving into {}", dest.display()))
 }
 
-/// A file share or an agent session was accepted here (or accepted again after it failed): start fetching it.
+/// A file share, an agent session or an agent start with notes was accepted here (or accepted
+/// again after it failed): start fetching it.
 pub fn begin(d: &Daemon, id: &str) {
     let restart = {
         let mut i = d.nearby.inner();
         let inbox = i.inbox(&d.cfg.home);
         let Some(e) = inbox.get_mut(id) else { return };
-        let files = e.item.payload.files().len();
-        if files == 0 {
+        if e.item.payload.files().is_empty() {
             return;
         }
-        let fresh = e.item.transfer.as_ref().is_none_or(|t| t.state == TransferState::Failed);
-        if fresh {
-            e.item.transfer = Some(Transfer::new(e.item.size, files));
+        let restart = e.item.transfer.as_ref().is_none_or(|t| t.state == TransferState::Failed);
+        if restart {
+            e.item.transfer = Some(fresh(&e.item.payload));
             let _ = inbox.save();
         }
-        fresh
+        restart
     };
     if restart {
         let _ = std::fs::remove_dir_all(stage_dir(&d.cfg.home, id));
         Progress { d, id: id.to_string(), last: Instant::now(), dirty: true }.flush();
     }
     nudge(d);
+}
+
+/// A new transfer of `payload`'s files (an agent start's prompt isn't among what moves).
+fn fresh(payload: &SharePayload) -> Transfer {
+    let files = payload.files();
+    Transfer::new(files.iter().fold(0u64, |n, f| n.saturating_add(f.size)), files.len())
 }
 
 /// Wake the transfer thread.
@@ -453,9 +458,11 @@ fn run(d: &Arc<Daemon>, id: &str) {
     let Some((item, open_in)) = found else { return };
     let mut progress = Progress::new(d, id);
     let mut ch = None;
-    // An agent session's transcript is placed and resumed; a file share lands in downloads.
+    // An agent session's transcript is placed and resumed; an agent start's notes are saved and
+    // it starts; a file share lands in downloads.
     let landed = fetch(d, &item, &mut progress, &mut ch).and_then(|staged| match &item.payload {
         SharePayload::Agent { .. } => super::session::arrived(d, &item, open_in.as_deref(), &staged).map_err(Stop::Fail),
+        SharePayload::AgentStart { .. } => super::notes::arrived(d, &item, open_in.as_deref(), &staged).map_err(Stop::Fail),
         _ => Ok((staged.clone(), format!("saved to {}", staged.display()))),
     });
     match landed {
@@ -514,17 +521,19 @@ fn tell(d: &Daemon, item: &ShareItem, ch: Option<Channel>, saved: bool, error: O
 }
 
 /// Fetch whatever of `item` isn't staged yet, check it, and land it; the saved path. An agent
-/// session's transcript stays staged (only this user can read it): its path.
+/// session's transcript, or an agent start's notes, stays staged (only this user can read it):
+/// its path.
 fn fetch(d: &Daemon, item: &ShareItem, progress: &mut Progress, ch: &mut Option<Channel>) -> Result<PathBuf, Stop> {
     let files = item.payload.files();
     if files.is_empty() {
         return Err(Stop::Fail("it has no files".into()));
     }
     let root = stage_dir(&d.cfg.home, &item.id).join("root");
-    let agent = matches!(item.payload, SharePayload::Agent { .. });
+    let private = !matches!(item.payload, SharePayload::File { .. });
     let staged = |f: &ShareFile| match &item.payload {
         SharePayload::File { folder: true, .. } => safe_join(&root, &f.path),
         SharePayload::File { name, .. } => Some(root.join(nb::safe_name(name))),
+        SharePayload::AgentStart { .. } => Some(root.join(nb::NOTES_FILE)),
         _ => Some(root.join(super::session::STAGED)),
     };
     let start = item.transfer.as_ref().map(|t| t.files_done).unwrap_or(0).min(files.len());
@@ -583,7 +592,7 @@ fn fetch(d: &Daemon, item: &ShareItem, progress: &mut Progress, ch: &mut Option<
                 return Err(Stop::Fail(format!("{} arrived with the wrong checksum twice", f.path)));
             }
         }
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(if agent { 0o600 } else { 0o644 }));
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(if private { 0o600 } else { 0o644 }));
         done += f.size;
         progress.update(|t| {
             t.files_done = k + 1;
@@ -591,7 +600,7 @@ fn fetch(d: &Daemon, item: &ShareItem, progress: &mut Progress, ch: &mut Option<
         });
     }
     let SharePayload::File { name, folder, dirs, .. } = &item.payload else {
-        return staged(&files[0]).ok_or_else(|| Stop::Fail("no transcript".into()));
+        return staged(&files[0]).ok_or_else(|| Stop::Fail("nothing staged".into()));
     };
     for dir in dirs {
         let p = safe_join(&root, dir).ok_or_else(|| Stop::Fail(format!("{dir:?} isn't a path inside the folder")))?;

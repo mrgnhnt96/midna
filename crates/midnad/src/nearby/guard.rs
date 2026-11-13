@@ -225,6 +225,7 @@ mod tests {
             project_name: None,
             prompt: "\nWhy does the build fail?\nIt worked yesterday.".into(),
             want_reply: false,
+            notes: None,
         };
         let (title, what) = ask("Bravo", &start);
         assert_eq!(title, "Start a Codex agent on Bravo with this prompt?");

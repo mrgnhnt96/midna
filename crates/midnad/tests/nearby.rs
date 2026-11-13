@@ -1828,3 +1828,70 @@ fn a_tab_or_an_agent_start_opens_in_a_project_named_wherever_the_sender_is() {
     assert_eq!(call(&mut hb, "session.get", json!({ "id": opened(&r) }))["cwd"].as_str(), dir.to_str());
     let _ = std::fs::remove_file(bin);
 }
+
+#[test]
+fn an_agent_start_hands_off_notes_in_its_prompt_or_as_a_file_in_midnas_home() {
+    let bin = fake_agent("notes");
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair_with(&svc, Some(bin.clone()));
+    let (mut ha, mut hb) = (a.human(), b.human());
+    let t = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": a.home, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let start = |notes: &str| json!({ "kind": "agent_start", "session": t, "prompt": "Carry on with the release", "notes": notes });
+    let long = format!("# Handoff\nTried the build twice.\n{}", "- a step that is left\n".repeat(1000));
+
+    // Only my own devices take notes: not a contact here, and not where B keeps A as one.
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "contact" }));
+    for notes in ["short", long.as_str()] {
+        let e = call_err(&mut ha, "share.send", { let mut p = start(notes); p["peer"] = json!(fb); p });
+        assert!(e.code == REFUSED && e.message.contains("only your own devices take handoff notes"), "{}", e.message);
+    }
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "my_device" }));
+    call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "contact" }));
+    let e = call_err(&mut ha, "share.send", { let mut p = start(&long); p["peer"] = json!(fb); p });
+    assert!(e.code == REFUSED && e.message.contains("only your own devices take handoff notes"), "{}", e.message);
+    stays(1, "a refused offer leaves no copy", || std::fs::read_dir(a.home.join("nearby/outgoing")).map_or(true, |mut d| d.next().is_none()));
+    both_mine(&mut ha, &mut hb, &fa, &fb);
+    let e = call_err(&mut ha, "share.send", { let mut p = start("bell\x07"); p["peer"] = json!(fb); p });
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
+
+    // Short notes ride in the prompt.
+    let id = send(&mut ha, &fb, start("Tried X.\r\nLeft: Y."))["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    assert!(got["payload"]["notes"].is_null(), "{got}");
+    assert_eq!(got["payload"]["prompt"], "Carry on with the release\n\n---\nHandoff notes:\n\nTried X.\nLeft: Y.", "{got}");
+    let r = call(&mut hb, "share.accept", json!({ "id": id }));
+    let screen = wait_for(10, "the agent's arguments", || Some(read(&mut hb, &opened(&r))).filter(|t| t.contains("ARGS-END")));
+    assert!(screen.contains("Left: Y."), "{screen}");
+
+    // Longer ones travel as a file; the approval shows their size and first lines.
+    let id = send(&mut ha, &fb, start(&long))["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    let n = &got["payload"]["notes"];
+    assert_eq!((n["file"]["path"].as_str(), n["file"]["size"].as_u64()), (Some(nb::NOTES_FILE), Some(long.trim().len() as u64)), "{got}");
+    assert!(n["head"].as_str().unwrap().starts_with("# Handoff\nTried the build twice.\n"), "{got}");
+    assert_eq!(got["payload"]["prompt"], "Carry on with the release", "{got}");
+    let saved = b.home.join("nearby/notes").join(format!("{id}.md"));
+    let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
+    let detail = ny["item"]["detail"].as_str().unwrap();
+    assert!(detail.contains("Handoff notes (") && detail.contains("# Handoff\nTried the build twice.") && detail.contains(&saved.display().to_string()), "{detail}");
+    stays(1, "nothing starts before accepting", || !saved.exists());
+
+    // Accepting fetches them into Midna's home, then starts the agent pointing at them.
+    let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
+    call(&mut hb, "needs_you.resolve", approve);
+    let done = wait_for(20, "the agent starts", || {
+        share(&mut hb, &id).filter(|s| s["result"].as_str().is_some_and(|r| r.starts_with("opened as")) || s["transfer"]["state"] == "failed")
+    });
+    assert_eq!(done["transfer"]["state"], "done", "{done}");
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), long.trim());
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&saved).unwrap().permissions()) & 0o777, 0o600);
+    let screen = wait_for(10, "the agent's arguments", || Some(read(&mut hb, &opened(&done))).filter(|t| t.contains("ARGS-END")));
+    let flat = screen.replace('\n', "");
+    assert!(flat.contains(&format!("Handoff notes from Alpha are in {}. Read them first.", saved.display())), "{screen}");
+    wait_for(10, "A drops its copy", || (!a.home.join("nearby/outgoing").join(&id).exists()).then_some(()));
+
+    // Accepting again changes nothing.
+    call(&mut hb, "share.accept", json!({ "id": id }));
+    stays(1, "one agent per start", || agents(&mut hb).len() == 2);
+    let _ = std::fs::remove_file(bin);
+}

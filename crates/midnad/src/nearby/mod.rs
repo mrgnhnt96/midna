@@ -29,6 +29,7 @@ pub mod dnssd;
 pub mod guard;
 pub mod identity;
 pub mod link;
+pub mod notes;
 pub mod objects;
 pub mod pairing;
 pub mod session;

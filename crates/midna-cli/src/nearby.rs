@@ -736,13 +736,13 @@ pub fn share(a: &Args, out: OutFn) -> Res {
 }
 
 const AGENT_START_USAGE: &str =
-    "share send agent-start --to <device> --prompt <text> [--agent claude|codex] [--project <its name there> | --session <terminal>] [--title <t>] [--wait [--timeout 30m]]";
+    "share send agent-start --to <device> --prompt <text> [--agent claude|codex] [--project <its name there> | --session <terminal>] [--title <t>] [--notes <file>|-] [--wait [--timeout 30m]]";
 const AGENT_ASK_USAGE: &str =
     "share send agent-ask --to <device> --session <name or id there> --prompt <text> [--wait [--timeout 30m]] (midna peers sessions <device> lists them)";
 
 /// `midna share send agent-start --to <device> --prompt <text>`: start an agent on a paired
 /// device, in its checkout of this terminal's project (or `--session`'s, or in its project named
-/// `--project`), with that prompt.
+/// `--project`), with that prompt, and handoff notes from `--notes` (a file, or `-` for stdin).
 /// `midna share send agent-ask --to <device> --session <terminal> --prompt <text>`: ask one of the
 /// agent terminals open there instead. The prompt may also come as words or on stdin. With
 /// `--wait`, wait for its answer and print it.
@@ -752,13 +752,17 @@ fn agent_start(a: &Args, out: OutFn) -> Res {
     if ask {
         a.check(&["to", "prompt", "session", "wait", "timeout"])?;
     } else {
-        a.check(&["to", "prompt", "agent", "session", "project", "title", "wait", "timeout"])?;
+        a.check(&["to", "prompt", "agent", "session", "project", "title", "notes", "wait", "timeout"])?;
     }
     let who = a.get("to").ok_or_else(|| Fail::Usage(format!("which device? --to <name or id> (midna peers lists them); {usage}")))?;
     if ask && a.get("session").is_none_or(|t| t.trim().is_empty()) {
         return Err(Fail::Usage(format!("which terminal there? --session <name or id>; {usage}")));
     }
     let words = a.text(3);
+    let notes_stdin = a.get("notes") == Some("-");
+    if notes_stdin && a.get("prompt").is_none() && words.is_empty() {
+        return Err(Fail::Usage(format!("the notes come on stdin, so give the prompt with --prompt <text> or as words; {usage}")));
+    }
     let prompt = match a.get("prompt") {
         Some(_) if !words.is_empty() => return Err(Fail::Usage(format!("give the prompt once: --prompt <text>, words or stdin; {usage}"))),
         Some(p) => p.to_string(),
@@ -778,8 +782,24 @@ fn agent_start(a: &Args, out: OutFn) -> Res {
         Some(t) => crate::triggers::parse_duration(t, 1).map_err(|e| Fail::Usage(format!("--timeout {e}")))?,
         None => ANSWER_WAIT_DEFAULT,
     };
+    let notes = match a.get("notes") {
+        None => None,
+        Some("-") => {
+            use std::io::{IsTerminal, Read};
+            if std::io::stdin().is_terminal() {
+                return Err(Fail::Usage(format!("--notes - reads the notes from stdin; pipe them in; {usage}")));
+            }
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t).map_err(|e| Fail::Usage(format!("reading the notes from stdin: {e}")))?;
+            Some(t)
+        }
+        Some(path) => Some(read_notes(path)?),
+    };
     let kind = if ask { "agent_ask" } else { "agent_start" };
     let mut params = json!({ "peer": paired(who)?, "kind": kind, "prompt": prompt, "want_reply": a.has("wait") });
+    if let Some(n) = notes {
+        params["notes"] = json!(n);
+    }
     for k in ["agent", "session", "project", "title"] {
         if let Some(v) = a.get(k) {
             params[k] = json!(v);
@@ -793,6 +813,17 @@ fn agent_start(a: &Args, out: OutFn) -> Res {
     let id = s(&v, "id");
     eprintln!("Offered {} to {} ({id}); waiting for its answer…", kind_word(&v), s(&v, "peer_name"));
     wait_for_answer(&id, timeout, out)
+}
+
+/// Handoff notes from file `path`: text, at most [`nb::MAX_NOTES`].
+fn read_notes(path: &str) -> Result<String, Fail> {
+    let too_big = || Fail::Usage(format!("{path}: handoff notes may be at most {}", nb::size_label(nb::MAX_NOTES as u64)));
+    let len = std::fs::metadata(path).map_err(|e| Fail::Usage(format!("--notes {path}: {e}")))?.len();
+    if len > nb::MAX_NOTES as u64 {
+        return Err(too_big());
+    }
+    let bytes = std::fs::read(path).map_err(|e| Fail::Usage(format!("--notes {path}: {e}")))?;
+    String::from_utf8(bytes).map_err(|_| Fail::Usage(format!("--notes {path} isn't UTF-8 text")))
 }
 
 /// `midna share answer <id> [--wait] [--timeout 30m]`: the answer to an agent start or ask sent

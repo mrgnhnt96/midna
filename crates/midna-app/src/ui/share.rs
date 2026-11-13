@@ -168,6 +168,7 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         agent: None,
         want_reply: false,
         project: None,
+        notes: None,
     }
 }
 
@@ -556,7 +557,7 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .child(div().text_color(t.dim).child(format!("{who} conversation · transcript {}", nb::size_label(transcript.size))))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).child(conversation.clone()))
         }
-        SharePayload::AgentStart { title, agent, project, cwd, project_name, prompt, want_reply } => {
+        SharePayload::AgentStart { title, agent, project, cwd, project_name, prompt, want_reply, notes } => {
             let place = match project {
                 _ if project_name.is_some() => format!("project {}", project_name.as_deref().unwrap_or_default()),
                 Some(p) if p.path.is_empty() => p.remote.clone(),
@@ -573,6 +574,11 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .child(div().font_weight(FontWeight::BOLD).child(format!("{title} · {place}")))
                 .child(div().text_color(t.dim).child(format!("A new {who} terminal with this prompt{back}")))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).child(prompt.clone()))
+                .when_some(notes.as_ref(), |el, n| {
+                    let more = if (n.head.len() as u64) < n.file.size { "\n…" } else { "" };
+                    el.child(div().pt(px(4.)).text_color(t.dim).child(format!("Handoff notes · {}", nb::size_label(n.file.size))))
+                        .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.dim).child(format!("{}{more}", n.head.trim_end())))
+                })
         }
         SharePayload::AgentAsk { session, prompt, want_reply } => {
             let back = if *want_reply { " · its answer goes back" } else { "" };
@@ -1636,7 +1642,7 @@ mod tests {
         assert_eq!(answered(&it(msg.clone(), ShareState::Accepted)).as_deref(), Some("Studio read your message."));
         assert_eq!(answered(&it(snip, ShareState::Declined)).as_deref(), Some("Studio declined your snippet."));
         assert_eq!(answered(&it(msg.clone(), ShareState::Offered)), None);
-        let start = SharePayload::AgentStart { title: "t".into(), agent: AgentKind::Claude, project: None, cwd: "/w".into(), project_name: None, prompt: "why?".into(), want_reply: true };
+        let start = SharePayload::AgentStart { title: "t".into(), agent: AgentKind::Claude, project: None, cwd: "/w".into(), project_name: None, prompt: "why?".into(), want_reply: true, notes: None };
         assert_eq!(answered(&it(start, ShareState::Accepted)).as_deref(), Some("Studio started your agent. Its answer comes back here."));
         let reply = SharePayload::Message { text: "\nThe build fails on zig.\nmore".into(), reply_to: Some("sh_start".into()) };
         let answer = ShareItem { direction: ShareDirection::Incoming, ..it(reply, ShareState::Accepted) };

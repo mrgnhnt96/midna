@@ -472,6 +472,15 @@ pub const MAX_TRANSCRIPT: u64 = 256 * 1024 * 1024;
 pub const MAX_CONVERSATION: usize = 128;
 /// … the prompt an agent start carries.
 pub const MAX_PROMPT: usize = 32 * 1024;
+/// … the handoff notes an agent start brings (a file once they're past [`MAX_INLINE_NOTES`]).
+pub const MAX_NOTES: usize = 1024 * 1024;
+/// … handoff notes that ride in the prompt itself; longer ones travel as a file.
+pub const MAX_INLINE_NOTES: usize = 4 * 1024;
+/// … the first lines of a notes file that the offer shows (at most [`NOTES_HEAD_LINES`]).
+pub const MAX_NOTES_HEAD: usize = 1024;
+pub const NOTES_HEAD_LINES: usize = 8;
+/// The name a notes file travels under.
+pub const NOTES_FILE: &str = "notes.md";
 
 /// What a share carries. Nothing in it ever runs: it is data until the receiving person
 /// accepts it, and even then a snippet is pasted (never submitted), a link opened or pinned, a
@@ -587,11 +596,17 @@ pub enum SharePayload {
         /// project. Sent with an empty `cwd`, so an older receiver refuses it too.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_name: Option<String>,
-        /// What to ask the agent: its first prompt, at most [`MAX_PROMPT`] bytes.
+        /// What to ask the agent: its first prompt, at most [`MAX_PROMPT`] bytes. Short handoff
+        /// notes are in it already.
         prompt: String,
         /// Send the agent's answer back once its first turn ends.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         want_reply: bool,
+        /// Handoff notes too long for the prompt (one of the sender's own devices only): once the
+        /// receiver accepts, its midnad fetches them like a file, saves them in its home
+        /// (`nearby/notes/<share id>.md`) and starts the agent with a prompt that says where.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes: Option<AgentNotes>,
     },
     /// A prompt for an agent terminal that is already open on the receiving Mac: "ask that tab
     /// over there". Only one of the receiver's own devices may send it (`peers.sessions` lists
@@ -618,6 +633,51 @@ pub struct TabProject {
     /// Where the tab was inside the repo: relative, `/`-separated, empty at its top.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
+}
+
+/// An agent start's handoff notes as a file: [`NOTES_FILE`], fetched after accept like a file
+/// share's one file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentNotes {
+    pub file: ShareFile,
+    /// Its first lines (at most [`NOTES_HEAD_LINES`], [`MAX_NOTES_HEAD`] bytes), for the
+    /// approval. The file must start with them, or the receiver drops it.
+    pub head: String,
+}
+
+/// The first lines of handoff notes as an offer shows them: at most [`NOTES_HEAD_LINES`] lines
+/// and [`MAX_NOTES_HEAD`] bytes, cut at a line's end where it can be.
+pub fn notes_head(notes: &str) -> &str {
+    let mut end = 0;
+    for (k, line) in notes.split_inclusive('\n').enumerate() {
+        if k == NOTES_HEAD_LINES || end + line.len() > MAX_NOTES_HEAD {
+            break;
+        }
+        end += line.len();
+    }
+    if end == 0 {
+        // One long first line: as much of it as fits.
+        end = notes.len().min(MAX_NOTES_HEAD);
+        while !notes.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    &notes[..end]
+}
+
+/// Handoff notes as text a share may carry: not blank, at most [`MAX_NOTES`] bytes, no control
+/// characters but newlines and tabs.
+pub fn check_notes(notes: &str) -> Result<(), String> {
+    if notes.trim().is_empty() {
+        return Err("the handoff notes are empty".into());
+    }
+    if notes.len() > MAX_NOTES {
+        return Err(format!("handoff notes may be at most {} KiB", MAX_NOTES / 1024));
+    }
+    if notes.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err("handoff notes are plain text".into());
+    }
+    Ok(())
 }
 
 /// A git remote URL as a key two checkouts of one repo share, whichever URL each cloned:
@@ -954,11 +1014,13 @@ impl SharePayload {
         }
     }
 
-    /// The files fetched after accept: a file share's, or an agent session's transcript.
+    /// The files fetched after accept: a file share's, an agent session's transcript, or an
+    /// agent start's notes file.
     pub fn files(&self) -> &[ShareFile] {
         match self {
             SharePayload::File { files, .. } => files,
             SharePayload::Agent { transcript, .. } => std::slice::from_ref(transcript),
+            SharePayload::AgentStart { notes: Some(n), .. } => std::slice::from_ref(&n.file),
             _ => &[],
         }
     }
@@ -973,7 +1035,8 @@ impl SharePayload {
             SharePayload::Tab { scrollback, .. } => scrollback.len() as u64,
             SharePayload::Object { object } => serde_json::to_vec(object).map(|b| b.len() as u64).unwrap_or(0),
             SharePayload::Agent { transcript, .. } => transcript.size,
-            SharePayload::AgentStart { prompt, .. } | SharePayload::AgentAsk { prompt, .. } => prompt.len() as u64,
+            SharePayload::AgentStart { prompt, notes, .. } => (prompt.len() as u64).saturating_add(notes.as_ref().map_or(0, |n| n.file.size)),
+            SharePayload::AgentAsk { prompt, .. } => prompt.len() as u64,
         }
     }
 
@@ -1063,12 +1126,25 @@ impl SharePayload {
                     return Err(format!("{} isn't where {} keeps conversation {conversation}", transcript.path, agent.as_str()));
                 }
             }
-            SharePayload::AgentStart { title, project, cwd, project_name, prompt, .. } => {
+            SharePayload::AgentStart { title, project, cwd, project_name, prompt, notes, .. } => {
                 if title.trim().is_empty() || title.len() > MAX_TITLE || !plain(title) {
                     return Err(format!("an agent start's title is one line of at most {MAX_TITLE} bytes"));
                 }
                 check_place("an agent start", project.as_ref(), cwd, project_name.as_deref())?;
                 check_prompt(prompt)?;
+                if let Some(AgentNotes { file, head }) = notes {
+                    if file.path != NOTES_FILE || !valid_sha256(&file.sha256) {
+                        return Err(format!("an agent start's notes file is {NOTES_FILE}, with its SHA-256"));
+                    }
+                    if file.size == 0 || file.size > MAX_NOTES as u64 {
+                        return Err(format!("handoff notes may be at most {} KiB", MAX_NOTES / 1024));
+                    }
+                    let lines = head.split_inclusive('\n').count();
+                    if head.trim().is_empty() || head.len() > MAX_NOTES_HEAD || lines > NOTES_HEAD_LINES || head.len() as u64 > file.size {
+                        return Err(format!("the notes' first lines are at most {NOTES_HEAD_LINES} lines and {MAX_NOTES_HEAD} bytes"));
+                    }
+                    check_notes(head)?;
+                }
             }
             SharePayload::AgentAsk { session, prompt, .. } => {
                 if session.trim().is_empty() || session.len() > MAX_TITLE || !plain(session) {
@@ -1366,6 +1442,11 @@ pub struct ShareSendParams {
     /// needs no terminal here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// An agent start: handoff notes for the new agent (one of your own devices only). Short
+    /// notes ride in the prompt; longer ones travel as a file the receiver saves in Midna's home
+    /// (`nearby/notes/<share id>.md`), and the prompt points the new agent at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     /// An object: which kind. midnad reads it from its stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<ObjectType>,
@@ -1401,6 +1482,9 @@ impl ShareSendParams {
         }
         if self.agent.is_some() && self.kind != ShareKind::AgentStart {
             return Err("only an agent start takes an `agent`".into());
+        }
+        if self.notes.is_some() && self.kind != ShareKind::AgentStart {
+            return Err("only an agent start takes `notes`".into());
         }
         if self.object.is_some() != (self.kind == ShareKind::Object) {
             return Err(if self.object.is_some() { "only an object share names an `object`".into() } else { "an object share needs `object`".into() });
@@ -1741,6 +1825,57 @@ mod tests {
         ] {
             assert!(send(bad.clone()).unwrap_err().contains("only an agent start"), "{bad}");
         }
+    }
+
+    #[test]
+    fn agent_start_notes() {
+        let check = |v: serde_json::Value| serde_json::from_value::<SharePayload>(v).unwrap().check();
+        let sha = "a".repeat(64);
+        let notes = serde_json::json!({ "file": { "path": NOTES_FILE, "size": 9000, "sha256": sha }, "head": "# Plan\n\tstep one\n" });
+        let start = serde_json::json!({ "kind": "agent_start", "title": "t", "agent": "claude", "cwd": "/w", "prompt": "go", "notes": notes });
+        assert_eq!(check(start.clone()), Ok(()));
+        let p: SharePayload = serde_json::from_value(start.clone()).unwrap();
+        assert_eq!((p.size(), p.files().len(), p.files()[0].path.as_str()), (9002, 1, NOTES_FILE));
+        for (k, v) in [
+            ("path", serde_json::json!("../notes.md")),
+            ("size", serde_json::json!(0)),
+            ("size", serde_json::json!(MAX_NOTES + 1)),
+            ("sha256", serde_json::json!("nope")),
+        ] {
+            let mut bad = start.clone();
+            bad["notes"]["file"][k] = v;
+            assert!(check(bad.clone()).is_err(), "{bad}");
+        }
+        for head in [serde_json::json!(" \n"), serde_json::json!("a\x1b[2J"), serde_json::json!("x\n".repeat(NOTES_HEAD_LINES + 1)), serde_json::json!("x".repeat(MAX_NOTES_HEAD + 1))] {
+            let mut bad = start.clone();
+            bad["notes"]["head"] = head;
+            assert!(check(bad.clone()).is_err(), "{bad}");
+        }
+        let mut longer = start.clone();
+        longer["notes"]["file"]["size"] = serde_json::json!(3);
+        assert!(check(longer).is_err(), "the head can't be longer than the notes");
+
+        let send = |v: serde_json::Value| serde_json::from_value::<ShareSendParams>(v).unwrap().payload();
+        let err = send(serde_json::json!({ "peer": "f", "kind": "message", "text": "hi", "notes": "x" })).unwrap_err();
+        assert!(err.contains("only an agent start takes `notes`"), "{err}");
+    }
+
+    #[test]
+    fn notes_heads_and_checks() {
+        assert_eq!(notes_head("a\nb\n"), "a\nb\n");
+        let many = "line\n".repeat(20);
+        assert_eq!(notes_head(&many), "line\n".repeat(NOTES_HEAD_LINES));
+        let long = format!("{}\nnext", "é".repeat(MAX_NOTES_HEAD));
+        let head = notes_head(&long);
+        assert!(head.len() <= MAX_NOTES_HEAD && head.len() > MAX_NOTES_HEAD - 2 && long.starts_with(head), "{}", head.len());
+        let wide = format!("short\n{}", "x".repeat(MAX_NOTES_HEAD));
+        assert_eq!(notes_head(&wide), "short\n", "cut at a line's end");
+
+        assert!(check_notes("# Notes\n\t- done\n").is_ok());
+        assert!(check_notes(" \n\t").is_err());
+        assert!(check_notes("bell\x07").is_err());
+        assert!(check_notes("cr\r\n").is_err());
+        assert!(check_notes(&"x".repeat(MAX_NOTES + 1)).is_err());
     }
 
     #[test]

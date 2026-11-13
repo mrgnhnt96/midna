@@ -25,6 +25,13 @@ Mac has: its hardware, a device plugged into it, its own checkout or login):
    there. It works only with devices the human keeps as their own. `--title` names its tab. Write the prompt for someone with no context:
    that agent has never seen this conversation, so say what you need, where, and what the
    answer should contain.
+
+   To hand off work with more context than a prompt holds (what you tried, what's left, files
+   and decisions), write handoff notes and add `--notes <file>` (or `--notes -` with the notes
+   on stdin and the prompt in `--prompt`). Short notes go in the prompt; longer ones (up to
+   1 MiB) travel as a file, are saved in that Mac's Midna home (`nearby/notes/<share id>.md`),
+   and the prompt tells the new agent to read them first. Only the human's own devices take
+   notes.
 3. First the human here approves sending it (the call waits for that), then a person on that Mac
    accepts it, or it starts at once if they set this Mac to auto-accept agent starts. `--wait`
    then waits (default 30m, `--timeout 2h`) until that agent's first turn ends and prints its
@@ -65,7 +72,7 @@ If the wait runs out (exit 4), the agent is still working or the offer still wai
 longer conversation, the human can carry on in that terminal on the other Mac; another agent
 start opens another terminal, it doesn't continue the first.
 
-Over MCP or RPC: `share_send {peer, kind: "agent_start", prompt, agent?, session?, title?,
-want_reply: true}`, then `share_answer {id, wait_secs}` (at most 600 per call; call again) until
+Over MCP or RPC: `share_send {peer, kind: "agent_start", prompt, agent?, session?, project?,
+title?, notes?, want_reply: true}`, then `share_answer {id, wait_secs}` (at most 600 per call; call again) until
 `answer` is set. Event `share.answered` fires when it comes. An ask is `peers_sessions {peer}` then
 `share_send {peer, kind: "agent_ask", session, prompt, want_reply: true}`.
