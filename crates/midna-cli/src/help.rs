@@ -747,7 +747,7 @@ pub static VERBS: &[Verb] = &[
                 \x20     | share send <name|id> --agent [--session <terminal>] [--title T]\n\
                 \x20     | share send <name|id> --object <summary|rules|triggers|theme|settings|queue> [ids…]\n\
                 \x20     | share send agent-start --to <name|id> --prompt <text> [--agent claude|codex] [--project <its name there> | --session <terminal>]\n\
-                \x20         [--title T] [--wait [--timeout 30m]]\n\
+                \x20         [--title T] [--notes <file>|-] [--wait [--timeout 30m]]\n\
                 \x20     | share send agent-ask --to <name|id> --session <name|id there> --prompt <text> [--wait [--timeout 30m]]\n\
                 \x20     | share answer <id> [--wait] [--timeout 30m]",
         summary: "offer a paired device a message, a snippet, a link, a file or folder, a terminal tab, an agent session, or midna's own things, or start or ask an agent there",
@@ -774,7 +774,10 @@ pub static VERBS: &[Verb] = &[
                   agent-start asks their Mac to start a new agent (Claude by default, or this terminal's agent) in its\n\
                   checkout of this terminal's project (or --session's, or in its project named --project, from anywhere),\n\
                   with --prompt (or words, or stdin) as its first\n\
-                  prompt; nothing runs until they accept. With --wait it waits for that agent's first turn to end and\n\
+                  prompt; nothing runs until they accept. --notes <file> (or - for stdin) hands it notes too (your own\n\
+                  devices only): short ones go in the prompt; longer ones (up to 1 MiB) are fetched like a file once\n\
+                  they accept, saved in their Midna home (nearby/notes/<id>.md), and the prompt tells the agent where.\n\
+                  Their approval shows the notes' size and first lines. With --wait it waits for that agent's first turn to end and\n\
                   prints its last message (cut to 4 KiB; exit 4 if --timeout runs out first; `share answer <id> --wait`\n\
                   waits again). The answer also arrives in the inbox as a message in reply to it (share.answered).\n\
                   agent-ask asks an agent terminal already open on one of your own devices (`peers sessions <device>`\n\

@@ -13,13 +13,15 @@
 //! [`answer`]).
 //!
 //! With `project` the sender names the receiver's project instead, and needs no terminal: the
-//! agent starts in that project's folder wherever the sender is (see `tab.rs`).
+//! agent starts in that project's folder wherever the sender is (see `tab.rs`). With `notes` the
+//! sender hands the new agent notes too (see `notes.rs`).
 use super::share::{self, Entry, Reply};
 use super::tab::{self, Place};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{self as nb, ShareAnswerParams, ShareAnswerResult, ShareDirection, ShareItem, SharePayload, ShareSendParams, ShareState};
 use midna_proto::{AgentKind, RpcError, SessionKind, SessionOpenParams, time};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,9 +30,10 @@ const TITLE_FROM_PROMPT: usize = 48;
 /// How often `share.answer` looks again while it waits.
 const POLL: Duration = Duration::from_millis(200);
 
-/// `share.send` kind `agent_start`: the payload, with the project and directory of terminal
-/// `session` (default the caller's), or the receiver's project named `project`.
-pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePayload, RpcError> {
+/// `share.send` kind `agent_start` for share `id`: the payload, with the project and directory of
+/// terminal `session` (default the caller's), or the receiver's project named `project`; and
+/// the notes file to serve, when the notes go as one.
+pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams, id: &str) -> Result<(SharePayload, Option<PathBuf>), RpcError> {
     if p.text.is_some() || p.url.is_some() || p.reply_to.is_some() || p.path.is_some() || p.object.is_some() || !p.ids.is_empty() {
         return Err(RpcError::bad_params(
             "an agent start takes a `prompt` (and `agent`, `session` or `project`, `title`, `want_reply`), not text, a url, a path or an object",
@@ -43,30 +46,36 @@ pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams) -> Result<SharePayload,
     }
     let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
     let title = tab::title_of(p, &share::cut(first, TITLE_FROM_PROMPT));
+    let (prompt, notes, source) = match p.notes.as_deref() {
+        Some(n) => super::notes::attach(d, id, prompt, n)?,
+        None => (prompt, None, None),
+    };
     let payload = match named {
         Some(name) => {
             let mine = ctx.session.as_deref().and_then(|sid| d.core().state.session(sid).and_then(|s| s.agent));
             let agent = p.agent.or(mine).unwrap_or(AgentKind::Claude);
-            SharePayload::AgentStart { title, agent, project: None, cwd: String::new(), project_name: Some(name), prompt, want_reply: p.want_reply }
+            SharePayload::AgentStart { title, agent, project: None, cwd: String::new(), project_name: Some(name), prompt, want_reply: p.want_reply, notes }
         }
         None => {
-            let sid = p
-                .session
-                .clone()
-                .or_else(|| ctx.session.clone())
-                .ok_or_else(|| RpcError::bad_params("which project? pass `project` (its name on the other Mac) or `session` (a terminal in it here)"))?;
-            let (s, pid) = {
-                let core = d.core();
-                let s = core.state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no terminal {sid}")))?;
-                (s, core.rt.get(&sid).map(|rt| rt.pid))
-            };
+            let (s, pid) = match p.session.clone().or_else(|| ctx.session.clone()) {
+                Some(sid) => {
+                    let core = d.core();
+                    let s = core.state.session(&sid).cloned().ok_or_else(|| RpcError::not_found(format!("no terminal {sid}")));
+                    s.map(|s| (s, core.rt.get(&sid).map(|rt| rt.pid)))
+                }
+                None => Err(RpcError::bad_params("which project? pass `project` (its name on the other Mac) or `session` (a terminal in it here)")),
+            }
+            .inspect_err(|_| super::session::forget(&d.cfg.home, id))?;
             let cwd = crate::git::work_cwd(&s, pid);
             let agent = p.agent.or(s.agent).unwrap_or(AgentKind::Claude);
-            SharePayload::AgentStart { title, agent, project: tab::project_of(&cwd), cwd, project_name: None, prompt, want_reply: p.want_reply }
+            SharePayload::AgentStart { title, agent, project: tab::project_of(&cwd), cwd, project_name: None, prompt, want_reply: p.want_reply, notes }
         }
     };
-    payload.check().map_err(RpcError::bad_params)?;
-    Ok(payload)
+    if let Err(e) = payload.check() {
+        super::session::forget(&d.cfg.home, id);
+        return Err(RpcError::bad_params(e));
+    }
+    Ok((payload, source))
 }
 
 /// For an agent start's guard and approval: a one-line summary (the prompt's first line), then
@@ -81,8 +90,9 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
     };
     let first = prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
     let back = if *want_reply { " Its answer comes back when its first turn ends." } else { "" };
+    let notes = super::notes::words(payload).map(|w| format!("\n\n{w}")).unwrap_or_default();
     format!(
-        "Prompt: {}\n\n{}\n\n{} in {place}.{back}",
+        "Prompt: {}\n\n{}{notes}\n\n{} in {place}.{back}",
         share::cut(first, 80),
         share::cut(prompt.trim(), shown),
         super::session::agent_name(*agent)
@@ -92,7 +102,7 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
 /// Accept an incoming agent start: open a new agent terminal where it maps to (or `chosen`)
 /// with its prompt. Returns what it did, for the share's `result`, and the new terminal.
 pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) -> Result<(String, String), RpcError> {
-    let SharePayload::AgentStart { title, agent, prompt, want_reply, .. } = &it.payload else { return Err(RpcError::bad_params("not an agent start")) };
+    let SharePayload::AgentStart { prompt, .. } = &it.payload else { return Err(RpcError::bad_params("not an agent start")) };
     if it.state == ShareState::Accepted {
         // Accepting it again would run the prompt again.
         let did = it.result.clone().unwrap_or_else(|| "started".into());
@@ -103,6 +113,13 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) ->
         None => tab::place(d, &it.payload),
     };
     place.usable()?;
+    start(d, ctx, it, &place, prompt)
+}
+
+/// Open agent start `it`'s new agent terminal at `place` with `prompt` as its first. What it
+/// did, and the new terminal.
+pub(super) fn start(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, place: &Place, prompt: &str) -> Result<(String, String), RpcError> {
+    let SharePayload::AgentStart { title, agent, want_reply, .. } = &it.payload else { return Err(RpcError::bad_params("not an agent start")) };
     let here = place.here();
     let params = SessionOpenParams {
         project_id: Some(place.project_id(d)),
@@ -111,7 +128,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) ->
         name: Some(title.clone()),
         cwd: place.dir().map(str::to_string),
         command: None,
-        prompt: Some(prompt.clone()),
+        prompt: Some(prompt.to_string()),
         agent_args: vec![],
         resume: None,
         cols: None,
@@ -286,6 +303,7 @@ mod tests {
             project_name: None,
             prompt: "Why?".into(),
             want_reply: true,
+            notes: None,
         };
         let text = describe(&p, 2000);
         assert!(text.starts_with("Prompt: Why?\n\nWhy?\n\nClaude Code in github.com/a/b/src (in /w/b/src).") && text.contains("answer comes back"), "{text}");

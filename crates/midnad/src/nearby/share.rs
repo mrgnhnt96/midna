@@ -12,7 +12,7 @@
 //! declining owes the sender a [`Wire::ShareResult`], delivered at once if it can be seen and
 //! retried while it can't. Accepting a file share starts fetching its files ([`super::transfer`]).
 use super::transport::{self, Wire};
-use super::{agent_ask, agent_start, identity, link, objects, session, tab, transfer};
+use super::{agent_ask, agent_start, identity, link, notes, objects, session, tab, transfer};
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, R, ok};
 use midna_proto::nearby::{
@@ -136,9 +136,9 @@ impl Inbox {
             let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && !owes(e) && !moving(e));
             let Some(at) = done.or_else(|| self.items.iter().position(|e| !moving(e))) else { return };
             let gone = self.items.remove(at);
-            // An agent session's transcript snapshot goes with it.
+            // An agent session's transcript snapshot, or an agent start's notes, go with it.
             if gone.item.direction == ShareDirection::Outgoing
-                && matches!(gone.item.payload, SharePayload::Agent { .. })
+                && matches!(gone.item.payload, SharePayload::Agent { .. } | SharePayload::AgentStart { .. })
                 && let Some(home) = self.path.parent().and_then(Path::parent)
             {
                 super::session::forget(home, &gone.item.id);
@@ -170,6 +170,8 @@ fn kept_bytes(it: &ShareItem) -> u64 {
         SharePayload::File { files, dirs, .. } => files.iter().map(|f| 80 + f.path.len() as u64).chain(dirs.iter().map(|d| d.len() as u64)).sum(),
         // The transcript isn't kept here, only what names it.
         SharePayload::Agent { .. } => 1024,
+        // Nor are an agent start's notes, only their first lines.
+        SharePayload::AgentStart { prompt, notes: Some(n), .. } => (prompt.len() + n.head.len()) as u64 + 1024,
         _ => it.size,
     }
 }
@@ -216,21 +218,22 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
             let (payload, copy) = session::snapshot(d, ctx, &p, &id)?;
             (payload, Some(copy))
         }
-        ShareKind::AgentStart => (agent_start::build(d, ctx, &p)?, None),
+        ShareKind::AgentStart => agent_start::build(d, ctx, &p, &id)?,
         _ => (p.payload().map_err(RpcError::bad_params)?, None),
     };
     let fp = p.peer.trim().to_lowercase();
-    if payload.project_name().is_some() {
-        let tier = d.nearby.inner().store(&d.cfg.home).get(&fp).map(|s| (s.tier, s.name.clone()));
-        if let Some((Tier::Contact, name)) = tier {
-            return Err(RpcError::refused(format!("{name} is kept as a contact: only your own devices open things in a project by name")));
-        }
-    }
-    // An agent session's transcript snapshot goes if the offer does.
+    // An agent session's transcript snapshot, or an agent start's notes, go if the offer does.
     let dropped = |e: RpcError| {
         session::forget(&d.cfg.home, &id);
         e
     };
+    if payload.project_name().is_some() {
+        let tier = d.nearby.inner().store(&d.cfg.home).get(&fp).map(|s| (s.tier, s.name.clone()));
+        if let Some((Tier::Contact, name)) = tier {
+            return Err(dropped(RpcError::refused(format!("{name} is kept as a contact: only your own devices open things in a project by name"))));
+        }
+    }
+    notes::may_send(d, &fp, p.notes.is_some()).map_err(dropped)?;
     super::guard::send(d, ctx, &payload, &fp).map_err(dropped)?;
     ok(offer(d, &fp, id.clone(), payload, source, ctx.actor(), true).map_err(dropped)?)
 }
@@ -333,6 +336,9 @@ pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire
         return refuse(&e);
     }
     if let Err(e) = tab::admit(d, from, &payload) {
+        return refuse(&e);
+    }
+    if let Err(e) = notes::admit(d, from, &payload) {
         return refuse(&e);
     }
     let name = peer_name(d, from);
@@ -544,11 +550,16 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
             let agent = session::agent_name(*agent);
             let back = if *want_reply { format!(", and sends {name} its answer when its first turn ends") } else { String::new() };
             let SharePayload::AgentStart { prompt, .. } = &it.payload else { unreachable!() };
+            let (notes, fetch) = match notes::words(&it.payload) {
+                Some(w) => (format!("\n\n{w}"), format!("fetches the notes into {}, then ", notes::saved_path(&d.cfg.home, &it.id).display())),
+                None => (String::new(), String::new()),
+            };
+            let pointed = if fetch.is_empty() { "" } else { " (pointing it at the notes)" };
             (
                 format!("{name} asks {agent} here: {}", first_line(prompt)),
                 format!(
-                    "{}\n\n{} Approving opens a new {agent} terminal there and gives it this prompt{back}; nothing runs \
-                     before. To open it in another folder: midna inbox accept {} --cwd <dir>",
+                    "{}{notes}\n\n{} Approving {fetch}opens a new {agent} terminal there and gives it this prompt{pointed}{back}; \
+                     nothing runs before. To open it in another folder: midna inbox accept {} --cwd <dir>",
                     cut(prompt, 2000),
                     tab::place(d, &it.payload).words(&it.payload),
                     it.id
@@ -662,6 +673,8 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
     }
     let file = matches!(it.payload, SharePayload::File { .. });
     let agent = matches!(it.payload, SharePayload::Agent { .. });
+    // An agent start with a notes file starts once they are here.
+    let with_notes = matches!(it.payload, SharePayload::AgentStart { notes: Some(_), .. });
     if p.cwd.is_some() && !matches!(it.payload, SharePayload::Tab { .. } | SharePayload::Agent { .. } | SharePayload::AgentStart { .. }) {
         return Err(RpcError::bad_params("only a tab, an agent session or an agent start takes a `cwd`"));
     }
@@ -738,9 +751,13 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
             if p.session.is_some() {
                 return Err(RpcError::bad_params("an agent start opens as a new terminal; `cwd` picks its folder"));
             }
-            let (result, sid) = agent_start::open(d, ctx, &it, p.cwd.as_deref())?;
-            watch = want_reply.then_some(sid);
-            result
+            if with_notes {
+                notes::accepting(d, &it, p.cwd.as_deref())?
+            } else {
+                let (result, sid) = agent_start::open(d, ctx, &it, p.cwd.as_deref())?;
+                watch = want_reply.then_some(sid);
+                result
+            }
         }
         SharePayload::AgentAsk { want_reply, .. } => {
             if p.session.is_some() {
@@ -781,7 +798,7 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         } else if e.item.state == ShareState::Declined {
             return Err(RpcError::conflict(format!("{} was declined", p.id)));
         }
-        if agent && e.item.transfer.as_ref().is_none_or(|t| t.state == TransferState::Failed) {
+        if (agent || with_notes) && e.item.transfer.as_ref().is_none_or(|t| t.state == TransferState::Failed) {
             e.open_in = p.cwd.clone();
         }
         e.item.result = Some(result);
@@ -801,7 +818,7 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
         emit(d, kinds::SHARE_ACCEPTED, ctx.actor(), &item);
         nudge(d);
     }
-    if file || agent {
+    if file || agent || with_notes {
         transfer::begin(d, &item.id);
         return ok(incoming_item(d, &item.id).unwrap_or(item));
     }
