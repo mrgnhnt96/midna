@@ -7,7 +7,8 @@
 //! - `MIDNA_SELECT=<session id>` — initial selection; `MIDNA_W` / `MIDNA_H` — window size.
 //! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|more-menu|system-upgrade|system-overload[-midna]|send-image[-drop]` — screenshot states.
 //! - `MIDNA_DEBUG_REMOTE=1|<name>` — also open another of my Macs' window (the fake's second Mac).
-//! - `MIDNA_FAKE_LINK=finding|proving|loading` — hold that window on a connecting step.
+//! - `MIDNA_FAKE_LINK=finding|proving|loading` — hold that window on a connecting step;
+//!   `reconnecting|offline` — its link drops 3 s in (`offline`: the pill's Mac tab goes asleep).
 //! - `MIDNA_FAKE_NEEDS=<n>` / `MIDNA_FAKE_MAC_NEEDS=<n>` — keep that many needs-you items on this
 //!   Mac / the Mac mini (the other Macs get none); `MIDNA_FAKE_MAC_ARRIVE=<s>` — one comes in on
 //!   the Mac mini after that.
