@@ -8,7 +8,6 @@ use crate::actions::CTX_MAIN;
 use crate::app::MainWindow;
 use crate::icons::Icon;
 use crate::terminal::TerminalView;
-use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::collections::HashMap;
@@ -88,8 +87,8 @@ impl PopOut {
 }
 
 impl Render for PopOut {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>().clone();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = crate::theme::of(window, cx).clone();
         let tray = crate::ui::annotate::tray(&self.session, &t, cx, |p, _, w, cx| p.open_sheet(w, cx), |p, w, cx| p.focus_term(w, cx));
         let on = self.on_top;
         let pill = div()
@@ -194,6 +193,7 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
     }
     m.release(&session, window, cx);
     let (main, backend) = (cx.entity().downgrade(), m.backend.clone());
+    let mac = backend.mac().map(|x| x.peer.clone());
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(720.), px(440.)), cx))),
         titlebar: Some(TitlebarOptions { title: Some(format!("midna · {session}").into()), appears_transparent: true, traffic_light_position: Some(point(px(10.), px(9.))) }),
@@ -204,7 +204,10 @@ pub fn open(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut C
     let id = session.clone();
     let opened = cx.open_window(opts, |window, cx| {
         set_level(window, true);
+        crate::theme::window_shows(window, mac.as_deref(), cx);
+        let window_id = window.window_handle().window_id();
         cx.new(|cx| {
+            cx.on_release(move |_: &mut PopOut, cx| crate::theme::window_closed(window_id, cx)).detach();
             let queue = cx.new(|cx| crate::ui::queue::QueueView::new(backend.clone(), cx));
             let term = cx.new(|cx| TerminalView::new(id.clone(), backend, window, cx));
             let fh = term.read(cx).focus_handle().clone();

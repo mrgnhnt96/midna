@@ -333,7 +333,7 @@ impl TerminalView {
     /// Like [`Self::new`], attaching at `size` (cols, rows) when known: switching terminals in
     /// the same pane reuses the pane's measured size, so the PTY isn't resized twice.
     pub fn new_sized(session_id: String, backend: Arc<dyn Backend>, size: (u16, u16), window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let theme = cx.global::<Theme>().clone();
+        let theme = crate::theme::of(window, cx).clone();
         let font_family = theme.mono_font.clone();
         let ts = window.text_system();
         let fid = ts.resolve_font(&font(font_family.clone()));
@@ -2732,7 +2732,7 @@ impl Render for TerminalView {
                 *m = FpsMeter { since: Instant::now(), frames: 0, renders: 0, rows: 0 };
             }
         }
-        let theme = cx.global::<Theme>().clone();
+        let theme = crate::theme::of(window, cx).clone();
         if theme.mono_font != self.font_family {
             self.font_family = theme.mono_font.clone();
             GLYPHS.with(|g| g.borrow_mut().clear());

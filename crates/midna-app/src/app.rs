@@ -138,6 +138,9 @@ pub struct MainWindow {
     pub twilight_lights: bool,
     /// The opening hasn't revealed the whole window yet (see-through, masked, no chrome).
     pub twilight_masked: bool,
+    /// Another Mac's window: that Mac's themes (`themes.list`), its custom ones too. None until
+    /// they arrive, or when that Mac can't send them; its theme then comes from this Mac's copy.
+    pub mac_themes: Option<Vec<midna_proto::themes::ThemeDef>>,
     pub triggers_count: usize,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
@@ -296,11 +299,17 @@ impl MainWindow {
         let intro = crate::ui::twilight::wanted();
         if !intro {
             window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-            crate::ui::twilight::native_bg(window, cx.global::<Theme>().bg);
+            crate::ui::twilight::native_bg(window, crate::theme::of(window, cx).bg);
         }
         let id = cx.entity_id();
         let windows = crate::windows::register(cx.weak_entity(), id, crate::backend::mac_id(&*backend), window, cx);
-        cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
+        crate::theme::window_shows(window, backend.mac().map(|m| m.peer.as_str()), cx);
+        let window_id = window.window_handle().window_id();
+        cx.on_release(move |m: &mut MainWindow, cx| {
+            crate::windows::closed(m.id, cx);
+            crate::theme::window_closed(window_id, cx);
+        })
+        .detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| weak.update(cx, |m, cx| crate::ui::close_window::should_close(m, window, cx)).unwrap_or(true));
         cx.observe_window_bounds(window, |_, _, cx| crate::windows::save_soon(cx)).detach();
@@ -334,11 +343,17 @@ impl MainWindow {
         }));
         cx.observe_window_appearance(window, |m, window, cx| m.apply_theme(window, cx)).detach();
         // Custom theme files ($MIDNA_HOME/themes) are edited by hand or by agents: follow them live.
+        // Another Mac's window asks that Mac for its themes now and then instead.
         tasks.push(cx.spawn_in(window, async move |this, cx| {
+            let mut tick = 0u32;
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
+                tick += 1;
+                if tick % 5 == 0 && this.update_in(cx, |m, window, cx| m.fetch_mac_themes(window, cx)).is_err() {
+                    break;
+                }
                 let gone = this.update_in(cx, |m, window, cx| {
-                    if crate::theme::themes_changed(&m.home()) {
+                    if !m.remote() && crate::theme::themes_changed(&m.home()) {
                         m.apply_theme(window, cx);
                     }
                 });
@@ -429,6 +444,7 @@ impl MainWindow {
             twilight_overlay: None,
             twilight_lights: true,
             twilight_masked: false,
+            mac_themes: None,
             selected: crate::dev::var("MIDNA_SELECT").ok(),
             history: Default::default(),
             navigating: false,
@@ -536,14 +552,61 @@ impl MainWindow {
     }
 
     pub fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The theme is this Mac's: another Mac's window shows in it for now.
         if self.remote() {
-            return;
+            return self.apply_mac_theme(window, cx);
         }
         // Re-reads custom theme files when they changed (`theme_def` then uses the cache).
         crate::theme::all_themes(&self.home());
         let def = self.resolve_theme(window);
         self.show_theme(&def, window, cx);
+    }
+
+    /// Another Mac's window shows that Mac's theme and look settings (its `settings.get` and
+    /// `themes.list`), in this window only. A theme neither Mac has keeps this Mac's.
+    fn apply_mac_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mac) = self.backend.mac().map(|m| m.peer.clone()) else { return };
+        if self.settings.is_empty() {
+            return;
+        }
+        let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        let s = |k: &str| self.setting_str(k).unwrap_or_default();
+        let id = midna_proto::themes::choose(&s("theme"), &s("theme.dark"), &s("theme.light"), system_dark);
+        let rules: Vec<String> = match self.settings.get("theme.colors") {
+            Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            _ => vec![],
+        };
+        let mine = cx.global::<Theme>().clone();
+        let def = crate::theme::resolve_mac(self.mac_themes.as_deref(), &id, &rules).unwrap_or_else(|| mine.def.clone());
+        let mut t = Theme::from_def(&def, mine.ui_font.clone(), mine.mono_font.clone());
+        t.compact = self.compact();
+        let bg = t.bg;
+        crate::theme::set_mac(&mac, t, cx);
+        if !self.twilight_masked {
+            crate::ui::twilight::native_bg(window, bg);
+        }
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Fetch another Mac's themes (`themes.list`), then show its theme again when they changed.
+    pub fn fetch_mac_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.remote() {
+            return;
+        }
+        let backend = self.backend.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx.background_executor().spawn(async move { backend.call("themes.list", serde_json::json!({})) }).await;
+            let Ok(v) = res else { return };
+            let Ok(list) = serde_json::from_value::<midna_proto::ThemesListResult>(v) else { return };
+            let defs: Vec<_> = list.themes.iter().filter_map(crate::theme::from_info).collect();
+            let _ = this.update_in(cx, |m, window, cx| {
+                if m.mac_themes.as_ref() != Some(&defs) {
+                    m.mac_themes = Some(defs);
+                    m.apply_theme(window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn show_theme(&mut self, def: &midna_proto::themes::ThemeDef, window: &mut Window, cx: &mut Context<Self>) {
@@ -604,6 +667,7 @@ impl MainWindow {
                         crate::ui::notifications::fetch(self, cx);
                         crate::ui::share::fetch(self, cx);
                         crate::ui::summary::fetch(self, cx);
+                        self.fetch_mac_themes(window, cx);
                         if !was_connected {
                             // re-attach after a reconnect (the split pane and pop-outs
                             // re-attach themselves, see TerminalView::watch_stream)

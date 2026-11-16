@@ -139,7 +139,7 @@ impl SidebarView {
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let anim = self.anim;
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         self.main.update(cx, |m, cx| render(m, &t, anim, window, cx)).unwrap_or_else(|_| div().into_any_element())
     }
 }

@@ -5,7 +5,8 @@
 //! `fake-engine` feature) runs a real PTY + libghostty engine per session so the terminal
 //! pane, keyboard input and resize can be exercised without the daemon.
 //!
-//! `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` overrides initial settings.
+//! `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` overrides initial settings;
+//! `MIDNA_FAKE_MAC_SETTINGS` the other Mac's (`theme=ember` is a theme only it has).
 //! `MIDNA_FAKE_MANY=N` adds N projects with three terminals each and N with only Summary
 //! records, for timing a long sidebar (`MIDNA_DEBUG_TERM=benchwheel:…`).
 use super::{AttachRequest, Backend, BackendEvent, ConnState, Mac, TermStream};
@@ -495,16 +496,7 @@ impl FakeBackend {
             }
         }
         let mut settings = settings_catalog();
-        if let Ok(over) = crate::dev::var("MIDNA_FAKE_SETTINGS") {
-            for kv in over.split(',') {
-                if let Some((k, v)) = kv.split_once('=')
-                    && let Some(s) = settings.iter_mut().find(|s| s.key == k.trim())
-                {
-                    // lists use `|`: ui.status.items=daemon|spacer|script
-                    s.value = if s.value.is_array() { json!(v.split('|').map(str::trim).filter(|x| !x.is_empty()).collect::<Vec<_>>()) } else { json!(v.trim()) };
-                }
-            }
-        }
+        override_settings(&mut settings, "MIDNA_FAKE_SETTINGS");
         let scripts: HashMap<String, String> = [
             (
                 "a1f00001",
@@ -605,9 +597,35 @@ impl FakeBackend {
                 _ => false,
             });
             st.scripts = std::mem::take(&mut st.scripts).into_iter().map(|(k, v)| (id(&k), v)).collect();
+            st.settings = settings_catalog();
+            override_settings(&mut st.settings, "MIDNA_FAKE_MAC_SETTINGS");
         }
         FakeBackend { st: b.st.clone(), mac: Some((mac, local)) }
     }
+}
+
+/// `var` (`theme=light,density=compact`) over `settings`; lists use `|`
+/// (`ui.status.items=daemon|spacer|script`).
+fn override_settings(settings: &mut [SettingEntry], var: &str) {
+    let Ok(over) = crate::dev::var(var) else { return };
+    for kv in over.split(',') {
+        if let Some((k, v)) = kv.split_once('=')
+            && let Some(s) = settings.iter_mut().find(|s| s.key == k.trim())
+        {
+            s.value = if s.value.is_array() { json!(v.split('|').map(str::trim).filter(|x| !x.is_empty()).collect::<Vec<_>>()) } else { json!(v.trim()) };
+        }
+    }
+}
+
+/// A custom theme only the fake's other Mac has (`MIDNA_FAKE_MAC_SETTINGS=theme=ember`).
+fn mac_only_theme() -> midna_proto::themes::ThemeDef {
+    let mut t = midna_proto::themes::builtin("gruvbox").expect("built-in");
+    t.id = "ember".into();
+    t.name = "Ember".into();
+    for (k, c) in [("bg", "#1C120E"), ("panel", "#24170F"), ("raised", "#2E1D13"), ("line", "#4A2E1E"), ("accent", "#FF8A3D"), ("accent-fg", "#1C120E")] {
+        midna_proto::themes::apply_overrides(&mut t, &[format!("{k} = {c}")]);
+    }
+    t
 }
 
 impl FakeState {
@@ -822,6 +840,23 @@ impl Backend for FakeBackend {
                 }
             }
             "script.click" => json!([{"text": "Deployed", "tone": "ok", "icon": "check", "tooltip": "Preview is live"}]),
+            "themes.list" => {
+                let mut all = midna_proto::themes::builtins();
+                if self.mac.is_some() {
+                    all.push(mac_only_theme());
+                }
+                let (dark, light) = (midna_proto::themes::DEFAULT_DARK.to_string(), midna_proto::themes::DEFAULT_LIGHT.to_string());
+                serde_json::to_value(midna_proto::ThemesListResult {
+                    themes: all.iter().map(|t| t.info()).collect(),
+                    errors: vec![],
+                    dir: "(fake)".into(),
+                    setting: "system".into(),
+                    dark,
+                    light,
+                    showing: None,
+                    format: String::new(),
+                })?
+            }
             "settings.set" => {
                 let key = p("key").ok_or_else(|| anyhow!("key required"))?;
                 let value = params.get("value").cloned().unwrap_or(Value::Null);

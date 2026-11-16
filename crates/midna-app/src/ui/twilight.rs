@@ -18,7 +18,6 @@
 //! overrides the system setting, `MIDNA_DEBUG_SCREEN=twilight` replays it.
 use crate::app::MainWindow;
 use crate::icons::Icon;
-use crate::theme::Theme;
 use midna_proto::themes::ThemeDef;
 use crate::ui::setup_screen::{self as ss, CELL, EXPOSE_AT, Model, OPEN_ORIGIN, PER_CELL_MS, RIPPLE_MS, rgb};
 use gpui_kit::prelude::*;
@@ -239,7 +238,7 @@ pub fn start(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindo
     m.twilight_setup = ss::active(m);
     m.twilight_clock = Rc::new(Clock::default());
     let size = window.viewport_size();
-    let md = Model::bare(&cx.global::<Theme>().def, f32::from(size.width), f32::from(size.height));
+    let md = Model::bare(&crate::theme::of(window, cx).def, f32::from(size.width), f32::from(size.height));
     let (cols, rows) = md.cells(CELL, CELL);
     m.twilight_total = if m.twilight_reduced {
         REDUCED_MS
@@ -279,7 +278,7 @@ pub fn first_frame(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Mai
         cx.background_executor().timer(revealed_at).await;
         let _ = this.update_in(cx, |m, window, cx| {
             if m.twilight_seq == seq {
-                restore(m, window, cx.global::<Theme>().bg);
+                restore(m, window, crate::theme::of(window, cx).bg);
             }
         });
         cx.background_executor().timer(length.saturating_sub(revealed_at)).await;
@@ -318,7 +317,7 @@ fn restore(m: &mut MainWindow, window: &Window, bg: Hsla) {
 }
 
 fn finish(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
-    restore(m, window, cx.global::<Theme>().bg);
+    restore(m, window, crate::theme::of(window, cx).bg);
     m.twilight_phase = Phase::Off;
     // The opening already brought the card in.
     m.onboarding.card_seq_opened = m.onboarding.card_seq;
@@ -350,7 +349,7 @@ fn open_overlay(m: &MainWindow, window: &Window, cx: &mut Context<MainWindow>) -
         inactive_frame_interval: None,
         ..Default::default()
     };
-    let (clock, reduced, def, main) = (m.twilight_clock.clone(), m.twilight_reduced, cx.global::<Theme>().def.clone(), window.window_handle());
+    let (clock, reduced, def, main) = (m.twilight_clock.clone(), m.twilight_reduced, crate::theme::of(window, cx).def.clone(), window.window_handle());
     let main_view = ns_view_ptr(window)? as usize;
     cx.open_window(opts, |window, cx| {
         click_through(window);

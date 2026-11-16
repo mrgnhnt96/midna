@@ -2,6 +2,7 @@
 //! `theme.colors` overrides), and font families.
 use gpui_kit::*;
 use midna_proto::themes::{self, ThemeDef};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -133,6 +134,72 @@ impl Theme {
     }
 }
 
+/// The themes other Macs' windows show (each Mac's own theme and look settings, resolved by its
+/// window), and which windows show which Mac. Every other window shows this Mac's [`Theme`].
+#[derive(Default)]
+pub struct MacThemes {
+    themes: HashMap<String, Theme>,
+    windows: Vec<(AnyWindowHandle, String)>,
+}
+
+impl Global for MacThemes {}
+
+/// The theme `window` shows: its Mac's when it shows another Mac, else this Mac's.
+pub fn of<'a>(window: &Window, cx: &'a App) -> &'a Theme {
+    let id = window.window_handle().window_id();
+    cx.try_global::<MacThemes>()
+        .and_then(|m| m.windows.iter().find(|(w, _)| w.window_id() == id).and_then(|(_, mac)| m.themes.get(mac)))
+        .unwrap_or_else(|| cx.global::<Theme>())
+}
+
+/// `window` shows `mac` (a paired Mac's peer id; None: this Mac) from now on.
+pub fn window_shows(window: &Window, mac: Option<&str>, cx: &mut App) {
+    let handle = window.window_handle();
+    let m = cx.default_global::<MacThemes>();
+    m.windows.retain(|(w, _)| w.window_id() != handle.window_id());
+    if let Some(mac) = mac {
+        m.windows.push((handle, mac.to_string()));
+    }
+}
+
+/// `window` closed.
+pub fn window_closed(id: WindowId, cx: &mut App) {
+    let m = cx.default_global::<MacThemes>();
+    m.windows.retain(|(w, _)| w.window_id() != id);
+    let shown: Vec<String> = m.windows.iter().map(|(_, mac)| mac.clone()).collect();
+    m.themes.retain(|mac, _| shown.contains(mac));
+}
+
+/// Show `t` in every window of `mac` (the one that called this redraws itself).
+pub fn set_mac(mac: &str, t: Theme, cx: &mut App) {
+    let m = cx.default_global::<MacThemes>();
+    if m.themes.get(mac).is_some_and(|old| old.def == t.def && old.compact == t.compact && old.ui_font == t.ui_font && old.mono_font == t.mono_font) {
+        return;
+    }
+    m.themes.insert(mac.to_string(), t);
+    let wins: Vec<AnyWindowHandle> = m.windows.iter().filter(|(_, x)| x == mac).map(|(w, _)| *w).collect();
+    for w in wins {
+        let _ = w.update(cx, |_, window, _| window.refresh());
+    }
+}
+
+/// A theme as another Mac's `themes.list` sends it.
+pub fn from_info(i: &themes::ThemeInfo) -> Option<ThemeDef> {
+    let ui: Vec<String> = themes::UI_TOKENS.iter().map(|k| i.colors.get(*k).cloned()).collect::<Option<_>>()?;
+    let v = serde_json::json!({ "id": i.id, "name": i.name, "dark": i.kind == "dark", "ui": ui, "ansi": i.terminal });
+    ThemeDef::from_cache(&v)
+}
+
+/// The theme another Mac's settings pick: `id` from that Mac's themes (`themes.list`; None
+/// before it arrives), else this Mac's copy of it, with that Mac's `theme.colors` applied. A
+/// theme neither has is None: the window keeps this Mac's theme.
+pub fn resolve_mac(mac_themes: Option<&[ThemeDef]>, id: &str, rules: &[String]) -> Option<ThemeDef> {
+    let local = cached_themes();
+    let mut t = mac_themes.and_then(|all| all.iter().find(|t| t.id == id)).or_else(|| local.iter().find(|t| t.id == id)).cloned()?;
+    themes::apply_overrides(&mut t, rules);
+    Some(t)
+}
+
 /// The theme for the first frames, before the daemon's settings arrive: the one shown last
 /// (`app-state.json` "theme", written by `MainWindow::show_theme`), else Twilight or Daylight
 /// by the macOS appearance. No flash of the wrong colors on launch.
@@ -224,4 +291,69 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
     let ui = if has(UI_FONT) { UI_FONT } else { UI_FALLBACK };
     let mono = if has(MONO_FONT) { MONO_FONT } else { MONO_FALLBACK };
     (ui.into(), mono.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn theme(id: &str) -> Theme {
+        Theme::from_def(&themes::builtin(id).unwrap(), "ui".into(), "mono".into())
+    }
+
+    struct Probe;
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[test]
+    fn another_macs_themes_come_over_as_data() {
+        let mut custom = themes::builtin("nord").unwrap();
+        custom.id = "ember".into();
+        custom.name = "Ember".into();
+        custom.ui[0] = [28, 18, 14];
+        for t in [themes::builtin("dracula").unwrap(), custom.clone()] {
+            let back = from_info(&t.info()).unwrap();
+            assert_eq!((back.id.as_str(), back.dark, back.ui, back.ansi), (t.id.as_str(), t.dark, t.ui, t.ansi));
+        }
+        let mut broken = custom.info();
+        broken.colors.remove("bg");
+        assert!(from_info(&broken).is_none(), "a theme missing a color isn't shown");
+    }
+
+    #[test]
+    fn another_macs_theme_falls_back_never_fails() {
+        let mut ember = themes::builtin("nord").unwrap();
+        ember.id = "ember".into();
+        let list = vec![ember.clone()];
+        assert_eq!(resolve_mac(Some(&list), "ember", &[]).map(|t| t.ui), Some(ember.ui), "that Mac's own theme");
+        assert_eq!(resolve_mac(None, "gruvbox", &[]).map(|t| t.id), Some("gruvbox".into()), "this Mac's copy before its list arrives");
+        assert!(resolve_mac(None, "ember", &[]).is_none(), "neither Mac has it: this Mac's theme shows");
+        let red = resolve_mac(Some(&list), "ember", &["accent = #FF0000".into(), "nord:bg = #000000".into()]).unwrap();
+        assert_eq!(red.get("accent"), Some([255, 0, 0]), "that Mac's theme.colors apply");
+        assert_eq!(red.get("bg"), ember.get("bg"), "a rule for another theme doesn't");
+    }
+
+    #[gpui_kit::test]
+    fn only_that_macs_windows_show_its_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(theme("twilight")));
+        let here = cx.add_window(|_, _| Probe);
+        let there = cx.add_window(|_, _| Probe);
+        let other = cx.add_window(|_, _| Probe);
+        let shows = |w: WindowHandle<Probe>, cx: &mut TestAppContext| w.update(cx, |_, window, cx| of(window, cx).id.clone()).unwrap();
+        there.update(cx, |_, window, cx| window_shows(window, Some("mini"), cx)).unwrap();
+        other.update(cx, |_, window, cx| window_shows(window, Some("studio"), cx)).unwrap();
+        assert_eq!(shows(there, cx), "twilight", "this Mac's theme until that Mac's arrives");
+        cx.update(|cx| set_mac("mini", theme("gruvbox"), cx));
+        assert_eq!((shows(here, cx), shows(there, cx), shows(other, cx)), ("twilight".into(), "gruvbox".into(), "twilight".into()));
+        cx.update(|cx| cx.set_global(theme("daylight")));
+        assert_eq!((shows(here, cx), shows(there, cx)), ("daylight".into(), "gruvbox".into()), "this Mac's theme changes only its windows");
+        let id = there.update(cx, |_, window, _| window.window_handle().window_id()).unwrap();
+        cx.update(|cx| window_closed(id, cx));
+        assert!(cx.update(|cx| cx.global::<MacThemes>().themes.is_empty()), "a Mac's theme goes with its last window");
+    }
 }

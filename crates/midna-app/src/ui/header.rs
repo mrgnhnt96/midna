@@ -420,8 +420,8 @@ pub fn tip_setting(text: impl Into<SharedString>, values: Vec<SharedString>, key
 }
 
 impl Render for Tip {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = crate::theme::of(window, cx);
         // long text wraps in a card; a short tip, or one with keys, stays one line
         if self.keys.is_empty() && (!self.footer.is_empty() || self.text.chars().count() > super::tooltip::LONG) {
             return super::tooltip::card(t, &self.text, &self.values, &self.footer);
