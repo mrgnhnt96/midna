@@ -11,7 +11,8 @@
 //!
 //! **That Mac** ([`serve`], when a paired connection sends `drive_open`): registers the link with
 //! [`drive::open`] (refused unless that device may drive this Mac), then serves each stream as an
-//! ordinary client connection ([`crate::conn::serve_peer`]: agent role, actor `via: peer`). The
+//! ordinary client connection ([`crate::conn::serve_peer`]: the human here, actor `via: peer`, minus
+//! [`super::local_only`]). The
 //! permission is checked again on every message, and [`drive::changed`] cuts the link through
 //! its closer.
 //!

@@ -243,6 +243,8 @@ pub fn call(d: &Arc<Daemon>, ctx: &Ctx, method: &str, mut params: Value) -> R {
         Err(RpcError::conflict("midnad is upgrading/restarting; reconnect and retry in a moment"))
     } else if spec.stub {
         Err(RpcError::new(NOT_IMPLEMENTED, format!("{method} is not implemented yet (later phase)")))
+    } else if let Some(e) = crate::nearby::local_only::refusal(d, ctx, method, &params) {
+        Err(e)
     } else if spec.human_only && !ctx.is_human() && !project::agent_may_remove(d, method, &params) && !updates::agent_may_install(d, method) {
         Err(human_only_refusal(d, ctx, method, &params))
     } else if ctx.no_wait && spec.mutating && ctx.detached.is_none() {

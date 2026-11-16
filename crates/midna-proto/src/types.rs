@@ -63,10 +63,14 @@ impl Actor {
     pub fn trigger_run(id: &str, name: &str) -> Actor {
         Actor { via: Some("run".into()), ..Actor::trigger(id, name) }
     }
-    /// A connection carried over a drive link from paired device `fingerprint`. Agent level for
-    /// now: nothing human only works over a link yet.
+    /// The person at paired device `fingerprint`, driving this Mac over a drive link: the human
+    /// here, except for what is local-only (midnad `nearby/local_only.rs`).
     pub fn peer(fingerprint: &str) -> Actor {
-        Actor { via: Some("peer".into()), peer: Some(fingerprint.to_string()), ..Actor::agent(None) }
+        Actor { via: Some("peer".into()), peer: Some(fingerprint.to_string()), ..Actor::human() }
+    }
+    /// The paired device's fingerprint when this is the person driving over a drive link.
+    pub fn drive_peer(&self) -> Option<&str> {
+        self.peer.as_deref().filter(|_| self.is_human() && self.via.as_deref() == Some("peer"))
     }
     pub fn is_human(&self) -> bool {
         self.kind == ActorKind::Human

@@ -2053,26 +2053,26 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     let listed = call(&mut ha, "drive.list", json!({}));
     assert_eq!((listed["links"][0]["link"].as_str(), listed["links"][0]["state"].as_str()), (Some(id.as_str()), Some("connected")), "{listed}");
 
-    // The socket speaks midnad.sock's protocol, answered by B as an agent acting via peer A.
+    // The socket speaks midnad.sock's protocol, answered by B as its human, acting via peer A.
     let tab = call(&mut hb, "session.open", json!({ "kind": "shell", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
     let mut there = Client::connect(&socket).unwrap();
     let info = call(&mut there, "daemon.info", json!({}));
-    assert_eq!((info["home"].as_str(), info["role"].as_str()), (Some(b.home.to_str().unwrap()), Some("agent")), "{info}");
+    assert_eq!((info["home"].as_str(), info["role"].as_str()), (Some(b.home.to_str().unwrap()), Some("human")), "{info}");
     let tabs = call(&mut there, "session.list", json!({}));
     assert!(tabs.as_array().unwrap().iter().any(|s| s["id"] == tab.as_str()), "{tabs}");
     call(&mut there, "notify.send", json!({ "title": "from A" }));
     let posted = events(&mut hb, kinds::AUDIT).into_iter().rfind(|e| e["data"]["method"] == "notify.send").expect("audited");
     let by = &posted["actor"];
-    assert_eq!((by["kind"].as_str(), by["via"].as_str(), by["peer"].as_str()), (Some("agent"), Some("peer"), Some(fa.as_str())), "{posted}");
+    assert_eq!((by["kind"].as_str(), by["via"].as_str(), by["peer"].as_str()), (Some("human"), Some("peer"), Some(fa.as_str())), "{posted}");
     let e = call_err(&mut there, "peers.set_drive", json!({ "peer": fa, "on": false }));
-    assert_eq!(e.code, HUMAN_ONLY, "nothing human-only works over it yet: {e:?}");
+    assert_eq!((e.code, e.message.starts_with("Do this at Bravo")), (HUMAN_ONLY, true), "local-only: {e:?}");
     assert_eq!(call_err(&mut there, "drive.open", json!({ "peer": fa })).code, HUMAN_ONLY, "no links from a link");
 
-    // Terminal frames come through the link (view only: it has agent role there).
+    // Terminal frames come through the link.
     let mut st = Client::connect(&socket).unwrap().attach(&tab, 60, 20, 8, 16).unwrap();
     st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let f = st.next_frame().unwrap();
-    assert!(f.full, "a full first frame (view only: it keeps the terminal's own size)");
+    assert!(f.full, "a full first frame");
     call(&mut hb, "session.input", json!({ "id": tab, "text": "echo relayed-$((6*7))", "enter": true }));
     wait_for(10, "relayed frame", || {
         st.want().unwrap();
@@ -2117,4 +2117,132 @@ fn a_quiet_link_stays_up_past_the_idle_close() {
     assert_eq!(call(&mut there, "daemon.info", json!({}))["home"], b.home.to_str().unwrap());
     let now = &call(&mut ha, "drive.list", json!({}))["links"][0];
     assert_eq!((now["state"].as_str(), now["drops"].as_u64()), (Some("connected"), Some(0)), "{now}");
+}
+
+/// A and B, B letting A drive it and A's link to B connected: the link's socket.
+fn driving(svc: &str) -> (TestDaemon, TestDaemon, String, String, String) {
+    let (a, b, fa, fb) = mine_both(svc);
+    call(&mut b.human(), "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let mut ha = a.human();
+    let link = call(&mut ha, "drive.open", json!({ "peer": fb }));
+    drive_state(&mut ha, link["link"].as_str().unwrap(), "connected", None, 15);
+    let socket = link["socket"].as_str().unwrap().to_string();
+    (a, b, fa, fb, socket)
+}
+
+/// `method(params)` over the link is refused as local-only, in B's name, never deferred.
+fn at_bravo(c: &mut Client, method: &str, params: Value) {
+    let e = call_err(c, method, params);
+    assert_eq!(e.code, HUMAN_ONLY, "{method}: {e:?}");
+    assert!(e.message.starts_with("Do this at Bravo: "), "{method}: {e:?}");
+    let data = e.data.clone().unwrap_or_default();
+    assert_eq!((data["local_only"].as_bool(), data["mac"].as_str(), data.get("needs_you_id")), (Some(true), Some("Bravo"), None), "{method}: {e:?}");
+}
+
+/// Is `actor` the person at device `fp`, driving?
+fn from_peer(actor: &Value, fp: &str) -> bool {
+    actor["kind"] == "human" && actor["via"] == "peer" && actor["peer"] == fp
+}
+
+/// The open needs-you items on `c`'s daemon.
+fn open_items(c: &mut Client) -> Vec<Value> {
+    call(c, "needs_you.list", json!({})).as_array().unwrap().clone()
+}
+
+#[test]
+fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
+    let svc = service();
+    let (a, b, fa, fb, socket) = driving(&svc);
+    let mut hb = b.human();
+    let mut there = Client::connect(&socket).unwrap();
+
+    // Every local-only method (DECISIONS.md, "Local-only"): refused before it looks at its params.
+    const LOCAL_ONLY: &[&str] = &[
+        "peers.pair", "peers.confirm", "peers.forget", "peers.set_tier", "peers.set_drive", "peers.set_auto_accept",
+        "share.accept", "share.decline",
+        "secret.set", "secret.replace", "secret.remove", "secret.write", "secret.exec_env", "trigger.set_secret",
+        "daemon.stop", "daemon.restart", "daemon.upgrade", "daemon.reset", "updates.install", "hooks.install", "hooks.uninstall",
+        "keep_awake.wake_setup",
+        "rule.remove", "rule.restore", "webhooks.configure", "links.actions.approve",
+        "updates.report", "themes.report",
+    ];
+    for m in LOCAL_ONLY {
+        at_bravo(&mut there, m, json!({}));
+    }
+    // Every human-only setting and every nearby.* one, set or reset, and a script path agents
+    // would have to ask for.
+    let settings = call(&mut hb, "settings.list", json!({}));
+    let local: Vec<Value> = settings.as_array().unwrap().iter().filter(|s| s["human_only"] == true || s["key"].as_str().unwrap().starts_with("nearby.")).cloned().collect();
+    assert!(local.iter().any(|s| s["key"] == "policy.default") && local.iter().any(|s| s["key"] == "nearby.name"), "{local:?}");
+    for s in &local {
+        at_bravo(&mut there, "settings.set", json!({ "key": s["key"], "value": s["value"] }));
+        at_bravo(&mut there, "settings.reset", json!({ "key": s["key"] }));
+    }
+    at_bravo(&mut there, "settings.set", json!({ "key": "ui.status.script", "value": "/bin/echo" }));
+    // Turning on a webhook trigger; turning it off is fine.
+    let gh = call(&mut hb, "trigger.add", json!({ "name": "Review new PRs", "source": "github", "event": "pull_request.opened",
+        "action": { "kind": "notify", "title": "PR" } }));
+    let gh = gh["id"].as_str().unwrap();
+    at_bravo(&mut there, "trigger.set_enabled", json!({ "id": gh, "enabled": true }));
+    call(&mut there, "trigger.set_enabled", json!({ "id": gh, "enabled": false }));
+    assert!(open_items(&mut hb).is_empty(), "nothing became a needs-you at B");
+    assert_eq!(call(&mut there, "daemon.info", json!({}))["home"], b.home.to_str().unwrap(), "B still runs and still lets A drive it");
+
+    // What the human there does: change an ordinary setting, open, type into, rename and close a
+    // terminal, read secret names, add a rule. B's log says A did it.
+    call(&mut there, "settings.set", json!({ "key": "theme", "value": "nord" }));
+    let tab = open_sh(&mut there);
+    call(&mut there, "session.input", json!({ "id": tab, "text": "echo typed-$((6*7))", "enter": true }));
+    wait_for(10, "typed over the link", || read(&mut hb, &tab).contains("typed-42").then_some(()));
+    call(&mut there, "session.rename", json!({ "id": tab, "name": "from Alpha" }));
+    call(&mut there, "secret.list", json!({}));
+    let rule = call(&mut there, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "command", "pattern": "deploy*" } }));
+    assert!(from_peer(&rule["added_by"], &fa), "{rule}");
+    let audit = events(&mut hb, kinds::AUDIT);
+    for m in ["settings.set", "session.open", "session.input", "session.rename", "rule.add"] {
+        let e = audit.iter().rfind(|e| e["data"]["method"] == m && e["data"]["outcome"] == "ok").unwrap_or_else(|| panic!("{m} audited"));
+        assert!(from_peer(&e["actor"], &fa), "{m}: {e}");
+    }
+
+    // An agent at B asks; the person driving approves it, for always. The rule it makes and the
+    // resolution say they acted from A.
+    let asker = open_sh(&mut hb);
+    let mut agent = b.agent(Some(&asker));
+    let asked = std::thread::spawn(move || {
+        agent.call_value("policy.request", json!({ "action": { "kind": "command", "value": "deploy prod" }, "timeout_secs": 30 })).unwrap()
+    });
+    let item = wait_for(10, "the agent's approval", || open_items(&mut there).into_iter().find(|n| n["kind"] == "approval"));
+    call(&mut there, "needs_you.resolve", json!({ "id": item["id"], "resolution": { "kind": "approve", "scope": { "kind": "always" } } }));
+    assert_eq!(asked.join().unwrap()["decision"], "allow");
+    let got = call(&mut hb, "needs_you.get", json!({ "id": item["id"] }));
+    assert!(from_peer(&got["resolved_by"], &fa), "{got}");
+    let resolved = events(&mut hb, kinds::NEEDS_YOU_RESOLVED).into_iter().rfind(|e| e["data"]["id"] == item["id"]).unwrap();
+    assert!(from_peer(&resolved["actor"], &fa), "{resolved}");
+    let rules = call(&mut hb, "rule.list", json!({}));
+    let made = rules.as_array().unwrap().iter().find(|r| r["origin"]["needs_you_id"] == item["id"]).cloned().unwrap_or_else(|| panic!("{rules}"));
+    assert!(from_peer(&made["added_by"], &fa), "{made}");
+    call(&mut there, "session.close", json!({ "id": tab }));
+
+    // Approving what would run something local-only isn't done from A; denying and dismissing are.
+    // An agent's human-only setting change:
+    let e = call_err(&mut b.agent(None), "settings.set", json!({ "key": "policy.default", "value": "allow" }));
+    let asked = e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).unwrap_or_else(|| panic!("deferred: {e:?}")).to_string();
+    at_bravo(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    assert_eq!(call(&mut hb, "settings.get", json!({ "key": "policy.default" }))["value"], "auto");
+    call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "dismiss" } }));
+    // a rule's removal:
+    let rid = rule["id"].as_str().unwrap();
+    let removal = call(&mut b.agent(Some(&asker)), "rule.request_removal", json!({ "id": rid, "reason": "in my way" }));
+    let removal = removal["needs_you_id"].as_str().or(removal["id"].as_str()).unwrap().to_string();
+    at_bravo(&mut there, "needs_you.resolve", json!({ "id": removal, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    call(&mut there, "needs_you.resolve", json!({ "id": removal, "resolution": { "kind": "deny" } }));
+    assert!(call(&mut hb, "rule.list", json!({})).as_array().unwrap().iter().any(|r| r["id"] == rid), "the rule stays");
+    // and a share sent to B, which is decided at B:
+    let sent = send(&mut a.human(), &fb, json!({ "kind": "message", "text": "for Bravo" }));
+    let offer = wait_for(10, "the share's approval", || open_items(&mut there).into_iter().find(|n| n["title"].as_str().is_some_and(|t| t.contains("Alpha"))));
+    at_bravo(&mut there, "needs_you.resolve", json!({ "id": offer["id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    call(&mut there, "needs_you.resolve", json!({ "id": offer["id"], "resolution": { "kind": "deny" } }));
+    let id = sent["id"].as_str().unwrap();
+    wait_for(10, "declined at B", || (share(&mut hb, id)?["state"] == "declined").then_some(()));
+    assert!(open_items(&mut hb).is_empty(), "{:?}", open_items(&mut hb));
 }

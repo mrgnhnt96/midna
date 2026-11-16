@@ -226,8 +226,9 @@ pub fn serve(d: Arc<Daemon>, s: UnixStream, conn_id: u64) {
 }
 
 /// Serve one stream of a drive link from paired device `fp` as an ordinary client connection.
-/// It has agent role, acts as `via: peer` with the device's fingerprint, and has no process
-/// here, so nothing human-only works over it.
+/// The person driving is the human here: human role, acting as `{kind: human, via: peer, peer:
+/// <fp>}`, never with a terminal of its own, and refused what is local-only
+/// (`nearby::local_only`). It has no process here.
 pub fn serve_peer(d: Arc<Daemon>, s: UnixStream, conn_id: u64, fp: &str) {
     serve_as(d, s, conn_id, Who::Peer(fp))
 }
@@ -240,7 +241,7 @@ fn serve_as(d: Arc<Daemon>, s: UnixStream, conn_id: u64, who: Who) {
             (pid, base_role(&d, fd, pid))
         }
         // The socket's other end is midnad's own relay thread: its pid says nothing.
-        Who::Peer(_) => (None, Role::Agent),
+        Who::Peer(_) => (None, Role::Human),
     };
     let (Ok(ws), Ok(ctl)) = (s.try_clone(), s.try_clone()) else { return };
     let (tx, rx) = OutTx::pair();
@@ -282,7 +283,11 @@ fn serve_as(d: Arc<Daemon>, s: UnixStream, conn_id: u64, who: Who) {
         let mut ctx = Ctx::new(role, &params, conn_id, tx.clone(), pid);
         match who {
             Who::Local => ctx.app = ctx.is_human(),
-            Who::Peer(fp) => ctx.as_actor = Some(Actor::peer(fp)),
+            Who::Peer(fp) => {
+                // Always the person, never an agent: `caller` claims say nothing over a link.
+                (ctx.role, ctx.session) = (Role::Human, None);
+                ctx.as_actor = Some(Actor::peer(fp));
+            }
         }
         if method == "stream.attach" {
             // Answer, stop the line writer, then hand the socket to the binary stream.

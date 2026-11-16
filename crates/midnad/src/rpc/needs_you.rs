@@ -211,6 +211,11 @@ fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result
 pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     let item = d.core().state.needs_you.iter().find(|n| n.id == p.id).cloned().ok_or_else(|| RpcError::not_found(format!("no needs-you item {}", p.id)))?;
     authorize(d, ctx, &item, &p.resolution)?;
+    // Deny and dismiss grant nothing, so they work from another Mac; approving what is local-only doesn't.
+    let driving = ctx.as_actor.as_ref().and_then(|a| a.drive_peer()).is_some();
+    if driving && matches!(p.resolution, Resolution::Approve { .. }) && crate::nearby::local_only::approval(d, &item) {
+        return Err(crate::nearby::local_only::refuse(d, "approving this can't be done from another Mac"));
+    }
     if p.value.is_some() && !(matches!(p.resolution, Resolution::Approve { .. }) && item.setting.is_some()) {
         return Err(RpcError::bad_params("value only applies to approving a setting change"));
     }
@@ -229,7 +234,7 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
                     None => drop(super::run_deferred(d, def)?),
                 }
             } else {
-                rule = super::policy::rule_from_approval(d, &item, scope);
+                rule = super::policy::rule_from_approval(d, &item, scope, ctx.actor());
             }
         }
         (Resolution::Approve { .. }, NeedsYouKind::RuleRemoval) => {
