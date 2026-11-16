@@ -60,7 +60,7 @@ impl Entry {
 
 /// That Mac's refusal, as midnad words it: "Bravo doesn't let this Mac drive it: …" when it
 /// refuses the link, "Bravo stopped letting this Mac drive it" when it turns driving off.
-fn refused(reason: &str) -> bool {
+pub(crate) fn refused(reason: &str) -> bool {
     reason.contains("this Mac drive it")
 }
 
@@ -121,6 +121,7 @@ pub fn index_of(list: &[Entry], mac: &MacId) -> Option<usize> {
 /// This Mac's name there is the one its windows show beside another Mac's.
 pub fn refresh(local: Arc<dyn Backend>, cx: &mut App) {
     cx.spawn(async move |cx| {
+        let b = local.clone();
         let r = cx
             .background_executor()
             .spawn(async move {
@@ -137,6 +138,8 @@ pub fn refresh(local: Arc<dyn Backend>, cx: &mut App) {
                 crate::windows::redraw_all(cx);
             }
             set_menus(cx);
+            // Each Mac of mine followed for what waits there, window or not.
+            crate::mac_feed::sync(&b, &peers, cx);
             crate::windows::set_local_name(peers.me.name, cx);
         });
     })

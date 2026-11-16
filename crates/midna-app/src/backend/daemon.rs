@@ -284,6 +284,11 @@ impl Backend for DaemonBackend {
                     !tx.is_closed()
                 };
                 loop {
+                    // Nobody's listening any more: don't connect again (through a drive link that
+                    // would open it again, see `Link::socket`, after it was closed on purpose).
+                    if tx.is_closed() {
+                        return;
+                    }
                     let sub = target.socket().and_then(|s| Client::connect(&s)).map_err(ClientError::Io).and_then(|mut c| {
                         c.set_caller(None);
                         c.subscribe(since)

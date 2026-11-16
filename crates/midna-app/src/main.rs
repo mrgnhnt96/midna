@@ -28,6 +28,7 @@ mod kass;
 mod lifecycle;
 mod list_edit;
 mod local_auth;
+mod mac_feed;
 mod macs;
 mod model;
 mod notify;
