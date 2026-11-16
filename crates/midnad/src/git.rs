@@ -95,7 +95,7 @@ type PrCache = HashMap<(String, String), (Instant, Option<PrInfo>)>;
 static PR_CACHE: Mutex<Option<PrCache>> = Mutex::new(None);
 const PR_TTL: Duration = Duration::from_secs(30);
 
-fn gh_available() -> bool {
+pub fn gh_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| std::env::var("MIDNA_NO_GH").is_err() && run_cmd(&["gh", "--version"], "/", Duration::from_secs(3), None, &[]).is_some())
 }

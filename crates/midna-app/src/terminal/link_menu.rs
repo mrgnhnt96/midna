@@ -759,9 +759,10 @@ impl TerminalView {
         let apps = Apps::new(apps, &kind, &target);
         let wants = matches!(kind, Kind::Url | Kind::Pr(_) | Kind::Issue(_) | Kind::Run(_) | Kind::Pattern { .. } | Kind::Folder);
         let server = matches!(kind, Kind::Server(_)).then(|| self.link_menu_served_by(target.clone(), cx));
+        let there = self.there();
         let load = server.or_else(|| link.filter(|_| seed.is_none() && wants).map(|l| {
             cx.spawn(async move |this, cx| {
-                let body = cx.background_executor().spawn(async move { link_preview::load(&l) }).await;
+                let body = cx.background_executor().spawn(async move { link_preview::load(&l, there.as_deref()) }).await;
                 let _ = this.update(cx, |t, cx| {
                     if let Some(m) = t.link_menu.menu.as_mut() {
                         m.body = Some(body);
@@ -919,8 +920,9 @@ impl TerminalView {
                 Some(Body::Pr(pr)) => self.link_menu_copy(pr.head.clone(), cx),
                 _ => {
                     if let Some(link) = Link::from_link_at(&m.v) {
+                        let there = self.there();
                         cx.spawn(async move |this, cx| {
-                            let body = cx.background_executor().spawn(async move { link_preview::load(&link) }).await;
+                            let body = cx.background_executor().spawn(async move { link_preview::load(&link, there.as_deref()) }).await;
                             if let Body::Pr(pr) = body {
                                 let _ = this.update(cx, |t, cx| t.link_menu_copy(pr.head, cx));
                             }
@@ -956,9 +958,10 @@ impl TerminalView {
         let (backend, session, act) = (self.backend.clone(), self.session_id.clone(), act.clone());
         let projects = link_preview::env(cx).projects;
         let link = Link::from_link_at(&m.v).filter(|_| m.body.is_none() && act == Act::StartAgent);
+        let there = self.there();
         cx.background_executor()
             .spawn(async move {
-                let body = m.body.or_else(|| link.map(|l| link_preview::load(&l)));
+                let body = m.body.or_else(|| link.map(|l| link_preview::load(&l, there.as_deref())));
                 let Some(mut p) = open_params(&act, &m.kind, &m.target, body.as_ref()) else { return };
                 let (Kind::Pr(g) | Kind::Issue(g) | Kind::Run(g)) = &m.kind else { return };
                 match project_for(&projects, g) {

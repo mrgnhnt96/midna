@@ -254,6 +254,11 @@ fn build() -> Vec<MethodSpec> {
             "Which terminal runs the server behind a link to this Mac (http://localhost:5173, 127.0.0.1, [::1]): the one \
              whose processes listen on that port, with what listens (`vite`). Null when no terminal's process does (another \
              app, or nothing). Not a local link is bad params. Answers from a few seconds' cache."),
+        m::<LinksPreviewParams, LinkPreview>("links.preview").d(
+            "What a link's hover card shows, read on this Mac: a file's lines around `line`, a folder's first entries, \
+             an image's size, or for a GitHub pull request, issue or workflow run link what `gh` says about it (its \
+             `--json` output). The app asks the Mac a window drives, so another Mac's card is read there. Not an \
+             absolute path or a GitHub link is bad params; `gh` failing is not found."),
         m::<LinksRefreshParams, LinksRefreshResult>("links.refresh").mutating().d(
             "Tell the app a link's state changed so it asks again now instead of when its cache runs out: a pull \
              request you merged, closed or marked ready, a workflow run you re-ran. Its color and icon in the grid and \

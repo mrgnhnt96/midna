@@ -79,7 +79,11 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                     .child(Icon::BellOff.el(13., t.dim)),
             )
         })
-        .when(!segs.is_empty(), |d| d.child(div().w(px(1.)).h(px(18.)).flex_none().bg(t.line)).child(div().min_w_0().overflow_hidden().child(segments(&segs, t, 12., cx))))
+        .when(!segs.is_empty(), |d| {
+            d.child(div().w(px(1.)).h(px(18.)).flex_none().bg(t.line))
+                .child(div().min_w_0().overflow_hidden().child(segments(&segs, t, 12., cx)))
+                .children(crate::ui::statusbar::on_mac(m, t).map(|d| d.text_size(px(12.))))
+        })
         .when(down.is_some(), |d| {
             d.child(div().flex_none().text_size(px(12.)).text_color(t.dim).whitespace_nowrap().child(format!("as of {}", crate::ui::link_down::when(m))))
         })

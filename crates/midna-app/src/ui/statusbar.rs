@@ -565,7 +565,23 @@ fn triggers_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Any
 /// worktree and branch), or a script path from the list.
 fn script_item(m: &MainWindow, item: &str, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let segs = m.status_segments.get(m.selected.as_ref()?)?.get(item)?;
-    (!segs.is_empty()).then(|| div().id(SharedString::from(format!("status-{item}"))).child(crate::ui::sidebar::segments(segs, t, 11.5, cx).gap(px(10.))).into_any_element())
+    (!segs.is_empty()).then(|| {
+        div()
+            .id(SharedString::from(format!("status-{item}")))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(crate::ui::sidebar::segments(segs, t, 11.5, cx).gap(px(10.)))
+            .children(on_mac(m, t))
+            .into_any_element()
+    })
+}
+
+/// "· on <Mac>" after a script's output in another Mac's window: the script is that Mac's,
+/// run there (screen 5, state C of the remote Mac windows design).
+pub fn on_mac(m: &MainWindow, t: &Theme) -> Option<Div> {
+    let mac = m.backend.mac()?;
+    Some(div().flex_none().whitespace_nowrap().text_color(t.ansi[6]).child(format!("· on {}", mac.name)))
 }
 
 /// A status bar item being dragged in the right-click menu.

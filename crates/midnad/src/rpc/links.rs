@@ -312,3 +312,26 @@ pub fn actions_approve(d: &Daemon, ctx: &Ctx, p: LinkActionsApproveParams) -> R 
     d.emit(kinds::LINK_ACTIONS_CHANGED, ctx.actor(), None, None, json!({ "owner": p.owner, "count": view.menus.len(), "approved": true }));
     ok(view)
 }
+
+/// `links.preview`: what a link's hover card shows, read on this Mac (for a window on another
+/// Mac that drives this one, the files and `gh` here, not there).
+pub fn preview(p: LinksPreviewParams) -> R {
+    use midna_proto::link_preview::{GithubLink, read_path};
+    if let Some(g) = GithubLink::parse(&p.target) {
+        let out = crate::git::gh_available().then(|| {
+            let args = g.gh_args();
+            let argv: Vec<&str> = std::iter::once("gh").chain(args.iter().map(String::as_str)).collect();
+            crate::git::run_cmd(&argv, "/", std::time::Duration::from_secs(8), None, &[])
+        });
+        let json = out.flatten().filter(|s| s.len() <= g.gh_limit()).and_then(|s| serde_json::from_str(&s).ok());
+        return match json {
+            Some(json) => ok(LinkPreview::Github { json }),
+            None => Err(RpcError::not_found(format!("gh couldn't read {}", p.target))),
+        };
+    }
+    let path = std::path::Path::new(&p.target);
+    if !path.is_absolute() {
+        return Err(RpcError::bad_params(format!("not an absolute path or a GitHub link: {}", p.target)));
+    }
+    ok(read_path(path, p.line))
+}

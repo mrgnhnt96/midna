@@ -18,6 +18,7 @@
 //! previews that link here, and the grid's own hover leaves the card alone meanwhile.
 use super::{LINE_H, PAD_Y, TerminalView};
 use crate::app::MainWindow;
+use crate::backend::Backend;
 use crate::icons::Icon;
 use crate::ide::{self, Ide};
 use crate::theme::Theme;
@@ -25,9 +26,11 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, Read};
+use std::io::Read;
+use midna_proto::LinkPreview;
+use midna_proto::link_preview::{GithubKind, GithubLink, read_path};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 const SHOW_DELAY: Duration = Duration::from_millis(350);
@@ -39,9 +42,6 @@ const SINK: f32 = 6.;
 /// Clear of the prompt rail on the right edge (as the queue pill).
 const RIGHT: f32 = 22.;
 /// Lines of a file shown, and how many of them come before the target line.
-const FILE_LINES: usize = 12;
-const BEFORE: usize = 4;
-const DIR_ROWS: usize = 8;
 const CHECKS: usize = 8;
 /// How much of an issue's text is kept (for the card's excerpt and an agent's prompt).
 const ISSUE_BODY: usize = 4000;
@@ -254,6 +254,8 @@ struct Card {
     ide: Option<(Ide, bool)>,
     /// Opened from a links-popover row, so it's in the links already: no "Add to links".
     listed: bool,
+    /// Read on the other Mac this window drives: the header says "via <Mac>".
+    there: bool,
     _load: Task<()>,
 }
 
@@ -322,11 +324,18 @@ impl TerminalView {
         }));
     }
 
+    /// The other Mac's backend when this terminal is on one, for what's read there.
+    pub(super) fn there(&self) -> Option<Arc<dyn Backend>> {
+        self.backend.mac().is_some().then(|| self.backend.clone())
+    }
+
     fn preview_show(&mut self, link: Link, cx: &mut Context<Self>) {
         let env = env(cx);
+        let there = self.there();
         let path = Path::new(&link.target);
-        let is_dir = !link.url && path.is_dir();
-        let project = (!link.url).then(|| env.projects.iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.len()).cloned()).flatten();
+        // Another Mac's path says what it is once it's read there; this Mac's projects aren't its.
+        let is_dir = !link.url && there.is_none() && path.is_dir();
+        let project = (!link.url && there.is_none()).then(|| env.projects.iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.len()).cloned()).flatten();
         let (name, sub) = match &link.app {
             Some(app) => (app.clone(), link.target.split_once("://").map_or(link.target.as_str(), |(_, r)| r).to_string()),
             None if link.url => url_title(&link.target),
@@ -334,11 +343,17 @@ impl TerminalView {
         };
         let ide = (!link.url).then(|| self.preview_ide(&env, path, is_dir, project.as_deref())).flatten();
         let l = link.clone();
+        let remote = there.is_some();
         let load = cx.spawn(async move |this, cx| {
             let what = l.clone();
-            let body = cx.background_executor().spawn(async move { load(&what) }).await;
+            let body = cx.background_executor().spawn(async move { load(&what, there.as_deref()) }).await;
             let _ = this.update(cx, |t, cx| {
                 if let Some(c) = t.preview.card.as_mut().filter(|c| c.link == l) {
+                    if remote && !c.link.url && matches!(body, Body::Dir { .. }) {
+                        c.is_dir = true;
+                        (c.name, c.sub) = path_title(Path::new(&c.link.target), true, None);
+                    }
+                    c.there |= remote && matches!(body, Body::Pr(_) | Body::Issue(_) | Body::Run(_));
                     c.body = body;
                     cx.notify();
                 }
@@ -348,7 +363,8 @@ impl TerminalView {
         self.preview.recover = None;
         self.preview.menu = false;
         self.preview.flash = None;
-        self.preview.card = Some(Card { link, is_dir, project, name, sub, body: Body::Loading, ide, listed: self.preview.external, _load: load });
+        let there = remote && !link.url;
+        self.preview.card = Some(Card { link, is_dir, project, name, sub, body: Body::Loading, ide, listed: self.preview.external, there, _load: load });
         cx.notify();
     }
 
@@ -659,7 +675,24 @@ impl TerminalView {
             .tooltip(crate::ui::header::tip("Close"))
             .on_click(cx.listener(|t, _, _, cx| t.preview_close(cx)))
             .child(Icon::Cross.el(11., t.dim));
-        let header = div().flex().items_center().gap(px(8.)).pl(px(14.)).pr(px(8.)).pt(px(6.)).pb(px(6.)).border_b_1().border_color(t.line).child(icon).child(title).child(close);
+        // Read on the Mac this window drives (screen 5, state C of the remote Mac windows design).
+        let via = self.backend.mac().filter(|_| c.there).map(|m| {
+            div().flex_none().whitespace_nowrap().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(t.ansi[6]).child(format!("via {}", m.name))
+        });
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(14.))
+            .pr(px(8.))
+            .pt(px(6.))
+            .pb(px(6.))
+            .border_b_1()
+            .border_color(t.line)
+            .child(icon)
+            .child(title)
+            .children(via)
+            .child(close);
 
         let body = render_body(&c.body, &c.link, t);
         let footer = self.render_footer(c, &env, t, cx);
@@ -1092,34 +1125,23 @@ pub(super) fn url_title(url: &str) -> (String, String) {
     (host.trim_start_matches("www.").to_string(), path.trim_end_matches('/').to_string())
 }
 
+fn github(url: &str, kind: GithubKind) -> Option<(String, String, u64)> {
+    GithubLink::parse(url).filter(|g| g.kind == kind).map(|g| (g.owner, g.repo, g.n))
+}
+
 /// `https://github.com/<owner>/<repo>/pull/<n>…`.
 pub(super) fn github_pr(url: &str) -> Option<(String, String, u64)> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
-    let rest = rest.strip_prefix("www.").unwrap_or(rest);
-    let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
-    let (owner, repo, pull, n) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?);
-    (pull == "pull" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
-    Some((owner.to_string(), repo.to_string(), n.parse().ok()?))
+    github(url, GithubKind::Pr)
 }
 
 /// `https://github.com/<owner>/<repo>/issues/<n>…`.
 pub(super) fn github_issue(url: &str) -> Option<(String, String, u64)> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
-    let rest = rest.strip_prefix("www.").unwrap_or(rest);
-    let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
-    let (owner, repo, issues, n) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?);
-    (issues == "issues" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
-    Some((owner.to_string(), repo.to_string(), n.parse().ok()?))
+    github(url, GithubKind::Issue)
 }
 
 /// `https://github.com/<owner>/<repo>/actions/runs/<id>…` (a job or an attempt in it too).
 pub(super) fn github_run(url: &str) -> Option<(String, String, u64)> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
-    let rest = rest.strip_prefix("www.").unwrap_or(rest);
-    let mut seg = rest.strip_prefix("github.com/")?.split(['/', '?', '#']);
-    let (owner, repo, actions, runs, id) = (seg.next()?, seg.next()?, seg.next()?, seg.next()?, seg.next()?);
-    (actions == "actions" && runs == "runs" && !owner.is_empty() && !repo.is_empty()).then_some(())?;
-    Some((owner.to_string(), repo.to_string(), id.parse().ok()?))
+    github(url, GithubKind::Run)
 }
 
 pub(super) fn human_size(n: u64) -> String {
@@ -1133,113 +1155,69 @@ pub(super) fn human_size(n: u64) -> String {
 
 // ------------------------------------------------------------------ loading (off the main thread)
 
-pub(super) fn load(link: &Link) -> Body {
+/// What the card shows for `link`. `there` is another Mac's backend when the link is in its
+/// window: files and GitHub links are read on that Mac (`links.preview`), and nothing of this
+/// Mac's (an app's or a link pattern's preview command, a local path) is.
+pub(super) fn load(link: &Link, there: Option<&dyn Backend>) -> Body {
     // A link pattern's own preview command; when it fails, the card the link would have had.
-    if let Some(p) = link.preview.as_deref().and_then(load_pattern) {
+    if there.is_none()
+        && let Some(p) = link.preview.as_deref().and_then(load_pattern)
+    {
         return Body::App(p);
     }
     if let Some(app) = &link.app {
-        return load_app(&link.target).map(Body::App).unwrap_or_else(|| Body::Note(format!("Opens in {app}")));
+        let here = there.is_none().then(|| load_app(&link.target)).flatten();
+        return here.map(Body::App).unwrap_or_else(|| Body::Note(format!("Opens in {app}")));
     }
-    if link.url { load_url(&link.target) } else { load_path(Path::new(&link.target), link.line) }
+    if link.url { load_url(&link.target, there) } else { load_path(Path::new(&link.target), link.line, there) }
 }
 
-fn load_path(path: &Path, line: Option<u32>) -> Body {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(e) => return Body::Note(format!("Couldn't read it: {e}")),
+/// Ask another Mac's midnad what the card shows for `target`.
+fn ask(b: &dyn Backend, target: &str, line: Option<u32>) -> anyhow::Result<LinkPreview> {
+    Ok(serde_json::from_value(b.call("links.preview", json!({ "target": target, "line": line }))?)?)
+}
+
+fn load_path(path: &Path, line: Option<u32>, there: Option<&dyn Backend>) -> Body {
+    let read = match there {
+        None => read_path(path, line),
+        Some(b) => match ask(b, &path.to_string_lossy(), line) {
+            Ok(p) => p,
+            Err(e) => return Body::Note(format!("Couldn't read it: {e}")),
+        },
     };
-    if meta.is_dir() {
-        return load_dir(path);
-    }
-    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
-        return Body::Image(path.to_path_buf());
-    }
-    if meta.len() == 0 {
-        return Body::Note("Empty file".into());
-    }
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) => return Body::Note(format!("Couldn't read it: {e}")),
-    };
-    let mut head = vec![0u8; 8192];
-    let n = f.read(&mut head).unwrap_or(0);
-    if head[..n].contains(&0) {
-        return Body::Note(format!("Binary file · {}", human_size(meta.len())));
-    }
-    match std::fs::File::open(path) {
-        Ok(f) => {
-            let (lines, focus) = excerpt(std::io::BufReader::new(f), line);
-            if lines.is_empty() { Body::Note("Empty file".into()) } else { Body::Code { lines, focus } }
-        }
-        Err(e) => Body::Note(format!("Couldn't read it: {e}")),
+    match read {
+        LinkPreview::Lines { lines, focus } => Body::Code { lines, focus },
+        LinkPreview::Dir { entries, total } => Body::Dir { rows: entries.into_iter().map(|e| (e.name, e.dir, e.size)).collect(), total },
+        // Another Mac's image isn't here to draw.
+        LinkPreview::Image { .. } if there.is_none() => Body::Image(path.to_path_buf()),
+        LinkPreview::Image { size } => Body::Note(format!("Image · {}", human_size(size))),
+        LinkPreview::Binary { size } => Body::Note(format!("Binary file · {}", human_size(size))),
+        LinkPreview::Note { text } => Body::Note(text),
+        LinkPreview::Github { .. } => Body::Note("Not a file".into()),
     }
 }
 
-/// `FILE_LINES` numbered lines around `line` (the top of the file without one), tabs expanded
-/// and very long lines cut. Reads no further than it needs (and gives up 64 MB in).
-fn excerpt(mut r: impl BufRead, line: Option<u32>) -> (Vec<(u32, String)>, Option<u32>) {
-    let start = line.map(|l| (l as usize).saturating_sub(1 + BEFORE)).unwrap_or(0);
-    let mut out = vec![];
-    let (mut n, mut read) = (0usize, 0usize);
-    let mut buf = vec![];
-    while out.len() < FILE_LINES && read < 64 << 20 {
-        buf.clear();
-        match r.read_until(b'\n', &mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(k) => read += k,
-        }
-        n += 1;
-        if n > start {
-            let s = String::from_utf8_lossy(&buf);
-            let s = s.trim_end_matches(['\n', '\r']).replace('\t', "    ");
-            let s: String = s.chars().take(500).collect();
-            out.push((n as u32, s));
-        }
-    }
-    // A line past the end: show the file's last lines instead of nothing.
-    let focus = line.filter(|l| out.iter().any(|(n, _)| n == l));
-    (out, focus)
+/// A cached card: for this Mac (None) or another (its fingerprint), and the URL.
+type UrlKey = (Option<String>, String);
+
+static URL_CACHE: LazyLock<Mutex<HashMap<UrlKey, (Instant, Body)>>> = LazyLock::new(Default::default);
+
+fn url_key(url: &str, there: Option<&dyn Backend>) -> UrlKey {
+    (there.and_then(crate::backend::mac_id), url.to_string())
 }
 
-fn load_dir(path: &Path) -> Body {
-    let rd = match std::fs::read_dir(path) {
-        Ok(r) => r,
-        Err(e) => return Body::Note(format!("Couldn't list it: {e}")),
-    };
-    let mut all: Vec<(String, bool, Option<u64>)> = rd
-        .flatten()
-        .filter(|e| e.file_name() != ".DS_Store")
-        .map(|e| {
-            let dir = e.file_type().is_ok_and(|t| t.is_dir());
-            let size = (!dir).then(|| e.metadata().ok().map(|m| m.len())).flatten();
-            (e.file_name().to_string_lossy().into_owned(), dir, size)
-        })
-        .collect();
-    all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
-    let total = all.len();
-    all.truncate(DIR_ROWS);
-    Body::Dir { rows: all, total }
-}
-
-static URL_CACHE: LazyLock<Mutex<HashMap<String, (Instant, Body)>>> = LazyLock::new(Default::default);
-
-fn load_url(url: &str) -> Body {
-    if let Some((at, b)) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+fn load_url(url: &str, there: Option<&dyn Backend>) -> Body {
+    let key = url_key(url, there);
+    if let Some((at, b)) = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
         && at.elapsed() < ttl(&b)
     {
         return b;
     }
-    let body = github_pr(url)
-        .and_then(|(o, r, n)| load_pr(&o, &r, n))
-        .map(Body::Pr)
-        .or_else(|| github_issue(url).and_then(|(o, r, n)| load_issue(&o, &r, n)).map(Body::Issue))
-        .or_else(|| github_run(url).and_then(|(o, r, id)| load_run(&o, &r, id)).map(Body::Run))
-        .unwrap_or_else(|| load_page(url));
+    // Any other page is the web's, the same from either Mac (and never a local or private host).
+    let body = load_github(url, there).unwrap_or_else(|| load_page(url));
     if let Ok(mut c) = URL_CACHE.lock() {
         c.retain(|_, (at, b)| at.elapsed() < ttl(b));
-        c.insert(url.to_string(), (Instant::now(), body.clone()));
+        c.insert(key, (Instant::now(), body.clone()));
     }
     body
 }
@@ -1248,15 +1226,16 @@ fn load_url(url: &str) -> Body {
 /// CLOSED. Asks `gh` only, never the web page, and shares the card's cache
 /// while it's fresh.
 pub(super) fn pr_state(url: &str) -> Option<String> {
-    if let Some((at, Body::Pr(pr))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+    let key = url_key(url, None);
+    if let Some((at, Body::Pr(pr))) = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
         && at.elapsed() < SHARE_TTL
     {
         return Some(pr.state);
     }
-    let (o, r, n) = github_pr(url)?;
-    let pr = load_pr(&o, &r, n)?;
+    github_pr(url)?;
+    let Body::Pr(pr) = load_github(url, None)? else { return None };
     if let Ok(mut c) = URL_CACHE.lock() {
-        c.insert(url.to_string(), (Instant::now(), Body::Pr(pr.clone())));
+        c.insert(key, (Instant::now(), Body::Pr(pr.clone())));
     }
     Some(pr.state)
 }
@@ -1264,17 +1243,18 @@ pub(super) fn pr_state(url: &str) -> Option<String> {
 /// A workflow run's state for its link in the grid (`pr_status.rs`): QUEUED, RUNNING, PASSED,
 /// FAILED, CANCELLED, SKIPPED or APPROVAL. Like `pr_state`, `gh` only, sharing the card's cache.
 pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
-    if let Some((at, b @ Body::Run(_))) = URL_CACHE.lock().ok().and_then(|c| c.get(url).cloned())
+    let key = url_key(url, None);
+    if let Some((at, b @ Body::Run(_))) = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
         && at.elapsed() < ttl(&b).min(SHARE_TTL)
         && let Body::Run(r) = b
     {
         return Some(r.state.key());
     }
-    let (o, r, id) = github_run(url)?;
-    let run = load_run(&o, &r, id)?;
+    github_run(url)?;
+    let Body::Run(run) = load_github(url, None)? else { return None };
     let state = run.state.key();
     if let Ok(mut c) = URL_CACHE.lock() {
-        c.insert(url.to_string(), (Instant::now(), Body::Run(run)));
+        c.insert(key, (Instant::now(), Body::Run(run)));
     }
     Some(state)
 }
@@ -1288,11 +1268,11 @@ pub(super) fn github_canonical(url: &str) -> Option<String> {
 }
 
 /// Drop the cached card for a link (`links.stale`), and for every other page of the same pull
-/// request or run.
+/// request or run, read on any Mac.
 pub(super) fn forget(url: &str) {
     let key = github_canonical(url).unwrap_or_else(|| url.to_string());
     if let Ok(mut c) = URL_CACHE.lock() {
-        c.retain(|k, _| k != url && github_canonical(k).as_deref().unwrap_or(k) != key);
+        c.retain(|(_, k), _| k != url && github_canonical(k).as_deref().unwrap_or(k) != key);
     }
 }
 
@@ -1569,14 +1549,35 @@ fn gh() -> std::process::Command {
     std::process::Command::new(bin)
 }
 
-fn load_pr(owner: &str, repo: &str, n: u64) -> Option<Pr> {
+/// What `gh` says about a GitHub link, asked on the Mac that reads it.
+fn gh_view(g: &GithubLink, url: &str, there: Option<&dyn Backend>) -> Option<Value> {
+    if let Some(b) = there {
+        return match ask(b, url, None).ok()? {
+            LinkPreview::Github { json } => Some(json),
+            _ => None,
+        };
+    }
     let mut cmd = gh();
-    cmd.args(["pr", "view", &n.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "title,state,isDraft,headRefName,baseRefName,additions,deletions,statusCheckRollup"]);
-    let (ok, out) = run_capped(cmd, 1 << 20, Duration::from_secs(8))?;
+    cmd.args(g.gh_args());
+    let (ok, out) = run_capped(cmd, g.gh_limit(), Duration::from_secs(8))?;
     if !ok {
         return None;
     }
-    parse_pr(&serde_json::from_slice(&out).ok()?)
+    serde_json::from_slice(&out).ok()
+}
+
+/// A GitHub pull request, issue or run's card; None for any other link, or when `gh` can't say.
+fn load_github(url: &str, there: Option<&dyn Backend>) -> Option<Body> {
+    let g = GithubLink::parse(url)?;
+    let v = gh_view(&g, url, there)?;
+    match g.kind {
+        GithubKind::Pr => parse_pr(&v).map(Body::Pr),
+        GithubKind::Issue => parse_issue(&v).map(Body::Issue),
+        GithubKind::Run => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            parse_run(&v, now).map(Body::Run)
+        }
+    }
 }
 
 pub(super) fn parse_pr(v: &Value) -> Option<Pr> {
@@ -1607,16 +1608,6 @@ pub(super) fn parse_pr(v: &Value) -> Option<Pr> {
     Some(Pr { title: s("title"), state, head: s("headRefName"), base: s("baseRefName"), additions: num("additions"), deletions: num("deletions"), checks })
 }
 
-fn load_issue(owner: &str, repo: &str, n: u64) -> Option<Issue> {
-    let mut cmd = gh();
-    cmd.args(["issue", "view", &n.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "title,state,body"]);
-    let (ok, out) = run_capped(cmd, 1 << 20, Duration::from_secs(8))?;
-    if !ok {
-        return None;
-    }
-    parse_issue(&serde_json::from_slice(&out).ok()?)
-}
-
 pub(super) fn parse_issue(v: &Value) -> Option<Issue> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let title = v.get("title").and_then(Value::as_str)?.to_string();
@@ -1627,17 +1618,6 @@ pub(super) fn parse_issue(v: &Value) -> Option<Issue> {
         None => body.to_string(),
     };
     Some(Issue { title, state: s("state"), body })
-}
-
-fn load_run(owner: &str, repo: &str, id: u64) -> Option<Run> {
-    let mut cmd = gh();
-    cmd.args(["run", "view", &id.to_string(), "-R", &format!("{owner}/{repo}"), "--json", "displayTitle,workflowName,headBranch,status,conclusion,startedAt,updatedAt,jobs"]);
-    let (ok, out) = run_capped(cmd, 4 << 20, Duration::from_secs(8))?;
-    if !ok {
-        return None;
-    }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    parse_run(&serde_json::from_slice(&out).ok()?, now)
 }
 
 /// `status` and `conclusion` as `gh` reports them for a run, a job or a step.
@@ -1846,7 +1826,7 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppPreview, Body, Check, FILE_LINES, Link, RunState, Tone, duration, excerpt, fade, fetchable, github_issue, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_issue, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
+    use super::{AppPreview, Body, Check, Link, RunState, Tone, duration, fade, fetchable, github_issue, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_issue, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -1856,9 +1836,92 @@ mod tests {
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://#/?task=T6", "app": "Taskboard" })).unwrap();
         assert_eq!(l.app.as_deref(), Some("Taskboard"));
         // No app supplies a preview: the card just says where it opens.
-        assert!(matches!(load(&l), Body::Note(n) if n == "Opens in Taskboard"));
+        assert!(matches!(load(&l, None), Body::Note(n) if n == "Opens in Taskboard"));
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "https://a.com" })).unwrap();
         assert_eq!(l.app, None);
+    }
+
+    /// Another Mac that answers `links.preview` with `answer`, and keeps what it was asked.
+    struct OtherMac {
+        mac: crate::backend::Mac,
+        answer: serde_json::Value,
+        asked: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl OtherMac {
+        fn new(answer: serde_json::Value) -> OtherMac {
+            OtherMac { mac: crate::backend::Mac { peer: "fp-bravo".into(), name: "Bravo".into() }, answer, asked: Default::default() }
+        }
+    }
+
+    impl crate::backend::Backend for OtherMac {
+        fn label(&self) -> &'static str {
+            "other"
+        }
+        fn socket_path(&self) -> std::path::PathBuf {
+            "/nonexistent".into()
+        }
+        fn mac(&self) -> Option<&crate::backend::Mac> {
+            Some(&self.mac)
+        }
+        fn open_mac(self: std::sync::Arc<Self>, _: crate::backend::Mac) -> std::sync::Arc<dyn crate::backend::Backend> {
+            self
+        }
+        fn call(&self, method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            assert_eq!(method, "links.preview");
+            self.asked.lock().unwrap().push(params);
+            Ok(self.answer.clone())
+        }
+        fn subscribe(&self, _: async_channel::Sender<crate::backend::BackendEvent>) {}
+        fn attach(&self, _: crate::backend::AttachRequest<'_>, _: std::sync::Arc<crate::frame::FrameSink>) -> anyhow::Result<std::sync::Arc<dyn crate::backend::TermStream>> {
+            anyhow::bail!("no terminals")
+        }
+    }
+
+    #[test]
+    fn another_macs_files_are_read_there() {
+        // A path that exists here too: the card still shows that Mac's file, never this one.
+        let here = std::env::temp_dir().join(format!("midna-lp-there-{}.rs", std::process::id()));
+        std::fs::write(&here, "this Mac's\n").unwrap();
+        let there = OtherMac::new(json!({ "kind": "lines", "lines": [[41, "a"], [42, "b"]], "focus": 42 }));
+        let l = Link { url: false, target: here.to_string_lossy().into_owned(), line: Some(42), app: None, preview: None };
+        match load(&l, Some(&there)) {
+            Body::Code { lines, focus } => assert_eq!((lines, focus), (vec![(41, "a".into()), (42, "b".into())], Some(42))),
+            b => panic!("{b:?}"),
+        }
+        assert_eq!(there.asked.lock().unwrap()[0], json!({ "target": l.target, "line": 42 }));
+        let _ = std::fs::remove_file(&here);
+
+        // Its folders and images: entries come back; an image there can't be drawn here.
+        let there = OtherMac::new(json!({ "kind": "dir", "entries": [{ "name": "src", "dir": true }, { "name": "a.rs", "size": 3 }], "total": 9 }));
+        let l = Link { target: "/Users/bravo/garden".into(), line: None, ..l };
+        assert!(matches!(load(&l, Some(&there)), Body::Dir { rows, total: 9 } if rows == vec![("src".into(), true, None), ("a.rs".into(), false, Some(3))]));
+        let there = OtherMac::new(json!({ "kind": "image", "size": 2048 }));
+        assert!(matches!(load(&l, Some(&there)), Body::Note(n) if n == "Image · 2 KB"));
+    }
+
+    #[test]
+    fn another_macs_pull_requests_are_read_there() {
+        let pr = json!({ "title": "Water on schedule", "state": "OPEN", "headRefName": "water", "baseRefName": "main", "additions": 3, "deletions": 1 });
+        let there = OtherMac::new(json!({ "kind": "github", "json": pr }));
+        let url = format!("https://github.com/a/midna-lp-test-{}/pull/7", std::process::id());
+        let l = Link { url: true, target: url.clone(), line: None, app: None, preview: None };
+        assert!(matches!(load(&l, Some(&there)), Body::Pr(p) if p.title == "Water on schedule" && p.head == "water"));
+        assert_eq!(there.asked.lock().unwrap()[0]["target"], json!(url));
+        // Cached for that Mac: asked once.
+        let _ = load(&l, Some(&there));
+        assert_eq!(there.asked.lock().unwrap().len(), 1);
+        super::forget(&url);
+        let _ = load(&l, Some(&there));
+        assert_eq!(there.asked.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn another_macs_app_links_run_nothing_here() {
+        let there = OtherMac::new(json!(null));
+        let l = Link { url: true, target: "midna-test-unregistered-scheme://#/?task=T6".into(), line: None, app: Some("Taskboard".into()), preview: Some(vec!["/bin/echo".into(), "{\"title\":\"here\"}".into()]) };
+        assert!(matches!(load(&l, Some(&there)), Body::Note(n) if n == "Opens in Taskboard"));
+        assert!(there.asked.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1867,21 +1930,6 @@ mod tests {
         assert!((fade(0.5) - 0.97).abs() < 0.01);
         assert!((fade(0.75) - 0.83).abs() < 0.01);
         assert!(fade(1.) < 0.001);
-    }
-
-    #[test]
-    fn excerpt_centers_on_the_line() {
-        let text: String = (1..=40).map(|n| format!("line {n}\n")).collect();
-        let (lines, focus) = excerpt(text.as_bytes(), Some(20));
-        assert_eq!(lines.first().map(|l| l.0), Some(16));
-        assert_eq!(lines.len(), FILE_LINES);
-        assert_eq!(focus, Some(20));
-        let (lines, focus) = excerpt(text.as_bytes(), None);
-        assert_eq!((lines[0].0, focus), (1, None));
-        // Near the top, the window starts at line 1.
-        assert_eq!(excerpt(text.as_bytes(), Some(2)).0[0].0, 1);
-        // Tabs expand; CRLF goes.
-        assert_eq!(excerpt("\ta\r\n".as_bytes(), Some(1)).0[0].1, "    a");
     }
 
     #[test]
@@ -2104,10 +2152,10 @@ mod tests {
 
         // `session.link_at` hands over the command; it fills the card.
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/RRD-3", "app": "Jira", "preview": [abs, "RRD-3"] })).unwrap();
-        assert!(matches!(load(&l), Body::App(p) if p.title == "RRD-3"));
+        assert!(matches!(load(&l, None), Body::App(p) if p.title == "RRD-3"));
         // A failing command falls back to the card the link would have had.
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/1", "app": "Jira", "preview": [bin.join("fails").display().to_string()] })).unwrap();
-        assert!(matches!(load(&l), Body::Note(n) if n == "Opens in Jira"));
+        assert!(matches!(load(&l, None), Body::Note(n) if n == "Opens in Jira"));
         // Only URLs take a preview, and it needs a program.
         assert_eq!(Link::from_link_at(&json!({ "kind": "file", "target": "/tmp", "preview": ["x"] })).unwrap().preview, None);
         assert_eq!(Link::from_link_at(&json!({ "kind": "url", "target": "https://a.com", "preview": [""] })).unwrap().preview, None);

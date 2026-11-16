@@ -10,6 +10,7 @@ pub mod image_chips;
 pub mod frame;
 pub mod keep_awake;
 pub mod link_actions;
+pub mod link_preview;
 pub mod link_patterns;
 pub mod methods;
 pub mod nearby;
