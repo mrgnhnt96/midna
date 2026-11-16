@@ -79,7 +79,11 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
                     .child(Icon::BellOff.el(13., t.dim)),
             )
         })
-        .when(!segs.is_empty(), |d| d.child(div().w(px(1.)).h(px(18.)).flex_none().bg(t.line)).child(div().min_w_0().overflow_hidden().child(segments(&segs, t, 12., cx))))
+        .when(!segs.is_empty(), |d| {
+            d.child(div().w(px(1.)).h(px(18.)).flex_none().bg(t.line))
+                .child(div().min_w_0().overflow_hidden().child(segments(&segs, t, 12., cx)))
+                .children(crate::ui::statusbar::on_mac(m, t).map(|d| d.text_size(px(12.))))
+        })
         .when(down.is_some(), |d| {
             d.child(div().flex_none().text_size(px(12.)).text_color(t.dim).whitespace_nowrap().child(format!("as of {}", crate::ui::link_down::when(m))))
         })
@@ -130,10 +134,16 @@ pub fn custom_buttons(m: &MainWindow) -> Vec<String> {
     buttons(m).into_iter().filter(|b| b.starts_with('/')).collect()
 }
 
-/// Built-in buttons left out of `ui.header.buttons`: their actions live in the More menu.
+/// Built-in buttons left out of `ui.header.buttons`: their actions live in the More menu. In
+/// another Mac's window the IDE button is too, so the More menu can say why it's off.
 pub fn hidden(m: &MainWindow) -> Vec<String> {
     let shown = buttons(m);
-    midna_proto::settings::HEADER_BUTTONS.iter().filter(|b| !shown.iter().any(|s| s == *b)).map(|s| s.to_string()).collect()
+    let remote = m.remote();
+    midna_proto::settings::HEADER_BUTTONS
+        .iter()
+        .filter(|b| !shown.iter().any(|s| s == *b) || (remote && **b == "ide"))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Add image shows only while the selected terminal, or the split beside it, runs an agent.
@@ -326,6 +336,14 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
                 let n = m.selected.as_ref().and_then(|s| m.links.by_session.get(s)).map_or(0, Vec::len);
                 menu_item(t, &id, "Session links", &n.to_string(), cx.listener(|m, _, w, cx| crate::ui::links::toggle(m, w, cx))).children(keys("keys.links"))
             }
+            "ide" if m.remote() => {
+                let why = crate::ide::off_here(m).unwrap_or_default();
+                // Another Mac's window: the editor would open on that Mac's screen, so its path
+                // is copied instead (screen 5, state C of the remote Mac windows design).
+                moved = moved.child(off_item(t, "more-ide-open", &format!("Open in {}", crate::ide::name(m)), &why));
+                let mac = m.backend.mac().map(|x| x.name.clone()).unwrap_or_default();
+                menu_item(t, "more-copy-path", &format!("Copy path on {mac}"), "", cx.listener(|m, _, _, cx| crate::ide::copy_path(m, cx)))
+            }
             "ide" => {
                 let name = crate::ide::current(m).map(|(i, _)| i.name).unwrap_or_else(|| "IDE".into());
                 moved = moved.child(
@@ -397,6 +415,22 @@ fn more_menu(m: &MainWindow, hidden: &[String], t: &Theme, cx: &mut Context<Main
         ),
     )
     .with_priority(1)
+}
+
+/// A More menu row that can't be used here, greyed, with why on its right.
+fn off_item(t: &Theme, id: &str, label: &str, why: &str) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id.to_string()))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .w_full()
+        .px(px(10.))
+        .py(px(8.))
+        .text_color(t.dim)
+        .opacity(0.7)
+        .child(div().flex_1().child(label.to_string()))
+        .child(div().text_size(px(11.5)).child(why.to_string()))
 }
 
 /// Tooltip view: the text, and the shortcut keys when the thing has one.

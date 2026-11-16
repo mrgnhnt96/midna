@@ -150,6 +150,8 @@ pub(super) struct LinkMenu {
     cwd: Option<String>,
     ide: Option<Ide>,
     agent: bool,
+    /// The terminal is on another Mac: nothing opens on this Mac's screen (see [`elsewhere`]).
+    remote: bool,
     entries: Vec<Entry>,
     /// Index into the items (not the entries).
     sel: usize,
@@ -178,7 +180,10 @@ impl LinkMenu {
 
     /// Build the entries again from what the menu knows now.
     fn rebuild(&mut self) {
-        let list = entries(&self.kind, self.ide.as_ref().map(|i| i.name.as_str()), self.agent, self.body.as_ref());
+        let mut list = entries(&self.kind, self.ide.as_ref().map(|i| i.name.as_str()), self.agent, self.body.as_ref());
+        if self.remote {
+            list = elsewhere(list);
+        }
         self.entries = with_apps(list, &self.apps, self.body.as_ref());
         self.sel = self.sel.min(self.items().count().saturating_sub(1));
     }
@@ -438,6 +443,20 @@ pub(super) fn entries(kind: &Kind, ide: Option<&str>, agent: bool, body: Option<
         ],
         Kind::Session => vec![item(Act::GoToTerminal, "Go to terminal", "↩"), Entry::Sep, item(Act::CopyLink, "Copy id", "⌘C")],
     }
+}
+
+/// A path on another Mac: Open in IDE and Reveal in Finder would act on that Mac's screen, so
+/// they go and Copy path leads (screen 5, state C of the remote Mac windows design).
+pub(super) fn elsewhere(list: Vec<Entry>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = vec![];
+    for e in list {
+        match e {
+            Entry::Item(Item { act: Act::OpenIde | Act::Reveal, .. }) => {}
+            Entry::Sep if out.is_empty() || matches!(out.last(), Some(Entry::Sep)) => {}
+            e => out.push(e),
+        }
+    }
+    out
 }
 
 /// The header for a link, from what the preview loaded (`body`) when it has.
@@ -759,9 +778,10 @@ impl TerminalView {
         let apps = Apps::new(apps, &kind, &target);
         let wants = matches!(kind, Kind::Url | Kind::Pr(_) | Kind::Issue(_) | Kind::Run(_) | Kind::Pattern { .. } | Kind::Folder);
         let server = matches!(kind, Kind::Server(_)).then(|| self.link_menu_served_by(target.clone(), cx));
+        let there = self.there();
         let load = server.or_else(|| link.filter(|_| seed.is_none() && wants).map(|l| {
             cx.spawn(async move |this, cx| {
-                let body = cx.background_executor().spawn(async move { link_preview::load(&l) }).await;
+                let body = cx.background_executor().spawn(async move { link_preview::load(&l, there.as_deref()) }).await;
                 let _ = this.update(cx, |t, cx| {
                     if let Some(m) = t.link_menu.menu.as_mut() {
                         m.body = Some(body);
@@ -777,7 +797,8 @@ impl TerminalView {
         self.clear_hover(cx);
         self.preview_close(cx);
         self.menu = None;
-        let mut m = LinkMenu { pos, v, kind, target, project, cwd, ide, agent, entries: vec![], sel: 0, body: seed, apps, asking: None, _load: load };
+        let remote = self.backend.mac().is_some();
+        let mut m = LinkMenu { pos, v, kind, target, project, cwd, ide, agent, remote, entries: vec![], sel: 0, body: seed, apps, asking: None, _load: load };
         m.rebuild();
         self.link_menu.menu = Some(m);
         cx.notify();
@@ -919,8 +940,9 @@ impl TerminalView {
                 Some(Body::Pr(pr)) => self.link_menu_copy(pr.head.clone(), cx),
                 _ => {
                     if let Some(link) = Link::from_link_at(&m.v) {
+                        let there = self.there();
                         cx.spawn(async move |this, cx| {
-                            let body = cx.background_executor().spawn(async move { link_preview::load(&link) }).await;
+                            let body = cx.background_executor().spawn(async move { link_preview::load(&link, there.as_deref()) }).await;
                             if let Body::Pr(pr) = body {
                                 let _ = this.update(cx, |t, cx| t.link_menu_copy(pr.head, cx));
                             }
@@ -956,9 +978,10 @@ impl TerminalView {
         let (backend, session, act) = (self.backend.clone(), self.session_id.clone(), act.clone());
         let projects = link_preview::env(cx).projects;
         let link = Link::from_link_at(&m.v).filter(|_| m.body.is_none() && act == Act::StartAgent);
+        let there = self.there();
         cx.background_executor()
             .spawn(async move {
-                let body = m.body.or_else(|| link.map(|l| link_preview::load(&l)));
+                let body = m.body.or_else(|| link.map(|l| link_preview::load(&l, there.as_deref())));
                 let Some(mut p) = open_params(&act, &m.kind, &m.target, body.as_ref()) else { return };
                 let (Kind::Pr(g) | Kind::Issue(g) | Kind::Run(g)) = &m.kind else { return };
                 match project_for(&projects, g) {
@@ -1132,7 +1155,7 @@ impl TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Act, Apps, Body, Entry, Gh, Icon, Kind, Tint, config_remotes, entries, head, key_glyphs, kind_of, open_params, own_head, relative, remote_repo, with_apps};
+    use super::{Act, Apps, Body, Entry, Gh, Icon, Kind, Tint, config_remotes, elsewhere, entries, head, key_glyphs, kind_of, open_params, own_head, relative, remote_repo, with_apps};
     use super::State;
     use super::link_preview::{parse_app_preview, parse_issue, parse_pr, parse_run};
     use gpui_kit::{Keystroke, Modifiers};
@@ -1191,6 +1214,21 @@ mod tests {
         );
         // No line, not an agent, no editor found.
         assert_eq!(labels(&Kind::File { line: None }, None, false), ["Open in editor ↩", "Reveal in Finder", "--", "Copy path ⌘C", "Copy relative path"]);
+    }
+
+    #[test]
+    fn another_macs_paths_copy_instead_of_opening_here() {
+        let k = Kind::File { line: Some(42) };
+        assert_eq!(
+            shown(elsewhere(entries(&k, Some("Zed"), true, None))),
+            ["Copy path ⌘C", "Copy relative path", "Copy path:line", "--", "Mention in prompt"]
+        );
+        assert_eq!(
+            shown(elsewhere(entries(&Kind::Folder, Some("Cursor"), false, None))),
+            ["New terminal here ↩", "--", "Copy path ⌘C", "Copy relative path"]
+        );
+        // Links that aren't paths keep every item.
+        assert_eq!(shown(elsewhere(entries(&Kind::Url, None, false, None))), labels(&Kind::Url, None, false));
     }
 
     #[test]

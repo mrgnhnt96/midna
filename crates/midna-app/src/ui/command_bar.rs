@@ -246,7 +246,8 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         name_note: &name_note,
     };
     let mut cmds = commands::build(&snap);
-    if let Some(dir) = crate::ide::folder(m) {
+    // another Mac's window: an editor would open on that Mac's screen (its ⋯ menu copies the path)
+    if let Some(dir) = crate::ide::folder(m).filter(|_| !m.remote()) {
         let cur = crate::ide::current(m).map(|(i, _)| i.id);
         cmds.extend(commands::ide_commands(&m.ide.list, cur.as_deref(), &dir, &key));
     }

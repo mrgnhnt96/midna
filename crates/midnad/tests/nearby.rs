@@ -45,7 +45,7 @@
 //! message limit) as a read reply that `share.answer` waits for; later turns send nothing.
 mod common;
 use common::*;
-use midna_proto::error::{HUMAN_ONLY, NOT_FOUND, REFUSED};
+use midna_proto::error::{BAD_PARAMS, HUMAN_ONLY, NOT_FOUND, REFUSED};
 use midna_proto::nearby as nb;
 use midna_proto::{Client, ClientError, RpcError, kinds};
 use midnad::nearby::identity::{self, Identity};
@@ -2067,6 +2067,15 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     let e = call_err(&mut there, "peers.set_drive", json!({ "peer": fa, "on": false }));
     assert_eq!((e.code, e.message.starts_with("Do this at Bravo")), (HUMAN_ONLY, true), "local-only: {e:?}");
     assert_eq!(call_err(&mut there, "drive.open", json!({ "peer": fa })).code, HUMAN_ONLY, "no links from a link");
+
+    // A link preview in A's window for B is read on B: its file, its folders.
+    let file = b.home.join("preview.txt");
+    std::fs::write(&file, "on bravo\n\tsecond\n").unwrap();
+    let p = call(&mut there, "links.preview", json!({ "target": file, "line": 2 }));
+    assert_eq!(p, json!({ "kind": "lines", "lines": [[1, "on bravo"], [2, "    second"]], "focus": 2 }));
+    let p = call(&mut there, "links.preview", json!({ "target": b.home }));
+    assert!(p["kind"] == "dir" && p["entries"].as_array().unwrap().iter().any(|e| e["name"] == "preview.txt"), "{p}");
+    assert_eq!(call_err(&mut there, "links.preview", json!({ "target": "preview.txt" })).code, BAD_PARAMS, "a path from nowhere");
 
     // Terminal frames come through the link.
     let mut st = Client::connect(&socket).unwrap().attach(&tab, 60, 20, 8, 16).unwrap();

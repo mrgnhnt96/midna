@@ -191,6 +191,47 @@ pub struct ServedBy {
     pub port: u16,
 }
 
+/// `links.preview`: what a link's hover card shows, read on this Mac: a file's lines, a
+/// folder's entries, or what `gh` says about a GitHub pull request, issue or workflow run. The
+/// app asks the Mac a window drives, so a card in another Mac's window is read on that Mac.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinksPreviewParams {
+    /// An absolute path, or a `https://github.com/<owner>/<repo>/{pull,issues,actions/runs}/<n>` link.
+    pub target: String,
+    /// For a file: the line to center on (1-based).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+/// What [`LinksPreviewParams`] found.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LinkPreview {
+    /// A text file's numbered lines around `line` (the top without one), and that line when
+    /// it's among them.
+    Lines { lines: Vec<(u32, String)>, #[serde(default, skip_serializing_if = "Option::is_none")] focus: Option<u32> },
+    /// A folder's first entries (folders first, then by name) and how many it has.
+    Dir { entries: Vec<DirEntry>, total: usize },
+    /// An image file and its size.
+    Image { size: u64 },
+    /// A binary file and its size.
+    Binary { size: u64 },
+    /// Nothing to show: an empty file, or why it couldn't be read.
+    Note { text: String },
+    /// `gh pr|issue|run view --json …` for a GitHub link, as `gh` printed it.
+    Github { json: Value },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DirEntry {
+    pub name: String,
+    #[serde(default)]
+    pub dir: bool,
+    /// A file's size in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
 /// `links.patterns.register`: an app's own `terminal.link_patterns` rules, replacing what it
 /// registered before.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
