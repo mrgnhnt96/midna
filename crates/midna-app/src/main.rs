@@ -7,6 +7,7 @@
 //! - `MIDNA_SELECT=<session id>` — initial selection; `MIDNA_W` / `MIDNA_H` — window size.
 //! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|system-upgrade|system-overload[-midna]` — screenshot states.
 //! - `MIDNA_DEBUG_REMOTE=1|<name>` — also open another of my Macs' window (the fake's second Mac).
+//! - `MIDNA_FAKE_LINK=finding|proving|loading` — hold that window on a connecting step.
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
 //! - `MIDNA_DEV=1` — dev mode even inside a bundle: no install / login item / updates; a missing
 //!   midnad is spawned from next to this binary (`MIDNA_NO_SPAWN=1` to skip). See `lifecycle.rs`.

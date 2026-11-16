@@ -295,6 +295,12 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .overflow_y_scroll()
         .track_scroll(&m.sidebar_scroll)
         .on_scroll_wheel(cx.listener(|m, _, _, cx| crate::ui::fold_peek::close(m, cx)));
+    // Another Mac's link down: its rows stay, greyed, as of when it dropped (`link_down`).
+    let stale = m.remote_down();
+    if let Some(down) = stale {
+        let label = crate::ui::link_down::stale_label(down, &crate::ui::link_down::when(m)).to_uppercase();
+        list = list.child(div().mt(px(8.)).mx(px(10.)).px(px(4.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim).child(label));
+    }
     let split_focused = crate::ui::split::focused(m, window, cx);
     let gap = if compact { 2. } else { 8. };
     let mut far = Far::new(m, gap, sb_anim.is_some() || cx.has_active_drag());
@@ -366,7 +372,7 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
             .child(caps_label(t, &g.name).min_w_0().truncate())
             .when(pinned, |d| d.child(Icon::PushPin.el(11., t.dim)))
             .child(div().flex_1())
-            .when(n > 0, |d| {
+            .when(n > 0 && stale.is_none(), |d| {
                 d.child(
                     div()
                         .min_w(px(18.))
@@ -501,7 +507,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
     if let Some(shelf) = crate::ui::shelf::section(m, t, compact, window, cx) {
         list = list.child(wipe(line, 0., shelf));
     }
-    if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
+    // Another Mac's window before its first list: placeholder rows (design 3 Connecting).
+    if m.remote_loading() {
+        list = list.child(placeholder_rows(t));
+    } else if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
         list = list
             .child(div().px(px(10.)).pt(px(8.)).child(open_project_button(m, t, "sidebar-open-project", cx)))
             .child(div().px(px(14.)).py(px(10.)).text_size(px(12.)).text_color(t.dim).child(format!("Or {} for a terminal at root.", m.key_label("keys.new_terminal"))));
@@ -522,11 +531,18 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .on_mouse_move(cx.listener(|m, ev: &MouseMoveEvent, _, cx| crate::ui::fold_peek::moved(m, ev.position, cx)))
         .children(crate::ui::fold_peek::card(m, t, window, cx))
         .child(top)
-        .when(btn_look.shown, |d| d.child(need_btn))
+        .when(btn_look.shown && !m.remote_loading() && stale.is_none(), |d| d.child(need_btn))
         .child(div().relative().flex().flex_col().flex_1().min_h_0().child(list).children(crate::ui::shelf::stuck(m, t, cx)))
         .children(background.map(|b| wipe(line, 0., b.into_any_element())))
         .child(wipe(line, 0., footer.into_any_element()))
         .into_any_element()
+}
+
+/// Grey bars where another Mac's rows go until its list arrives: a heading, two rows, a gap,
+/// another heading and a row.
+fn placeholder_rows(t: &Theme) -> Div {
+    let bar = |w: f32, gap: f32| div().h(px(10.)).w(relative(w)).mt(px(gap)).rounded(px(5.)).bg(t.line);
+    div().flex().flex_col().gap(px(10.)).px(px(14.)).py(px(12.)).children([bar(0.4, 0.), bar(0.75, 0.), bar(0.6, 0.), bar(0.35, 10.), bar(0.7, 0.)])
 }
 
 /// The project list's padding above its first group and below its last.
@@ -786,7 +802,7 @@ fn rail(m: &MainWindow, t: &Theme, anim: Option<Frame>, cx: &mut Context<MainWin
         .border_color(t.line)
         .child(titlebar_strip())
         .child(div().flex().justify_center().pb(px(6.)).child(collapse_button(t, true)))
-        .when(need_n > 0, |d| {
+        .when(need_n > 0 && m.remote_down().is_none(), |d| {
             d.child(
                 div().flex().justify_center().pb(px(6.)).child(
                     div()
@@ -952,22 +968,24 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let custom = super::status_label(m, s);
     // A trigger's custom status (or a ui.status.looks label) replaces the built-in second
     // line: its label in its color.
+    // Another Mac's link down: no ages ("· 3m"), they'd count from a state that's gone stale.
+    let stale = m.remote_down().is_some();
     let custom_line = custom.as_ref().filter(|_| !compact).map(|c| {
-        let since = c.since.as_deref().map(since_short).unwrap_or_default();
+        let since = c.since.as_deref().filter(|_| !stale).map(since_short).unwrap_or_default();
         let mut text = if since.is_empty() { c.label.clone() } else { format!("{} · {since}", c.label) };
         // paused · 3m · 34 processes held
         if let Some(held) = c.detail.as_ref().filter(|_| s.paused.is_some()) {
             text = format!("{text} · {held}");
         }
-        (text, t.status_color(&c.color))
+        (text, if stale { t.dim } else { t.status_color(&c.color) })
     });
     let custom_icon = custom.as_ref().and_then(|c| c.icon.as_deref()).and_then(Icon::from_name);
     let line2 = custom_line.or_else(|| (!compact && attention).then(|| {
         let need = m.need_for_session(&s.id);
         let text = attention_text(&s.status, state, need.map(|n| n.title.as_str()));
         let since = need.filter(|_| state == StatusState::NeedsYou).map(|n| since_short(&n.created_at)).or_else(|| s.status.since.as_deref().map(since_short)).unwrap_or_default();
-        let text = if since.is_empty() { text } else { format!("{text} · {since}") };
-        (text, if state == StatusState::Failed { t.err } else { t.need })
+        let text = if since.is_empty() || stale { text } else { format!("{text} · {since}") };
+        (text, if stale { t.dim } else if state == StatusState::Failed { t.err } else { t.need })
     }));
     let look = m.need_anim.row(&s.id, state == StatusState::NeedsYou);
     // Handled: the reason line says what you did while it folds away.
@@ -1031,7 +1049,10 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(div().w(px(12.)).flex_none().flex().items_center().child(super::terminal_dot(m, t, s, 8.)))
+                .child(div().w(px(12.)).flex_none().flex().items_center().child(match stale {
+                    true => div().size(px(8.)).flex_none().rounded_full().bg(t.dim),
+                    false => super::terminal_dot(m, t, s, 8.),
+                }))
                 .child(
                     div()
                         .flex()

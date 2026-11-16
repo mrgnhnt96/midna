@@ -42,6 +42,13 @@ impl Split {
     }
 }
 
+/// Typing in the split pane off (`on`) while another Mac's link is down, or back on.
+pub fn freeze(m: &MainWindow, on: bool, cx: &mut Context<MainWindow>) {
+    if let Some(s) = &m.split {
+        s.view.update(cx, |v, cx| v.freeze(on, cx));
+    }
+}
+
 /// The terminal `session` is the split of, if any.
 pub fn host_of(m: &MainWindow, session: &str) -> Option<String> {
     m.splits.iter().find(|(_, s)| s.session == session).map(|(h, _)| h.clone())

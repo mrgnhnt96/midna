@@ -21,6 +21,41 @@ pub enum ConnState {
     Connecting,
     Connected,
     NotRunning { socket: PathBuf, error: String },
+    /// Another Mac's window whose drive link isn't up yet, or is down: how far it got, from
+    /// this Mac's midnad (`drive.list`).
+    Link(LinkProgress),
+}
+
+/// A drive link that isn't carrying calls yet (`ConnState::Link`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkProgress {
+    /// Connected means the link is up but this window's own connection through it isn't yet.
+    pub state: midna_proto::nearby::DriveState,
+    pub stage: Option<midna_proto::nearby::DriveStage>,
+    pub reason: Option<String>,
+}
+
+impl LinkProgress {
+    /// The window has started the link and heard nothing back yet.
+    pub fn starting() -> Self {
+        LinkProgress { state: midna_proto::nearby::DriveState::Connecting, stage: None, reason: None }
+    }
+
+    /// "reconnecting to Bravo: the network dropped".
+    pub fn describe(&self, name: &str) -> String {
+        use midna_proto::nearby::DriveState;
+        let state = match self.state {
+            DriveState::Connecting => format!("connecting to {name}"),
+            DriveState::Connected => format!("connected to {name}"),
+            DriveState::Reconnecting => format!("reconnecting to {name}"),
+            DriveState::Offline => format!("{name} is offline"),
+            DriveState::Closed => format!("the link to {name} closed"),
+        };
+        match self.reason.as_deref() {
+            Some(r) if !r.is_empty() => format!("{state}: {r}"),
+            _ => state,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

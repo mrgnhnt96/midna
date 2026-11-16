@@ -190,6 +190,9 @@ pub struct TerminalView {
     /// (Claude Code can apply a typed letter in the middle of a burst of deletes). The job is
     /// None when the erase needs no check, only that wait.
     erasing: Option<(Option<term_edit::Pending>, Vec<ClientMsg>)>,
+    /// Another Mac's link is down: keys and clicks go nowhere (never saved up to send later) and
+    /// the last screen stays, without the "stream ended" note.
+    frozen: bool,
     /// Bumped per scheduled erase check, so only the latest one runs.
     erase_gen: u64,
     /// A message over the terminal, and when it goes.
@@ -409,7 +412,7 @@ impl TerminalView {
             loop {
                 cx.background_executor().timer(Duration::from_millis(60)).await;
                 let r = this.update(cx, |t, _| {
-                    if let (Some(m), Some(s)) = (t.drag_out, t.stream()) {
+                    if let (Some(m), Some(s), false) = (t.drag_out, t.stream(), t.frozen) {
                         s.send(&ClientMsg::Mouse(m));
                     }
                 });
@@ -501,6 +504,7 @@ impl TerminalView {
             agent_proc: None,
             alt_probed: false,
             erasing: None,
+            frozen: false,
             erase_gen: 0,
             notice: None,
             redo: Vec::new(),
@@ -676,8 +680,20 @@ impl TerminalView {
         self.blink_on = true;
     }
 
+    /// Typing off while another Mac's link is down (`MainWindow::remote_down`), or back on.
+    pub fn freeze(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.frozen = on;
+        if on {
+            self.erasing = None;
+        }
+        cx.notify();
+    }
+
     /// Raw bytes for the PTY (text). The daemon snaps the viewport back and clears the selection.
     pub fn send(&mut self, bytes: &[u8]) {
+        if self.frozen {
+            return;
+        }
         if let Some(s) = self.stream() {
             s.input(bytes);
         }
@@ -685,6 +701,9 @@ impl TerminalView {
     }
 
     fn send_msg(&self, m: ClientMsg) {
+        if self.frozen {
+            return;
+        }
         if let Some(s) = self.stream() {
             s.send(&m);
         }
@@ -692,6 +711,9 @@ impl TerminalView {
 
     /// The user's input: sent now, or after the selection being erased is gone.
     fn deliver(&mut self, m: ClientMsg) {
+        if self.frozen {
+            return;
+        }
         match self.erasing.as_mut() {
             Some((_, queued)) => queued.push(m),
             None => self.send_msg(m),
@@ -2801,6 +2823,7 @@ impl Render for TerminalView {
         let below = self.ext.scroll_total.saturating_sub(self.ext.scroll_offset + self.ext.scroll_len);
 
         let overlay = match &self.status {
+            _ if self.frozen => None,
             StreamStatus::Attaching => Some(("Attaching…".to_string(), dim)),
             StreamStatus::Ended => Some(("Stream ended. The session closed or midnad went away.".to_string(), dim)),
             StreamStatus::NotRunning(_) => None,

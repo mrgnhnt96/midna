@@ -1,7 +1,7 @@
 //! Real midnad backend, built on `midna_proto::Client`: a control connection for calls, a
 //! second connection for `events.subscribe` (reconnecting), and one `stream.attach`
 //! connection per visible terminal.
-use super::{AttachRequest, Backend, BackendEvent, ConnState, Mac, TermStream};
+use super::{AttachRequest, Backend, BackendEvent, ConnState, LinkProgress, Mac, TermStream};
 use crate::frame::FrameSink;
 use crate::model::Event;
 use anyhow::anyhow;
@@ -82,27 +82,28 @@ impl Link {
         Ok(s)
     }
 
+    /// Where the link is, from this Mac's midnad (`drive.list`); None once it's gone.
+    fn progress(&self) -> Option<LinkProgress> {
+        let links = self.local.call("drive.list", Value::Null).ok().and_then(|v| serde_json::from_value::<DriveListResult>(v).ok())?;
+        let l = links.links.into_iter().find(|l| l.peer == self.mac.peer)?;
+        Some(LinkProgress { state: l.state, stage: l.stage, reason: l.reason })
+    }
+
     /// Why a connection through the link failed: a link that isn't connected answers each one
     /// with a refusal and closes it, so the state comes from this Mac's midnad instead.
     fn why(&self) -> String {
-        let links = self.local.call("drive.list", Value::Null).ok().and_then(|v| serde_json::from_value::<DriveListResult>(v).ok());
-        let link = links.and_then(|l| l.links.into_iter().find(|l| l.peer == self.mac.peer));
-        let name = &self.mac.name;
-        match link {
-            None => self.refused.lock().unwrap().clone().unwrap_or_else(|| format!("no link to {name}")),
-            Some(l) => {
-                let state = match l.state {
-                    DriveState::Connecting => format!("connecting to {name}"),
-                    DriveState::Connected => format!("connected to {name}"),
-                    DriveState::Reconnecting => format!("reconnecting to {name}"),
-                    DriveState::Offline => format!("{name} is offline"),
-                    DriveState::Closed => format!("the link to {name} closed"),
-                };
-                match l.reason {
-                    Some(r) if !r.is_empty() => format!("{state}: {r}"),
-                    _ => state,
-                }
-            }
+        match self.progress() {
+            None => self.refused.lock().unwrap().clone().unwrap_or_else(|| format!("no link to {}", self.mac.name)),
+            Some(p) => p.describe(&self.mac.name),
+        }
+    }
+
+    /// The window's state after a connection through the link failed: how far the link got
+    /// while it's on its way (or back), else why it can't be reached.
+    fn state(&self) -> ConnState {
+        match self.progress() {
+            Some(p) if p.state != DriveState::Closed => ConnState::Link(p),
+            _ => ConnState::NotRunning { socket: self.local.socket_path(), error: self.why() },
         }
     }
 }
@@ -120,7 +121,7 @@ impl Target {
     fn failed(&self, e: impl std::fmt::Display) -> ConnState {
         match self {
             Target::Local(s) => ConnState::NotRunning { socket: s.clone(), error: e.to_string() },
-            Target::Link(l) => ConnState::NotRunning { socket: l.local.socket_path(), error: l.why() },
+            Target::Link(l) => l.state(),
         }
     }
 }
@@ -556,6 +557,28 @@ mod tests {
 
     fn drive_link(socket: &std::path::Path, state: &str, reason: Option<&str>) -> Value {
         serde_json::json!({ "link": "l_1", "peer": "f".repeat(64), "name": "Morgan's Mac mini", "socket": socket, "state": state, "reason": reason })
+    }
+
+    #[test]
+    fn a_connecting_link_tells_the_window_how_far_it_got() {
+        let gone = std::env::temp_dir().join(format!("mdl-connecting-{}", std::process::id()));
+        let g = gone.clone();
+        let (local, _) = daemon_with(move |m, _| match m {
+            "drive.open" => drive_link(&g, "connecting", None),
+            "drive.list" => {
+                let mut l = drive_link(&g, "connecting", None);
+                l["stage"] = "proving".into();
+                serde_json::json!({ "links": [l] })
+            }
+            _ => Value::Null,
+        });
+        let here: Arc<dyn Backend> = Arc::new(DaemonBackend::new(local));
+        let mini = here.open_mac(mini());
+        let (tx, rx) = async_channel::unbounded();
+        mini.subscribe(tx);
+        let first = rx.recv_blocking().unwrap();
+        let BackendEvent::Conn(ConnState::Link(p)) = first else { panic!("{first:?}") };
+        assert_eq!(p, LinkProgress { state: DriveState::Connecting, stage: Some(midna_proto::nearby::DriveStage::Proving), reason: None });
     }
 
     #[test]
