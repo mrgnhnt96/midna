@@ -173,7 +173,8 @@ fn go_to(m: &mut MainWindow, session: String, window: &mut Window, cx: &mut Cont
     if m.screen != Screen::Terminal {
         m.set_screen(Screen::Terminal, window, cx);
     }
-    cx.defer(move |cx| crate::windows::reveal(session, cx));
+    let mac = m.mac_id();
+    cx.defer(move |cx| crate::windows::reveal(mac, session, cx));
 }
 
 fn step(m: &mut MainWindow, by: isize, cx: &mut Context<MainWindow>) {

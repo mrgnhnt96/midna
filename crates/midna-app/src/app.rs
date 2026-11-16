@@ -299,7 +299,7 @@ impl MainWindow {
             crate::ui::twilight::native_bg(window, cx.global::<Theme>().bg);
         }
         let id = cx.entity_id();
-        let windows = crate::windows::register(cx.weak_entity(), id, window, cx);
+        let windows = crate::windows::register(cx.weak_entity(), id, crate::backend::mac_id(&*backend), window, cx);
         cx.on_release(|m: &mut MainWindow, cx| crate::windows::closed(m.id, cx)).detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| weak.update(cx, |m, cx| crate::ui::close_window::should_close(m, window, cx)).unwrap_or(true));
@@ -536,6 +536,10 @@ impl MainWindow {
     }
 
     pub fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The theme is this Mac's: another Mac's window shows in it for now.
+        if self.remote() {
+            return;
+        }
         // Re-reads custom theme files when they changed (`theme_def` then uses the cache).
         crate::theme::all_themes(&self.home());
         let def = self.resolve_theme(window);
@@ -558,6 +562,10 @@ impl MainWindow {
     }
 
     fn rebind(&self, cx: &mut Context<Self>) {
+        // Shortcuts are this Mac's settings, not another Mac's.
+        if self.remote() {
+            return;
+        }
         let settings = self.settings.clone();
         let when: Vec<String> = match settings.get("keys.when") {
             Some(Value::Array(rules)) => rules.iter().filter_map(|r| r.as_str().map(str::to_string)).collect(),
@@ -602,8 +610,11 @@ impl MainWindow {
                             self.terminal = None;
                             self.pending_terminal = None;
                             self.ensure_terminal(window, cx);
-                            if self.backend.label() == "midnad" && self.is_home() {
+                            if self.backend.label() == "midnad" && self.is_local_home() {
                                 crate::lifecycle::report_updates(self.backend.clone());
+                            }
+                            if self.is_local_home() {
+                                crate::windows::refresh_menu(self.backend.clone(), cx);
                             }
                         }
                     }
@@ -694,7 +705,7 @@ impl MainWindow {
                 if k == midna_proto::kinds::SESSION_QUEUE {
                     crate::ui::queue::on_event(self, &e, cx);
                     // Only for a message you queued: trigger, resume and agent sends stay quiet.
-                    if self.is_home()
+                    if self.is_local_home()
                         && e.actor.kind == "human"
                         && e.data.get("action").and_then(|a| a.as_str()) == Some("sent")
                     {
@@ -715,15 +726,15 @@ impl MainWindow {
                 if k == midna_proto::kinds::NOTIFY_POSTED || k == midna_proto::kinds::NOTIFY_READ || k == midna_proto::kinds::NOTIFY_WITHDRAWN {
                     crate::ui::notifications::on_event(self, &e, cx);
                 }
-                if k == midna_proto::kinds::NOTIFY_POSTED && self.is_home() {
+                if k == midna_proto::kinds::NOTIFY_POSTED && self.is_local_home() {
                     self.on_notification(&e, window, cx);
                 }
                 if k == midna_proto::kinds::NOTIFY_WITHDRAWN
                     && let Some(id) = e.data["id"].as_str()
                 {
-                    // Every window drops its card; the home one also clears the banner and badge.
+                    // Every window drops its card; this Mac's home one also clears the banner and badge.
                     crate::ui::toast::withdraw(self, id, cx);
-                    if self.is_home() {
+                    if self.is_local_home() {
                         crate::notify::withdraw(id);
                         crate::ui::badge::withdraw(id, cx);
                     }
@@ -733,13 +744,13 @@ impl MainWindow {
                 {
                     crate::terminal::link_stale(url);
                 }
-                if k == midna_proto::kinds::NOTIFY_CLEARED && self.is_home() {
+                if k == midna_proto::kinds::NOTIFY_CLEARED && self.is_local_home() {
                     match e.session_id.as_deref() {
                         Some(s) => crate::notify::clear(s),
                         None => crate::notify::clear_all(),
                     }
                 }
-                if k == midna_proto::kinds::NOTIFY_SOUND && self.is_home() {
+                if k == midna_proto::kinds::NOTIFY_SOUND && self.is_local_home() {
                     let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 30);
                     if let Ok(p) = serde_json::from_value::<midna_proto::notify::Played>(e.data.clone())
                         && fresh
@@ -753,7 +764,7 @@ impl MainWindow {
                     crate::ui::paused::on_load_event(self, k, &e.data, cx);
                 }
                 // The Mac stayed busy: offer to pause or stop the terminals behind it (once per spell).
-                if self.is_home() {
+                if self.is_local_home() {
                     use crate::ui::system_window::{self as sw, Kind};
                     let fresh = midna_proto::time::parse_rfc3339(&e.at).is_some_and(|t| midna_proto::time::now_unix() - t < 120);
                     if k == midna_proto::kinds::SYSTEM_OVERLOADED
@@ -766,6 +777,12 @@ impl MainWindow {
                     if k == midna_proto::kinds::SYSTEM_CALM {
                         sw::close(Kind::Overloaded, cx);
                     }
+                }
+                // Paired, forgotten or renamed: the Window menu's Macs follow.
+                if self.is_local_home()
+                    && matches!(k, midna_proto::kinds::PEERS_PAIRED | midna_proto::kinds::PEERS_CHANGED | midna_proto::kinds::PEERS_FORGOTTEN)
+                {
+                    crate::windows::refresh_menu(self.backend.clone(), cx);
                 }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
@@ -783,7 +800,8 @@ impl MainWindow {
             }
             BackendEvent::WindowCommand(v) if self.is_home() => {
                 // A command about one terminal goes to the window it shows in.
-                let target = v.get("target").and_then(|t| t.as_str()).and_then(|t| self.windows.borrow().place(t)).filter(|w| *w != self.id);
+                let mac = self.mac_id();
+                let target = v.get("target").and_then(|t| t.as_str()).and_then(|t| self.windows.borrow().place(&mac, t)).filter(|w| *w != self.id);
                 match target {
                     Some(w) => cx.defer(move |cx| crate::windows::command(w, v, cx)),
                     None => self.on_window_command(v, window, cx),
@@ -791,7 +809,7 @@ impl MainWindow {
             }
             BackendEvent::WindowCommand(_) => {}
             BackendEvent::Notification { method, params } => {
-                if method == "updates.command" && self.is_home() {
+                if method == "updates.command" && self.is_local_home() {
                     let action = params.get("action").and_then(|a| a.as_str()).unwrap_or("").to_string();
                     if let Some(msg) = crate::lifecycle::on_daemon_command(&action, cx) {
                         self.toast(msg, cx);
@@ -804,9 +822,25 @@ impl MainWindow {
         }
     }
 
-    /// The main window focused last (see `windows`).
+    /// Its Mac's main window focused last (see `windows`).
     fn is_home(&self) -> bool {
         self.windows.borrow().is_home(self.id)
+    }
+
+    /// This Mac's main window focused last: it posts this Mac's banners, plays its sounds and
+    /// takes its update commands.
+    fn is_local_home(&self) -> bool {
+        !self.remote() && self.is_home()
+    }
+
+    /// The Mac this window shows (see `windows`).
+    pub fn mac_id(&self) -> crate::windows::MacId {
+        crate::backend::mac_id(&*self.backend)
+    }
+
+    /// This window shows another of my Macs (see `windows`).
+    pub fn remote(&self) -> bool {
+        self.backend.mac().is_some()
     }
 
     /// Whether `session` shows in this window (not another main window).
@@ -1147,7 +1181,7 @@ impl MainWindow {
             // New terminals (from an agent, a trigger, the CLI) land in the home window.
             if self.is_home() {
                 let mut w = self.windows.borrow_mut();
-                let new: Vec<&Session> = self.sessions.iter().filter(|s| !w.owned(&s.id)).collect();
+                let new: Vec<&Session> = self.sessions.iter().filter(|s| !w.owned(&s.id, self.id)).collect();
                 for s in &new {
                     w.claim(&s.id, self.id);
                 }
@@ -1176,7 +1210,7 @@ impl MainWindow {
         }
         crate::ui::need_anim::sync(self, cx);
         crate::ui::toast::sync(self, cx);
-        if badge && self.is_home() {
+        if badge && self.is_local_home() {
             crate::ui::badge::sync(self, cx);
         }
         if let Some(t) = r.today {
@@ -1448,9 +1482,10 @@ impl MainWindow {
             return;
         }
         // Another main window has it: show it there. Nobody has it yet: it's this window's.
-        if self.windows.borrow().owned(&id) {
+        if self.windows.borrow().owned(&id, self.id) {
             if !self.shows(&id) {
-                cx.defer(move |cx| crate::windows::reveal(id, cx));
+                let mac = self.mac_id();
+                cx.defer(move |cx| crate::windows::reveal(mac, id, cx));
                 return;
             }
         } else {
@@ -2371,7 +2406,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &crate::ide::ChooseIde, w, cx| crate::ide::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenTriggers, w, cx| m.set_screen(Screen::Triggers, w, cx)))
             .on_action(cx.listener(|m, _: &OpenInsights, w, cx| m.set_screen(Screen::Insights, w, cx)))
-            .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
+            .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(crate::backend::local(&m.backend), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
                     if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide) {

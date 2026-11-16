@@ -189,12 +189,14 @@ fn drag_out_move(m: &mut MainWindow, ev: &DragMoveEvent<DraggedRow>, window: &mu
     let pos = ev.event.position;
     m.drag_out = Some((drag_ids(m, &dragged), pos));
     let bounds = window.bounds();
-    let over = crate::windows::window_at(bounds.origin + pos, m.id, bounds, cx).filter(|w| *w != m.id);
+    // Another Mac's window isn't a place to drop: a terminal stays on its Mac.
+    let over = crate::windows::window_at(bounds.origin + pos, m.id, bounds, cx).filter(|w| *w != m.id && crate::windows::same_mac(m.id, *w, cx));
     crate::windows::set_drop_hint(over, cx);
 }
 
-/// Released: over another main window, the rows move there; outside every window, they get
-/// a new one under the cursor. Inside this window the drag was a reorder (already done).
+/// Released: over another main window of the same Mac, the rows move there; outside every
+/// window, they get a new one under the cursor (the same Mac's). Over another Mac's window the
+/// drop is refused. Inside this window the drag was a reorder (already done).
 fn drag_out_end(m: &mut MainWindow, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some((ids, _)) = m.drag_out.take() else { return };
     crate::windows::set_drop_hint(None, cx);
@@ -207,18 +209,24 @@ fn drag_out_end(m: &mut MainWindow, pos: Point<Pixels>, window: &mut Window, cx:
     if target == Some(m.id) {
         return;
     }
+    if target.is_some_and(|t| !crate::windows::same_mac(m.id, t, cx)) {
+        return m.toast(REFUSE_OTHER_MAC.to_string(), cx);
+    }
     m.hand_off(&ids, window, cx);
-    let backend = m.backend.clone();
+    let (backend, from) = (m.backend.clone(), m.id);
     cx.defer(move |cx| {
         let target = target.or_else(|| {
             let at = Bounds::new(screen - point(px(80.), px(20.)), bounds.size);
             crate::windows::open(backend, Some(at), cx).and_then(|h| crate::windows::id_of(h, cx))
         });
         if let Some(t) = target {
-            crate::windows::give(ids, t, cx);
+            crate::windows::give(ids, from, t, cx);
         }
     });
 }
+
+/// A row dropped on another Mac's window: it stays where it is.
+pub const REFUSE_OTHER_MAC: &str = "A terminal stays on its Mac: it can't move to another Mac's window";
 
 /// `sb_anim`: ⌘B collapsing or expanding it: each line's text wipes back toward its status dot
 /// (the top line first), or writes itself back in, clipped without reflowing.

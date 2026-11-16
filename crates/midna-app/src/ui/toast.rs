@@ -362,7 +362,8 @@ pub fn go(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>)
     if m.screen != crate::app::Screen::Terminal {
         m.set_screen(crate::app::Screen::Terminal, window, cx);
     }
-    cx.defer(move |cx| crate::windows::reveal(sid, cx));
+    let mac = m.mac_id();
+    cx.defer(move |cx| crate::windows::reveal(mac, sid, cx));
 }
 
 /// Drop the cards that should go now (after a refresh, or a terminal opened), not on the next

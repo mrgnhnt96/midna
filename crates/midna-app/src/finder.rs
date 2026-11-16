@@ -131,11 +131,11 @@ fn percent_decode(s: &str) -> String {
 pub fn open(dir: String, cx: &mut App) {
     crate::lifecycle::log(&format!("open folder: {dir}"));
     cx.activate(true);
-    crate::windows::with_active(cx, move |m, window, cx| {
+    crate::windows::with_active_local(cx, move |m, window, cx| {
         window.activate_window();
         let existing = m.sessions.iter().find(|s| !s.background && s.kind == crate::model::SessionKind::Shell && s.cwd.trim_end_matches('/') == dir).map(|s| s.id.clone());
         if let Some(id) = existing {
-            cx.defer(move |cx| crate::windows::reveal(id, cx));
+            cx.defer(move |cx| crate::windows::reveal(None, id, cx));
             return;
         }
         open_shell(m, dir, cx);

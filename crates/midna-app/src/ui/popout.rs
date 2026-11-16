@@ -82,7 +82,8 @@ impl PopOut {
         forget(&self.session, cx);
         window.remove_window();
         let id = self.session.clone();
-        cx.defer(move |cx| crate::windows::reveal(id, cx));
+        let mac = self.main.upgrade().and_then(|m| m.read(cx).mac_id());
+        cx.defer(move |cx| crate::windows::reveal(mac, id, cx));
     }
 }
 
