@@ -369,8 +369,13 @@ struct Waiting {
     mac: Option<String>,
     /// Approving it can only be done at its Mac: its card says "Decide at <Mac>" instead.
     local_only: bool,
-    /// Another Mac's: the card's line saying where it is ("<Mac> · project › terminal").
+    /// Another Mac's: where it is there ("project › terminal"), after the Mac's name on the
+    /// card's top line.
     on: Option<String>,
+    /// Another Mac's, while that Mac can't be reached (`Reach::Asleep`): its row greys out and
+    /// its card can't act on it until it wakes. `since`: when its link dropped (unix seconds).
+    asleep: bool,
+    since: Option<i64>,
 }
 
 /// A capsule beside the badge.
@@ -840,9 +845,10 @@ fn remote_rows(feeds: &[crate::mac_feed::Feed], colors: &HashMap<String, String>
             let category = category_of(n.kind).to_string();
             let (title, detail, command) = words(n);
             let place = f.place(n);
-            let on = match place {
-                Some(p) => format!("{} · {}{}", f.mac.name, p.project.as_ref().map(|p| format!("{p} › ")).unwrap_or_default(), p.terminal),
-                None => f.mac.name.clone(),
+            let on = place.map(|p| format!("{}{}", p.project.as_ref().map(|p| format!("{p} › ")).unwrap_or_default(), p.terminal));
+            let since = match f.reach {
+                crate::mac_feed::Reach::Asleep { since } => Some(since),
+                _ => None,
             };
             rows.push(Waiting {
                 id: mac_tab::row_id(&f.mac.peer, &n.id),
@@ -865,7 +871,9 @@ fn remote_rows(feeds: &[crate::mac_feed::Feed], colors: &HashMap<String, String>
                 timer: None,
                 mac: Some(f.mac.peer.clone()),
                 local_only: n.local_only,
-                on: Some(on),
+                on,
+                asleep: since.is_some(),
+                since: since.flatten(),
             });
         }
     }
@@ -933,6 +941,8 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 mac: None,
                 local_only: false,
                 on: None,
+                asleep: false,
+                since: None,
             }
         })
         .collect();
@@ -1443,7 +1453,7 @@ impl Badge {
         let now = Instant::now();
         let (tabs, arrival) = mac_tab::follow(&self.macs, feeds, &mut self.arrivals, now);
         let remote = remote_rows(feeds, &self.colors);
-        let same = |a: &[Waiting], b: &[Waiting]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.id == b.id && a.title == b.title && a.detail == b.detail && a.name == b.name && a.on == b.on && a.approval == b.approval && a.local_only == b.local_only && a.options == b.options);
+        let same = |a: &[Waiting], b: &[Waiting]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.id == b.id && a.title == b.title && a.detail == b.detail && a.name == b.name && a.on == b.on && a.asleep == b.asleep && a.since == b.since && a.approval == b.approval && a.local_only == b.local_only && a.options == b.options);
         if tabs == self.macs && same(&remote, &self.remote) {
             return;
         }
@@ -1991,6 +2001,8 @@ impl Badge {
                     mac: None,
                     local_only: false,
                     on: None,
+                    asleep: false,
+                    since: None,
                 });
             }
             waiting = Some(id);
@@ -2025,6 +2037,8 @@ impl Badge {
                 mac: None,
                 local_only: false,
                 on: None,
+                asleep: false,
+                since: None,
             });
             waiting = Some(id);
         }
@@ -2083,6 +2097,8 @@ impl Badge {
                     mac: None,
                     local_only: false,
                     on: None,
+                    asleep: false,
+                    since: None,
                 });
             }
             self.recount(cx);
@@ -2157,6 +2173,11 @@ impl Badge {
         Some(crate::backend::for_mac(&self.backend, crate::backend::Mac { peer: t.peer.clone(), name: t.name.clone() }))
     }
 
+    /// Whether my other Mac `peer` can't be reached now (its tab, list and cards grey out).
+    fn asleep(&self, peer: &str) -> bool {
+        self.macs.iter().any(|t| t.peer == peer && t.asleep)
+    }
+
     /// The name of my other Mac `peer`.
     fn mac_name(&self, peer: &str) -> String {
         self.macs.iter().find(|t| t.peer == peer).map_or_else(|| "the other Mac".into(), |t| t.name.clone())
@@ -2196,6 +2217,8 @@ impl Badge {
             mac: None,
             local_only: false,
             on: None,
+            asleep: false,
+            since: None,
         }
     }
 
@@ -2261,6 +2284,8 @@ impl Badge {
     /// on its card if it doesn't go through. False if there's nothing to resolve.
     fn resolve(&mut self, id: String, res: Resolution, cx: &mut Context<Self>) -> bool {
         let (need, mac) = match self.row(&id) {
+            // Its Mac is asleep: nothing goes, and nothing is queued for when it wakes.
+            Some(w) if w.asleep => return false,
             Some(w) if w.mac.is_some() => (w.need.clone(), w.mac.clone()),
             _ => (Some(id.clone()), None),
         };
@@ -2302,6 +2327,9 @@ impl Badge {
     /// once; if midnad can't answer (the picker changed, or it asks more than this question),
     /// it comes back with the reason on its card, as a turned-down approval does.
     fn answer(&mut self, w: &Waiting, options: Vec<usize>, cx: &mut Context<Self>) {
+        if w.asleep {
+            return;
+        }
         let (Some(need), Some(session)) = (w.need.clone(), w.session.clone()) else { return };
         let Some(backend) = self.backend_of(w.mac.as_deref()) else { return };
         let (id, remote) = (w.id.clone(), w.mac.is_some());
@@ -2878,8 +2906,9 @@ fn options(t: &Theme, w: &Waiting, picked: &[usize], cx: &mut Context<Badge>) ->
                 .border_1()
                 .border_color(if on { t.accent } else { t.line })
                 .bg(if on { t.accent_soft } else { t.panel })
-                .cursor_pointer()
-                .hover(|s| s.border_color(t.accent))
+                // Its Mac asleep: shown, but nothing to pick till it wakes.
+                .when(w.asleep, |d| d.opacity(0.55))
+                .when(!w.asleep, |d| d.cursor_pointer().hover(|s| s.border_color(t.accent)))
                 .on_click(cx.listener(move |b, _, _, cx| if w2.multi { b.toggle_pick(&w2.id, i, cx) } else { b.answer(&w2, vec![i], cx) }))
                 .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(if on { t.accent } else { t.dim }).child(if on { "✓".to_string() } else { (i + 1).to_string() }))
                 .child(
@@ -2916,6 +2945,14 @@ fn button(t: &Theme, id: impl Into<ElementId>, label: &str, primary: bool) -> St
             }
         })
         .child(label.to_string())
+}
+
+/// A button that's off for now (its Mac is asleep): dimmed, nothing to press (the canvas's
+/// `.btn:disabled`).
+fn button_off(t: &Theme, id: impl Into<ElementId>, label: &str, primary: bool) -> Stateful<Div> {
+    let b = div().id(id).flex_none().h(px(26.)).px(px(10.)).flex().items_center().justify_center().rounded(px(13.)).text_size(px(12.)).opacity(0.55);
+    let b = if primary { b.bg(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD) } else { b.border_1().border_color(t.line).text_color(t.fg) };
+    b.child(label.to_string())
 }
 
 /// "Decide at <Mac>", in Approve's place on another Mac's card when approving it can only be done
@@ -3110,8 +3147,11 @@ impl Badge {
                 BoxShadow { color: hsla(0., 0., 0., 0.3), offset: point(px(0.), px(3. * k)), blur_radius: px(8. * k), spread_radius: px(0.), inset: false },
             ];
             if lit {
-                shadow.insert(0, BoxShadow { color: mac, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(4.), inset: false });
+                // Asleep, a grey ring (the canvas's `.tabm.off.open`).
+                let ring = if m.asleep { t.dim } else { mac };
+                shadow.insert(0, BoxShadow { color: ring, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(4.), inset: false });
             }
+            // Asleep: a grey outline, its icon locked; the count stays (its items still wait there).
             if m.asleep {
                 shadow.push(BoxShadow { color: t.dim, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.5), inset: true });
             }
@@ -3130,7 +3170,7 @@ impl Badge {
                 .text_size(px((12. * k).max(1.)))
                 .font_weight(FontWeight::EXTRA_BOLD)
                 .shadow(shadow)
-                .when(k > 0.05, |d| d.child(Icon::Mac.el(13. * k, fg)).child(label))
+                .when(k > 0.05, |d| d.child((if m.asleep { Icon::MacOff } else { Icon::Mac }).el(13. * k, fg)).child(label))
                 .child(measure_part(self.zones.tabs.clone(), m.peer.clone()));
             // The ping: a ring of the Mac's colour growing out of the tab and fading, twice.
             let ping = came.and_then(|c| mac_tab::ping(&c, now)).map(|(scale, alpha)| {
@@ -3707,6 +3747,8 @@ impl Badge {
         let label = |of: &Option<String>, k: f32, off: f32| {
             let (icon, color, name) = match of {
                 None => (Icon::Laptop, t.fg, "This Mac".to_string()),
+                // Asleep: "<Mac> · asleep", its icon locked and grey.
+                Some(peer) if self.asleep(peer) => (Icon::MacOff, t.dim, format!("{} · asleep", self.mac_name(peer))),
                 Some(peer) => (Icon::Mac, mac, self.macs.iter().find(|m| m.peer == *peer).map_or_else(|| peer.clone(), |m| m.name.clone())),
             };
             div()
@@ -3729,7 +3771,10 @@ impl Badge {
             .h_full()
             .overflow_hidden()
             .child(label(&self.list_mac, si, dir * mac_tab::SWITCH_DX * (1. - si)));
-        let border = if self.list_mac.is_some() { mac.opacity(0.5) } else { t.line };
+        let border = match &self.list_mac {
+            Some(peer) if !self.asleep(peer) => mac.opacity(0.5),
+            _ => t.line,
+        };
         let to = self.middles.iter().find(|(p, _)| *p == self.list_mac).map(|(_, x)| *x);
         let x = match sw.and_then(|w| w.from_x) {
             Some(from) => to.map(|to| from + (to - from) * sg),
@@ -3881,8 +3926,9 @@ impl Badge {
                 .pl(px(14. - 6. * k.min(1.)))
                 .pr(px(if w.image.is_some() { 8. } else { 14. - 6. * k.min(1.) }))
                 .opacity(words)
-                .child(div().size(px(8.)).flex_none().rounded_full().bg(color))
-                .child(div().flex_none().max_w(px(130.)).truncate().font_weight(FontWeight::BOLD).text_color(t.fg).child(w.name.clone()))
+                // Its Mac asleep: its dot and terminal go grey (the canvas's `.cap.off`).
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(if w.asleep { t.dim } else { color }))
+                .child(div().flex_none().max_w(px(130.)).truncate().font_weight(FontWeight::BOLD).text_color(if w.asleep { t.dim } else { t.fg }).child(w.name.clone()))
                 .child(div().min_w_0().truncate().text_color(t.dim).child(w.title.clone())),
         );
         // Another Mac's row has no arrow: its terminal is over there.
@@ -4021,7 +4067,15 @@ impl Badge {
             .child(Icon::Chevron.el(12., t.dim).with_transformation(Transformation::rotate(radians(std::f32::consts::PI))));
         let mut buttons = div().flex().flex_wrap().gap(px(8.)).pt(px(4.));
         let mut menu = None;
-        if w.need.is_some() && w.approval {
+        if w.asleep {
+            // Its Mac is asleep: what would go over its link is off till it wakes.
+            buttons = match (w.approval, w.mac.as_deref().filter(|_| w.local_only)) {
+                (true, Some(peer)) => buttons.child(decide_at(t, &self.mac_name(peer)).flex_1()).child(button_off(t, "card-deny", "Deny", false)).child(button_off(t, "card-dismiss", "Dismiss", false)),
+                (true, None) => buttons.child(button_off(t, "card-approve", "Approve", true).flex_1()).child(button_off(t, "card-deny", "Deny", false)),
+                (false, _) => buttons.child(button_off(t, "card-dismiss", "Dismiss", false)),
+            }
+            .child(div().flex_1());
+        } else if w.need.is_some() && w.approval {
             let (a, d, x) = (w.id.clone(), w.id.clone(), w.id.clone());
             buttons = match w.mac.as_deref().filter(|_| w.local_only) {
                 // Approving it can only be done at that Mac (DECISIONS.md, Local-only): said in
@@ -4065,9 +4119,11 @@ impl Badge {
         let held = w.need.is_none().then(|| w.id.clone());
         let opens = sent.as_ref().is_some_and(|s| s.open.is_some());
         if let Some(peer) = w.mac.clone().filter(|_| w.need.is_some()) {
-            // Another Mac's: that Mac's window, on its terminal with its card showing.
+            // Another Mac's: that Mac's window, on its terminal with its card showing. Asleep,
+            // its window shows it reconnecting, then the terminal once it's back.
+            let label = if w.asleep { "Open when back".to_string() } else { format!("Open on {}", self.mac_name(&peer)) };
             buttons = buttons.child(
-                button(t, "card-open", &format!("Open on {}", self.mac_name(&peer)), false)
+                button(t, "card-open", &label, false)
                     .gap(px(6.))
                     .child(Icon::Arrow.el(12., t.fg))
                     .on_click(cx.listener(move |b, _, _, cx| b.open_on(peer.clone(), session.clone(), need.clone(), cx))),
@@ -4088,16 +4144,19 @@ impl Badge {
             .flex_col()
             .gap(px(9.))
             .opacity(fade)
-            .children(w.on.clone().map(|on| {
+            .children(w.mac.as_deref().filter(|_| w.need.is_some()).map(|peer| {
+                // "<Mac> · project › terminal"; asleep, grey and locked, with since when.
+                let (icon, color) = if w.asleep { (Icon::MacOff, t.dim) } else { (Icon::Mac, t.ansi[6]) };
+                let words: Vec<String> = [Some(self.mac_name(peer)), w.asleep.then(|| mac_tab::asleep_since(w.since, super::screen_kit::now_unix())), w.on.clone()].into_iter().flatten().collect();
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.))
                     .text_size(px(12.))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(t.ansi[6])
-                    .child(Icon::Mac.el(13., t.ansi[6]))
-                    .child(div().min_w_0().truncate().child(on))
+                    .text_color(color)
+                    .child(icon.el(13., color))
+                    .child(div().min_w_0().truncate().child(words.join(" · ")))
             }))
             .child(match w.image.clone() {
                 // Its image beside the title, the card's detail under the title beside it too.
@@ -4124,6 +4183,7 @@ impl Badge {
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
             .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
             .when(!w.options.is_empty(), |d| d.child(options(t, w, self.picks.get(&w.id).map_or(&[][..], |p| &p[..]), cx)))
+            .children(w.mac.as_deref().filter(|_| w.asleep).map(|peer| div().text_size(px(12.)).line_height(px(17.)).text_color(t.dim).child(mac_tab::asleep_why(&self.mac_name(peer)))))
             .child(buttons)
             .children(menu);
         div()
@@ -4258,7 +4318,13 @@ mod tests {
 
     /// The Mac mini's feed as it stands now, as `mac_feed` hands it over.
     fn follow(p: &Pill, cx: &mut TestAppContext) {
+        follow_as(p, Feed::new(p.mini.mac().unwrap().clone()).reach, cx);
+    }
+
+    /// The same, with the Mac mini reached (or not) like this.
+    fn follow_as(p: &Pill, reach: crate::mac_feed::Reach, cx: &mut TestAppContext) {
         let mut feed = Feed::new(p.mini.mac().unwrap().clone());
+        feed.reach = reach;
         feed.needs = parse_list(&p.mini.call("needs_you.list", json!({})).unwrap());
         let projects: Vec<Project> = parse_list(&p.mini.call("project.list", json!({})).unwrap());
         let sessions: Vec<Session> = parse_list(&p.mini.call("session.list", json!({})).unwrap());
@@ -4286,7 +4352,8 @@ mod tests {
         let publish = row(&p, "n_publsh", cx);
         assert_eq!(publish.mac.as_deref(), Some(p.peer.as_str()));
         assert!(publish.approval && !publish.local_only);
-        assert!(publish.on.as_deref().is_some_and(|on| on.starts_with("Morgan's Mac mini · ") && on.contains(" › ")), "{:?}", publish.on);
+        assert!(publish.on.as_deref().is_some_and(|on| on.contains(" › ")), "{:?}", publish.on);
+        assert!(!publish.asleep && publish.since.is_none());
         p.badge.update(cx, |b, _, cx| b.approve(publish.id.clone(), false, cx)).unwrap();
         cx.run_until_parked();
         let need = publish.need.clone().unwrap();
@@ -4346,6 +4413,43 @@ mod tests {
         cx.run_until_parked();
         assert!(!ids(&p.here).contains(&need));
         assert_eq!(ids(&p.mini), theirs);
+    }
+
+    #[gpui_kit::test]
+    fn an_asleep_mac_greys_out_holds_its_items_and_comes_back_by_itself(cx: &mut TestAppContext) {
+        use crate::mac_feed::Reach;
+        let p = pill('6', cx);
+        let theirs = ids(&p.mini);
+        let since = super::super::screen_kit::now_unix() - 120;
+        // Its lid closes: the tab greys out but keeps its count, its rows grey out.
+        follow_as(&p, Reach::Asleep { since: Some(since) }, cx);
+        let publish = row(&p, "n_publsh", cx);
+        assert!(publish.asleep && publish.since == Some(since));
+        p.badge
+            .read_with(cx, |b, _| {
+                let tabs = b.tabs();
+                assert!(tabs.len() == 1 && tabs[0].asleep && tabs[0].count() == theirs.len());
+                assert!(b.asleep(&p.peer));
+                assert!(b.remote.iter().all(|w| w.asleep), "all its rows");
+                assert!(b.tip().is_some_and(|t| t.ends_with(&format!("{} on Morgan's Mac mini (asleep)", theirs.len()))), "{:?}", b.tip());
+            })
+            .unwrap();
+        // Approve, Deny, Dismiss and its options are off: nothing goes, nothing is queued.
+        let went = p.badge.update(cx, |b, _, cx| b.resolve(publish.id.clone(), Resolution::Approve { scope: ApprovalScope::Once }, cx)).unwrap();
+        let question = row(&p, "n_golden", cx);
+        p.badge.update(cx, |b, _, cx| b.answer(&question, vec![0], cx)).unwrap();
+        cx.run_until_parked();
+        assert!(!went);
+        assert_eq!(ids(&p.mini), theirs);
+        p.badge.read_with(cx, |b, _| assert!(b.cleared.is_empty() && b.row(&publish.id).is_some())).unwrap();
+        // It wakes: all of it comes back, and Approve goes through again.
+        follow_as(&p, Reach::Connected, cx);
+        let publish = row(&p, "n_publsh", cx);
+        assert!(!publish.asleep && publish.since.is_none());
+        p.badge.read_with(cx, |b, _| assert!(!b.asleep(&p.peer) && b.tabs().iter().all(|t| !t.asleep))).unwrap();
+        p.badge.update(cx, |b, _, cx| b.approve(publish.id.clone(), false, cx)).unwrap();
+        cx.run_until_parked();
+        assert!(!ids(&p.mini).contains(publish.need.as_ref().unwrap()));
     }
 
     #[gpui_kit::test]
