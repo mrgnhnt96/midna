@@ -254,7 +254,13 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
                 cx.notify();
             }),
         );
-    // The bell is always first, like VS Code's: notifications and how many are unread.
+    // The Mac's name starts the bar while the window shows one; it stands in for the daemon item.
+    let named = m.shown_name();
+    let has_named = named.is_some();
+    if let Some(name) = named {
+        bar = bar.child(mac_item(m, name, t));
+    }
+    // The bell comes next, like VS Code's first item: notifications and how many are unread.
     if connected {
         bar = bar.child(crate::ui::notifications::bell(m, t, cx));
     }
@@ -262,12 +268,13 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
     // CPU and paused terminals: not a `ui.status.items` choice, it only shows while it matters
     // (after the daemon item, else first).
     let mut load = if connected { crate::ui::paused::status_item(m, t, cx) } else { None };
-    if !items.iter().any(|i| i == "daemon") {
+    if has_named || !items.iter().any(|i| i == "daemon") {
         bar = bar.children(load.take());
     }
     for item in items {
         // The daemon-backed items need midnad; the rest always show.
         let el = match item.as_str() {
+            "daemon" if has_named => None,
             "daemon" => Some(daemon_item(m, t)),
             "usage" if connected => usage_item(m, t, cx),
             "cache" if connected => cache_item(m, t),
@@ -303,16 +310,39 @@ fn dot(c: Hsla) -> Div {
     div().text_color(c).child("●")
 }
 
+/// "● Work MacBook Pro · 4 terminals": the Mac this window shows, its dot the state of its
+/// daemon (this Mac) or of the link to it (another Mac).
+fn mac_item(m: &MainWindow, name: String, t: &Theme) -> AnyElement {
+    let remote = m.remote();
+    let (c, rest) = match &m.conn {
+        ConnState::Connected => {
+            let n = m.sessions.len();
+            (t.ok, format!("{n} terminal{}", if n == 1 { "" } else { "s" }))
+        }
+        ConnState::Connecting if remote => (t.dim, "connecting…".to_string()),
+        ConnState::Connecting => (t.dim, "connecting to midnad…".to_string()),
+        ConnState::NotRunning { .. } if remote => (t.err, "can't reach it".to_string()),
+        ConnState::NotRunning { .. } if m.daemon_restarting() => (t.need, "midnad restarting…".to_string()),
+        ConnState::NotRunning { .. } => (t.err, "midnad not running".to_string()),
+    };
+    let tip_text = if remote {
+        format!("This window shows {name}: its terminals and agents run there, over a link from this Mac.")
+    } else {
+        format!("This window shows {name}, this Mac: its terminals run in midnad and keep running when this window closes.")
+    };
+    div()
+        .id("daemon")
+        .flex()
+        .gap(px(4.))
+        .child(dot(c))
+        .child(div().text_color(t.fg).font_weight(FontWeight::SEMIBOLD).child(name))
+        .child(format!("· {rest}"))
+        .tooltip(tip(tip_text))
+        .into_any_element()
+}
+
+/// This Mac's daemon, while the window shows no Mac's name (another Mac's window always does).
 fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
-    if let Some(mac) = m.backend.mac() {
-        let (c, what) = match &m.conn {
-            ConnState::Connected => (t.ok, mac.name.clone()),
-            ConnState::Connecting => (t.dim, format!("connecting to {}…", mac.name)),
-            ConnState::NotRunning { .. } => (t.err, format!("can't reach {}", mac.name)),
-        };
-        let tip_text = format!("This window shows {}: its terminals and agents run there, over a link from this Mac.", mac.name);
-        return div().id("daemon").child(div().flex().gap(px(4.)).child(dot(c)).child(what)).tooltip(tip(tip_text)).into_any_element();
-    }
     let daemon = match &m.conn {
         ConnState::Connected => div().flex().gap(px(4.)).child(dot(t.ok)).child(m.backend.label()),
         ConnState::Connecting => div().flex().gap(px(4.)).child(dot(t.dim)).child("connecting to midnad…"),

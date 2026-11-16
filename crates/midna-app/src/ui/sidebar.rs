@@ -244,7 +244,9 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
     };
     let mut line = 1;
 
-    let top = wipe(0, 0., titlebar_strip().flex().items_center().justify_end().pr(px(8.)).child(collapse_button(t, false)).into_any_element());
+    // Clear of the traffic lights on the left.
+    let top = titlebar_strip().flex().items_center().justify_end().gap(px(4.)).pl(px(78.)).pr(px(8.));
+    let top = wipe(0, 0., top.children(m.shown_name().map(|n| name_plate(n, t))).child(collapse_button(t, false)).into_any_element());
 
     if m.need_anim.moving() || m.close_anim.moving() || m.row_close.moving() {
         window.request_animation_frame();
@@ -691,6 +693,25 @@ fn titlebar_strip() -> Stateful<Div> {
             window.start_window_move();
         }
     })
+}
+
+/// The Mac this window shows, at the top of the sidebar (see `MainWindow::shown_name`).
+fn name_plate(name: String, t: &Theme) -> Stateful<Div> {
+    div()
+        .id("mac-plate")
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .min_w_0()
+        .h(px(26.))
+        .px(px(8.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.dim)
+        .whitespace_nowrap()
+        .tooltip(super::header::tip(name.clone()))
+        .child(Icon::Mac.el(13., t.dim))
+        .child(div().min_w_0().truncate().child(name))
 }
 
 fn collapse_button(t: &Theme, collapsed: bool) -> Stateful<Div> {
