@@ -90,6 +90,14 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     }
 }
 
+/// Open Settings at Nearby (the Mac switcher's "Pair another Mac…").
+pub fn open_nearby(backend: Arc<dyn Backend>, cx: &mut App) {
+    open(backend, cx);
+    if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0) {
+        let _ = h.update(cx, |s, _, cx| s.open_section(Sec::Nearby, cx));
+    }
+}
+
 /// The sidebar's sections, top to bottom.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sec {

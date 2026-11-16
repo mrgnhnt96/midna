@@ -192,6 +192,7 @@ pub fn register(entity: WeakEntity<MainWindow>, id: EntityId, mac: MacId, window
     drop(r);
     save_soon(cx);
     cx.defer(sync_names);
+    cx.defer(crate::macs::set_menus);
     reg
 }
 
@@ -217,7 +218,7 @@ fn sync_names(cx: &mut App) {
 }
 
 /// This Mac's name, from its daemon (`peers.list`).
-fn set_local_name(name: String, cx: &mut App) {
+pub(crate) fn set_local_name(name: String, cx: &mut App) {
     let reg = shared(cx);
     let name = Some(name).filter(|n| !n.is_empty());
     if std::mem::replace(&mut reg.borrow_mut().local_name, name.clone()) != name {
@@ -234,6 +235,8 @@ pub fn ns_windows(cx: &mut App) -> Vec<objc2::rc::Retained<objc2_app_kit::NSWind
 pub fn focused(id: EntityId, cx: &mut App) {
     let reg = shared(cx);
     reg.borrow_mut().places.focused(id);
+    // The Window menu checks the front window's Mac.
+    cx.defer(crate::macs::set_menus);
 }
 
 /// A main window closed: its terminals go to its Mac's home window.
@@ -248,6 +251,7 @@ pub fn closed(id: EntityId, cx: &mut App) {
         let _ = h.entity.update(cx, |m, cx| m.request_refresh(crate::app::refresh::ALL, cx));
     }
     cx.defer(sync_names);
+    cx.defer(crate::macs::set_menus);
 }
 
 /// The human is closing main window `id`: drop it from the saved layout.
@@ -547,85 +551,49 @@ pub fn same_mac(a: EntityId, b: EntityId, cx: &mut App) -> bool {
     shared(cx).borrow().same_mac(a, b)
 }
 
-/// Open `mac`'s window, or bring its window used last forward. `local` is this Mac's backend,
-/// which opens the drive link the first time.
-pub fn open_mac(local: &Arc<dyn Backend>, mac: Mac, cx: &mut App) {
+/// Open `mac`'s window (None: this Mac's), or bring its window used last forward. `local` is
+/// this Mac's backend, which opens the drive link the first time.
+pub fn open_mac(local: &Arc<dyn Backend>, mac: Option<Mac>, cx: &mut App) {
     let target = {
         let reg = shared(cx);
         let r = reg.borrow();
-        r.home(&Some(mac.peer.clone())).and_then(|id| r.main(id))
+        r.home(&mac.as_ref().map(|m| m.peer.clone())).and_then(|id| r.main(id))
     };
     match target {
         Some(t) => {
             let _ = t.handle.update(cx, |_, window, _| window.activate_window());
         }
         None => {
-            let b = crate::backend::for_mac(local, mac);
+            let b = match mac {
+                Some(mac) => crate::backend::for_mac(local, mac),
+                None => local.clone(),
+            };
             let _ = open(b, None, cx);
         }
     }
 }
 
-/// The Macs the Window menu lists: my paired Macs, by name. Whether one lets this Mac drive
-/// it is that Mac's setting; opening one that doesn't says so in its window.
+/// My paired Macs, by name (`macs` adds this one and how each stands). Whether one lets this
+/// Mac drive it is that Mac's setting; once a link to it is refused, `drive.list` says so.
 pub fn my_macs(l: &midna_proto::nearby::PeersListResult) -> Vec<Mac> {
     let mut macs: Vec<Mac> = l.paired.iter().filter(|p| p.tier == midna_proto::nearby::Tier::MyDevice).map(|p| Mac { peer: p.fingerprint.clone(), name: p.name.clone() }).collect();
     macs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.peer.cmp(&b.peer)));
     macs
 }
 
-/// The Macs the menu bar lists now.
-#[derive(Default)]
-struct MenuMacs(Option<Vec<Mac>>);
-impl Global for MenuMacs {}
-
-/// The menu bar: the app menu, and the Window menu with an entry per other Mac of mine that
-/// opens or brings forward its window. macOS lists the open windows below, by title.
-pub fn set_menus(macs: Vec<Mac>, cx: &mut App) {
-    use crate::actions::*;
-    if cx.try_global::<MenuMacs>().is_some_and(|m| m.0.as_ref() == Some(&macs)) {
-        return;
-    }
-    let mut window = vec![MenuItem::action("New Window", NewWindow)];
-    if !macs.is_empty() {
-        window.push(MenuItem::separator());
-    }
-    for m in &macs {
-        window.push(MenuItem::action(m.name.clone(), OpenMac { peer: m.peer.clone(), name: m.name.clone() }));
-    }
-    cx.set_menus(vec![
-        Menu {
-            name: "midna".into(),
-            items: vec![
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action("Hide midna", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
-                MenuItem::separator(),
-                MenuItem::action("Close", CloseWindow),
-                MenuItem::action("Quit midna", Quit),
-            ],
-            disabled: false,
-        },
-        Menu { name: "Window".into(), items: window, disabled: false },
-    ]);
-    cx.set_global(MenuMacs(Some(macs)));
+/// The Macs with a main window open, and the one the window focused last shows.
+pub fn mac_windows(cx: &mut App) -> (Vec<MacId>, Option<MacId>) {
+    let reg = shared(cx);
+    let r = reg.borrow();
+    (r.places.wins.iter().map(|w| w.1.clone()).collect(), r.places.wins.first().map(|w| w.1.clone()))
 }
 
-/// Ask this Mac's daemon which Macs are mine (`peers.list`) and list them in the Window menu;
-/// its name there is the one this Mac's windows show beside another Mac's.
-pub fn refresh_menu(local: Arc<dyn Backend>, cx: &mut App) {
-    cx.spawn(async move |cx| {
-        let r = cx.background_executor().spawn(async move { local.call("peers.list", serde_json::json!({})) }).await;
-        let Some(list) = r.ok().and_then(|v| serde_json::from_value::<midna_proto::nearby::PeersListResult>(v).ok()) else { return };
-        let _ = cx.update(|cx| {
-            set_menus(my_macs(&list), cx);
-            set_local_name(list.me.name, cx);
-        });
-    })
-    .detach();
+/// Redraw every main window (the Macs' states changed).
+pub fn redraw_all(cx: &mut App) {
+    let mains = shared(cx).borrow().ordered();
+    for (m, _) in mains {
+        let _ = m.entity.update(cx, |_, cx| cx.notify());
+    }
 }
 
 /// Every other Mac's window works out its theme again (this Mac's picks for them changed).
@@ -769,7 +737,7 @@ mod tests {
         let b = crate::backend::fake::FakeBackend::new();
         let list = serde_json::from_value(b.call("peers.list", serde_json::json!({})).unwrap()).unwrap();
         let names: Vec<String> = my_macs(&list).into_iter().map(|m| m.name).collect();
-        assert_eq!(names, ["Morgan's Mac mini", "Studio"]);
+        assert_eq!(names, ["Morgan's Mac mini", "Office iMac", "Studio"]);
     }
 
     #[test]

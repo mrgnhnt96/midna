@@ -17,6 +17,7 @@ pub mod hooks;
 pub mod insights;
 pub mod onboarding;
 pub mod links;
+pub mod mac_switcher;
 pub mod paused;
 pub mod queue;
 pub mod need_anim;
@@ -386,6 +387,7 @@ impl Render for MainWindow {
             .children(shelf::undo_toast(self, &t, cx))
             // Setup's Twilight Tiles screen covers the whole window while setup is open.
             .children(setup_screen::render(self, &t, window, cx))
+            .children(mac_switcher::loose(self, &t, cx))
             .when(self.menu != Menu::None, |d| {
                 // click-away layer under any open popover menu
                 d.child(

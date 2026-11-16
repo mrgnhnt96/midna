@@ -73,6 +73,8 @@ pub enum Menu {
     FooterStat(usize),
     /// The footer's "Add a button" menu while customizing.
     FooterAdd,
+    /// The Mac switcher under the sidebar's name plate (`ui/mac_switcher.rs`, ⌃⌘M).
+    Macs,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -254,6 +256,7 @@ pub struct MainWindow {
     pub queue: Entity<crate::ui::queue::QueueView>,
     /// Installed IDEs and the header's Open in IDE menu.
     pub ide: crate::ide::IdePanel,
+    pub mac_menu: crate::ui::mac_switcher::MacMenu,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// The image sheet (`annotate.rs`); drafts are in the `Drafts` global.
@@ -493,6 +496,7 @@ impl MainWindow {
             sidebar_view,
             dropped_at: None,
             ide: crate::ide::IdePanel::new(cx),
+            mac_menu: crate::ui::mac_switcher::MacMenu::new(cx),
             restart_expected: false,
             pending_refresh: 0,
             pending_rows: Default::default(),
@@ -685,7 +689,7 @@ impl MainWindow {
                                 crate::lifecycle::report_updates(self.backend.clone());
                             }
                             if self.is_local_home() {
-                                crate::windows::refresh_menu(self.backend.clone(), cx);
+                                crate::macs::refresh(self.backend.clone(), cx);
                             }
                         }
                     }
@@ -748,7 +752,7 @@ impl MainWindow {
                     }
                     // This Mac's name, shown beside another Mac's window.
                     if key == "nearby.name" && self.is_local_home() {
-                        crate::windows::refresh_menu(self.backend.clone(), cx);
+                        crate::macs::refresh(self.backend.clone(), cx);
                     }
                     // How this Mac shows its other Macs' windows (Settings → Nearby).
                     if (key == "nearby.mac_themes" || key == "theme.colors") && self.is_local_home() {
@@ -857,11 +861,20 @@ impl MainWindow {
                         sw::close(Kind::Overloaded, cx);
                     }
                 }
-                // Paired, forgotten or renamed: the Window menu's Macs follow.
+                // Paired, forgotten, renamed, on or off the network, or a drive link changed: the
+                // Macs in the Window menu and the switcher follow.
                 if self.is_local_home()
-                    && matches!(k, midna_proto::kinds::PEERS_PAIRED | midna_proto::kinds::PEERS_CHANGED | midna_proto::kinds::PEERS_FORGOTTEN)
+                    && matches!(
+                        k,
+                        midna_proto::kinds::PEERS_PAIRED
+                            | midna_proto::kinds::PEERS_CHANGED
+                            | midna_proto::kinds::PEERS_FORGOTTEN
+                            | midna_proto::kinds::PEERS_APPEARED
+                            | midna_proto::kinds::PEERS_LEFT
+                            | midna_proto::kinds::DRIVE_STATE
+                    )
                 {
-                    crate::windows::refresh_menu(self.backend.clone(), cx);
+                    crate::macs::refresh(self.backend.clone(), cx);
                 }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
@@ -2494,7 +2507,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(crate::backend::local(&m.backend), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide) {
+                    if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide | Menu::Macs) {
                         m.focus_terminal(w, cx);
                     }
                     m.menu = Menu::None;
@@ -2572,6 +2585,7 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &ToggleSidebar, _w, cx| crate::ui::sidebar::toggle_collapsed(m, cx)))
+            .on_action(cx.listener(|m, _: &ToggleMacSwitcher, w, cx| crate::ui::mac_switcher::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &CopySessionId, _w, cx| m.copy_session_id(cx)))
             .on_action(cx.listener(|m, _: &ToggleMute, _w, cx| m.toggle_mute(cx)))
             .on_action(cx.listener(|m, _: &ToggleSplitOrientation, _w, cx| crate::ui::split::flip(m, cx)))
