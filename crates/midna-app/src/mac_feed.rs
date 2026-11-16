@@ -116,7 +116,6 @@ impl Feed {
     }
 
     /// Where `need` is on its Mac, if it's in a terminal that Mac listed.
-    #[allow(dead_code, reason = "the pill reads it (T2106)")]
     pub fn place(&self, need: &NeedsYou) -> Option<&Place> {
         self.places.get(need.session_id.as_deref()?)
     }
@@ -299,7 +298,6 @@ impl Global for MacFeeds {}
 
 /// Each of my other Macs I can drive, by name: what waits there and how it's reached. Observe
 /// [`MacFeeds`] (`cx.observe_global`) to hear when it changes.
-#[allow(dead_code, reason = "the pill reads it (T2106)")]
 pub fn list(cx: &App) -> Vec<Feed> {
     let Some(g) = cx.try_global::<MacFeeds>() else { return vec![] };
     let mut feeds: Vec<Feed> = g.followed.values().map(|f| f.feed.lock().unwrap().clone()).filter(|f| !matches!(f.reach, Reach::NotAllowed { .. })).collect();
