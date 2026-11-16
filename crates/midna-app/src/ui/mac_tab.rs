@@ -220,6 +220,24 @@ pub fn switching(since: Duration) -> bool {
     since < SWITCH_IN.max(SWITCH_OUT).max(SWITCH_GLIDE)
 }
 
+/// The card's words for a Mac that can't be reached: "asleep since 14:02" (local), the day
+/// first when it wasn't today ("asleep since 2 Sep 14:02"), or "asleep" when it was never
+/// reached (`since`: unix seconds when its link dropped; `now` likewise).
+pub fn asleep_since(since: Option<i64>, now: i64) -> String {
+    use super::screen_kit::{hm, same_day, weekday_date};
+    match since {
+        Some(s) if same_day(s, now) => format!("asleep since {}", hm(s)),
+        // "Saturday 7 Nov" → "7 Nov".
+        Some(s) => format!("asleep since {} {}", weekday_date(s).split_once(' ').map_or("", |(_, d)| d), hm(s)),
+        None => "asleep".into(),
+    }
+}
+
+/// What's off on an asleep Mac's card, and what to do instead.
+pub fn asleep_why(mac: &str) -> String {
+    format!("Approve and Deny come back when {mac} wakes; nothing is queued. Open when back shows its window reconnecting, then this terminal.")
+}
+
 /// Text on a tab of `color`: near-black on a light one, white on a dark one (the canvas's
 /// `--mac-fg`, white in light themes and #06201F in dark ones).
 pub fn fg_on(color: Hsla) -> Hsla {
@@ -301,6 +319,17 @@ mod tests {
         assert!(a.is_none() && tabs[0].asleep && tabs[0].count() == 1);
         let (tabs, a) = follow(&tabs, &[feed("m", "Studio", Reach::Connected, items)], &mut serial, now);
         assert!(a.is_none() && !tabs[0].asleep);
+    }
+
+    #[test]
+    fn an_asleep_macs_card_says_since_when() {
+        let now = crate::ui::screen_kit::now_unix();
+        let at = crate::ui::screen_kit::hm(now);
+        assert_eq!(asleep_since(Some(now), now), format!("asleep since {at}"));
+        let week = asleep_since(Some(now - 7 * 86_400), now);
+        assert!(week.starts_with("asleep since ") && week.ends_with(&at) && week.len() > format!("asleep since {at}").len() + 3, "{week}");
+        assert_eq!(asleep_since(None, now), "asleep");
+        assert!(asleep_why("Studio").starts_with("Approve and Deny come back when Studio wakes; nothing is queued."));
     }
 
     #[test]
