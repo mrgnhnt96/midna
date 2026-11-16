@@ -30,6 +30,7 @@ pub mod drive;
 pub mod guard;
 pub mod identity;
 pub mod link;
+pub mod local_only;
 pub mod notes;
 pub mod objects;
 pub mod pairing;

@@ -347,8 +347,8 @@ pub fn rule_add(d: &Daemon, ctx: &Ctx, p: RuleAddParams) -> R {
     ok(insert_rule(d, new_rule(p.effect, p.matcher, scope, p.expires_in_secs, ctx.actor())))
 }
 
-/// The rule an approval scope creates (None for `once`).
-pub fn rule_from_approval(d: &Daemon, item: &NeedsYou, scope: &ApprovalScope) -> Option<Rule> {
+/// The rule an approval scope creates (None for `once`), made by whoever approved (`by`).
+pub fn rule_from_approval(d: &Daemon, item: &NeedsYou, scope: &ApprovalScope, by: Actor) -> Option<Rule> {
     let a = &item.approval.as_ref()?.action;
     let session = a.session.clone().or(item.session_id.clone());
     let project = a.project.clone().or(item.project_id.clone());
@@ -363,7 +363,7 @@ pub fn rule_from_approval(d: &Daemon, item: &NeedsYou, scope: &ApprovalScope) ->
         ApprovalScope::Always => (project.map(RuleScope::Project).unwrap_or(RuleScope::Global), None),
     };
     let matcher = Matcher { kind: a.kind, pattern: escape_glob(&a.value) };
-    let mut rule = new_rule(Effect::Allow, matcher, rule_scope, expires, Actor::human());
+    let mut rule = new_rule(Effect::Allow, matcher, rule_scope, expires, by);
     rule.origin = Some(RuleOrigin { needs_you_id: item.id.clone(), approval_scope: scope.clone() });
     Some(insert_rule(d, rule))
 }
