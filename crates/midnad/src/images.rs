@@ -54,10 +54,13 @@ pub fn prepare(dir: &Path, src: &str) -> Result<PathBuf, String> {
     }
     let mut head = [0u8; 16];
     let n = std::io::Read::read(&mut std::fs::File::open(path).map_err(|e| format!("can't read image {src}: {e}"))?, &mut head).unwrap_or(0);
+    // Already one of ours (`store` saved it): pasted as it is.
+    if path.parent() == Some(dir) && sniff(&head[..n]).is_some() {
+        return Ok(path.to_path_buf());
+    }
     std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     prune(dir);
-    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() % 1_000_000_000_000;
-    let base = format!("{stamp:012}-{}", safe_stem(path));
+    let base = base_name(path);
     match sniff(&head[..n]) {
         Some(ext) => {
             let dst = dir.join(format!("{base}.{ext}"));
@@ -83,6 +86,28 @@ pub fn prepare(dir: &Path, src: &str) -> Result<PathBuf, String> {
             }
         }
     }
+}
+
+/// `<stamp>-<safe stem>`: a fresh name for a copy of `path`.
+fn base_name(path: &Path) -> String {
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos() % 1_000_000_000_000;
+    format!("{stamp:012}-{}", safe_stem(path))
+}
+
+/// Save an image's bytes into `dir` under `name`'s stem (`session.send_image`), returning the
+/// path to paste. Only the formats the agents take as they are (PNG, JPEG, GIF, WebP), and at
+/// most `max` bytes: these come from another Mac, so nothing here converts them.
+pub fn store(dir: &Path, name: &str, bytes: &[u8], max: usize) -> Result<PathBuf, String> {
+    if bytes.len() > max {
+        return Err(format!("image is too large ({:.1} MB, limit {} MB)", bytes.len() as f64 / (1024.0 * 1024.0), max >> 20));
+    }
+    let ext = sniff(bytes).ok_or("not an image: send a PNG, JPEG, GIF or WebP")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+    prune(dir);
+    let name = Path::new(name).file_name().map(Path::new).unwrap_or(Path::new("image"));
+    let dst = dir.join(format!("{}.{ext}", base_name(name)));
+    std::fs::write(&dst, bytes).map_err(|e| format!("can't save the image: {e}"))?;
+    Ok(dst)
 }
 
 /// Drop copies older than [`KEEP`].
@@ -131,6 +156,23 @@ mod tests {
         let txt = dir.join("notes.txt");
         std::fs::write(&txt, b"hello").unwrap();
         assert!(prepare(&dir.join("out"), txt.to_str().unwrap()).unwrap_err().contains("not an image"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stores_sent_bytes_and_pastes_them_as_they_are() {
+        let dir = std::env::temp_dir().join(format!("midna-images-store-{}", std::process::id()));
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        let out = store(&dir, "../../My Shot.png", png, 64).unwrap();
+        assert_eq!(out.parent(), Some(dir.as_path()), "named by its stem only: {}", out.display());
+        assert!(out.to_str().unwrap().ends_with("-My-Shot.png"), "{}", out.display());
+        assert_eq!(std::fs::read(&out).unwrap(), png);
+        assert!(store(&dir, "", png, 64).unwrap().to_str().unwrap().ends_with("-image.png"));
+        // session.input pastes a stored image itself, not a second copy.
+        assert_eq!(prepare(&dir, out.to_str().unwrap()).unwrap(), out);
+        assert!(store(&dir, "big.png", png, png.len() - 1).unwrap_err().contains("too large"));
+        assert!(store(&dir, "x.heic", b"....ftypheic", 64).unwrap_err().contains("not an image"));
+        assert!(store(&dir, "x.pdf", b"%PDF-1.7", 64).unwrap_err().contains("not an image"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

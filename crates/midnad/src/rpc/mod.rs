@@ -291,6 +291,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.clear_status" => session::clear_status(d, ctx, parse(p)?),
         "session.set_background" => session::set_background(d, ctx, parse(p)?),
         "session.input" => session::input(d, ctx, parse(p)?),
+        "session.send_image" => session::send_image(d, ctx, parse(p)?),
         "session.read" => session::read(d, parse(p)?),
         "session.resize" => session::resize(d, parse(p)?),
         "session.key" => session::key(d, ctx, parse(p)?),
@@ -461,6 +462,9 @@ fn summarize(method: &str, params: &Value) -> String {
         if method == "agent.hook" {
             o.remove("payload");
         }
+        if method == "session.send_image" && o.contains_key("data") {
+            o.insert("data".into(), json!("…"));
+        }
     }
     let s = p.to_string();
     if s.chars().count() > 240 { format!("{}…", s.chars().take(240).collect::<String>()) } else { s }
@@ -505,6 +509,10 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     }
     if method == "links.actions.approve" {
         return RpcError::human_only("links.actions.approve is the human's answer to the approval links.actions.register raised");
+    }
+    if method == "session.send_image" {
+        // Only the person driving from another Mac sends one; nobody here can, approved or not.
+        return session::send_image_refusal();
     }
     if method == "rule.remove" {
         return RpcError::human_only("rule.remove is human only; use rule.request_removal to ask the human");

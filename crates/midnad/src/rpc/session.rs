@@ -610,6 +610,33 @@ pub fn input(d: &Daemon, ctx: &Ctx, mut p: SessionInputParams) -> R {
     ok(OkResult { ok: true })
 }
 
+/// An image the person driving this Mac from another one pasted or dropped there and confirmed:
+/// saved in this Mac's images folder, then its path pasted as `session.input` would. Only a drive
+/// link's person may: the app there sends it after its confirm, and nothing on this Mac (agents,
+/// scripts, the CLI, the app here) has an image it would need to send this way.
+pub fn send_image(d: &Daemon, ctx: &Ctx, p: SessionSendImageParams) -> R {
+    if ctx.as_actor.as_ref().and_then(|a| a.drive_peer()).is_none() {
+        return Err(send_image_refusal());
+    }
+    d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
+    // base64 is 4 bytes per 3: refuse a long one before decoding it.
+    if p.data.len() > SEND_IMAGE_MAX_BYTES / 3 * 4 + 4 {
+        return Err(RpcError::bad_params(format!("image is too large (limit {} MB)", SEND_IMAGE_MAX_BYTES >> 20)));
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(p.data.trim()).map_err(|e| RpcError::bad_params(format!("data isn't base64: {e}")))?;
+    let path = crate::images::store(&d.cfg.home.join("images"), &p.name, &bytes, SEND_IMAGE_MAX_BYTES).map_err(RpcError::bad_params)?;
+    let path = path.display().to_string();
+    input(d, ctx, SessionInputParams { id: p.id, text: String::new(), enter: false, images: vec![path.clone()] })?;
+    ok(SessionSendImageResult { path })
+}
+
+pub fn send_image_refusal() -> RpcError {
+    RpcError::human_only(
+        "session.send_image takes an image from the Mac driving this one, once its person confirms it there; here, attach one with session.input's images",
+    )
+}
+
 /// The `[Image #N]` numbers on the terminal's screen.
 fn chips(rt: &term::RtHandle) -> std::collections::BTreeSet<u32> {
     rt.read(true).map(|(lines, _, _)| image_chips::on_screen(&lines)).unwrap_or_default()
