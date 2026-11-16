@@ -1,7 +1,8 @@
 //! Settings ▸ Nearby: who can find this Mac (with Everyone's countdown), the Midnas on this
 //! network, and the devices it's paired with (their tier, and Forget). Pairing happens in a
 //! sheet over the window: Pair connects, both Macs show the same six digits, and each person
-//! confirms (as a contact or as one of their own Macs) or cancels. A request from another Mac
+//! confirms (as a contact or as one of their own Macs, then with a box to also let it drive this
+//! one: Confirm asks for Touch ID first and sends `allow_drive`) or cancels. A request from another Mac
 //! opens the sheet when this section is showing; it's also a needs-you card (ui/nearby.rs).
 //! Under each of my devices, the kinds of share it may send without asking (all off at first).
 //! Under Driving this Mac, a switch per device kept as my device lets it drive this one: turning
@@ -12,6 +13,7 @@
 //! for the prompt, or (denied) a button to System Settings › Privacy & Security › Local Network.
 use super::*;
 use crate::local_auth::{self, Outcome};
+use crate::ui::nearby as nearby_ui;
 use crate::ui::screen_kit::{btn, btn_primary, now_unix};
 use midna_proto::nearby::{self as nb, LocalNetwork, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
 
@@ -54,7 +56,9 @@ enum Sheet {
     Connecting { fingerprint: String, name: String },
     /// A pairing, kept current from `peers.list` and the pairing events (`pairing` stays once
     /// the daemon drops an ended one). `tier`: how to keep the device when this side confirms.
-    Pairing { pairing: Pairing, tier: Tier, busy: bool },
+    /// `drive`: its "Also let … drive" box, which counts only as my device; ticked, Confirm asks
+    /// macOS first (`check`: that prompt, or why it didn't go through) and sends `allow_drive`.
+    Pairing { pairing: Pairing, tier: Tier, busy: bool, drive: bool, check: Option<DriveStep> },
     /// `peers.pair` failed before there was a pairing.
     Failed { name: String, error: String },
 }
@@ -187,9 +191,16 @@ impl SettingsWindow {
                     Err(e) => s.nearby.error = Some(format!("{e:#}")),
                 }
                 if crate::dev::var("MIDNA_SETTINGS_PAIRING").is_ok() && s.nearby.sheet.is_none() {
-                    // dev (screenshots): the sheet for the first pairing
+                    // dev (screenshots): the sheet for the first pairing (`drive`: as my device, box ticked)
                     if let Some(p) = s.nearby.list.as_ref().and_then(|l| l.pairings.first()) {
-                        s.nearby.sheet = Some(Sheet::Pairing { pairing: p.clone(), tier: Tier::Contact, busy: false });
+                        let drive = crate::dev::var("MIDNA_SETTINGS_PAIRING").is_ok_and(|v| v == "drive");
+                        s.nearby.sheet = Some(Sheet::Pairing {
+                            pairing: p.clone(),
+                            tier: if drive { Tier::MyDevice } else { Tier::Contact },
+                            busy: false,
+                            drive,
+                            check: None,
+                        });
                     }
                 }
                 if crate::dev::var("MIDNA_SETTINGS_DRIVE").is_ok() && s.nearby.drive.is_none() {
@@ -226,11 +237,11 @@ impl SettingsWindow {
     fn show_pairing(&mut self, p: Pairing, started: bool) {
         match &mut self.nearby.sheet {
             Some(Sheet::Connecting { fingerprint, .. }) if *fingerprint == p.fingerprint => {
-                self.nearby.sheet = Some(Sheet::Pairing { pairing: p, tier: Tier::Contact, busy: false });
+                self.nearby.sheet = Some(pairing_sheet(p, Tier::Contact));
             }
             Some(Sheet::Pairing { pairing, .. }) if pairing.id == p.id => *pairing = p,
             None if started && p.role == PairingRole::Incoming && self.view == View::Section(Sec::Nearby) => {
-                self.nearby.sheet = Some(Sheet::Pairing { pairing: p, tier: Tier::Contact, busy: false });
+                self.nearby.sheet = Some(pairing_sheet(p, Tier::Contact));
             }
             _ => {}
         }
@@ -272,22 +283,62 @@ impl SettingsWindow {
     /// Open the sheet on a pairing that's in progress (a row's Show code).
     fn reopen(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(p) = self.nearby.list.as_ref().and_then(|l| l.pairings.iter().find(|p| p.id == id)) else { return };
-        self.nearby.sheet = Some(Sheet::Pairing { pairing: p.clone(), tier: p.tier.unwrap_or_default(), busy: false });
+        self.nearby.sheet = Some(pairing_sheet(p.clone(), p.tier.unwrap_or_default()));
         cx.notify();
     }
 
-    /// The sheet's Confirm: this side's code matches; keep the device as the picked tier.
+    /// The sheet's Confirm: this side's code matches; keep the device as the picked tier. With
+    /// the drive box ticked (my device only), macOS checks it's you first.
     fn confirm_pairing(&mut self, cx: &mut Context<Self>) {
-        let Some(Sheet::Pairing { pairing, tier, busy }) = &mut self.nearby.sheet else { return };
+        let here = self.this_mac();
+        let Some(Sheet::Pairing { pairing, tier, busy, drive, check }) = &mut self.nearby.sheet else { return };
+        if *busy || pairing.confirmed || pairing.state != PairingState::Comparing || matches!(check, Some(DriveStep::Asking(_))) {
+            return;
+        }
+        if !(*drive && *tier == Tier::MyDevice) {
+            return self.send_confirm(false, cx);
+        }
+        let asking = local_auth::ask(&format!("let “{}” drive “{here}”", pairing.name));
+        let answer = asking.answer.clone();
+        *check = Some(DriveStep::Asking(asking));
+        let id = pairing.id.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = answer.recv().await.unwrap_or(Outcome::Cancelled);
+            let _ = this.update(cx, |s, cx| {
+                let Some(Sheet::Pairing { pairing, check, .. }) = &mut s.nearby.sheet else { return };
+                if pairing.id != id || !matches!(check, Some(DriveStep::Asking(_))) {
+                    return;
+                }
+                *check = match outcome {
+                    Outcome::Allowed => None,
+                    Outcome::Cancelled => Some(DriveStep::Ready),
+                    Outcome::Failed(e) => Some(DriveStep::Failed(e)),
+                };
+                if check.is_none() {
+                    s.send_confirm(true, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// `peers.confirm` as the picked tier (`allow_drive`: also let it drive this Mac).
+    fn send_confirm(&mut self, allow_drive: bool, cx: &mut Context<Self>) {
+        let Some(Sheet::Pairing { pairing, tier, busy, .. }) = &mut self.nearby.sheet else { return };
         if *busy || pairing.confirmed || pairing.state != PairingState::Comparing {
             return;
         }
         *busy = true;
         let (id, tier) = (pairing.id.clone(), *tier);
-        let cmd = format!("midna peers confirm {id} --as {}", tier_cli(tier));
+        let cmd = format!("midna peers confirm {id} --as {}{}", tier_cli(tier), if allow_drive { " --allow-drive" } else { "" });
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let params = json!({ "pairing": id, "accept": true, "as": tier.as_str() });
+            let mut params = json!({ "pairing": id, "accept": true, "as": tier.as_str() });
+            if allow_drive {
+                params["allow_drive"] = true.into();
+            }
             let r = cx.background_executor().spawn(async move { backend.call("peers.confirm", params) }).await;
             let _ = this.update(cx, |s, cx| {
                 if let Some(Sheet::Pairing { busy, .. }) = &mut s.nearby.sheet {
@@ -963,7 +1014,7 @@ impl SettingsWindow {
                 card = card.child(title(format!("Couldn't pair with {name}"))).child(text(error.clone(), t.err));
                 buttons = buttons.child(btn_primary(t, "pair-done", "Done  ↩").on_click(cx.listener(|s, _, _, cx| s.hide_sheet(cx))));
             }
-            Sheet::Pairing { pairing: p, tier, busy } => {
+            Sheet::Pairing { pairing: p, tier, busy, drive, check } => {
                 let code = p.code.clone().unwrap_or_default();
                 let left = seconds_until(&p.expires_at).map(|s| s.max(0));
                 match p.state {
@@ -989,12 +1040,35 @@ impl SettingsWindow {
                             ));
                         }
                         card = card.child(self.tier_picker(t, *tier, cx));
+                        if *tier == Tier::MyDevice {
+                            card = card.child(nearby_ui::drive_box(t, "pair-drive", &p.name, &self.this_mac(), *drive).on_click(cx.listener(|s, _, _, cx| {
+                                if let Some(Sheet::Pairing { drive, check, .. }) = &mut s.nearby.sheet {
+                                    *drive = !*drive;
+                                    *check = None;
+                                    cx.notify();
+                                }
+                            })));
+                            let note = match check {
+                                Some(DriveStep::Asking(_)) => Some(("Confirm with Touch ID or your password…".to_string(), t.need)),
+                                Some(DriveStep::Ready) => Some(("Cancelled, so nothing was confirmed. Confirm asks again.".into(), t.dim)),
+                                Some(DriveStep::Failed(e)) => Some((format!("{} Nothing was confirmed.", sentence(e)), t.err)),
+                                _ => None,
+                            };
+                            card = card.children(note.map(|(s, c)| div().text_size(px(12.)).text_color(c).child(s)));
+                        }
                         if let Some(l) = left {
                             buttons = div().flex().items_center().gap(px(8.)).child(div().text_size(px(12.)).text_color(t.dim).child(format!("{} left to confirm", mmss(l)))).child(div().flex_1());
                         }
                         buttons = buttons
                             .child(btn(t, "pair-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.cancel_sheet(cx))))
-                            .child(btn_primary(t, "pair-confirm", if *busy { "Confirming…" } else { "Confirm  ↩" }).on_click(cx.listener(|s, _, _, cx| s.confirm_pairing(cx))));
+                            .child(
+                                btn_primary(t, "pair-confirm", match check {
+                                    _ if *busy => "Confirming…",
+                                    Some(DriveStep::Asking(_)) => "Waiting…",
+                                    _ => "Confirm  ↩",
+                                })
+                                .on_click(cx.listener(|s, _, _, cx| s.confirm_pairing(cx))),
+                            );
                     }
                     PairingState::Comparing => {
                         let kept = p.tier.unwrap_or(*tier);
@@ -1070,6 +1144,10 @@ impl SettingsWindow {
                     .child(choice(Tier::MyDevice, "One of your own Macs.")),
             )
     }
+}
+
+fn pairing_sheet(pairing: Pairing, tier: Tier) -> Sheet {
+    Sheet::Pairing { pairing, tier, busy: false, drive: false, check: None }
 }
 
 /// "the other device declined (declined)" → "The other device declined (declined)."

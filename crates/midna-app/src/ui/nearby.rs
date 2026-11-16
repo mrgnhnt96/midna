@@ -2,6 +2,10 @@
 //! a pairing ("Pair with X? Code 123 456", action `midna peers confirm pr_…`); its card shows
 //! the code large and answers it three ways: pair as a contact (approve), pair as one of your
 //! own Macs (`peers.confirm … as my_device`), or Codes differ (deny, which ends the pairing).
+//! A box under the code, off until ticked, also lets that Mac drive this one: it counts only
+//! for Pair as my Mac (a contact can never drive), which then asks for Touch ID or the password
+//! before confirming with `allow_drive`.
+use crate::icons::Icon;
 use crate::model::NeedsYou;
 use crate::theme::Theme;
 use gpui_kit::prelude::*;
@@ -72,9 +76,49 @@ pub fn panel(t: &Theme, ask: &PairingAsk, detail: &str) -> Div {
         )
 }
 
+/// `peers.confirm` for Pair as my Mac; `allow_drive` (the box ticked and Touch ID passed) also
+/// lets it drive this Mac. Pair as a contact never sends it.
+pub fn confirm_mine_params(pairing: &str, allow_drive: bool) -> serde_json::Value {
+    let mut params = serde_json::json!({ "pairing": pairing, "accept": true, "as": "my_device" });
+    if allow_drive {
+        params["allow_drive"] = true.into();
+    }
+    params
+}
+
+/// The "Also let <name> drive <here>" box (`on`: ticked). The caller makes it clickable.
+pub fn drive_box(t: &Theme, id: &'static str, name: &str, here: &str, on: bool) -> Stateful<Div> {
+    let mark = div().flex_none().mt(px(2.)).size(px(16.)).rounded(px(4.)).flex().items_center().justify_center();
+    let mark = if on { mark.bg(t.accent).child(Icon::Check.el(12., t.accent_fg)) } else { mark.border_1().border_color(t.dim) };
+    div()
+        .id(id)
+        .flex()
+        .items_start()
+        .gap(px(10.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(t.line)
+        .text_size(px(13.))
+        .cursor_pointer()
+        .hover(|s| s.bg(t.raised))
+        .child(mark)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .min_w_0()
+                .child(div().font_weight(FontWeight::BOLD).child(format!("Also let {name} drive {here}")))
+                .child(div().text_size(px(12.)).text_color(t.dim).child(format!(
+                    "Open, type into and approve {here}'s terminals from {name}. Applies only to “Pair as my Mac”; asks for Touch ID. Change it later in Settings → Nearby."
+                ))),
+        )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PairingAsk, pairing_of, parse_title};
+    use super::{PairingAsk, confirm_mine_params, pairing_of, parse_title};
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
 
     fn need(title: &str, value: &str) -> NeedsYou {
@@ -109,5 +153,13 @@ mod tests {
     #[test]
     fn a_title_without_a_code() {
         assert_eq!(parse_title("Pair with Studio?"), ("Studio".into(), String::new()));
+    }
+
+    #[test]
+    fn pair_as_my_mac_asks_to_drive_only_when_ticked() {
+        let off = confirm_mine_params("pr_1", false);
+        assert_eq!(off, serde_json::json!({ "pairing": "pr_1", "accept": true, "as": "my_device" }));
+        let on = confirm_mine_params("pr_1", true);
+        assert_eq!(on, serde_json::json!({ "pairing": "pr_1", "accept": true, "as": "my_device", "allow_drive": true }));
     }
 }

@@ -12,7 +12,7 @@ use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::nearby::ShareKind;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
@@ -62,6 +62,19 @@ pub struct Stack {
     pub(super) edits: HashMap<String, serde_json::Value>,
     /// The setting change showing its current value instead of the ask.
     pub(super) current: Option<String>,
+    /// Pairing cards whose "Also let … drive this Mac" box is ticked, by item (off at first).
+    drive: HashSet<String>,
+    /// Pair as my Mac with that box ticked: macOS's Touch ID or password check, by item.
+    drive_check: Option<(String, DriveCheck)>,
+}
+
+enum DriveCheck {
+    /// The prompt is up (dropping it takes the prompt down).
+    Asking(#[allow(dead_code)] crate::local_auth::Asking),
+    /// The prompt went away: nothing was confirmed, and Pair as my Mac asks again.
+    Cancelled,
+    /// macOS said no (its own words).
+    Failed(String),
 }
 
 impl Stack {
@@ -78,6 +91,8 @@ impl Stack {
             gone: HashMap::new(),
             edits: HashMap::new(),
             current: None,
+            drive: HashSet::new(),
+            drive_check: None,
         }
     }
 }
@@ -92,6 +107,8 @@ pub fn on_open(m: &mut MainWindow) {
     s.clicked = None;
     s.log.clear();
     s.gone.clear();
+    s.drive.clear();
+    s.drive_check = None;
     // dev: screenshot the approve dropdown
     s.menu = crate::dev::var("MIDNA_DEBUG_APPROVE_MENU").is_ok();
     if s.menu {
@@ -290,21 +307,83 @@ fn secondary(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
-/// A pairing card's "Pair as my device": confirm it keeping the other Mac as one of yours
-/// (`peers.confirm` closes the needs-you item itself).
+/// A pairing card's "Pair as my Mac": confirm it keeping the other Mac as one of yours
+/// (`peers.confirm` closes the needs-you item itself). With the drive box ticked, macOS checks
+/// it's you first, and the confirm carries `allow_drive`.
 fn pair_as_mine(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     let Some(n) = current(m) else { return };
     let Some(ask) = super::nearby::pairing_of(&n) else { return };
+    if !m.stack.drive.contains(&n.id) {
+        return confirm_mine(m, &n, &ask.id, false, cx);
+    }
+    if matches!(&m.stack.drive_check, Some((id, DriveCheck::Asking(_))) if *id == n.id) {
+        return;
+    }
+    let asking = crate::local_auth::ask(&format!("let “{}” drive this Mac", ask.name));
+    let answer = asking.answer.clone();
+    m.stack.drive_check = Some((n.id.clone(), DriveCheck::Asking(asking)));
+    let id = n.id.clone();
+    cx.spawn(async move |this, cx| {
+        let outcome = answer.recv().await.unwrap_or(crate::local_auth::Outcome::Cancelled);
+        let _ = this.update(cx, |m, cx| {
+            if !matches!(&m.stack.drive_check, Some((i, DriveCheck::Asking(_))) if *i == id) {
+                return;
+            }
+            m.stack.drive_check = match outcome {
+                crate::local_auth::Outcome::Allowed => None,
+                crate::local_auth::Outcome::Cancelled => Some((id.clone(), DriveCheck::Cancelled)),
+                crate::local_auth::Outcome::Failed(e) => Some((id.clone(), DriveCheck::Failed(e))),
+            };
+            // still waiting (and still ticked): confirm it, wherever the stack has moved since
+            if m.stack.drive_check.is_none()
+                && m.stack.drive.contains(&id)
+                && let Some(n) = m.needs.iter().find(|x| x.id == id).cloned()
+                && let Some(ask) = super::nearby::pairing_of(&n)
+            {
+                confirm_mine(m, &n, &ask.id, true, cx);
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+    cx.notify();
+}
+
+/// `peers.confirm` as my device (`allow_drive`: also let it drive this Mac), and the card
+/// leaves the stack.
+fn confirm_mine(m: &mut MainWindow, n: &NeedsYou, pairing: &str, allow_drive: bool, cx: &mut Context<MainWindow>) {
     let order = ordered(m);
-    m.stack.pos = current_index(m, &order).unwrap_or(0);
-    m.stack.cur = None;
+    if let Some(i) = order.iter().position(|x| x.id == n.id)
+        && current_index(m, &order) == Some(i)
+    {
+        m.stack.pos = i;
+        m.stack.cur = None;
+    }
     m.stack.menu = false;
+    m.stack.drive.remove(&n.id);
     m.stack.log.push((n.title.clone(), Outcome::Approved));
     m.stack.gone.insert(n.id.clone(), std::time::Instant::now());
     m.needs.retain(|x| x.id != n.id);
     crate::sounds::play("approved");
-    let params = serde_json::json!({ "pairing": ask.id, "accept": true, "as": "my_device" });
+    let params = super::nearby::confirm_mine_params(pairing, allow_drive);
     m.rpc("peers.confirm", params, cx, |m, _, _, cx| m.request_refresh(crate::app::refresh::NEEDS, cx));
+    cx.notify();
+}
+
+/// A pairing card's drive box: tick or untick it. Unticking takes down a prompt that's up.
+fn toggle_drive(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
+    if !m.stack.drive.remove(id) {
+        m.stack.drive.insert(id.to_string());
+    }
+    if m.stack.drive_check.as_ref().is_some_and(|(i, _)| i == id) {
+        m.stack.drive_check = None;
+    }
+    cx.notify();
+}
+
+/// Dev (`MIDNA_DEBUG_SCREEN=needs:<id>+drive`): tick that pairing card's drive box.
+pub fn debug_tick_drive(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
+    m.stack.drive.insert(id.to_string());
     cx.notify();
 }
 
@@ -822,9 +901,22 @@ fn card(m: &MainWindow, t: &Theme, n: &NeedsYou, cx: &mut Context<MainWindow>) -
             (true, _, _) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("{who} wants to change a setting")))
                 .child(super::setting_change::panel(m, t, n, cx)),
-            (false, Some(ask), _) => d
-                .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("Pair with {}?", ask.name)))
-                .child(super::nearby::panel(t, &ask, &n.detail)),
+            (false, Some(ask), _) => {
+                let ticked = m.stack.drive.contains(&n.id);
+                let id = n.id.clone();
+                let check = m.stack.drive_check.as_ref().filter(|(i, _)| *i == n.id).map(|(_, c)| match c {
+                    DriveCheck::Asking(_) => ("Confirm with Touch ID or your password…".to_string(), t.need),
+                    DriveCheck::Cancelled => ("Cancelled, so nothing was paired. Pair as my Mac asks again.".into(), t.dim),
+                    DriveCheck::Failed(e) => (format!("{}. Nothing was paired.", e.trim_end_matches('.')), t.err),
+                });
+                d.child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(format!("Pair with {}?", ask.name)))
+                    .child(super::nearby::panel(t, &ask, &n.detail))
+                    .child(
+                        super::nearby::drive_box(t, "ny-pair-drive", &ask.name, "this Mac", ticked)
+                            .on_click(cx.listener(move |m, _, _, cx| toggle_drive(m, &id, cx))),
+                    )
+                    .children(check.map(|(s, c)| div().text_size(px(12.)).text_color(c).child(s)))
+            }
             (false, None, Some(offer)) => d
                 .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(n.title.clone()))
                 .child(super::share::panel(m, t, &offer)),
@@ -843,6 +935,7 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
     let sess = session_of(m, n);
     let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
     let pairing = super::nearby::pairing_of(n).is_some();
+    let asking = matches!(&m.stack.drive_check, Some((i, DriveCheck::Asking(_))) if *i == n.id);
     let button = |id: &'static str, label: String| {
         div().id(id).flex().items_center().h(px(38.)).px(px(16.)).rounded(px(7.)).border_1().border_color(t.line).text_size(px(14.)).cursor_pointer().hover(|s| s.bg(t.raised)).child(label)
     };
@@ -864,9 +957,12 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.92))
                     .on_click(cx.listener(|m, _, _, cx| resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx)))
-                    .child(format!("Pair as contact {approve_key}")),
+                    .child(format!("Pair as a contact {approve_key}")),
             )
-            .child(button("ny-pair-mine", "Pair as my device".into()).on_click(cx.listener(|m, _, _, cx| pair_as_mine(m, cx))))
+            .child(
+                button("ny-pair-mine", if asking { "Waiting…".into() } else { "Pair as my Mac".into() })
+                    .on_click(cx.listener(|m, _, _, cx| pair_as_mine(m, cx))),
+            )
             .child(button("ny-deny", format!("Codes differ {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
     } else if let Some(offer) = super::share::offer_of(n) {
         // approve accepts the share, deny declines it; a snippet can also go into a terminal

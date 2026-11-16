@@ -1284,7 +1284,14 @@ impl MainWindow {
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     // dev: a needs-you item by id (`needs:n_settng`)
-                    s if s.starts_with("needs:") => crate::ui::needs_you::show(self, s["needs:".len()..].to_string(), window, cx),
+                    // (`needs:n_pair01+drive`: with a pairing card's drive box ticked)
+                    s if s.starts_with("needs:") => {
+                        let (id, drive) = s["needs:".len()..].split_once('+').map_or((&s["needs:".len()..], false), |(id, f)| (id, f == "drive"));
+                        crate::ui::needs_you::show(self, id.to_string(), window, cx);
+                        if drive {
+                            crate::ui::needs_you::debug_tick_drive(self, id, cx);
+                        }
+                    }
                     "toast" | "toast-long" => crate::ui::toast::debug(self, &s, cx),
                     "close-hold" | "close-hold-wait" => crate::ui::close_hold::debug(self, &s, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
