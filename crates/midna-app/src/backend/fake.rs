@@ -622,7 +622,7 @@ fn mac_only_theme() -> midna_proto::themes::ThemeDef {
     let mut t = midna_proto::themes::builtin("gruvbox").expect("built-in");
     t.id = "ember".into();
     t.name = "Ember".into();
-    for (k, c) in [("bg", "#1C120E"), ("panel", "#24170F"), ("raised", "#2E1D13"), ("line", "#4A2E1E"), ("accent", "#FF8A3D"), ("accent-fg", "#1C120E")] {
+    for (k, c) in [("bg", "#1C120E"), ("panel", "#24170F"), ("raised", "#2E1D13"), ("line", "#4A2E1E"), ("accent", "#FF8A3D"), ("accent-fg", "#1C120E"), ("term", "#140C09")] {
         midna_proto::themes::apply_overrides(&mut t, &[format!("{k} = {c}")]);
     }
     t
