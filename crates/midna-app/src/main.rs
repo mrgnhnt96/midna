@@ -25,6 +25,7 @@ mod install;
 mod kass;
 mod lifecycle;
 mod list_edit;
+mod local_auth;
 mod model;
 mod notify;
 mod report;
