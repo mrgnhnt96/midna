@@ -1047,6 +1047,26 @@ pub struct SessionInputParams {
     pub images: Vec<String>,
 }
 
+/// The most `session.send_image` takes: the image's own bytes, before base64.
+pub const SEND_IMAGE_MAX_BYTES: usize = 10 << 20;
+
+/// `session.send_image`: an image the person driving this Mac from another one confirmed there.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSendImageParams {
+    pub id: Id,
+    /// The image's file name on the Mac it came from. Only names the saved copy.
+    #[serde(default)]
+    pub name: String,
+    /// The image, base64: PNG, JPEG, GIF or WebP, at most 10 MB before encoding.
+    pub data: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSendImageResult {
+    /// Where it was saved on this Mac: the path typed into the terminal.
+    pub path: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionReadParams {
     pub id: Id,

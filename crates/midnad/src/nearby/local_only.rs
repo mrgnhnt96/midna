@@ -12,8 +12,10 @@ use midna_proto::RpcError;
 use serde_json::{Value, json};
 
 /// Human-only methods the person driving may still call: they approve, close and pause like the
-/// human here. `drive.open` and `drive.close` answer only this Mac's own app anyway.
+/// human here. `drive.open` and `drive.close` answer only this Mac's own app anyway, and
+/// `session.send_image` only the person driving.
 const OVER_A_LINK: &[&str] = &[
+    "session.send_image",
     "session.close_hold",
     "session.pause",
     "session.stop_processes",

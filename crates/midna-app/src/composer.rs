@@ -553,6 +553,12 @@ fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
         return false;
     }
     let sources = crate::annotate::clipboard_sources(cx);
+    if m.remote() {
+        // Another Mac's terminal: asked about in its bar, then sent there (`terminal::send_image`).
+        let target = m.composer.target.clone();
+        crate::annotate::offer_to_mac(m, target, Some(sources), window, cx);
+        return true;
+    }
     match m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) {
         Some(id) if !crate::terminal::image_paste_inline() => {
             release_native_focus(m);

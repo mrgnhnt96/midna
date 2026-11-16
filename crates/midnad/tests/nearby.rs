@@ -2255,3 +2255,52 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     wait_for(10, "declined at B", || (share(&mut hb, id)?["state"] == "declined").then_some(()));
     assert!(open_items(&mut hb).is_empty(), "{:?}", open_items(&mut hb));
 }
+
+#[test]
+fn an_image_crosses_only_from_the_person_driving_and_only_an_image_under_the_cap() {
+    use base64::Engine;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let svc = service();
+    let (a, b, fa, _fb, socket) = driving(&svc);
+    let mut hb = b.human();
+    let mut there = Client::connect(&socket).unwrap();
+    let tab = open_sh(&mut there);
+    let png = b"\x89PNG\r\n\x1a\nnot really the rest of a png".to_vec();
+    let images = b.home.join("images");
+    let saved = || std::fs::read_dir(&images).map(|d| d.count()).unwrap_or(0);
+
+    // Nobody at B sends one, nor A's human straight to A: refused outright, never asked about.
+    let send = |c: &mut Client, id: &str| call_err(c, "session.send_image", json!({ "id": id, "name": "shot.png", "data": b64(&png) }));
+    for (who, e) in [("B's agent", send(&mut b.agent(Some(&tab)), &tab)), ("B's human", send(&mut hb, &tab)), ("A's human", send(&mut a.human(), "s_x"))] {
+        assert_eq!(e.code, HUMAN_ONLY, "{who}: {e:?}");
+        assert!(e.data.as_ref().is_none_or(|d| d.get("needs_you_id").is_none()), "{who}: refused, not deferred: {e:?}");
+    }
+    assert!(open_items(&mut hb).is_empty() && open_items(&mut a.human()).is_empty(), "nothing asks either human");
+    assert_eq!(saved(), 0);
+
+    // The person driving: saved in B's images folder under its own name, and B's path typed.
+    let sent = call(&mut there, "session.send_image", json!({ "id": tab, "name": "My Shot.png", "data": b64(&png) }));
+    let path = sent["path"].as_str().unwrap().to_string();
+    assert!(path.starts_with(&images.display().to_string()) && path.ends_with("-My-Shot.png"), "{sent}");
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+    wait_for(10, "B's path typed", || read(&mut hb, &tab).contains(&path).then_some(()));
+    let audited = events(&mut hb, kinds::AUDIT).into_iter().rfind(|e| e["data"]["method"] == "session.send_image").expect("audited");
+    assert!(from_peer(&audited["actor"], &fa), "{audited}");
+    let summary = audited["data"]["params_summary"].as_str().unwrap();
+    assert!(summary.contains("My Shot.png") && !summary.contains(&b64(&png)), "the image stays out of the log: {summary}");
+
+    // Over the cap, not an image, not base64, no such terminal: refused, nothing saved.
+    let max = midna_proto::SEND_IMAGE_MAX_BYTES;
+    let mut big = png.clone();
+    big.resize(max + 1, 0);
+    let refused = |c: &mut Client, id: &str, data: String| call_err(c, "session.send_image", json!({ "id": id, "data": data }));
+    let e = refused(&mut there, &tab, b64(&big));
+    assert!(e.message.contains("too large"), "{e:?}");
+    let e = refused(&mut there, &tab, "A".repeat(max / 3 * 4 + 8));
+    assert!(e.message.contains("too large"), "too long to decode: {e:?}");
+    let e = refused(&mut there, &tab, b64(b"%PDF-1.7 a document"));
+    assert!(e.message.contains("not an image"), "{e:?}");
+    assert!(refused(&mut there, &tab, "not base64!".into()).message.contains("base64"));
+    assert_eq!(refused(&mut there, "s_nope", b64(&png)).code, NOT_FOUND);
+    assert_eq!(saved(), 1, "only the one image");
+}

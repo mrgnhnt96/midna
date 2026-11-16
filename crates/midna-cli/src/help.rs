@@ -1053,6 +1053,8 @@ mod tests {
             "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by", "links.preview", "links.actions.approve",
             // The app's own: only it may open or close a drive link.
             "drive.open", "drive.close", "drive.list",
+            // Only the person driving from another Mac, through that Mac's app.
+            "session.send_image",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

@@ -972,6 +972,50 @@ pub fn pane_session(m: &MainWindow, window: &Window, cx: &App) -> Option<String>
     m.selected.clone()
 }
 
+/// In a window on another Mac, images go to that Mac, and only once the person says so in the
+/// terminal's bar (`terminal::send_image`), never to the sheet here: its paths would mean
+/// nothing there. Sources None = pick them (⌘I, Add image). False = this window is this Mac's.
+pub fn offer_to_mac(m: &mut MainWindow, session: Option<String>, sources: Option<Vec<Source>>, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    if !m.remote() {
+        return false;
+    }
+    let Some(id) = session.or_else(|| pane_session(m, window, cx)) else {
+        m.toast("Select a terminal to send an image to.", cx);
+        return true;
+    };
+    let view = m.terminal.iter().chain(m.split.as_ref().map(|s| &s.view)).find(|v| v.read(cx).session_id == id).cloned();
+    let view = view.or_else(|| crate::ui::popout::view(&id, cx));
+    let Some(view) = view else {
+        m.toast("Select a terminal to send an image to.", cx);
+        return true;
+    };
+    view.update(cx, |v, cx| match sources {
+        Some(s) => v.offer_images(s, cx),
+        None => v.pick_images(cx),
+    });
+    true
+}
+
+/// Dev (`MIDNA_DEBUG_SCREEN=send-image|send-image-drop` with `MIDNA_DEBUG_REMOTE`): another
+/// Mac's window asks about the images in `MIDNA_DEBUG_IMAGES`; `-drop` drops them with a file
+/// that isn't an image, which is refused.
+pub fn debug_send(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if !m.remote() {
+        return;
+    }
+    let images: Vec<PathBuf> = crate::dev::var("MIDNA_DEBUG_IMAGES").unwrap_or_default().split(',').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+    let others = if screen == "send-image-drop" { vec![PathBuf::from("/Users/me/Documents/notes.pdf")] } else { vec![] };
+    cx.spawn_in(window, async move |m, cx| {
+        cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+        let _ = m.update(cx, |m, cx| {
+            if let Some(v) = m.terminal.clone() {
+                v.update(cx, |v, cx| v.offer_dropped(images, others, cx));
+            }
+        });
+    })
+    .detach();
+}
+
 /// Whether `session` runs an agent: images only help there, so the sheet (⌘I, the toolbar
 /// button, a sidebar row taking dropped images) waits for one.
 pub fn is_agent(m: &MainWindow, session: &str) -> bool {
@@ -997,6 +1041,10 @@ pub fn open(m: &mut MainWindow, session: Option<String>, window: &mut Window, cx
 
 /// Image files dropped on `session` (a pane or a sidebar row): open its sheet with them.
 pub fn drop_images(m: &mut MainWindow, session: String, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if m.remote() {
+        offer_to_mac(m, Some(session), Some(paths.into_iter().map(Source::Path).collect()), window, cx);
+        return;
+    }
     if crate::ui::popout::is_popped(&session, cx) {
         crate::ui::popout::drop_images(&session, paths, cx);
         return;
