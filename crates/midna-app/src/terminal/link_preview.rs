@@ -324,6 +324,13 @@ impl TerminalView {
         }));
     }
 
+    /// Dev (`MIDNA_DEBUG_TERM` `preview:PATH[:LINE]|URL`): a link's card, as hovering it would
+    /// show.
+    pub fn preview_debug(&mut self, target: String, line: Option<u32>, cx: &mut Context<Self>) {
+        let url = target.contains("://");
+        self.preview_set(Some(Link { url, target, line: line.filter(|_| !url), app: None, preview: None }), cx);
+    }
+
     /// The other Mac's backend when this terminal is on one, for what's read there.
     pub(super) fn there(&self) -> Option<Arc<dyn Backend>> {
         self.backend.mac().is_some().then(|| self.backend.clone())

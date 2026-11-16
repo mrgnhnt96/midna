@@ -781,6 +781,17 @@ impl Backend for FakeBackend {
                 json!({ "read_seq": 900, "unread": 0 })
             }
             "settings.list" => serde_json::to_value(&st.settings)?,
+            // A link's card: files read as midnad would (the fake's Macs share this disk); a
+            // GitHub link answers a stand-in PR.
+            "links.preview" => {
+                let target = p("target").unwrap_or_default();
+                if midna_proto::link_preview::GithubLink::parse(&target).is_some() {
+                    json!({ "kind": "github", "json": { "title": "Water the beds on a schedule", "state": "OPEN", "isDraft": false, "headRefName": "schedule-rules", "baseRefName": "main", "additions": 120, "deletions": 14, "statusCheckRollup": [] } })
+                } else {
+                    let line = params.get("line").and_then(Value::as_u64).map(|l| l as u32);
+                    serde_json::to_value(midna_proto::link_preview::read_path(std::path::Path::new(&target), line))?
+                }
+            }
             "peers.list" => fake_peers(),
             "drive.list" => fake_links(),
             "inbox.list" => fake_inbox(),

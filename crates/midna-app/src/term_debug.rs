@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `benchwheel:X,Y,MS[,TURN]` (trackpad scrolls at a window point, e.g. over the sidebar, each timed to its frame, turning every TURN deltas of 12px), `switch:ROUNDS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `preview:PATH[:LINE]|URL` (a link's hover card), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `benchwheel:X,Y,MS[,TURN]` (trackpad scrolls at a window point, e.g. over the sidebar, each timed to its frame, turning every TURN deltas of 12px), `switch:ROUNDS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;
@@ -250,6 +250,16 @@ fn run_step(main: &Entity<MainWindow>, verb: &str, arg: &str, window: &mut Windo
             if let Some(t) = pane {
                 let cell = (nums[0] as i32, nums[1] as i32);
                 t.update(cx, |t, cx| t.open_link_menu_at(cell, cx));
+            }
+        }
+        // A link's hover card (`preview:/a/b.rs:42`, `preview:https://github.com/o/r/pull/7`).
+        "preview" => {
+            if let Some(t) = pane {
+                let (target, line) = match arg.rsplit_once(':') {
+                    Some((p, l)) if !arg.contains("://") && l.parse::<u32>().is_ok() => (p.to_string(), l.parse().ok()),
+                    _ => (arg.to_string(), None),
+                };
+                t.update(cx, |t, cx| t.preview_debug(target, line, cx));
             }
         }
         "split" => main.update(cx, |m, cx| crate::ui::split::toggle(m, window, cx)),
