@@ -843,7 +843,7 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .child(Icon::Monitor.el(15., color))
+                .child(Icon::Mac.el(16., color))
                 .child(
                     div()
                         .flex_1()

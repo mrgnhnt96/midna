@@ -43,6 +43,8 @@ pub enum Icon {
     Project,
     Play,
     Screen,
+    /// A Mac: a display on a stand (Settings ▸ Nearby's devices).
+    Mac,
     Check,
     Cross,
     Plus,
@@ -142,6 +144,7 @@ impl Icon {
             Icon::Project => "icons/project.svg",
             Icon::Play => "icons/play.svg",
             Icon::Screen => "icons/screen.svg",
+            Icon::Mac => "icons/mac.svg",
             Icon::Check => "icons/check.svg",
             Icon::Cross => "icons/cross.svg",
             Icon::Plus => "icons/plus.svg",
@@ -360,6 +363,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/screen.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M1.5 6h13"/></svg>"##
+        }
+        "icons/mac.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="9" rx="1.6"/><path d="M8 11.5v2.5M5.5 14h5"/></svg>"##
         }
         "icons/copy.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg>"##
