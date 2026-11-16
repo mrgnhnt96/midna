@@ -226,6 +226,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Nearby, "This Mac", &["@nearby_me", "nearby.visibility", "nearby.name", "nearby.downloads"]),
     (Sec::Nearby, "On this network", &["@nearby_peers"]),
     (Sec::Nearby, "Paired devices", &["@nearby_paired"]),
+    (Sec::Nearby, "Driving this Mac", &["@nearby_drive"]),
     (Sec::Webhooks, "Delivery", &["webhooks.path", "webhooks.port", "webhooks.relay_url"]),
     (Sec::Webhooks, "Triggers", &["triggers.agent_mode"]),
     (Sec::System, "macOS", &["@accessibility", "@notifications", "@login"]),
@@ -2298,6 +2299,7 @@ impl Render for SettingsWindow {
             )
             .children(self.shortcut_menu_el(&t, cx))
             .children(self.pairing_sheet(&t, cx))
+            .children(self.drive_sheet(&t, cx))
             .when(self.picker.is_some(), |d| {
                 // click-away layer under an open sound/image picker
                 d.child(

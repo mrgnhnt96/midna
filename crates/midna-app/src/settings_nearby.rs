@@ -4,14 +4,19 @@
 //! confirms (as a contact or as one of their own Macs) or cancels. A request from another Mac
 //! opens the sheet when this section is showing; it's also a needs-you card (ui/nearby.rs).
 //! Under each of my devices, the kinds of share it may send without asking (all off at first).
+//! Under Driving this Mac, a switch per device kept as my device lets it drive this one: turning
+//! it on asks macOS for Touch ID or the password, on a sheet naming both Macs, then calls
+//! `peers.set_drive`; turning it off needs no check and cuts its drive links at once. A contact
+//! is listed without a switch.
 //! Until macOS lets Midna use the local network, the status and the sheet say so calmly: wait
 //! for the prompt, or (denied) a button to System Settings › Privacy & Security › Local Network.
 use super::*;
+use crate::local_auth::{self, Outcome};
 use crate::ui::screen_kit::{btn, btn_primary, now_unix};
 use midna_proto::nearby::{self as nb, LocalNetwork, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
 
 /// The `@` rows this section adds to `LAYOUT`.
-pub(super) const ROWS: [&str; 3] = ["@nearby_me", "@nearby_peers", "@nearby_paired"];
+pub(super) const ROWS: [&str; 4] = ["@nearby_me", "@nearby_peers", "@nearby_paired", "@nearby_drive"];
 
 #[derive(Default)]
 pub(super) struct State {
@@ -22,6 +27,26 @@ pub(super) struct State {
     sheet: Option<Sheet>,
     /// The paired device whose Forget was clicked once (the second click forgets it).
     armed_forget: Option<String>,
+    /// Letting a device drive this Mac: the sheet naming both Macs while macOS checks it's you.
+    drive: Option<DriveSheet>,
+}
+
+struct DriveSheet {
+    /// The device that would drive this Mac.
+    fingerprint: String,
+    name: String,
+    step: DriveStep,
+}
+
+enum DriveStep {
+    /// Nothing asked yet, or the prompt was cancelled: Allow asks (again).
+    Ready,
+    /// macOS's Touch ID or password prompt is up (dropping it takes the prompt down).
+    Asking(#[allow(dead_code)] local_auth::Asking),
+    /// It's you: `peers.set_drive` is on its way.
+    Saving,
+    /// The check or the call failed.
+    Failed(String),
 }
 
 enum Sheet {
@@ -44,6 +69,18 @@ pub(super) enum Ctl {
     Paired { fingerprint: String, tier: Tier },
     /// One of my devices: the kinds of share accepted from it without asking.
     AutoAccept { fingerprint: String, on: Vec<ShareKind> },
+    /// Each paired device and whether it may drive this Mac (a switch for my devices only).
+    Drive { devices: Vec<DriveDevice> },
+}
+
+pub(super) struct DriveDevice {
+    fingerprint: String,
+    name: String,
+    /// Under its name: its tier and when it paired, or why a contact can't drive.
+    note: String,
+    /// Kept as my device, so it gets a switch.
+    mine: bool,
+    on: bool,
 }
 
 impl Ctl {
@@ -54,6 +91,7 @@ impl Ctl {
             Ctl::Pair { .. } => vec![("Button", "Pair".into())],
             Ctl::Paired { .. } => vec![("Option", "Contact".into()), ("Option", "My device".into()), ("Button", "Forget".into())],
             Ctl::AutoAccept { .. } => ShareKind::ALL.iter().map(|k| ("Option", kind_label(*k).to_string())).collect(),
+            Ctl::Drive { devices } => devices.iter().map(|d| ("Device", d.name.clone())).collect(),
         }
     }
 
@@ -152,6 +190,12 @@ impl SettingsWindow {
                     // dev (screenshots): the sheet for the first pairing
                     if let Some(p) = s.nearby.list.as_ref().and_then(|l| l.pairings.first()) {
                         s.nearby.sheet = Some(Sheet::Pairing { pairing: p.clone(), tier: Tier::Contact, busy: false });
+                    }
+                }
+                if crate::dev::var("MIDNA_SETTINGS_DRIVE").is_ok() && s.nearby.drive.is_none() {
+                    // dev (screenshots): the drive sheet for the first of my devices, before asking
+                    if let Some(p) = s.nearby.list.as_ref().and_then(|l| l.paired.iter().find(|p| p.tier == Tier::MyDevice)) {
+                        s.nearby.drive = Some(DriveSheet { fingerprint: p.fingerprint.clone(), name: p.name.clone(), step: DriveStep::Ready });
                     }
                 }
                 cx.notify();
@@ -290,6 +334,14 @@ impl SettingsWindow {
 
     /// ↩ and esc while the sheet is open. True when the sheet took the key.
     pub(super) fn sheet_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.nearby.drive.is_some() {
+            match key {
+                "escape" => self.cancel_drive(cx),
+                "enter" => self.ask_drive(cx),
+                _ => return false,
+            }
+            return true;
+        }
         let Some(sheet) = &self.nearby.sheet else { return false };
         let comparing = matches!(sheet, Sheet::Pairing { pairing, .. } if pairing.state == PairingState::Comparing && !pairing.confirmed);
         match key {
@@ -337,6 +389,91 @@ impl SettingsWindow {
         self.nearby.armed_forget = None;
         let cmd = format!("midna peers forget {}", id12(&fingerprint));
         self.kind_call("peers.forget", json!({ "fingerprint": fingerprint }), cmd, cx);
+    }
+
+    /// This Mac's name as other Midnas see it.
+    fn this_mac(&self) -> String {
+        self.nearby.list.as_ref().map_or_else(|| "this Mac".into(), |l| l.me.name.clone())
+    }
+
+    /// A device's drive switch. Off goes through at once (its drive links are cut as the call
+    /// returns); on opens the sheet and asks macOS for Touch ID or the password first.
+    fn drive_switch(&mut self, fingerprint: String, name: String, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            self.set_drive(fingerprint, false, cx);
+            return;
+        }
+        self.nearby.drive = Some(DriveSheet { fingerprint, name, step: DriveStep::Ready });
+        self.ask_drive(cx);
+    }
+
+    /// The sheet's Allow: macOS checks it's you, then `peers.set_drive` on. Nothing is allowed
+    /// unless the sheet is still open on that device when the answer comes.
+    fn ask_drive(&mut self, cx: &mut Context<Self>) {
+        let here = self.this_mac();
+        let Some(d) = &mut self.nearby.drive else { return };
+        if !matches!(d.step, DriveStep::Ready | DriveStep::Failed(_)) {
+            return;
+        }
+        let asking = local_auth::ask(&format!("let “{}” drive “{here}”", d.name));
+        let answer = asking.answer.clone();
+        d.step = DriveStep::Asking(asking);
+        let fp = d.fingerprint.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = answer.recv().await.unwrap_or(Outcome::Cancelled);
+            let _ = this.update(cx, |s, cx| {
+                let Some(d) = &mut s.nearby.drive else { return };
+                if d.fingerprint != fp || !matches!(d.step, DriveStep::Asking(_)) {
+                    return;
+                }
+                match outcome {
+                    Outcome::Allowed => {
+                        d.step = DriveStep::Saving;
+                        s.set_drive(fp, true, cx);
+                    }
+                    Outcome::Cancelled => d.step = DriveStep::Ready,
+                    Outcome::Failed(e) => d.step = DriveStep::Failed(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// `peers.set_drive`. On closes the sheet once it went through.
+    fn set_drive(&mut self, fingerprint: String, on: bool, cx: &mut Context<Self>) {
+        let cmd = format!("midna peers drive {} {}", id12(&fingerprint), if on { "on" } else { "off" });
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let params = json!({ "peer": fingerprint, "on": on });
+            let r = cx.background_executor().spawn(async move { backend.call("peers.set_drive", params) }).await;
+            let _ = this.update(cx, |s, cx| {
+                let result = match &r {
+                    Ok(_) if on => "✓ allowed".to_string(),
+                    Ok(_) => "✓ stopped; any window it had open here was closed".into(),
+                    Err(e) => s.call_error(e),
+                };
+                if on && let Some(d) = &mut s.nearby.drive {
+                    match &r {
+                        Ok(_) => s.nearby.drive = None,
+                        Err(_) => d.step = DriveStep::Failed(result.trim_start_matches("✗ ").to_string()),
+                    }
+                }
+                s.last = Some(Last { cmd, ok: r.is_ok(), result, who: "you, from this window".into(), at: Instant::now() });
+                s.load_peers(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The drive sheet's Cancel: a prompt that's still up goes away, and nothing changes.
+    fn cancel_drive(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.nearby.drive.as_ref().map(|d| &d.step), Some(DriveStep::Saving)) {
+            self.nearby.drive = None;
+            cx.notify();
+        }
     }
 
     /// Seconds Everyone has left, while visibility is Everyone.
@@ -510,6 +647,39 @@ impl SettingsWindow {
                 }
                 rows
             }
+            "@nearby_drive" => {
+                let here = &me.name;
+                let label = format!("Let my Macs drive {here}");
+                let cli = "midna peers drive <name|id> on|off";
+                if list.paired.is_empty() {
+                    let why = "Pair one of your Macs and keep it as “My device” to let it drive this one.";
+                    return vec![status(&label, t.dim, "No paired Macs".into(), note(why.into()), cli)];
+                }
+                let devices = list
+                    .paired
+                    .iter()
+                    .map(|p| {
+                        let mine = p.tier == Tier::MyDevice;
+                        let note = if mine {
+                            format!("My device · paired {}", crate::ui::screen_kit::day_label(&p.paired_at))
+                        } else {
+                            "Contact · only “My device” can drive".into()
+                        };
+                        DriveDevice { fingerprint: p.fingerprint.clone(), name: p.name.clone(), note, mine, on: mine && p.drive }
+                    })
+                    .collect();
+                vec![RowSpec {
+                    label,
+                    note: note(format!(
+                        "Paired Macs kept as “My device” can open, type into and approve {here}'s terminals. Everything still runs on {here}. \
+                         Off until you turn it on, which asks for Touch ID or your password. Turning it off closes its window at once."
+                    )),
+                    control: Control::Nearby(Ctl::Drive { devices }),
+                    cli: cli.into(),
+                    who: Who::Human,
+                    warn: false,
+                }]
+            }
             _ => vec![],
         }
     }
@@ -659,7 +829,92 @@ impl SettingsWindow {
                     .into_any_element()
             }
             Ctl::AutoAccept { fingerprint, on } => self.nearby_auto_chips(t, id, fingerprint, on, cx).into_any_element(),
+            Ctl::Drive { devices } => self.drive_devices(t, id, devices, cx).into_any_element(),
         }
+    }
+
+    /// One line per paired device: its name and tier, and for my devices a switch.
+    fn drive_devices(&self, t: &Theme, id: usize, devices: Vec<DriveDevice>, cx: &mut Context<Self>) -> Div {
+        let here = self.this_mac();
+        let mut list = div().flex().flex_col().gap(px(6.)).min_w(px(220.));
+        for (n, d) in devices.into_iter().enumerate() {
+            let color = if d.mine { t.fg } else { t.dim };
+            let mut line = div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(Icon::Monitor.el(15., color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_color(color).truncate().child(d.name.clone()))
+                        .child(div().text_size(px(11.)).text_color(t.dim).truncate().child(d.note)),
+                );
+            if d.mine {
+                let on = d.on;
+                let (fp, name) = (d.fingerprint, d.name);
+                let tip = if on { format!("{name} can drive {here}. Click to stop it.") } else { format!("Let {name} drive {here}. Asks for Touch ID or your password.") };
+                line = line.child(
+                    div()
+                        .id(SharedString::from(format!("nearby-drive-{id}-{n}")))
+                        .relative()
+                        .flex_none()
+                        .w(px(36.))
+                        .h(px(20.))
+                        .rounded(px(10.))
+                        .bg(if on { t.accent } else { t.line })
+                        .cursor_pointer()
+                        .tooltip(crate::ui::header::tip(tip))
+                        .on_click(cx.listener(move |s, _, window, cx| {
+                            s.focus.focus(window, cx);
+                            s.drive_switch(fp.clone(), name.clone(), !on, cx)
+                        }))
+                        .child(div().absolute().top(px(2.)).left(px(if on { 18. } else { 2. })).size(px(16.)).rounded_full().bg(gpui_kit::white())),
+                );
+            }
+            list = list.child(line);
+        }
+        list
+    }
+
+    /// The sheet that asks before a device may drive this Mac, naming both Macs.
+    pub(super) fn drive_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let d = self.nearby.drive.as_ref()?;
+        let here = self.this_mac();
+        let (status, color) = match &d.step {
+            DriveStep::Ready => ("Allow asks for Touch ID or your password.".to_string(), t.dim),
+            DriveStep::Asking(_) => ("Confirm with Touch ID or your password…".into(), t.need),
+            DriveStep::Saving => ("Allowing…".into(), t.dim),
+            DriveStep::Failed(e) => (sentence(e), t.err),
+        };
+        let card = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(format!("Let {} drive {here}?", d.name)))
+            .child(div().text_color(t.dim).child(format!(
+                "From {}, you can open, type into and approve the terminals and agents on {here}, even while it's locked. Everything still runs on {here}.",
+                d.name
+            )))
+            .child(div().text_color(t.dim).child("Turn it off here any time; that closes its window at once."))
+            .child(div().flex().items_center().gap(px(8.)).text_color(color).child(Icon::Lock.el(14., color)).child(status));
+        let primary = match &d.step {
+            DriveStep::Ready => "Allow…  ↩",
+            DriveStep::Failed(_) => "Try again  ↩",
+            DriveStep::Asking(_) => "Waiting…",
+            DriveStep::Saving => "Allowing…",
+        };
+        let buttons = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1())
+            .child(btn(t, "drive-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.cancel_drive(cx))))
+            .child(btn_primary(t, "drive-allow", primary).on_click(cx.listener(|s, _, _, cx| s.ask_drive(cx))));
+        Some(sheet_overlay(t, "drive", card, buttons, 3))
     }
 
     /// Local Network access as the last `peers.list` said.
@@ -771,37 +1026,7 @@ impl SettingsWindow {
                 }
             }
         }
-        let card = div()
-            .id("pair-card")
-            .w(px(460.))
-            .flex()
-            .flex_col()
-            .gap(px(18.))
-            .p(px(20.))
-            .rounded(px(12.))
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.line)
-            .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.4), offset: point(px(0.), px(12.)), blur_radius: px(32.), spread_radius: px(0.), inset: false }])
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(card)
-            .child(buttons);
-        Some(
-            deferred(
-                div()
-                    .id("pair-sheet")
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(hsla(0., 0., 0., 0.45))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(card),
-            )
-            .with_priority(2)
-            .into_any_element(),
-        )
+        Some(sheet_overlay(t, "pair", card, buttons, 2))
     }
 
     /// Contact or My device, as two cards with a line each.
@@ -865,6 +1090,40 @@ fn auto_accept_note(on: &[ShareKind]) -> String {
     }
     let names: Vec<String> = on.iter().map(|k| kind_label(*k).to_lowercase()).collect();
     format!("Accepted without asking: {}. Everything else asks first. {always}", names.join(", "))
+}
+
+/// A sheet over the settings window: a card with its buttons under it, on a dimmed backdrop
+/// that takes the clicks.
+fn sheet_overlay(t: &Theme, id: &str, card: Div, buttons: Div, priority: usize) -> AnyElement {
+    let panel = div()
+        .id(SharedString::from(format!("{id}-card")))
+        .w(px(460.))
+        .flex()
+        .flex_col()
+        .gap(px(18.))
+        .p(px(20.))
+        .rounded(px(12.))
+        .bg(t.raised)
+        .border_1()
+        .border_color(t.line)
+        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.4), offset: point(px(0.), px(12.)), blur_radius: px(32.), spread_radius: px(0.), inset: false }])
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(card)
+        .child(buttons);
+    deferred(
+        div()
+            .id(SharedString::from(format!("{id}-sheet")))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(hsla(0., 0., 0., 0.45))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(panel),
+    )
+    .with_priority(priority)
+    .into_any_element()
 }
 
 #[cfg(test)]
