@@ -1535,6 +1535,7 @@ impl MainWindow {
                     "toast" | "toast-long" => crate::ui::toast::debug(self, &s, cx),
                     "close-hold" | "close-hold-wait" => crate::ui::close_hold::debug(self, &s, cx),
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
+                    "send-image" | "send-image-drop" => crate::annotate::debug_send(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
                     "background-menu" => self.menu = Menu::Background,
                     "more-menu" => self.menu = Menu::More,
@@ -2611,6 +2612,9 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenPrompts, w, cx| crate::ui::command_bar::open_prompts(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenNeedsYou, w, cx| m.set_overlay(Overlay::NeedsYou, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::AddImage, w, cx| {
+                if crate::annotate::offer_to_mac(m, None, None, w, cx) {
+                    return;
+                }
                 if crate::annotate::pane_session(m, w, cx).is_some_and(|id| crate::annotate::is_agent(m, &id)) {
                     crate::annotate::open(m, None, w, cx);
                 } else {
@@ -2621,6 +2625,9 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &crate::ui::subagents::ToggleSubagents, w, cx| crate::ui::subagents::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::ui::queue::ToggleQueue, w, cx| crate::ui::queue::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &crate::annotate::PasteImage, w, cx| {
+                if crate::annotate::offer_to_mac(m, None, Some(crate::annotate::clipboard_sources(cx)), w, cx) {
+                    return;
+                }
                 if crate::annotate::open(m, None, w, cx) {
                     let s = crate::annotate::clipboard_sources(cx);
                     m.annot.update(cx, |v, cx| v.add(s, w, cx));

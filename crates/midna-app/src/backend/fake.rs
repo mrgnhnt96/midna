@@ -767,6 +767,16 @@ impl Backend for FakeBackend {
             ]),
             "session.list" if self.mac.is_some() && fake_link().as_deref() == Some("loading") => bail!("still loading"),
             "session.list" => serde_json::to_value(&st.sessions)?,
+            "session.get" => serde_json::to_value(st.sessions.iter().find(|x| Some(&x.id) == p("id").as_ref()).ok_or_else(|| anyhow!("rpc error 3: no such session"))?)?,
+            // Only the person driving, over a link (`terminal::send_image`); this Mac's own
+            // windows are refused like midnad refuses them.
+            "session.send_image" => {
+                if self.mac.is_none() {
+                    bail!("rpc error 2: session.send_image takes an image from the Mac driving this one");
+                }
+                let name = p("name").unwrap_or_default();
+                json!({ "path": format!("/Users/me/Library/Application Support/com.mrgnhnt.midna/images/fake-{}", name.replace(' ', "-")) })
+            }
             "session.subagent_log" => fake_subagent_log(&p("agent").unwrap_or_default(), params.get("from").and_then(Value::as_u64).unwrap_or(0)),
             "needs_you.list" => serde_json::to_value(&st.needs)?,
             "notify.history" => fake_history(),
