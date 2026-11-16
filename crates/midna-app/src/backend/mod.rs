@@ -7,8 +7,9 @@
 use crate::frame::FrameSink;
 use crate::model::Event;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod daemon;
 pub mod fake;
@@ -58,15 +59,60 @@ pub trait TermStream: Send + Sync {
     fn close(&self);
 }
 
+/// Another of my Macs, driven over a drive link (`drive.open`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Mac {
+    /// Its fingerprint: what a window is keyed by.
+    pub peer: String,
+    /// Its name, for the window title and messages.
+    pub name: String,
+}
+
 pub trait Backend: Send + Sync + 'static {
     fn label(&self) -> &'static str;
+    /// This Mac's midnad socket, also for another Mac's backend: app-state.json, themes, sounds
+    /// and commands stay on this Mac.
     fn socket_path(&self) -> PathBuf;
+    /// The Mac this backend reaches when it isn't this one.
+    fn mac(&self) -> Option<&Mac> {
+        None
+    }
+    /// This Mac's backend, for another Mac's (None: this is it). See [`local`].
+    fn this_mac(&self) -> Option<Arc<dyn Backend>> {
+        None
+    }
+    /// A backend for another of my Macs, reached over a drive link this one opens. Use
+    /// [`for_mac`], which keeps one per Mac.
+    fn open_mac(self: Arc<Self>, mac: Mac) -> Arc<dyn Backend>;
     /// Blocking JSON-RPC call on the control connection. Call from a background task.
     fn call(&self, method: &str, params: Value) -> anyhow::Result<Value>;
     /// Start the event subscription (reconnecting). Pushes `Conn` state changes too.
     fn subscribe(&self, tx: async_channel::Sender<BackendEvent>);
     /// Open a frame stream for a session. Blocking; call from a background task.
     fn attach(&self, req: AttachRequest<'_>, sink: Arc<FrameSink>) -> anyhow::Result<Arc<dyn TermStream>>;
+}
+
+/// The fingerprint of the Mac a backend reaches; None: this one.
+pub fn mac_id(b: &dyn Backend) -> Option<String> {
+    b.mac().map(|m| m.peer.clone())
+}
+
+fn remotes() -> &'static Mutex<HashMap<String, Arc<dyn Backend>>> {
+    static R: OnceLock<Mutex<HashMap<String, Arc<dyn Backend>>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// This Mac's backend: `b` itself, or the one another Mac's backend was opened through. For
+/// what stays on this Mac whichever Mac's window asks (Settings, this Mac's notifications).
+pub fn local(b: &Arc<dyn Backend>) -> Arc<dyn Backend> {
+    b.this_mac().unwrap_or_else(|| b.clone())
+}
+
+/// The backend for another of my Macs: one per Mac, shared by its windows, opened through
+/// `local` (this Mac's backend) the first time.
+pub fn for_mac(local: &Arc<dyn Backend>, mac: Mac) -> Arc<dyn Backend> {
+    let mut r = remotes().lock().unwrap();
+    r.entry(mac.peer.clone()).or_insert_with(|| local.clone().open_mac(mac)).clone()
 }
 
 /// Pick the backend: `MIDNA_BACKEND=fake` for the in-memory fake, otherwise the daemon.

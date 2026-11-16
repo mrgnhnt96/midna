@@ -10,7 +10,42 @@ fn code(t: &Theme, s: impl Into<SharedString>) -> Div {
     div().px(px(10.)).py(px(6.)).rounded(px(7.)).bg(t.raised).border_1().border_color(t.line).font_family(t.mono_font.clone()).text_size(px(12.5)).child(s.into())
 }
 
-pub fn not_running(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+pub fn not_running(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
+    if let Some(mac) = m.backend.mac() {
+        return not_reached(&m.conn, &mac.name, t, cx).into_any_element();
+    }
+    local_not_running(m, t).into_any_element()
+}
+
+/// Another Mac's window before its drive link connects, or once it's down: why, from this
+/// Mac's daemon (connecting, reconnecting, offline, not allowed). The connecting and offline
+/// screens of the design come later.
+fn not_reached(conn: &ConnState, name: &str, t: &Theme, _cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+    let (title, detail, dot) = match conn {
+        ConnState::NotRunning { error, .. } => (format!("Can't reach {name}"), error.clone(), t.err),
+        _ => (format!("Connecting to {name}…"), String::new(), t.dim),
+    };
+    div().flex_1().min_w_0().h_full().flex().flex_col().child(div().h(px(44.)).flex_none().border_b_1().border_color(t.line)).child(
+        div().flex_1().bg(t.term).flex().items_center().justify_center().child(
+            div()
+                .w(px(460.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .p(px(20.))
+                .rounded(px(12.))
+                .bg(t.panel)
+                .border_1()
+                .border_color(t.line)
+                .child(div().flex().items_center().gap(px(10.)).child(div().size(px(9.)).rounded_full().bg(dot)).child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(title)))
+                .child(div().text_color(t.dim).child(format!("Its terminals and agents run on {name}; this window shows them over a link from this Mac.")))
+                .when(!detail.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.dim).child(detail)))
+                .child(div().text_size(px(11.5)).text_color(t.dim).child("Retrying every second…")),
+        ),
+    )
+}
+
+fn local_not_running(m: &MainWindow, t: &Theme) -> impl IntoElement + use<> {
     let restarting = m.daemon_restarting();
     let (title, detail) = match &m.conn {
         ConnState::NotRunning { .. } if restarting => ("midnad restarting…", "Your terminals keep running; this window reconnects in a moment.".to_string()),

@@ -98,6 +98,14 @@ actions!(
 #[action(namespace = midna, no_json)]
 pub struct SelectProject(pub usize);
 
+/// Window menu: open another of my Macs in its own window, or bring its window forward.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = midna, no_json)]
+pub struct OpenMac {
+    pub peer: String,
+    pub name: String,
+}
+
 pub const CTX_MAIN: &str = "MidnaMain";
 pub const CTX_TERM: &str = "Terminal";
 /// Every overlay over the main window has this (escape dismisses it), its [`Kind`] and its

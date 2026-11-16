@@ -6,6 +6,7 @@
 //! - `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` — fake backend initial settings.
 //! - `MIDNA_SELECT=<session id>` — initial selection; `MIDNA_W` / `MIDNA_H` — window size.
 //! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|system-upgrade|system-overload[-midna]` — screenshot states.
+//! - `MIDNA_DEBUG_REMOTE=1|<name>` — also open another of my Macs' window (the fake's second Mac).
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
 //! - `MIDNA_DEV=1` — dev mode even inside a bundle: no install / login item / updates; a missing
 //!   midnad is spawned from next to this binary (`MIDNA_NO_SPAWN=1` to skip). See `lifecycle.rs`.
@@ -96,21 +97,14 @@ fn main() {
         cx.on_action(move |_: &NewWindow, cx| {
             let _ = windows::open(b.clone(), None, cx);
         });
-        cx.set_menus(vec![Menu {
-            name: "midna".into(),
-            items: vec![
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action("Hide midna", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
-                MenuItem::separator(),
-                MenuItem::action("Close", CloseWindow),
-                MenuItem::action("Quit midna", Quit),
-            ],
-            disabled: false,
-        }]);
+        // Window menu → one of my other Macs: its window (opened over a drive link the first time).
+        let b = backend.clone();
+        cx.on_action(move |a: &OpenMac, cx| {
+            windows::open_mac(&b, backend::Mac { peer: a.peer.clone(), name: a.name.clone() }, cx);
+        });
+        // The Window menu's Macs come from peers.list (and follow pairing, see `MainWindow`).
+        windows::set_menus(vec![], cx);
+        windows::refresh_menu(backend.clone(), cx);
         // The windows, places and terminals from last time (or one centered window).
         let fallback = Bounds::centered(None, size(px(w), px(h)), cx);
         let handle = windows::restore(backend.clone(), fallback, cx).expect("open main window");
@@ -138,6 +132,11 @@ fn main() {
         #[cfg(feature = "snapshot")]
         snapshot(handle, cx);
         let _ = handle;
+        // Screenshots: the fake's other Mac in its own window, in front.
+        if let Ok(name) = crate::dev::var("MIDNA_DEBUG_REMOTE") {
+            let name = if name == "1" { "Morgan's Mac mini".to_string() } else { name };
+            windows::open_mac(&backend, backend::Mac { peer: "f".repeat(64), name }, cx);
+        }
         if crate::dev::var("MIDNA_DEBUG_SETTINGS").is_ok() {
             settings_window::open(backend.clone(), cx);
         }
@@ -170,7 +169,7 @@ fn snapshot(handle: WindowHandle<app::MainWindow>, cx: &mut App) {
     let last = std::env::var("MIDNA_SNAPSHOT_WINDOW").is_ok_and(|v| v == "last");
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
-        let any = if last { cx.update(|cx| cx.windows().last().copied()).unwrap_or(main) } else { main };
+        let any = if last { cx.update(|cx| cx.windows().into_iter().rfind(|w| !ui::badge::is_badge(*w, cx))).unwrap_or(main) } else { main };
         // two passes so layout-dependent state (terminal size, frames) settles
         for _ in 0..2 {
             let _ = cx.update_window(any, |_, window, cx| {

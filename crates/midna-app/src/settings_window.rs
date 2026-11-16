@@ -2956,7 +2956,7 @@ impl SettingsWindow {
                 cx.notify();
             }
             Act::Life(c) => crate::lifecycle::command(c.clone(), cx),
-            &Act::Hooks { uninstall } => crate::windows::with_active(cx, |m, window, cx| {
+            &Act::Hooks { uninstall } => crate::windows::with_active_local(cx, |m, window, cx| {
                 if uninstall {
                     window.activate_window();
                     crate::ui::hooks::open(m, true, window, cx);

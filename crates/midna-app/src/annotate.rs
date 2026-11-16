@@ -1021,7 +1021,7 @@ impl Global for Spring {}
 /// terminal; dropped on it, they open its sheet. Rows without an agent, and rows another main
 /// window shows, are left alone.
 pub fn row_drop_target(row: Stateful<Div>, m: &MainWindow, session: &str, t: &crate::theme::Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    if !is_agent(m, session) || (m.windows.borrow().owned(session) && !m.shows(session)) {
+    if !is_agent(m, session) || (m.windows.borrow().owned(session, m.id) && !m.shows(session)) {
         return row;
     }
     let (hover_id, drop_id) = (session.to_string(), session.to_string());

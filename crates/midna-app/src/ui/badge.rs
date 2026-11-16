@@ -1790,7 +1790,7 @@ impl Badge {
                 }
             });
             // Either way, the home window refetches (and syncs the badge).
-            let _ = cx.update(|cx| crate::windows::with_active(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS | crate::app::refresh::RULES, cx)));
+            let _ = cx.update(|cx| crate::windows::with_active_local(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS | crate::app::refresh::RULES, cx)));
         })
         .detach();
     }
@@ -1817,7 +1817,7 @@ impl Badge {
                     cx.notify();
                 }
             });
-            let _ = cx.update(|cx| crate::windows::with_active(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS, cx)));
+            let _ = cx.update(|cx| crate::windows::with_active_local(cx, |m, _, cx| m.request_refresh(crate::app::refresh::NEEDS | crate::app::refresh::SESSIONS, cx)));
         })
         .detach();
     }
@@ -1855,7 +1855,7 @@ impl Badge {
         match session {
             Some(s) if terminal => crate::windows::reveal_terminal(s, need, cx),
             Some(s) => crate::windows::reveal_need(s, need, cx),
-            None => crate::windows::with_active(cx, |m, window, cx| {
+            None => crate::windows::with_active_local(cx, |m, window, cx| {
                 window.activate_window();
                 if let Some(id) = need.filter(|id| m.needs.iter().any(|n| n.id == *id)) {
                     crate::ui::needs_you::show(m, id, window, cx);

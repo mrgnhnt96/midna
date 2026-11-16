@@ -304,6 +304,15 @@ fn dot(c: Hsla) -> Div {
 }
 
 fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
+    if let Some(mac) = m.backend.mac() {
+        let (c, what) = match &m.conn {
+            ConnState::Connected => (t.ok, mac.name.clone()),
+            ConnState::Connecting => (t.dim, format!("connecting to {}…", mac.name)),
+            ConnState::NotRunning { .. } => (t.err, format!("can't reach {}", mac.name)),
+        };
+        let tip_text = format!("This window shows {}: its terminals and agents run there, over a link from this Mac.", mac.name);
+        return div().id("daemon").child(div().flex().gap(px(4.)).child(dot(c)).child(what)).tooltip(tip(tip_text)).into_any_element();
+    }
     let daemon = match &m.conn {
         ConnState::Connected => div().flex().gap(px(4.)).child(dot(t.ok)).child(m.backend.label()),
         ConnState::Connecting => div().flex().gap(px(4.)).child(dot(t.dim)).child("connecting to midnad…"),
@@ -332,7 +341,7 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
             .hover(move |s| s.text_color(fg))
             .child(Icon::Sun.el(12., t.work))
             .tooltip(tip(format!("{line}. The display may still sleep; closing the lid still sleeps the Mac. Settings › Agents › Keep the Mac awake.")))
-            .on_click(move |_, _, cx| crate::settings_window::open(backend.clone(), cx))
+            .on_click(move |_, _, cx| crate::settings_window::open(crate::backend::local(&backend), cx))
             .into_any_element(),
     )
 }

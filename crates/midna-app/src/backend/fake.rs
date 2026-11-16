@@ -8,7 +8,7 @@
 //! `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` overrides initial settings.
 //! `MIDNA_FAKE_MANY=N` adds N projects with three terminals each and N with only Summary
 //! records, for timing a long sidebar (`MIDNA_DEBUG_TERM=benchwheel:…`).
-use super::{AttachRequest, Backend, BackendEvent, ConnState, TermStream};
+use super::{AttachRequest, Backend, BackendEvent, ConnState, Mac, TermStream};
 use crate::frame::FrameSink;
 use crate::model::*;
 use anyhow::{anyhow, bail};
@@ -19,6 +19,9 @@ use std::sync::{Arc, Mutex};
 
 pub struct FakeBackend {
     st: Arc<Mutex<FakeState>>,
+    /// Another of my Macs (`open_mac`): drops-app and midna only, under other session ids. With
+    /// this Mac's backend, which opened it.
+    mac: Option<(Mac, Arc<dyn Backend>)>,
 }
 
 struct FakeState {
@@ -575,7 +578,35 @@ impl FakeBackend {
                 scripts,
                 next_id: 8,
             })),
+            mac: None,
         }
+    }
+
+    /// The fake's other Mac: two of this one's projects, their terminals under ids of its own
+    /// (`b…`), so the windows of the two Macs never share a session id.
+    fn remote(mac: Mac, local: Arc<dyn Backend>) -> Self {
+        let b = FakeBackend::new();
+        {
+            let mut st = b.st.lock().unwrap();
+            let keep = ["p_drops1", "p_midna1"];
+            let id = |s: &str| format!("b{}", s.get(1..).unwrap_or_default());
+            st.projects.retain(|p| keep.contains(&p.id.as_str()));
+            st.sessions.retain(|s| s.project_id.as_deref().is_some_and(|p| keep.contains(&p)));
+            for s in &mut st.sessions {
+                s.id = id(&s.id);
+            }
+            let ids: Vec<String> = st.sessions.iter().map(|s| s.id.clone()).collect();
+            st.needs.retain_mut(|n| match &n.session_id {
+                Some(sid) if ids.contains(&id(sid)) => {
+                    n.session_id = Some(id(sid));
+                    n.id = format!("{}_{}", n.id, mac.peer.get(..4).unwrap_or_default());
+                    true
+                }
+                _ => false,
+            });
+            st.scripts = std::mem::take(&mut st.scripts).into_iter().map(|(k, v)| (id(&k), v)).collect();
+        }
+        FakeBackend { st: b.st.clone(), mac: Some((mac, local)) }
     }
 }
 
@@ -667,6 +698,18 @@ impl Backend for FakeBackend {
 
     fn socket_path(&self) -> PathBuf {
         PathBuf::from("(fake backend)")
+    }
+
+    fn mac(&self) -> Option<&Mac> {
+        self.mac.as_ref().map(|(m, _)| m)
+    }
+
+    fn this_mac(&self) -> Option<Arc<dyn Backend>> {
+        self.mac.as_ref().map(|(_, l)| l.clone())
+    }
+
+    fn open_mac(self: Arc<Self>, mac: Mac) -> Arc<dyn Backend> {
+        Arc::new(FakeBackend::remote(mac, self))
     }
 
     fn call(&self, method: &str, params: Value) -> anyhow::Result<Value> {
@@ -1435,4 +1478,30 @@ fn fake_summary_base() -> Vec<Value> {
             "state": "done", "turns": 1, "cost_usd": 0.84, "prompts": prompts(&[("tb release cut v0.1.0-beta.37", 399)]),
         }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(b: &dyn Backend, method: &str) -> Vec<String> {
+        b.call(method, json!({})).unwrap().as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn the_other_mac_has_its_own_terminals_and_needs() {
+        let here: Arc<dyn Backend> = Arc::new(FakeBackend::new());
+        let mini = crate::backend::for_mac(&here, Mac { peer: "f".repeat(64), name: "Morgan's Mac mini".into() });
+        assert_eq!(mini.mac().map(|m| m.name.as_str()), Some("Morgan's Mac mini"));
+        assert!(Arc::ptr_eq(&mini, &crate::backend::for_mac(&here, mini.mac().unwrap().clone())), "one backend per Mac");
+        let (a, b) = (ids(&*here, "session.list"), ids(&*mini, "session.list"));
+        assert!(!b.is_empty() && b.len() < a.len());
+        assert!(b.iter().all(|id| !a.contains(id)), "no session id shared between the two Macs: {b:?}");
+        let (na, nb) = (ids(&*here, "needs_you.list"), ids(&*mini, "needs_you.list"));
+        assert!(!nb.is_empty() && nb.iter().all(|id| !na.contains(id)), "{nb:?}");
+        let needs = mini.call("needs_you.list", json!({})).unwrap();
+        for n in needs.as_array().unwrap() {
+            assert!(b.iter().any(|id| n["session_id"] == id.as_str()), "{n}");
+        }
+    }
 }
