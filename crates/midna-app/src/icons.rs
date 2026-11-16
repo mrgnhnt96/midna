@@ -45,6 +45,8 @@ pub enum Icon {
     Screen,
     /// A Mac: a display on a stand (Settings ▸ Nearby's devices).
     Mac,
+    /// This Mac: a laptop (the needs-you list's header, beside another Mac's display).
+    Laptop,
     Check,
     Cross,
     Plus,
@@ -149,6 +151,7 @@ impl Icon {
             Icon::Play => "icons/play.svg",
             Icon::Screen => "icons/screen.svg",
             Icon::Mac => "icons/mac.svg",
+            Icon::Laptop => "icons/laptop.svg",
             Icon::Check => "icons/check.svg",
             Icon::Cross => "icons/cross.svg",
             Icon::Plus => "icons/plus.svg",
@@ -382,6 +385,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/mac.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="9" rx="1.6"/><path d="M8 11.5v2.5M5.5 14h5"/></svg>"##
+        }
+        "icons/laptop.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#000" stroke-width="1.3" stroke-linecap="round"><rect x="2.4" y="2.6" width="9.2" height="6.6" rx="1"/><path d="M1 11.4h12"/></svg>"##
         }
         "icons/copy.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg>"##
