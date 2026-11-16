@@ -2221,6 +2221,7 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
         agent.call_value("policy.request", json!({ "action": { "kind": "command", "value": "deploy prod" }, "timeout_secs": 30 })).unwrap()
     });
     let item = wait_for(10, "the agent's approval", || open_items(&mut there).into_iter().find(|n| n["kind"] == "approval"));
+    assert!(item.get("local_only").is_none(), "an ordinary approval can be approved from A: {item}");
     call(&mut there, "needs_you.resolve", json!({ "id": item["id"], "resolution": { "kind": "approve", "scope": { "kind": "always" } } }));
     assert_eq!(asked.join().unwrap()["decision"], "allow");
     let got = call(&mut hb, "needs_you.get", json!({ "id": item["id"] }));
@@ -2236,6 +2237,10 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     // An agent's human-only setting change:
     let e = call_err(&mut b.agent(None), "settings.set", json!({ "key": "policy.default", "value": "allow" }));
     let asked = e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).unwrap_or_else(|| panic!("deferred: {e:?}")).to_string();
+    // The list and get say so up front, so A's pill shows "Decide at Bravo" before you try.
+    let marked = |c: &mut Client, id: &str| open_items(c).into_iter().find(|n| n["id"] == id).map(|n| n["local_only"].clone());
+    assert_eq!(marked(&mut there, &asked), Some(json!(true)));
+    assert_eq!(call(&mut there, "needs_you.get", json!({ "id": asked }))["item"]["local_only"], true);
     at_bravo(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     assert_eq!(call(&mut hb, "settings.get", json!({ "key": "policy.default" }))["value"], "auto");
     call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "dismiss" } }));
@@ -2243,12 +2248,14 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     let rid = rule["id"].as_str().unwrap();
     let removal = call(&mut b.agent(Some(&asker)), "rule.request_removal", json!({ "id": rid, "reason": "in my way" }));
     let removal = removal["needs_you_id"].as_str().or(removal["id"].as_str()).unwrap().to_string();
+    assert_eq!(marked(&mut there, &removal), Some(json!(true)));
     at_bravo(&mut there, "needs_you.resolve", json!({ "id": removal, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     call(&mut there, "needs_you.resolve", json!({ "id": removal, "resolution": { "kind": "deny" } }));
     assert!(call(&mut hb, "rule.list", json!({})).as_array().unwrap().iter().any(|r| r["id"] == rid), "the rule stays");
     // and a share sent to B, which is decided at B:
     let sent = send(&mut a.human(), &fb, json!({ "kind": "message", "text": "for Bravo" }));
     let offer = wait_for(10, "the share's approval", || open_items(&mut there).into_iter().find(|n| n["title"].as_str().is_some_and(|t| t.contains("Alpha"))));
+    assert_eq!(offer["local_only"], true, "{offer}");
     at_bravo(&mut there, "needs_you.resolve", json!({ "id": offer["id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     call(&mut there, "needs_you.resolve", json!({ "id": offer["id"], "resolution": { "kind": "deny" } }));
     let id = sent["id"].as_str().unwrap();

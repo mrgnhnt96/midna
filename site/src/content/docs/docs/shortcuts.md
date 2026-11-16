@@ -16,7 +16,8 @@ Keys are written like `cmd-shift-t`, with modifiers `cmd`, `shift`, `alt` and `c
 | Shortcut | Action |
 | --- | --- |
 | <kbd>⌘</kbd> <kbd>K</kbd> | Command bar |
-| <kbd>⌘</kbd> <kbd>J</kbd> | Needs you: open, then skip to the next item |
+| <kbd>⌘</kbd> <kbd>J</kbd> | Needs you: the newest item on the Mac whose window is in front, then skip to the next |
+| <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>J</kbd> | Needs you: the newest item on any of your Macs |
 | <kbd>⌘</kbd> <kbd>↩</kbd> / <kbd>⌘</kbd> <kbd>⌫</kbd> | Approve once / deny the selected terminal's approval |
 | <kbd>⌘</kbd> <kbd>T</kbd> | New terminal in the current project |
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>T</kbd> | New agent in the current project |

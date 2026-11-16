@@ -624,6 +624,28 @@ impl FakeBackend {
                 }
                 _ => false,
             });
+            // An agent there asking to run a command: approved from here, over the link.
+            let first = st.sessions.first().map(|s| (s.id.clone(), s.project_id.clone()));
+            if let Some((sid, project)) = first {
+                st.needs.insert(0, NeedsYou {
+                    id: format!("n_publsh_{}", mac.peer.get(..4).unwrap_or_default()),
+                    session_id: Some(sid.clone()),
+                    project_id: project.clone(),
+                    kind: NeedsYouKind::Approval,
+                    title: "Approve npm publish?".into(),
+                    asked_by: Actor { kind: "agent".into(), session: Some(sid.clone()), name: Some("claude".into()) },
+                    created_at: ago(1),
+                    approval: Some(ApprovalRequest {
+                        action: PolicyAction { kind: "command".into(), value: "npm publish --access public".into(), session: Some(sid), project },
+                        matched_rule: None,
+                    }),
+                    ..Default::default()
+                });
+            }
+            // A setting change there (a custom script's path) can only be approved at that Mac.
+            for n in &mut st.needs {
+                n.local_only = n.setting.is_some();
+            }
             st.scripts = std::mem::take(&mut st.scripts).into_iter().map(|(k, v)| (id(&k), v)).collect();
             st.settings = settings_catalog();
             override_settings(&mut st.settings, "MIDNA_FAKE_MAC_SETTINGS");
@@ -952,6 +974,13 @@ impl Backend for FakeBackend {
                 let id = p("id").ok_or_else(|| anyhow!("id required"))?;
                 let res: Resolution = serde_json::from_value(params.get("resolution").cloned().unwrap_or(Value::Null))?;
                 let Some(i) = st.needs.iter().position(|n| n.id == id) else { bail!("rpc error 3: not found") };
+                // As midnad over a drive link: approving what's local-only there is turned down.
+                if let Some((mac, _)) = &self.mac
+                    && st.needs[i].local_only
+                    && matches!(res, Resolution::Approve { .. })
+                {
+                    bail!("rpc error 2: Do this at {}: approving this can't be done from another Mac", mac.name);
+                }
                 let item = st.needs.remove(i);
                 st.emit("needs_you.resolved", item.session_id.as_deref(), json!({"id": id, "resolution": res}));
                 if let Some(sid) = &item.session_id {

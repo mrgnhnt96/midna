@@ -51,7 +51,7 @@ pub struct Stack {
     pub menu: bool,
     filter: Filter,
     /// The item a clicked notification opened ("from your notification").
-    clicked: Option<String>,
+    pub(crate) clicked: Option<String>,
     scroll: ScrollHandle,
     /// Handled during this pass, for the "All clear" summary.
     log: Vec<(String, Outcome)>,
@@ -448,6 +448,16 @@ fn select_at(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
     m.stack.menu = false;
     m.stack.scroll.scroll_to_item(i);
     cx.notify();
+}
+
+/// ⌘J with the list closed: open it on the newest item (the list's last), or as it opens with
+/// nothing waiting.
+pub fn open_newest(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    m.set_overlay(Overlay::NeedsYou, window, cx);
+    let last = ordered(m).len().checked_sub(1);
+    if let Some(i) = last.filter(|_| !m.stack.menu) {
+        select_at(m, i, cx);
+    }
 }
 
 /// Open the list on item `id` (a clicked notification), keeping it open if it already is.

@@ -13,9 +13,10 @@
 //!   the Mac mini after that.
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
 //! - `MIDNA_DEBUG_BADGE_DOCK=1` — the needs-you pill docks in the window though midna isn't in front.
-//! - `MIDNA_DEBUG_BADGE=list|card|menu|mac|switch:<ms>` — once something's waiting, open this Mac's
-//!   list (with its first card) or the menu; the first other Mac's list (`mac`); or this Mac's,
-//!   then switch to the other Mac's and hold the slide `<ms>` in (`switch`).
+//! - `MIDNA_DEBUG_BADGE=list|card|menu|mac|switch:<ms>|tip` — once something's waiting, open this
+//!   Mac's list (with its first card) or the menu; the first other Mac's list (`mac`); or this
+//!   Mac's, then switch to the other Mac's and hold the slide `<ms>` in (`switch`); or rest on the
+//!   pill with its tooltip up (`tip`).
 //! - `MIDNA_DEV=1` — dev mode even inside a bundle: no install / login item / updates; a missing
 //!   midnad is spawned from next to this binary (`MIDNA_NO_SPAWN=1` to skip). See `lifecycle.rs`.
 mod actions;
@@ -172,7 +173,8 @@ fn main() {
 }
 
 /// Dev: render the main window offscreen to `MIDNA_SNAPSHOT` after `MIDNA_SNAPSHOT_DELAY_MS`
-/// (`MIDNA_SNAPSHOT_WINDOW=last`: the window opened last instead, e.g. a pop-out).
+/// (`MIDNA_SNAPSHOT_WINDOW=last`: the window opened last instead, e.g. a pop-out; `badge`: the
+/// needs-you pill's window).
 #[cfg(feature = "snapshot")]
 fn snapshot(handle: WindowHandle<app::MainWindow>, cx: &mut App) {
     let Ok(path) = std::env::var("MIDNA_SNAPSHOT") else {
@@ -180,10 +182,14 @@ fn snapshot(handle: WindowHandle<app::MainWindow>, cx: &mut App) {
     };
     let delay: u64 = std::env::var("MIDNA_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2500);
     let main: AnyWindowHandle = handle.into();
-    let last = std::env::var("MIDNA_SNAPSHOT_WINDOW").is_ok_and(|v| v == "last");
+    let which = std::env::var("MIDNA_SNAPSHOT_WINDOW").unwrap_or_default();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
-        let any = if last { cx.update(|cx| cx.windows().into_iter().rfind(|w| !ui::badge::is_badge(*w, cx))).unwrap_or(main) } else { main };
+        let any = match which.as_str() {
+            "last" => cx.update(|cx| cx.windows().into_iter().rfind(|w| !ui::badge::is_badge(*w, cx))).unwrap_or(main),
+            "badge" => cx.update(|cx| cx.windows().into_iter().find(|w| ui::badge::is_badge(*w, cx))).unwrap_or(main),
+            _ => main,
+        };
         // two passes so layout-dependent state (terminal size, frames) settles
         for _ in 0..2 {
             let _ = cx.update_window(any, |_, window, cx| {

@@ -386,6 +386,17 @@ pub fn on_home(cx: &mut App, f: impl FnOnce(&mut MainWindow, &mut Window, &mut C
     });
 }
 
+/// What waits on this Mac, as its home window last listed it (empty with no window onto it).
+/// Not from inside that window's own update: it reads the window.
+pub fn local_needs(cx: &App) -> Vec<crate::model::NeedsYou> {
+    let Some(reg) = cx.try_global::<Windows>().map(|w| w.0.clone()) else { return vec![] };
+    let target = {
+        let r = reg.borrow();
+        r.home(&None).and_then(|id| r.main(id))
+    };
+    target.and_then(|t| t.entity.upgrade()).map(|e| e.read(cx).needs.clone()).unwrap_or_default()
+}
+
 /// `reveal` of one of this Mac's terminals, for a clicked notification: about a needs-you
 /// item (`need`), open the stack on that card, or its terminal when the card can't show the
 /// whole question (`needs_you::too_long`).
@@ -397,6 +408,42 @@ pub fn reveal_need(session: String, need: Option<String>, cx: &mut App) {
 /// terminal, never the stack. Its needs-you card (`need`) shows only when the terminal is gone.
 pub fn reveal_terminal(session: String, need: Option<String>, cx: &mut App) {
     reveal_on(None, session, need, false, cx)
+}
+
+/// Another of my Macs' needs-you item, from this Mac's pill ("Open on <Mac>"): that Mac's window
+/// comes forward on its terminal with its card showing. With no window onto that Mac, one opens
+/// and connects first (its connecting card), and goes there once it has its terminals.
+pub fn reveal_on_mac(local: &Arc<dyn Backend>, mac: Mac, session: Option<String>, need: Option<String>, cx: &mut App) {
+    let id: MacId = Some(mac.peer.clone());
+    let Some(w) = open_mac(local, Some(mac), cx) else { return };
+    let listed = w.read_with(cx, |m, _| m.listed).unwrap_or(false);
+    if listed {
+        reveal_there(id, session, need, cx);
+    } else {
+        let _ = w.update(cx, |m, _| m.reveal_waiting = Some((session, need)));
+    }
+}
+
+/// `mac`'s needs-you item `need`: its terminal with its card over it, or without a terminal, its
+/// card in that Mac's home window.
+pub fn reveal_there(mac: MacId, session: Option<String>, need: Option<String>, cx: &mut App) {
+    if let Some(session) = session {
+        return reveal_on(mac, session, need, true, cx);
+    }
+    let target = {
+        let reg = shared(cx);
+        let r = reg.borrow();
+        r.home(&mac).and_then(|id| r.main(id))
+    };
+    let Some(t) = target else { return };
+    let _ = t.handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        let _ = t.entity.update(cx, |m, cx| {
+            if let Some(id) = need.filter(|id| m.needs.iter().any(|n| n.id == *id)) {
+                crate::ui::needs_you::show(m, id, window, cx);
+            }
+        });
+    });
 }
 
 /// `reveal_need`; `card`: show the needs-you card over a terminal that's still there.

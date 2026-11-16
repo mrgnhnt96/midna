@@ -283,6 +283,9 @@ pub struct MainWindow {
     front_waiting: Option<String>,
     /// A project to open once `session.list` next answers (`open_at`).
     open_waiting: Option<String>,
+    /// Another Mac's item to show once this window onto it has its terminals and items: its
+    /// terminal (if any) and needs-you id ("Open on <Mac>" before the window had connected).
+    pub reveal_waiting: Option<(Option<String>, Option<String>)>,
     loaded: bool,
     /// The first terminal list has arrived (empty or not): another Mac's window shows its
     /// connecting card and placeholder rows until then.
@@ -539,6 +542,7 @@ impl MainWindow {
             sessions_floor: 0,
             front_waiting: None,
             open_waiting: None,
+            reveal_waiting: None,
             loaded: false,
             listed: false,
             lost_at: None,
@@ -1408,8 +1412,18 @@ impl MainWindow {
         if let Some(before) = before {
             crate::ui::close_anim::arrive(self, &before, cx);
         }
+        let needs_in = r.needs.is_some();
         if let Some(n) = r.needs {
             self.needs = n;
+        }
+        // "Open on <Mac>" waited for this window's terminals and items: show them now.
+        if self.listed
+            && let Some((_, need)) = &self.reveal_waiting
+            && (needs_in || need.as_ref().is_none_or(|id| self.needs.iter().any(|n| n.id == *id)))
+            && let Some((session, need)) = self.reveal_waiting.take()
+        {
+            let mac = self.mac_id();
+            cx.defer(move |cx| crate::windows::reveal_there(mac, session, need, cx));
         }
         crate::ui::need_anim::sync(self, cx);
         crate::ui::toast::sync(self, cx);
@@ -2046,20 +2060,49 @@ impl MainWindow {
         }
     }
 
-    /// ⌘J / the sidebar "N need you" button: open the needs-you card stack (NeedsYou-C).
+    /// ⌘J: the newest needs-you item on the Mac this window shows, as its sidebar's "N need you
+    /// ⌘J" counts, so it never takes you to another Mac (⌥⌘J does: `next_needs_you_anywhere`).
     /// Inside the stack ⌘J skips to the next card (handled by the stack).
     pub fn next_needs_you(&mut self, _: &NextNeedsYou, window: &mut Window, cx: &mut Context<Self>) {
-        // The badge's newest capsule showing (docked in this window): ⌘J goes to its terminal.
-        // A banner card showing (badge off): ⌘J is its "Go to terminal".
-        if self.overlay == Overlay::None && crate::ui::badge::newest(cx) {
-            cx.defer(crate::ui::badge::go_newest);
+        let mac = self.mac_id();
+        // The badge's newest capsule showing (docked in this window) from this window's Mac:
+        // ⌘J goes to its terminal. A banner card showing (badge off): its "Go to terminal".
+        if self.overlay == Overlay::None && crate::ui::badge::newest(&mac, cx) {
+            cx.defer(move |cx| crate::ui::badge::go_newest(mac, cx));
         } else if self.overlay == Overlay::None && crate::ui::toast::can_go(self) {
             crate::ui::toast::go(self, window, cx);
         } else if self.overlay == Overlay::NeedsYou {
             crate::ui::needs_you::skip(self, cx);
         } else {
-            self.set_overlay(Overlay::NeedsYou, window, cx);
+            crate::ui::needs_you::open_newest(self, window, cx);
         }
+    }
+
+    /// ⌥⌘J: the newest needs-you item on any of my Macs. On this Mac, its terminal with its
+    /// card (or the card in this Mac's home window); on another, that Mac's window comes forward
+    /// on it as its pill card's "Open on <Mac>" does, opening one if none is. Nothing waiting
+    /// anywhere: as ⌘J.
+    pub fn next_needs_you_anywhere(&mut self, _: &NextNeedsYouAnywhere, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.mac_id();
+        // This window's own Mac from its own list (the freshest); the others as followed.
+        let local = if here.is_none() { self.needs.clone() } else { crate::windows::local_needs(cx) };
+        let feeds = crate::mac_feed::list(cx);
+        let mut macs: Vec<(Option<&str>, &[NeedsYou])> = vec![(None, &local)];
+        if let Some(peer) = here.as_deref() {
+            macs.push((Some(peer), &self.needs));
+        }
+        macs.extend(feeds.iter().filter(|f| Some(&f.mac.peer) != here.as_ref()).map(|f| (Some(f.mac.peer.as_str()), &f.needs[..])));
+        let Some((mac, n)) = crate::ui::mac_tab::newest(macs) else {
+            return self.next_needs_you(&NextNeedsYou, window, cx);
+        };
+        let (session, need) = (n.session_id.clone(), Some(n.id.clone()));
+        crate::lifecycle::log(&format!("⌥⌘J: newest is {} on {}", n.id, mac.as_deref().unwrap_or("this Mac")));
+        let name = mac.as_ref().and_then(|p| feeds.iter().find(|f| f.mac.peer == *p)).map(|f| f.mac.name.clone());
+        let local_backend = crate::backend::local(&self.backend);
+        cx.defer(move |cx| match (mac, name) {
+            (Some(peer), Some(name)) => crate::windows::reveal_on_mac(&local_backend, crate::backend::Mac { peer, name }, session, need, cx),
+            (mac, _) => crate::windows::reveal_there(mac, session, need, cx),
+        });
     }
 
     pub fn open_session(&mut self, project: Option<String>, agent: Option<AgentKind>, cx: &mut Context<Self>) {
@@ -2600,6 +2643,7 @@ impl MainWindow {
         el.on_action(cx.listener(Self::approve_once))
             .on_action(cx.listener(Self::deny))
             .on_action(cx.listener(Self::next_needs_you))
+            .on_action(cx.listener(Self::next_needs_you_anywhere))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::new_agent))
             .on_action(cx.listener(Self::new_terminal_root))
@@ -2966,5 +3010,41 @@ mod tests {
         let r = rows(&[("a1", Some("a")), ("b1", Some("b")), ("g1", Some("bg"))]);
         assert_eq!(neighbour(&r, "g1", |_| true).as_deref(), Some("b1"));
         assert_eq!(neighbour(&r, "missing", |_| true), None);
+    }
+
+    /// "Open on <Mac>" from the pill with no window onto that Mac: one opens and connects, and
+    /// once it has that Mac's terminals it shows the item's card.
+    #[gpui_kit::test]
+    fn open_on_a_mac_waits_for_its_window_to_list_then_shows_the_card(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::{Backend, Mac};
+        use crate::model::{NeedsYou, parse_list};
+        use std::sync::Arc;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::from_def(&midna_proto::themes::builtin("twilight").unwrap(), "ui".into(), "mono".into())));
+        let here: Arc<dyn Backend> = Arc::new(crate::backend::fake::FakeBackend::new());
+        let mac = Mac { peer: "7".repeat(64), name: "Morgan's Mac mini".into() };
+        let mini = crate::backend::for_mac(&here, mac.clone());
+        let needs: Vec<NeedsYou> = parse_list(&mini.call("needs_you.list", serde_json::json!({})).unwrap());
+        let need = needs.into_iter().find(|n| n.is_approval() && n.session_id.is_some()).unwrap();
+        cx.update(|cx| crate::windows::reveal_on_mac(&here, mac.clone(), need.session_id.clone(), Some(need.id.clone()), cx));
+        let w = cx.windows().into_iter().find_map(|w| w.downcast::<super::MainWindow>()).expect("a window onto the Mac mini");
+        w.read_with(cx, |m, _| {
+            assert_eq!(m.mac_id(), Some(mac.peer.clone()));
+            assert_eq!(m.reveal_waiting, Some((need.session_id.clone(), Some(need.id.clone()))), "held until it's connected");
+        })
+        .unwrap();
+        // Its first list comes in (the terminal itself isn't attached here: its card shows).
+        w.update(cx, |m, window, cx| {
+            let r = super::RefreshResult { seq: m.refresh_seq, sessions: Some(vec![]), needs: Some(vec![need.clone()]), ..Default::default() };
+            m.apply_refresh(r, window, cx);
+        })
+        .unwrap();
+        w.read_with(cx, |m, _| {
+            assert_eq!(m.reveal_waiting, None);
+            assert_eq!(m.overlay, super::Overlay::NeedsYou);
+            assert_eq!(m.stack.clicked.as_deref(), Some(need.id.as_str()));
+        })
+        .unwrap();
+        // This Mac got no window from it.
+        assert_eq!(cx.windows().len(), 1);
     }
 }

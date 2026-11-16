@@ -10,8 +10,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub fn list(d: &Daemon, p: NeedsYouListParams) -> R {
-    let core = d.core();
-    ok(core.state.needs_you.iter().filter(|n| p.session_id.is_none() || n.session_id == p.session_id).cloned().collect::<Vec<_>>())
+    let items: Vec<NeedsYou> = d.core().state.needs_you.iter().filter(|n| p.session_id.is_none() || n.session_id == p.session_id).cloned().collect();
+    ok(items.into_iter().map(|n| marked(d, n)).collect::<Vec<_>>())
+}
+
+/// `item` as `list` and `get` give it: `local_only` when approving it can only be done here.
+fn marked(d: &Daemon, mut item: NeedsYou) -> NeedsYou {
+    item.local_only = crate::nearby::local_only::approval(d, &item);
+    item
 }
 
 /// Most closed items `needs_you.get` remembers.
@@ -89,7 +95,7 @@ pub fn get(d: &Daemon, p: NeedsYouGetParams) -> R {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
-            let r = NeedsYouGetResult { id: p.id, state: NeedsYouState::Open, item: Some(item), resolution: None, resolved_by: None, resolved_at: None, result: None, error: None };
+            let r = NeedsYouGetResult { id: p.id, state: NeedsYouState::Open, item: Some(marked(d, item)), resolution: None, resolved_by: None, resolved_at: None, result: None, error: None };
             return ok(r);
         }
         let answered = d.answered.lock().unwrap_or_else(|e| e.into_inner()).get(&p.id);
@@ -313,6 +319,7 @@ mod expire_tests {
             trigger_id: None,
             question: None,
             setting: None,
+            local_only: false,
         }
     }
 

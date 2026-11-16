@@ -889,6 +889,11 @@ pub struct NeedsYou {
     /// Approving may save a different value (`needs_you.resolve`'s `value`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setting: Option<SettingChange>,
+    /// Approving it runs something only this Mac's own human may do (DECISIONS.md, Local-only),
+    /// so another of my Macs driving this one shows "Decide at <Mac>" instead of Approve. Set by
+    /// `needs_you.list` and `needs_you.get`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_only: bool,
 }
 
 /// A setting an agent asked to change, as it was when it asked.
