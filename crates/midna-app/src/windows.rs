@@ -105,6 +105,21 @@ impl Places {
     pub fn same_mac(&self, a: EntityId, b: EntityId) -> bool {
         matches!((self.mac_of(a), self.mac_of(b)), (Some(x), Some(y)) if x == y)
     }
+
+    /// Another Mac's window is open.
+    fn any_remote(&self) -> bool {
+        self.wins.iter().any(|w| w.1.is_some())
+    }
+}
+
+/// The name a window of `mac` (None: this Mac) shows in its sidebar's plate, its status bar and
+/// its title: another Mac's always; this Mac's (`local`) only while another Mac's window is
+/// open. None: the window looks as it did before there were other Macs' windows.
+fn shown_name(mac: Option<&Mac>, any_remote: bool, local: Option<&str>) -> Option<String> {
+    match mac {
+        Some(m) => Some(m.name.clone()),
+        None => local.filter(|_| any_remote).map(str::to_string),
+    }
 }
 
 #[derive(Default)]
@@ -118,6 +133,10 @@ pub struct Registry {
     /// quitting isn't here, so the next launch reopens it.
     leaving: Vec<EntityId>,
     save_pending: bool,
+    /// This Mac's name (`peers.list`'s `me`), once its daemon said it.
+    local_name: Option<String>,
+    /// The name this Mac's windows show now (see `shown_name`).
+    local_shown: Option<String>,
 }
 
 impl std::ops::Deref for Registry {
@@ -135,6 +154,11 @@ impl Registry {
 
     pub fn claim(&mut self, session: &str, me: EntityId) {
         self.places.claim(session, me)
+    }
+
+    /// The name a window of `mac` shows (see `shown_name`).
+    pub fn shown_name(&self, mac: Option<&Mac>) -> Option<String> {
+        shown_name(mac, self.places.any_remote(), self.local_name.as_deref())
     }
 
     fn main(&self, id: EntityId) -> Option<Main> {
@@ -167,7 +191,38 @@ pub fn register(entity: WeakEntity<MainWindow>, id: EntityId, mac: MacId, window
     r.mains.insert(id, Main { id, entity, handle, ns });
     drop(r);
     save_soon(cx);
+    cx.defer(sync_names);
     reg
+}
+
+/// Another Mac's window opened or closed, or this Mac's name changed: this Mac's windows show
+/// its name, or stop showing it, in their plate, status bar and title.
+fn sync_names(cx: &mut App) {
+    let reg = shared(cx);
+    let name = {
+        let mut r = reg.borrow_mut();
+        let now = r.shown_name(None);
+        if r.local_shown == now {
+            return;
+        }
+        r.local_shown = now.clone();
+        now
+    };
+    let mains = reg.borrow().ordered();
+    let title = title(name.as_deref());
+    for (m, _) in mains.into_iter().filter(|(_, mac)| mac.is_none()) {
+        let _ = m.handle.update(cx, |_, window, _| window.set_window_title(&title));
+        let _ = m.entity.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// This Mac's name, from its daemon (`peers.list`).
+fn set_local_name(name: String, cx: &mut App) {
+    let reg = shared(cx);
+    let name = Some(name).filter(|n| !n.is_empty());
+    if std::mem::replace(&mut reg.borrow_mut().local_name, name.clone()) != name {
+        sync_names(cx);
+    }
 }
 
 /// The main windows' AppKit windows, most recently focused first (the badge docks only in these).
@@ -192,6 +247,7 @@ pub fn closed(id: EntityId, cx: &mut App) {
     if let Some(h) = home {
         let _ = h.entity.update(cx, |m, cx| m.request_refresh(crate::app::refresh::ALL, cx));
     }
+    cx.defer(sync_names);
 }
 
 /// The human is closing main window `id`: drop it from the saved layout.
@@ -558,21 +614,25 @@ pub fn set_menus(macs: Vec<Mac>, cx: &mut App) {
     cx.set_global(MenuMacs(Some(macs)));
 }
 
-/// Ask this Mac's daemon which Macs are mine (`peers.list`) and list them in the Window menu.
+/// Ask this Mac's daemon which Macs are mine (`peers.list`) and list them in the Window menu;
+/// its name there is the one this Mac's windows show beside another Mac's.
 pub fn refresh_menu(local: Arc<dyn Backend>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let r = cx.background_executor().spawn(async move { local.call("peers.list", serde_json::json!({})) }).await;
         let Some(list) = r.ok().and_then(|v| serde_json::from_value::<midna_proto::nearby::PeersListResult>(v).ok()) else { return };
-        let _ = cx.update(|cx| set_menus(my_macs(&list), cx));
+        let _ = cx.update(|cx| {
+            set_menus(my_macs(&list), cx);
+            set_local_name(list.me.name, cx);
+        });
     })
     .detach();
 }
 
-/// The title macOS shows for a window (Mission Control, ⌘`, the Window menu): another Mac's
-/// window is named for it.
-pub fn title(mac: Option<&Mac>) -> SharedString {
-    match mac {
-        Some(m) => format!("{} — Midna", m.name).into(),
+/// The title macOS shows for a window (Mission Control, ⌘`, the Window menu), from the name
+/// it shows (`shown_name`): another Mac's window is named for it, and this Mac's beside one.
+pub fn title(name: Option<&str>) -> SharedString {
+    match name {
+        Some(n) => format!("{n} — Midna").into(),
         None => "midna".into(),
     }
 }
@@ -583,9 +643,10 @@ pub fn open(backend: Arc<dyn Backend>, bounds: Option<Bounds<Pixels>>, cx: &mut 
     let sz = size(px(size_env("MIDNA_W", 1280.)), px(size_env("MIDNA_H", 800.)));
     let cascade = cx.active_window().and_then(|w| w.update(cx, |_, window, _| window.bounds()).ok()).map(|b| Bounds::new(b.origin + point(px(28.), px(28.)), b.size));
     let bounds = bounds.or(cascade).unwrap_or_else(|| Bounds::centered(None, sz, cx));
+    let name = shared(cx).borrow().shown_name(backend.mac());
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: Some(TitlebarOptions { title: Some(title(backend.mac())), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
+        titlebar: Some(TitlebarOptions { title: Some(title(name.as_deref())), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
         window_min_size: Some(size(px(720.), px(420.))),
         app_id: Some("com.mrgnhnt.midna".into()),
         // Keep rendering daemon updates at full rate while the window is in the background.
@@ -608,7 +669,7 @@ pub fn id_of(handle: WindowHandle<MainWindow>, cx: &mut App) -> Option<EntityId>
 
 #[cfg(test)]
 mod tests {
-    use super::{MacId, Places, Saved, SavedMac, my_macs, title};
+    use super::{MacId, Places, Saved, SavedMac, my_macs, shown_name, title};
     use crate::backend::{Backend, Mac};
 
     const MINI: &str = "ffff";
@@ -699,7 +760,22 @@ mod tests {
     #[test]
     fn another_macs_window_is_named_for_it() {
         let m = Mac { peer: MINI.into(), name: "Morgan's Mac mini".into() };
-        assert_eq!(title(Some(&m)), "Morgan's Mac mini — Midna");
+        let name = shown_name(Some(&m), true, Some("Work MacBook Pro"));
+        assert_eq!(title(name.as_deref()), "Morgan's Mac mini — Midna");
         assert_eq!(title(None), "midna");
+    }
+
+    #[test]
+    fn this_mac_names_itself_only_beside_another_macs_window() {
+        let m = Mac { peer: MINI.into(), name: "Morgan's Mac mini".into() };
+        assert_eq!(shown_name(None, false, Some("Work MacBook Pro")), None, "no other Mac's window: as before");
+        assert_eq!(shown_name(None, true, Some("Work MacBook Pro")).as_deref(), Some("Work MacBook Pro"));
+        assert_eq!(shown_name(None, true, None), None, "this Mac's name isn't known yet");
+        assert_eq!(shown_name(Some(&m), false, None).as_deref(), Some("Morgan's Mac mini"), "another Mac's window always says whose it is");
+        let mut p = four();
+        assert!(p.any_remote());
+        p.closed(3u64.into());
+        p.closed(4u64.into());
+        assert!(!p.any_remote(), "the Mac mini's last window closed");
     }
 }

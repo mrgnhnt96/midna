@@ -675,6 +675,10 @@ impl MainWindow {
                     if key.starts_with("policy.") {
                         what |= refresh::RULES;
                     }
+                    // This Mac's name, shown beside another Mac's window.
+                    if key == "nearby.name" && self.is_local_home() {
+                        crate::windows::refresh_menu(self.backend.clone(), cx);
+                    }
                     // Which kinds count on the bell: count again.
                     if key.starts_with("notify.bell.") {
                         crate::ui::notifications::fetch(self, cx);
@@ -841,6 +845,12 @@ impl MainWindow {
     /// This window shows another of my Macs (see `windows`).
     pub fn remote(&self) -> bool {
         self.backend.mac().is_some()
+    }
+
+    /// The Mac's name this window shows in its sidebar's plate and its status bar: another
+    /// Mac's always, this Mac's only while another Mac's window is open (`windows::shown_name`).
+    pub fn shown_name(&self) -> Option<String> {
+        self.windows.borrow().shown_name(self.backend.mac())
     }
 
     /// Whether `session` shows in this window (not another main window).
