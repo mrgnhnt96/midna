@@ -116,6 +116,11 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
                 transfer::serve(&d, &mut ch, &from, &id, file, offset)
             }
             Wire::FileDone { id, ok, error } => transfer::finished(&d, &ch.fingerprint, &id, ok, error),
+            Wire::DriveOpen => {
+                drop(d);
+                // The connection becomes the link from here on.
+                return super::relay::serve(w, ch);
+            }
             _ => Wire::Refused { reason: "unsupported".into() },
         };
         drop(d);
@@ -137,12 +142,26 @@ pub fn connect_peer_waiting(d: &Daemon, fp: &str) -> Result<Channel, RpcError> {
 }
 
 fn reach(d: &Daemon, fp: &str, patient: bool) -> Result<Channel, RpcError> {
+    reach_staged(d, fp, &Reach { finding: &|| {}, proving: &|| {}, patient })
+}
+
+/// What [`reach_staged`] says as it goes: it is looking for the device, then proving keys with it.
+pub struct Reach<'a> {
+    pub finding: &'a dyn Fn(),
+    pub proving: &'a dyn Fn(),
+    pub patient: bool,
+}
+
+/// [`connect_peer`], reporting its stages (a drive link shows them).
+pub fn reach_staged(d: &Daemon, fp: &str, stages: &Reach) -> Result<Channel, RpcError> {
     if !trusted(d, fp) {
         return Err(RpcError::refused("that device isn't paired with this Mac"));
     }
+    (stages.finding)();
     let peer = d.nearby.inner().peers.get(fp).cloned().ok_or_else(|| RpcError::not_found("that device can't be seen on the network now"))?;
     let addrs = pairing::addresses(d, peer.host.as_deref(), peer.port)?;
-    let ch = access::dial(d, &addrs, &peer.name, patient)?;
+    (stages.proving)();
+    let ch = access::dial(d, &addrs, &peer.name, stages.patient)?;
     if ch.fingerprint != fp {
         return Err(RpcError::refused(format!("the device that answered at {}'s address isn't it (another key)", peer.name)));
     }

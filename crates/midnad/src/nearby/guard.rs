@@ -154,6 +154,12 @@ pub fn refusal(d: &Daemon, method: &str, params: &Value) -> Option<RpcError> {
                  or `midna peers drive <name> on|off` in their own shell); agents can't ask for it",
             ));
         }
+        // Only the Midna app opens and closes drive links; nothing to approve for anyone else.
+        "drive.open" | "drive.close" => {
+            return Some(RpcError::human_only(format!(
+                "{method} is for the Midna app only: agents and the CLI can't open or close a link to drive another Mac"
+            )));
+        }
         share::ACCEPT_METHOD | share::DECLINE_METHOD => {
             (format!("{method} is human only: agents can't accept or decline what other devices send"), share::waiting_on(d, &id("id")))
         }

@@ -302,7 +302,7 @@ impl FakeBackend {
                 trigger_id: None,
                 waiting_for: vec![],
             };
-            let trigger = midna_proto::Actor { kind: midna_proto::ActorKind::Trigger, session: None, name: Some("After compact, write notes".into()), trigger: None, via: None };
+            let trigger = midna_proto::Actor { kind: midna_proto::ActorKind::Trigger, session: None, name: Some("After compact, write notes".into()), trigger: None, via: None, peer: None };
             vec![
                 Session {
                     queue: vec![

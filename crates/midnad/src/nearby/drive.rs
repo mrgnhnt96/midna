@@ -1,8 +1,8 @@
 //! Driving this Mac from one of my other Macs: whether a paired device may (`peers.set_drive`,
 //! `peers.confirm` `allow_drive`; kept in `nearby/peers.json`), and the live drive links it has.
 //!
-//! Nothing opens a drive link yet; the relay does, through [`open`], and drops the returned
-//! [`Link`] when it closes. Whatever takes the permission away cuts that device's links at once,
+//! The relay (`relay.rs`) opens a drive link through [`open`] when a paired device asks to drive
+//! this Mac, and drops the returned [`Handle`] when the link closes. Whatever takes the permission away cuts that device's links at once,
 //! before the call returns: `peers.set_drive` off, keeping it as a contact (`peers.set_tier`),
 //! `peers.forget`, and pairing again without it. A cut link runs the relay's closer once
 //! (`Link::on_cut`) and reads as cut from then on (`Link::is_cut`), so a link that was being opened

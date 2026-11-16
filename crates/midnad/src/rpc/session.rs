@@ -1267,7 +1267,7 @@ pub fn on_title(d: &Arc<Daemon>, sid: &str, generation: u64, title: &str, screen
             }
         }
         (TitleHint::Working, StatusState::Idle | StatusState::Done) if agent == AgentKind::Codex => {
-            let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.as_str().into()), trigger: None, via: None };
+            let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(agent.as_str().into()), trigger: None, via: None, peer: None };
             crate::rpc::agent::start_turn(d, sid, &project, &actor);
             d.set_status(sid, StatusState::Working, Some("working (title)".into()), None, Actor::system());
         }

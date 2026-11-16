@@ -26,6 +26,8 @@ pub enum ActorKind {
 /// Who did something. Agents inside a midna terminal carry their session id. A trigger carries
 /// its id (`trigger`) and name; `via: "run"` marks a call made by a process of that trigger's
 /// headless run (midnad matches the caller's process to the run it started, never an env var).
+/// `via: "peer"` marks a call carried over a drive link from one of my other Macs, `peer` being
+/// that Mac's fingerprint as the Noise handshake proved it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Actor {
@@ -38,25 +40,33 @@ pub struct Actor {
     pub trigger: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// `via: "peer"`: the fingerprint of the paired Mac whose drive link made the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 
 impl Actor {
     pub fn human() -> Actor {
-        Actor { kind: ActorKind::Human, session: None, name: None, trigger: None, via: None }
+        Actor { kind: ActorKind::Human, session: None, name: None, trigger: None, via: None, peer: None }
     }
     pub fn system() -> Actor {
-        Actor { kind: ActorKind::System, session: None, name: None, trigger: None, via: None }
+        Actor { kind: ActorKind::System, session: None, name: None, trigger: None, via: None, peer: None }
     }
     pub fn agent(session: Option<Id>) -> Actor {
-        Actor { kind: ActorKind::Agent, session, name: None, trigger: None, via: None }
+        Actor { kind: ActorKind::Agent, session, name: None, trigger: None, via: None, peer: None }
     }
     /// Trigger `id` (named `name`) acting on its own.
     pub fn trigger(id: &str, name: &str) -> Actor {
-        Actor { kind: ActorKind::Trigger, session: None, name: Some(name.to_string()), trigger: Some(id.to_string()), via: None }
+        Actor { kind: ActorKind::Trigger, session: None, name: Some(name.to_string()), trigger: Some(id.to_string()), via: None, peer: None }
     }
     /// A process of trigger `id`'s headless run.
     pub fn trigger_run(id: &str, name: &str) -> Actor {
         Actor { via: Some("run".into()), ..Actor::trigger(id, name) }
+    }
+    /// A connection carried over a drive link from paired device `fingerprint`. Agent level for
+    /// now: nothing human only works over a link yet.
+    pub fn peer(fingerprint: &str) -> Actor {
+        Actor { via: Some("peer".into()), peer: Some(fingerprint.to_string()), ..Actor::agent(None) }
     }
     pub fn is_human(&self) -> bool {
         self.kind == ActorKind::Human
@@ -1528,6 +1538,10 @@ pub mod kinds {
     /// `{peer, name, on}`): `peers.set_drive`, or off because it was kept as a contact, forgotten
     /// or paired again without it. Turning it off cuts that device's drive links at once.
     pub const PEERS_DRIVE: &str = "peers.drive";
+    /// Nearby: a drive link this Mac opened to another of my Macs changed state (data: a
+    /// `nearby::DriveLink`: connecting with its stage, connected, reconnecting, offline or closed,
+    /// and why).
+    pub const DRIVE_STATE: &str = "drive.state";
     /// Nearby: Local Network access changed as midnad sees it (data: `{local_network: ok | waiting |
     /// denied}`, as in `peers.list` `me.local_network`).
     pub const PEERS_LOCAL_NETWORK: &str = "peers.local_network";

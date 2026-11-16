@@ -1975,3 +1975,146 @@ fn an_agent_start_hands_off_notes_in_its_prompt_or_as_a_file_in_midnas_home() {
     stays(1, "one agent per start", || agents(&mut hb).len() == 2);
     let _ = std::fs::remove_file(bin);
 }
+
+/// The `drive.state` events `c` has seen (each a link's status).
+fn drive_states(c: &mut Client) -> Vec<Value> {
+    events(c, kinds::DRIVE_STATE).into_iter().map(|e| e["data"].clone()).collect()
+}
+
+/// Wait until `link` has been `state` (with a reason containing `why`, if given); the latest
+/// such status. It may have moved on since (a dropped link tries again at once).
+fn drive_state(c: &mut Client, link: &str, state: &str, why: Option<&str>, secs: u64) -> Value {
+    wait_for(secs, &format!("link {state} {why:?}"), || {
+        drive_states(c).into_iter().rev().find(|s| {
+            s["link"] == link && s["state"] == state && why.is_none_or(|w| s["reason"].as_str().is_some_and(|r| r.contains(w)))
+        })
+    })
+}
+
+/// A and B paired, each keeping the other as one of my devices (B doesn't let A drive it yet).
+fn mine_both(svc: &str) -> (TestDaemon, TestDaemon, String, String) {
+    let (a, b, fa, fb) = alpha_bravo(svc);
+    pair_both(&a, &b, &fa, &fb);
+    call(&mut b.human(), "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+    (a, b, fa, fb)
+}
+
+/// What the link's socket says to a process other than the app that opened it.
+fn stranger_hears(socket: &str) -> String {
+    let script = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\nprint(s.makefile().readline())";
+    let out = std::process::Command::new("python3").args(["-c", script, socket]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// One raw line the link's socket answers a new connection with (a refusal), without asking.
+fn refused_line(socket: &str) -> Value {
+    use std::io::BufRead;
+    let s = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(s).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
+}
+
+#[test]
+fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it() {
+    let svc = service();
+    let (a, b, fa, fb) = mine_both(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+
+    // Only the app opens a link: not an agent, not a call that says it's one.
+    for c in [&mut a.agent(None), &mut a.agent(Some("abcd1234"))] {
+        let e = call_err(c, "drive.open", json!({ "peer": fb }));
+        assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
+        assert!(e.data.as_ref().is_none_or(|d| d.get("needs_you_id").is_none()), "refused outright, not deferred: {e:?}");
+        assert_eq!(call_err(c, "drive.close", json!({ "link": "dl_x" })).code, HUMAN_ONLY);
+    }
+    assert!(call(&mut ha, "needs_you.list", json!({})).as_array().unwrap().is_empty(), "nothing asks A's human");
+    assert_eq!(call_err(&mut ha, "drive.open", json!({ "peer": "nope" })).code, NOT_FOUND);
+
+    // B doesn't let A drive it yet: the link waits, saying why, with its own socket ready.
+    let link = call(&mut ha, "drive.open", json!({ "peer": fb }));
+    let id = link["link"].as_str().unwrap().to_string();
+    let socket = link["socket"].as_str().unwrap().to_string();
+    assert_eq!((link["state"].as_str(), link["stage"].as_str(), link["name"].as_str()), (Some("connecting"), Some("finding"), Some("Bravo")), "{link}");
+    assert!(socket.starts_with(&a.home.join("drive").display().to_string()), "{socket}");
+    let mode = |p: &str| std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(p).unwrap().permissions()) & 0o777;
+    assert_eq!((mode(&socket), mode(a.home.join("drive").to_str().unwrap())), (0o600, 0o700));
+    drive_state(&mut ha, &id, "connecting", Some("doesn't let this Mac drive it"), 10);
+    assert_eq!(refused_line(&socket)["error"]["code"], REFUSED, "nothing is queued while it's down");
+    assert_eq!(call(&mut ha, "drive.open", json!({ "peer": fb }))["link"], id.as_str(), "one link per device and app");
+
+    // B's human allows it: the link connects on its next try, through each stage.
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let up = drive_state(&mut ha, &id, "connected", None, 15);
+    assert!(up["last_seen"].is_string() && up["stage"].is_null(), "{up}");
+    let stages: Vec<Value> = drive_states(&mut ha).iter().filter(|s| s["link"] == id.as_str()).map(|s| s["stage"].clone()).collect();
+    assert!(stages.contains(&json!("finding")) && stages.contains(&json!("proving")), "{stages:?}");
+    let listed = call(&mut ha, "drive.list", json!({}));
+    assert_eq!((listed["links"][0]["link"].as_str(), listed["links"][0]["state"].as_str()), (Some(id.as_str()), Some("connected")), "{listed}");
+
+    // The socket speaks midnad.sock's protocol, answered by B as an agent acting via peer A.
+    let tab = call(&mut hb, "session.open", json!({ "kind": "shell", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
+    let mut there = Client::connect(&socket).unwrap();
+    let info = call(&mut there, "daemon.info", json!({}));
+    assert_eq!((info["home"].as_str(), info["role"].as_str()), (Some(b.home.to_str().unwrap()), Some("agent")), "{info}");
+    let tabs = call(&mut there, "session.list", json!({}));
+    assert!(tabs.as_array().unwrap().iter().any(|s| s["id"] == tab.as_str()), "{tabs}");
+    call(&mut there, "notify.send", json!({ "title": "from A" }));
+    let posted = events(&mut hb, kinds::AUDIT).into_iter().rfind(|e| e["data"]["method"] == "notify.send").expect("audited");
+    let by = &posted["actor"];
+    assert_eq!((by["kind"].as_str(), by["via"].as_str(), by["peer"].as_str()), (Some("agent"), Some("peer"), Some(fa.as_str())), "{posted}");
+    let e = call_err(&mut there, "peers.set_drive", json!({ "peer": fa, "on": false }));
+    assert_eq!(e.code, HUMAN_ONLY, "nothing human-only works over it yet: {e:?}");
+    assert_eq!(call_err(&mut there, "drive.open", json!({ "peer": fa })).code, HUMAN_ONLY, "no links from a link");
+
+    // Terminal frames come through the link (view only: it has agent role there).
+    let mut st = Client::connect(&socket).unwrap().attach(&tab, 60, 20, 8, 16).unwrap();
+    st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let f = st.next_frame().unwrap();
+    assert!(f.full, "a full first frame (view only: it keeps the terminal's own size)");
+    call(&mut hb, "session.input", json!({ "id": tab, "text": "echo relayed-$((6*7))", "enter": true }));
+    wait_for(10, "relayed frame", || {
+        st.want().unwrap();
+        let f = st.next_frame().unwrap();
+        f.changed.iter().any(|(_, r)| r.text().contains("relayed-42")).then_some(())
+    });
+
+    // Only the app that opened the link may use its socket.
+    let heard = stranger_hears(&socket);
+    assert!(heard.contains("only the Midna app that opened this drive link"), "{heard}");
+
+    // B's human turns it off: the link drops at once, says why, and isn't let back in.
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": false }));
+    let down = drive_state(&mut ha, &id, "reconnecting", Some("Bravo stopped letting this Mac drive it"), 10);
+    assert_eq!(down["drops"], 1, "{down}");
+    assert!(there.call_value("daemon.info", json!({})).is_err(), "its connections closed");
+    drive_state(&mut ha, &id, "reconnecting", Some("doesn't let this Mac drive it"), 10);
+    assert_eq!(refused_line(&socket)["error"]["code"], REFUSED);
+
+    // Closed: its socket goes, and it's gone from the list.
+    assert_eq!(call(&mut ha, "drive.close", json!({ "link": id }))["closed"], true);
+    drive_state(&mut ha, &id, "closed", None, 5);
+    assert!(!std::path::Path::new(&socket).exists());
+    assert!(call(&mut ha, "drive.list", json!({}))["links"].as_array().unwrap().is_empty());
+    assert_eq!(call(&mut ha, "drive.close", json!({ "link": id }))["closed"], false);
+}
+
+#[test]
+fn a_quiet_link_stays_up_past_the_idle_close() {
+    let svc = service();
+    let (a, b, fa, fb) = mine_both(&svc);
+    let mut ha = a.human();
+    call(&mut b.human(), "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let link = call(&mut ha, "drive.open", json!({ "peer": fb }));
+    let id = link["link"].as_str().unwrap().to_string();
+    drive_state(&mut ha, &id, "connected", None, 15);
+    let mut there = Client::connect(link["socket"].as_str().unwrap()).unwrap();
+    call(&mut there, "daemon.info", json!({}));
+
+    // Longer than the 30 s a quiet Nearby connection is kept: the keepalives hold it open.
+    std::thread::sleep(midnad::nearby::relay::SILENCE + Duration::from_secs(15));
+    assert_eq!(call(&mut there, "daemon.info", json!({}))["home"], b.home.to_str().unwrap());
+    let now = &call(&mut ha, "drive.list", json!({}))["links"][0];
+    assert_eq!((now["state"].as_str(), now["drops"].as_u64()), (Some("connected"), Some(0)), "{now}");
+}
