@@ -674,15 +674,26 @@ fn build() -> Vec<MethodSpec> {
         m::<PeersConfirmParams, Pairing>("peers.confirm").mutating().human().d(
             "Nearby: the human confirms a pairing's code matches the one on the other device (accept true, the \
              default) or says it doesn't / declines (accept false: the pairing ends on both sides). `as` is how this \
-             side keeps the other device: contact (default; whatever it sends asks first) or my_device. The devices \
-             are paired once both sides confirmed. Human only: an agent can't confirm a pairing."),
+             side keeps the other device: contact (default; whatever it sends asks first) or my_device. allow_drive \
+             true (only with as my_device; a contact is refused) also lets it drive this Mac once paired, as \
+             peers.set_drive would. The devices are paired once both sides confirmed. Human only: an agent can't \
+             confirm a pairing."),
         m::<PeersForgetParams, PeersForgetResult>("peers.forget").mutating().human().d(
             "Nearby: forget a paired device. From then on it is unknown here: its connections may only ask to pair \
-             again, and it no longer finds this Mac while visibility is paired. Event peers.forgotten. Human only."),
+             again, and it no longer finds this Mac while visibility is paired, and any drive link it has is cut at \
+             once. Event peers.forgotten (and peers.drive if it could drive this Mac). Human only."),
         m::<PeersSetTierParams, PairedPeer>("peers.set_tier").mutating().human().d(
             "Nearby: change how a paired device is kept: `as` contact (whatever it sends asks first) or my_device. \
              Returns the device; event peers.changed. Human only: an agent can't promote a device. Keeping a device \
-             as a contact turns off everything it auto-accepted."),
+             as a contact turns off everything it auto-accepted, and whether it may drive this Mac (event peers.drive; \
+             its drive links are cut at once)."),
+        m::<PeersSetDriveParams, PairedPeer>("peers.set_drive").mutating().human().d(
+            "Nearby: let one of my devices drive this Mac (on true: open, use and approve terminals and agents here as \
+             if sitting at it), or stop it (on false: any drive link it has is cut at once). `peer` is the paired \
+             device's fingerprint. Off by default; only a device kept as my_device can be allowed (a contact is \
+             refused), and keeping it as a contact or forgetting it turns it off. Returns the device (drive says \
+             whether it may); events peers.drive {peer, name, on} and peers.changed. Human only: an agent's call is \
+             refused, never deferred to the human."),
         m::<PeersSetAutoAcceptParams, PairedPeer>("peers.set_auto_accept").mutating().human().d(
             "Nearby: accept one kind of share (message, snippet, link, file, tab, object, agent_start or agent_ask) from one of my devices \
              without asking (on true), or ask again (on false). Everything is off by default. Only a device kept as \

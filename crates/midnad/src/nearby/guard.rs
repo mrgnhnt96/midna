@@ -130,6 +130,9 @@ fn cut(s: &str) -> String {
     out
 }
 
+/// `peers.set_drive`.
+pub const DRIVE_METHOD: &str = "peers.set_drive";
+
 /// An agent called a human-only Nearby method: the refusal names the needs-you item the human
 /// answers instead (each pairing and each incoming share raised one), so the agent can point at
 /// it. None for other methods.
@@ -142,6 +145,14 @@ pub fn refusal(d: &Daemon, method: &str, params: &Value) -> Option<RpcError> {
                 "peers.confirm is human only: the human compares the codes on both Macs and confirms".to_string(),
                 d.nearby.inner().pairings.get(&pr).filter(|s| !s.info.confirmed && !s.info.state.is_over()).and_then(|s| s.info.needs_you_id.clone()),
             )
+        }
+        // Never deferred: approving an agent's request would stand in for the human choosing,
+        // on this Mac, to let another one drive it.
+        DRIVE_METHOD => {
+            return Some(RpcError::human_only(
+                "peers.set_drive is human only: only the human can let another Mac drive this one (Settings › Nearby, \
+                 or `midna peers drive <name> on|off` in their own shell); agents can't ask for it",
+            ));
         }
         share::ACCEPT_METHOD | share::DECLINE_METHOD => {
             (format!("{method} is human only: agents can't accept or decline what other devices send"), share::waiting_on(d, &id("id")))

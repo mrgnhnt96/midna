@@ -334,7 +334,10 @@ const TOPICS: &[(&str, &str)] = &[
         raise a needs-you approval. peers.confirm {pairing, accept, as: contact|my_device} is human only: agents never \
         confirm, and never tell the human the codes match; the human compares the two screens. Once both sides confirm, \
         each keeps the other (peers.paired; peers.list paired) and paired devices find each other even while visibility is \
-        paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed); a contact auto-accepts nothing. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
+        paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed); a contact auto-accepts nothing and can't drive this Mac. \
+        peers.set_drive {peer, on} lets one of my own devices drive this Mac (paired list drive; event peers.drive {peer, name, on}), off by default; \
+        it is human only and an agent's call is refused outright, never turned into an approval, so never ask for it (peers.confirm allow_drive sets it while pairing). \
+        Turning it off, keeping the device as a contact or forgetting it cuts its drive links at once. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
         keys; a device that isn't paired can only ask to pair, and one that uses a paired device's name with another key \
         is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
         they never see each other. Shares: share.send {peer, kind: message|snippet|link|file|tab|agent, text|url|path|session, title?, reply_to?} \

@@ -1524,6 +1524,10 @@ pub mod kinds {
     pub const PEERS_CHANGED: &str = "peers.changed";
     /// Nearby: a paired device was forgotten (data: `nearby::PairedPeer`).
     pub const PEERS_FORGOTTEN: &str = "peers.forgotten";
+    /// Nearby: whether a paired device may drive this Mac changed (data: `nearby::PeerDrive`,
+    /// `{peer, name, on}`): `peers.set_drive`, or off because it was kept as a contact, forgotten
+    /// or paired again without it. Turning it off cuts that device's drive links at once.
+    pub const PEERS_DRIVE: &str = "peers.drive";
     /// Nearby: Local Network access changed as midnad sees it (data: `{local_network: ok | waiting |
     /// denied}`, as in `peers.list` `me.local_network`).
     pub const PEERS_LOCAL_NETWORK: &str = "peers.local_network";
