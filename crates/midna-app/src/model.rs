@@ -254,6 +254,9 @@ pub struct NeedsYou {
     pub question: Option<NeedsYouQuestion>,
     /// An agent's ask to change a human-only setting: its value now and the one asked for.
     pub setting: Option<SettingChange>,
+    /// Approving it can only be done at its own Mac (DECISIONS.md, Local-only): another Mac's
+    /// card says "Decide at <Mac>" in place of Approve.
+    pub local_only: bool,
 }
 
 impl NeedsYou {

@@ -426,6 +426,7 @@ impl Daemon {
             trigger_id: None,
             question: None,
             setting: None,
+            local_only: false,
         }
     }
 

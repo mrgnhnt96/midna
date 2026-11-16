@@ -51,7 +51,7 @@ pub struct Stack {
     pub menu: bool,
     filter: Filter,
     /// The item a clicked notification opened ("from your notification").
-    clicked: Option<String>,
+    pub(crate) clicked: Option<String>,
     scroll: ScrollHandle,
     /// Handled during this pass, for the "All clear" summary.
     log: Vec<(String, Outcome)>,
