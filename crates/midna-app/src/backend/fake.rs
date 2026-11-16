@@ -592,6 +592,16 @@ impl FakeBackend {
         }
     }
 
+    /// The app's fake daemon. Dev (screenshots): `MIDNA_FAKE_NEEDS=<n>` keeps only that many of
+    /// its needs-you items.
+    pub fn local() -> Self {
+        let b = FakeBackend::new();
+        if let Some(n) = crate::dev::var("MIDNA_FAKE_NEEDS").ok().and_then(|v| v.parse::<usize>().ok()) {
+            b.st.lock().unwrap().needs.truncate(n);
+        }
+        b
+    }
+
     /// The fake's other Mac: two of this one's projects, their terminals under ids of its own
     /// (`b…`), so the windows of the two Macs never share a session id.
     fn remote(mac: Mac, local: Arc<dyn Backend>) -> Self {
@@ -617,6 +627,33 @@ impl FakeBackend {
             st.scripts = std::mem::take(&mut st.scripts).into_iter().map(|(k, v)| (id(&k), v)).collect();
             st.settings = settings_catalog();
             override_settings(&mut st.settings, "MIDNA_FAKE_MAC_SETTINGS");
+            // Dev (screenshots): `MIDNA_FAKE_MAC_NEEDS=<n>` keeps that many of the Mac mini's
+            // items, and none of the other Macs'.
+            if let Some(n) = crate::dev::var("MIDNA_FAKE_MAC_NEEDS").ok().and_then(|v| v.parse::<usize>().ok()) {
+                st.needs.truncate(if mac.peer == "f".repeat(64) { n } else { 0 });
+            }
+        }
+        // Dev (screenshots): `MIDNA_FAKE_MAC_ARRIVE=<seconds>`: an approval comes in on the Mac
+        // mini's first terminal that long after it's first reached.
+        if mac.peer == "f".repeat(64) && let Some(secs) = crate::dev::var("MIDNA_FAKE_MAC_ARRIVE").ok().and_then(|v| v.parse::<f64>().ok()) {
+            let st = b.st.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                let mut st = st.lock().unwrap();
+                st.next_id += 1;
+                let need = NeedsYou {
+                    id: format!("ny_arrive{:05x}", st.next_id),
+                    session_id: st.sessions.first().map(|s| s.id.clone()),
+                    project_id: st.sessions.first().and_then(|s| s.project_id.clone()),
+                    kind: NeedsYouKind::Approval,
+                    title: "Approve npm publish?".into(),
+                    created_at: now_rfc3339(),
+                    ..Default::default()
+                };
+                st.needs.push(need.clone());
+                let session = need.session_id.clone();
+                st.emit("needs_you.raised", session.as_deref(), serde_json::to_value(&need).unwrap_or_default());
+            });
         }
         FakeBackend { st: b.st.clone(), mac: Some((mac, local)) }
     }

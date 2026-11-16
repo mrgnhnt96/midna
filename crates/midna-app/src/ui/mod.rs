@@ -19,6 +19,7 @@ pub mod onboarding;
 pub mod links;
 pub mod link_down;
 pub mod mac_switcher;
+pub mod mac_tab;
 pub mod paused;
 pub mod queue;
 pub mod need_anim;

@@ -153,7 +153,7 @@ pub fn for_mac(local: &Arc<dyn Backend>, mac: Mac) -> Arc<dyn Backend> {
 /// Pick the backend: `MIDNA_BACKEND=fake` for the in-memory fake, otherwise the daemon.
 pub fn from_env() -> Arc<dyn Backend> {
     match std::env::var("MIDNA_BACKEND").as_deref() {
-        Ok("fake") => Arc::new(fake::FakeBackend::new()),
+        Ok("fake") => Arc::new(fake::FakeBackend::local()),
         _ => Arc::new(daemon::DaemonBackend::new(daemon::socket_path())),
     }
 }

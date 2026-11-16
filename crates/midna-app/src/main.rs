@@ -8,7 +8,11 @@
 //! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|more-menu|system-upgrade|system-overload[-midna]|send-image[-drop]` — screenshot states.
 //! - `MIDNA_DEBUG_REMOTE=1|<name>` — also open another of my Macs' window (the fake's second Mac).
 //! - `MIDNA_FAKE_LINK=finding|proving|loading` — hold that window on a connecting step.
+//! - `MIDNA_FAKE_NEEDS=<n>` / `MIDNA_FAKE_MAC_NEEDS=<n>` — keep that many needs-you items on this
+//!   Mac / the Mac mini (the other Macs get none); `MIDNA_FAKE_MAC_ARRIVE=<s>` — one comes in on
+//!   the Mac mini after that.
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
+//! - `MIDNA_DEBUG_BADGE_DOCK=1` — the needs-you pill docks in the window though midna isn't in front.
 //! - `MIDNA_DEV=1` — dev mode even inside a bundle: no install / login item / updates; a missing
 //!   midnad is spawned from next to this binary (`MIDNA_NO_SPAWN=1` to skip). See `lifecycle.rs`.
 mod actions;
