@@ -694,6 +694,21 @@ fn build() -> Vec<MethodSpec> {
              refused), and keeping it as a contact or forgetting it turns it off. Returns the device (drive says \
              whether it may); events peers.drive {peer, name, on} and peers.changed. Human only: an agent's call is \
              refused, never deferred to the human."),
+        m::<DriveOpenParams, DriveLink>("drive.open").mutating().human().d(
+            "Nearby: open a drive link to one of my devices (kept as my_device here; that Mac must allow it with \
+             peers.set_drive there). Returns the link at once with `socket`, a Unix socket under this home that the app \
+             connects to exactly as it does to midnad.sock (newline JSON-RPC, binary stream.attach); each connection is \
+             carried to that Mac over the encrypted Nearby connection and served there as an ordinary client. Event \
+             drive.state reports the stages (connecting: finding, proving), connected, drops (reconnecting, then offline \
+             after a minute, still retried every 30 s) and closed, each with why. Opening a device that already has a \
+             link from this app returns that link and retries it now. Only the verified Midna app may open a link and \
+             connect to its socket; anyone else is refused outright, never deferred to the human. The link closes with \
+             drive.close or when the app that opened it quits."),
+        m::<DriveCloseParams, DriveCloseResult>("drive.close").mutating().human().d(
+            "Nearby: close a drive link drive.open made: its connections end and its socket goes (event drive.state \
+             closed). The verified Midna app only."),
+        m::<NoParams, DriveListResult>("drive.list").d(
+            "Nearby: the drive links this Mac has open to my other devices, with their state (as event drive.state)."),
         m::<PeersSetAutoAcceptParams, PairedPeer>("peers.set_auto_accept").mutating().human().d(
             "Nearby: accept one kind of share (message, snippet, link, file, tab, object, agent_start or agent_ask) from one of my devices \
              without asking (on true), or ask again (on false). Everything is off by default. Only a device kept as \

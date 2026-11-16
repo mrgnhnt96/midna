@@ -14,6 +14,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const NOISE: &str = "Noise_XX_25519_ChaChaPoly_SHA256";
@@ -24,6 +25,8 @@ const MAX_NOISE: usize = 65535;
 const AEAD_TAG: usize = 16;
 /// The most plaintext one Noise message carries after its more-follows byte.
 const CHUNK: usize = MAX_NOISE - AEAD_TAG - 1;
+/// The most plaintext one raw message ([`RawWriter::send`]) carries.
+pub const RAW_MAX: usize = MAX_NOISE - AEAD_TAG;
 /// The largest [`Wire`] message, as JSON.
 pub const MAX_MESSAGE: usize = 1 << 20;
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -84,6 +87,11 @@ pub enum Wire {
     SessionsGet,
     /// The agent terminals open here.
     Sessions { sessions: Vec<midna_proto::nearby::PeerSession> },
+    /// One of my devices: let me drive you over this connection. Answered [`Wire::DriveOk`], or
+    /// refused unless this Mac lets that device drive it. After `drive_ok` both sides speak the
+    /// relay's binary messages ([`Channel::split`], `relay.rs`), never `Wire` again.
+    DriveOpen,
+    DriveOk,
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).
@@ -348,6 +356,78 @@ impl Channel {
     }
 }
 
+impl Channel {
+    /// Split the channel for full duplex, so one thread reads while others write: from here on
+    /// each message is raw bytes in one Noise message (at most [`RAW_MAX`]), framed by whoever
+    /// uses them (the drive relay). The two halves share the Noise state; a write blocked for
+    /// `write_timeout` fails.
+    pub fn split(self, write_timeout: Duration) -> Result<(RawReader, RawWriter), String> {
+        if !self.partial.is_empty() {
+            return Err("a message was half read".into());
+        }
+        let stream = self.io.stream.try_clone().map_err(|e| e.to_string())?;
+        let _ = stream.set_write_timeout(Some(write_timeout));
+        let noise = Arc::new(Mutex::new(self.noise));
+        Ok((RawReader { io: self.io, noise: noise.clone(), plain: vec![0u8; MAX_NOISE] }, RawWriter { stream, noise, out: vec![0u8; 2 + MAX_NOISE] }))
+    }
+}
+
+fn lock_noise(n: &Mutex<snow::TransportState>) -> std::sync::MutexGuard<'_, snow::TransportState> {
+    n.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The reading half of a split [`Channel`].
+pub struct RawReader {
+    io: Framed,
+    noise: Arc<Mutex<snow::TransportState>>,
+    plain: Vec<u8>,
+}
+
+impl RawReader {
+    /// The next message, waiting at most `wait`: None if none came in time. An error means the
+    /// connection is over.
+    pub fn recv(&mut self, wait: Duration) -> Result<Option<&[u8]>, String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            let _ = self.io.stream.set_read_timeout(Some(left));
+            match self.io.frame() {
+                Ok(Some(f)) => {
+                    let n = lock_noise(&self.noise).read_message(&f, &mut self.plain).map_err(|_| "a message failed to decrypt".to_string())?;
+                    return Ok(Some(&self.plain[..n]));
+                }
+                Ok(None) if Instant::now() >= deadline => return Ok(None),
+                Ok(None) => {}
+                Err(e) => return Err(io_words(&e)),
+            }
+        }
+    }
+}
+
+/// The writing half of a split [`Channel`].
+pub struct RawWriter {
+    stream: TcpStream,
+    noise: Arc<Mutex<snow::TransportState>>,
+    out: Vec<u8>,
+}
+
+impl RawWriter {
+    /// Send one message of at most [`RAW_MAX`] bytes.
+    pub fn send(&mut self, plain: &[u8]) -> Result<(), String> {
+        if plain.len() > RAW_MAX {
+            return Err(format!("message too big ({} bytes)", plain.len()));
+        }
+        let n = lock_noise(&self.noise).write_message(plain, &mut self.out[2..]).map_err(|e| e.to_string())?;
+        self.out[..2].copy_from_slice(&(n as u16).to_be_bytes());
+        self.stream.write_all(&self.out[..2 + n]).map_err(|e| io_words(&e))
+    }
+
+    /// A handle on the connection, to shut it down from elsewhere.
+    pub fn stream(&self) -> std::io::Result<TcpStream> {
+        self.stream.try_clone()
+    }
+}
+
 /// `n` random bytes.
 pub fn random<const N: usize>() -> [u8; N] {
     let mut out = [0u8; N];
@@ -410,6 +490,36 @@ mod tests {
         assert_eq!(raw, Wire::Unknown);
         cb.finish();
         assert!(ca.recv(Duration::from_secs(2)).is_err(), "closed");
+    }
+
+    #[test]
+    fn a_split_channel_reads_and_writes_at_once() {
+        let (a, b) = (ident("sa"), ident("sb"));
+        let (ca, cb) = pair_up(&a, &b);
+        let (mut ra, mut wa) = ca.unwrap().split(Duration::from_secs(5)).unwrap();
+        let (mut rb, mut wb) = cb.unwrap().split(Duration::from_secs(5)).unwrap();
+        // Each side writes many full-size messages while the other reads.
+        let n = 200;
+        let writer = std::thread::spawn(move || {
+            for i in 0..n {
+                wa.send(&vec![i as u8; RAW_MAX]).unwrap();
+            }
+            wa
+        });
+        for i in 0..n {
+            wb.send(&[i as u8]).unwrap();
+            let got = rb.recv(Duration::from_secs(5)).unwrap().unwrap();
+            assert_eq!((got.len(), got[0]), (RAW_MAX, i as u8));
+        }
+        let wa = writer.join().unwrap();
+        for i in 0..n {
+            assert_eq!(ra.recv(Duration::from_secs(5)).unwrap().unwrap(), &[i as u8]);
+        }
+        assert_eq!(ra.recv(Duration::from_millis(50)).unwrap(), None, "nothing more");
+        let mut w = wb;
+        assert!(w.send(&vec![0; RAW_MAX + 1]).is_err(), "too big");
+        let _ = wa.stream().unwrap().shutdown(Shutdown::Both);
+        assert!(rb.recv(Duration::from_secs(2)).is_err(), "closed");
     }
 
     #[test]

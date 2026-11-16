@@ -354,6 +354,86 @@ pub struct PeerDrive {
     pub on: bool,
 }
 
+/// `drive.open` (the verified Midna app only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DriveOpenParams {
+    /// The paired device to drive: its fingerprint. It must be kept as my_device here.
+    #[serde(alias = "fingerprint")]
+    pub peer: String,
+}
+
+/// `drive.close` (the verified Midna app only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DriveCloseParams {
+    /// The link (`dl_…`).
+    pub link: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DriveCloseResult {
+    /// false: there was no such link open.
+    pub closed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DriveListResult {
+    pub links: Vec<DriveLink>,
+}
+
+/// Where a drive link is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DriveState {
+    /// Opening for the first time (see `stage`).
+    Connecting,
+    /// Connections to the socket reach that Mac.
+    Connected,
+    /// It dropped and is being tried again (`reason` says why it dropped or the last try failed).
+    Reconnecting,
+    /// A minute of failed tries: still tried, every 30 s.
+    Offline,
+    /// Closed for good (`drive.close`, the app that opened it quit, or this daemon stopping).
+    Closed,
+}
+
+/// How far a connecting link got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DriveStage {
+    /// Looking for that Mac on the network.
+    Finding,
+    /// Connected; the encrypted handshake is proving its key, and it is asked to be driven.
+    Proving,
+}
+
+/// A drive link this Mac opened to another of mine (`drive.open`, `drive.list`, event
+/// `drive.state`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DriveLink {
+    /// The link's id (`dl_…`).
+    pub link: String,
+    /// The driven device's fingerprint.
+    pub peer: String,
+    /// Its name. Display only.
+    pub name: String,
+    /// The Unix socket the app connects to as it does to midnad.sock (newline JSON-RPC, and
+    /// binary `stream.attach`); only the app that opened the link may.
+    pub socket: String,
+    pub state: DriveState,
+    /// While `connecting`: how far it got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<DriveStage>,
+    /// Why it dropped, why the last try failed, or why it closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When it was last connected (now, while `connected`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<Timestamp>,
+    /// How many times it dropped after connecting.
+    #[serde(default)]
+    pub drops: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PeersForgetResult {
     /// The device that was forgotten.

@@ -1051,6 +1051,8 @@ mod tests {
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
             "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report", "notify.respond",
             "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by", "links.actions.approve",
+            // The app's own: only it may open or close a drive link.
+            "drive.open", "drive.close", "drive.list",
         ];
         for m in catalog() {
             assert!(covered.contains(m.name) || call_only.contains(&m.name), "no verb covers {}", m.name);

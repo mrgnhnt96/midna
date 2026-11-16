@@ -33,6 +33,7 @@ pub mod link;
 pub mod notes;
 pub mod objects;
 pub mod pairing;
+pub mod relay;
 pub mod session;
 pub mod share;
 pub mod tab;
@@ -161,6 +162,8 @@ pub struct Runtime {
     access: Mutex<access::Access>,
     /// Drive links open now (`drive.rs`).
     drive: drive::Links,
+    /// Drive links this Mac opened to others (`relay.rs`).
+    relay: relay::Outgoing,
 }
 
 impl Runtime {
@@ -286,6 +289,7 @@ pub fn start(d: &Arc<Daemon>) {
     let iface = if d.cfg.nearby.local_only { dnssd::LOCAL_ONLY } else { dnssd::ANY };
     d.nearby.inner().service = service.clone();
     pairing::withdraw_stale(d);
+    relay::clear_stale(d);
     let port = match service {
         Some(_) => match open_listener() {
             Ok((listener, port)) => {
