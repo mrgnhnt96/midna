@@ -40,13 +40,24 @@ pub struct Palette {
     user: Vec<Command>,
     /// `session.prompts` of the terminal the prompt list (⌘P) was opened for.
     prompts: Option<(String, Value)>,
+    /// The other Macs as the bar opened, and what's on each once its daemon answered (only
+    /// Macs this one can drive now are asked).
+    macs: Vec<(crate::macs::Entry, Option<OnMac>)>,
+}
+
+/// What another Mac's daemon listed while the bar was open.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct OnMac {
+    projects: Vec<Project>,
+    terminals: usize,
+    needs: usize,
 }
 
 impl Palette {
     pub fn new(cx: &mut App) -> Palette {
         let input = cx.new(|cx| super::text_input::TextField::new(cx, false, "Type a command, or ask an agent…"));
         let focus = input.read(cx).focus.clone();
-        Palette { input, focus, query: String::new(), sel: 0, armed: None, scroll: ScrollHandle::new(), policy: HashMap::new(), user: vec![], prompts: None }
+        Palette { input, focus, query: String::new(), sel: 0, armed: None, scroll: ScrollHandle::new(), policy: HashMap::new(), user: vec![], prompts: None, macs: vec![] }
     }
 }
 
@@ -57,6 +68,7 @@ pub fn on_open(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     reload_user_commands(m, cx);
     // folders under projects.roots may have come and gone
     m.request_refresh(crate::app::refresh::PROJECTS, cx);
+    fetch_macs(m, cx);
     let checks: Vec<(String, String)> = m.projects.iter().flat_map(|p| p.commands.iter().map(move |c| (p.id.clone(), c.run.clone()))).collect();
     if checks.is_empty() {
         return;
@@ -87,6 +99,48 @@ pub fn on_open(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
         });
     })
     .detach();
+}
+
+/// The Macs other than this window's, and each drivable one's projects, terminals and needs
+/// over its drive link (opened the first time, then kept like the Window menu's). Asked each time
+/// the bar opens, never while it's closed.
+fn fetch_macs(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let here = m.backend.mac().map(|x| x.peer.clone());
+    let (open, _) = crate::windows::mac_windows(cx);
+    let others: Vec<crate::macs::Entry> = crate::macs::list(cx).into_iter().filter(|e| e.id() != here).collect();
+    m.palette.macs = others.iter().map(|e| (e.clone(), None)).collect();
+    let local = crate::backend::local(&m.backend);
+    for e in others {
+        // Offline or refusing: its row says so, and nothing is asked of it (a window already
+        // open to it still reads its link).
+        if !e.enabled(false) && !open.contains(&e.id()) {
+            continue;
+        }
+        let b = match e.mac.clone() {
+            Some(mac) => crate::backend::for_mac(&local, mac),
+            None => local.clone(),
+        };
+        let id = e.id();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    let projects: Vec<Project> = parse_list(&b.call("project.list", json!({})).ok()?);
+                    let sessions: Vec<Session> = b.call("session.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default();
+                    let needs: Vec<NeedsYou> = b.call("needs_you.list", json!({})).map(|v| parse_list(&v)).unwrap_or_default();
+                    Some(OnMac { projects, terminals: sessions.iter().filter(|s| !s.background).count(), needs: needs.len() })
+                })
+                .await;
+            let Some(res) = res else { return };
+            let _ = this.update(cx, |m, cx| {
+                if let Some(slot) = m.palette.macs.iter_mut().find(|(e, _)| e.id() == id) {
+                    slot.1 = Some(res);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
 }
 
 /// User commands from `ui.commands.list` (the daemon validates `$MIDNA_HOME/commands.json`);
@@ -197,6 +251,18 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         cmds.extend(commands::ide_commands(&m.ide.list, cur.as_deref(), &dir, &key));
     }
     cmds.extend(m.palette.user.iter().cloned());
+    let macs: Vec<commands::OtherMac> = m
+        .palette
+        .macs
+        .iter()
+        .map(|(e, on)| commands::OtherMac {
+            peer: e.mac.as_ref().map(|x| x.peer.as_str()),
+            name: &e.name,
+            detail: commands::mac_detail(&e.detail(), on.as_ref().map(|o| o.terminals), on.as_ref().map_or(0, |o| o.needs)),
+            projects: on.as_ref().map_or(&[], |o| o.projects.as_slice()),
+        })
+        .collect();
+    cmds.extend(commands::mac_commands(&macs));
     cmds
 }
 
@@ -219,7 +285,10 @@ fn rows(m: &MainWindow) -> Vec<Row> {
     let cmds = registry(m);
     // A typed folder path ("~/Development/kass") is offered first, as "Open … as a project".
     let path = commands::path_command(&m.palette.query, &home, &m.projects).map(|cmd| Row { cmd, hits: vec![], head: None });
-    path.into_iter().chain(commands::search(&cmds, &m.palette.query, LIMIT).into_iter().map(|h| Row { cmd: h.cmd.clone(), hits: h.hits, head: h.head })).collect()
+    // Rows from the other Macs go under their Mac's heading; the rest are this window's Mac's.
+    let rest = m.backend.mac().map_or_else(|| "On this Mac".to_string(), |x| format!("On {}", x.name));
+    let hits = commands::group_hits(commands::search(&cmds, &m.palette.query, LIMIT), &rest);
+    path.into_iter().chain(hits.into_iter().map(|h| Row { cmd: h.cmd.clone(), hits: h.hits, head: h.head })).collect()
 }
 
 // ------------------------------------------------------------------ behavior
@@ -432,6 +501,11 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
         Run::Replace { session } => m.replace_session(session, cx),
         Run::OpenProject { path: Some(path) } => m.add_project(path, false, window, cx),
         Run::OpenProject { path: None } => m.pick_project(cx),
+        Run::Mac { peer, path } => {
+            let local = crate::backend::local(&m.backend);
+            // After this window's update: it brings another window forward or opens one.
+            cx.defer(move |cx| crate::macs::open(&local, &peer, path, cx));
+        }
         Run::OpenIde { ide, dir } => {
             if let Some(ide) = m.ide.list.iter().find(|i| i.id == ide).cloned() {
                 if crate::ide::folder(m).as_deref() == Some(dir.as_str()) {
@@ -619,6 +693,7 @@ fn icon_of(i: CmdIcon) -> Icon {
         CmdIcon::Trigger => Icon::Triggers,
         CmdIcon::Restart => Icon::Restart,
         CmdIcon::Ide => Icon::Code,
+        CmdIcon::Mac => Icon::Mac,
     }
 }
 

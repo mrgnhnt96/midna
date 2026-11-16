@@ -62,6 +62,10 @@ pub enum Run {
     /// Open the Share picker (`ui/share.rs`): `selection` (the focused terminal's),
     /// `clipboard`, or `message` (one you type).
     Share { what: String },
+    /// Open another Mac's window, or bring it forward, at the project at `path` there when
+    /// set. `peer`: that Mac's fingerprint (None: this Mac). Built-in rows only.
+    #[serde(skip)]
+    Mac { peer: Option<String>, path: Option<String> },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +87,7 @@ pub enum CmdIcon {
     Trigger,
     Restart,
     Ide,
+    Mac,
 }
 
 /// One palette row. Optional fields become badges: `pending` = "waiting on you",
@@ -116,6 +121,10 @@ pub struct Command {
     /// commands.json can't claim it.
     #[serde(skip)]
     pub project: Option<String>,
+    /// The heading this row goes under among search results ("Macs", "Projects on Studio").
+    /// Built-in rows only.
+    #[serde(skip)]
+    pub group: Option<String>,
     pub run: Option<Run>,
 }
 
@@ -151,6 +160,10 @@ impl Command {
     }
     fn project(mut self, name: &str) -> Self {
         self.project = Some(name.into());
+        self
+    }
+    fn group(mut self, g: impl Into<String>) -> Self {
+        self.group = Some(g.into());
         self
     }
 }
@@ -989,18 +1002,21 @@ pub fn fuzzy(query: &str, title: &str, keywords: &str) -> Option<Match> {
 pub struct Hit<'a> {
     pub cmd: &'a Command,
     pub hits: Vec<usize>,
-    /// Group heading to show above this row (empty query only).
+    /// Group heading to show above this row (empty query, and `group_hits`).
     pub head: Option<String>,
 }
 
 /// Lifts a project's row above every other match when the query is its name (most) or the
 /// start of its name (shorter names first). `q` is lowercase.
 fn project_bonus(c: &Command, q: &str) -> f32 {
-    match c.project.as_deref().map(str::to_lowercase) {
+    let bonus = match c.project.as_deref().map(str::to_lowercase) {
         Some(name) if name == q => 2000.,
         Some(name) if name.starts_with(q) => 1000. - name.chars().count().min(100) as f32,
         _ => 0.,
-    }
+    };
+    // Another Mac's project ranks just below this window's of the same name ("Go to project
+    // midna" scores at most 10 less on its title than "midna"), above that project's other rows.
+    if c.group.is_some() && bonus > 0. { bonus - 15. } else { bonus }
 }
 
 /// Empty query: featured commands grouped by heading (Needs you, then Suggested, then any
@@ -1038,6 +1054,95 @@ pub fn search<'a>(cmds: &'a [Command], query: &str, limit: usize) -> Vec<Hit<'a>
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.into_iter().take(limit).map(|(_, h)| h).collect()
+}
+
+/// Another of my Macs as ⌘K offers it (state C of "Switching Macs" in the remote Mac windows
+/// design): its window, and the projects there once its daemon has listed them.
+pub struct OtherMac<'a> {
+    /// None: this Mac (⌘K in another Mac's window).
+    pub peer: Option<&'a str>,
+    pub name: &'a str,
+    /// How it stands ("Online · 5 terminals · 1 needs you", "Offline · last seen 2h ago").
+    pub detail: String,
+    /// Its projects: empty until fetched, and for a Mac that can't be driven now.
+    pub projects: &'a [Project],
+}
+
+/// "Online", then the Mac's terminals and what needs you there once they're known.
+pub fn mac_detail(reach: &str, terminals: Option<usize>, needs: usize) -> String {
+    let mut out = reach.to_string();
+    if let Some(n) = terminals {
+        out.push_str(&format!(" · {n} terminal{}", if n == 1 { "" } else { "s" }));
+    }
+    if needs > 0 {
+        out.push_str(&format!(" · {needs} need{} you", if needs == 1 { "s" } else { "" }));
+    }
+    out
+}
+
+/// A path on another Mac with its home folder as `~` (`/Users/sam/code/x` → `~/code/x`).
+fn tilde_there(path: &str) -> String {
+    match path.strip_prefix("/Users/").and_then(|r| r.find('/').map(|i| &r[i..])) {
+        Some(rest) => format!("~{rest}"),
+        None if path.starts_with("/Users/") => "~".into(),
+        None => path.to_string(),
+    }
+}
+
+/// ⌘K rows for the other Macs: "Open <Mac>" for each, then the projects on each, which open in
+/// that Mac's window. Nothing is featured: they only show once the query finds them, under
+/// their Mac's heading (`group_hits`). A project here with the same name ranks above one there.
+pub fn mac_commands(macs: &[OtherMac]) -> Vec<Command> {
+    let mut out = vec![];
+    for m in macs {
+        let id = m.peer.unwrap_or("here");
+        let run = Run::Mac { peer: m.peer.map(str::to_string), path: None };
+        out.push(Command::new(format!("mac:{id}"), CmdIcon::Mac, format!("Open {}", m.name), run).sub(m.detail.clone()).kw("mac window switch").project(m.name).group("Macs"));
+    }
+    for m in macs {
+        let id = m.peer.unwrap_or("here");
+        for p in m.projects {
+            let run = Run::Mac { peer: m.peer.map(str::to_string), path: Some(p.path.clone()) };
+            out.push(
+                Command::new(format!("mac:{id}:{}", p.path), CmdIcon::Project, p.name.clone(), run)
+                    .sub(format!("{} · opens in {}'s window", tilde_there(&p.path), m.name))
+                    .kw(&format!("{} mac", m.name))
+                    .project(&p.name)
+                    .group(format!("Projects on {}", m.name)),
+            );
+        }
+    }
+    out
+}
+
+/// Search results with the other Macs' rows under their headings ("Macs", "Projects on
+/// Studio"), each group together where its best row ranked, and the rows in between under
+/// `rest` ("On this Mac"). With no Mac rows the results are left as they are.
+pub fn group_hits<'a>(hits: Vec<Hit<'a>>, rest: &str) -> Vec<Hit<'a>> {
+    if hits.iter().all(|h| h.cmd.group.is_none()) {
+        return hits;
+    }
+    let mut out = vec![];
+    let mut done: Vec<&str> = vec![];
+    // The section the last row went in (None: `rest`).
+    let mut section: Option<Option<&str>> = None;
+    for h in &hits {
+        match h.cmd.group.as_deref() {
+            Some(g) if done.contains(&g) => {}
+            Some(g) => {
+                done.push(g);
+                for (n, x) in hits.iter().filter(|x| x.cmd.group.as_deref() == Some(g)).enumerate() {
+                    out.push(Hit { cmd: x.cmd, hits: x.hits.clone(), head: (n == 0).then(|| g.to_string()) });
+                }
+                section = Some(Some(g));
+            }
+            None => {
+                out.push(Hit { cmd: h.cmd, hits: h.hits.clone(), head: (section != Some(None)).then(|| rest.to_string()) });
+                section = Some(None);
+            }
+        }
+    }
+    out
 }
 
 /// How many recent projects the empty pane and ⌘K (before anything is typed) list.
@@ -1625,6 +1730,98 @@ mod tests {
         // words that aren't the project's name rank as before
         assert_eq!(titles(&search(&cmds, "rules", 8))[0], "Open Rules");
         assert_eq!(titles(&search(&cmds, "midna test", 8))[0], "Run cargo test");
+    }
+
+    fn on_studio() -> Vec<Project> {
+        let p = |id: &str, name: &str, path: &str| Project { id: id.into(), name: name.into(), path: path.into(), ..Default::default() };
+        vec![p("p_g", "garden-app", "/Users/sam/code/garden-app"), p("p_m", "midna", "/Users/sam/code/midna")]
+    }
+
+    fn heads<'a>(hits: &[Hit<'a>]) -> Vec<(Option<String>, &'a str)> {
+        hits.iter().map(|h| (h.head.clone(), h.cmd.title.as_str())).collect()
+    }
+
+    #[test]
+    fn mac_rows_open_each_mac_and_its_projects_there() {
+        let projects = on_studio();
+        let macs = [
+            OtherMac { peer: Some("dddd"), name: "Studio", detail: mac_detail("Online", Some(5), 1), projects: &projects },
+            OtherMac { peer: None, name: "Work MacBook Pro", detail: mac_detail("This Mac", None, 0), projects: &[] },
+        ];
+        let rows = mac_commands(&macs);
+        let open = rows.iter().find(|c| c.title == "Open Studio").unwrap();
+        assert_eq!(open.sub, "Online · 5 terminals · 1 needs you");
+        assert_eq!(open.icon, CmdIcon::Mac);
+        assert_eq!(open.run, Some(Run::Mac { peer: Some("dddd".into()), path: None }));
+        assert_eq!(open.featured, None, "nothing says other Macs exist until you search");
+        let here = rows.iter().find(|c| c.title == "Open Work MacBook Pro").unwrap();
+        assert_eq!(here.run, Some(Run::Mac { peer: None, path: None }));
+        let garden = rows.iter().find(|c| c.title == "garden-app").unwrap();
+        assert_eq!(garden.sub, "~/code/garden-app · opens in Studio's window");
+        assert_eq!(garden.run, Some(Run::Mac { peer: Some("dddd".into()), path: Some("/Users/sam/code/garden-app".into()) }));
+        assert_eq!(garden.group.as_deref(), Some("Projects on Studio"));
+        assert!(search(&rows, "", 20).is_empty());
+    }
+
+    #[test]
+    fn typing_a_mac_finds_it_and_its_projects_under_its_headings() {
+        let projects = on_studio();
+        let macs = [OtherMac { peer: Some("dddd"), name: "Studio", detail: "Online".into(), projects: &projects }];
+        let (p, s, n) = snapshot_fixture();
+        let mut cmds = build_fixture(&p, &s, &n, &|_| None);
+        cmds.extend(mac_commands(&macs));
+        let got = group_hits(search(&cmds, "studio", 12), "On this Mac");
+        assert_eq!(heads(&got)[0], (Some("Macs".into()), "Open Studio"));
+        assert_eq!(heads(&got)[1], (Some("Projects on Studio".into()), "garden-app"));
+        assert_eq!(heads(&got)[2], (None, "midna"));
+        // a project typed by name opens there, under its Mac
+        assert_eq!(heads(&group_hits(search(&cmds, "garden", 12), "On this Mac"))[0], (Some("Projects on Studio".into()), "garden-app"));
+    }
+
+    #[test]
+    fn a_project_here_ranks_above_the_same_project_on_another_mac() {
+        let projects = on_studio();
+        let macs = [OtherMac { peer: Some("dddd"), name: "Studio", detail: "Online".into(), projects: &projects }];
+        let (p, s, n) = snapshot_fixture();
+        let mut cmds = build_fixture(&p, &s, &n, &|_| None);
+        cmds.extend(mac_commands(&macs));
+        let got = heads(&group_hits(search(&cmds, "midna", 12), "On this Mac"));
+        assert_eq!(got[0], (Some("On this Mac".into()), "Go to project midna"));
+        assert_eq!(got[1], (Some("Projects on Studio".into()), "midna"), "right under it, above the project's terminals");
+        assert_eq!(got[2].0.as_deref(), Some("On this Mac"));
+        // the start of a name: this Mac's project, then the one there
+        let got = heads(&group_hits(search(&cmds, "mid", 12), "On this Mac"));
+        assert_eq!(got[..2], [(Some("On this Mac".into()), "Go to project midna"), (Some("Projects on Studio".into()), "midna")]);
+    }
+
+    #[test]
+    fn group_hits_leaves_plain_results_alone() {
+        let (p, s, n) = snapshot_fixture();
+        let cmds = build_fixture(&p, &s, &n, &|_| None);
+        let plain = search(&cmds, "rules", 8);
+        let want = heads(&plain);
+        assert_eq!(heads(&group_hits(plain, "On this Mac")), want);
+    }
+
+    #[test]
+    fn group_hits_heads_this_macs_rows_when_another_macs_ranked_first() {
+        let projects = on_studio();
+        let macs = [OtherMac { peer: Some("dddd"), name: "Studio", detail: "Online".into(), projects: &projects }];
+        let mut cmds = mac_commands(&macs);
+        cmds.push(Command::new("x", CmdIcon::Screen, "Studio lights", Run::ReportIssue));
+        let got = heads(&group_hits(search(&cmds, "studio", 12), "On this Mac"));
+        assert_eq!(got[0], (Some("Macs".into()), "Open Studio"));
+        let lights = got.iter().find(|h| h.1 == "Studio lights").unwrap();
+        assert_eq!(lights.0.as_deref(), Some("On this Mac"));
+    }
+
+    #[test]
+    fn another_macs_paths_show_its_home_as_tilde() {
+        assert_eq!(tilde_there("/Users/sam/code/x"), "~/code/x");
+        assert_eq!(tilde_there("/Users/sam"), "~");
+        assert_eq!(tilde_there("/opt/x"), "/opt/x");
+        assert_eq!(mac_detail("Online", Some(1), 2), "Online · 1 terminal · 2 need you");
+        assert_eq!(mac_detail("Offline", None, 0), "Offline");
     }
 
     #[test]

@@ -27,6 +27,7 @@ mod kass;
 mod lifecycle;
 mod list_edit;
 mod local_auth;
+mod macs;
 mod model;
 mod notify;
 mod report;
@@ -97,14 +98,16 @@ fn main() {
         cx.on_action(move |_: &NewWindow, cx| {
             let _ = windows::open(b.clone(), None, cx);
         });
-        // Window menu → one of my other Macs: its window (opened over a drive link the first time).
+        // ⌃⌘1…9, the Window menu and the Mac switcher: that Mac's window (opened over a drive
+        // link the first time).
         let b = backend.clone();
-        cx.on_action(move |a: &OpenMac, cx| {
-            windows::open_mac(&b, backend::Mac { peer: a.peer.clone(), name: a.name.clone() }, cx);
-        });
-        // The Window menu's Macs come from peers.list (and follow pairing, see `MainWindow`).
-        windows::set_menus(vec![], cx);
-        windows::refresh_menu(backend.clone(), cx);
+        cx.on_action(move |a: &SwitchMac, cx| macs::switch(&b, a.0, cx));
+        let b = backend.clone();
+        cx.on_action(move |_: &PairMac, cx| settings_window::open_nearby(b.clone(), cx));
+        // The Window menu's Macs come from peers.list and drive.list (and follow pairing and
+        // the links, see `MainWindow`).
+        macs::set_menus(cx);
+        macs::refresh(backend.clone(), cx);
         // This Mac's picks for its other Macs' windows (Settings → Nearby).
         theme::refresh_picks(backend.clone(), cx);
         // The windows, places and terminals from last time (or one centered window).
@@ -137,7 +140,7 @@ fn main() {
         // Screenshots: the fake's other Mac in its own window, in front.
         if let Ok(name) = crate::dev::var("MIDNA_DEBUG_REMOTE") {
             let name = if name == "1" { "Morgan's Mac mini".to_string() } else { name };
-            windows::open_mac(&backend, backend::Mac { peer: "f".repeat(64), name }, cx);
+            windows::open_mac(&backend, Some(backend::Mac { peer: "f".repeat(64), name }), cx);
         }
         if crate::dev::var("MIDNA_DEBUG_SETTINGS").is_ok() {
             settings_window::open(backend.clone(), cx);

@@ -90,6 +90,10 @@ actions!(
         ShowProjectSummary,
         /// Collapse the sidebar to a rail / expand it again.
         ToggleSidebar,
+        /// ⌃⌘M: the Mac switcher under the sidebar's name plate.
+        ToggleMacSwitcher,
+        /// Window menu → Pair Another Mac…: Settings › Nearby.
+        PairMac,
     ]
 );
 
@@ -98,13 +102,17 @@ actions!(
 #[action(namespace = midna, no_json)]
 pub struct SelectProject(pub usize);
 
-/// Window menu: open another of my Macs in its own window, or bring its window forward.
+/// ⌃⌘1–9, the Window menu and the Mac switcher: the Nth Mac (0: this one, then my paired Macs
+/// by name, see `macs`) — its window opens or comes forward.
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = midna, no_json)]
-pub struct OpenMac {
-    pub peer: String,
-    pub name: String,
-}
+pub struct SwitchMac(pub usize);
+
+/// The Window menu's entry for a Mac that can't be driven now. Nothing handles it, so macOS
+/// greys the entry.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = midna, no_json)]
+pub struct MacUnavailable(pub usize);
 
 pub const CTX_MAIN: &str = "MidnaMain";
 pub const CTX_TERM: &str = "Terminal";
@@ -152,8 +160,9 @@ pub mod overlay {
     pub const INSIGHTS: &str = "insights";
     pub const NOTIFICATIONS: &str = "notifications";
     pub const SUMMARY: &str = "summary";
+    pub const MACS: &str = "macs";
     #[cfg(test)]
-    pub const ALL: &[&str] = &[ANNOTATE, NEEDS_YOU, COMMAND_BAR, LINKS, QUEUE, SUBAGENTS, IDE, RULES, TRIGGERS, INSIGHTS, NOTIFICATIONS, SUMMARY];
+    pub const ALL: &[&str] = &[ANNOTATE, NEEDS_YOU, COMMAND_BAR, LINKS, QUEUE, SUBAGENTS, IDE, RULES, TRIGGERS, INSIGHTS, NOTIFICATIONS, SUMMARY, MACS];
 }
 
 /// An overlay's key context (see [`CTX_OVERLAY`]).
@@ -210,6 +219,7 @@ pub const PLACES: &[(&str, &str)] = &[
     (overlay::INSIGHTS, "Insights"),
     (overlay::NOTIFICATIONS, "Notifications"),
     (overlay::SUMMARY, "Summary"),
+    (overlay::MACS, "Mac switcher"),
 ];
 
 /// A when clause in words, for Settings ▸ Shortcuts: `None` is "Anywhere",
@@ -544,7 +554,10 @@ pub fn bind_keys(cx: &mut App, get: impl Fn(&str) -> Option<String>, when: &[Str
     b.extend(crate::composer::bindings());
     for i in 1..=9 {
         b.push(KeyBinding::new(&format!("cmd-{i}"), SelectProject(i - 1), WINDOW));
+        // The Window menu shows these beside its Macs (it finds them by the action).
+        b.push(KeyBinding::new(&format!("ctrl-cmd-{i}"), SwitchMac(i - 1), ANYWHERE));
     }
+    b.push(KeyBinding::new("ctrl-cmd-m", ToggleMacSwitcher, Some("MidnaMain && !Modal")));
     b.push(KeyBinding::new("escape", Dismiss, Some(CTX_OVERLAY)));
     b.push(KeyBinding::new("cmd-c", TermCopy, TERM));
     b.push(KeyBinding::new("cmd-x", TermCut, TERM));

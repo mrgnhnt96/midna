@@ -66,6 +66,7 @@ fn fake_peers() -> Value {
             { "fingerprint": fp('d'), "name": "Studio", "tier": "my_device", "paired_at": ago(60 * 24 * 9), "nearby": true, "drive": false },
             { "fingerprint": fp('f'), "name": "Morgan's Mac mini", "tier": "my_device", "paired_at": ago(60 * 24 * 4), "nearby": false, "drive": true },
             { "fingerprint": fp('e'), "name": "Sam's iMac", "tier": "contact", "paired_at": ago(60 * 24 * 30), "nearby": false },
+            { "fingerprint": fp('9'), "name": "Office iMac", "tier": "my_device", "paired_at": ago(60 * 24 * 20), "nearby": false },
         ],
         "pairings": [{
             "id": "pr_7f3a19c2", "role": "outgoing", "fingerprint": fp('b'), "name": "Ada's MacBook Air", "state": "comparing",
@@ -73,6 +74,20 @@ fn fake_peers() -> Value {
             "expires_at": rfc3339_from_unix(now + 94),
         }],
     })
+}
+
+/// `drive.list`: the links to my Macs in `fake_peers`. The Mac mini's is up (its window is
+/// `MIDNA_DEBUG_REMOTE`'s), Studio refuses to be driven, the Office iMac has been away 2 h.
+fn fake_links() -> Value {
+    let fp = |c: char| c.to_string().repeat(64);
+    let link = |c: char, name: &str, state: &str, reason: Option<String>, seen: Option<String>| {
+        json!({ "link": format!("dl_{c}"), "peer": fp(c), "name": name, "socket": "", "state": state, "reason": reason, "last_seen": seen })
+    };
+    json!({ "links": [
+        link('f', "Morgan's Mac mini", "connected", None, Some(ago(0))),
+        link('d', "Studio", "reconnecting", Some("Studio doesn't let this Mac drive it: turn it on at Studio in Settings › Nearby".into()), None),
+        link('9', "Office iMac", "offline", Some("timed out".into()), Some(ago(121))),
+    ] })
 }
 
 /// `inbox.list`: shares to and from the paired Macs in `fake_peers`, newest first.
@@ -763,6 +778,7 @@ impl Backend for FakeBackend {
             }
             "settings.list" => serde_json::to_value(&st.settings)?,
             "peers.list" => fake_peers(),
+            "drive.list" => fake_links(),
             "inbox.list" => fake_inbox(),
             "share.send" => {
                 let peer = p("peer").unwrap_or_default();

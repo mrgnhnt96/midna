@@ -73,6 +73,8 @@ pub enum Menu {
     FooterStat(usize),
     /// The footer's "Add a button" menu while customizing.
     FooterAdd,
+    /// The Mac switcher under the sidebar's name plate (`ui/mac_switcher.rs`, ⌃⌘M).
+    Macs,
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
@@ -254,6 +256,7 @@ pub struct MainWindow {
     pub queue: Entity<crate::ui::queue::QueueView>,
     /// Installed IDEs and the header's Open in IDE menu.
     pub ide: crate::ide::IdePanel,
+    pub mac_menu: crate::ui::mac_switcher::MacMenu,
     /// Native composer for Kass dictation and long prompts (`composer.rs`).
     pub composer: crate::composer::Composer,
     /// The image sheet (`annotate.rs`); drafts are in the `Drafts` global.
@@ -278,6 +281,8 @@ pub struct MainWindow {
     sessions_floor: u64,
     /// A `front` command's terminal that `sessions` doesn't list yet (see `front_terminal`).
     front_waiting: Option<String>,
+    /// A project to open once `session.list` next answers (`open_at`).
+    open_waiting: Option<String>,
     loaded: bool,
     _tasks: Vec<Task<()>>,
 }
@@ -493,6 +498,7 @@ impl MainWindow {
             sidebar_view,
             dropped_at: None,
             ide: crate::ide::IdePanel::new(cx),
+            mac_menu: crate::ui::mac_switcher::MacMenu::new(cx),
             restart_expected: false,
             pending_refresh: 0,
             pending_rows: Default::default(),
@@ -500,6 +506,7 @@ impl MainWindow {
             refresh_seq: 0,
             sessions_floor: 0,
             front_waiting: None,
+            open_waiting: None,
             loaded: false,
             _tasks: tasks,
         };
@@ -685,7 +692,7 @@ impl MainWindow {
                                 crate::lifecycle::report_updates(self.backend.clone());
                             }
                             if self.is_local_home() {
-                                crate::windows::refresh_menu(self.backend.clone(), cx);
+                                crate::macs::refresh(self.backend.clone(), cx);
                             }
                         }
                     }
@@ -748,7 +755,7 @@ impl MainWindow {
                     }
                     // This Mac's name, shown beside another Mac's window.
                     if key == "nearby.name" && self.is_local_home() {
-                        crate::windows::refresh_menu(self.backend.clone(), cx);
+                        crate::macs::refresh(self.backend.clone(), cx);
                     }
                     // How this Mac shows its other Macs' windows (Settings → Nearby).
                     if (key == "nearby.mac_themes" || key == "theme.colors") && self.is_local_home() {
@@ -857,11 +864,20 @@ impl MainWindow {
                         sw::close(Kind::Overloaded, cx);
                     }
                 }
-                // Paired, forgotten or renamed: the Window menu's Macs follow.
+                // Paired, forgotten, renamed, on or off the network, or a drive link changed: the
+                // Macs in the Window menu and the switcher follow.
                 if self.is_local_home()
-                    && matches!(k, midna_proto::kinds::PEERS_PAIRED | midna_proto::kinds::PEERS_CHANGED | midna_proto::kinds::PEERS_FORGOTTEN)
+                    && matches!(
+                        k,
+                        midna_proto::kinds::PEERS_PAIRED
+                            | midna_proto::kinds::PEERS_CHANGED
+                            | midna_proto::kinds::PEERS_FORGOTTEN
+                            | midna_proto::kinds::PEERS_APPEARED
+                            | midna_proto::kinds::PEERS_LEFT
+                            | midna_proto::kinds::DRIVE_STATE
+                    )
                 {
-                    crate::windows::refresh_menu(self.backend.clone(), cx);
+                    crate::macs::refresh(self.backend.clone(), cx);
                 }
                 if k == "ui.commands_changed" {
                     crate::ui::command_bar::reload_user_commands(self, cx);
@@ -1247,6 +1263,7 @@ impl MainWindow {
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
         let mut fronted = None;
+        let mut open_at = None;
         // An older list than the one we have (or than a terminal we just opened or closed) would
         // drop the new tab, or move the selection off it, until the next session event.
         if let Some(s) = r.sessions.filter(|_| r.seq >= self.sessions_floor) {
@@ -1276,6 +1293,7 @@ impl MainWindow {
                 }
             }
             fronted = listed(self.front_waiting.take(), &self.sessions);
+            open_at = self.open_waiting.take();
             let live = &self.sessions;
             self.marked.retain(|id| live.iter().any(|s| &s.id == id));
             if self.marked.len() < 2 {
@@ -1336,6 +1354,9 @@ impl MainWindow {
         }
         if let Some(id) = fronted {
             self.front_terminal(id, window, cx);
+        }
+        if let Some(path) = open_at {
+            self.add_project(path, false, window, cx);
         }
         // keep a valid selection
         // (a popped-out terminal lives in its own window, never in the main pane)
@@ -2050,6 +2071,13 @@ impl MainWindow {
     /// Add `path` as a project (a no-op if it already is one), then go to it: its first
     /// terminal outside the Background group, or what `projects.empty_opens` asks for when it
     /// has none. `other` (⌥) always opens a new one of the kind the setting doesn't pick.
+    /// Open the project at `path`, as ⌘K's project rows do, once this window has its terminals
+    /// (a window that just opened has none yet, and would open a second terminal there).
+    pub fn open_at(&mut self, path: String, cx: &mut Context<Self>) {
+        self.open_waiting = Some(path);
+        self.request_refresh(refresh::SESSIONS, cx);
+    }
+
     pub fn add_project(&mut self, path: String, other: bool, _window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("project.add", json!({ "path": path }), cx, move |m, v, window, cx| {
             let Some(pid) = v.get("id").and_then(|x| x.as_str()).map(str::to_string) else {
@@ -2494,7 +2522,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(crate::backend::local(&m.backend), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
-                    if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide) {
+                    if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide | Menu::Macs) {
                         m.focus_terminal(w, cx);
                     }
                     m.menu = Menu::None;
@@ -2572,6 +2600,7 @@ impl MainWindow {
                 }
             }))
             .on_action(cx.listener(|m, _: &ToggleSidebar, _w, cx| crate::ui::sidebar::toggle_collapsed(m, cx)))
+            .on_action(cx.listener(|m, _: &ToggleMacSwitcher, w, cx| crate::ui::mac_switcher::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &CopySessionId, _w, cx| m.copy_session_id(cx)))
             .on_action(cx.listener(|m, _: &ToggleMute, _w, cx| m.toggle_mute(cx)))
             .on_action(cx.listener(|m, _: &ToggleSplitOrientation, _w, cx| crate::ui::split::flip(m, cx)))
