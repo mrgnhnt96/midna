@@ -628,6 +628,21 @@ pub fn refresh_menu(local: Arc<dyn Backend>, cx: &mut App) {
     .detach();
 }
 
+/// Every other Mac's window works out its theme again (this Mac's picks for them changed).
+/// Never call it from inside a main window's update: it updates each one.
+pub fn reapply_mac_themes(cx: &mut App) {
+    let remote: Vec<Main> = {
+        let reg = shared(cx);
+        let r = reg.borrow();
+        r.ordered().into_iter().filter(|(_, mac)| mac.is_some()).map(|(m, _)| m).collect()
+    };
+    for m in remote {
+        let _ = m.handle.update(cx, |_, window, cx| {
+            let _ = m.entity.update(cx, |w, cx| w.apply_theme(window, cx));
+        });
+    }
+}
+
 /// The title macOS shows for a window (Mission Control, ⌘`, the Window menu), from the name
 /// it shows (`shown_name`): another Mac's window is named for it, and this Mac's beside one.
 pub fn title(name: Option<&str>) -> SharedString {

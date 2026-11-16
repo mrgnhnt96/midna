@@ -53,6 +53,10 @@ pub struct Theme {
     pub ui_font: SharedString,
     pub mono_font: SharedString,
     pub compact: bool,
+    /// Another Mac's window showing a theme this Mac picked for it: that Mac's own ANSI
+    /// colors, which its engines paint cells in. The terminal shows each as the same slot of
+    /// `def.ansi`. None everywhere else.
+    pub ansi_from: Option<[[u8; 3]; 16]>,
 }
 
 impl Global for Theme {}
@@ -97,6 +101,7 @@ impl Theme {
             ui_font,
             mono_font,
             compact: false,
+            ansi_from: None,
         }
     }
 
@@ -173,7 +178,7 @@ pub fn window_closed(id: WindowId, cx: &mut App) {
 /// Show `t` in every window of `mac` (the one that called this redraws itself).
 pub fn set_mac(mac: &str, t: Theme, cx: &mut App) {
     let m = cx.default_global::<MacThemes>();
-    if m.themes.get(mac).is_some_and(|old| old.def == t.def && old.compact == t.compact && old.ui_font == t.ui_font && old.mono_font == t.mono_font) {
+    if m.themes.get(mac).is_some_and(|old| old.def == t.def && old.ansi_from == t.ansi_from && old.compact == t.compact && old.ui_font == t.ui_font && old.mono_font == t.mono_font) {
         return;
     }
     m.themes.insert(mac.to_string(), t);
@@ -181,6 +186,59 @@ pub fn set_mac(mac: &str, t: Theme, cx: &mut App) {
     for w in wins {
         let _ = w.update(cx, |_, window, _| window.refresh());
     }
+}
+
+/// This Mac's picks for its other Macs' windows (Settings → Nearby): `nearby.mac_themes`, and
+/// this Mac's `theme.colors` to go with a picked theme. Kept on this Mac, never sent over.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct MacPicks {
+    pub rules: Vec<String>,
+    pub colors: Vec<String>,
+}
+
+impl Global for MacPicks {}
+
+impl MacPicks {
+    /// The theme picked for Mac `mac`'s windows: one of this Mac's themes, with this Mac's
+    /// colors. None when there's no pick, or the picked theme is gone (that Mac's own shows).
+    pub fn def_for(&self, mac: &str) -> Option<ThemeDef> {
+        let id = midna_proto::settings::mac_theme(&self.rules, mac)?;
+        resolve_mac(None, id, &self.colors)
+    }
+}
+
+/// The theme this Mac picked for Mac `mac`'s windows, if any (see [`MacPicks`]).
+pub fn picked_for(mac: &str, cx: &App) -> Option<ThemeDef> {
+    cx.try_global::<MacPicks>()?.def_for(mac)
+}
+
+/// Read this Mac's picks from its daemon (`local`); when they changed, every other Mac's window
+/// shows its theme again. A daemon too old to know `nearby.mac_themes` leaves them as they were.
+pub fn refresh_picks(local: std::sync::Arc<dyn crate::backend::Backend>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let picks = cx
+            .background_executor()
+            .spawn(async move {
+                let get = |k: &str| -> Option<Vec<String>> {
+                    let v = local.call("settings.get", serde_json::json!({ "key": k })).ok()?;
+                    Some(v.get("value")?.as_array()?.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                };
+                Some(MacPicks { rules: get("nearby.mac_themes")?, colors: get("theme.colors").unwrap_or_default() })
+            })
+            .await;
+        let Some(picks) = picks else { return };
+        let _ = cx.update(|cx| set_picks(picks, cx));
+    })
+    .detach();
+}
+
+/// This Mac's picks are `picks` from now on; other Macs' windows follow when they changed.
+pub fn set_picks(picks: MacPicks, cx: &mut App) {
+    if cx.try_global::<MacPicks>() == Some(&picks) {
+        return;
+    }
+    cx.set_global(picks);
+    crate::windows::reapply_mac_themes(cx);
 }
 
 /// A theme as another Mac's `themes.list` sends it.
@@ -336,6 +394,17 @@ mod tests {
         let red = resolve_mac(Some(&list), "ember", &["accent = #FF0000".into(), "nord:bg = #000000".into()]).unwrap();
         assert_eq!(red.get("accent"), Some([255, 0, 0]), "that Mac's theme.colors apply");
         assert_eq!(red.get("bg"), ember.get("bg"), "a rule for another theme doesn't");
+    }
+
+    #[test]
+    fn a_picked_theme_is_this_macs_with_this_macs_colors() {
+        let mini = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+        let picks = MacPicks { rules: vec!["0a1b2c3d4e5f = gruvbox".into(), "99887766 = gone".into()], colors: vec!["gruvbox:accent = #00FF00".into()] };
+        let def = picks.def_for(mini).expect("picked");
+        assert_eq!(def.id, "gruvbox");
+        assert_eq!(def.get("accent"), Some([0, 255, 0]), "this Mac's theme.colors come with it");
+        assert!(picks.def_for("ffeeddccbbaa").is_none(), "no pick: that Mac's own theme");
+        assert!(picks.def_for("998877665544").is_none(), "a theme this Mac no longer has: that Mac's own");
     }
 
     #[gpui_kit::test]

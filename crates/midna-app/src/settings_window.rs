@@ -19,6 +19,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::settings::{SETTINGS, SettingKind};
 use serde_json::{Value, json};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -227,6 +228,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (Sec::Nearby, "On this network", &["@nearby_peers"]),
     (Sec::Nearby, "Paired devices", &["@nearby_paired"]),
     (Sec::Nearby, "Driving this Mac", &["@nearby_drive"]),
+    (Sec::Nearby, "My other Macs' windows here", &["@nearby_looks"]),
     (Sec::Webhooks, "Delivery", &["webhooks.path", "webhooks.port", "webhooks.relay_url"]),
     (Sec::Webhooks, "Triggers", &["triggers.agent_mode"]),
     (Sec::System, "macOS", &["@accessibility", "@notifications", "@login"]),
@@ -439,6 +441,10 @@ impl SettingsWindow {
             BackendEvent::Event(e) if e.kind == "settings.changed" => {
                 self.note_change(&e);
                 self.load(cx);
+                // another Mac's windows show what this Mac picked for them, at once
+                if matches!(e.data.get("key").and_then(Value::as_str), Some("nearby.mac_themes" | "theme.colors")) {
+                    crate::theme::refresh_picks(self.backend.clone(), cx);
+                }
             }
             BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED || e.kind == midna_proto::kinds::LINK_ACTIONS_CHANGED => self.load(cx),
             BackendEvent::Event(e) if e.kind.starts_with("peers.") => self.peers_event(&e, cx),
@@ -1355,21 +1361,39 @@ impl SettingsWindow {
     fn theme_control(&self, t: &Theme, key: String, current: String, cx: &mut Context<Self>) -> impl IntoElement {
         use midna_proto::themes;
         let current = if key == "theme" && current != "system" { themes::choose(&current, "", "", true) } else { current };
-        let all = crate::theme::cached_themes();
         let only = match key.as_str() {
             "theme.dark" => Some(true),
             "theme.light" => Some(false),
             _ => None,
         };
-        let chip = |id: String, name: String, swatch: Option<[Hsla; 3]>, on: bool, cx: &mut Context<Self>| {
-            let k = key.clone();
+        let first = (key == "theme").then(|| ("system".to_string(), "Follow macOS".to_string()));
+        let k = key.clone();
+        self.theme_chips(t, format!("theme-{key}"), &current, first, only, Rc::new(move |s, id, cx| s.set(&k, json!(id), cx)), cx)
+    }
+
+    /// Swatch chips for every theme on this Mac (customs too), a dark row then a light row (or
+    /// only one, `only`), after an optional `first` choice without a swatch. Clicking one that
+    /// isn't `current` calls `pick` with its id.
+    pub(super) fn theme_chips(
+        &self,
+        t: &Theme,
+        id: String,
+        current: &str,
+        first: Option<(String, String)>,
+        only: Option<bool>,
+        pick: Rc<dyn Fn(&mut Self, String, &mut Context<Self>)>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let all = crate::theme::cached_themes();
+        let chip = |theme: String, name: String, swatch: Option<[Hsla; 3]>, on: bool, cx: &mut Context<Self>| {
+            let pick = pick.clone();
             div()
-                .id(SharedString::from(format!("theme-{key}-{id}")))
+                .id(SharedString::from(format!("{id}-{theme}")))
                 .flex()
                 .items_center()
                 .gap(px(7.))
                 .h(px(28.))
-                .pl(px(5.))
+                .pl(px(if swatch.is_some() { 5. } else { 10. }))
                 .pr(px(10.))
                 .rounded(px(7.))
                 .border_1()
@@ -1388,14 +1412,15 @@ impl SettingsWindow {
                 }))
                 .on_click(cx.listener(move |s, _, _, cx| {
                     if !on {
-                        s.set(&k, json!(id), cx);
+                        pick(s, theme.clone(), cx);
                     }
                 }))
                 .child(name)
         };
         let mut col = div().flex().flex_col().gap(px(6.));
-        if key == "theme" {
-            col = col.child(div().flex().child(chip("system".into(), "Follow macOS".into(), None, current == "system", cx)));
+        if let Some((value, label)) = first {
+            let on = value == current;
+            col = col.child(div().flex().child(chip(value, label, None, on, cx)));
         }
         for dark in [true, false] {
             if only.is_some_and(|o| o != dark) {
@@ -3579,7 +3604,8 @@ mod tests {
         };
         // kept out of the window on purpose; still in the catalog (`midna settings`)
         // (keep_awake.end shares the Hours row with keep_awake.start; per-day hours are CLI-only)
-        let unlisted = ["updates.feed_url", "keep_awake.end", "keep_awake.hours"];
+        // (nearby.mac_themes is a row per Mac, `@nearby_looks`)
+        let unlisted = ["updates.feed_url", "keep_awake.end", "keep_awake.hours", "nearby.mac_themes"];
         for s in SETTINGS {
             assert!(listed.contains(&s.key) || unlisted.contains(&s.key) || s.key.starts_with("keys.") || per_kind(s.key), "{} has no place in Settings (add it to LAYOUT)", s.key);
         }

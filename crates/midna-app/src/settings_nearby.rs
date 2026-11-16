@@ -18,7 +18,7 @@ use crate::ui::screen_kit::{btn, btn_primary, now_unix};
 use midna_proto::nearby::{self as nb, LocalNetwork, Pairing, PairingRole, PairingState, PeersListResult, ShareKind, Tier, Visibility};
 
 /// The `@` rows this section adds to `LAYOUT`.
-pub(super) const ROWS: [&str; 4] = ["@nearby_me", "@nearby_peers", "@nearby_paired", "@nearby_drive"];
+pub(super) const ROWS: [&str; 5] = ["@nearby_me", "@nearby_peers", "@nearby_paired", "@nearby_drive", "@nearby_looks"];
 
 #[derive(Default)]
 pub(super) struct State {
@@ -75,6 +75,9 @@ pub(super) enum Ctl {
     AutoAccept { fingerprint: String, on: Vec<ShareKind> },
     /// Each paired device and whether it may drive this Mac (a switch for my devices only).
     Drive { devices: Vec<DriveDevice> },
+    /// One of my Macs: the theme its windows show on this Mac (`nearby.mac_themes`), None for
+    /// that Mac's own.
+    Look { fingerprint: String, name: String, current: Option<String> },
 }
 
 pub(super) struct DriveDevice {
@@ -96,12 +99,16 @@ impl Ctl {
             Ctl::Paired { .. } => vec![("Option", "Contact".into()), ("Option", "My device".into()), ("Button", "Forget".into())],
             Ctl::AutoAccept { .. } => ShareKind::ALL.iter().map(|k| ("Option", kind_label(*k).to_string())).collect(),
             Ctl::Drive { devices } => devices.iter().map(|d| ("Device", d.name.clone())).collect(),
+            Ctl::Look { .. } => std::iter::once("That Mac's theme".to_string())
+                .chain(crate::theme::cached_themes().into_iter().map(|d| d.name))
+                .map(|n| ("Option", n))
+                .collect(),
         }
     }
 
     /// It goes under the row's name, like chips.
     pub(super) fn wide(&self) -> bool {
-        matches!(self, Ctl::AutoAccept { .. })
+        matches!(self, Ctl::AutoAccept { .. } | Ctl::Look { .. })
     }
 }
 
@@ -731,8 +738,46 @@ impl SettingsWindow {
                     warn: false,
                 }]
             }
+            "@nearby_looks" => {
+                let rules = self.mac_theme_rules();
+                let cli = "midna settings set nearby.mac_themes \"<id> = <theme>\"";
+                let mine: Vec<_> = list.paired.iter().filter(|p| p.tier == Tier::MyDevice).collect();
+                if mine.is_empty() {
+                    let why = "Pair one of your Macs and keep it as “My device” to pick how its windows look here.";
+                    return vec![status("Theme", t.dim, "No paired Macs".into(), note(why.into()), cli)];
+                }
+                mine.into_iter()
+                    .map(|p| {
+                        let current = midna_proto::settings::mac_theme(&rules, &p.fingerprint).map(str::to_string);
+                        RowSpec {
+                            label: format!("{}'s windows", p.name),
+                            note: note("Its own theme, or one of this Mac's. Only this Mac keeps the pick; that Mac never sees it.".into()),
+                            control: Control::Nearby(Ctl::Look { fingerprint: p.fingerprint.clone(), name: p.name.clone(), current }),
+                            cli: format!("midna settings set nearby.mac_themes \"{} = <theme>\"", id12(&p.fingerprint)),
+                            who: Who::Agents,
+                            warn: false,
+                        }
+                    })
+                    .collect()
+            }
             _ => vec![],
         }
+    }
+
+    /// `nearby.mac_themes`' rules as they stand in this window.
+    fn mac_theme_rules(&self) -> Vec<String> {
+        self.value("nearby.mac_themes").as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    }
+
+    /// Picks `theme` (None: that Mac's own) for paired Mac `fingerprint`'s windows: its rule is
+    /// dropped and, for a theme, a new one added under its 12-character id.
+    fn pick_mac_theme(&mut self, fingerprint: &str, theme: Option<String>, cx: &mut Context<Self>) {
+        let mut rules = self.mac_theme_rules();
+        rules.retain(|r| !r.split_once(" = ").is_some_and(|(m, _)| m.len() >= 8 && fingerprint.starts_with(m)));
+        if let Some(theme) = theme {
+            rules.push(format!("{} = {theme}", id12(fingerprint)));
+        }
+        self.set("nearby.mac_themes", json!(rules), cx);
     }
 
     /// Toggle chips like the settings' own lists: one per kind of share, on when it's accepted
@@ -881,6 +926,13 @@ impl SettingsWindow {
             }
             Ctl::AutoAccept { fingerprint, on } => self.nearby_auto_chips(t, id, fingerprint, on, cx).into_any_element(),
             Ctl::Drive { devices } => self.drive_devices(t, id, devices, cx).into_any_element(),
+            Ctl::Look { fingerprint, name, current } => {
+                const OWN: &str = "";
+                let current = current.unwrap_or_default();
+                let first = Some((OWN.to_string(), format!("{name}'s theme")));
+                let pick = Rc::new(move |s: &mut Self, theme: String, cx: &mut Context<Self>| s.pick_mac_theme(&fingerprint, (theme != OWN).then_some(theme), cx));
+                self.theme_chips(t, format!("nearby-look-{id}"), &current, first, None, pick, cx).into_any_element()
+            }
         }
     }
 

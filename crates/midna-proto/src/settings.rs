@@ -160,6 +160,12 @@ impl SettingSpec {
                     if self.key == "theme.colors" {
                         crate::themes::check_override(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                     }
+                    if self.key == "nearby.mac_themes" {
+                        check_mac_theme(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
+                        if out.iter().any(|r| r.split_once(" = ").is_some_and(|(n, _)| n.starts_with(m) || m.starts_with(n))) {
+                            return Err(format!("{}: two rules for device `{m}`", self.key));
+                        }
+                    }
                     if self.key == "keys.when" {
                         check_key_when(m, val).map_err(|e| format!("{}: `{i}`: {e}", self.key))?;
                         if out.iter().any(|r| r.split_once(" = ").is_some_and(|(n, _)| n == m)) {
@@ -422,6 +428,24 @@ fn check_insights_layout(value: &str) -> Result<(), String> {
 
 /// A `keys.when` value that drops a shortcut's when clause: it works anywhere in the app.
 pub const WHEN_ANYWHERE: &str = "*";
+
+/// A `nearby.mac_themes` rule: `<device id> = <theme id>`. The device id is a paired Mac's
+/// fingerprint, or its first 8 or more characters (`midna peers` shows them).
+fn check_mac_theme(m: &str, val: &str) -> Result<(), String> {
+    if m.len() < 8 || m.len() > 64 || !m.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+        return Err(format!("`{m}` is not a device id (8 to 64 lowercase hex characters from `midna peers`)"));
+    }
+    if !crate::themes::valid_id(val) {
+        return Err(format!("`{val}` is not a theme id (`midna themes`)"));
+    }
+    Ok(())
+}
+
+/// The theme `nearby.mac_themes` (`rules`) picks for paired Mac `fingerprint`'s windows on this
+/// Mac, if any.
+pub fn mac_theme<'a>(rules: &'a [String], fingerprint: &str) -> Option<&'a str> {
+    rules.iter().filter_map(|r| r.split_once(" = ")).find(|(m, _)| m.len() >= 8 && fingerprint.starts_with(m)).map(|(_, v)| v)
+}
 
 /// A `keys.when` rule: `<keys.* setting> = <when expression>`.
 fn check_key_when(m: &str, val: &str) -> Result<(), String> {
@@ -692,6 +716,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Nearby: who on this network can find this Mac to send it things. off: Nearby is off; midna neither shows itself nor looks for other Midnas. paired: only devices you paired with can find it (midna still looks for others). everyone: every Midna on the network can find it, for 10 minutes, then back to paired. `midna peers` shows what midna sees. Human only."),
     s!("nearby.name", SettingKind::String, S(""), "general", false,
         "Nearby: the name other Midnas see for this Mac. Empty = the Mac's computer name. Display only: devices are told apart by their key, never by name."),
+    s!("nearby.mac_themes", SettingKind::RuleList, L(&[]), "appearance", false,
+        "Nearby: the theme another of my Macs' windows show on this Mac, kept on this Mac (that Mac never sees it): `<device id> = <theme id>`, the device id from `midna peers` (its first 12 characters will do), the theme any theme on this Mac (`midna themes`), with this Mac's theme.colors. A Mac with no rule shows its own theme and look settings. E.g. `0a1b2c3d4e5f = gruvbox`."),
     s!("nearby.downloads", SettingKind::String, S(""), "general", true,
         "Nearby: the folder accepted files and folders are saved in (an absolute path or ~/…). Empty = ~/Downloads/Midna. Each lands under its own name there (with a number added if the name is taken), marked as downloaded so macOS checks it before it opens. Human only: what other devices send never lands where an agent points it."),
     SettingSpec { range: Some((50, 2000)), ..s!("system.busy_load", SettingKind::Int, I(200), "general", false,
@@ -1038,6 +1064,20 @@ mod tests {
         assert!(s.coerce(&json!(["theme = MidnaMain"])).unwrap_err().contains("not a shortcut setting"));
         assert!(s.coerce(&json!(["keys.new_agent = MidnaMain &&"])).unwrap_err().contains("keys.new_agent"));
         assert!(s.coerce(&json!(["keys.new_agent = a", "keys.new_agent = b"])).unwrap_err().contains("two rules"));
+    }
+
+    #[test]
+    fn mac_themes_pick_a_theme_per_device() {
+        let s = setting("nearby.mac_themes").unwrap();
+        assert_eq!(s.coerce(&json!("0a1b2c3d4e5f=gruvbox, 99887766 = my-ember")), Ok(json!(["0a1b2c3d4e5f = gruvbox", "99887766 = my-ember"])));
+        assert!(s.coerce(&json!(["Bravo = nord"])).unwrap_err().contains("not a device id"), "a name isn't an id");
+        assert!(s.coerce(&json!(["0a1b2c3 = nord"])).unwrap_err().contains("not a device id"), "too short to tell Macs apart");
+        assert!(s.coerce(&json!(["0a1b2c3d = Nord!"])).unwrap_err().contains("not a theme id"));
+        assert!(s.coerce(&json!(["0a1b2c3d = nord", "0a1b2c3d4e5f = latte"])).unwrap_err().contains("two rules"));
+        let rules = vec!["0a1b2c3d4e5f = gruvbox".to_string(), "99887766 = latte".to_string()];
+        assert_eq!(mac_theme(&rules, "0a1b2c3d4e5f60718293a4b5c6d7e8f9"), Some("gruvbox"));
+        assert_eq!(mac_theme(&rules, "998877665544"), Some("latte"));
+        assert_eq!(mac_theme(&rules, "ffeeddcc"), None, "a Mac with no rule shows its own theme");
     }
 
     #[test]

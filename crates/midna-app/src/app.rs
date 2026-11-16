@@ -576,9 +576,14 @@ impl MainWindow {
             _ => vec![],
         };
         let mine = cx.global::<Theme>().clone();
-        let def = crate::theme::resolve_mac(self.mac_themes.as_deref(), &id, &rules).unwrap_or_else(|| mine.def.clone());
+        let own = crate::theme::resolve_mac(self.mac_themes.as_deref(), &id, &rules);
+        // a theme this Mac picked for that Mac (Settings → Nearby), else that Mac's own
+        let picked = crate::theme::picked_for(&mac, cx);
+        let def = picked.clone().or_else(|| own.clone()).unwrap_or_else(|| mine.def.clone());
         let mut t = Theme::from_def(&def, mine.ui_font.clone(), mine.mono_font.clone());
         t.compact = self.compact();
+        // that Mac's engines paint in its own theme's ANSI colors; the terminal swaps them
+        t.ansi_from = picked.and(own).map(|o| o.ansi).filter(|a| *a != def.ansi);
         let bg = t.bg;
         crate::theme::set_mac(&mac, t, cx);
         if !self.twilight_masked {
@@ -589,10 +594,12 @@ impl MainWindow {
     }
 
     /// Fetch another Mac's themes (`themes.list`), then show its theme again when they changed.
+    /// This Mac's picks for other Macs' windows are read again too (`theme::refresh_picks`).
     pub fn fetch_mac_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.remote() {
             return;
         }
+        crate::theme::refresh_picks(crate::backend::local(&self.backend), cx);
         let backend = self.backend.clone();
         cx.spawn_in(window, async move |this, cx| {
             let res = cx.background_executor().spawn(async move { backend.call("themes.list", serde_json::json!({})) }).await;
@@ -742,6 +749,10 @@ impl MainWindow {
                     // This Mac's name, shown beside another Mac's window.
                     if key == "nearby.name" && self.is_local_home() {
                         crate::windows::refresh_menu(self.backend.clone(), cx);
+                    }
+                    // How this Mac shows its other Macs' windows (Settings → Nearby).
+                    if (key == "nearby.mac_themes" || key == "theme.colors") && self.is_local_home() {
+                        crate::theme::refresh_picks(self.backend.clone(), cx);
                     }
                     // Which kinds count on the bell: count again.
                     if key.starts_with("notify.bell.") {

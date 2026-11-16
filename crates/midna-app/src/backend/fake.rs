@@ -857,6 +857,11 @@ impl Backend for FakeBackend {
                     format: String::new(),
                 })?
             }
+            "settings.get" => {
+                let key = p("key").ok_or_else(|| anyhow!("key required"))?;
+                let Some(s) = st.settings.iter().find(|s| s.key == key) else { bail!("rpc error 3: unknown setting") };
+                json!({"key": key, "value": s.value})
+            }
             "settings.set" => {
                 let key = p("key").ok_or_else(|| anyhow!("key required"))?;
                 let value = params.get("value").cloned().unwrap_or(Value::Null);
