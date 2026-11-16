@@ -200,6 +200,11 @@ pub struct PairedPeer {
     /// objects that change rules, triggers or settings (and queued prompts) still ask.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_accept: Vec<ShareKind>,
+    /// It may drive this Mac (`peers.set_drive`): open, use and approve terminals and agents here
+    /// as if sitting at it. Off by default; only one of my devices can have it, and keeping it as
+    /// a contact or forgetting it turns it off.
+    #[serde(default)]
+    pub drive: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -258,6 +263,10 @@ pub struct Pairing {
     /// The tier this side keeps the other device as, once confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// This side's person let the other device drive this Mac once paired (`peers.confirm`
+    /// `allow_drive`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_drive: bool,
     /// The approval asking this side's person to compare the codes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_you_id: Option<String>,
@@ -287,6 +296,10 @@ pub struct PeersConfirmParams {
     /// How to keep the other device (default contact).
     #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// Let the other device drive this Mac once paired (default false). Only with `as`
+    /// my_device; a contact is refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_drive: bool,
 }
 
 fn yes() -> bool {
@@ -317,6 +330,27 @@ pub struct PeersSetAutoAcceptParams {
     pub kind: ShareKind,
     /// true: accept that kind from it without asking. false (default): ask, as for any device.
     #[serde(default)]
+    pub on: bool,
+}
+
+/// `peers.set_drive` (human only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersSetDriveParams {
+    /// The paired device's fingerprint. It must be kept as my_device.
+    #[serde(alias = "fingerprint")]
+    pub peer: String,
+    /// true: it may drive this Mac. false: it may not, and any drive link it has is cut at once.
+    pub on: bool,
+}
+
+/// Whether a paired device may drive this Mac changed (event `peers.drive`): `peers.set_drive`,
+/// or turned off because it was kept as a contact, forgotten or paired again without it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeerDrive {
+    /// The paired device's fingerprint.
+    pub peer: String,
+    /// Its name. Display only.
+    pub name: String,
     pub on: bool,
 }
 

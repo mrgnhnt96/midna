@@ -26,6 +26,7 @@ pub mod access;
 pub mod agent_ask;
 pub mod agent_start;
 pub mod dnssd;
+pub mod drive;
 pub mod guard;
 pub mod identity;
 pub mod link;
@@ -158,6 +159,8 @@ pub struct Runtime {
     fetch: Arc<(Mutex<bool>, Condvar)>,
     /// Local Network access as far as it can be told.
     access: Mutex<access::Access>,
+    /// Drive links open now (`drive.rs`).
+    drive: drive::Links,
 }
 
 impl Runtime {

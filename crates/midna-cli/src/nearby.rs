@@ -68,8 +68,9 @@ pub fn print_list(v: &Value) {
             let here = if p["nearby"] == true { "  nearby now" } else { "" };
             let auto: Vec<&str> = p["auto_accept"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             let auto = if auto.is_empty() { String::new() } else { format!("  auto-accepts {}", auto.join(", ")) };
+            let drive = if p["drive"] == true { "  can drive this Mac" } else { "" };
             println!(
-                "  {}  id {}  {}  since {}{here}{auto}",
+                "  {}  id {}  {}  since {}{here}{auto}{drive}",
                 s(p, "name"),
                 short_fingerprint(p["fingerprint"].as_str().unwrap_or("")),
                 tier(p["tier"].as_str()),
@@ -173,7 +174,7 @@ fn print_forgot(v: &Value) {
 }
 
 pub fn peers(a: &Args, out: OutFn) -> Res {
-    a.check(&["as", "no"])?;
+    a.check(&["as", "no", "allow-drive"])?;
     let set = |key: &str, value: Value| -> Res {
         call("settings.set", json!({ "key": key, "value": value }))?;
         let v = call("peers.list", json!({}))?;
@@ -243,6 +244,12 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
                 };
                 params["as"] = json!(t);
             }
+            if a.has("allow-drive") {
+                if params["as"] != json!(midna_proto::nearby::Tier::MyDevice) {
+                    return Err(Fail::Usage("--allow-drive needs --as my-device: only your own devices can drive this Mac".into()));
+                }
+                params["allow_drive"] = json!(true);
+            }
             let v = call("peers.confirm", params)?;
             out(&v, &|v| println!("{}", pairing_line(v)));
             Ok(())
@@ -296,6 +303,28 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             });
             Ok(())
         }
+        "drive" => {
+            const USAGE: &str = "peers drive <name or id> on|off: let one of your own devices drive this Mac, or stop it";
+            let pos = a.pos.get(2..).unwrap_or_default();
+            let [who @ .., on] = pos else { return Err(Fail::Usage(USAGE.into())) };
+            let on = match on.as_str() {
+                "on" | "yes" | "true" => true,
+                "off" | "no" | "false" => false,
+                _ => return Err(Fail::Usage(USAGE.into())),
+            };
+            let who = who.join(" ");
+            if who.trim().is_empty() {
+                return Err(Fail::Usage(USAGE.into()));
+            }
+            let list = call("peers.list", json!({}))?;
+            let fingerprint = find(list["paired"].as_array().map(Vec::as_slice).unwrap_or_default(), &who, "paired device")?;
+            let v = call("peers.set_drive", json!({ "peer": fingerprint, "on": on }))?;
+            out(&v, &|v| {
+                let can = if v["drive"] == true { "can drive this Mac" } else { "can't drive this Mac" };
+                println!("{} (id {}) {can}.", s(v, "name"), short_fingerprint(v["fingerprint"].as_str().unwrap_or("")));
+            });
+            Ok(())
+        }
         "forget" | "unpair" => {
             let who = a.pos.get(2..).map(|p| p.join(" ")).unwrap_or_default();
             if who.trim().is_empty() {
@@ -307,7 +336,7 @@ pub fn peers(a: &Args, out: OutFn) -> Res {
             out(&v, &print_forgot);
             Ok(())
         }
-        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, sessions, pair, confirm, tier, auto-accept, forget, visibility or name)"))),
+        other => Err(Fail::Usage(format!("unknown peers subcommand `{other}` (list, sessions, pair, confirm, tier, auto-accept, drive, forget, visibility or name)"))),
     }
 }
 

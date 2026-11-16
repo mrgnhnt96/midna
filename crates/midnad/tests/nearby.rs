@@ -345,6 +345,86 @@ fn both_screens_show_the_code_and_only_the_human_confirms() {
     assert_eq!(paired(&mut hb)[0]["fingerprint"], fa.as_str());
 }
 
+/// The drive events `c` has seen, as (peer, on).
+fn drive_events(c: &mut Client) -> Vec<(String, bool)> {
+    events(c, kinds::PEERS_DRIVE).iter().map(|e| (e["data"]["peer"].as_str().unwrap_or_default().to_string(), e["data"]["on"] == true)).collect()
+}
+
+/// A drive link from `peer` into `t`, and a flag set once it's cut.
+fn drive_link(t: &TestDaemon, peer: &str) -> Option<(midnad::nearby::drive::Handle, std::sync::mpsc::Receiver<String>)> {
+    let link = midnad::nearby::drive::open(&t.daemon(), peer)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.on_cut(move |why| drop(tx.send(why.to_string())));
+    Some((link, rx))
+}
+
+#[test]
+fn driving_is_off_until_the_human_allows_it_and_losing_it_cuts_the_links() {
+    let svc = service();
+    let (a, b, fa, fb) = alpha_bravo(&svc);
+    let (mut ha, mut hb) = (a.human(), b.human());
+
+    // While pairing, only a device kept as my own can be allowed to drive; A allows B.
+    let mine = call(&mut ha, "peers.pair", json!({ "fingerprint": fb }));
+    let theirs = wait_for(10, "B has the pairing", || pairings(&mut hb).into_iter().find(|p| p["fingerprint"] == fa.as_str()));
+    let refused = call_err(&mut ha, "peers.confirm", json!({ "pairing": mine["id"], "allow_drive": true }));
+    assert_eq!(refused.code, REFUSED, "{refused:?}");
+    assert_eq!(call_err(&mut a.agent(None), "peers.confirm", json!({ "pairing": mine["id"], "as": "my_device", "allow_drive": true })).code, HUMAN_ONLY);
+    let confirmed = call(&mut ha, "peers.confirm", json!({ "pairing": mine["id"], "as": "my_device", "allow_drive": true }));
+    assert_eq!(confirmed["allow_drive"], true, "{confirmed}");
+    let item = approval(&mut hb, &theirs);
+    call(&mut hb, "needs_you.resolve", json!({ "id": item["id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    wait_for(10, "both keep each other", || (paired(&mut ha).len() == 1 && paired(&mut hb).len() == 1).then_some(()));
+    assert_eq!(paired(&mut ha)[0]["drive"], true);
+    assert_eq!(drive_events(&mut ha), vec![(fb.clone(), true)]);
+    assert!(drive_link(&a, &fb).is_some());
+
+    // B kept A as a contact through its approval: A can't drive B, and nobody can change that but B's human.
+    assert_eq!(paired(&mut hb)[0]["drive"], false, "off by default");
+    assert!(drive_link(&b, &fa).is_none());
+    let refused = call_err(&mut b.agent(None), "peers.set_drive", json!({ "peer": fa, "on": true }));
+    assert_eq!(refused.code, HUMAN_ONLY, "{refused:?}");
+    assert!(refused.data.as_ref().is_none_or(|d| d.get("needs_you_id").is_none()), "refused outright, not deferred: {refused:?}");
+    assert!(call(&mut hb, "needs_you.list", json!({})).as_array().unwrap().is_empty(), "nothing asks B's human");
+    assert_eq!(call_err(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true })).code, REFUSED, "a contact can't drive");
+    assert_eq!(call_err(&mut hb, "peers.set_drive", json!({ "peer": "nope", "on": true })).code, NOT_FOUND);
+    assert_eq!(paired(&mut hb)[0]["drive"], false);
+    assert!(drive_events(&mut hb).is_empty());
+
+    // Kept as B's own device and allowed: a link opens, and turning it off cuts it at once.
+    call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+    let on = call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
+    assert_eq!((on["drive"].as_bool(), on["tier"].as_str()), (Some(true), Some("my_device")), "{on}");
+    assert_eq!(paired(&mut hb)[0]["drive"], true);
+    let (link, cut) = drive_link(&b, &fa).expect("allowed");
+    assert!(!link.is_cut());
+    call(&mut hb, "peers.set_drive", json!({ "fingerprint": fa, "on": false }));
+    assert!(link.is_cut() && cut.try_recv().is_ok(), "cut before the call returned");
+    assert!(drive_link(&b, &fa).is_none());
+    assert_eq!(drive_events(&mut hb), vec![(fa.clone(), true), (fa.clone(), false)]);
+    let quiet = events(&mut hb, kinds::PEERS_CHANGED).len();
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": false }));
+    assert_eq!((drive_events(&mut hb).len(), events(&mut hb, kinds::PEERS_CHANGED).len()), (2, quiet), "no change, no events");
+
+    // Kept as a contact again: off, its link cut, and it stays off when promoted again.
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let (link, cut) = drive_link(&b, &fa).expect("allowed");
+    let demoted = call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "contact" }));
+    assert_eq!(demoted["drive"], false);
+    assert!(link.is_cut() && cut.try_recv().is_ok());
+    call(&mut hb, "peers.set_tier", json!({ "fingerprint": fa, "as": "my_device" }));
+    assert_eq!(paired(&mut hb)[0]["drive"], false);
+    assert_eq!(drive_events(&mut hb).last(), Some(&(fa.clone(), false)));
+
+    // Forgotten: its link is cut too.
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let (link, cut) = drive_link(&b, &fa).expect("allowed");
+    call(&mut hb, "peers.forget", json!({ "fingerprint": fa }));
+    assert!(link.is_cut() && cut.try_recv().is_ok());
+    assert_eq!(drive_events(&mut hb).last(), Some(&(fa.clone(), false)));
+    assert!(drive_link(&b, &fa).is_none());
+}
+
 #[test]
 fn only_paired_keys_get_past_the_connection_and_forgetting_cuts_them_off() {
     let svc = service();

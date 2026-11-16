@@ -2,8 +2,8 @@
 //! device's public key (its fingerprint must match, or the entry is skipped on load), the tier
 //! this side chose, and the pair's presence key, which makes the tags of paired-only
 //! advertisements. Only pairing (both people confirmed) adds an entry; `peers.forget` removes it.
-//! One of my devices also keeps the kinds of share its person set to auto-accept; a contact
-//! never keeps any.
+//! One of my devices also keeps the kinds of share its person set to auto-accept, and whether it
+//! may drive this Mac; a contact never keeps either.
 use super::transport::{hex, unhex};
 use hmac::{Hmac, Mac};
 use midna_proto::nearby::{PairedPeer, ShareKind, TAG_HEX, Tier};
@@ -27,6 +27,9 @@ pub struct Stored {
     /// The kinds of share accepted from it without asking (my devices only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_accept: Vec<ShareKind>,
+    /// It may drive this Mac (my devices only; off by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drive: bool,
 }
 
 impl Stored {
@@ -38,7 +41,13 @@ impl Stored {
             paired_at: self.paired_at.clone(),
             nearby,
             auto_accept: ShareKind::ALL.into_iter().filter(|k| self.auto_accepts(*k)).collect(),
+            drive: self.drives(),
         }
+    }
+
+    /// It may drive this Mac: it is one of my devices and its person allowed it.
+    pub fn drives(&self) -> bool {
+        self.tier == Tier::MyDevice && self.drive
     }
 
     /// Shares of `kind` from it are accepted without asking: it is one of my devices and its
@@ -97,6 +106,7 @@ impl Store {
             .map(|mut p| {
                 if p.tier != Tier::MyDevice {
                     p.auto_accept.clear();
+                    p.drive = false;
                 }
                 (p.fingerprint.clone(), p)
             })
@@ -113,12 +123,14 @@ impl Store {
         self.save()
     }
 
-    /// Change a paired device's tier; None if it isn't paired. A contact auto-accepts nothing.
+    /// Change a paired device's tier; None if it isn't paired. A contact auto-accepts nothing
+    /// and can't drive this Mac.
     pub fn set_tier(&mut self, fp: &str, tier: Tier) -> std::io::Result<Option<Stored>> {
         let Some(s) = self.peers.get_mut(fp) else { return Ok(None) };
         s.tier = tier;
         if tier != Tier::MyDevice {
             s.auto_accept.clear();
+            s.drive = false;
         }
         let s = s.clone();
         self.save()?;
@@ -137,6 +149,19 @@ impl Store {
             s.auto_accept.push(kind);
         }
         s.auto_accept.sort_by_key(|k| ShareKind::ALL.iter().position(|x| x == k));
+        let s = s.clone();
+        self.save()?;
+        Ok(Some(s))
+    }
+
+    /// Let one of my devices drive this Mac (`on`), or stop it. None if it isn't paired; the
+    /// entry unchanged if it is a contact (the caller refuses that).
+    pub fn set_drive(&mut self, fp: &str, on: bool) -> std::io::Result<Option<Stored>> {
+        let Some(s) = self.peers.get_mut(fp) else { return Ok(None) };
+        if s.tier != Tier::MyDevice || s.drive == on {
+            return Ok(Some(s.clone()));
+        }
+        s.drive = on;
         let s = s.clone();
         self.save()?;
         Ok(Some(s))
@@ -201,6 +226,7 @@ mod tests {
             paired_at: "2026-11-12T00:00:00Z".into(),
             presence: hex(&[7u8; 32]),
             auto_accept: vec![],
+            drive: false,
         };
         let mut s = Store::load(&h);
         assert!(s.peers.is_empty());
@@ -242,6 +268,7 @@ mod tests {
             paired_at: "2026-11-12T00:00:00Z".into(),
             presence: hex(&[7u8; 32]),
             auto_accept: vec![],
+            drive: false,
         };
         let mut s = Store::load(&h);
         s.insert(contact.clone()).unwrap();
@@ -274,6 +301,46 @@ mod tests {
         assert!(loaded.get(&fp).unwrap().auto_accept.is_empty());
         assert!(!edited.auto_accepts(ShareKind::Link));
         assert!(edited.paired(false).auto_accept.is_empty());
+        let _ = std::fs::remove_dir_all(&h);
+    }
+    #[test]
+    fn only_my_devices_drive_and_demoting_turns_it_off() {
+        let h = std::env::temp_dir().join(format!("midna-store-drive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        let id = identity::load_or_create(&h.join("other"));
+        let fp = id.fingerprint.clone();
+        let contact = Stored {
+            fingerprint: fp.clone(),
+            public_key: hex(id.public_key().as_bytes()),
+            name: "Bravo".into(),
+            tier: Tier::Contact,
+            paired_at: "2026-11-12T00:00:00Z".into(),
+            presence: hex(&[7u8; 32]),
+            auto_accept: vec![],
+            drive: false,
+        };
+        let mut s = Store::load(&h);
+        s.insert(contact.clone()).unwrap();
+        let got = s.set_drive(&fp, true).unwrap().unwrap();
+        assert!(!got.drive && !got.drives() && !got.paired(false).drive, "a contact can't");
+        assert!(s.set_drive("nope", true).unwrap().is_none());
+
+        s.set_tier(&fp, Tier::MyDevice).unwrap();
+        assert!(!s.get(&fp).unwrap().drives(), "off by default");
+        assert!(s.set_drive(&fp, true).unwrap().unwrap().drives());
+        assert!(Store::load(&h).get(&fp).unwrap().paired(true).drive, "kept");
+
+        // Kept as a contact again: off, and stays off when promoted again.
+        s.set_tier(&fp, Tier::Contact).unwrap();
+        assert!(!s.get(&fp).unwrap().drive);
+        s.set_tier(&fp, Tier::MyDevice).unwrap();
+        assert!(!Store::load(&h).get(&fp).unwrap().drives());
+
+        // A contact edited by hand to drive still can't.
+        let edited = Stored { drive: true, ..contact };
+        std::fs::write(path(&h), serde_json::to_string(&File { peers: vec![edited.clone()] }).unwrap()).unwrap();
+        assert!(!Store::load(&h).get(&fp).unwrap().drive);
+        assert!(!edited.drives() && !edited.paired(false).drive);
         let _ = std::fs::remove_dir_all(&h);
     }
 }

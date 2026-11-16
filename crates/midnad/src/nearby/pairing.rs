@@ -15,7 +15,7 @@
 //! or the connection breaking ends it on both sides with nothing stored.
 use super::store::Stored;
 use super::transport::{self, Channel, Wire, hex, random, unhex};
-use super::{Inner, display_name, identity, visibility};
+use super::{Inner, display_name, drive, identity, visibility};
 use crate::daemon::Daemon;
 use crate::rpc::{R, ok};
 use midna_proto::nearby::{
@@ -245,6 +245,7 @@ fn begin(d: &Arc<Daemon>, ch: Channel, role: PairingRole, agreed: Agreed) -> Pai
         confirmed: false,
         peer_confirmed: false,
         tier: None,
+        allow_drive: false,
         needs_you_id: None,
         started_at: time::format_unix(now),
         expires_at: time::format_unix(now + PAIRING_SECS),
@@ -364,16 +365,26 @@ fn complete(d: &Daemon, ch: &Channel, info: &Pairing, agreed: &Agreed) {
         paired_at: time::now_rfc3339(),
         presence: hex(&agreed.presence),
         auto_accept: vec![],
+        drive: info.allow_drive && info.tier == Some(Tier::MyDevice),
     };
-    let saved = d.nearby.inner().store(&d.cfg.home).insert(stored.clone());
-    if let Err(e) = saved {
-        end(d, &info.id, PairingState::Failed, &format!("couldn't save the paired device: {e}"), Close::Withdraw);
-        return;
-    }
+    let saved = {
+        let mut i = d.nearby.inner();
+        let store = i.store(&d.cfg.home);
+        let before = store.get(&stored.fingerprint).is_some_and(Stored::drives);
+        store.insert(stored.clone()).map(|()| before)
+    };
+    let before = match saved {
+        Ok(before) => before,
+        Err(e) => {
+            end(d, &info.id, PairingState::Failed, &format!("couldn't save the paired device: {e}"), Close::Withdraw);
+            return;
+        }
+    };
     if end(d, &info.id, PairingState::Paired, "", Close::Withdraw).is_some() {
         let nearby = d.nearby.inner().peers.contains_key(&stored.fingerprint);
         d.emit(kinds::PEERS_PAIRED, Actor::system(), None, None, serde_json::to_value(stored.paired(nearby)).unwrap_or_default());
     }
+    drive::changed(d, &stored.fingerprint, &stored.name, before, stored.drives(), "paired again without letting it drive this Mac");
 }
 
 /// What ending a pairing does with its needs-you item.
@@ -413,6 +424,9 @@ fn end(d: &Daemon, id: &str, state: PairingState, why: &str, close: Close) -> Op
 
 /// `peers.confirm` (human only).
 pub fn confirm(d: &Daemon, p: PeersConfirmParams) -> R {
+    if p.accept && p.allow_drive && p.tier != Some(Tier::MyDevice) {
+        return Err(RpcError::refused("only a device kept as your device can drive this Mac; confirm with as my_device to allow it"));
+    }
     let info = {
         let mut i = d.nearby.inner();
         prune(&mut i);
@@ -428,6 +442,7 @@ pub fn confirm(d: &Daemon, p: PeersConfirmParams) -> R {
         if p.accept {
             s.info.confirmed = true;
             s.info.tier = Some(p.tier.unwrap_or(Tier::Contact));
+            s.info.allow_drive = p.allow_drive;
         }
         s.info.clone()
     };
@@ -462,14 +477,17 @@ pub fn withdraw_stale(d: &Daemon) {
     }
 }
 
-/// `peers.set_tier` (human only).
+/// `peers.set_tier` (human only). Keeping a device as a contact cuts its drive links.
 pub fn set_tier(d: &Daemon, p: nb::PeersSetTierParams) -> R {
-    let peer = {
+    let (before, peer) = {
         let mut i = d.nearby.inner();
-        let s = i.store(&d.cfg.home).set_tier(&p.fingerprint, p.tier).map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
-        s.map(|s| s.paired(i.peers.contains_key(&s.fingerprint)))
+        let store = i.store(&d.cfg.home);
+        let before = store.get(&p.fingerprint).is_some_and(Stored::drives);
+        let s = store.set_tier(&p.fingerprint, p.tier).map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
+        (before, s.map(|s| s.paired(i.peers.contains_key(&s.fingerprint))))
     };
     let Some(peer) = peer else { return Err(RpcError::not_found("no paired device with that id")) };
+    drive::changed_to(d, before, &peer, "it is kept as a contact now");
     d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
     ok(peer)
 }
@@ -499,14 +517,39 @@ pub fn set_auto_accept(d: &Daemon, p: nb::PeersSetAutoAcceptParams) -> R {
     ok(peer)
 }
 
-/// `peers.forget` (human only).
+/// `peers.set_drive` (human only): one of my devices may drive this Mac, or not any more (its
+/// drive links are cut before this returns). A contact never may.
+pub fn set_drive(d: &Daemon, p: nb::PeersSetDriveParams) -> R {
+    let got = {
+        let mut i = d.nearby.inner();
+        let store = i.store(&d.cfg.home);
+        let before = store.get(&p.peer).is_some_and(Stored::drives);
+        let s = store.set_drive(&p.peer, p.on).map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
+        s.map(|s| (s.tier, before, s.paired(i.peers.contains_key(&s.fingerprint))))
+    };
+    let Some((tier, before, peer)) = got else { return Err(RpcError::not_found("no paired device with that id")) };
+    if tier != Tier::MyDevice && p.on {
+        return Err(RpcError::refused(format!(
+            "{} is kept as a contact, and only your own devices can drive this Mac; keep it as your device first",
+            peer.name
+        )));
+    }
+    if before != peer.drive {
+        drive::changed_to(d, before, &peer, "you stopped letting it drive this Mac");
+        d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
+    }
+    ok(peer)
+}
+
+/// `peers.forget` (human only). Its drive links are cut.
 pub fn forget(d: &Daemon, p: PeersForgetParams) -> R {
     let gone = {
         let mut i = d.nearby.inner();
         let gone = i.store(&d.cfg.home).remove(&p.fingerprint).map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
-        gone.map(|s| s.paired(i.peers.contains_key(&s.fingerprint)))
+        gone.map(|s| (s.drives(), s.paired(i.peers.contains_key(&s.fingerprint))))
     };
-    let Some(forgotten) = gone else { return Err(RpcError::not_found("no paired device with that id")) };
+    let Some((drove, forgotten)) = gone else { return Err(RpcError::not_found("no paired device with that id")) };
+    drive::changed(d, &forgotten.fingerprint, &forgotten.name, drove, false, "it was forgotten");
     d.emit(kinds::PEERS_FORGOTTEN, Actor::system(), None, None, serde_json::to_value(&forgotten).unwrap_or_default());
     ok(PeersForgetResult { forgotten })
 }
