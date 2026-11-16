@@ -280,7 +280,7 @@ fn resolve_cur(m: &mut MainWindow, res: Resolution, cx: &mut Context<MainWindow>
 
 fn primary(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(n) = current(m) else { return };
-    let t = cx.global::<Theme>().clone();
+    let t = crate::theme::of(window, cx).clone();
     if meta(&t, &n).approve {
         return resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx);
     }

@@ -245,7 +245,7 @@ pub fn caps_label(t: &Theme, text: &str) -> Div {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         // The launch opening over setup: only the setup screen, over the desktop (the window is
         // see-through). Over the main window, the app draws as usual, masked (the tile window keeps the mask).
         twilight::first_frame(self, window, cx);

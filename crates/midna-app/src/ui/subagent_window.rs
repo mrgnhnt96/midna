@@ -6,7 +6,6 @@
 use crate::app::MainWindow;
 use crate::backend::Backend;
 use crate::icons::Icon;
-use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::{Subagent, SubagentLog, SubagentLogEntry, time};
@@ -111,8 +110,8 @@ pub fn elapsed(from: &str, to: Option<&str>) -> String {
 }
 
 impl Render for SubagentWindow {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>().clone();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = crate::theme::of(window, cx).clone();
         let a = self.agent.as_ref();
         let kind = a.map(|a| a.agent_type.clone()).unwrap_or_default();
         let status = match (self.running, a) {
@@ -267,10 +266,14 @@ pub fn open(m: &MainWindow, session: String, agent: Subagent, window: &mut Windo
         ..Default::default()
     };
     let k = key.clone();
-    let opened = cx.open_window(opts, |_, cx| {
+    let mac = m.backend.mac().map(|x| x.peer.clone());
+    let opened = cx.open_window(opts, |window, cx| {
+        crate::theme::window_shows(window, mac.as_deref(), cx);
+        let window_id = window.window_handle().window_id();
         cx.new(|cx| {
             cx.on_release(move |_: &mut SubagentWindow, cx| {
                 cx.default_global::<Open>().0.remove(&k);
+                crate::theme::window_closed(window_id, cx);
             })
             .detach();
             let mut w = SubagentWindow {

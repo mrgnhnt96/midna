@@ -333,7 +333,7 @@ impl TerminalView {
     /// Like [`Self::new`], attaching at `size` (cols, rows) when known: switching terminals in
     /// the same pane reuses the pane's measured size, so the PTY isn't resized twice.
     pub fn new_sized(session_id: String, backend: Arc<dyn Backend>, size: (u16, u16), window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let theme = cx.global::<Theme>().clone();
+        let theme = crate::theme::of(window, cx).clone();
         let font_family = theme.mono_font.clone();
         let ts = window.text_system();
         let fid = ts.resolve_font(&font(font_family.clone()));
@@ -2709,6 +2709,19 @@ struct Palette {
     fg: Hsla,
     cursor: Hsla,
     selection: Hsla,
+    /// (the engine's ANSI colors, the theme's): see `Theme::ansi_from`.
+    ansi: Option<([[u8; 3]; 16], [[u8; 3]; 16])>,
+}
+
+impl Palette {
+    /// A cell color as this window's theme shows it: one of the engine's ANSI colors becomes
+    /// the same slot of the theme's, when they differ.
+    fn swap(&self, c: [u8; 3]) -> [u8; 3] {
+        match &self.ansi {
+            Some((from, to)) => from.iter().position(|x| *x == c).map_or(c, |i| to[i]),
+            None => c,
+        }
+    }
 }
 
 /// Scrollbar thumb geometry and visibility, from the frame's scroll state.
@@ -2732,7 +2745,7 @@ impl Render for TerminalView {
                 *m = FpsMeter { since: Instant::now(), frames: 0, renders: 0, rows: 0 };
             }
         }
-        let theme = cx.global::<Theme>().clone();
+        let theme = crate::theme::of(window, cx).clone();
         if theme.mono_font != self.font_family {
             self.font_family = theme.mono_font.clone();
             GLYPHS.with(|g| g.borrow_mut().clear());
@@ -2741,7 +2754,7 @@ impl Render for TerminalView {
         // Dev runs (MIDNA_DEBUG_TERM) don't activate the window; count it as active.
         let active = window.is_window_active() || crate::dev::var_os("MIDNA_DEBUG_TERM").is_some();
         self.report_focus(focused && active);
-        let pal = Palette { fg: theme.fg, cursor: theme.fg.opacity(0.55), selection: theme.selection };
+        let pal = Palette { fg: theme.fg, cursor: theme.fg.opacity(0.55), selection: theme.selection, ansi: theme.ansi_from.map(|f| (f, theme.def.ansi)) };
         let term_bg = theme.term;
         let dim = theme.dim;
         let grid = self.grid.clone();
@@ -3086,7 +3099,7 @@ fn paint_grid(
     };
     // Default fg/bg from the engine map to the theme so light/dark both read right.
     let fg_of = |c: [u8; 3], alpha: f32| {
-        if c == dfg { pal.fg.opacity(alpha) } else { rgb3(c, alpha) }
+        if c == dfg { pal.fg.opacity(alpha) } else { rgb3(pal.swap(c), alpha) }
     };
     for (y, row) in grid.iter().enumerate() {
         let py = oy + lh * y as f32;
@@ -3104,7 +3117,7 @@ fn paint_grid(
             while x < n && cells[x].bg == bg {
                 x += 1;
             }
-            let color = if bg == dfg { pal.fg } else { rgb3(bg, 1.0) };
+            let color = if bg == dfg { pal.fg } else { rgb3(pal.swap(bg), 1.0) };
             window.paint_quad(fill(Bounds::new(point(px(ox + cw * st as f32), px(py)), size(px(cw * (x - st) as f32), px(lh))), color));
         }
         // selection (engine-owned; a range ending on a wide char covers its spacer too)
@@ -3189,6 +3202,17 @@ fn escaped_path(p: &std::path::Path) -> String {
 mod tests {
     use super::{caps_text, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text};
     use serde_json::json;
+
+    #[test]
+    fn a_picked_theme_repaints_that_macs_ansi_colors() {
+        let (from, to) = (midna_proto::themes::builtin("twilight").unwrap().ansi, midna_proto::themes::builtin("gruvbox").unwrap().ansi);
+        let pal = super::Palette { fg: gpui_kit::white(), cursor: gpui_kit::white(), selection: gpui_kit::white(), ansi: Some((from, to)) };
+        assert_eq!(pal.swap(from[1]), to[1], "that Mac's red is the picked theme's red");
+        assert_eq!(pal.swap(from[12]), to[12]);
+        assert_eq!(pal.swap([1, 2, 3]), [1, 2, 3], "a 24-bit color a program chose stays");
+        let none = super::Palette { ansi: None, ..pal };
+        assert_eq!(none.swap(from[1]), from[1], "no pick: as the engine painted it");
+    }
 
     #[test]
     fn dropped_paths_are_one_shell_word() {

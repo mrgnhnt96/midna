@@ -105,6 +105,8 @@ fn main() {
         // The Window menu's Macs come from peers.list (and follow pairing, see `MainWindow`).
         windows::set_menus(vec![], cx);
         windows::refresh_menu(backend.clone(), cx);
+        // This Mac's picks for its other Macs' windows (Settings → Nearby).
+        theme::refresh_picks(backend.clone(), cx);
         // The windows, places and terminals from last time (or one centered window).
         let fallback = Bounds::centered(None, size(px(w), px(h)), cx);
         let handle = windows::restore(backend.clone(), fallback, cx).expect("open main window");

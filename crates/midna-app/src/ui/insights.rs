@@ -428,7 +428,7 @@ impl Render for InsightsView {
         if self.data.range.is_none() && !self.loading {
             self.fetch(cx);
         }
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         let header = self.header(&t, cx);
         let body: Vec<AnyElement> = if let Some(e) = self.error.clone().filter(|_| self.data.range.is_none()) {
             vec![message_card(&t, "Couldn't load insights", &e, "midna insights").into_any_element()]

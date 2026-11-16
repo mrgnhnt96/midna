@@ -442,7 +442,7 @@ impl Render for QueueView {
     /// Anchored above the pill of the terminal it is for, with a click-away layer under it.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(sid) = self.session.clone() else { return div().into_any_element() };
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         let store = cx.global::<QueueStore>();
         let vp = window.viewport_size();
         let anchor = store.anchors.borrow().get(&sid).copied().unwrap_or(point(vp.width - px(22.), vp.height - px(120.)));

@@ -697,7 +697,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 
 impl Render for RulesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         let names = self.main.upgrade().map(|m| Names::from_main(m.read(cx))).unwrap_or_default();
         let cmdk = self.main.upgrade().map(|m| m.read(cx).key_label("keys.command_bar")).unwrap_or_else(|| "⌘K".into());
         let requests: Vec<RuleItem> = {

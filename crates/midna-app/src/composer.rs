@@ -210,7 +210,7 @@ fn follow_selection(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Ma
         native(m, |n| n.tv.setString(&NSString::from_str(&d.text)));
         cx.defer_in(window, |m, window, cx| {
             if m.composer.open && on_target(m) && can_show(m) {
-                let t = cx.global::<Theme>().clone();
+                let t = crate::theme::of(window, cx).clone();
                 show_native(m, window, &t);
                 m.composer.focus.focus(window, cx);
                 on_event(m, ComposerEvent::Changed, window, cx);
@@ -229,7 +229,7 @@ fn open(m: &mut MainWindow, source: Source, window: &mut Window, cx: &mut Contex
     } else if source == Source::Kass {
         m.composer.source = Source::Kass;
     }
-    let t = cx.global::<Theme>().clone();
+    let t = crate::theme::of(window, cx).clone();
     let ok = show_native(m, window, &t);
     m.composer.focus.focus(window, cx);
     cx.notify();
@@ -271,7 +271,7 @@ pub fn refocus(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
     if !m.composer.open || !on_target(m) || !can_show(m) {
         return false;
     }
-    let t = cx.global::<Theme>().clone();
+    let t = crate::theme::of(window, cx).clone();
     show_native(m, window, &t);
     m.composer.focus.focus(window, cx);
     cx.notify();

@@ -15,7 +15,6 @@
 //! (⇧ to select) move a row there, to the start or end past the first or last row; ⌘↑/↓ still
 //! bubble. ⌘←/→ and ⌘⌫ stop at the drawn row's ends. Rows break after spaces, never before
 //! punctuation, and [`wrap_text`] draws text with the same rows when the field isn't on it.
-use crate::theme::Theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::ops::Range;
@@ -818,7 +817,7 @@ impl TextLine {
     /// What to shape: the shown text (or the placeholder) and its runs, with the IME's marked
     /// text underlined.
     fn text_and_runs(&self, window: &Window, cx: &App) -> (String, Vec<TextRun>) {
-        let theme = cx.global::<Theme>();
+        let theme = crate::theme::of(window, cx);
         let f = self.field.read(cx);
         let style = window.text_style();
         let shown = f.display();
@@ -874,7 +873,7 @@ impl Element for TextLine {
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _i: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _r: &mut (), window: &mut Window, cx: &mut App) -> LinePrepaint {
-        let theme = cx.global::<Theme>().clone();
+        let theme = crate::theme::of(window, cx).clone();
         let (text, runs) = self.text_and_runs(window, cx);
         let f = self.field.read(cx);
         let size = window.text_style().font_size.to_pixels(window.rem_size());

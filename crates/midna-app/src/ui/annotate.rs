@@ -74,7 +74,7 @@ fn area_badge(t: &Theme, n: usize, size: f32) -> Div {
 
 impl Render for AnnotateView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.global::<Theme>().clone();
+        let t = crate::theme::of(window, cx).clone();
         sheet(self, &t, window, cx)
     }
 }
