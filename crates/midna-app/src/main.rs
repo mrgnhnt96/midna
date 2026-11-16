@@ -5,7 +5,7 @@
 //! - `MIDNA_HOME` / `MIDNA_SOCKET` — where to find midnad.
 //! - `MIDNA_FAKE_SETTINGS="theme=light,density=compact"` — fake backend initial settings.
 //! - `MIDNA_SELECT=<session id>` — initial selection; `MIDNA_W` / `MIDNA_H` — window size.
-//! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|system-upgrade|system-overload[-midna]` — screenshot states.
+//! - `MIDNA_DEBUG_APPROVE_MENU=1`, `MIDNA_DEBUG_SCREEN=rules|triggers|insights|commands|more-menu|system-upgrade|system-overload[-midna]` — screenshot states.
 //! - `MIDNA_DEBUG_REMOTE=1|<name>` — also open another of my Macs' window (the fake's second Mac).
 //! - `MIDNA_FAKE_LINK=finding|proving|loading` — hold that window on a connecting step.
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).

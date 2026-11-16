@@ -355,10 +355,11 @@ pub fn detect(cx: &mut Context<MainWindow>) {
 
 // ------------------------------------------------------------------ opening
 
-/// The folder to open: the selected terminal's directory, else its project's.
+/// The folder to open: the selected terminal's directory, else its project's. In another
+/// Mac's window it's that Mac's path, so it isn't checked here.
 pub fn folder(m: &MainWindow) -> Option<String> {
     let s = m.selected_session()?;
-    Some(s.cwd.clone()).filter(|c| !c.is_empty() && Path::new(c).is_dir()).or_else(|| project(m))
+    Some(s.cwd.clone()).filter(|c| !c.is_empty() && (m.remote() || Path::new(c).is_dir())).or_else(|| project(m))
 }
 
 /// The selected terminal's project folder.
@@ -450,13 +451,50 @@ pub fn open_in(ide: Ide, dir: String, cx: &mut Context<MainWindow>) {
 
 /// Open the selected terminal's folder in `ide` and remember it (see [`remember`]).
 pub fn open_and_remember(m: &mut MainWindow, ide: Ide, everywhere: bool, cx: &mut Context<MainWindow>) {
+    if refuse(m, cx) {
+        return;
+    }
     let Some(dir) = folder(m) else { return };
     remember(m, &ide, everywhere, cx);
     open_in(ide, dir, cx);
 }
 
+/// The editor's name for the ⋯ menu's greyed row in another Mac's window.
+pub fn name(m: &MainWindow) -> String {
+    current(m).map(|(i, _)| i.name).or_else(|| chosen(&m.ide.list, m.setting_str("ide.app").as_deref()).map(|i| i.name.clone())).unwrap_or_else(|| "IDE".into())
+}
+
+/// Why Open in IDE is off in another Mac's window: the editor would open on that Mac's own
+/// screen (screen 5, state C of the remote Mac windows design). None in this Mac's windows.
+pub fn off_here(m: &MainWindow) -> Option<String> {
+    m.backend.mac().map(|mac| format!("would open on {}", mac.name))
+}
+
+/// Another Mac's window: copy the selected terminal's folder (that Mac's path) in place of
+/// opening it in an editor here.
+pub fn copy_path(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    m.menu = Menu::None;
+    if let Some(dir) = folder(m) {
+        cx.write_to_clipboard(ClipboardItem::new_string(dir.clone()));
+        crate::sounds::play("copied");
+        m.toast(format!("Copied {dir}"), cx);
+    }
+    cx.notify();
+}
+
+/// ⌥⌘E or ⌥⇧⌘E in another Mac's window: say why nothing opens.
+fn refuse(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> bool {
+    let Some(why) = off_here(m) else { return false };
+    let text = format!("Open in {} is off: it {why}'s screen. Copy path is in the ⋯ menu.", name(m));
+    m.toast(text, cx);
+    true
+}
+
 /// ⌥⌘E / the button: the selected terminal's folder in the editor its rules pick.
 pub fn open_default(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if refuse(m, cx) {
+        return;
+    }
     let Some(dir) = folder(m) else { return };
     m.ide.names.borrow_mut().clear();
     match current(m) {
@@ -472,7 +510,7 @@ pub fn toggle(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         close(m, window, cx);
         return;
     }
-    if m.selected_session().is_none() {
+    if m.selected_session().is_none() || refuse(m, cx) {
         return;
     }
     detect(cx);
@@ -520,8 +558,11 @@ fn app_icon(ide: Option<&Ide>, size: f32, t: &Theme) -> AnyElement {
 }
 
 /// The header's split button: the editor's icon opens the folder there, the chevron opens the
-/// menu. None when no editor was found.
+/// menu. None when no editor was found, and in another Mac's window (the ⋯ menu says why).
 pub fn button(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    if m.remote() {
+        return None;
+    }
     let (cur, _) = current(m)?;
     let open = m.menu == Menu::Ide;
     let main = div()

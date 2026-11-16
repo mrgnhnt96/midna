@@ -1537,6 +1537,7 @@ impl MainWindow {
                     "annotate" | "annotate-tray" => crate::annotate::debug(self, &s, window, cx),
                     "queue" | "queue-sent" => crate::ui::queue::debug(self, &s, window, cx),
                     "background-menu" => self.menu = Menu::Background,
+                    "more-menu" => self.menu = Menu::More,
                     "close-window" => {
                         self.close_ask = Some(Default::default());
                     }

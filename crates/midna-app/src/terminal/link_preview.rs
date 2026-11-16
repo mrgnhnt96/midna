@@ -537,7 +537,16 @@ impl TerminalView {
         self.preview_flash("Copied", false, cx);
     }
 
+    /// The card's path is on another Mac: revealing or opening it would act on that Mac's
+    /// screen, so the card copies it instead.
+    fn preview_elsewhere(&self) -> bool {
+        self.backend.mac().is_some() && self.preview.card.as_ref().is_some_and(|c| !c.link.url)
+    }
+
     fn preview_path_click(&mut self, cx: &mut Context<Self>) {
+        if self.preview_elsewhere() {
+            return self.preview_copy(cx);
+        }
         match env(cx).path_click {
             PathClick::Reveal => self.preview_reveal(cx),
             PathClick::Copy => self.preview_copy(cx),
@@ -650,6 +659,7 @@ impl TerminalView {
             div().flex_1().min_w_0().child(title).into_any_element()
         } else {
             let tip = match env.path_click {
+                _ if self.preview_elsewhere() => "Copy path".to_string(),
                 PathClick::Reveal => "Reveal in Finder".to_string(),
                 PathClick::Copy => "Copy path".to_string(),
                 PathClick::Ide => c.ide.as_ref().map(|(i, _)| format!("Open in {}", i.name)).unwrap_or_else(|| "Open".into()),
@@ -798,6 +808,26 @@ impl TerminalView {
                 }))
                 .child(secondary("lp-copy", "Copy URL").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))))
                 .when(!c.listed, |r| r.child(secondary("lp-add", "Add to links").on_click(cx.listener(|t, _, _, cx| t.preview_add_link(cx)))));
+        } else if let Some(mac) = self.backend.mac() {
+            // Another Mac's path: copy it; an editor or Finder would open on that Mac's screen
+            // (screen 5, state C of the remote Mac windows design).
+            if c.is_dir {
+                row = row
+                    .child(primary("lp-new-term").on_click(cx.listener(|t, _, _, cx| t.preview_new_terminal(cx))).child("New terminal here"))
+                    .child(secondary("lp-copy", "Copy path").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))));
+            } else {
+                let ide = c.ide.as_ref().map_or_else(|| "IDE".to_string(), |(i, _)| i.name.clone());
+                row = row.child(primary("lp-copy").on_click(cx.listener(|t, _, _, cx| t.preview_copy(cx))).child("Copy path")).child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_size(px(11.5))
+                        .text_color(t.dim)
+                        .child(format!("· Open in {ide} is off: it would open on {}'s screen", mac.name)),
+                );
+            }
         } else {
             let open = if c.is_dir {
                 primary("lp-new-term").on_click(cx.listener(|t, _, _, cx| t.preview_new_terminal(cx))).child("New terminal here").into_any_element()
