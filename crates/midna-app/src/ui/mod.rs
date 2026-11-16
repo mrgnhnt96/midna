@@ -270,7 +270,8 @@ impl Render for MainWindow {
         let sidebar_anim = sidebar_anim::frame(self, window);
         let sidebar = sidebar::SidebarView::element(&self.sidebar_view.clone(), self, sidebar_anim, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
-            (ConnState::NotRunning { .. }, _) | (ConnState::Connecting, _) => screens::not_running(self, &t, cx).into_any_element(),
+            // Another Mac's window shows its connecting card until its first terminal list arrives.
+            _ if self.conn != ConnState::Connected || self.remote_loading() => screens::not_running(self, &t, cx).into_any_element(),
             // NeedsYou-C replaces the pane right of the sidebar, whatever screen is under it.
             _ if self.overlay == Overlay::NeedsYou => needs_you::render(self, &t, window, cx).into_any_element(),
             (_, Screen::Terminal) => div()
@@ -359,7 +360,7 @@ impl Render for MainWindow {
             .when(self.queue.read(cx).is_open(), |d| d.child(self.queue.clone()))
             // Setup's theme step browses with ← and → wherever focus is.
             .capture_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
-                if setup_screen::on_key(m, ev, w, cx) || crate::composer::escape_in_terminal(m, &ev.keystroke, w, cx) {
+                if setup_screen::on_key(m, ev, w, cx) || crate::composer::escape_in_terminal(m, &ev.keystroke, w, cx) || screens::cancel_key(m, ev, w, cx) {
                     cx.stop_propagation();
                 }
             }))

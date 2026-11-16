@@ -73,6 +73,13 @@ fn stat(today: &Today, key: &str) -> (String, &'static str, &'static str) {
     }
 }
 
+/// The card's stat `key`: a dash while another Mac's window waits for its first list (its
+/// numbers come from that Mac).
+fn shown_stat(m: &MainWindow, key: &str) -> (String, &'static str, &'static str) {
+    let (v, label, short) = stat(&m.today, key);
+    (if m.remote_loading() { "—".into() } else { v }, label, short)
+}
+
 fn stat_name(key: &str) -> &'static str {
     match key {
         "turns" => "Agent turns",
@@ -182,7 +189,7 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
 fn card(m: &MainWindow, t: &Theme, stats: &[String], cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let mut row = div().flex().justify_between().gap(px(8.));
     for k in stats {
-        let (v, label, _) = stat(&m.today, k);
+        let (v, label, _) = shown_stat(m, k);
         row = row.child(
             div()
                 .flex()
@@ -231,7 +238,7 @@ fn compact_card(m: &MainWindow, t: &Theme, stats: &[String], cx: &mut Context<Ma
         .on_click(cx.listener(|m, _, w, cx| m.set_screen(Screen::Insights, w, cx)))
         .child(div().text_size(px(10.)).font_weight(FontWeight::BOLD).child(if week(m) { "WEEK" } else { "TODAY" }));
     for k in stats {
-        let (v, _, short) = stat(&m.today, k);
+        let (v, _, short) = shown_stat(m, k);
         row = row.child(div().flex().items_baseline().gap(px(3.)).child(div().text_size(px(12.5)).font_weight(FontWeight::BOLD).text_color(t.fg).child(v)).child(short));
     }
     row

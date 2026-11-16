@@ -284,6 +284,9 @@ pub struct MainWindow {
     /// A project to open once `session.list` next answers (`open_at`).
     open_waiting: Option<String>,
     loaded: bool,
+    /// The first terminal list has arrived (empty or not): another Mac's window shows its
+    /// connecting card and placeholder rows until then.
+    pub listed: bool,
     _tasks: Vec<Task<()>>,
 }
 
@@ -395,9 +398,11 @@ impl MainWindow {
         let sidebar_view = cx.new(|cx| crate::ui::sidebar::SidebarView::new(&main, window, cx));
         crate::ui::links::wire(&links, cx);
         crate::ide::detect(cx);
+        // Another Mac's window starts on its connecting card's first step.
+        let conn = if backend.mac().is_some() { ConnState::Link(crate::backend::LinkProgress::starting()) } else { ConnState::Connecting };
         let mut this = MainWindow {
             backend,
-            conn: ConnState::Connecting,
+            conn,
             projects: vec![],
             discovered: vec![],
             sessions: vec![],
@@ -508,6 +513,7 @@ impl MainWindow {
             front_waiting: None,
             open_waiting: None,
             loaded: false,
+            listed: false,
             _tasks: tasks,
         };
         if intro {
@@ -696,7 +702,7 @@ impl MainWindow {
                             }
                         }
                     }
-                    ConnState::NotRunning { .. } => {
+                    ConnState::NotRunning { .. } | ConnState::Link(_) => {
                         self.terminal = None;
                         self.pending_terminal = None;
                         if was_connected || self.dropped_at.is_none() {
@@ -934,6 +940,14 @@ impl MainWindow {
     }
 
     /// This window shows another of my Macs (see `windows`).
+    /// Another Mac's window that hasn't shown its terminals yet: its link is on the way, or up
+    /// with the first list still to come (the connecting card's steps).
+    pub fn remote_loading(&self) -> bool {
+        use midna_proto::nearby::DriveState;
+        let on_the_way = matches!(&self.conn, ConnState::Link(p) if matches!(p.state, DriveState::Connecting | DriveState::Connected));
+        self.remote() && !self.listed && (on_the_way || matches!(self.conn, ConnState::Connected | ConnState::Connecting))
+    }
+
     pub fn remote(&self) -> bool {
         self.backend.mac().is_some()
     }
@@ -1268,6 +1282,7 @@ impl MainWindow {
         // drop the new tab, or move the selection off it, until the next session event.
         if let Some(s) = r.sessions.filter(|_| r.seq >= self.sessions_floor) {
             self.sessions_floor = r.seq + 1;
+            self.listed = true;
             if let Some(sel) = self.selected.clone().filter(|id| self.sessions.iter().any(|x| &x.id == id) && !s.iter().any(|x| &x.id == id)) {
                 let rows = self.sidebar_rows(Some(&sel), cx);
                 closed_neighbour = neighbour(&rows, &sel, |id| s.iter().any(|x| x.id == id));

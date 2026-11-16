@@ -501,7 +501,10 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
     if let Some(shelf) = crate::ui::shelf::section(m, t, compact, window, cx) {
         list = list.child(wipe(line, 0., shelf));
     }
-    if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
+    // Another Mac's window before its first list: placeholder rows (design 3 Connecting).
+    if m.remote_loading() {
+        list = list.child(placeholder_rows(t));
+    } else if m.sessions.is_empty() && m.conn == crate::backend::ConnState::Connected {
         list = list
             .child(div().px(px(10.)).pt(px(8.)).child(open_project_button(m, t, "sidebar-open-project", cx)))
             .child(div().px(px(14.)).py(px(10.)).text_size(px(12.)).text_color(t.dim).child(format!("Or {} for a terminal at root.", m.key_label("keys.new_terminal"))));
@@ -522,11 +525,18 @@ fn full(m: &MainWindow, t: &Theme, sb_anim: Option<Frame>, window: &mut Window, 
         .on_mouse_move(cx.listener(|m, ev: &MouseMoveEvent, _, cx| crate::ui::fold_peek::moved(m, ev.position, cx)))
         .children(crate::ui::fold_peek::card(m, t, window, cx))
         .child(top)
-        .when(btn_look.shown, |d| d.child(need_btn))
+        .when(btn_look.shown && !m.remote_loading(), |d| d.child(need_btn))
         .child(div().relative().flex().flex_col().flex_1().min_h_0().child(list).children(crate::ui::shelf::stuck(m, t, cx)))
         .children(background.map(|b| wipe(line, 0., b.into_any_element())))
         .child(wipe(line, 0., footer.into_any_element()))
         .into_any_element()
+}
+
+/// Grey bars where another Mac's rows go until its list arrives: a heading, two rows, a gap,
+/// another heading and a row.
+fn placeholder_rows(t: &Theme) -> Div {
+    let bar = |w: f32, gap: f32| div().h(px(10.)).w(relative(w)).mt(px(gap)).rounded(px(5.)).bg(t.line);
+    div().flex().flex_col().gap(px(10.)).px(px(14.)).py(px(12.)).children([bar(0.4, 0.), bar(0.75, 0.), bar(0.6, 0.), bar(0.35, 10.), bar(0.7, 0.)])
 }
 
 /// The project list's padding above its first group and below its last.

@@ -110,6 +110,10 @@ pub enum Icon {
     Summary,
     /// Copy to the clipboard (two overlapping sheets).
     Copy,
+    /// A ring with a solid quarter: spun by [`spinner`] while something loads.
+    Spinner,
+    /// An empty circle: a step still to come.
+    Ring,
 }
 
 impl Icon {
@@ -190,6 +194,8 @@ impl Icon {
             Icon::Chain => "icons/chain.svg",
             Icon::ChainBroken => "icons/chain-broken.svg",
             Icon::Copy => "icons/copy.svg",
+            Icon::Spinner => "icons/spinner.svg",
+            Icon::Ring => "icons/ring.svg",
         }
     }
 
@@ -245,6 +251,16 @@ impl Icon {
     pub fn el(self, size: f32, color: Hsla) -> Svg {
         svg().path(self.path()).size(px(size)).flex_none().text_color(color)
     }
+}
+
+/// A spinning ring (the design's `.spin`, one turn every 0.9s). `id` tells spinners on the
+/// same screen apart.
+pub fn spinner(id: impl Into<SharedString>, size: f32, color: Hsla) -> impl IntoElement {
+    Icon::Spinner.el(size, color).with_animation(
+        ElementId::Name(id.into()),
+        Animation::new(std::time::Duration::from_millis(900)).repeat(),
+        |el, d| el.with_transformation(Transformation::rotate(radians(d * std::f32::consts::TAU))),
+    )
 }
 
 fn source(path: &str) -> Option<&'static str> {
@@ -369,6 +385,12 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/copy.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg>"##
+        }
+        "icons/spinner.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="2"><circle cx="8" cy="8" r="6" stroke-opacity=".3"/><path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/></svg>"##
+        }
+        "icons/ring.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.7"><circle cx="8" cy="8" r="5.3"/></svg>"##
         }
         "icons/check.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>"##

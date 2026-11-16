@@ -314,6 +314,25 @@ fn dot(c: Hsla) -> Div {
 /// daemon (this Mac) or of the link to it (another Mac).
 fn mac_item(m: &MainWindow, name: String, t: &Theme) -> AnyElement {
     let remote = m.remote();
+    let tip_text = if remote {
+        format!("This window shows {name}: its terminals and agents run there, over a link from this Mac.")
+    } else {
+        format!("This window shows {name}, this Mac: its terminals run in midnad and keep running when this window closes.")
+    };
+    // Another Mac's window until its terminals arrive: amber, spinning (design 3 Connecting).
+    if m.remote_loading() {
+        return div()
+            .id("daemon")
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .text_color(t.need)
+            .child(crate::icons::spinner("connecting-status", 10., t.need))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+            .child("· connecting")
+            .tooltip(tip(tip_text))
+            .into_any_element();
+    }
     let (c, rest) = match &m.conn {
         ConnState::Connected => {
             let n = m.sessions.len();
@@ -324,11 +343,8 @@ fn mac_item(m: &MainWindow, name: String, t: &Theme) -> AnyElement {
         ConnState::NotRunning { .. } if remote => (t.err, "can't reach it".to_string()),
         ConnState::NotRunning { .. } if m.daemon_restarting() => (t.need, "midnad restarting…".to_string()),
         ConnState::NotRunning { .. } => (t.err, "midnad not running".to_string()),
-    };
-    let tip_text = if remote {
-        format!("This window shows {name}: its terminals and agents run there, over a link from this Mac.")
-    } else {
-        format!("This window shows {name}, this Mac: its terminals run in midnad and keep running when this window closes.")
+        ConnState::Link(p) if p.state == midna_proto::nearby::DriveState::Offline => (t.err, "offline".to_string()),
+        ConnState::Link(_) => (t.need, "reconnecting…".to_string()),
     };
     div()
         .id("daemon")
@@ -347,7 +363,7 @@ fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
         ConnState::Connected => div().flex().gap(px(4.)).child(dot(t.ok)).child(m.backend.label()),
         ConnState::Connecting => div().flex().gap(px(4.)).child(dot(t.dim)).child("connecting to midnad…"),
         ConnState::NotRunning { .. } if m.daemon_restarting() => div().flex().gap(px(4.)).child(dot(t.need)).child("midnad restarting…"),
-        ConnState::NotRunning { .. } => div().flex().gap(px(4.)).child(dot(t.err)).child("midnad not running"),
+        ConnState::NotRunning { .. } | ConnState::Link(_) => div().flex().gap(px(4.)).child(dot(t.err)).child("midnad not running"),
     };
     div().id("daemon").child(daemon).tooltip(tip("midnad: the background daemon that runs your terminals. They keep running when this window closes.")).into_any_element()
 }

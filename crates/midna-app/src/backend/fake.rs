@@ -9,6 +9,8 @@
 //! `MIDNA_FAKE_MAC_SETTINGS` the other Mac's (`theme=ember` is a theme only it has).
 //! `MIDNA_FAKE_MANY=N` adds N projects with three terminals each and N with only Summary
 //! records, for timing a long sidebar (`MIDNA_DEBUG_TERM=benchwheel:…`).
+//! `MIDNA_FAKE_LINK=finding|proving|loading` holds another Mac's window (`MIDNA_DEBUG_REMOTE`)
+//! on that step of its connecting card.
 use super::{AttachRequest, Backend, BackendEvent, ConnState, Mac, TermStream};
 use crate::frame::FrameSink;
 use crate::model::*;
@@ -762,6 +764,7 @@ impl Backend for FakeBackend {
                 {"name": "kass", "path": "~/Development/kass", "root": "~/Development", "git": true},
                 {"name": "midna", "path": "~/Development/rust/midna", "root": "~/Development", "git": true},
             ]),
+            "session.list" if self.mac.is_some() && fake_link().as_deref() == Some("loading") => bail!("still loading"),
             "session.list" => serde_json::to_value(&st.sessions)?,
             "session.subagent_log" => fake_subagent_log(&p("agent").unwrap_or_default(), params.get("from").and_then(Value::as_u64).unwrap_or(0)),
             "needs_you.list" => serde_json::to_value(&st.needs)?,
@@ -1040,6 +1043,17 @@ impl Backend for FakeBackend {
     }
 
     fn subscribe(&self, tx: async_channel::Sender<BackendEvent>) {
+        use midna_proto::nearby::{DriveStage, DriveState};
+        let stage = match fake_link().as_deref() {
+            Some("finding") => Some(DriveStage::Finding),
+            Some("proving") => Some(DriveStage::Proving),
+            _ => None,
+        };
+        if let Some(stage) = stage.filter(|_| self.mac.is_some()) {
+            let p = super::LinkProgress { state: DriveState::Connecting, stage: Some(stage), reason: None };
+            let _ = tx.try_send(BackendEvent::Conn(ConnState::Link(p)));
+            return;
+        }
         let _ = tx.try_send(BackendEvent::Conn(ConnState::Connected));
         self.st.lock().unwrap().subs.push(tx);
     }
@@ -1465,6 +1479,11 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
         },
         usage,
     }
+}
+
+/// `MIDNA_FAKE_LINK`: the connecting card's step another Mac's window stays on.
+fn fake_link() -> Option<String> {
+    crate::dev::var("MIDNA_FAKE_LINK").ok()
 }
 
 /// `MIDNA_FAKE_MANY`: how many extra projects of each kind.
