@@ -199,6 +199,18 @@ fn menus(s: &MenuState) -> Vec<Menu> {
 /// ⌃⌘N, the Window menu or the switcher: the Nth Mac's window opens or comes forward. One that
 /// can't be driven opens the switcher instead, which says why.
 pub fn switch(local: &Arc<dyn Backend>, i: usize, cx: &mut App) {
+    switch_at(local, i, None, cx);
+}
+
+/// ⌘K's Mac rows: `mac`'s window, at the project at `path` there when set (`switch` says what
+/// happens with a Mac that can't be driven now).
+pub fn open(local: &Arc<dyn Backend>, mac: &MacId, path: Option<String>, cx: &mut App) {
+    if let Some(i) = index_of(&list(cx), mac) {
+        switch_at(local, i, path, cx);
+    }
+}
+
+fn switch_at(local: &Arc<dyn Backend>, i: usize, path: Option<String>, cx: &mut App) {
     let list = list(cx);
     let Some(e) = list.get(i) else { return };
     let (open, _) = crate::windows::mac_windows(cx);
@@ -206,7 +218,10 @@ pub fn switch(local: &Arc<dyn Backend>, i: usize, cx: &mut App) {
         crate::windows::with_active(cx, |m, w, cx| crate::ui::mac_switcher::open(m, Some(i), w, cx));
         return;
     }
-    crate::windows::open_mac(local, e.mac.clone(), cx);
+    let win = crate::windows::open_mac(local, e.mac.clone(), cx);
+    if let (Some(win), Some(path)) = (win, path) {
+        let _ = win.update(cx, |m, cx| m.open_at(path, cx));
+    }
 }
 
 #[cfg(test)]

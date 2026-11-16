@@ -551,9 +551,9 @@ pub fn same_mac(a: EntityId, b: EntityId, cx: &mut App) -> bool {
     shared(cx).borrow().same_mac(a, b)
 }
 
-/// Open `mac`'s window (None: this Mac's), or bring its window used last forward. `local` is
-/// this Mac's backend, which opens the drive link the first time.
-pub fn open_mac(local: &Arc<dyn Backend>, mac: Option<Mac>, cx: &mut App) {
+/// Open `mac`'s window (None: this Mac's), or bring its window used last forward, and return
+/// it. `local` is this Mac's backend, which opens the drive link the first time.
+pub fn open_mac(local: &Arc<dyn Backend>, mac: Option<Mac>, cx: &mut App) -> Option<WeakEntity<MainWindow>> {
     let target = {
         let reg = shared(cx);
         let r = reg.borrow();
@@ -562,13 +562,14 @@ pub fn open_mac(local: &Arc<dyn Backend>, mac: Option<Mac>, cx: &mut App) {
     match target {
         Some(t) => {
             let _ = t.handle.update(cx, |_, window, _| window.activate_window());
+            Some(t.entity)
         }
         None => {
             let b = match mac {
                 Some(mac) => crate::backend::for_mac(local, mac),
                 None => local.clone(),
             };
-            let _ = open(b, None, cx);
+            open(b, None, cx)?.update(cx, |_, _, cx| cx.entity().downgrade()).ok()
         }
     }
 }

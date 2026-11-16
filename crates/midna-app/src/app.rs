@@ -281,6 +281,8 @@ pub struct MainWindow {
     sessions_floor: u64,
     /// A `front` command's terminal that `sessions` doesn't list yet (see `front_terminal`).
     front_waiting: Option<String>,
+    /// A project to open once `session.list` next answers (`open_at`).
+    open_waiting: Option<String>,
     loaded: bool,
     _tasks: Vec<Task<()>>,
 }
@@ -504,6 +506,7 @@ impl MainWindow {
             refresh_seq: 0,
             sessions_floor: 0,
             front_waiting: None,
+            open_waiting: None,
             loaded: false,
             _tasks: tasks,
         };
@@ -1260,6 +1263,7 @@ impl MainWindow {
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
         let mut fronted = None;
+        let mut open_at = None;
         // An older list than the one we have (or than a terminal we just opened or closed) would
         // drop the new tab, or move the selection off it, until the next session event.
         if let Some(s) = r.sessions.filter(|_| r.seq >= self.sessions_floor) {
@@ -1289,6 +1293,7 @@ impl MainWindow {
                 }
             }
             fronted = listed(self.front_waiting.take(), &self.sessions);
+            open_at = self.open_waiting.take();
             let live = &self.sessions;
             self.marked.retain(|id| live.iter().any(|s| &s.id == id));
             if self.marked.len() < 2 {
@@ -1349,6 +1354,9 @@ impl MainWindow {
         }
         if let Some(id) = fronted {
             self.front_terminal(id, window, cx);
+        }
+        if let Some(path) = open_at {
+            self.add_project(path, false, window, cx);
         }
         // keep a valid selection
         // (a popped-out terminal lives in its own window, never in the main pane)
@@ -2063,6 +2071,13 @@ impl MainWindow {
     /// Add `path` as a project (a no-op if it already is one), then go to it: its first
     /// terminal outside the Background group, or what `projects.empty_opens` asks for when it
     /// has none. `other` (⌥) always opens a new one of the kind the setting doesn't pick.
+    /// Open the project at `path`, as ⌘K's project rows do, once this window has its terminals
+    /// (a window that just opened has none yet, and would open a second terminal there).
+    pub fn open_at(&mut self, path: String, cx: &mut Context<Self>) {
+        self.open_waiting = Some(path);
+        self.request_refresh(refresh::SESSIONS, cx);
+    }
+
     pub fn add_project(&mut self, path: String, other: bool, _window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("project.add", json!({ "path": path }), cx, move |m, v, window, cx| {
             let Some(pid) = v.get("id").and_then(|x| x.as_str()).map(str::to_string) else {
