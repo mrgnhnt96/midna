@@ -287,7 +287,34 @@ pub struct MainWindow {
     /// The first terminal list has arrived (empty or not): another Mac's window shows its
     /// connecting card and placeholder rows until then.
     pub listed: bool,
+    /// When another Mac's window lost its link after showing its terminals (unix seconds; None
+    /// while it's up): the "as of" and "last seen" times (`remote_down`).
+    pub lost_at: Option<i64>,
     _tasks: Vec<Task<()>>,
+}
+
+/// Another Mac's window whose link dropped after it showed its terminals (design 3, option A):
+/// the last screen stays up, dimmed, typing is off, and a strip under the header says which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Down {
+    /// Trying again every few seconds: the amber strip.
+    Reconnecting,
+    /// A minute of failed tries: the red strip, tries every 30 s (midnad's drive link).
+    Offline,
+}
+
+/// Whether a window is down, and how: only another Mac's, once its list came, while its link
+/// is being tried again. A link that closed (NotRunning) shows its card saying why instead.
+pub fn down(remote: bool, listed: bool, conn: &ConnState) -> Option<Down> {
+    use midna_proto::nearby::DriveState;
+    if !remote || !listed {
+        return None;
+    }
+    match conn {
+        ConnState::Connected | ConnState::NotRunning { .. } => None,
+        ConnState::Link(p) if p.state == DriveState::Offline => Some(Down::Offline),
+        ConnState::Link(_) | ConnState::Connecting => Some(Down::Reconnecting),
+    }
 }
 
 impl MainWindow {
@@ -514,6 +541,7 @@ impl MainWindow {
             open_waiting: None,
             loaded: false,
             listed: false,
+            lost_at: None,
             _tasks: tasks,
         };
         if intro {
@@ -688,12 +716,22 @@ impl MainWindow {
                         crate::ui::share::fetch(self, cx);
                         crate::ui::summary::fetch(self, cx);
                         self.fetch_mac_themes(window, cx);
-                        if !was_connected {
+                        let back = self.lost_at.take().is_some();
+                        if back {
+                            crate::ui::split::freeze(self, false, cx);
+                        }
+                        if back && self.terminal.is_some() {
+                            // Another Mac back: its last screen stays until the fresh one has drawn.
+                            self.pending_terminal = None;
+                            self.reattach_terminal(window, cx);
+                        } else if !was_connected {
                             // re-attach after a reconnect (the split pane and pop-outs
                             // re-attach themselves, see TerminalView::watch_stream)
                             self.terminal = None;
                             self.pending_terminal = None;
                             self.ensure_terminal(window, cx);
+                        }
+                        if !was_connected {
                             if self.backend.label() == "midnad" && self.is_local_home() {
                                 crate::lifecycle::report_updates(self.backend.clone());
                             }
@@ -702,7 +740,37 @@ impl MainWindow {
                             }
                         }
                     }
+                    _ if down(self.remote(), self.listed, &st).is_some() => {
+                        // Another Mac's link is being tried again: keep its last screen, typing off.
+                        if self.lost_at.is_none() {
+                            self.lost_at = Some(crate::ui::screen_kit::now_unix());
+                            self.pending_terminal = None;
+                            if let Some(t) = &self.terminal {
+                                t.update(cx, |v, cx| v.freeze(true, cx));
+                            }
+                            crate::ui::split::freeze(self, true, cx);
+                            // "14 min ago" and the sidebar's "as of" keep up while it's down.
+                            cx.spawn(async move |this, cx| {
+                                loop {
+                                    cx.background_executor().timer(Duration::from_secs(30)).await;
+                                    let Ok(up) = this.update(cx, |m, cx| {
+                                        cx.notify();
+                                        m.lost_at.is_none()
+                                    }) else {
+                                        break;
+                                    };
+                                    if up {
+                                        break;
+                                    }
+                                }
+                            })
+                            .detach();
+                        }
+                    }
                     ConnState::NotRunning { .. } | ConnState::Link(_) => {
+                        if self.lost_at.take().is_some() {
+                            crate::ui::split::freeze(self, false, cx);
+                        }
                         self.terminal = None;
                         self.pending_terminal = None;
                         if was_connected || self.dropped_at.is_none() {
@@ -950,6 +1018,23 @@ impl MainWindow {
 
     pub fn remote(&self) -> bool {
         self.backend.mac().is_some()
+    }
+
+    /// Another Mac's window with its link down after it showed its terminals (see [`down`]).
+    pub fn remote_down(&self) -> Option<Down> {
+        down(self.remote(), self.listed, &self.conn)
+    }
+
+    /// Try another Mac's link again now, instead of at its next try: opening it again from this
+    /// app wakes the link's wait (midnad's `drive.open`).
+    pub fn retry_link(&self) {
+        let Some(peer) = self.backend.mac().map(|m| m.peer.clone()) else {
+            return;
+        };
+        let local = crate::backend::local(&self.backend);
+        std::thread::spawn(move || {
+            let _ = local.call("drive.open", json!({ "peer": peer }));
+        });
     }
 
     /// The Mac's name this window shows in its sidebar's plate and its status bar: another
@@ -1776,6 +1861,23 @@ impl MainWindow {
         self.pending_terminal = Some((view.clone(), sub));
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(250)).await;
+            let _ = this.update_in(cx, |m, window, cx| m.promote_terminal(&view, true, window, cx));
+        })
+        .detach();
+    }
+
+    /// A fresh view of the terminal on screen, shown once it has drawn (another Mac back).
+    fn reattach_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else {
+            self.terminal = None;
+            return;
+        };
+        let size = self.terminal.as_ref().map(|t| t.read(cx).size()).unwrap_or((0, 0));
+        let view = cx.new(|cx| TerminalView::new_sized(id, self.backend.clone(), size, window, cx));
+        let sub = cx.observe_in(&view, window, |m, v, window, cx| m.promote_terminal(&v, false, window, cx));
+        self.pending_terminal = Some((view.clone(), sub));
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
             let _ = this.update_in(cx, |m, window, cx| m.promote_terminal(&view, true, window, cx));
         })
         .detach();

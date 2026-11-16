@@ -13,6 +13,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         return div().h(px(44.)).flex_none().border_b_1().border_color(t.line).into_any_element();
     };
     let segs = m.header_segments.get(&s.id).cloned().unwrap_or_default();
+    let down = m.remote_down();
     div()
         .flex()
         .flex_none()
@@ -24,6 +25,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .border_b_1()
         .border_color(t.line)
         .child(match crate::app::background_note(s).filter(|_| m.effective_state(s) == crate::model::StatusState::Done) {
+            // Another Mac's link down: its state is as of then, so the dot is grey.
+            _ if down.is_some() => div().size(px(9.)).flex_none().rounded_full().bg(t.dim).into_any_element(),
             Some(note) => div().id("header-dot").child(terminal_dot(m, t, s, 9.)).tooltip(tip(format!("Turn done · {note}"))).into_any_element(),
             None => terminal_dot(m, t, s, 9.).into_any_element(),
         })
@@ -48,6 +51,10 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         })
         .child(terminal_icon(m, t, s, 14., t.dim))
         .when_some(status_label(m, s), |d, mut c| {
+            if down.is_some() {
+                // As of when the link dropped, like the sidebar's rows.
+                c.color = "gray".into();
+            }
             if s.paused.is_some() {
                 // "Paused 3m"; Resume is on the card over the terminal.
                 let since = c.since.as_deref().map(crate::model::since_short).filter(|x| x != "now");
@@ -73,6 +80,9 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             )
         })
         .when(!segs.is_empty(), |d| d.child(div().w(px(1.)).h(px(18.)).flex_none().bg(t.line)).child(div().min_w_0().overflow_hidden().child(segments(&segs, t, 12., cx))))
+        .when(down.is_some(), |d| {
+            d.child(div().flex_none().text_size(px(12.)).text_color(t.dim).whitespace_nowrap().child(format!("as of {}", crate::ui::link_down::when(m))))
+        })
         .child(
             // empty header space drags the window like a titlebar
             div().id("header-drag").flex_1().h(px(44.)).on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
@@ -170,7 +180,11 @@ fn toolbar(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl Into
                 cx.notify();
             }),
         )
-        .children(buttons(m).into_iter().filter_map(|b| toolbar_button(m, b, t, cx)))
+        .children(buttons(m).into_iter().filter_map(|b| match m.remote_down() {
+            // Another Mac's link down: its tools wait, greyed, until it's back; More still opens.
+            Some(_) => disabled_button(&b, t),
+            None => toolbar_button(m, b, t, cx),
+        }))
         .child(
             div()
                 .relative()
@@ -182,6 +196,17 @@ fn toolbar(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl Into
                 .children(popover_on_more),
         )
         .when(m.menu == Menu::HeaderButtons, |d| d.child(buttons_menu(m, t, cx)))
+}
+
+/// Split, Pop out and Restart, greyed and doing nothing, while another Mac's link is down.
+fn disabled_button(b: &str, t: &Theme) -> Option<AnyElement> {
+    let icon = match b {
+        "split" => Icon::Split,
+        "popout" => Icon::PopOut,
+        "restart" => Icon::Restart,
+        _ => return None,
+    };
+    Some(div().size(px(32.)).flex().items_center().justify_center().opacity(0.4).child(icon.el(16., t.dim)).into_any_element())
 }
 
 /// One `ui.header.buttons` entry: a built-in button, or a custom one (a script path).

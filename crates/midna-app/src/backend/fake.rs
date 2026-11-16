@@ -10,7 +10,8 @@
 //! `MIDNA_FAKE_MANY=N` adds N projects with three terminals each and N with only Summary
 //! records, for timing a long sidebar (`MIDNA_DEBUG_TERM=benchwheel:…`).
 //! `MIDNA_FAKE_LINK=finding|proving|loading` holds another Mac's window (`MIDNA_DEBUG_REMOTE`)
-//! on that step of its connecting card.
+//! on that step of its connecting card; `reconnecting|offline` drops its link once its terminals
+//! have shown.
 use super::{AttachRequest, Backend, BackendEvent, ConnState, Mac, TermStream};
 use crate::frame::FrameSink;
 use crate::model::*;
@@ -1055,6 +1056,19 @@ impl Backend for FakeBackend {
             return;
         }
         let _ = tx.try_send(BackendEvent::Conn(ConnState::Connected));
+        // `reconnecting` / `offline`: another Mac's link drops once its terminals have shown.
+        let down = match fake_link().as_deref() {
+            Some("reconnecting") => Some(DriveState::Reconnecting),
+            Some("offline") => Some(DriveState::Offline),
+            _ => None,
+        };
+        if let Some(state) = down.filter(|_| self.mac.is_some()) {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(3000));
+                let _ = tx.try_send(BackendEvent::Conn(ConnState::Link(super::LinkProgress { state, stage: None, reason: None })));
+            });
+        }
         self.st.lock().unwrap().subs.push(tx);
     }
 
@@ -1481,7 +1495,8 @@ fn fake_insights_detail(range: &str, sessions: &[Session], projects: &[Project])
     }
 }
 
-/// `MIDNA_FAKE_LINK`: the connecting card's step another Mac's window stays on.
+/// `MIDNA_FAKE_LINK`: the connecting card's step another Mac's window stays on, or how its link
+/// drops.
 fn fake_link() -> Option<String> {
     crate::dev::var("MIDNA_FAKE_LINK").ok()
 }

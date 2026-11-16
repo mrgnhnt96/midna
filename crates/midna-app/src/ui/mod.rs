@@ -17,6 +17,7 @@ pub mod hooks;
 pub mod insights;
 pub mod onboarding;
 pub mod links;
+pub mod link_down;
 pub mod mac_switcher;
 pub mod paused;
 pub mod queue;
@@ -271,7 +272,10 @@ impl Render for MainWindow {
         let sidebar = sidebar::SidebarView::element(&self.sidebar_view.clone(), self, sidebar_anim, cx);
         let main: AnyElement = match (&self.conn, self.screen) {
             // Another Mac's window shows its connecting card until its first terminal list arrives.
-            _ if self.conn != ConnState::Connected || self.remote_loading() => screens::not_running(self, &t, cx).into_any_element(),
+            // Its link down after that: the last screen stays, dimmed, under a strip (`link_down`).
+            _ if self.remote_down().is_none() && (self.conn != ConnState::Connected || self.remote_loading()) => {
+                screens::not_running(self, &t, cx).into_any_element()
+            }
             // NeedsYou-C replaces the pane right of the sidebar, whatever screen is under it.
             _ if self.overlay == Overlay::NeedsYou => needs_you::render(self, &t, window, cx).into_any_element(),
             (_, Screen::Terminal) => div()
@@ -281,6 +285,7 @@ impl Render for MainWindow {
                 .min_w_0()
                 .h_full()
                 .child(header::render(self, &t, window, cx))
+                .children(link_down::render(self, &t, cx))
                 .child(
                     div()
                         .flex()
@@ -307,13 +312,17 @@ impl Render for MainWindow {
                                             Some((Some(old), dir, e)) => close_anim::slide(el, summary::ghost_page(self, &t, &old, cx), dir, e),
                                             _ => el,
                                         };
+                                        let el = match self.remote_down() {
+                                            Some(_) => div().flex().flex_col().flex_1().min_h_0().size_full().opacity(0.45).child(el).into_any_element(),
+                                            None => el,
+                                        };
                                         paused::over_pane(self, el, &t, cx)
                                     }
                                     None => screens::empty_terminal(self, &t, cx).into_any_element(),
                                 })
                                 .children(crate::composer::render(self, &t, cx)),
                         )
-                        .children(banner::render(self, &t, cx))
+                        .children(banner::render(self, &t, cx).filter(|_| self.remote_down().is_none()))
                         .children(update_banner::render(self, &t, cx))
                         .children(self.selected.clone().and_then(|id| annotate::tray(&id, &t, cx, |m, id, w, cx| _ = crate::annotate::open(m, Some(id), w, cx), |m, w, cx| m.focus_terminal(w, cx)))),
                 )

@@ -319,8 +319,10 @@ fn mac_item(m: &MainWindow, name: String, t: &Theme) -> AnyElement {
     } else {
         format!("This window shows {name}, this Mac: its terminals run in midnad and keep running when this window closes.")
     };
-    // Another Mac's window until its terminals arrive: amber, spinning (design 3 Connecting).
-    if m.remote_loading() {
+    // Another Mac's window until its terminals arrive, or while its link is tried again: amber,
+    // spinning (design 3 Connecting and Reconnecting). Offline, red: below.
+    let reconnecting = m.remote_down() == Some(crate::app::Down::Reconnecting);
+    if m.remote_loading() || reconnecting {
         return div()
             .id("daemon")
             .flex()
@@ -329,7 +331,7 @@ fn mac_item(m: &MainWindow, name: String, t: &Theme) -> AnyElement {
             .text_color(t.need)
             .child(crate::icons::spinner("connecting-status", 10., t.need))
             .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
-            .child("· connecting")
+            .child(if reconnecting { "· reconnecting" } else { "· connecting" })
             .tooltip(tip(tip_text))
             .into_any_element();
     }
