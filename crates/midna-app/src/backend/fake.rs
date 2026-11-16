@@ -1055,6 +1055,45 @@ impl Backend for FakeBackend {
                 }
                 out
             }
+            "needs_you.raise" => {
+                st.next_id += 1;
+                let mut item = params.clone();
+                item["id"] = json!(format!("ny_raised{:05x}", st.next_id));
+                item["created_at"] = json!(now_rfc3339());
+                let need: NeedsYou = serde_json::from_value(item)?;
+                st.needs.push(need.clone());
+                st.emit("needs_you.raised", need.session_id.as_deref(), serde_json::to_value(&need)?);
+                json!({ "id": need.id })
+            }
+            // A post as midnad words it (`notify.posted`), `id` naming it for `notify.withdraw`.
+            "notify.send" => {
+                let mut posted = json!({ "category": "attention", "title": "", "via": "app" });
+                for (k, v) in params.as_object().into_iter().flatten().filter(|(k, _)| k.as_str() != "session_id") {
+                    posted[k.as_str()] = v.clone();
+                }
+                st.emit("notify.posted", p("session_id").as_deref(), posted);
+                json!({ "ok": true })
+            }
+            "notify.withdraw" => {
+                st.emit("notify.withdrawn", None, json!({ "id": p("id") }));
+                json!({ "ok": true })
+            }
+            // Tests: this Mac's link to another as midnad would tell it (`connected`,
+            // `reconnecting`, `offline`, or `refused`: that Mac turned driving off).
+            "fake.link" => {
+                use midna_proto::nearby::DriveState;
+                let name = self.mac.as_ref().map(|(m, _)| m.name.clone()).unwrap_or_default();
+                let link = |state, reason: Option<String>| ConnState::Link(super::LinkProgress { state, stage: None, reason });
+                let conn = match p("state").as_deref() {
+                    Some("connected") => ConnState::Connected,
+                    Some("reconnecting") => link(DriveState::Reconnecting, Some("the network dropped".into())),
+                    Some("offline") => link(DriveState::Offline, Some("timed out".into())),
+                    Some("refused") => link(DriveState::Reconnecting, Some(format!("{name} stopped letting this Mac drive it"))),
+                    other => bail!("fake.link: no state {other:?}"),
+                };
+                st.subs.retain(|tx| tx.try_send(BackendEvent::Conn(conn.clone())).is_ok());
+                json!({ "ok": true })
+            }
             "window.command" => {
                 let cmd = params.clone();
                 st.subs.retain(|tx| tx.try_send(BackendEvent::WindowCommand(cmd.clone())).is_ok());
