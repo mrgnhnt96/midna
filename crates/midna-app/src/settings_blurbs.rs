@@ -155,6 +155,8 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
 /// A shortcut row's name: its catalog description, shortened where that runs long.
 pub(super) fn shortcut_title(setting: &str) -> String {
     let short = match setting {
+        "keys.next_needs_you" => "Newest needs-you on this window's Mac",
+        "keys.next_needs_you_anywhere" => "Newest needs-you on any Mac",
         "keys.new_agent" => "New agent terminal in this project",
         "keys.new_terminal" => "New terminal in this project",
         "keys.new_agent_root" => "New agent terminal in your home folder",

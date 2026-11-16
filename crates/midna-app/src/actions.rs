@@ -9,8 +9,10 @@ actions!(
     [
         /// ⌘K palette (CommandBar-A). Placeholder overlay for now.
         ToggleCommandBar,
-        /// Jump to the next needs-you item.
+        /// Jump to the newest needs-you item on the Mac whose window is in front.
         NextNeedsYou,
+        /// Jump to the newest needs-you item on any of my Macs.
+        NextNeedsYouAnywhere,
         /// Open the needs-you inbox (`ui/needs_you.rs`).
         OpenNeedsYou,
         NewTerminal,
@@ -332,6 +334,7 @@ macro_rules! shortcut {
 pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("keys.command_bar", ToggleCommandBar, WINDOW),
     shortcut!("keys.next_needs_you", NextNeedsYou, WINDOW),
+    shortcut!("keys.next_needs_you_anywhere", NextNeedsYouAnywhere, WINDOW),
     shortcut!("keys.needs_you", OpenNeedsYou, WINDOW),
     shortcut!("keys.new_terminal", NewTerminal, WINDOW),
     shortcut!("keys.new_agent", NewAgent, WINDOW),
@@ -402,6 +405,7 @@ pub const OVERLAY_KEYS: &[Shortcut] = &[
     shortcut!("keys.approve", ApproveOnce, Some("overlay == needs_you")),
     shortcut!("keys.deny", Deny, Some("overlay == needs_you")),
     shortcut!("keys.next_needs_you", NextNeedsYou, Some("overlay == needs_you")),
+    shortcut!("keys.next_needs_you_anywhere", NextNeedsYouAnywhere, Some("overlay == needs_you")),
     shortcut!("keys.approve", crate::ui::command_bar::RunSelected, Some("overlay == command_bar")),
     shortcut!("keys.deny", crate::ui::command_bar::ClearQuery, Some("overlay == command_bar")),
     shortcut!("keys.approve", crate::annotate::AttachImages, Some("overlay == annotate")),

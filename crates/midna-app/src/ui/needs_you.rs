@@ -450,6 +450,16 @@ fn select_at(m: &mut MainWindow, i: usize, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
+/// ⌘J with the list closed: open it on the newest item (the list's last), or as it opens with
+/// nothing waiting.
+pub fn open_newest(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    m.set_overlay(Overlay::NeedsYou, window, cx);
+    let last = ordered(m).len().checked_sub(1);
+    if let Some(i) = last.filter(|_| !m.stack.menu) {
+        select_at(m, i, cx);
+    }
+}
+
 /// Open the list on item `id` (a clicked notification), keeping it open if it already is.
 pub fn show(m: &mut MainWindow, id: String, window: &mut Window, cx: &mut Context<MainWindow>) {
     if m.overlay != Overlay::NeedsYou {

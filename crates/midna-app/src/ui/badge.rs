@@ -38,8 +38,10 @@
 //! window's top right and follows it there (laid out as top right, whatever its corner; it can't
 //! be dragged), a band of the need color sweeping across it when something comes in and every
 //! `REMIND` while anything waits. Leaving midna, it springs back to its corner. ⌘J goes to the
-//! newest capsule's terminal while one shows (`newest`, `go_newest`). While the screen is
-//! shared (`notify.badge.sharing`), it hides, or shows only its number, or carries on.
+//! newest capsule's terminal while one shows from the Mac whose window is in front (`newest`,
+//! `go_newest`); ⌥⌘J goes to the newest item on any Mac (`MainWindow::next_needs_you_anywhere`).
+//! While the screen is shared (`notify.badge.sharing`), it hides, or shows only its number, or
+//! carries on.
 //! A `notify.send` notification (`Sent`) replaces the one with its id, may open a URL instead of
 //! a terminal and have buttons on its card, and reports what you did with it (`notify.respond`).
 //!
@@ -691,6 +693,9 @@ pub struct Badge {
     middles: Vec<(Option<String>, f32)>,
     /// What VoiceOver last got told the badge says.
     spoken: String,
+    /// The tooltip's keys line (`mac_tab::keys`), as `keys.next_needs_you` and
+    /// `keys.next_needs_you_anywhere` are bound.
+    keys: String,
     _ticker: Task<()>,
 }
 
@@ -773,20 +778,28 @@ pub fn seen(session: &str, cx: &mut App) {
     });
 }
 
-/// Docked in midna's window with a capsule showing beside it: ⌘J goes to it (`go_newest`).
-pub fn newest(cx: &App) -> bool {
+/// Docked in midna's window with a capsule showing beside it from `mac` (the front window's
+/// Mac: None this one, or another's peer): ⌘J goes to it (`go_newest`). A capsule from another
+/// Mac than the window's isn't ⌘J's, so ⌘J never takes you across Macs.
+pub fn newest(mac: &crate::windows::MacId, cx: &App) -> bool {
     let Some(h) = handle(cx) else { return false };
-    h.read(cx).is_ok_and(|b| b.shown && b.within && b.lines.front().is_some_and(|l| l.leaving.is_none() && (l.session.is_some() || l.need.is_some())))
+    h.read(cx).is_ok_and(|b| b.shown && b.within && b.front_line(mac).is_some())
 }
 
-/// Go to the newest capsule's terminal (or its needs-you card), as clicking it does.
-pub fn go_newest(cx: &mut App) {
+/// Go to the newest capsule's terminal (or its needs-you card) on `mac`, as clicking it does on
+/// this Mac. Another Mac's goes there the way its card's "Open on <Mac>" does.
+pub fn go_newest(mac: crate::windows::MacId, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let _ = h.update(cx, |b, _, cx| {
-        let Some(l) = b.lines.front().filter(|l| l.leaving.is_none() && l.mac.is_none()) else { return };
-        let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
+        let Some(l) = b.front_line(&mac) else { return };
         let (session, need, sent) = (l.session.clone(), l.need.clone(), l.sent.clone());
-        b.open(session, need, held, sent, false, cx);
+        match l.peer.clone() {
+            Some(peer) => b.open_on(peer, session, need, cx),
+            None => {
+                let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
+                b.open(session, need, held, sent, false, cx);
+            }
+        }
     });
 }
 
@@ -888,6 +901,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
     };
     let colors: HashMap<String, String> =
         m.settings.iter().filter_map(|(k, v)| Some((k.strip_prefix("notify.color.")?.to_string(), v.as_str()?.to_string()))).collect();
+    let keys = mac_tab::keys(&m.key_label("keys.next_needs_you"), &m.key_label("keys.next_needs_you_anywhere"));
     let home = midna_proto::paths::midna_home();
     let image = |kind: &str| midna_proto::notify::kind_image(&home, kind, |k| setting(k).unwrap_or_default());
     let needs: Vec<Waiting> = m
@@ -933,6 +947,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         b.sharing = sharing;
         b.idle = idle;
         b.colors = colors;
+        b.keys = keys;
         // A list fetched just before an item came in doesn't drop it (it'd count down, then up).
         let fresh: Vec<Waiting> = b.needs.iter().filter(|w| b.pending.iter().any(|(id, at)| *id == w.id && at.elapsed() < PENDING) && !needs.iter().any(|n| n.id == w.id)).cloned().collect();
         b.pending.retain(|(_, at)| at.elapsed() < PENDING);
@@ -1145,6 +1160,7 @@ impl Badge {
             shared: false,
             watched_at: None,
             colors: HashMap::new(),
+            keys: mac_tab::keys("⌘J", "⌥⌘J"),
             needs: vec![],
             held: vec![],
             pending: vec![],
@@ -1504,6 +1520,15 @@ impl Badge {
         true
     }
 
+    /// The capsule beside the badge, when it's showing, is about a terminal or an item, and is
+    /// from `mac` (None this Mac, or another's peer). Another Mac's needs its item to go to.
+    fn front_line(&self, mac: &crate::windows::MacId) -> Option<&Line> {
+        self.lines
+            .front()
+            .filter(|l| l.leaving.is_none() && l.peer == *mac)
+            .filter(|l| if l.peer.is_some() { l.need.is_some() } else { l.session.is_some() || l.need.is_some() })
+    }
+
     /// The Macs' tabs that show: those with something waiting.
     fn tabs(&self) -> Vec<mac_tab::Tab> {
         self.counted().into_iter().filter(|m| m.count() > 0).collect()
@@ -1521,7 +1546,7 @@ impl Badge {
 
     /// Tell VoiceOver what the badge says (its window's label), when that changed.
     fn speak(&mut self) {
-        let mut words = if self.macs.is_empty() { format!("Needs you: {}", self.count) } else { mac_tab::spoken(self.count, &self.counted()) };
+        let mut words = if self.macs.is_empty() { format!("Needs you: {}", self.count) } else { mac_tab::spoken(self.count, &self.counted(), &self.keys) };
         // Another Mac's capsule says where it's from (it shows only its colour).
         if let Some(l) = self.lines.front().filter(|l| l.leaving.is_none() && !self.quiet()) {
             words.push_str(&match &l.mac {
@@ -2669,12 +2694,14 @@ impl Badge {
             let mouse = objc2_app_kit::NSEvent::mouseLocation();
             let f = ns.frame();
             let p = point(px((mouse.x - f.origin.x) as f32), px((f.origin.y + f.size.height - mouse.y) as f32));
-            let hover = self.zones.hit(p);
+            // Dev (`MIDNA_DEBUG_BADGE=tip`): rest on the pill for good, its tooltip up.
+            let tip = self.debug.as_deref() == Some("tip");
+            let hover = if tip { Some("badge") } else { self.zones.hit(p) };
             keep = matches!(hover, Some("badge" | "line")) || (hover == Some("panel") && self.zones.keeps(p));
             // Which part of it: moving from the pill to a Mac's tab starts the rest over.
-            let part = self.zones.part(p).flatten();
+            let part = if tip { None } else { self.zones.part(p).flatten() };
             if hover != self.hover || (hover == Some("badge") && part != self.hover_part) {
-                if hover == Some("badge") {
+                if hover == Some("badge") && !tip {
                     self.hover_since = Some(now);
                 } else if self.hover == Some("badge") {
                     self.hover_since = None;
@@ -3160,8 +3187,11 @@ impl Badge {
             return None;
         }
         let tip = self.tip()?;
+        // The room beside the pill, in the window (`render`'s `side`); past it, a line wraps.
+        let room = MX + SIZE - self.badge_w.get().max(SIZE) - 16.;
         Some(
             div()
+                .max_w(px(room))
                 .flex()
                 .flex_col()
                 .gap(px(2.))
@@ -3173,9 +3203,8 @@ impl Badge {
                 .border_color(t.line)
                 .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.35), offset: point(px(0.), px(6.)), blur_radius: px(16.), spread_radius: px(0.), inset: false }])
                 .text_size(px(12.))
-                .whitespace_nowrap()
                 .child(div().text_color(t.fg).child(tip))
-                .child(div().text_color(t.dim).child(mac_tab::KEYS))
+                .when(!self.keys.is_empty(), |d| d.child(div().text_color(t.dim).child(self.keys.clone())))
                 .into_any_element(),
         )
     }

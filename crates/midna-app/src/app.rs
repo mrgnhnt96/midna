@@ -2060,20 +2060,49 @@ impl MainWindow {
         }
     }
 
-    /// ⌘J / the sidebar "N need you" button: open the needs-you card stack (NeedsYou-C).
+    /// ⌘J: the newest needs-you item on the Mac this window shows, as its sidebar's "N need you
+    /// ⌘J" counts, so it never takes you to another Mac (⌥⌘J does: `next_needs_you_anywhere`).
     /// Inside the stack ⌘J skips to the next card (handled by the stack).
     pub fn next_needs_you(&mut self, _: &NextNeedsYou, window: &mut Window, cx: &mut Context<Self>) {
-        // The badge's newest capsule showing (docked in this window): ⌘J goes to its terminal.
-        // A banner card showing (badge off): ⌘J is its "Go to terminal".
-        if self.overlay == Overlay::None && crate::ui::badge::newest(cx) {
-            cx.defer(crate::ui::badge::go_newest);
+        let mac = self.mac_id();
+        // The badge's newest capsule showing (docked in this window) from this window's Mac:
+        // ⌘J goes to its terminal. A banner card showing (badge off): its "Go to terminal".
+        if self.overlay == Overlay::None && crate::ui::badge::newest(&mac, cx) {
+            cx.defer(move |cx| crate::ui::badge::go_newest(mac, cx));
         } else if self.overlay == Overlay::None && crate::ui::toast::can_go(self) {
             crate::ui::toast::go(self, window, cx);
         } else if self.overlay == Overlay::NeedsYou {
             crate::ui::needs_you::skip(self, cx);
         } else {
-            self.set_overlay(Overlay::NeedsYou, window, cx);
+            crate::ui::needs_you::open_newest(self, window, cx);
         }
+    }
+
+    /// ⌥⌘J: the newest needs-you item on any of my Macs. On this Mac, its terminal with its
+    /// card (or the card in this Mac's home window); on another, that Mac's window comes forward
+    /// on it as its pill card's "Open on <Mac>" does, opening one if none is. Nothing waiting
+    /// anywhere: as ⌘J.
+    pub fn next_needs_you_anywhere(&mut self, _: &NextNeedsYouAnywhere, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.mac_id();
+        // This window's own Mac from its own list (the freshest); the others as followed.
+        let local = if here.is_none() { self.needs.clone() } else { crate::windows::local_needs(cx) };
+        let feeds = crate::mac_feed::list(cx);
+        let mut macs: Vec<(Option<&str>, &[NeedsYou])> = vec![(None, &local)];
+        if let Some(peer) = here.as_deref() {
+            macs.push((Some(peer), &self.needs));
+        }
+        macs.extend(feeds.iter().filter(|f| Some(&f.mac.peer) != here.as_ref()).map(|f| (Some(f.mac.peer.as_str()), &f.needs[..])));
+        let Some((mac, n)) = crate::ui::mac_tab::newest(macs) else {
+            return self.next_needs_you(&NextNeedsYou, window, cx);
+        };
+        let (session, need) = (n.session_id.clone(), Some(n.id.clone()));
+        crate::lifecycle::log(&format!("⌥⌘J: newest is {} on {}", n.id, mac.as_deref().unwrap_or("this Mac")));
+        let name = mac.as_ref().and_then(|p| feeds.iter().find(|f| f.mac.peer == *p)).map(|f| f.mac.name.clone());
+        let local_backend = crate::backend::local(&self.backend);
+        cx.defer(move |cx| match (mac, name) {
+            (Some(peer), Some(name)) => crate::windows::reveal_on_mac(&local_backend, crate::backend::Mac { peer, name }, session, need, cx),
+            (mac, _) => crate::windows::reveal_there(mac, session, need, cx),
+        });
     }
 
     pub fn open_session(&mut self, project: Option<String>, agent: Option<AgentKind>, cx: &mut Context<Self>) {
@@ -2614,6 +2643,7 @@ impl MainWindow {
         el.on_action(cx.listener(Self::approve_once))
             .on_action(cx.listener(Self::deny))
             .on_action(cx.listener(Self::next_needs_you))
+            .on_action(cx.listener(Self::next_needs_you_anywhere))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::new_agent))
             .on_action(cx.listener(Self::new_terminal_root))

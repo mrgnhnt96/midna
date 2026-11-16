@@ -19,8 +19,13 @@ pub const PINGS: u32 = 2;
 /// The capsule springs out this long after the tab starts popping.
 pub const CAPSULE_AFTER: Duration = Duration::from_millis(160);
 
-/// The keys, after the counts in the tooltip and for VoiceOver (the keys themselves come later).
-pub const KEYS: &str = "⌘J next on this window's Mac · ⌥⌘J next anywhere";
+/// The keys, after the counts in the tooltip and for VoiceOver: `next` (`keys.next_needs_you`)
+/// and `anywhere` (`keys.next_needs_you_anywhere`) as their labels show them. A key that's
+/// unbound (an empty label) is left out.
+pub fn keys(next: &str, anywhere: &str) -> String {
+    let parts = [(next, "next on this window's Mac"), (anywhere, "next anywhere")];
+    parts.iter().filter(|(k, _)| !k.is_empty()).map(|(k, what)| format!("{k} {what}")).collect::<Vec<_>>().join(" · ")
+}
 
 /// One of my other Macs, as the pill shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -96,6 +101,21 @@ pub fn follow(prev: &[Tab], feeds: &[Feed], serial: &mut u64, now: Instant) -> (
     (tabs, arrival)
 }
 
+/// ⌥⌘J's item: the newest of what waits on each Mac (`(mac, items)`, mac None for this one or
+/// another's peer), by when it came in. Of two at the same moment, the Mac listed first wins.
+pub fn newest<'a>(macs: impl IntoIterator<Item = (Option<&'a str>, &'a [NeedsYou])>) -> Option<(Option<String>, &'a NeedsYou)> {
+    let mut best: Option<(i64, Option<&str>, &NeedsYou)> = None;
+    for (mac, needs) in macs {
+        for n in needs {
+            let at = crate::model::parse_rfc3339(&n.created_at).unwrap_or(i64::MIN);
+            if best.is_none_or(|(b, _, _)| at > b) {
+                best = Some((at, mac, n));
+            }
+        }
+    }
+    best.map(|(_, mac, n)| (mac.map(str::to_string), n))
+}
+
 /// The tooltip's first line: "2 on this Mac · 1 on Home Mac Studio", a Mac's count followed by
 /// "(asleep)" while it can't be reached.
 pub fn tip(local: usize, tabs: &[Tab]) -> String {
@@ -107,9 +127,12 @@ pub fn tip(local: usize, tabs: &[Tab]) -> String {
     parts.join(" · ")
 }
 
-/// What VoiceOver reads for the pill: the tooltip's counts and keys.
-pub fn spoken(local: usize, tabs: &[Tab]) -> String {
-    format!("Needs you: {}. {KEYS}", tip(local, tabs))
+/// What VoiceOver reads for the pill: the tooltip's counts and `keys`.
+pub fn spoken(local: usize, tabs: &[Tab], keys: &str) -> String {
+    if keys.is_empty() {
+        return format!("Needs you: {}", tip(local, tabs));
+    }
+    format!("Needs you: {}. {keys}", tip(local, tabs))
 }
 
 /// How far the tab has popped on (`back_out`, overshooting past 1), or None once it's done.
@@ -293,7 +316,34 @@ mod tests {
         assert_eq!(tip(2, &[tab("Home Mac Studio", 1, false)]), "2 on this Mac · 1 on Home Mac Studio");
         assert_eq!(tip(0, &[tab("Home Mac Studio", 1, false)]), "Nothing on this Mac · 1 on Home Mac Studio");
         assert_eq!(tip(3, &[tab("Studio", 0, false), tab("Air", 2, true)]), "3 on this Mac · nothing on Studio · 2 on Air (asleep)");
-        assert_eq!(spoken(2, &[tab("Studio", 1, false)]), "Needs you: 2 on this Mac · 1 on Studio. ⌘J next on this window's Mac · ⌥⌘J next anywhere");
+        let both = keys("⌘J", "⌥⌘J");
+        assert_eq!(spoken(2, &[tab("Studio", 1, false)], &both), "Needs you: 2 on this Mac · 1 on Studio. ⌘J next on this window's Mac · ⌥⌘J next anywhere");
+        assert_eq!(spoken(2, &[tab("Studio", 1, false)], ""), "Needs you: 2 on this Mac · 1 on Studio");
+    }
+
+    #[test]
+    fn the_newest_anywhere_is_by_when_it_came_in() {
+        fn picked<'a>(macs: &[(Option<&'a str>, &'a [NeedsYou])]) -> Option<(Option<String>, String)> {
+            newest(macs.iter().copied()).map(|(mac, n)| (mac, n.id.clone()))
+        }
+        let here = [need("a", "2026-11-16T10:00:00Z", Some("t1")), need("b", "2026-11-16T10:05:00Z", None)];
+        let studio = [need("c", "2026-11-16T10:03:00Z", Some("t9"))];
+        let peer = Some("peer-s");
+        assert_eq!(picked(&[(None, &here), (peer, &studio)]), Some((None, "b".into())));
+        assert_eq!(picked(&[(None, &here[..1]), (peer, &studio)]), Some((Some("peer-s".into()), "c".into())));
+        // Another offset, the same moment as this Mac's "b": the Mac listed first wins.
+        let same = [need("d", "2026-11-16T11:05:00+01:00", None)];
+        assert_eq!(picked(&[(None, &here), (peer, &same)]), Some((None, "b".into())));
+        assert_eq!(picked(&[(peer, &same), (None, &here)]), Some((Some("peer-s".into()), "d".into())));
+        assert_eq!(picked(&[(None, &[]), (peer, &[])]), None);
+    }
+
+    #[test]
+    fn the_keys_follow_their_bindings() {
+        assert_eq!(keys("⌘J", "⌥⌘J"), "⌘J next on this window's Mac · ⌥⌘J next anywhere");
+        assert_eq!(keys("⌃J", "⇧⌃J"), "⌃J next on this window's Mac · ⇧⌃J next anywhere");
+        assert_eq!(keys("⌘J", ""), "⌘J next on this window's Mac");
+        assert_eq!(keys("", ""), "");
     }
 
     #[test]

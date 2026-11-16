@@ -386,6 +386,17 @@ pub fn on_home(cx: &mut App, f: impl FnOnce(&mut MainWindow, &mut Window, &mut C
     });
 }
 
+/// What waits on this Mac, as its home window last listed it (empty with no window onto it).
+/// Not from inside that window's own update: it reads the window.
+pub fn local_needs(cx: &App) -> Vec<crate::model::NeedsYou> {
+    let Some(reg) = cx.try_global::<Windows>().map(|w| w.0.clone()) else { return vec![] };
+    let target = {
+        let r = reg.borrow();
+        r.home(&None).and_then(|id| r.main(id))
+    };
+    target.and_then(|t| t.entity.upgrade()).map(|e| e.read(cx).needs.clone()).unwrap_or_default()
+}
+
 /// `reveal` of one of this Mac's terminals, for a clicked notification: about a needs-you
 /// item (`need`), open the stack on that card, or its terminal when the card can't show the
 /// whole question (`needs_you::too_long`).
