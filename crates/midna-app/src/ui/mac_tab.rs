@@ -58,6 +58,7 @@ pub struct Came {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arrival {
     pub mac: String,
+    pub peer: String,
     pub need: NeedsYou,
     pub place: Option<Place>,
 }
@@ -86,7 +87,7 @@ pub fn follow(prev: &[Tab], feeds: &[Feed], serial: &mut u64, now: Instant) -> (
                 tab.came = Some(Came { n: *serial, at: now, pops: was.count() == 0 });
                 // Of several Macs at once, the newest item.
                 if arrival.as_ref().is_none_or(|a| n.created_at > a.need.created_at) {
-                    arrival = Some(Arrival { mac: f.mac.name.clone(), need: n.clone(), place: f.place(n).cloned() });
+                    arrival = Some(Arrival { mac: f.mac.name.clone(), peer: f.mac.peer.clone(), need: n.clone(), place: f.place(n).cloned() });
                 }
             }
         }
@@ -138,6 +139,62 @@ pub fn ping(came: &Came, now: Instant) -> Option<(f32, f32)> {
 /// Whether the tab is still moving (the window keeps drawing frames for it).
 pub fn moving(came: &Came, now: Instant) -> bool {
     now.duration_since(came.at) < POP.max(PING * PINGS)
+}
+
+/// Switching the open list from one Mac's to another's (clicking the other part): the old
+/// rows slide out toward the part you left (`SWITCH_OUT`, easing in), the new ones slide in
+/// from the part you clicked (`SWITCH_IN`, easing out), `SWITCH_DX` across, and the notch and
+/// the list's height glide over `SWITCH_GLIDE` (the canvas's 220, 300 and 280 ms).
+pub const SWITCH_IN: Duration = Duration::from_millis(300);
+pub const SWITCH_OUT: Duration = Duration::from_millis(220);
+pub const SWITCH_GLIDE: Duration = Duration::from_millis(280);
+pub const SWITCH_DX: f32 = 28.;
+
+/// A list row's id for another Mac's item: its peer and its id there (ids are only unique on
+/// their own Mac).
+pub fn row_id(peer: &str, id: &str) -> String {
+    format!("{peer}/{id}")
+}
+
+/// The tabs as the pill shows them: less what you cleared from their lists (`row_id`s), as the
+/// pill's own count is.
+pub fn uncleared(tabs: &[Tab], cleared: &[String]) -> Vec<Tab> {
+    tabs.iter().map(|t| Tab { ids: t.ids.iter().filter(|id| !cleared.contains(&row_id(&t.peer, id))).cloned().collect(), ..t.clone() }).collect()
+}
+
+/// What a click on a part of the pill does: `part` is the part (None the pill, this Mac's;
+/// a Mac's tab, its peer), `open` whose list is open (None: none is).
+#[derive(Debug, PartialEq)]
+pub enum Click {
+    Open,
+    Switch,
+    Close,
+}
+
+pub fn click(open: Option<&Option<String>>, part: &Option<String>) -> Click {
+    match open {
+        None => Click::Open,
+        Some(mac) if mac == part => Click::Close,
+        Some(_) => Click::Switch,
+    }
+}
+
+/// Which way the rows go: +1 when the part you clicked (`to`, its middle) is right of the one
+/// you left (`from`), so the new rows come in from the right and the old ones leave to the left.
+pub fn slide_dir(from: f32, to: f32) -> f32 {
+    if to < from { -1. } else { 1. }
+}
+
+/// A switch `since` it started: how far the new rows are in, the old ones out, and the notch
+/// and height across (each 0 to 1).
+pub fn switch_at(since: Duration) -> (f32, f32, f32) {
+    let k = |d: Duration| (since.as_secs_f32() / d.as_secs_f32()).min(1.);
+    let ease_out = |x: f32| 1. - (1. - x).powi(4);
+    (ease_out(k(SWITCH_IN)), k(SWITCH_OUT).powi(2), ease_out(k(SWITCH_GLIDE)))
+}
+
+pub fn switching(since: Duration) -> bool {
+    since < SWITCH_IN.max(SWITCH_OUT).max(SWITCH_GLIDE)
 }
 
 /// Text on a tab of `color`: near-black on a light one, white on a dark one (the canvas's
@@ -265,5 +322,38 @@ mod tests {
         let rgb = |r: u8, g: u8, b: u8| Hsla::from(gpui_kit::Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a: 1. });
         assert_eq!(fg_on(rgb(0x0E, 0x7A, 0x78)), white);
         assert_ne!(fg_on(rgb(0x3F, 0xC4, 0xC0)), white);
+    }
+
+    #[test]
+    fn a_click_opens_closes_or_switches() {
+        let studio = Some("studio".to_string());
+        assert_eq!(click(None, &None), Click::Open);
+        assert_eq!(click(None, &studio), Click::Open);
+        assert_eq!(click(Some(&None), &None), Click::Close, "the lit pill again closes");
+        assert_eq!(click(Some(&studio), &studio), Click::Close, "the lit tab again closes");
+        assert_eq!(click(Some(&None), &studio), Click::Switch);
+        assert_eq!(click(Some(&studio), &None), Click::Switch);
+        assert_eq!(click(Some(&studio), &Some("air".into())), Click::Switch);
+    }
+
+    #[test]
+    fn rows_slide_from_the_part_you_clicked() {
+        // The tab sits left of the pill (top-right corner): to it, the new rows come from the left.
+        assert_eq!(slide_dir(380., 330.), -1.);
+        assert_eq!(slide_dir(330., 380.), 1.);
+        let (i, o, g) = switch_at(Duration::ZERO);
+        assert_eq!((i, o, g), (0., 0., 0.));
+        let (i, o, g) = switch_at(Duration::from_millis(150));
+        assert!(i > 0.8 && o > 0.4 && o < 0.6 && g > 0.8, "{i} {o} {g}");
+        assert_eq!(switch_at(SWITCH_IN), (1., 1., 1.));
+        assert!(switching(Duration::from_millis(299)) && !switching(SWITCH_IN));
+    }
+
+    #[test]
+    fn what_you_cleared_leaves_its_tab() {
+        let tab = Tab { peer: "studio".into(), name: "Studio".into(), ids: vec!["a".into(), "b".into()], asleep: false, seeded: true, came: None };
+        let shown = uncleared(&[tab.clone()], &[row_id("studio", "a"), row_id("air", "b")]);
+        assert_eq!(shown[0].ids, vec!["b".to_string()]);
+        assert_eq!(uncleared(&[tab], &[]).first().map(Tab::count), Some(2));
     }
 }

@@ -13,6 +13,9 @@
 //!   the Mac mini after that.
 //! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
 //! - `MIDNA_DEBUG_BADGE_DOCK=1` — the needs-you pill docks in the window though midna isn't in front.
+//! - `MIDNA_DEBUG_BADGE=list|card|menu|mac|switch:<ms>` — once something's waiting, open this Mac's
+//!   list (with its first card) or the menu; the first other Mac's list (`mac`); or this Mac's,
+//!   then switch to the other Mac's and hold the slide `<ms>` in (`switch`).
 //! - `MIDNA_DEV=1` — dev mode even inside a bundle: no install / login item / updates; a missing
 //!   midnad is spawned from next to this binary (`MIDNA_NO_SPAWN=1` to skip). See `lifecycle.rs`.
 mod actions;
