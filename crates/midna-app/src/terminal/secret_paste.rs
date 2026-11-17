@@ -459,6 +459,7 @@ impl TerminalView {
             .occlude()
             .w(px(560.))
             .max_w(relative(0.94))
+            .max_h(relative(0.9))
             .flex()
             .flex_col()
             .gap(px(14.))
@@ -474,7 +475,8 @@ impl TerminalView {
             .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(title))
             .child(div().text_color(t.dim).child(body))
             .children(new_secret)
-            .when(!adding, |d| d.child(div().flex().flex_col().gap(px(10.)).children(rows)))
+            // A long list scrolls by itself so the buttons under it stay on screen.
+            .when(!adding, |d| d.child(div().id("secret-rows").flex().flex_col().min_h_0().overflow_y_scroll().gap(px(10.)).children(rows)))
             .children(scope)
             .when_some(s.error.clone(), |d, e| d.child(div().text_color(t.err).text_size(px(12.)).child(e)))
             .child(
