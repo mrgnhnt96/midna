@@ -255,14 +255,28 @@ pub fn add(d: &Daemon, ctx: &Ctx, p: TriggerAddParams) -> R {
     ok(t)
 }
 
+/// Would `p` change how much the agents `t` starts may do without asking? Agents ask the human
+/// for that, and the person driving from another Mac does it at this one.
+pub(crate) fn changes_access(t: &Trigger, p: &TriggerUpdateParams) -> bool {
+    p.action.as_ref().is_some_and(|a| a.agent_access() != t.action.agent_access())
+}
+
+/// Would `p` change the action or source of a webhook trigger that is on or paused? An agent's
+/// edit sends it back to draft; the person driving from another Mac makes it at this one.
+pub(crate) fn edits_live_webhook(t: &Trigger, p: &TriggerUpdateParams) -> bool {
+    let sensitive = p.action.as_ref().is_some_and(|a| *a != t.action) || p.source.is_some_and(|s| s != t.source);
+    let source = p.source.unwrap_or(t.source);
+    sensitive && source != TriggerSource::Local && matches!(t.state, TriggerState::Active | TriggerState::Paused)
+}
+
 pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
     let mut t = get(d, &p.id)?;
-    if !ctx.is_human() && p.action.as_ref().is_some_and(|a| a.agent_access() != t.action.agent_access()) {
+    if !ctx.is_human() && changes_access(&t, &p) {
         let params = serde_json::to_value(&p).unwrap_or_default();
         return Err(defer_access(d, ctx, &t.name, "trigger.update", params));
     }
+    let back_to_draft = !ctx.is_human() && edits_live_webhook(&t, &p);
     let mut changed = vec![];
-    let mut sensitive = false;
     if let Some(n) = p.name {
         t.name = n.trim().to_string();
         changed.push("name");
@@ -285,14 +299,12 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
     {
         t.source = s;
         changed.push("source");
-        sensitive = true;
     }
     if let Some(a) = p.action
         && a != t.action
     {
         t.action = a;
         changed.push("action");
-        sensitive = true;
     }
     if let Some(h) = p.github_hook_id {
         t.github_hook_id = Some(h).filter(|h| *h > 0);
@@ -307,11 +319,9 @@ pub fn update(d: &Daemon, ctx: &Ctx, p: TriggerUpdateParams) -> R {
         changed.push("cooldown_secs");
     }
     validate(d, &t)?;
-    let mut back_to_draft = false;
-    if sensitive && !ctx.is_human() && t.source != TriggerSource::Local && matches!(t.state, TriggerState::Active | TriggerState::Paused) {
+    if back_to_draft {
         t.enabled = false;
         t.state = TriggerState::Draft;
-        back_to_draft = true;
     }
     save(d, ctx, &t, json!({ "fields": changed, "back_to_draft": back_to_draft }));
     ok(t)
