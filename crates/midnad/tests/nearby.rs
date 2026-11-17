@@ -1909,6 +1909,8 @@ fn a_tab_or_an_agent_start_opens_in_a_project_named_wherever_the_sender_is() {
     let _ = std::fs::remove_file(bin);
 }
 
+/// Its waits are generous: during a full-workspace run on a Mac short of memory, one of these
+/// steps took longer than 10s.
 #[test]
 fn an_agent_start_hands_off_notes_in_its_prompt_or_as_a_file_in_midnas_home() {
     let bin = fake_agent("notes");
@@ -1940,7 +1942,7 @@ fn an_agent_start_hands_off_notes_in_its_prompt_or_as_a_file_in_midnas_home() {
     assert!(got["payload"]["notes"].is_null(), "{got}");
     assert_eq!(got["payload"]["prompt"], "Carry on with the release\n\n---\nHandoff notes:\n\nTried X.\nLeft: Y.", "{got}");
     let r = call(&mut hb, "share.accept", json!({ "id": id }));
-    let screen = wait_for(10, "the agent's arguments", || Some(read(&mut hb, &opened(&r))).filter(|t| t.contains("ARGS-END")));
+    let screen = wait_for(30, "the agent's arguments", || Some(read(&mut hb, &opened(&r))).filter(|t| t.contains("ARGS-END")));
     assert!(screen.contains("Left: Y."), "{screen}");
 
     // Longer ones travel as a file; the approval shows their size and first lines.
@@ -1959,16 +1961,16 @@ fn an_agent_start_hands_off_notes_in_its_prompt_or_as_a_file_in_midnas_home() {
     // Accepting fetches them into Midna's home, then starts the agent pointing at them.
     let approve = json!({ "id": got["needs_you_id"], "resolution": { "kind": "approve", "scope": { "kind": "once" } } });
     call(&mut hb, "needs_you.resolve", approve);
-    let done = wait_for(20, "the agent starts", || {
+    let done = wait_for(30, "the agent starts", || {
         share(&mut hb, &id).filter(|s| s["result"].as_str().is_some_and(|r| r.starts_with("opened as")) || s["transfer"]["state"] == "failed")
     });
     assert_eq!(done["transfer"]["state"], "done", "{done}");
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), long.trim());
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&saved).unwrap().permissions()) & 0o777, 0o600);
-    let screen = wait_for(10, "the agent's arguments", || Some(read(&mut hb, &opened(&done))).filter(|t| t.contains("ARGS-END")));
+    let screen = wait_for(30, "the agent's arguments", || Some(read(&mut hb, &opened(&done))).filter(|t| t.contains("ARGS-END")));
     let flat = screen.replace('\n', "");
     assert!(flat.contains(&format!("Handoff notes from Alpha are in {}. Read them first.", saved.display())), "{screen}");
-    wait_for(10, "A drops its copy", || (!a.home.join("nearby/outgoing").join(&id).exists()).then_some(()));
+    wait_for(30, "A drops its copy", || (!a.home.join("nearby/outgoing").join(&id).exists()).then_some(()));
 
     // Accepting again changes nothing.
     call(&mut hb, "share.accept", json!({ "id": id }));
