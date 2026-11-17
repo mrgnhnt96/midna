@@ -40,6 +40,8 @@ struct FakeState {
     terms: HashMap<String, Arc<pty::FakeTerm>>,
     scripts: HashMap<String, String>,
     next_id: u64,
+    /// What the app reported for `notify.send` notifications (`notify.respond`), by id.
+    responses: Vec<(String, Value)>,
 }
 
 fn ago(mins: i64) -> String {
@@ -587,6 +589,7 @@ impl FakeBackend {
                 terms: HashMap::new(),
                 scripts,
                 next_id: 8,
+                responses: vec![],
             })),
             mac: None,
         }
@@ -675,6 +678,22 @@ impl FakeBackend {
                 st.needs.push(need.clone());
                 let session = need.session_id.clone();
                 st.emit("needs_you.raised", session.as_deref(), serde_json::to_value(&need).unwrap_or_default());
+            });
+        }
+        // Dev (screenshots): `MIDNA_FAKE_MAC_POST=<seconds>`: an agent on the Mac mini's first
+        // terminal posts a notification with buttons that long after it's first reached.
+        if mac.peer == "f".repeat(64) && let Some(secs) = crate::dev::var("MIDNA_FAKE_MAC_POST").ok().and_then(|v| v.parse::<f64>().ok()) {
+            let st = b.st.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                let mut st = st.lock().unwrap();
+                let session = st.sessions.first().map(|s| s.id.clone());
+                let posted = json!({
+                    "category": "attention", "title": "", "via": "app", "id": "deploy_prod",
+                    "body": "Deploy api 1.4.2 to production?\nAll 214 checks passed on main",
+                    "actions": ["Deploy", "Wait an hour", "Cancel"],
+                });
+                st.emit("notify.posted", session.as_deref(), posted);
             });
         }
         FakeBackend { st: b.st.clone(), mac: Some((mac, local)) }
@@ -1139,6 +1158,17 @@ impl Backend for FakeBackend {
                 }
                 st.emit("notify.posted", p("session_id").as_deref(), posted);
                 json!({ "ok": true })
+            }
+            // What you did with a notification, and what was last done with one.
+            "notify.respond" => {
+                let id = p("id").unwrap_or_default();
+                st.responses.push((id.clone(), params["response"].clone()));
+                json!({ "id": id, "response": params["response"] })
+            }
+            "notify.response" => {
+                let id = p("id").unwrap_or_default();
+                let response = st.responses.iter().rev().find(|(i, _)| *i == id).map_or(Value::Null, |(_, r)| r.clone());
+                json!({ "id": id, "response": response })
             }
             "notify.withdraw" => {
                 st.emit("notify.withdrawn", None, json!({ "id": p("id") }));

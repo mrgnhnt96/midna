@@ -6,7 +6,7 @@
 //! This is the part that doesn't draw: following [`mac_feed`](crate::mac_feed)'s feeds into
 //! tabs and telling what just came in, the words for the tooltip and VoiceOver, and the
 //! arrival's timing. `badge.rs` draws them.
-use crate::mac_feed::{Feed, Place, Reach};
+use crate::mac_feed::{Feed, Place, Post, Reach};
 use crate::model::NeedsYou;
 use gpui_kit::{Hsla, hsla};
 use std::time::{Duration, Instant};
@@ -59,13 +59,32 @@ pub struct Came {
     pub pops: bool,
 }
 
-/// What came in last on a Mac, for the capsule that springs out beside the pill.
+/// What came in last on a Mac, for the capsule that springs out beside the pill: a needs-you
+/// item or a post that stays.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arrival {
     pub mac: String,
     pub peer: String,
-    pub need: NeedsYou,
+    /// Its id there (`row_id` with `peer` is its row's).
+    pub id: String,
+    pub category: String,
+    pub title: String,
+    /// When it came in (RFC 3339).
+    pub at: String,
     pub place: Option<Place>,
+}
+
+impl Arrival {
+    fn of_need(f: &Feed, n: &NeedsYou) -> Arrival {
+        let (category, title) = (super::badge::category_of(n.kind).to_string(), super::badge::capitalize(n.title.trim()));
+        Arrival { mac: f.mac.name.clone(), peer: f.mac.peer.clone(), id: n.id.clone(), category, title, at: n.created_at.clone(), place: f.place(n).cloned() }
+    }
+
+    fn of_post(f: &Feed, p: &Post) -> Arrival {
+        let body = midna_proto::notify::plain_body(&p.posted.body);
+        let title = body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&p.posted.title).to_string();
+        Arrival { mac: f.mac.name.clone(), peer: f.mac.peer.clone(), id: p.id(), category: p.posted.category.clone(), title, at: p.at.clone(), place: f.place_of(p.session.as_deref()).cloned() }
+    }
 }
 
 /// Follow `feeds` (`mac_feed::list`) on from `prev`: the tabs as they are now, and the newest
@@ -75,7 +94,8 @@ pub fn follow(prev: &[Tab], feeds: &[Feed], serial: &mut u64, now: Instant) -> (
     let mut arrival: Option<Arrival> = None;
     for f in feeds {
         let was = prev.iter().find(|t| t.peer == f.mac.peer);
-        let ids: Vec<String> = f.needs.iter().map(|n| n.id.clone()).collect();
+        let held = f.held();
+        let ids: Vec<String> = f.needs.iter().map(|n| n.id.clone()).chain(held.iter().map(|p| p.id())).collect();
         let mut tab = Tab {
             peer: f.mac.peer.clone(),
             name: f.mac.name.clone(),
@@ -86,13 +106,14 @@ pub fn follow(prev: &[Tab], feeds: &[Feed], serial: &mut u64, now: Instant) -> (
             came: was.and_then(|w| w.came),
         };
         if let Some(was) = was.filter(|w| w.seeded) {
-            let new = f.needs.iter().filter(|n| !was.ids.contains(&n.id)).max_by(|a, b| a.created_at.cmp(&b.created_at));
-            if let Some(n) = new {
+            let needs = f.needs.iter().filter(|n| !was.ids.contains(&n.id)).map(|n| Arrival::of_need(f, n));
+            let posts = held.iter().filter(|p| !was.ids.contains(&p.id())).map(|p| Arrival::of_post(f, p));
+            if let Some(n) = needs.chain(posts).max_by(|a, b| a.at.cmp(&b.at)) {
                 *serial += 1;
                 tab.came = Some(Came { n: *serial, at: now, pops: was.count() == 0 });
                 // Of several Macs at once, the newest item.
-                if arrival.as_ref().is_none_or(|a| n.created_at > a.need.created_at) {
-                    arrival = Some(Arrival { mac: f.mac.name.clone(), peer: f.mac.peer.clone(), need: n.clone(), place: f.place(n).cloned() });
+                if arrival.as_ref().is_none_or(|a| n.at > a.at) {
+                    arrival = Some(n);
                 }
             }
         }
@@ -284,7 +305,7 @@ mod tests {
         f.places.insert("s1".into(), Place { terminal: "sync".into(), project: Some("garden".into()) });
         let (tabs, a) = follow(&tabs, &[f.clone()], &mut serial, now);
         let a = a.expect("it arrived");
-        assert_eq!((a.mac.as_str(), a.need.id.as_str(), a.place.map(|p| p.terminal)), ("Home Mac Studio", "n1", Some("sync".to_string())));
+        assert_eq!((a.mac.as_str(), a.id.as_str(), a.place.map(|p| p.terminal)), ("Home Mac Studio", "n1", Some("sync".to_string())));
         assert_eq!(tabs[0].came, Some(Came { n: 1, at: now, pops: true }));
         // The same items again: nothing new, the last arrival kept.
         let (tabs, a) = follow(&tabs, &[f.clone()], &mut serial, now);
@@ -293,8 +314,29 @@ mod tests {
         // A second one while the tab's there: it pings, it doesn't pop.
         f.needs.push(need("n2", "2026-11-16T10:01:00Z", None));
         let (tabs, a) = follow(&tabs, &[f], &mut serial, now);
-        assert_eq!(a.map(|a| a.need.id), Some("n2".to_string()));
+        assert_eq!(a.map(|a| a.id), Some("n2".to_string()));
         assert_eq!(tabs[0].came, Some(Came { n: 2, at: now, pops: false }));
+    }
+
+    #[test]
+    fn a_post_that_stays_counts_and_arrives_too() {
+        use crate::mac_feed::Post;
+        let mut serial = 0;
+        let now = Instant::now();
+        let (tabs, _) = follow(&[], &[feed("m", "Home Mac Studio", Reach::Connected, vec![])], &mut serial, now);
+        let mut f = feed("m", "Home Mac Studio", Reach::Connected, vec![]);
+        f.places.insert("s1".into(), Place { terminal: "deploy".into(), project: None });
+        let posted = serde_json::from_value(serde_json::json!({ "category": "attention", "title": "", "via": "app", "id": "go", "body": "[Ship 1.4?](https://example.com/r)\nAll checks green", "actions": ["Ship", "Later"] })).unwrap();
+        f.posts.push(Post { seq: 7, session: Some("s1".into()), at: "2026-11-16T10:00:00Z".into(), posted });
+        let (tabs, a) = follow(&tabs, &[f.clone()], &mut serial, now);
+        let a = a.expect("it arrived");
+        assert_eq!((a.id.as_str(), a.category.as_str(), a.title.as_str()), ("n7", "attention", "Ship 1.4?"));
+        assert_eq!(a.place.map(|p| p.terminal), Some("deploy".into()));
+        assert_eq!((tabs[0].count(), tabs[0].came.map(|c| c.pops)), (1, Some(true)));
+        // Withdrawn there: the tab goes.
+        f.posts.clear();
+        let (tabs, a) = follow(&tabs, &[f], &mut serial, now);
+        assert!(a.is_none() && tabs[0].count() == 0);
     }
 
     #[test]

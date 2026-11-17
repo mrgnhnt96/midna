@@ -318,6 +318,12 @@ fn prevent_activation(ns: &objc2_app_kit::NSWindow, on: bool) {
     }
 }
 
+/// Whether `url` opens the same from any Mac (a web link, not a file or an app's own).
+fn web_url(url: &str) -> bool {
+    let u = url.trim_start().to_ascii_lowercase();
+    u.starts_with("https://") || u.starts_with("http://")
+}
+
 /// A `notify.send` notification's id, URL and buttons.
 #[derive(Clone)]
 struct Sent {
@@ -876,8 +882,49 @@ fn remote_rows(feeds: &[crate::mac_feed::Feed], colors: &HashMap<String, String>
                 since: since.flatten(),
             });
         }
+        for p in f.held() {
+            rows.push(remote_post(f, p, colors));
+        }
     }
     rows
+}
+
+/// Another Mac's post that stays, as its list's row. Its buttons, Dismiss and Open go back
+/// over that Mac's link (`Sent::mac`). Its image is a file over there: none here.
+fn remote_post(f: &crate::mac_feed::Feed, post: &crate::mac_feed::Post, colors: &HashMap<String, String>) -> Waiting {
+    let p = &post.posted;
+    let body = midna_proto::notify::plain_body(&p.body);
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let place = f.place_of(post.session.as_deref());
+    let since = match f.reach {
+        crate::mac_feed::Reach::Asleep { since } => Some(since),
+        _ => None,
+    };
+    Waiting {
+        id: mac_tab::row_id(&f.mac.peer, &post.id()),
+        sent: Sent::of(p).map(|s| Sent { mac: Some(f.mac.peer.clone()), ..s }),
+        need: None,
+        session: post.session.clone(),
+        name: place.map_or_else(|| f.mac.name.clone(), |p| p.terminal.clone()),
+        label: p.label.clone().or_else(|| midna_proto::notify::category(&p.category).map(|c| c.label.to_string())).unwrap_or_default(),
+        color: p.color.clone().or_else(|| colors.get(&p.category).cloned()).unwrap_or_else(|| default_color(&p.category).into()),
+        category: p.category.clone(),
+        title: lines.next().unwrap_or(&p.title).to_string(),
+        detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
+        command: None,
+        approval: false,
+        options: vec![],
+        multi: false,
+        question: None,
+        image: None,
+        at: post.at.clone(),
+        timer: None,
+        mac: Some(f.mac.peer.clone()),
+        local_only: false,
+        on: place.map(|p| format!("{}{}", p.project.as_ref().map(|p| format!("{p} › ")).unwrap_or_default(), p.terminal)),
+        asleep: since.is_some(),
+        since: since.flatten(),
+    }
 }
 
 /// The home window's needs-you items and settings changed.
@@ -979,7 +1026,7 @@ fn options_of(n: &NeedsYou) -> Vec<(String, String)> {
 }
 
 /// A needs-you item's notification kind (as midnad picks it).
-fn category_of(k: NeedsYouKind) -> &'static str {
+pub(super) fn category_of(k: NeedsYouKind) -> &'static str {
     match k {
         NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt => "approval",
         NeedsYouKind::Blocked | NeedsYouKind::Note => "attention",
@@ -1017,7 +1064,7 @@ fn icon_of(category: &str) -> Icon {
     }
 }
 
-fn capitalize(s: &str) -> String {
+pub(super) fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
@@ -1467,24 +1514,26 @@ impl Badge {
         }
         if let Some(a) = arrival {
             let held = self.hover == Some("line") || self.lines.front().is_some_and(|l| l.leaving.is_none() && self.expanded.as_ref().is_some_and(|(e, _)| *e == self.line_waiting(l).id));
-            crate::lifecycle::log(&format!("badge {} came in on {} (list {}, capsule held {held})", a.need.id, a.mac, self.list));
+            crate::lifecycle::log(&format!("badge {} came in on {} (list {}, capsule held {held})", a.id, a.mac, self.list));
             // Like this Mac's: no capsule over the open list or one you're on, or on a shared screen.
             if !self.quiet() && !self.list && !held {
                 self.serial += 1;
-                let category = category_of(a.need.kind).to_string();
+                let waiting = mac_tab::row_id(&a.peer, &a.id);
+                // Its row's colour (its kind's, or a post's own).
+                let color = self.remote.iter().find(|w| w.id == waiting).map_or_else(|| default_color(&a.category).to_string(), |w| w.color.clone());
                 let line = Line {
                     serial: self.serial,
                     born: now,
                     wear: self.serial,
                     replaced: false,
-                    waiting: Some(mac_tab::row_id(&a.peer, &a.need.id)),
+                    waiting: Some(waiting),
                     session: None,
                     need: None,
                     sent: None,
-                    color: category.clone(),
-                    category,
+                    color,
+                    category: a.category,
                     name: a.place.map_or_else(|| a.mac.clone(), |p| p.terminal),
-                    text: capitalize(a.need.title.trim()),
+                    text: a.title,
                     detail: None,
                     label: String::new(),
                     image: None,
@@ -1669,7 +1718,8 @@ impl Badge {
         for l in self.lines.iter_mut().filter(|l| l.waiting.as_deref() == Some(id)) {
             l.leaving.get_or_insert(Instant::now());
         }
-        if let Some(sent) = self.held.iter().find(|w| w.id == id).and_then(|w| w.sent.clone()) {
+        // Another Mac's post is dismissed there too (`respond`).
+        if let Some(sent) = self.held.iter().chain(self.remote.iter()).find(|w| w.id == id).and_then(|w| w.sent.clone()) {
             self.respond(&sent, midna_proto::notify::ResponseKind::Dismissed, None);
         }
         if self.held.iter().any(|w| w.id == id) {
@@ -2159,6 +2209,10 @@ impl Badge {
 
     /// Report what you did with a `notify.send` notification.
     fn respond(&self, sent: &Sent, kind: midna_proto::notify::ResponseKind, action: Option<String>) {
+        // Another Mac's, while it's asleep: nothing goes, and nothing is queued for when it wakes.
+        if sent.mac.as_deref().is_some_and(|p| self.asleep(p)) {
+            return;
+        }
         if let Some(backend) = self.backend_of(sent.mac.as_deref()) {
             crate::notify::respond(&backend, &sent.id, midna_proto::notify::Response { kind, action });
         }
@@ -2185,6 +2239,10 @@ impl Badge {
 
     /// One of a `notify.send` notification's buttons: report it, and it's handled.
     fn pick(&mut self, id: &str, sent: &Sent, action: String, cx: &mut Context<Self>) {
+        // Its Mac is asleep: nothing goes, and nothing is queued for when it wakes.
+        if self.row(id).is_some_and(|w| w.asleep) {
+            return;
+        }
         self.respond(sent, midna_proto::notify::ResponseKind::Action, Some(action));
         self.dismiss(id, cx);
     }
@@ -2254,7 +2312,8 @@ impl Badge {
         }
     }
 
-    /// Drop a held notification (the stack's Dismiss).
+    /// Drop a held notification (the stack's Dismiss). Another Mac's stays in its feed (it keeps
+    /// what it heard): hidden here.
     fn dismiss(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(serial) = line_serial(id) {
             for l in self.lines.iter_mut().filter(|l| l.serial == serial) {
@@ -2263,6 +2322,9 @@ impl Badge {
             return cx.notify();
         }
         self.held.retain(|w| w.id != id);
+        if self.remote.iter().any(|w| w.id == id) && !self.cleared.iter().any(|c| c == id) {
+            self.cleared.push(id.to_string());
+        }
         for l in self.lines.iter_mut().filter(|l| l.waiting.as_deref() == Some(id)) {
             l.leaving.get_or_insert(Instant::now());
         }
@@ -4072,7 +4134,15 @@ impl Badge {
             buttons = match (w.approval, w.mac.as_deref().filter(|_| w.local_only)) {
                 (true, Some(peer)) => buttons.child(decide_at(t, &self.mac_name(peer)).flex_1()).child(button_off(t, "card-deny", "Deny", false)).child(button_off(t, "card-dismiss", "Dismiss", false)),
                 (true, None) => buttons.child(button_off(t, "card-approve", "Approve", true).flex_1()).child(button_off(t, "card-deny", "Deny", false)),
-                (false, _) => buttons.child(button_off(t, "card-dismiss", "Dismiss", false)),
+                // A post's own buttons, off (as many as its card would show).
+                (false, _) => match w.sent.as_ref().filter(|s| !s.actions.is_empty()) {
+                    Some(sent) => buttons.children(super::button_slots::slots(&sent.actions).iter().enumerate().map(|(n, slot)| {
+                        let first = slot.members()[0];
+                        let label = if matches!(slot, Slot::More(_)) { "More" } else { sent.actions[first].as_str() };
+                        button_off(t, ("card-action", n), label, first == 0 && !matches!(slot, Slot::More(_)))
+                    })),
+                    None => buttons.child(button_off(t, "card-dismiss", "Dismiss", false)),
+                },
             }
             .child(div().flex_1());
         } else if w.need.is_some() && w.approval {
@@ -4118,16 +4188,31 @@ impl Badge {
         let (session, need, sent) = (w.session.clone(), w.need.clone(), w.sent.clone());
         let held = w.need.is_none().then(|| w.id.clone());
         let opens = sent.as_ref().is_some_and(|s| s.open.is_some());
-        if let Some(peer) = w.mac.clone().filter(|_| w.need.is_some()) {
+        // Another Mac's post's link, when it opens here too (it goes first, as this Mac's does).
+        let web = sent.as_ref().and_then(|s| s.open.as_deref()).is_some_and(web_url);
+        if let Some(peer) = w.mac.clone().filter(|_| w.need.is_some() || (w.session.is_some() && !web)) {
             // Another Mac's: that Mac's window, on its terminal with its card showing. Asleep,
             // its window shows it reconnecting, then the terminal once it's back.
             let label = if w.asleep { "Open when back".to_string() } else { format!("Open on {}", self.mac_name(&peer)) };
+            // A post is seen: that Mac hears it was clicked, and it leaves the list.
+            let post = held.clone().filter(|_| !w.asleep).map(|id| (id, sent.clone()));
             buttons = buttons.child(
                 button(t, "card-open", &label, false)
                     .gap(px(6.))
                     .child(Icon::Arrow.el(12., t.fg))
-                    .on_click(cx.listener(move |b, _, _, cx| b.open_on(peer.clone(), session.clone(), need.clone(), cx))),
+                    .on_click(cx.listener(move |b, _, _, cx| {
+                        if let Some((id, sent)) = &post {
+                            if let Some(sent) = sent {
+                                b.respond(sent, midna_proto::notify::ResponseKind::Clicked, None);
+                            }
+                            b.dismiss(id, cx);
+                        }
+                        b.open_on(peer.clone(), session.clone(), need.clone(), cx);
+                    })),
             );
+        } else if w.mac.is_some() && !web {
+            // Another Mac's post with no terminal there and no web link: nowhere to go from here
+            // (a file it opens is on that Mac).
         } else if opens || session.is_some() || need.is_some() {
             // Somewhere to go: its URL, its terminal, or its needs-you card.
             buttons = buttons.child(
@@ -4144,7 +4229,7 @@ impl Badge {
             .flex_col()
             .gap(px(9.))
             .opacity(fade)
-            .children(w.mac.as_deref().filter(|_| w.need.is_some()).map(|peer| {
+            .children(w.mac.as_deref().map(|peer| {
                 // "<Mac> · project › terminal"; asleep, grey and locked, with since when.
                 let (icon, color) = if w.asleep { (Icon::MacOff, t.dim) } else { (Icon::Mac, t.ansi[6]) };
                 let words: Vec<String> = [Some(self.mac_name(peer)), w.asleep.then(|| mac_tab::asleep_since(w.since, super::screen_kit::now_unix())), w.on.clone()].into_iter().flatten().collect();
@@ -4323,8 +4408,14 @@ mod tests {
 
     /// The same, with the Mac mini reached (or not) like this.
     fn follow_as(p: &Pill, reach: crate::mac_feed::Reach, cx: &mut TestAppContext) {
+        follow_posts(p, reach, vec![], cx);
+    }
+
+    /// The same, with these posts heard from it.
+    fn follow_posts(p: &Pill, reach: crate::mac_feed::Reach, posts: Vec<crate::mac_feed::Post>, cx: &mut TestAppContext) {
         let mut feed = Feed::new(p.mini.mac().unwrap().clone());
         feed.reach = reach;
+        feed.posts = posts;
         feed.needs = parse_list(&p.mini.call("needs_you.list", json!({})).unwrap());
         let projects: Vec<Project> = parse_list(&p.mini.call("project.list", json!({})).unwrap());
         let sessions: Vec<Session> = parse_list(&p.mini.call("session.list", json!({})).unwrap());
@@ -4450,6 +4541,56 @@ mod tests {
         p.badge.update(cx, |b, _, cx| b.approve(publish.id.clone(), false, cx)).unwrap();
         cx.run_until_parked();
         assert!(!ids(&p.mini).contains(publish.need.as_ref().unwrap()));
+    }
+
+    /// What the Mac mini heard last for `notify.send` notification `id` (null: nothing yet),
+    /// waiting up to `wait` for it (answers go on a thread of their own).
+    fn response(p: &Pill, id: &str, wait: Duration) -> Value {
+        let start = Instant::now();
+        loop {
+            let r = p.mini.call("notify.response", json!({ "id": id })).unwrap()["response"].clone();
+            if !r.is_null() || start.elapsed() >= wait {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn another_macs_post_waits_in_its_list_and_answers_there(cx: &mut TestAppContext) {
+        use crate::mac_feed::{Post, Reach};
+        let p = pill('p', cx);
+        let sid = p.mini.call("session.list", json!({})).unwrap()[0]["id"].as_str().unwrap().to_string();
+        let post = |seq: u64, id: &str| {
+            let posted = json!({ "category": "attention", "title": "", "via": "app", "id": id, "body": "Deploy 1.4 to prod?\nAll checks green", "actions": ["Deploy", "Later"] });
+            Post { seq, session: Some(sid.clone()), at: midna_proto::time::now_rfc3339(), posted: serde_json::from_value(posted).unwrap() }
+        };
+        let theirs = ids(&p.mini).len();
+        follow_posts(&p, Reach::Connected, vec![post(41, "deploy")], cx);
+        let w = p.badge.read_with(cx, |b, _| b.row(&mac_tab::row_id(&p.peer, "n41")).cloned()).unwrap().expect("its row");
+        let sent = w.sent.clone().expect("its buttons");
+        assert_eq!((sent.mac.as_deref(), sent.actions.as_slice()), (Some(p.peer.as_str()), ["Deploy".to_string(), "Later".to_string()].as_slice()));
+        assert_eq!((w.title.as_str(), w.detail.as_deref(), w.mac.as_deref()), ("Deploy 1.4 to prod?", Some("All checks green"), Some(p.peer.as_str())));
+        assert!(w.on.is_some() && w.need.is_none() && !w.asleep);
+        p.badge.read_with(cx, |b, _| assert_eq!(b.tabs()[0].count(), theirs + 1, "its tab counts it")).unwrap();
+        // A button goes to the Mac mini, not this Mac, and the row goes.
+        p.badge.update(cx, |b, _, cx| b.pick(&w.id, &sent, "Deploy".into(), cx)).unwrap();
+        assert_eq!(response(&p, "deploy", Duration::from_secs(5)), json!({ "kind": "action", "action": "Deploy" }));
+        assert!(p.here.call("notify.response", json!({ "id": "deploy" })).unwrap()["response"].is_null());
+        p.badge.read_with(cx, |b, _| assert!(b.row(&w.id).is_none() && b.tabs()[0].count() == theirs)).unwrap();
+
+        // Asleep: its buttons and Dismiss send nothing, now or once it wakes.
+        follow_posts(&p, Reach::Asleep { since: None }, vec![post(41, "deploy"), post(42, "later")], cx);
+        let w = p.badge.read_with(cx, |b, _| b.row(&mac_tab::row_id(&p.peer, "n42")).cloned()).unwrap().expect("its row");
+        assert!(w.asleep);
+        p.badge.update(cx, |b, _, cx| b.pick(&w.id, w.sent.as_ref().unwrap(), "Later".into(), cx)).unwrap();
+        p.badge.read_with(cx, |b, _| assert!(b.row(&w.id).is_some(), "still waiting")).unwrap();
+        p.badge.update(cx, |b, _, cx| b.forget(&w.id, cx)).unwrap();
+        assert!(response(&p, "later", Duration::from_millis(300)).is_null());
+        // Awake again, Dismiss on another goes there.
+        follow_posts(&p, Reach::Connected, vec![post(43, "again")], cx);
+        p.badge.update(cx, |b, _, cx| b.forget(&mac_tab::row_id(&p.peer, "n43"), cx)).unwrap();
+        assert_eq!(response(&p, "again", Duration::from_secs(5)), json!({ "kind": "dismissed" }));
     }
 
     #[gpui_kit::test]
