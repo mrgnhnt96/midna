@@ -71,6 +71,13 @@ pub struct Post {
     pub posted: Posted,
 }
 
+impl Post {
+    /// Its id among that Mac's items (`n<seq>`, as this Mac's pill names its own).
+    pub fn id(&self) -> String {
+        format!("n{}", self.seq)
+    }
+}
+
 /// Where an item is on its Mac: its terminal's name and that terminal's project's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
@@ -118,6 +125,21 @@ impl Feed {
     /// Where `need` is on its Mac, if it's in a terminal that Mac listed.
     pub fn place(&self, need: &NeedsYou) -> Option<&Place> {
         self.places.get(need.session_id.as_deref()?)
+    }
+
+    /// Where terminal `session` is on its Mac, if that Mac listed it.
+    pub fn place_of(&self, session: Option<&str>) -> Option<&Place> {
+        self.places.get(session?)
+    }
+
+    /// The posts that wait in its list, oldest first: of kinds that stay (buttons, or
+    /// `stay_secs` 0), as this Mac's pill holds its own. One per terminal and kind, or per
+    /// `notify.send` id (already so in `posts`). A post about a needs-you item is that item's row.
+    pub fn held(&self) -> Vec<&Post> {
+        let stays = |p: &&Post| p.posted.needs_you_id.is_none() && crate::ui::toast::stay_of(&p.posted).is_none();
+        let held: Vec<&Post> = self.posts.iter().filter(stays).collect();
+        let newer = |i: usize, p: &Post| held[i + 1..].iter().any(|q| q.posted.id.is_none() && q.session == p.session && q.posted.category == p.posted.category);
+        held.iter().enumerate().filter(|(i, p)| p.posted.id.is_some() || !newer(*i, p)).map(|(_, p)| *p).collect()
     }
 
     /// The link's state changed (`now`: unix seconds).
@@ -494,7 +516,7 @@ mod tests {
 
     #[test]
     fn items_arrive_and_resolve_with_their_mac_and_place() {
-        let (b, mac) = mac('1');
+        let (b, mac) = mac('g');
         let (feed, _rx) = followed(&b, &mac);
         let start = b.call("needs_you.list", json!({})).unwrap().as_array().unwrap().len();
         until(&feed, "connected, with what was there", |f| f.reach == Reach::Connected && f.needs.len() == start);
@@ -514,7 +536,7 @@ mod tests {
 
     #[test]
     fn posts_come_and_go_and_old_ones_are_left_out() {
-        let (b, mac) = mac('2');
+        let (b, mac) = mac('h');
         let (feed, _rx) = followed(&b, &mac);
         until(&feed, "connected", |f| f.reach == Reach::Connected);
         b.call("notify.send", json!({ "id": "n1", "category": "done", "title": "Tests passed" })).unwrap();
@@ -530,8 +552,34 @@ mod tests {
     }
 
     #[test]
+    fn only_posts_that_stay_wait_in_its_list() {
+        let mut f = Feed::new(Mac { peer: "a".repeat(64), name: "Bravo".into() });
+        let post = |seq: u64, session: Option<&str>, data: Value| {
+            let mut v = json!({ "via": "app", "title": "", "category": "done" });
+            for (k, x) in data.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            Post { seq, session: session.map(str::to_string), at: "2026-11-16T10:00:00Z".into(), posted: serde_json::from_value(v).unwrap() }
+        };
+        f.posts = vec![
+            // Passing (the app's default stay): no.
+            post(1, Some("s1"), json!({ "body": "Tests passed" })),
+            // Buttons: it stays until one's picked.
+            post(2, Some("s1"), json!({ "id": "deploy", "body": "Deploy to prod?", "actions": ["Deploy", "Later"] })),
+            // `stay_secs` 0, one per terminal and kind: the newer replaces the older.
+            post(3, Some("s1"), json!({ "category": "failed", "body": "build broke", "stay_secs": 0 })),
+            post(4, Some("s2"), json!({ "category": "failed", "body": "lint broke", "stay_secs": 0 })),
+            post(5, Some("s1"), json!({ "category": "failed", "body": "build broke again", "stay_secs": 0 })),
+            // About a needs-you item: that item's row.
+            post(6, Some("s1"), json!({ "category": "approval", "needs_you_id": "ny1", "stay_secs": 0 })),
+        ];
+        let held: Vec<String> = f.held().iter().map(|p| p.id()).collect();
+        assert_eq!(held, ["n2", "n4", "n5"]);
+    }
+
+    #[test]
     fn asleep_keeps_its_items_and_comes_back_fresh() {
-        let (b, mac) = mac('3');
+        let (b, mac) = mac('i');
         let (feed, _rx) = followed(&b, &mac);
         until(&feed, "connected", |f| f.reach == Reach::Connected && !f.needs.is_empty());
         let had = feed.lock().unwrap().needs.len();
@@ -555,7 +603,7 @@ mod tests {
 
     #[test]
     fn turning_driving_off_there_drops_its_items_and_stops() {
-        let (b, mac) = mac('4');
+        let (b, mac) = mac('j');
         let (feed, rx) = followed(&b, &mac);
         until(&feed, "connected", |f| f.reach == Reach::Connected && !f.needs.is_empty());
         b.call("fake.link", json!({ "state": "refused" })).unwrap();
