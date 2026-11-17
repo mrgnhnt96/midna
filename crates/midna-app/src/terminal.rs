@@ -2094,12 +2094,15 @@ impl TerminalView {
         });
     }
 
-    /// Share the selection with a nearby Mac: hands its text to the home window's Share
-    /// picker (`ui/share.rs`), once this window's update is over. False when nothing is selected.
+    /// Share the selection with a nearby Mac: hands its text to the Share picker in the home
+    /// window of this terminal's Mac (`ui/share.rs`), so another Mac's selection is sent from
+    /// that Mac, once this window's update is over. False when nothing is selected.
     pub fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let share = |text: String, cx: &mut Context<Self>| {
+        let mac = crate::backend::mac_id(&*self.backend);
+        let share = move |text: String, cx: &mut Context<Self>| {
             if !text.is_empty() {
-                cx.defer(move |cx| crate::ui::share::open_in_home(text, cx));
+                let mac = mac.clone();
+                cx.defer(move |cx| crate::ui::share::open_in_home(mac, text, cx));
             }
         };
         if let Some((s, e)) = self.kbd_range() {

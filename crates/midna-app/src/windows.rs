@@ -372,12 +372,13 @@ pub fn reveal(mac: MacId, session: String, cx: &mut App) {
     reveal_on(mac, session, None, true, cx)
 }
 
-/// Run `f` on this Mac's home window (its main window focused last), brought to the front.
-pub fn on_home(cx: &mut App, f: impl FnOnce(&mut MainWindow, &mut Window, &mut Context<MainWindow>) + 'static) {
+/// Run `f` on `mac`'s home window (its main window focused last), brought to the front.
+/// Nothing when that Mac has no main window open.
+pub fn on_home(mac: &MacId, cx: &mut App, f: impl FnOnce(&mut MainWindow, &mut Window, &mut Context<MainWindow>) + 'static) {
     let target = {
         let reg = shared(cx);
         let r = reg.borrow();
-        r.home(&None).and_then(|id| r.main(id))
+        r.home(mac).and_then(|id| r.main(id))
     };
     let Some(t) = target else { return };
     let _ = t.handle.update(cx, |_, window, cx| {

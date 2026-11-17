@@ -76,8 +76,17 @@ fn merge_order(base: &[String], mine: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_left, merge_order, moved, pace, scripts_wanted, toggled};
+    use super::{awake_tip, cache_left, merge_order, moved, pace, scripts_wanted, toggled};
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn another_macs_sun_says_whose_keep_awake_it_is() {
+        let here = awake_tip(Some("Keeping awake: build"), None);
+        assert!(here.starts_with("Keeping awake: build. The display may still sleep"));
+        let there = awake_tip(Some("Keeping awake: build"), Some("Bravo"));
+        assert!(there.starts_with("Bravo: Keeping awake: build."));
+        assert!(there.ends_with("Set at Bravo in Settings › Agents › Keep the Mac awake."));
+    }
 
     fn v(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
@@ -370,28 +379,44 @@ fn daemon_item(m: &MainWindow, t: &Theme) -> AnyElement {
     div().id("daemon").child(daemon).tooltip(tip("midnad: the background daemon that runs your terminals. They keep running when this window closes.")).into_any_element()
 }
 
-/// A sun while midnad holds its keep-awake assertion (nothing otherwise); the tooltip says why. Click: Settings.
+/// A sun while midnad holds its keep-awake assertion (nothing otherwise); the tooltip says why.
+/// Click: Settings. Another Mac's window shows that Mac's keep-awake (design option C), says so,
+/// and has no click: this Mac's Settings would set this Mac's.
 fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let k = &m.keep_awake;
     if k["held"] != true {
         return None;
     }
-    let line = k["line"].as_str().unwrap_or("Keeping the Mac awake").to_string();
+    let mac = m.backend.mac().map(|x| x.name.clone());
     let backend = m.backend.clone();
     let fg = t.fg;
-    Some(
-        div()
-            .id("keep-awake")
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .cursor_pointer()
-            .hover(move |s| s.text_color(fg))
-            .child(Icon::Sun.el(12., t.work))
-            .tooltip(tip(format!("{line}. The display may still sleep; closing the lid still sleeps the Mac. Settings › Agents › Keep the Mac awake.")))
-            .on_click(move |_, _, cx| crate::settings_window::open(crate::backend::local(&backend), cx))
-            .into_any_element(),
-    )
+    let item = div()
+        .id("keep-awake")
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(Icon::Sun.el(12., t.work))
+        .tooltip(tip(awake_tip(k["line"].as_str(), mac.as_deref())));
+    let item = match mac {
+        Some(_) => item,
+        None => item.cursor_pointer().hover(move |s| s.text_color(fg)).on_click(move |_, _, cx| crate::settings_window::open(crate::backend::local(&backend), cx)),
+    };
+    Some(item.into_any_element())
+}
+
+/// The keep-awake sun's tooltip: midnad's `line`, and where it's set; `mac` names that Mac in
+/// its window.
+fn awake_tip(line: Option<&str>, mac: Option<&str>) -> String {
+    match mac {
+        None => {
+            let line = line.unwrap_or("Keeping the Mac awake");
+            format!("{line}. The display may still sleep; closing the lid still sleeps the Mac. Settings › Agents › Keep the Mac awake.")
+        }
+        Some(mac) => {
+            let line = line.unwrap_or("Keeping awake");
+            format!("{mac}: {line}. Its display may still sleep; closing its lid still sleeps it. Set at {mac} in Settings › Agents › Keep the Mac awake.")
+        }
+    }
 }
 
 /// Claude's plan limits in the taskboard's usage pill: a rounded pill with, per window, a label,

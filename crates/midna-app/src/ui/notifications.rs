@@ -579,3 +579,9 @@ pub fn bell(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyEleme
         })
         .into_any_element()
 }
+
+/// Dev (`MIDNA_DEBUG_SCREEN=nearby:<share id>`): the Nearby tab on that share.
+pub fn debug_nearby(m: &mut MainWindow, share: &str) {
+    m.inbox.tab = Tab::Nearby;
+    m.share.sel = Some(share.to_string());
+}

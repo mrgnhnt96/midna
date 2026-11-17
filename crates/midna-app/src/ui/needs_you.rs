@@ -196,10 +196,26 @@ fn other_actions(n: &NeedsYou) -> (Option<(&'static str, Option<Resolution>)>, O
     }
 }
 
+/// The Mac where `n` has to be approved, in another Mac's window (`mac`, its name): an item
+/// that Mac's daemon marks `local_only` (a share, a pairing, a protection removed) can't be
+/// approved over the link. Deny and dismiss still work. None: approve it here.
+fn decide_at<'a>(mac: Option<&'a str>, n: &NeedsYou) -> Option<&'a str> {
+    mac.filter(|_| n.local_only)
+}
+
+/// The name of the Mac this window drives; None in this Mac's own windows.
+fn that_mac(m: &MainWindow) -> Option<String> {
+    m.backend.mac().map(|x| x.name.clone())
+}
+
 /// What the approve and deny keys do to the selected item, for the footer: approve / deny,
 /// else its own actions (a question is only dismissed; its options are answered in its terminal).
-fn key_actions(n: Option<&NeedsYou>) -> (Option<String>, Option<String>) {
+/// An item to decide at that Mac (`decide_at`) has no approve key.
+fn key_actions(n: Option<&NeedsYou>, mac: Option<&str>) -> (Option<String>, Option<String>) {
     let Some(n) = n else { return (None, None) };
+    if decide_at(mac, n).is_some() {
+        return (None, key_actions(Some(n), None).1);
+    }
     if approves(n) {
         return (Some("approve".into()), Some("deny".into()));
     }
@@ -280,6 +296,9 @@ fn resolve_cur(m: &mut MainWindow, res: Resolution, cx: &mut Context<MainWindow>
 
 fn primary(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(n) = current(m) else { return };
+    if let Some(mac) = decide_at(that_mac(m).as_deref(), &n) {
+        return m.toast(format!("Decide at {mac}: approving this can't be done from another Mac"), cx);
+    }
     let t = crate::theme::of(window, cx).clone();
     if meta(&t, &n).approve {
         return resolve_cur(m, Resolution::Approve { scope: ApprovalScope::Once }, cx);
@@ -603,7 +622,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
 /// The left column: title and count, kind chips, one row per item, key hints.
 fn list(m: &MainWindow, t: &Theme, order: &[&NeedsYou], cur: usize, approve_key: &str, deny_key: &str, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let all = waiting(m);
-    let (approve_hint, deny_hint) = key_actions(order.get(cur).copied());
+    let (approve_hint, deny_hint) = key_actions(order.get(cur).copied(), that_mac(m).as_deref());
     let mut chips = div().flex().flex_none().flex_wrap().gap(px(6.)).px(px(18.)).pb(px(12.));
     for (f, label) in FILTERS {
         let count = if f == Filter::All { all.len() } else { all.iter().filter(|n| filter_of(n) == f).count() };
@@ -949,7 +968,41 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
     let button = |id: &'static str, label: String| {
         div().id(id).flex().items_center().h(px(38.)).px(px(16.)).rounded(px(7.)).border_1().border_color(t.line).text_size(px(14.)).cursor_pointer().hover(|s| s.bg(t.raised)).child(label)
     };
-    if pairing {
+    let mac = that_mac(m);
+    if let Some(mac) = decide_at(mac.as_deref(), n) {
+        // design option C: approving it is done at that Mac; denying works from here, and a
+        // message can still be answered (`share.send` runs on that Mac)
+        let deny = if pairing {
+            "Codes differ"
+        } else if super::share::offer_of(n).is_some() {
+            "Decline"
+        } else if mt.approve {
+            "Deny"
+        } else {
+            other_actions(n).1.map_or("Dismiss", |(l, _)| l)
+        };
+        actions = actions.child(
+            div()
+                .id("ny-decide")
+                .flex()
+                .items_center()
+                .h(px(38.))
+                .px(px(16.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(t.line)
+                .text_size(px(14.))
+                .text_color(t.dim)
+                .child(format!("Decide at {mac}")),
+        );
+        if let Some(offer) = super::share::offer_of(n).filter(|o| o.kind == ShareKind::Message) {
+            let (id, peer) = (offer.id.clone(), super::share::offer_peer(m, &offer));
+            actions = actions.child(
+                button("ny-share-reply", "Reply…".into()).on_click(cx.listener(move |m, _, w, cx| super::share::open_message(m, Some(id.clone()), Some(peer.clone()), None, w, cx))),
+            );
+        }
+        actions = actions.child(button("ny-deny", format!("{deny} {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
+    } else if pairing {
         // no scopes: each pairing is confirmed once, as a contact or as one of your Macs
         actions = actions
             .child(
@@ -1251,8 +1304,23 @@ mod tests {
         let question = NeedsYou { question: Some(NeedsYouQuestion { text: "Which?".into(), ..Default::default() }), ..prompt.clone() };
         assert!(!super::approves(&question));
         assert!(matches!(super::filter_of(&question), super::Filter::Other));
-        assert_eq!(super::key_actions(Some(&prompt)), (Some("approve".into()), Some("deny".into())));
-        assert_eq!(super::key_actions(Some(&question)), (None, Some("dismiss".into())));
-        assert_eq!(super::key_actions(None), (None, None));
+        assert_eq!(super::key_actions(Some(&prompt), None), (Some("approve".into()), Some("deny".into())));
+        assert_eq!(super::key_actions(Some(&question), None), (None, Some("dismiss".into())));
+        assert_eq!(super::key_actions(None, None), (None, None));
+    }
+
+    #[test]
+    fn a_local_only_item_is_decided_at_that_mac() {
+        use crate::model::{NeedsYou, NeedsYouKind};
+        let share = NeedsYou { kind: NeedsYouKind::Approval, local_only: true, ..Default::default() };
+        // another Mac's window: no approve key, deny still works
+        assert_eq!(super::decide_at(Some("Bravo"), &share), Some("Bravo"));
+        assert_eq!(super::key_actions(Some(&share), Some("Bravo")), (None, Some("deny".into())));
+        // this Mac's own window approves it as before
+        assert_eq!(super::decide_at(None, &share), None);
+        assert_eq!(super::key_actions(Some(&share), None), (Some("approve".into()), Some("deny".into())));
+        // an item a link can approve is approved from that Mac's window too
+        let plain = NeedsYou { local_only: false, ..share };
+        assert_eq!(super::decide_at(Some("Bravo"), &plain), None);
     }
 }

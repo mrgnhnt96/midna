@@ -625,6 +625,11 @@ impl FakeBackend {
                     n.id = format!("{}_{}", n.id, mac.peer.get(..4).unwrap_or_default());
                     true
                 }
+                // a share sent to that Mac (`MIDNA_FAKE_SHARE`): accepted only there
+                None if n.id.starts_with("n_share") => {
+                    n.id = format!("{}_{}", n.id, mac.peer.get(..4).unwrap_or_default());
+                    true
+                }
                 _ => false,
             });
             // An agent there asking to run a command: approved from here, over the link.
@@ -645,9 +650,10 @@ impl FakeBackend {
                     ..Default::default()
                 });
             }
-            // A setting change there (a custom script's path) can only be approved at that Mac.
+            // A setting change there (a custom script's path) and a share sent there can only be
+            // approved at that Mac.
             for n in &mut st.needs {
-                n.local_only = n.setting.is_some();
+                n.local_only = n.setting.is_some() || n.id.starts_with("n_share");
             }
             st.scripts = std::mem::take(&mut st.scripts).into_iter().map(|(k, v)| (id(&k), v)).collect();
             st.settings = settings_catalog();

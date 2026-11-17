@@ -1541,6 +1541,13 @@ impl MainWindow {
                     "triggers" => self.screen = Screen::Triggers,
                     "insights" => self.screen = Screen::Insights,
                     "notifications" => self.set_screen(Screen::Notifications, window, cx),
+                    // dev: Notifications › Nearby on a share (`nearby:sh_snip0001`)
+                    s if s.starts_with("nearby:") => {
+                        self.set_screen(Screen::Notifications, window, cx);
+                        crate::ui::notifications::debug_nearby(self, &s["nearby:".len()..]);
+                    }
+                    // dev: the Share picker on a snippet
+                    "share" => crate::ui::share::open(self, "cargo build --release".into(), window, cx),
                     // dev: a project's Summary (`summary:p_taskboard1`), its ⋯ menu open with `+menu`
                     s if s.starts_with("summary:") => {
                         let (pid, menu) = s["summary:".len()..].split_once('+').map_or((&s["summary:".len()..], false), |(p, _)| (p, true));
