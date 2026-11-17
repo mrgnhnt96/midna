@@ -3950,6 +3950,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4142,6 +4148,7 @@ dependencies = [
  "hmac",
  "libc",
  "libghostty-vt",
+ "lz4_flex",
  "midna-proto",
  "security-framework",
  "serde",

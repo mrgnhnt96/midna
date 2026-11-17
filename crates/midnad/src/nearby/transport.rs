@@ -89,9 +89,17 @@ pub enum Wire {
     Sessions { sessions: Vec<midna_proto::nearby::PeerSession> },
     /// One of my devices: let me drive you over this connection. Answered [`Wire::DriveOk`], or
     /// refused unless this Mac lets that device drive it. After `drive_ok` both sides speak the
-    /// relay's binary messages ([`Channel::split`], `relay.rs`), never `Wire` again.
-    DriveOpen,
-    DriveOk,
+    /// relay's binary messages ([`Channel::split`], `relay.rs`), never `Wire` again. `compress`
+    /// lists the compressions the driving side can unpack, and `drive_ok` names the one the link
+    /// uses (none: plain). Older builds send and expect neither and ignore them.
+    DriveOpen {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        compress: Vec<String>,
+    },
+    DriveOk {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compress: Option<String>,
+    },
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).
@@ -448,11 +456,11 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    fn ident(tag: &str) -> Identity {
+    pub(crate) fn ident(tag: &str) -> Identity {
         let h = std::env::temp_dir().join(format!("midna-tr-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&h);
         let id = identity::load_or_create(&h);
@@ -460,7 +468,7 @@ mod tests {
         id
     }
 
-    fn pair_up(a: &Identity, b: &Identity) -> (Result<Channel, String>, Result<Channel, String>) {
+    pub(crate) fn pair_up(a: &Identity, b: &Identity) -> (Result<Channel, String>, Result<Channel, String>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let lb = Local::new(b);
