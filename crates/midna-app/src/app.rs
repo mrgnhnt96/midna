@@ -698,6 +698,23 @@ impl MainWindow {
         );
     }
 
+    /// Settings that hold for every window, not just this one: sounds, the keyboard, paste,
+    /// the Finder Quick Action, haptics and the prompt bar. They're this Mac's, so another
+    /// Mac's window leaves them alone (as with shortcuts, [`Self::rebind`]).
+    fn apply_app_wide(&self, cx: &mut Context<Self>) {
+        if self.remote() {
+            return;
+        }
+        let s = &self.settings;
+        crate::sounds::sync(s, self.backend.socket_path().parent());
+        crate::terminal::set_option_as_meta(s.get("terminal.option_as_meta").and_then(Value::as_bool).unwrap_or(true));
+        crate::terminal::set_image_paste_inline(s.get("terminal.image_paste").and_then(Value::as_str) == Some("inline"));
+        crate::terminal::set_cmd_enter_sends(s.get("terminal.cmd_enter_sends").and_then(Value::as_bool).unwrap_or(false));
+        crate::finder::sync(s.get("finder.quick_action").and_then(Value::as_bool).unwrap_or(true));
+        crate::haptics::sync(s.get("ui.haptics").and_then(Value::as_bool).unwrap_or(true));
+        crate::terminal::share_prompt_bar(s.get("terminal.prompt_bar").and_then(Value::as_str) == Some("always"), cx);
+    }
+
     // ------------------------------------------------------------------ backend
 
     fn on_backend_event(&mut self, ev: BackendEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1343,14 +1360,9 @@ impl MainWindow {
                 if footer_changed {
                     self.request_refresh(refresh::INSIGHTS, cx);
                 }
-                crate::sounds::sync(&self.settings, self.backend.socket_path().parent());
                 self.apply_theme(window, cx);
                 self.rebind(cx);
-                crate::terminal::set_option_as_meta(self.settings.get("terminal.option_as_meta").and_then(Value::as_bool).unwrap_or(true));
-                crate::terminal::set_image_paste_inline(self.settings.get("terminal.image_paste").and_then(Value::as_str) == Some("inline"));
-                crate::terminal::set_cmd_enter_sends(self.settings.get("terminal.cmd_enter_sends").and_then(Value::as_bool).unwrap_or(false));
-                crate::finder::sync(self.settings.get("finder.quick_action").and_then(Value::as_bool).unwrap_or(true));
-                crate::haptics::sync(self.settings.get("ui.haptics").and_then(Value::as_bool).unwrap_or(true));
+                self.apply_app_wide(cx);
             }
         }
         if let Some(mut p) = r.projects {
@@ -1361,7 +1373,6 @@ impl MainWindow {
             self.discovered = d;
         }
         crate::terminal::share_preview_env(self, cx);
-        crate::terminal::share_prompt_bar(self.settings.get("terminal.prompt_bar").and_then(Value::as_str) == Some("always"), cx);
         // The selected terminal closing (⌘K, the header menu, its shell exiting): its neighbour
         // in the sidebar we had, so focus stays in its project.
         let mut closed_neighbour = None;
@@ -3046,5 +3057,37 @@ mod tests {
         .unwrap();
         // This Mac got no window from it.
         assert_eq!(cx.windows().len(), 1);
+    }
+
+    /// Sounds, the keyboard and the prompt bar hold for every window, so they follow this Mac's
+    /// settings: a window onto another Mac gets that Mac's settings but leaves them alone.
+    #[gpui_kit::test]
+    fn another_macs_settings_leave_this_macs_app_wide_ones_alone(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::{Backend, Mac};
+        use serde_json::{Value, json};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::from_def(&midna_proto::themes::builtin("twilight").unwrap(), "ui".into(), "mono".into())));
+        // This Mac's (no window of its own here: its theme would be cached to the cwd).
+        let mine: HashMap<String, Value> = [("notify.sounds".to_string(), json!(true))].into();
+        crate::sounds::sync(&mine, None);
+        cx.update(|cx| crate::terminal::share_prompt_bar(true, cx));
+        let app_wide = |cx: &mut gpui_kit::TestAppContext| (crate::sounds::synced("notify.sounds"), cx.update(|cx| crate::terminal::prompt_bar_shared(cx)));
+        let mut theirs = crate::backend::fake::settings_catalog();
+        theirs.retain(|e| !["notify.sounds", "terminal.prompt_bar"].contains(&e.key.as_str()));
+        for (key, value) in [("notify.sounds", json!(false)), ("terminal.prompt_bar", json!("scrolled"))] {
+            theirs.push(crate::model::SettingEntry { key: key.into(), value, default: Value::Null, description: String::new(), human_only: false, cli: String::new() });
+        }
+        // Never parked: its terminals would attach, and their threads would wake the test's.
+        let here: Arc<dyn Backend> = Arc::new(crate::backend::fake::FakeBackend::new());
+        let mini = crate::backend::for_mac(&here, Mac { peer: "7".repeat(64), name: "Morgan's Mac mini".into() });
+        let w = cx.update(|cx| crate::windows::open(mini, None, cx)).unwrap();
+        w.update(cx, |m, window, cx| {
+            let r = super::RefreshResult { seq: m.refresh_seq, settings: Some(theirs), ..Default::default() };
+            m.apply_refresh(r, window, cx);
+        })
+        .unwrap();
+        w.read_with(cx, |m, _| assert_eq!(m.settings.get("notify.sounds"), Some(&json!(false)), "its window has that Mac's settings")).unwrap();
+        assert_eq!(app_wide(cx), (json!(true), true), "still this Mac's");
     }
 }

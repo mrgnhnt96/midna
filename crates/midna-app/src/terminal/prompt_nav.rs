@@ -32,6 +32,11 @@ pub fn share(always: bool, cx: &mut App) {
     cx.set_global(AlwaysBar(always));
 }
 
+/// What [`share`] last set.
+pub fn shared(cx: &App) -> bool {
+    cx.try_global::<AlwaysBar>().is_some_and(|a| a.0)
+}
+
 /// Height of the bar.
 pub(super) const BAR_H: f32 = PAD_Y + LINE_H;
 
@@ -204,7 +209,7 @@ impl PromptNav {
 impl TerminalView {
     /// The bar shows at the live end too (`terminal.prompt_bar` = always, agents only).
     pub(super) fn bar_row(&self, cx: &App) -> bool {
-        self.is_agent() && cx.try_global::<AlwaysBar>().is_some_and(|a| a.0)
+        self.is_agent() && shared(cx)
     }
 
     /// The grid's top row is Claude's pinned copy of the prompt: the grid slides up a row so the
