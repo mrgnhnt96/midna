@@ -1260,17 +1260,17 @@ fn load_url(url: &str, there: Option<&dyn Backend>) -> Body {
 }
 
 /// A pull request's state for its link in the grid (`pr_status.rs`): OPEN, DRAFT, MERGED or
-/// CLOSED. Asks `gh` only, never the web page, and shares the card's cache
-/// while it's fresh.
-pub(super) fn pr_state(url: &str) -> Option<String> {
-    let key = url_key(url, None);
+/// CLOSED. Asks `gh` only, never the web page, on the Mac the terminal is on (`there`, as the
+/// card does), and shares the card's cache while it's fresh.
+pub(super) fn pr_state(url: &str, there: Option<&dyn Backend>) -> Option<String> {
+    let key = url_key(url, there);
     if let Some((at, Body::Pr(pr))) = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
         && at.elapsed() < SHARE_TTL
     {
         return Some(pr.state);
     }
     github_pr(url)?;
-    let Body::Pr(pr) = load_github(url, None)? else { return None };
+    let Body::Pr(pr) = load_github(url, there)? else { return None };
     if let Ok(mut c) = URL_CACHE.lock() {
         c.insert(key, (Instant::now(), Body::Pr(pr.clone())));
     }
@@ -1278,9 +1278,10 @@ pub(super) fn pr_state(url: &str) -> Option<String> {
 }
 
 /// A workflow run's state for its link in the grid (`pr_status.rs`): QUEUED, RUNNING, PASSED,
-/// FAILED, CANCELLED, SKIPPED or APPROVAL. Like `pr_state`, `gh` only, sharing the card's cache.
-pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
-    let key = url_key(url, None);
+/// FAILED, CANCELLED, SKIPPED or APPROVAL. Like `pr_state`, `gh` only on the terminal's Mac,
+/// sharing the card's cache.
+pub(super) fn run_link_state(url: &str, there: Option<&dyn Backend>) -> Option<&'static str> {
+    let key = url_key(url, there);
     if let Some((at, b @ Body::Run(_))) = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
         && at.elapsed() < ttl(&b).min(SHARE_TTL)
         && let Body::Run(r) = b
@@ -1288,7 +1289,7 @@ pub(super) fn run_link_state(url: &str) -> Option<&'static str> {
         return Some(r.state.key());
     }
     github_run(url)?;
-    let Body::Run(run) = load_github(url, None)? else { return None };
+    let Body::Run(run) = load_github(url, there)? else { return None };
     let state = run.state.key();
     if let Ok(mut c) = URL_CACHE.lock() {
         c.insert(key, (Instant::now(), Body::Run(run)));
@@ -1863,7 +1864,7 @@ fn decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppPreview, Body, Check, Link, RunState, Tone, duration, fade, fetchable, github_issue, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_issue, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, preview_command, run_pattern_on, run_preview, unix_time, url_title};
+    use super::{AppPreview, Body, Check, Link, RunState, Tone, duration, fade, fetchable, github_issue, github_pr, github_run, load, load_pattern, page_meta, parse_app_preview, parse_issue, parse_pr, parse_preview_command, parse_run, path_title, pattern_command, pr_state, preview_command, run_link_state, run_pattern_on, run_preview, unix_time, url_title};
     use serde_json::json;
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -1951,6 +1952,26 @@ mod tests {
         super::forget(&url);
         let _ = load(&l, Some(&there));
         assert_eq!(there.asked.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn another_macs_link_colors_are_read_there() {
+        // The grid's color for a link in that Mac's terminal comes from its gh, sharing its card.
+        let pr = json!({ "title": "Prune", "state": "MERGED", "headRefName": "prune", "baseRefName": "main" });
+        let there = OtherMac::new(json!({ "kind": "github", "json": pr }));
+        let url = format!("https://github.com/a/midna-lp-color-{}/pull/8", std::process::id());
+        assert_eq!(pr_state(&url, Some(&there)).as_deref(), Some("MERGED"));
+        assert_eq!(there.asked.lock().unwrap()[0]["target"], json!(url));
+        let l = Link { url: true, target: url.clone(), line: None, app: None, preview: None };
+        assert!(matches!(load(&l, Some(&there)), Body::Pr(p) if p.state == "MERGED"));
+        assert_eq!(pr_state(&url, Some(&there)).as_deref(), Some("MERGED"));
+        assert_eq!(there.asked.lock().unwrap().len(), 1);
+
+        let run = json!({ "status": "in_progress", "conclusion": "", "workflowName": "CI", "displayTitle": "Prune", "headBranch": "prune", "event": "push", "jobs": [] });
+        let there = OtherMac::new(json!({ "kind": "github", "json": run }));
+        let url = format!("https://github.com/a/midna-lp-color-{}/actions/runs/77", std::process::id());
+        assert_eq!(run_link_state(&url, Some(&there)), Some("RUNNING"));
+        assert_eq!(there.asked.lock().unwrap().len(), 1);
     }
 
     #[test]
