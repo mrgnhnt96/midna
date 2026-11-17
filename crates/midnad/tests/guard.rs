@@ -1,14 +1,19 @@
 //! The load guard's hold on agents' tool calls: `guard.busy_gate` while midna's terminals keep
 //! the Mac's CPU busy, and `guard.max_subagents`. Every daemon in this binary sees a busy CPU
 //! (MIDNA_DEBUG_CPU); only the first test changes who it's busy because of, and the second one
-//! turns the gate off.
+//! turns the gate off. Memory pressure is pinned to normal (MIDNA_DEBUG_MEMORY): the Mac's real
+//! pressure often reaches warning during a full-workspace build, and a short-of-memory hold
+//! would give a different reason and hold back what these tests expect to go through.
 mod common;
 use common::*;
 use midna_proto::Client;
 use serde_json::{Value, json};
 
 fn busy_daemon() -> TestDaemon {
-    unsafe { std::env::set_var("MIDNA_DEBUG_CPU", "100:100") };
+    unsafe {
+        std::env::set_var("MIDNA_DEBUG_CPU", "100:100");
+        std::env::set_var("MIDNA_DEBUG_MEMORY", "normal");
+    }
     TestDaemon::start()
 }
 
