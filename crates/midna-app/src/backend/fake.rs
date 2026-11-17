@@ -870,10 +870,20 @@ impl Backend for FakeBackend {
             }
             "settings.list" => serde_json::to_value(&st.settings)?,
             // A link's card: files read as midnad would (the fake's Macs share this disk); a
-            // GitHub link answers a stand-in PR.
+            // GitHub link answers a stand-in PR, an app's link (`taskboard://…`) a stand-in task.
             "links.preview" => {
                 let target = p("target").unwrap_or_default();
-                if midna_proto::link_preview::GithubLink::parse(&target).is_some() {
+                let app = target.split_once("://").is_some_and(|(s, _)| !matches!(s, "http" | "https" | "file"));
+                if app {
+                    let id = target.rsplit('/').next().unwrap_or_default();
+                    json!({ "kind": "app", "json": {
+                        "title": "Water the beds on a schedule", "subtitle": format!("{id} · Garden goal"),
+                        "status": { "label": "In progress", "tone": "busy" },
+                        "fields": [["Terminal", "drops-app"], ["Branch", "schedule-rules"]],
+                        "progress": { "done": 3, "total": 5 },
+                        "actions": [{ "label": "Mark done", "run": ["tb", "done", id] }],
+                    } })
+                } else if midna_proto::link_preview::GithubLink::parse(&target).is_some() {
                     json!({ "kind": "github", "json": { "title": "Water the beds on a schedule", "state": "OPEN", "isDraft": false, "headRefName": "schedule-rules", "baseRefName": "main", "additions": 120, "deletions": 14, "statusCheckRollup": [] } })
                 } else {
                     let line = params.get("line").and_then(Value::as_u64).map(|l| l as u32);

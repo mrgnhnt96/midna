@@ -262,9 +262,12 @@ fn build() -> Vec<MethodSpec> {
              app, or nothing). Not a local link is bad params. Answers from a few seconds' cache."),
         m::<LinksPreviewParams, LinkPreview>("links.preview").d(
             "What a link's hover card shows, read on this Mac: a file's lines around `line`, a folder's first entries, \
-             an image's size, or for a GitHub pull request, issue or workflow run link what `gh` says about it (its \
-             `--json` output). The app asks the Mac a window drives, so another Mac's card is read there. Not an \
-             absolute path or a GitHub link is bad params; `gh` failing is not found."),
+             an image's size, for a GitHub pull request, issue or workflow run link what `gh` says about it (its \
+             `--json` output), or for an app link (`taskboard://…`) what its app's preview command prints. With \
+             `preview`, a link pattern's preview command that session.link_at gave for `target` in the last 10 minutes \
+             runs and its output comes back; any other command is refused. The app asks the Mac a window drives, so \
+             another Mac's card is read there. Not an absolute path, a GitHub link or an app link is bad params; `gh` or \
+             a preview command failing, or an app with no preview, is not found."),
         m::<LinksRefreshParams, LinksRefreshResult>("links.refresh").mutating().d(
             "Tell the app a link's state changed so it asks again now instead of when its cache runs out: a pull \
              request you merged, closed or marked ready, a workflow run you re-ran. Its color and icon in the grid and \

@@ -192,15 +192,21 @@ pub struct ServedBy {
 }
 
 /// `links.preview`: what a link's hover card shows, read on this Mac: a file's lines, a
-/// folder's entries, or what `gh` says about a GitHub pull request, issue or workflow run. The
-/// app asks the Mac a window drives, so a card in another Mac's window is read on that Mac.
+/// folder's entries, what `gh` says about a GitHub pull request, issue or workflow run, or what
+/// an app's or a link pattern's preview command prints. The app asks the Mac a window drives, so
+/// a card in another Mac's window is read on that Mac.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LinksPreviewParams {
-    /// An absolute path, or a `https://github.com/<owner>/<repo>/{pull,issues,actions/runs}/<n>` link.
+    /// An absolute path, a `https://github.com/<owner>/<repo>/{pull,issues,actions/runs}/<n>`
+    /// link, or an app link (`taskboard://…`) whose app on this Mac declares a preview.
     pub target: String,
     /// For a file: the line to center on (1-based).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    /// A link pattern's preview command for `target`, as `session.link_at` on this Mac gave it.
+    /// Only a command it gave for that link lately runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Vec<String>>,
 }
 
 /// What [`LinksPreviewParams`] found.
@@ -220,6 +226,8 @@ pub enum LinkPreview {
     Note { text: String },
     /// `gh pr|issue|run view --json …` for a GitHub link, as `gh` printed it.
     Github { json: Value },
+    /// What an app's or a link pattern's preview command printed (`{"title", "lines", …}`).
+    App { json: Value },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

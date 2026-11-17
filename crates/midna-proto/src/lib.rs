@@ -17,6 +17,7 @@ pub mod nearby;
 pub mod notify;
 pub mod openrpc;
 pub mod paths;
+pub mod preview_cmd;
 pub mod prompts;
 pub mod secrets;
 pub mod settings;
