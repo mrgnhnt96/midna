@@ -328,7 +328,7 @@ pub fn preview(p: LinksPreviewParams) -> R {
     if let Some(g) = GithubLink::parse(&p.target) {
         let out = crate::git::gh_available().then(|| {
             let args = g.gh_args();
-            let argv: Vec<&str> = std::iter::once("gh").chain(args.iter().map(String::as_str)).collect();
+            let argv: Vec<&str> = std::iter::once(crate::git::gh_bin()).chain(args.iter().map(String::as_str)).collect();
             crate::git::run_cmd(&argv, "/", std::time::Duration::from_secs(8), None, &[])
         });
         let json = out.flatten().filter(|s| s.len() <= g.gh_limit()).and_then(|s| serde_json::from_str(&s).ok());

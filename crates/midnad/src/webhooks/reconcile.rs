@@ -75,7 +75,7 @@ pub fn parse_detail(json: &str) -> Option<(String, String, Value)> {
 }
 
 fn gh(args: &[&str]) -> Option<String> {
-    let mut argv = vec!["gh"];
+    let mut argv = vec![crate::git::gh_bin()];
     argv.extend_from_slice(args);
     run_cmd(&argv, "/", Duration::from_secs(20), None, &[])
 }
