@@ -330,6 +330,36 @@ fn stream_attach_frames_roundtrip() {
     assert_ne!(end.kind(), std::io::ErrorKind::WouldBlock);
 }
 
+/// A drive link's GUI asks for a few frames at attach: the stream then keeps that many in
+/// flight, and no more until it asks again.
+#[test]
+fn stream_credit_keeps_a_window_of_frames_in_flight() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let id = open_sh(&mut c);
+    let mut st = d.human().attach(&id, 60, 20, 8, 16).unwrap();
+    st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert!(st.next_frame().unwrap().full);
+    for _ in 0..3 {
+        st.want().unwrap();
+    }
+    // Output that keeps coming well past the three frames.
+    st.input(b"i=0; while [ $i -lt 12 ]; do echo tick-$i; i=$((i+1)); sleep 0.25; done\r").unwrap();
+    for _ in 0..3 {
+        st.next_frame().unwrap();
+    }
+    st.set_read_timeout(Some(Duration::from_millis(1200))).unwrap();
+    let stalled = st.next_frame().unwrap_err();
+    assert!(matches!(stalled.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "{stalled}");
+    // One more ask: the rows printed meanwhile come in one frame.
+    st.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    st.want().unwrap();
+    let f = st.next_frame().unwrap();
+    let ticks = f.changed.iter().filter(|(_, r)| r.text().contains("tick-")).count();
+    assert!(ticks >= 2, "{:?}", f.changed.iter().map(|(_, r)| r.text()).collect::<Vec<_>>());
+    call(&mut c, "session.close", json!({ "id": id }));
+}
+
 #[test]
 fn a_gui_size_undone_at_once_never_reaches_the_app() {
     let d = TestDaemon::start();

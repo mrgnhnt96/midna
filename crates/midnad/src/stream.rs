@@ -1,5 +1,6 @@
 //! `stream.attach`: after the JSON answer, the connection is binary. Daemon -> client:
-//! `u32 LE len` + `Frame::encode()`, one per credit. Client -> daemon: 1-byte tags
+//! `u32 LE len` + `Frame::encode()`, one per credit (attaching grants one, each want one
+//! more, up to `term::MAX_CREDIT` in flight). Client -> daemon: 1-byte tags
 //! (0x01 want, 0x02 resize, 0x03 input, 0x04 key, 0x05 scroll, 0x06 mouse, 0x07 focus,
 //! 0x08 paste; see `midna_proto::frame::ClientMsg`). See ARCHITECTURE.md "Frame stream connection".
 use crate::daemon::Daemon;
@@ -30,7 +31,8 @@ pub fn run(h: RtHandle, mut reader: BufReader<UnixStream>, params: &Value, human
     if human && p.cols > 0 && p.rows > 0 {
         h.resize(p.cols, p.rows, p.cell_w, p.cell_h);
     }
-    let (ftx, frx) = sync_channel::<Frame>(1);
+    // Room for every frame the client's credit lets the engine send before this writer drains.
+    let (ftx, frx) = sync_channel::<Frame>(crate::term::MAX_CREDIT as usize);
     if h.tx.send(EngineMsg::Attach(id, ftx)).is_err() {
         return;
     }

@@ -731,7 +731,7 @@ impl TerminalView {
         if self.sink.is_ended() && self.status == StreamStatus::Live {
             self.status = StreamStatus::Ended;
         }
-        let Some(f) = self.sink.take() else { return };
+        let Some((f, credits)) = self.sink.take() else { return };
         self.painted = Instant::now();
         if let Some(m) = self.fps.as_mut() {
             m.frames += 1;
@@ -790,8 +790,12 @@ impl TerminalView {
         if (rows_changed || moved) && self.list_watch.is_some() {
             self.fix_list_numbers_later(cx);
         }
+        // Give back a credit for every stream frame this one folded in, or a drive link's
+        // window of frames in flight would shrink each time two arrived between paints.
         if let Some(s) = self.stream() {
-            s.want();
+            for _ in 0..credits.max(1) {
+                s.want();
+            }
         }
     }
 

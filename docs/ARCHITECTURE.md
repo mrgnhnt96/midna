@@ -66,10 +66,11 @@ spikes/               proven prototypes; reuse code from here freely
 - The daemon answers with one JSON line (result `{ok:true}`). From then on the connection is binary in both directions:
   - Daemon → client: length-prefixed frames, `u32 LE len` + payload = `Frame::encode()` (the dirty-rows frame format from the spike). Moving that encoder into `midna-proto` is fine.
   - Client → daemon: 1-byte tags.
-    - `0x01` = want (credit for the next frame).
+    - `0x01` = want (credit for one more frame).
     - `0x02` + u16 cols + u16 rows + u32 cw + u32 ch = resize.
     - `0x03` + u32 len + bytes = input. Input may also go through `session.input` on the control connection.
 - The daemon only sends a frame when the client has credit, and merges dirty rows meanwhile. That's what makes 120fps on an 80MB `cat` possible.
+- Credit is a count, capped at 4 (`term::MAX_CREDIT`). The app gives one back per frame it applies, counting frames that merged before it painted. A local stream keeps one frame in flight. Over a drive link the app asks for two more at attach, so three are in flight and a frame doesn't wait a Wi-Fi round trip for the one before it.
 
 **Caller identity.**
 - **GUI = human.** The daemon reads the peer pid (`LOCAL_PEERPID`) and resolves its executable with `proc_pidpath`. If that is the midna-app binary (`MIDNA_APP_PATH` env override for dev), the connection's role is `human`.
