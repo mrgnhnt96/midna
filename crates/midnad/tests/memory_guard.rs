@@ -49,6 +49,25 @@ fn memory_pressure_holds_heavy_work_back_and_says_so() {
 }
 
 #[test]
+fn memory_alert_off_still_holds_but_raises_no_needs_you() {
+    let d = short_of_memory();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "guard.memory_alert", "value": false }));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let r = request(&mut a, "Bash(cargo build)");
+    assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("deny"), Some("guard")), "{r}");
+    // The spell still fires its event, with no needs-you behind it.
+    let event = wait_for(15, "memory event", || {
+        let events = call(&mut h, "events.list", json!({ "filter": { "kinds": ["system.memory_pressure"] } }));
+        events.as_array().unwrap().first().cloned()
+    });
+    assert!(event["data"]["needs_you_id"].is_null(), "{event}");
+    let list = call(&mut h, "needs_you.list", json!({}));
+    assert!(!list.as_array().unwrap().iter().any(|n| n["title"].as_str().is_some_and(|t| t.contains("short of memory"))), "{list}");
+}
+
+#[test]
 fn model_runs_wait_for_a_model_slot_apart_from_builds() {
     let d = short_of_memory();
     let mut h = d.human();

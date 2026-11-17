@@ -894,9 +894,17 @@ fn biggest_by_memory(procs: HashMap<String, (u32, u64)>) -> Vec<String> {
 
 /// Memory pressure reached `system.busy_memory`: raise a needs-you naming the terminals using the
 /// most (on the biggest one), once per spell; close it once the pressure has been under it for
-/// CALM_TICKS.
+/// CALM_TICKS. With `guard.memory_alert` off there's no needs-you (one already up is closed), but
+/// the hold and the events stay.
 fn memory_alert(d: &Daemon) {
     let l = load(d);
+    let alert = d.setting("guard.memory_alert").as_bool().unwrap_or(true);
+    if !alert {
+        let open = d.guard.inner().memory_spell.as_mut().and_then(|item| item.take());
+        if let Some(id) = open {
+            d.close_needs_you(&id, json!({ "kind": "done" }), Actor::system());
+        }
+    }
     let raise = {
         let mut g = d.guard.inner();
         if l.memory_held {
@@ -923,11 +931,13 @@ fn memory_alert(d: &Daemon) {
         return;
     }
     let biggest = l.memory_top.first();
-    let title = format!("The Mac is short of memory (pressure {})", l.memory_pressure.as_str());
-    let mut item = d.new_needs_you(NeedsYouKind::Note, title, Actor::system(), biggest.map(|t| t.session_id.clone()));
-    item.detail = memory_detail(&l);
-    item.bulk_safe = true;
-    let item = Some(d.raise_needs_you(item).id);
+    let item = alert.then(|| {
+        let title = format!("The Mac is short of memory (pressure {})", l.memory_pressure.as_str());
+        let mut item = d.new_needs_you(NeedsYouKind::Note, title, Actor::system(), biggest.map(|t| t.session_id.clone()));
+        item.detail = memory_detail(&l);
+        item.bulk_safe = true;
+        d.raise_needs_you(item).id
+    });
     d.guard.inner().memory_spell = Some(item.clone());
     log(&format!("memory pressure {}: {} compressed, {} swap", l.memory_pressure.as_str(), sys::bytes_label(l.compressed_bytes), sys::bytes_label(l.swap_used_bytes)));
     let mut data = json!(l);
