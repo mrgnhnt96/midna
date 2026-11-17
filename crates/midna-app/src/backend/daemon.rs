@@ -40,6 +40,10 @@ const SLOW_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Idle control connections kept open; more are opened while calls overlap.
 const MAX_IDLE: usize = 4;
 
+/// Frames a stream over a drive link keeps in flight (midnad caps credit at `term::MAX_CREDIT`,
+/// 4). One would make every frame wait a Wi-Fi round trip; a few is enough to hide it.
+const LINK_FRAME_WINDOW: u32 = 3;
+
 /// What a backend connects to.
 #[derive(Clone)]
 enum Target {
@@ -134,6 +138,15 @@ impl DaemonBackend {
     /// Another of my Macs, through a drive link `local` (this Mac's backend) opens.
     pub fn link(local: Arc<dyn Backend>, mac: Mac) -> Self {
         DaemonBackend { target: Target::Link(Arc::new(Link { local, mac, socket: Mutex::new(None), refused: Mutex::new(None) })), idle: Mutex::new(Vec::new()) }
+    }
+
+    /// Frames a stream may have in flight: one locally, as midnad has always given, a few over
+    /// a drive link. Older midnads keep one credit at most, so the extra asks do no harm there.
+    fn frame_window(&self) -> u32 {
+        match self.target {
+            Target::Local(_) => 1,
+            Target::Link(_) => LINK_FRAME_WINDOW,
+        }
     }
 
     fn socket(&self) -> std::io::Result<PathBuf> {
@@ -401,7 +414,11 @@ impl Backend for DaemonBackend {
             sink.end();
         })?;
         let st = Arc::new(DaemonStream { w: Mutex::new(writer), closed: AtomicBool::new(false) });
-        st.want();
+        // Attaching grants one frame. Over a drive link, ask for a few in flight so scrolling
+        // isn't held to one frame per Wi-Fi round trip; a local stream keeps the one.
+        for _ in 1..self.frame_window() {
+            st.want();
+        }
         Ok(st)
     }
 }

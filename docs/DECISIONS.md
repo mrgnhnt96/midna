@@ -85,7 +85,7 @@
 - **The CLI is found via** `MIDNA_CLI_PATH`, else a `midna` next to the midnad executable (or one directory up), else `midna` on PATH.
 - **GUI fan-out.** Human connections that call `events.subscribe` also receive `window.command` notifications. `window.list.gui_connected` probes them with a blank line, which clients ignore.
 - **Frame streams:**
-  - A new attach gets one credit and a full frame.
+  - A new attach gets one credit and a full frame. Each want adds one, up to 4. The app keeps 1 in flight locally and 3 over a drive link (older daemons hold one credit at most, so the extra wants are harmless there).
   - When several clients attach to the same session, each one accumulates merged dirty rows while it has no credit.
   - Frames are built only when at least one client has credit.
 - **CLI exit codes:**
