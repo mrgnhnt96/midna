@@ -18,9 +18,22 @@ pub fn app_for(scheme: &str) -> Option<String> {
     if let Some(app) = APPS.lock().unwrap_or_else(|e| e.into_inner()).get(&scheme) {
         return app.clone();
     }
-    let app = ls::default_app(&format!("{scheme}://"));
+    let app = ls::default_app(&format!("{scheme}://")).and_then(|p| name(&p));
     APPS.lock().unwrap_or_else(|e| e.into_inner()).insert(scheme, app.clone());
     app
+}
+
+/// The bundle of the app that opens `url`, an app link (`taskboard://…`; never http(s) or file).
+pub fn app_bundle(url: &str) -> Option<std::path::PathBuf> {
+    let (scheme, _) = url.split_once("://")?;
+    app_for(scheme)?;
+    ls::default_app(url)
+}
+
+/// `Taskboard.app` -> `Taskboard`.
+fn name(bundle: &std::path::Path) -> Option<String> {
+    let name = bundle.file_stem()?.to_string_lossy().into_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986).
@@ -66,8 +79,8 @@ mod ls {
     /// kLSRolesAll.
     const ROLES_ALL: u32 = 0xFFFF_FFFF;
 
-    /// The default app for `url`, by its bundle's name (`Taskboard.app` -> `Taskboard`).
-    pub fn default_app(url: &str) -> Option<String> {
+    /// The bundle of the default app for `url`.
+    pub fn default_app(url: &str) -> Option<std::path::PathBuf> {
         let s = core_foundation::string::CFString::new(url);
         let url = unsafe { core_foundation_sys::url::CFURLCreateWithString(kCFAllocatorDefault, s.as_concrete_TypeRef(), std::ptr::null()) };
         if url.is_null() {
@@ -79,9 +92,7 @@ mod ls {
             return None;
         }
         let app = unsafe { CFURL::wrap_under_create_rule(app) };
-        let path = app.to_path()?;
-        let name = path.file_stem()?.to_string_lossy().into_owned();
-        (!name.is_empty()).then_some(name)
+        app.to_path()
     }
 }
 

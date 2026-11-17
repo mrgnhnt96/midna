@@ -314,9 +314,17 @@ pub fn actions_approve(d: &Daemon, ctx: &Ctx, p: LinkActionsApproveParams) -> R 
 }
 
 /// `links.preview`: what a link's hover card shows, read on this Mac (for a window on another
-/// Mac that drives this one, the files and `gh` here, not there).
+/// Mac that drives this one, the files, `gh` and preview commands here, not there).
 pub fn preview(p: LinksPreviewParams) -> R {
     use midna_proto::link_preview::{GithubLink, read_path};
+    use midna_proto::preview_cmd;
+    if let Some(argv) = &p.preview {
+        if !was_issued(&p.target, argv) {
+            return Err(RpcError::refused(format!("not a preview command this Mac's link patterns gave for {}", p.target)));
+        }
+        let out = preview_cmd::run_pattern(argv, user_path(), preview_cmd::PATTERN_TIMEOUT);
+        return app_card(out, &p.target);
+    }
     if let Some(g) = GithubLink::parse(&p.target) {
         let out = crate::git::gh_available().then(|| {
             let args = g.gh_args();
@@ -329,9 +337,59 @@ pub fn preview(p: LinksPreviewParams) -> R {
             None => Err(RpcError::not_found(format!("gh couldn't read {}", p.target))),
         };
     }
+    if let Some(bundle) = crate::schemes::app_bundle(&p.target) {
+        let cmd = preview_cmd::preview_command(&bundle);
+        let out = cmd.and_then(|(path, args)| preview_cmd::run_preview(&path, &args, &p.target, preview_cmd::APP_TIMEOUT));
+        return app_card(out, &p.target);
+    }
     let path = std::path::Path::new(&p.target);
     if !path.is_absolute() {
-        return Err(RpcError::bad_params(format!("not an absolute path or a GitHub link: {}", p.target)));
+        return Err(RpcError::bad_params(format!("not an absolute path, a GitHub link or an app link: {}", p.target)));
     }
     ok(read_path(path, p.line))
+}
+
+/// A preview command's output as the card's JSON; the app reads what it shows.
+fn app_card(out: Option<Vec<u8>>, target: &str) -> R {
+    match out.and_then(|o| serde_json::from_slice::<serde_json::Value>(&o).ok()).filter(serde_json::Value::is_object) {
+        Some(json) => ok(LinkPreview::App { json }),
+        None => Err(RpcError::not_found(format!("no preview for {target}"))),
+    }
+}
+
+/// The login shell's PATH, which preview commands run with (midnad's own from launchd is
+/// minimal), read once.
+fn user_path() -> &'static str {
+    static PATH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| midna_proto::preview_cmd::user_path(true));
+    &PATH
+}
+
+/// A link pattern's preview command `session.link_at` gave, with its link, this long ago or less
+/// still runs for `links.preview`.
+const ISSUED_FOR: std::time::Duration = std::time::Duration::from_secs(600);
+const ISSUED_MAX: usize = 256;
+
+type Issued = std::collections::VecDeque<(std::time::Instant, String, Vec<String>)>;
+
+/// The preview commands `session.link_at` gave lately. `links.preview` runs only these, so a
+/// caller can't have it run a command the human's (or an app's) link patterns didn't make.
+fn issued_list() -> std::sync::MutexGuard<'static, Issued> {
+    static ISSUED: std::sync::LazyLock<std::sync::Mutex<Issued>> = std::sync::LazyLock::new(Default::default);
+    let mut l = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
+    l.retain(|(at, _, _)| at.elapsed() < ISSUED_FOR);
+    l
+}
+
+/// `session.link_at` gave `argv` as `url`'s preview command.
+pub fn issued(url: &str, argv: &[String]) {
+    let mut l = issued_list();
+    l.retain(|(_, u, a)| !(u == url && a == argv));
+    if l.len() >= ISSUED_MAX {
+        l.pop_front();
+    }
+    l.push_back((std::time::Instant::now(), url.to_string(), argv.to_vec()));
+}
+
+fn was_issued(url: &str, argv: &[String]) -> bool {
+    issued_list().iter().any(|(_, u, a)| u == url && a == argv)
 }

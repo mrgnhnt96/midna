@@ -5,7 +5,7 @@
 //!
 //! Steps: `wait:MS`, `key:KEYSTROKE` (e.g. `key:ctrl-c`, `key:cmd-up`), `text:STRING` (typed
 //! key by key), `run:CMD` (text + enter), `paste:TEXT` (a ⌘V of TEXT, `\\n` = newline), `wheel:PIXELS` (negative = toward history), `drag:C0,R0,C1,R1[,alt]`,
-//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `preview:PATH[:LINE]|URL` (a link's hover card), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `benchwheel:X,Y,MS[,TURN]` (trackpad scrolls at a window point, e.g. over the sidebar, each timed to its frame, turning every TURN deltas of 12px), `switch:ROUNDS`, `quit`, and with the
+//! `click:C,R[,COUNT][,cmd|shift]`, `clickxy:X,Y[,COUNT][,cmd|shift]` and `dragxy:X0,Y0,X1,Y1` and `hoverxy:X,Y` (window points), `linkmenu:C,R` (the link menu for the link at a cell), `preview:PATH[:LINE]|URL` (a link's hover card; an app scheme's URL, e.g. `taskboard://T42`, is that app's link), `release` (all modifiers up), `split`, `stack`, `focus:main|split`, `bench:MS`, `benchpane:MS`, `benchwheel:X,Y,MS[,TURN]` (trackpad scrolls at a window point, e.g. over the sidebar, each timed to its frame, turning every TURN deltas of 12px), `switch:ROUNDS`, `quit`, and with the
 //! `snapshot` feature `shot:NAME` (saves `$MIDNA_SHOT_DIR/terminal-NAME.png`, default `.`).
 use crate::app::MainWindow;
 use crate::terminal::TerminalView;

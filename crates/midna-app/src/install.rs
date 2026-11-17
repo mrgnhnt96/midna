@@ -15,7 +15,6 @@ use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
@@ -321,31 +320,7 @@ pub fn cli_link_dir_pinned() -> bool {
 
 /// The user's PATH as their login shell sets it (the app's own PATH from launchd is minimal).
 /// Reads only; never edits shell files.
-pub fn login_shell_path() -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let mut child = Command::new(&shell)
-        .args(["-l", "-i", "-c", "printf '\\n__MIDNA_PATH__%s\\n' \"$PATH\""])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let t0 = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if t0.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
-    out.lines().find_map(|l| l.strip_prefix("__MIDNA_PATH__")).map(str::to_string)
-}
+pub use midna_proto::preview_cmd::login_shell_path;
 
 fn dir_on_path(dir: &Path, path: &str) -> bool {
     let want = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());

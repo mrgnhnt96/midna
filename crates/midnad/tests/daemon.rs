@@ -1168,6 +1168,39 @@ fn apps_register_their_own_link_patterns() {
 }
 
 #[test]
+fn link_pattern_previews_run_only_as_link_at_gave_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let card = d.home.join("zq-card");
+    std::fs::write(&card, "#!/bin/sh\necho \"{\\\"title\\\": \\\"$1 on this Mac\\\"}\"\n").unwrap();
+    std::fs::set_permissions(&card, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rule = format!(r#"\b(ZQ\d+)\b = https://tracker.dev/$1 preview:"{} $1""#, card.display());
+    call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [rule] }));
+    let argv = json!([card, "ZQ5"]);
+    // Nothing link_at gave yet: not run.
+    let e = call_err(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": argv }));
+    assert_eq!(e.code, REFUSED, "{e:?}");
+
+    let id = open_sh(&mut c);
+    call(&mut c, "session.input", json!({ "id": id, "text": "clear; echo 'see ZQ5 now'", "enter": true }));
+    let at = |c: &mut Client| (0..24).map(|row| call(c, "session.link_at", json!({ "id": id, "col": 5, "row": row }))).find(|l| l["kind"] != "none");
+    let link = wait_for(5, "pattern link", || at(&mut c));
+    assert_eq!((&link["target"], &link["preview"]), (&json!("https://tracker.dev/ZQ5"), &argv), "{link}");
+    // As link_at gave it, it runs here and its card comes back.
+    let p = call(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": argv }));
+    assert_eq!(p, json!({ "kind": "app", "json": { "title": "ZQ5 on this Mac" } }));
+    // Not for another link, nor with other words.
+    let e = call_err(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ6", "preview": argv }));
+    assert_eq!(e.code, REFUSED);
+    let e = call_err(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": [card, "ZQ5", "--rm"] }));
+    assert_eq!(e.code, REFUSED);
+    // A scheme no app opens isn't a link to preview.
+    let e = call_err(&mut c, "links.preview", json!({ "target": "midna-test-unregistered-scheme://x" }));
+    assert!(e.message.contains("not an absolute path, a GitHub link or an app link"), "{e:?}");
+}
+
+#[test]
 fn app_link_menu_commands_wait_for_the_humans_approval() {
     let mut d = TestDaemon::start();
     let mut agent = d.agent(None);
