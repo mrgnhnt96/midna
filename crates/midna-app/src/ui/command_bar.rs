@@ -252,8 +252,13 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
         cmds.extend(commands::ide_commands(&m.ide.list, cur.as_deref(), &dir, &key));
     }
     cmds.extend(m.palette.user.iter().cloned());
-    let macs: Vec<commands::OtherMac> = m
-        .palette
+    cmds.extend(commands::mac_commands(&other_macs(m)));
+    cmds
+}
+
+/// The other Macs as ⌘K lists them, with each one's projects once its daemon answered.
+fn other_macs(m: &MainWindow) -> Vec<commands::OtherMac<'_>> {
+    m.palette
         .macs
         .iter()
         .map(|(e, on)| commands::OtherMac {
@@ -262,9 +267,7 @@ pub fn registry(m: &MainWindow) -> Vec<Command> {
             detail: commands::mac_detail(&e.detail(), on.as_ref().map(|o| o.terminals), on.as_ref().map_or(0, |o| o.needs)),
             projects: on.as_ref().map_or(&[], |o| o.projects.as_slice()),
         })
-        .collect();
-    cmds.extend(commands::mac_commands(&macs));
-    cmds
+        .collect()
 }
 
 struct Row {
@@ -276,6 +279,9 @@ struct Row {
 fn rows(m: &MainWindow) -> Vec<Row> {
     if prompt_mode(m) {
         return prompt_rows(m);
+    }
+    if let Some(rows) = mac_agent_rows(m) {
+        return rows;
     }
     let home = std::env::var("HOME").unwrap_or_default();
     // "Add project folder…": a path search instead of commands
@@ -301,6 +307,52 @@ pub fn wire(p: &Palette, cx: &mut Context<MainWindow>) {
         if text != m.palette.query {
             set_query(m, text, cx);
         }
+    })
+    .detach();
+}
+
+/// "Start an agent on <Mac>…": a project there, then the agent's prompt.
+fn mac_agent_mode(m: &MainWindow) -> Option<commands::MacAgentStep<'_>> {
+    commands::mac_agent_step(&m.palette.query, &other_macs(m))
+}
+
+fn mac_agent_rows(m: &MainWindow) -> Option<Vec<Row>> {
+    let macs = other_macs(m);
+    let step = commands::mac_agent_step(&m.palette.query, &macs)?;
+    let head = match step {
+        commands::MacAgentStep::Project { mac, .. } => Some(format!("Projects on {}", macs[mac].name)),
+        commands::MacAgentStep::Prompt { .. } => None,
+    };
+    let cmds = commands::mac_agent_rows(step, &macs, current_agent(m));
+    Some(cmds.into_iter().enumerate().map(|(n, cmd)| Row { cmd, hits: vec![], head: head.clone().filter(|_| n == 0) }).collect())
+}
+
+/// The "Agent on <Mac>: " query a Mac row (its "Open" or "Start an agent" row) goes to on ⇥.
+fn mac_agent_entry(m: &MainWindow, cmd: &Command) -> Option<String> {
+    match &cmd.run {
+        Some(Run::Prefill { text }) if cmd.id.starts_with("mac-agent:") => Some(text.clone()),
+        Some(Run::Mac { peer, path: None }) => other_macs(m)
+            .iter()
+            .find(|x| x.peer == peer.as_deref() && !x.projects.is_empty())
+            .map(|x| commands::mac_agent_prefix(x.name, None)),
+        _ => None,
+    }
+}
+
+/// Start an agent on another Mac over its link, without opening or switching to its window.
+fn start_on_mac(m: &mut MainWindow, peer: Option<String>, params: Value, done: String, cx: &mut Context<MainWindow>) {
+    let local = crate::backend::local(&m.backend);
+    let backend = match m.palette.macs.iter().find(|(e, _)| e.mac.as_ref().map(|x| &x.peer) == peer.as_ref()).and_then(|(e, _)| e.mac.clone()) {
+        Some(mac) => crate::backend::for_mac(&local, mac),
+        None if peer.is_none() => local,
+        None => return m.toast("That Mac isn't listed any more", cx),
+    };
+    cx.spawn(async move |this, cx| {
+        let res = cx.background_executor().spawn(async move { backend.call("session.open", params) }).await;
+        let _ = this.update(cx, |m, cx| match res {
+            Ok(_) => m.toast(format!("✓ {done}"), cx),
+            Err(e) => m.toast(format!("Couldn't start the agent: {e:#}"), cx),
+        });
     })
     .detach();
 }
@@ -404,7 +456,7 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
         }
         "enter" if !md.platform => {
             let q = m.palette.query.trim().to_string();
-            if (folder_mode(m) || prompt_mode(m)) && (md.shift || n == 0) {
+            if (folder_mode(m) || prompt_mode(m) || mac_agent_mode(m).is_some()) && (md.shift || n == 0) {
                 // nothing to hand to an agent here
             } else if md.shift || (n == 0 && !q.is_empty()) {
                 ask(m, window, cx);
@@ -415,10 +467,15 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
                 }
             }
         }
-        "tab" if prompt_mode(m) => {}
-        "tab" if folder_mode(m) => {
+        "tab" if prompt_mode(m) || (md.shift && mac_agent_mode(m).is_some()) => {}
+        "tab" if matches!(mac_agent_mode(m), Some(commands::MacAgentStep::Project { .. })) || folder_mode(m) => {
             // complete to the selected folder
             if let Some(Run::Prefill { text }) = rows.get(m.palette.sel.min(n.saturating_sub(1))).and_then(|r| r.cmd.run.clone()) {
+                set_query(m, text, cx);
+            }
+        }
+        "tab" if !md.shift && rows.get(m.palette.sel.min(n.saturating_sub(1))).and_then(|r| mac_agent_entry(m, &r.cmd)).is_some() => {
+            if let Some(text) = rows.get(m.palette.sel.min(n.saturating_sub(1))).and_then(|r| mac_agent_entry(m, &r.cmd)) {
                 set_query(m, text, cx);
             }
         }
@@ -507,6 +564,7 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
             // After this window's update: it brings another window forward or opens one.
             cx.defer(move |cx| crate::macs::open(&local, &peer, path, cx));
         }
+        Run::MacAgent { peer, params, done } => start_on_mac(m, peer, params, done, cx),
         Run::OpenIde { ide, dir } => {
             if let Some(ide) = m.ide.list.iter().find(|i| i.id == ide).cloned() {
                 if crate::ide::folder(m).as_deref() == Some(dir.as_str()) {
@@ -756,6 +814,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     }
     let folders = folder_mode(m);
     let prompts_mode = prompt_mode(m);
+    let mac_agent = mac_agent_mode(m);
     if prompts_mode && rows.is_empty() {
         let why = match m.selected_session() {
             Some(s) if s.agent.is_none() => "Prompts are listed for agent terminals.",
@@ -764,6 +823,9 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
             None => "Select an agent terminal first.",
         };
         list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child(why));
+    } else if let (true, Some(commands::MacAgentStep::Project { mac, .. })) = (none, mac_agent) {
+        let name = other_macs(m).get(mac).map(|x| x.name.to_string()).unwrap_or_default();
+        list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child(format!("No project on {name} matches.")));
     } else if none && folders {
         list = list.child(div().px(px(12.)).py(px(14.)).text_color(t.dim).child("No folder here."));
     } else if none {
@@ -776,7 +838,7 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     let project = if root { None } else { m.current_project_id() };
     let project_name = current_project(m).map(|p| p.name.clone()).unwrap_or_else(|| "root".into());
     let scope_name = if root { "root".to_string() } else { project_name.clone() };
-    let ask_box = (!empty && !folders && !prompts_mode).then(|| {
+    let ask_box = (!empty && !folders && !prompts_mode && mac_agent.is_none()).then(|| {
         let seg = |id: &'static str, on: bool| {
             let d = div().id(id).flex().items_center().gap(px(6.)).h(px(24.)).px(px(10.)).rounded(px(6.)).text_size(px(12.)).cursor_pointer();
             if on { d.bg(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD) } else { d.text_color(t.dim) }
@@ -891,6 +953,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
     let other_label = if m.empty_opens_agent() { "⌥↩ open terminal" } else { "⌥↩ open agent" };
     let enter_label = if prompts_mode {
         "jump"
+    } else if let Some(step) = mac_agent {
+        if matches!(step, commands::MacAgentStep::Project { .. }) { "pick project" } else { "start" }
     } else if none {
         "ask agent"
     } else if sel_danger {
@@ -915,7 +979,8 @@ pub fn render(m: &MainWindow, t: &Theme, _window: &mut Window, cx: &mut Context<
         .child(format!("↩ {enter_label}"))
         .when(sel_project && !prompts_mode, |d| d.child(other_label))
         .when(prompts_mode, |d| d.child("prompts sent before a /clear can't be jumped to"))
-        .when(!prompts_mode, |d| {
+        .when(matches!(mac_agent, Some(commands::MacAgentStep::Prompt { .. })), |d| d.child("⇥ agent"))
+        .when(!prompts_mode && mac_agent.is_none(), |d| {
             d.child("⇧↩ ask instead")
                 .child("⇥ agent · ⇧⇥ scope")
                 .child(div().flex_1())

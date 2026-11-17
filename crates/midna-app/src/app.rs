@@ -1552,6 +1552,15 @@ impl MainWindow {
                     // dev: a project's … menu open (`project-menu:p_taskboard1`)
                     s if s.starts_with("project-menu:") => self.menu = Menu::Project(s["project-menu:".len()..].to_string()),
                     "commands" => self.set_overlay(Overlay::CommandBar, window, cx),
+                    // dev: ⌘K open on a typed query (`commands:Agent on Studio: `), once the other Macs are listed
+                    s if s.starts_with("commands:") => {
+                        let q = s["commands:".len()..].to_string();
+                        cx.spawn_in(window, async move |this, cx| {
+                            cx.background_executor().timer(Duration::from_millis(1200)).await;
+                            let _ = this.update_in(cx, |m, window, cx| crate::ui::command_bar::open_with(m, q, window, cx));
+                        })
+                        .detach();
+                    }
                     "needs" => self.set_overlay(Overlay::NeedsYou, window, cx),
                     // dev: a needs-you item by id (`needs:n_settng`)
                     // (`needs:n_pair01+drive`: with a pairing card's drive box ticked)

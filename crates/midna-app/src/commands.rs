@@ -66,6 +66,10 @@ pub enum Run {
     /// set. `peer`: that Mac's fingerprint (None: this Mac). Built-in rows only.
     #[serde(skip)]
     Mac { peer: Option<String>, path: Option<String> },
+    /// `session.open` on another Mac (`peer`; None: this Mac), leaving its window as it is.
+    /// `done` is the toast once it started. Built-in rows only.
+    #[serde(skip)]
+    MacAgent { peer: Option<String>, params: Value, done: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1098,6 +1102,18 @@ pub fn mac_commands(macs: &[OtherMac]) -> Vec<Command> {
         let id = m.peer.unwrap_or("here");
         let run = Run::Mac { peer: m.peer.map(str::to_string), path: None };
         out.push(Command::new(format!("mac:{id}"), CmdIcon::Mac, format!("Open {}", m.name), run).sub(m.detail.clone()).kw("mac window switch").project(m.name).group("Macs"));
+        // Only once its daemon listed somewhere to start one.
+        if !m.projects.is_empty() {
+            let run = Run::Prefill { text: mac_agent_prefix(m.name, None) };
+            out.push(
+                Command::new(format!("mac-agent:{id}"), CmdIcon::Mac, format!("Start an agent on {}…", m.name), run)
+                    .sub("In a project there, without opening its window")
+                    .kw("agent claude codex new start remote mac")
+                    .keys("⇥".into())
+                    .project(m.name)
+                    .group("Macs"),
+            );
+        }
     }
     for m in macs {
         let id = m.peer.unwrap_or("here");
@@ -1113,6 +1129,81 @@ pub fn mac_commands(macs: &[OtherMac]) -> Vec<Command> {
         }
     }
     out
+}
+
+/// ⌘K query prefix for starting an agent on another Mac: "Agent on Studio: " (the rest finds a
+/// project there), then "Agent on Studio in garden-app: " (the rest is the agent's prompt).
+pub fn mac_agent_prefix(mac: &str, project: Option<&str>) -> String {
+    match project {
+        Some(p) => format!("Agent on {mac} in {p}: "),
+        None => format!("Agent on {mac}: "),
+    }
+}
+
+/// Where a [`mac_agent_prefix`] query is: picking a project on `macs[mac]`, or writing the
+/// prompt for an agent in its project `project`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MacAgentStep<'q> {
+    Project { mac: usize, filter: &'q str },
+    Prompt { mac: usize, project: usize, prompt: &'q str },
+}
+
+/// The step a query is at, when it starts with a prefix for one of `macs` (and its projects).
+pub fn mac_agent_step<'q>(query: &'q str, macs: &[OtherMac]) -> Option<MacAgentStep<'q>> {
+    for (i, m) in macs.iter().enumerate() {
+        for (j, p) in m.projects.iter().enumerate() {
+            if let Some(rest) = query.strip_prefix(&mac_agent_prefix(m.name, Some(&p.name))) {
+                return Some(MacAgentStep::Prompt { mac: i, project: j, prompt: rest });
+            }
+        }
+    }
+    let i = macs.iter().position(|m| !m.projects.is_empty() && query.starts_with(&mac_agent_prefix(m.name, None)))?;
+    Some(MacAgentStep::Project { mac: i, filter: &query[mac_agent_prefix(macs[i].name, None).len()..] })
+}
+
+/// Rows for a [`MacAgentStep`]: the Mac's projects matching the filter (↩ goes on to the
+/// prompt), then the one row that starts `agent` there with what was typed.
+pub fn mac_agent_rows(step: MacAgentStep, macs: &[OtherMac], agent: AgentKind) -> Vec<Command> {
+    match step {
+        MacAgentStep::Project { mac, filter } => {
+            let m = &macs[mac];
+            let id = m.peer.unwrap_or("here");
+            let all: Vec<Command> = m
+                .projects
+                .iter()
+                .map(|p| {
+                    let run = Run::Prefill { text: mac_agent_prefix(m.name, Some(&p.name)) };
+                    Command::new(format!("mac-agent:{id}:{}", p.path), CmdIcon::Project, p.name.clone(), run).sub(tilde_there(&p.path))
+                })
+                .collect();
+            if filter.trim().is_empty() {
+                return all;
+            }
+            search(&all, filter, all.len()).into_iter().map(|h| h.cmd.clone()).collect()
+        }
+        MacAgentStep::Prompt { mac, project, prompt } => {
+            let m = &macs[mac];
+            let p = &m.projects[project];
+            let prompt = prompt.trim();
+            let name = agent_name(agent);
+            let mut params = json!({"kind": "agent", "agent": agent, "project_id": p.id});
+            if !prompt.is_empty() {
+                params["prompt"] = json!(prompt);
+                params["name"] = json!(short(prompt, 28));
+            }
+            let done = match prompt {
+                "" => format!("Started {name} in {} on {}", p.name, m.name),
+                _ => format!("Started {name} in {} on {}: “{}”", p.name, m.name, short(prompt, 40)),
+            };
+            let run = Run::MacAgent { peer: m.peer.map(str::to_string), params, done };
+            let icon = if agent == AgentKind::Codex { CmdIcon::Codex } else { CmdIcon::Claude };
+            let sub = match prompt {
+                "" => "Type what it should do, or ↩ to start it waiting for you".to_string(),
+                _ => format!("“{}”", short(prompt, 80)),
+            };
+            vec![Command::new(format!("mac-agent-start:{}:{}", m.peer.unwrap_or("here"), p.path), icon, format!("Start {name} in {} on {}", p.name, m.name), run).sub(sub)]
+        }
+    }
 }
 
 /// Search results with the other Macs' rows under their headings ("Macs", "Projects on
@@ -1772,8 +1863,9 @@ mod tests {
         cmds.extend(mac_commands(&macs));
         let got = group_hits(search(&cmds, "studio", 12), "On this Mac");
         assert_eq!(heads(&got)[0], (Some("Macs".into()), "Open Studio"));
-        assert_eq!(heads(&got)[1], (Some("Projects on Studio".into()), "garden-app"));
-        assert_eq!(heads(&got)[2], (None, "midna"));
+        assert_eq!(heads(&got)[1], (None, "Start an agent on Studio…"));
+        assert_eq!(heads(&got)[2], (Some("Projects on Studio".into()), "garden-app"));
+        assert_eq!(heads(&got)[3], (None, "midna"));
         // a project typed by name opens there, under its Mac
         assert_eq!(heads(&group_hits(search(&cmds, "garden", 12), "On this Mac"))[0], (Some("Projects on Studio".into()), "garden-app"));
     }
@@ -1813,6 +1905,59 @@ mod tests {
         assert_eq!(got[0], (Some("Macs".into()), "Open Studio"));
         let lights = got.iter().find(|h| h.1 == "Studio lights").unwrap();
         assert_eq!(lights.0.as_deref(), Some("On this Mac"));
+    }
+
+    #[test]
+    fn a_mac_with_projects_offers_to_start_an_agent_there() {
+        let projects = on_studio();
+        let macs = [
+            OtherMac { peer: Some("dddd"), name: "Studio", detail: "Online".into(), projects: &projects },
+            OtherMac { peer: Some("eeee"), name: "Office iMac", detail: "Offline".into(), projects: &[] },
+        ];
+        let rows = mac_commands(&macs);
+        let start = rows.iter().find(|c| c.title == "Start an agent on Studio…").unwrap();
+        assert_eq!(start.sub, "In a project there, without opening its window");
+        assert_eq!(start.keys.as_deref(), Some("⇥"));
+        assert_eq!(start.run, Some(Run::Prefill { text: "Agent on Studio: ".into() }));
+        assert!(!rows.iter().any(|c| c.title.starts_with("Start an agent on Office")), "nothing listed there: offline, or not asked yet");
+        let (p, s, n) = snapshot_fixture();
+        let mut cmds = build_fixture(&p, &s, &n, &|_| None);
+        cmds.extend(rows);
+        let got = heads(&group_hits(search(&cmds, "studio", 12), "On this Mac"));
+        assert_eq!(got[..2], [(Some("Macs".into()), "Open Studio"), (None, "Start an agent on Studio…")]);
+    }
+
+    #[test]
+    fn starting_an_agent_on_a_mac_picks_a_project_then_takes_a_prompt() {
+        let projects = on_studio();
+        let macs = [OtherMac { peer: Some("dddd"), name: "Studio", detail: "Online".into(), projects: &projects }];
+        assert_eq!(mac_agent_step("Agent on Office: ", &macs), None);
+        assert_eq!(mac_agent_step("studio", &macs), None);
+        let step = mac_agent_step("Agent on Studio: gar", &macs).unwrap();
+        assert_eq!(step, MacAgentStep::Project { mac: 0, filter: "gar" });
+        let rows = mac_agent_rows(step, &macs, AgentKind::Claude);
+        assert_eq!(rows.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["garden-app"]);
+        assert_eq!(rows[0].sub, "~/code/garden-app");
+        assert_eq!(rows[0].run, Some(Run::Prefill { text: "Agent on Studio in garden-app: ".into() }));
+        let all = mac_agent_rows(mac_agent_step("Agent on Studio: ", &macs).unwrap(), &macs, AgentKind::Claude);
+        assert_eq!(all.len(), projects.len());
+
+        let garden = projects.iter().find(|p| p.name == "garden-app").unwrap();
+        let step = mac_agent_step("Agent on Studio in garden-app: ", &macs).unwrap();
+        let rows = mac_agent_rows(step, &macs, AgentKind::Claude);
+        assert_eq!(rows[0].title, "Start Claude in garden-app on Studio");
+        let Some(Run::MacAgent { peer, params, done }) = rows[0].run.clone() else { panic!("{:?}", rows[0].run) };
+        assert_eq!(peer.as_deref(), Some("dddd"));
+        assert_eq!(params, json!({"kind": "agent", "agent": "claude", "project_id": garden.id}), "no prompt: it waits there");
+        assert_eq!(done, "Started Claude in garden-app on Studio");
+
+        let step = mac_agent_step("Agent on Studio in garden-app: fix the build", &macs).unwrap();
+        let rows = mac_agent_rows(step, &macs, AgentKind::Codex);
+        assert_eq!(rows[0].title, "Start Codex in garden-app on Studio");
+        assert_eq!(rows[0].sub, "“fix the build”");
+        let Some(Run::MacAgent { params, .. }) = rows[0].run.clone() else { panic!() };
+        assert_eq!(params["prompt"], "fix the build");
+        assert_eq!(params["agent"], "codex");
     }
 
     #[test]
