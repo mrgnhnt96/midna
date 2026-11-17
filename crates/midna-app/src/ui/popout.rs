@@ -52,11 +52,6 @@ impl PopOut {
     }
 
     fn add_images(&mut self, sources: Vec<crate::annotate::Source>, window: &mut Window, cx: &mut Context<Self>) {
-        // Another Mac's terminal: asked about in its bar, then sent there (`terminal::send_image`).
-        if self.term.read(cx).remote_mac().is_some() {
-            self.term.update(cx, |t, cx| t.offer_images(sources, cx));
-            return;
-        }
         self.open_sheet(window, cx);
         self.annot.update(cx, |v, cx| v.add(sources, window, cx));
     }
@@ -130,9 +125,7 @@ impl Render for PopOut {
             .on_action(cx.listener(move |p, _: &crate::actions::ToggleKeepOnTop, w, cx| p.set_on_top(!on, w, cx)))
             .on_action(cx.listener(|p, _: &crate::ui::queue::ToggleQueue, w, cx| p.toggle_queue(w, cx)))
             .on_action(cx.listener(|p, _: &crate::annotate::AddImage, w, cx| {
-                if p.term.read(cx).remote_mac().is_some() {
-                    p.term.update(cx, |t, cx| t.pick_images(cx));
-                } else if p.main.upgrade().is_some_and(|m| crate::annotate::is_agent(m.read(cx), &p.session)) {
+                if p.main.upgrade().is_some_and(|m| crate::annotate::is_agent(m.read(cx), &p.session)) {
                     p.open_sheet(w, cx);
                 } else {
                     cx.propagate();
@@ -161,12 +154,6 @@ impl Render for PopOut {
             .when(self.annot.read(cx).is_open(), |d| d.child(self.annot.clone()))
             .when_some(self.toast.clone(), |d, (msg, _)| d.child(super::toast(&t, msg).bottom(px(16.))))
     }
-}
-
-/// `session`'s terminal in its pop-out, when it's popped out.
-pub fn view(session: &str, cx: &App) -> Option<Entity<TerminalView>> {
-    let h = cx.try_global::<Popped>()?.0.get(session).copied()?;
-    h.read(cx).ok().map(|p| p.term.clone())
 }
 
 pub fn is_popped(session: &str, cx: &App) -> bool {

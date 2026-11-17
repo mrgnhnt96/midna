@@ -30,7 +30,7 @@ mod pr_status;
 mod prompt_nav;
 mod queue_pill;
 mod secret_paste;
-mod send_image;
+pub mod send_image;
 
 pub use link_preview::share as share_preview_env;
 pub(crate) use pr_status::stale as link_stale;
@@ -180,8 +180,6 @@ pub struct TerminalView {
     project_id: Option<String>,
     /// Asking whether to store the secrets in a paste (`terminal/secret_paste.rs`).
     secret_sheet: Option<secret_paste::Sheet>,
-    /// Images waiting to be sent to the Mac this remote window drives (`send_image`).
-    send_bar: Option<send_image::Bar>,
     /// Claude Code or Codex found running in this terminal's full-screen app (started from a
     /// shell), probed each time the alternate screen turns on.
     agent_proc: Option<&'static str>,
@@ -504,7 +502,6 @@ impl TerminalView {
             agent: None,
             project_id: None,
             secret_sheet: None,
-            send_bar: None,
             agent_press: None,
             press_at: None,
             agent_proc: None,
@@ -838,7 +835,7 @@ impl TerminalView {
         if self.secret_sheet.is_some() {
             return;
         }
-        if self.link_menu_key(ks, window, cx) || self.send_bar_key(ks, cx) {
+        if self.link_menu_key(ks, window, cx) {
             cx.stop_propagation();
             return;
         }
@@ -1788,10 +1785,26 @@ impl TerminalView {
         let Some(out) = crate::annotate::take(&self.session_id, cx) else {
             return false;
         };
-        let images = if self.agent_kind() == Some("claude") { out.paths.len() } else { 0 };
+        let mut images = if self.agent_kind() == Some("claude") { out.paths.len() } else { 0 };
         let mut steps = out.steps();
         steps.push(ClientMsg::Key(enter.clone()));
+        // Another Mac's terminal: the images go there first, and that Mac pastes each path (and
+        // waits for its chip) before the notes and the ↩ follow.
+        let there = self.remote_mac().map(|mac| (mac, self.backend.clone(), self.session_id.clone(), out.paths.clone()));
+        if there.is_some() {
+            steps.drain(..out.paths.len());
+            images = 0;
+        }
         cx.spawn(async move |this, cx| {
+            if let Some((mac, backend, id, paths)) = there.filter(|t| !t.3.is_empty()) {
+                let sent = cx.background_executor().spawn(async move { send_image::send_there(&*backend, &id, &paths, &mac) }).await;
+                if let Err(e) = sent {
+                    // Nothing more goes: the text stays in the input, to send again.
+                    let _ = this.update(cx, |t, cx| t.say(e, cx));
+                    return;
+                }
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+            }
             let deadline = Instant::now() + image_chips::WAIT;
             for (i, s) in steps.iter().enumerate() {
                 if i > 0 {
@@ -1883,21 +1896,6 @@ impl TerminalView {
     }
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
-        if self.find.is_none() && self.remote_mac().is_some() {
-            // Another Mac's terminal: an image is asked about before it's sent there, and a path
-            // to one here means nothing there, so it's offered too (in agents, as the sheet does).
-            let paths = match self.is_agent() {
-                true => cx.read_from_clipboard().and_then(|c| c.text()).map(|t| crate::annotate::pasted_image_paths(&t)).unwrap_or_default(),
-                false => vec![],
-            };
-            if crate::annotate::clipboard_is_image(cx) {
-                return self.offer_images(crate::annotate::clipboard_sources(cx), cx);
-            }
-            if !paths.is_empty() {
-                return self.offer_images(paths.into_iter().map(crate::annotate::Source::Path).collect(), cx);
-            }
-            return self.paste_clipboard_text(window, cx);
-        }
         if self.find.is_none() && crate::annotate::clipboard_is_image(cx) {
             // A bare image (a screenshot): open the image sheet with it, or paste it inline. The
             // sheet is for agents; any other app gets the file.
@@ -1933,17 +1931,19 @@ impl TerminalView {
         let sources = if self.find.is_none() { crate::annotate::clipboard_sources(cx) } else { vec![] };
         if sources.is_empty() {
             self.paste_clipboard_text(window, cx);
-        } else if self.remote_mac().is_some() {
-            self.offer_images(sources, cx);
         } else {
             self.paste_images_inline(sources, cx);
         }
     }
 
     /// Normalize the images (off the UI thread, as the sheet does) and paste each path, spaced
-    /// out so Claude Code turns each one into its own `[Image #N]`.
+    /// out so Claude Code turns each one into its own `[Image #N]`. On another Mac's terminal
+    /// each goes there and that Mac pastes its own path (`send_image`).
     fn paste_images_inline(&mut self, sources: Vec<crate::annotate::Source>, cx: &mut Context<Self>) {
         self.erase_selection(cx);
+        if self.remote_mac().is_some() {
+            return self.send_images(sources, cx);
+        }
         cx.spawn(async move |this, cx| {
             let saved = cx.background_executor().spawn(async move { sources.into_iter().map(crate::annotate::save).collect::<Vec<_>>() }).await;
             let mut first = true;
@@ -1976,12 +1976,11 @@ impl TerminalView {
     /// path, escaped as a shell wants it (Claude Code reads it that way too).
     fn on_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         let (images, others) = crate::annotate::sort_dropped(paths);
-        if self.remote_mac().is_some() {
-            // Another Mac's terminal: these paths mean nothing there. Images are asked about and
-            // sent; anything else stays here, and says so.
-            return self.offer_dropped(images, others, cx);
-        }
-        if !others.is_empty() {
+        if let Some(mac) = self.remote_mac().filter(|_| !others.is_empty()) {
+            // Another Mac's terminal: a path here means nothing there. Images still go (through
+            // the sheet, or sent there); anything else stays here, and says so.
+            self.say(send_image::refusal(&others, &mac), cx);
+        } else if !others.is_empty() {
             let typed: Vec<String> = others.iter().map(|p| escaped_path(p)).collect();
             self.paste_text(&format!("{} ", typed.join(" ")), window, cx);
             cx.notify();
@@ -2860,8 +2859,6 @@ impl Render for TerminalView {
         let menu = self.render_menu(&theme, cx);
         let link_menu = self.render_link_menu(&theme, cx);
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
-        let send_bar = self.render_send_bar(&theme, cx);
-        let toast_at = if send_bar.is_some() { px(78.) } else { px(12.) };
         self.update_nav(window, cx);
         let nav = self.render_nav(&theme, window, cx);
         // Claude's pinned prompt row slides out above the top, so the conversation scrolls behind
@@ -3039,11 +3036,10 @@ impl Render for TerminalView {
             })
             .children(not_running)
             .when_some(overlay, |d, (msg, color)| d.child(chip(div().absolute().bottom(px(12.)).right(px(16.))).text_color(color).child(msg)))
-            .when_some(self.notice.as_ref().map(|n| n.0.clone()), |d, msg| d.child(crate::ui::toast(&theme, msg).bottom(toast_at)))
+            .when_some(self.notice.as_ref().map(|n| n.0.clone()), |d, msg| d.child(crate::ui::toast(&theme, msg).bottom(px(12.))))
             .children(nav)
             .children(menu)
             .children(link_menu)
-            .children(send_bar)
             .children(secret_sheet)
     }
 }

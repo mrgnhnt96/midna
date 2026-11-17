@@ -176,7 +176,7 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionSendImageParams, SessionSendImageResult>("session.send_image").mutating().human().d(
             "Save an image in this Mac's images folder and paste its path into a terminal, as session.input's `images` \
              would. Only for the person driving this Mac from another of theirs, over a drive link: their Midna sends an \
-             image they pasted or dropped there, once they confirm it. `data` is the image, base64 (PNG, JPEG, GIF or \
+             image they pasted or dropped there, when their message is sent. `data` is the image, base64 (PNG, JPEG, GIF or \
              WebP, at most 10 MB); `name` names the saved copy. Returns the saved path. Anyone else is refused outright, \
              never deferred to the human: here, attach an image with session.input's `images`."),
         m::<SessionReadParams, SessionReadResult>("session.read").d(
