@@ -4,7 +4,9 @@
 //! came from. A terminal nobody owns yet (just opened by an agent, a trigger or the CLI, or its
 //! window closed) goes to its Mac's home window: that Mac's main window focused last. The home
 //! window also takes its daemon's `window.command`s, and this Mac's posts notifications and
-//! takes update commands, so a second window doesn't double them. Sidebar rows dragged onto
+//! takes update commands, so a second window doesn't double them. Closing this Mac's last window
+//! while another Mac's is open only hides it (see [`hide`]): those duties keep a window, and it
+//! comes back as it was. Sidebar rows dragged onto
 //! another window of the same Mac move there; dropped outside every window they get a new one.
 //! A terminal never moves to another Mac's window.
 use crate::app::{MainWindow, Overlay, Screen};
@@ -34,6 +36,10 @@ pub struct Places {
     wins: Vec<(EntityId, MacId)>,
     /// The window each terminal shows in, by its Mac and its id.
     owner: HashMap<(MacId, String), EntityId>,
+    /// This Mac's last window, closed while another Mac's was open: hidden, not gone, so this
+    /// Mac's banners, sounds, badge and update commands still have a window. It shows again
+    /// the next time it's brought forward (focused).
+    hidden: Option<EntityId>,
 }
 
 impl Places {
@@ -43,6 +49,9 @@ impl Places {
     }
 
     fn focused(&mut self, id: EntityId) {
+        if self.hidden == Some(id) {
+            self.hidden = None;
+        }
         if let Some(i) = self.wins.iter().position(|w| w.0 == id) {
             let w = self.wins.remove(i);
             self.wins.insert(0, w);
@@ -52,6 +61,9 @@ impl Places {
     /// Window `id` closed: its terminals go to its Mac's home window, returned.
     fn closed(&mut self, id: EntityId) -> Option<EntityId> {
         let mac = self.mac_of(id);
+        if self.hidden == Some(id) {
+            self.hidden = None;
+        }
         self.wins.retain(|w| w.0 != id);
         self.owner.retain(|_, o| *o != id);
         mac.and_then(|mac| self.home(&mac))
@@ -110,6 +122,39 @@ impl Places {
     fn any_remote(&self) -> bool {
         self.wins.iter().any(|w| w.1.is_some())
     }
+
+    /// The windows on screen (all but a hidden one), most recently focused first.
+    fn shown(&self) -> impl Iterator<Item = &(EntityId, MacId)> {
+        self.wins.iter().filter(|w| Some(w.0) != self.hidden)
+    }
+
+    pub fn is_hidden(&self, id: EntityId) -> bool {
+        self.hidden == Some(id)
+    }
+
+    /// Closing `me` hides it instead: it's this Mac's last window on screen and another Mac's
+    /// window stays open (`leaving`: windows already on their way out).
+    fn hides_on_close(&self, me: EntityId, leaving: &[EntityId]) -> bool {
+        let stays = |w: &&(EntityId, MacId)| w.0 != me && !leaving.contains(&w.0);
+        self.hidden.is_none()
+            && self.mac_of(me) == Some(None)
+            && !self.shown().filter(stays).any(|w| w.1.is_none())
+            && self.shown().filter(stays).any(|w| w.1.is_some())
+    }
+
+    /// `id` is hidden (see `hidden`): last in line, so the window you see is the one used last.
+    fn hide(&mut self, id: EntityId) {
+        self.hidden = Some(id);
+        if let Some(i) = self.wins.iter().position(|w| w.0 == id) {
+            let w = self.wins.remove(i);
+            self.wins.push(w);
+        }
+    }
+
+    /// The hidden window, once no window is on screen (it closes then: nothing's left to quit for).
+    fn hidden_alone(&self) -> Option<EntityId> {
+        self.hidden.filter(|_| self.shown().next().is_none())
+    }
 }
 
 /// The name a window of `mac` (None: this Mac) shows in its sidebar's plate, its status bar and
@@ -149,7 +194,12 @@ impl std::ops::Deref for Registry {
 impl Registry {
     /// Another main window is open (closing this one isn't quitting).
     pub fn has_other(&self, me: EntityId) -> bool {
-        self.places.wins.iter().any(|w| w.0 != me && !self.leaving.contains(&w.0))
+        self.places.shown().any(|w| w.0 != me && !self.leaving.contains(&w.0))
+    }
+
+    /// Closing `me` hides it instead (see `Places::hidden`).
+    pub fn hides_on_close(&self, me: EntityId) -> bool {
+        self.places.hides_on_close(me, &self.leaving)
     }
 
     pub fn claim(&mut self, session: &str, me: EntityId) {
@@ -187,9 +237,14 @@ pub fn register(entity: WeakEntity<MainWindow>, id: EntityId, mac: MacId, window
     let reg = shared(cx);
     let (handle, ns) = (window.window_handle(), crate::ui::twilight::ns_window(window));
     let mut r = reg.borrow_mut();
+    // This Mac has a window on screen again: the hidden one goes, its terminals to this one.
+    let hidden = r.places.hidden.filter(|_| mac.is_none()).and_then(|h| r.main(h));
     r.places.opened(id, mac);
     r.mains.insert(id, Main { id, entity, handle, ns });
     drop(r);
+    if let Some(h) = hidden {
+        cx.defer(move |cx| remove(&h, cx));
+    }
     save_soon(cx);
     cx.defer(sync_names);
     cx.defer(crate::macs::set_menus);
@@ -226,9 +281,12 @@ pub(crate) fn set_local_name(name: String, cx: &mut App) {
     }
 }
 
-/// The main windows' AppKit windows, most recently focused first (the badge docks only in these).
+/// The main windows' AppKit windows on screen, most recently focused first (the badge docks
+/// only in these).
 pub fn ns_windows(cx: &mut App) -> Vec<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
-    shared(cx).borrow().ordered().into_iter().filter_map(|(m, _)| m.ns).collect()
+    let reg = shared(cx);
+    let r = reg.borrow();
+    r.ordered().into_iter().filter(|(m, _)| !r.is_hidden(m.id)).filter_map(|(m, _)| m.ns).collect()
 }
 
 /// `id` was focused: it's its Mac's home window now.
@@ -239,19 +297,49 @@ pub fn focused(id: EntityId, cx: &mut App) {
     cx.defer(crate::macs::set_menus);
 }
 
-/// A main window closed: its terminals go to its Mac's home window.
+/// A main window closed: its terminals go to its Mac's home window. The last one on screen
+/// takes a hidden one with it (midna quits).
 pub fn closed(id: EntityId, cx: &mut App) {
     let reg = shared(cx);
-    let home = {
+    let (home, alone) = {
         let mut r = reg.borrow_mut();
         r.mains.remove(&id);
-        r.places.closed(id).and_then(|h| r.main(h))
+        let home = r.places.closed(id).and_then(|h| r.main(h));
+        (home, r.places.hidden_alone().and_then(|h| r.main(h)))
     };
-    if let Some(h) = home {
+    if let Some(h) = alone {
+        cx.defer(move |cx| remove(&h, cx));
+    } else if let Some(h) = home {
         let _ = h.entity.update(cx, |m, cx| m.request_refresh(crate::app::refresh::ALL, cx));
     }
     cx.defer(sync_names);
     cx.defer(crate::macs::set_menus);
+}
+
+/// Close this Mac's last window on screen by hiding it (`Registry::hides_on_close`): it keeps
+/// its terminals and this Mac's duties, and the window you see now is another Mac's.
+pub fn hide(id: EntityId, window: &Window, cx: &mut App) {
+    let reg = shared(cx);
+    let next = {
+        let mut r = reg.borrow_mut();
+        r.places.hide(id);
+        r.places.shown().next().and_then(|w| r.main(w.0))
+    };
+    if let Some(ns) = crate::ui::twilight::ns_window(window) {
+        ns.orderOut(None);
+    }
+    if let Some(n) = next {
+        cx.defer(move |cx| {
+            let _ = n.handle.update(cx, |_, window, _| window.activate_window());
+        });
+    }
+    save_soon(cx);
+    cx.defer(crate::macs::set_menus);
+}
+
+/// Close main window `m` for good.
+fn remove(m: &Main, cx: &mut App) {
+    let _ = m.handle.update(cx, |_, window, _| window.remove_window());
 }
 
 /// The human is closing main window `id`: drop it from the saved layout.
@@ -630,11 +718,11 @@ pub fn my_macs(l: &midna_proto::nearby::PeersListResult) -> Vec<Mac> {
     macs
 }
 
-/// The Macs with a main window open, and the one the window focused last shows.
+/// The Macs with a main window on screen, and the one the window focused last shows.
 pub fn mac_windows(cx: &mut App) -> (Vec<MacId>, Option<MacId>) {
     let reg = shared(cx);
     let r = reg.borrow();
-    (r.places.wins.iter().map(|w| w.1.clone()).collect(), r.places.wins.first().map(|w| w.1.clone()))
+    (r.places.shown().map(|w| w.1.clone()).collect(), r.places.shown().next().map(|w| w.1.clone()))
 }
 
 /// Redraw every main window (the Macs' states changed).
@@ -764,6 +852,47 @@ mod tests {
         assert_eq!(p.closed(3u64.into()), None, "the Mac mini's last window");
         assert_eq!(p.place(&mini(), "s1"), None);
         assert_eq!(p.place(&None, "a1"), Some(2u64.into()));
+    }
+
+    #[test]
+    fn this_macs_last_window_hides_beside_another_macs() {
+        let mut p = four();
+        // Another of this Mac's windows is still open: 2 just closes.
+        assert!(!p.hides_on_close(2u64.into(), &[]));
+        assert!(!p.hides_on_close(3u64.into(), &[]), "another Mac's window never hides");
+        // 1 is on its way out, so 2 is this Mac's last window: it hides.
+        assert!(p.hides_on_close(2u64.into(), &[1u64.into()]));
+        p.closed(1u64.into());
+        p.claim("a1", 2u64.into());
+        p.hide(2u64.into());
+        assert!(p.is_hidden(2u64.into()));
+        assert!(!p.hides_on_close(2u64.into(), &[]), "only one hidden window");
+        // It's still this Mac's home: its banners, sounds and new terminals, and a1 stays put.
+        assert!(p.is_home(2u64.into()));
+        assert_eq!(p.place(&None, "a1"), Some(2u64.into()));
+        assert_eq!(p.place(&None, "new"), Some(2u64.into()));
+        // The Mac mini's window is the one you see, and the one used last.
+        assert_eq!(p.shown().map(|w| w.0).collect::<Vec<_>>(), [4u64.into(), 3u64.into()]);
+        assert_eq!(p.hidden_alone(), None);
+        // Brought forward: on screen again.
+        p.focused(2u64.into());
+        assert!(!p.is_hidden(2u64.into()));
+        assert_eq!(p.shown().next().map(|w| w.0), Some(2u64.into()));
+    }
+
+    #[test]
+    fn a_hidden_window_goes_with_the_last_window_on_screen() {
+        let mut p = Places::default();
+        p.opened(1u64.into(), None);
+        p.opened(2u64.into(), mini());
+        assert!(!p.hides_on_close(2u64.into(), &[]), "another Mac's last window just closes");
+        assert!(p.hides_on_close(1u64.into(), &[]));
+        assert!(!p.hides_on_close(1u64.into(), &[2u64.into()]), "nothing stays on screen: midna quits");
+        p.hide(1u64.into());
+        p.closed(2u64.into());
+        assert_eq!(p.hidden_alone(), Some(1u64.into()), "nothing on screen: it closes too");
+        p.closed(1u64.into());
+        assert!(!p.is_hidden(1u64.into()) && p.wins.is_empty());
     }
 
     #[test]
