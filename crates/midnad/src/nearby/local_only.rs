@@ -6,9 +6,9 @@
 //! "Do this at <this Mac>", never turned into a needs-you (its answer would come back to the
 //! same window).
 use crate::daemon::Daemon;
-use crate::rpc::Ctx;
+use crate::rpc::{Ctx, trigger};
 use midna_proto::types::{NeedsYou, NeedsYouKind, TriggerSource};
-use midna_proto::RpcError;
+use midna_proto::{RpcError, TriggerAddParams, TriggerUpdateParams};
 use serde_json::{Value, json};
 
 /// Human-only methods the person driving may still call: they approve, close and pause like the
@@ -44,6 +44,15 @@ pub fn method(d: &Daemon, method: &str, params: &Value) -> bool {
             let on = params.get("enabled").and_then(Value::as_bool).unwrap_or(false);
             let id = params.get("id").and_then(Value::as_str).unwrap_or_default();
             on && d.core().state.triggers.iter().find(|t| t.id == id).is_some_and(|t| t.source != TriggerSource::Local)
+        }
+        // How much the agents a trigger starts may do without asking (agents ask the human for
+        // it), and the action or source of a webhook trigger that is on or paused (an agent's
+        // edit sends it back to draft).
+        "trigger.add" => serde_json::from_value::<TriggerAddParams>(params.clone()).is_ok_and(|p| p.action.agent_access().is_some()),
+        "trigger.update" => {
+            let Ok(p) = serde_json::from_value::<TriggerUpdateParams>(params.clone()) else { return false };
+            let t = d.core().state.triggers.iter().find(|t| t.id == p.id).cloned();
+            t.is_some_and(|t| trigger::changes_access(&t, &p) || trigger::edits_live_webhook(&t, &p))
         }
         _ => midna_proto::method(method).is_some_and(|s| s.human_only) && !OVER_A_LINK.contains(&method),
     }

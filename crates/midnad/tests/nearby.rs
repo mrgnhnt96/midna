@@ -2193,7 +2193,32 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
         "action": { "kind": "notify", "title": "PR" } }));
     let gh = gh["id"].as_str().unwrap();
     at_bravo(&mut there, "trigger.set_enabled", json!({ "id": gh, "enabled": true }));
-    call(&mut there, "trigger.set_enabled", json!({ "id": gh, "enabled": false }));
+    // Changing the action or source of a webhook trigger that is on or paused (an agent's edit
+    // would send it back to draft); its name is fine.
+    call(&mut hb, "trigger.set_secret", json!({ "id": gh, "secret": "s3cret-value-that-stays" }));
+    call(&mut hb, "trigger.set_enabled", json!({ "id": gh, "enabled": true }));
+    let state = |c: &mut Client| call(c, "trigger.list", json!({})).as_array().unwrap().iter().find(|t| t["id"] == gh).unwrap()["state"].clone();
+    for paused in [false, true] {
+        at_bravo(&mut there, "trigger.update", json!({ "id": gh, "action": { "kind": "notify", "title": "New PR" } }));
+        at_bravo(&mut there, "trigger.update", json!({ "id": gh, "source": "bitbucket" }));
+        call(&mut there, "trigger.update", json!({ "id": gh, "name": "Review PRs" }));
+        assert_eq!(state(&mut hb), if paused { "paused" } else { "active" });
+        call(&mut there, "trigger.set_enabled", json!({ "id": gh, "enabled": false }));
+    }
+    // What the agents a trigger starts may do without asking, added or changed (an agent asks
+    // the human for it); the rest of a start_agent trigger is fine.
+    let pid = call(&mut hb, "project.add", json!({ "path": b.home, "name": "bravo" }))["id"].clone();
+    let stand_up = |extra: Value| {
+        let mut act = json!({ "kind": "start_agent", "project_id": pid, "agent": "claude", "prompt_template": "Draft the stand-up" });
+        act.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({ "name": "Stand-up", "source": "local", "event": "schedule", "filter": { "cron": "@daily" }, "action": act })
+    };
+    at_bravo(&mut there, "trigger.add", stand_up(json!({ "permission_mode": "acceptEdits" })));
+    at_bravo(&mut there, "trigger.add", stand_up(json!({ "allowed_tools": ["Bash(git status)"] })));
+    let added = call(&mut there, "trigger.add", stand_up(json!({})));
+    let added = added["id"].as_str().unwrap();
+    at_bravo(&mut there, "trigger.update", json!({ "id": added, "action": stand_up(json!({ "permission_mode": "acceptEdits" }))["action"] }));
+    call(&mut there, "trigger.update", json!({ "id": added, "action": stand_up(json!({ "prompt_template": "Draft the retro" }))["action"] }));
     assert!(open_items(&mut hb).is_empty(), "nothing became a needs-you at B");
     assert_eq!(call(&mut there, "daemon.info", json!({}))["home"], b.home.to_str().unwrap(), "B still runs and still lets A drive it");
 
@@ -2244,6 +2269,12 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     at_bravo(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
     assert_eq!(call(&mut hb, "settings.get", json!({ "key": "policy.default" }))["value"], "auto");
     call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "dismiss" } }));
+    // an agent's trigger that sets what its agents may do without asking:
+    let e = call_err(&mut b.agent(None), "trigger.add", stand_up(json!({ "permission_mode": "bypassPermissions" })));
+    let asked = e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).unwrap_or_else(|| panic!("deferred: {e:?}")).to_string();
+    assert_eq!(marked(&mut there, &asked), Some(json!(true)));
+    at_bravo(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "deny" } }));
     // a rule's removal:
     let rid = rule["id"].as_str().unwrap();
     let removal = call(&mut b.agent(Some(&asker)), "rule.request_removal", json!({ "id": rid, "reason": "in my way" }));
