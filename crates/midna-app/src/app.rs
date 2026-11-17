@@ -1117,7 +1117,8 @@ impl MainWindow {
             }
             crate::notify::Show::Nothing => return,
         }
-        if !p.test && crate::sounds::app_active() {
+        // Hidden (this Mac's last window closed beside another Mac's): a banner, not its card.
+        if !p.test && crate::sounds::app_active() && !self.windows.borrow().is_hidden(self.id) {
             if let (true, Some(file), true) = (p.sound, p.sound_file.as_deref(), crate::sounds::allowed_now()) {
                 crate::sounds::play_file(file, p.volume.unwrap_or(100));
             }
