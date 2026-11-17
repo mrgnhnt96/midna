@@ -18,9 +18,10 @@
 //!
 //! A Mac that refuses the link (it doesn't let this Mac drive it, or just stopped) has no
 //! items and no link: its feed is dropped and the link closed, unless a window onto that Mac is
-//! open (the window shows why). It's asked again every [`REFUSED_RETRY`]. While this Mac can't
-//! open links (Nearby is off here), each Mac is the same, asked again every [`LOCAL_RETRY`]. A
-//! Mac no longer paired as mine is dropped too.
+//! open (the window shows why; the link closes when its last window does). It's asked again
+//! every [`REFUSED_RETRY`]. While this Mac can't open links (Nearby is off here), each Mac is
+//! the same, asked again every [`LOCAL_RETRY`]. A Mac no longer paired as mine is dropped too.
+//! A Mac that's followed keeps its link when its windows close: its items still come over it.
 use crate::backend::{Backend, BackendEvent, ConnState, Mac};
 use crate::model::{Event, NeedsYou, Project, Session, parse_list};
 use gpui_kit::{App, BorrowAppContext, Global};
@@ -318,6 +319,13 @@ pub struct MacFeeds {
 
 impl Global for MacFeeds {}
 
+impl MacFeeds {
+    /// Whether `peer` is followed and hasn't refused: its link stays up for its items.
+    fn follows(&self, peer: &str) -> bool {
+        self.followed.get(peer).is_some_and(|f| f.refused_at.is_none())
+    }
+}
+
 /// Each of my other Macs I can drive, by name: what waits there and how it's reached. Observe
 /// [`MacFeeds`] (`cx.observe_global`) to hear when it changes.
 pub fn list(cx: &App) -> Vec<Feed> {
@@ -451,13 +459,30 @@ fn tick(woke: bool, now: i64, cx: &mut App) {
 }
 
 /// Close this app's link to `peer`, unless a window onto that Mac is open (it keeps its link,
-/// and shows why it can't be used).
+/// and shows why it can't be used, until [`window_closed`]).
 fn let_go(peer: &str, cx: &mut App) {
     if crate::windows::mac_windows(cx).0.contains(&Some(peer.to_string())) {
         return;
     }
     let Some(local) = cx.global::<MacFeeds>().local.clone() else { return };
-    let peer = peer.to_string();
+    close_link(local, peer.to_string(), cx);
+}
+
+/// A window onto `peer` closed (`local`: this Mac's backend). Once it was the last one, close
+/// that Mac's link unless it's followed here: one that refused, or isn't one of my Macs any
+/// more, kept its link only for the window ([`let_go`]), and midnad would go on trying it.
+pub fn window_closed(local: Arc<dyn Backend>, peer: &str, cx: &mut App) {
+    if crate::windows::mac_windows(cx).0.contains(&Some(peer.to_string())) {
+        return;
+    }
+    if cx.try_global::<MacFeeds>().is_some_and(|g| g.follows(peer)) {
+        return;
+    }
+    close_link(local, peer.to_string(), cx);
+}
+
+/// `drive.close` each of this app's links to `peer`.
+fn close_link(local: Arc<dyn Backend>, peer: String, cx: &mut App) {
     cx.background_executor()
         .spawn(async move {
             let links = local.call("drive.list", Value::Null).ok().and_then(|v| serde_json::from_value::<DriveListResult>(v).ok());
@@ -668,5 +693,61 @@ mod tests {
         cx.update(|cx| sync(&here, &fewer, cx));
         let names: Vec<String> = cx.update(|cx| list(cx)).into_iter().map(|f| f.mac.name).collect();
         assert_eq!(names, ["Office iMac", "Studio"]);
+    }
+
+    /// This Mac's midnad with a link to each of `a`, `b` and `c`: records the calls made to it.
+    #[derive(Default)]
+    struct Here(Mutex<Vec<String>>);
+
+    impl Backend for Here {
+        fn label(&self) -> &'static str {
+            "here"
+        }
+        fn socket_path(&self) -> std::path::PathBuf {
+            "/nowhere".into()
+        }
+        fn open_mac(self: Arc<Self>, _: Mac) -> Arc<dyn Backend> {
+            unreachable!("no window opens a Mac here")
+        }
+        fn call(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+            self.0.lock().unwrap().push(format!("{method} {}", params["link"].as_str().unwrap_or("")).trim().to_string());
+            let link = |c: char| json!({ "link": format!("dl_{c}"), "peer": c.to_string().repeat(64), "name": c.to_string(), "socket": "", "state": "connected" });
+            Ok(match method {
+                "drive.list" => json!({ "links": [link('a'), link('b'), link('c')] }),
+                _ => json!({ "closed": true }),
+            })
+        }
+        fn subscribe(&self, _: async_channel::Sender<BackendEvent>) {}
+        fn attach(&self, _: crate::backend::AttachRequest<'_>, _: Arc<crate::frame::FrameSink>) -> anyhow::Result<Arc<dyn crate::backend::TermStream>> {
+            anyhow::bail!("no terminals here")
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_last_window_closing_lets_go_of_a_link_only_it_kept(cx: &mut gpui_kit::TestAppContext) {
+        let here = Arc::new(Here::default());
+        let local: Arc<dyn Backend> = here.clone();
+        let peer = |c: char| c.to_string().repeat(64);
+        let follow = |c: char, refused_at: Option<i64>| {
+            let feed = Arc::new(Mutex::new(Feed::new(Mac { peer: peer(c), name: c.to_string() })));
+            Followed { feed, events: async_channel::unbounded().1, refused_at }
+        };
+        cx.update(|cx| {
+            let g = cx.default_global::<MacFeeds>();
+            g.followed.insert(peer('a'), follow('a', None));
+            g.followed.insert(peer('b'), follow('b', Some(100)));
+        });
+        let closed = |c: char, cx: &mut gpui_kit::TestAppContext| {
+            here.0.lock().unwrap().clear();
+            cx.update(|cx| window_closed(local.clone(), &peer(c), cx));
+            cx.run_until_parked();
+            here.0.lock().unwrap().iter().filter(|c| c.starts_with("drive.close")).cloned().collect::<Vec<_>>()
+        };
+        // Followed: its items still come over the link.
+        assert_eq!(closed('a', cx), Vec::<String>::new());
+        // It refused while the window showed why, or isn't one of my Macs any more: nothing
+        // here wants the link now.
+        assert_eq!(closed('b', cx), ["drive.close dl_b"]);
+        assert_eq!(closed('c', cx), ["drive.close dl_c"]);
     }
 }
