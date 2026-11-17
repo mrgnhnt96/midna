@@ -346,6 +346,11 @@ impl MainWindow {
         cx.on_release(move |m: &mut MainWindow, cx| {
             crate::windows::closed(m.id, cx);
             crate::theme::window_closed(window_id, cx);
+            // Deferred until its events stop with the window, so they don't open the link again.
+            if let Some(peer) = crate::backend::mac_id(&*m.backend) {
+                let local = crate::backend::local(&m.backend);
+                cx.defer(move |cx| crate::mac_feed::window_closed(local, &peer, cx));
+            }
         })
         .detach();
         let weak = cx.weak_entity();
