@@ -75,11 +75,15 @@ pub enum ComposerEvent {
     Cancel,
     Changed,
     Focused(bool),
+    /// The secret sheet answered a ⌘V here (`terminal/secret_paste.rs`): type this at the cursor.
+    Insert(String),
+    /// The secret sheet was cancelled: focus the field again.
+    Refocus,
 }
 
 static EVENTS: OnceLock<async_channel::Sender<ComposerEvent>> = OnceLock::new();
 
-fn emit(e: ComposerEvent) {
+pub fn emit(e: ComposerEvent) {
     if let Some(tx) = EVENTS.get() {
         let _ = tx.try_send(e);
     }
@@ -352,6 +356,18 @@ fn on_event(m: &mut MainWindow, ev: ComposerEvent, window: &mut Window, cx: &mut
             }
         }
         ComposerEvent::Focused(false) => {}
+        ComposerEvent::Insert(text) => {
+            if refocus(m, window, cx) {
+                native(m, |n| unsafe {
+                    let s = NSString::from_str(&text);
+                    let _: () = msg_send![&*n.tv, insertText: &*s, replacementRange: n.tv.selectedRange()];
+                });
+                on_event(m, ComposerEvent::Changed, window, cx);
+            }
+        }
+        ComposerEvent::Refocus => {
+            refocus(m, window, cx);
+        }
     }
 }
 
@@ -416,7 +432,7 @@ pub fn text(m: &MainWindow) -> String {
 /// layout (called every render).
 pub fn sync(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     follow_selection(m, window, cx);
-    let visible = m.composer.open && on_target(m) && can_show(m);
+    let visible = m.composer.open && on_target(m) && can_show(m) && !sheet_over(m, cx);
     native(m, |n| {
         // Every render, not just on hide: whatever stranded AppKit's first responder (an AX
         // client poking the hidden field, a hide racing a focus), keys must reach GPUI.
@@ -430,7 +446,7 @@ pub fn sync(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow
 }
 
 pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    if !m.composer.open || !on_target(m) || !can_show(m) {
+    if !m.composer.open || !on_target(m) || !can_show(m) || sheet_over(m, cx) {
         return None;
     }
     let line_h = native(m, |n| n.line_h).unwrap_or(16.) as f32;
@@ -534,7 +550,7 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
     let all = fwd(sel!(selectAll:));
     el.on_action(cx.listener(|m, _: &OpenComposer, w, cx| open_manual(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerPaste, w, cx| {
-            if !paste_image(m, w, cx) {
+            if !paste_image(m, w, cx) && !paste_secret(m, w, cx) {
                 paste(m, w, cx)
             }
         }))
@@ -569,6 +585,31 @@ fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
         _ => paste_image_paths(sources, cx),
     }
     true
+}
+
+/// ⌘V of text with a secret in it over an agent: the terminal's secret sheet asks now, as a
+/// paste into the terminal would, instead of when ↩ sends it. Its answer (references, or the
+/// text as it was) comes back into the field (`ComposerEvent::Insert`). False = paste as usual.
+fn paste_secret(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return false };
+    let Some(t) = target_terminal(m, cx) else { return false };
+    if !t.update(cx, |t, cx| t.composer_paste_checks_secrets(&text, window, cx)) {
+        return false;
+    }
+    release_native_focus(m);
+    cx.notify();
+    true
+}
+
+/// The composer's target terminal, when it's the one on screen.
+fn target_terminal(m: &MainWindow, cx: &App) -> Option<Entity<crate::terminal::TerminalView>> {
+    let id = m.composer.target.clone().or_else(|| m.selected.clone())?;
+    m.terminal.clone().filter(|t| t.read(cx).session_id == id)
+}
+
+/// The target terminal's secret sheet is open: the native field hides so it can't cover it.
+fn sheet_over(m: &MainWindow, cx: &App) -> bool {
+    target_terminal(m, cx).is_some_and(|t| t.read(cx).secret_sheet_open())
 }
 
 /// Save the images (off the UI thread, as the sheet does) and type their paths at the cursor,
