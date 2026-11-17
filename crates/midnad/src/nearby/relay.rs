@@ -23,6 +23,10 @@
 //! [`SILENCE`] without a message, which also keeps it clear of the listener's 30 s idle close.
 //! A stream whose reader stops reading is cut off once [`MAX_PENDING`] bytes wait for it, as
 //! `conn.rs` cuts off a slow client, so one stuck window never holds up the link.
+//!
+//! When both sides offer [`LZ4`] (`drive_open` / `drive_ok`), bytes worth packing go as [`ZDATA`]
+//! instead: a full-screen frame (~100 KB at 180x50) becomes a few KB. Short messages such as
+//! keystrokes stay plain [`DATA`], and a Mac on an older build gets plain DATA only.
 use super::link::{self, Reach};
 use super::transport::{self, Channel, RawReader, RawWriter, Wire};
 use super::drive;
@@ -52,6 +56,11 @@ pub const PING: u8 = 4;
 pub const PONG: u8 = 5;
 /// The link is closing; the rest is why (UTF-8).
 pub const BYE: u8 = 6;
+/// Bytes on stream `sid`, packed (only on a link that agreed on [`LZ4`]): after the stream id,
+/// the unpacked length (big-endian `u32`, at most [`ZDATA_MAX`]), then one lz4 block.
+pub const ZDATA: u8 = 7;
+/// The compression a link can agree on (`drive_open`'s `compress`, `drive_ok`'s answer).
+pub const LZ4: &str = "lz4";
 
 /// How often each side pings.
 pub const PING_EVERY: Duration = Duration::from_secs(5);
@@ -67,6 +76,11 @@ pub const MAX_PENDING: usize = 64 << 20;
 pub const MAX_STREAMS: usize = 256;
 /// The bytes one `DATA` message carries.
 const DATA_MAX: usize = transport::RAW_MAX - 5;
+/// The most one [`ZDATA`] message unpacks to, and the most read from a local stream at once on a
+/// link that packs. A peer can't make one message cost more memory than this.
+const ZDATA_MAX: usize = 256 << 10;
+/// Bytes shorter than this go plain: packing a keystroke saves nothing and costs time.
+const PACK_FROM: usize = 512;
 /// How long the read loop waits before it looks at the time (pings, checks).
 const TICK: Duration = Duration::from_secs(1);
 /// After this long failing to connect, a link is `offline` and tried every [`OFFLINE_RETRY`].
@@ -93,6 +107,48 @@ fn message(tag: u8, sid: u32, data: &[u8]) -> Vec<u8> {
     m
 }
 
+/// `data` (at most [`ZDATA_MAX`] bytes) as one [`ZDATA`] message for `sid` in `out`, when packing
+/// makes it smaller and the result fits in one raw message.
+fn pack(sid: u32, data: &[u8], out: &mut Vec<u8>) -> bool {
+    debug_assert!(data.len() <= ZDATA_MAX);
+    out.clear();
+    out.push(ZDATA);
+    out.extend_from_slice(&sid.to_be_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let head = out.len();
+    out.resize(head + lz4_flex::block::get_maximum_output_size(data.len()), 0);
+    match lz4_flex::block::compress_into(data, &mut out[head..]) {
+        Ok(n) if n < data.len() && head + n <= transport::RAW_MAX => {
+            out.truncate(head + n);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The bytes a [`ZDATA`] message (what follows its stream id) carries; None if it's malformed or
+/// claims more than [`ZDATA_MAX`].
+fn unpack(z: &[u8]) -> Option<Vec<u8>> {
+    let (len, block) = z.split_first_chunk::<4>()?;
+    let len = u32::from_be_bytes(*len) as usize;
+    if len > ZDATA_MAX {
+        return None;
+    }
+    let mut out = vec![0u8; len];
+    let n = lz4_flex::block::decompress_into(block, &mut out).ok()?;
+    (n == len).then_some(out)
+}
+
+/// Let a local stream hold a whole frame or two, so one read on a packing link takes most of a
+/// frame (packs better, fewer messages) instead of the system's 8 KiB at a time.
+fn widen(sock: &UnixStream) {
+    let size = ZDATA_MAX as libc::c_int;
+    for opt in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+        // SAFETY: setsockopt reads one c_int from a valid pointer on a socket this owns.
+        unsafe { libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, opt, (&size as *const libc::c_int).cast(), size_of::<libc::c_int>() as libc::socklen_t) };
+    }
+}
+
 /// What one local stream's writer thread is given.
 enum Item {
     Data(Vec<u8>),
@@ -113,12 +169,14 @@ pub struct Mux {
     streams: Mutex<HashMap<u32, Stream>>,
     done: AtomicBool,
     why: Mutex<Option<String>>,
+    /// Both sides agreed on [`LZ4`]: send [`ZDATA`] where it pays, and take it.
+    lz4: bool,
 }
 
 impl Mux {
-    fn new(writer: RawWriter) -> Result<Arc<Mux>, String> {
+    fn new(writer: RawWriter, lz4: bool) -> Result<Arc<Mux>, String> {
         let tcp = writer.stream().map_err(|e| e.to_string())?;
-        Ok(Arc::new(Mux { writer: Mutex::new(writer), tcp, streams: Mutex::new(HashMap::new()), done: AtomicBool::new(false), why: Mutex::new(None) }))
+        Ok(Arc::new(Mux { writer: Mutex::new(writer), tcp, streams: Mutex::new(HashMap::new()), done: AtomicBool::new(false), why: Mutex::new(None), lz4 }))
     }
 
     fn is_done(&self) -> bool {
@@ -143,6 +201,22 @@ impl Mux {
             self.close(&format!("the connection to that Mac broke ({e})"), false);
         }
         sent.is_ok()
+    }
+
+    /// Send bytes read from local stream `sid`: packed where the link agreed to it and it pays,
+    /// else as plain [`DATA`] messages of at most [`DATA_MAX`] bytes. `out` is scratch space.
+    fn send_data(&self, sid: u32, data: &[u8], out: &mut Vec<u8>) -> bool {
+        if self.lz4 && data.len() >= PACK_FROM && pack(sid, data, out) {
+            return self.send_raw(out);
+        }
+        if data.len() > DATA_MAX {
+            return data.chunks(DATA_MAX).all(|piece| self.send_data(sid, piece, out));
+        }
+        out.clear();
+        out.push(DATA);
+        out.extend_from_slice(&sid.to_be_bytes());
+        out.extend_from_slice(data);
+        self.send_raw(out)
     }
 
     /// Close the link and every stream on it; `tell` sends the other side why first. Once.
@@ -201,14 +275,13 @@ impl Mux {
         });
         let m = self.clone();
         let inp = std::thread::Builder::new().name("drive-in".into()).spawn(move || {
-            let mut buf = vec![0u8; 5 + DATA_MAX];
-            buf[0] = DATA;
-            buf[1..5].copy_from_slice(&sid.to_be_bytes());
+            let mut buf = vec![0u8; if m.lz4 { ZDATA_MAX } else { DATA_MAX }];
+            let mut out = Vec::with_capacity(transport::RAW_MAX);
             loop {
-                match rd.read(&mut buf[5..]) {
+                match rd.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if !m.send_raw(&buf[..5 + n]) {
+                        if !m.send_data(sid, &buf[..n], &mut out) {
                             break;
                         }
                     }
@@ -289,6 +362,16 @@ impl Mux {
                             let sid = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]);
                             on(self, tag, sid, &rest[4..]);
                         }
+                        ZDATA if rest.len() >= 4 => {
+                            let sid = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]);
+                            // Unpacked here, so `on` sees plain DATA and MAX_PENDING counts what
+                            // the stream will really hold.
+                            let Some(plain) = self.lz4.then(|| unpack(&rest[4..])).flatten() else {
+                                self.close("that Mac sent data that doesn't unpack", true);
+                                break;
+                            };
+                            on(self, DATA, sid, &plain);
+                        }
                         _ => {}
                     }
                     continue;
@@ -318,19 +401,21 @@ impl Mux {
 
 // ------------------------------------------------------------------ that Mac: serving a link
 
-/// A paired device sent `drive_open` on `ch`: serve the link while it may drive this Mac.
-pub fn serve(w: &Weak<Daemon>, mut ch: Channel) {
+/// A paired device sent `drive_open` on `ch`, offering `compress`: serve the link while it may
+/// drive this Mac.
+pub fn serve(w: &Weak<Daemon>, mut ch: Channel, compress: &[String]) {
     let Some(d) = w.upgrade() else { return };
     let fp = ch.fingerprint.clone();
     let Some(handle) = drive::open(&d, &fp) else {
         let _ = ch.send(&Wire::Refused { reason: NOT_ALLOWED.into() });
         return ch.finish();
     };
-    if ch.send(&Wire::DriveOk).is_err() {
+    let lz4 = compress.iter().any(|c| c == LZ4);
+    if ch.send(&Wire::DriveOk { compress: lz4.then(|| LZ4.to_string()) }).is_err() {
         return;
     }
     let Ok((rd, wr)) = ch.split(WRITE_TIMEOUT) else { return };
-    let Ok(mux) = Mux::new(wr) else { return };
+    let Ok(mux) = Mux::new(wr, lz4) else { return };
     let m = mux.clone();
     // The cut's own words are for the person here; the other side says it with this Mac's name.
     handle.on_cut(move |_| m.close(NOT_ALLOWED, true));
@@ -352,6 +437,10 @@ pub fn serve(w: &Weak<Daemon>, mut ch: Channel) {
                 mux.send(CLOSE, sid, &[]);
                 return;
             };
+            if mux.lz4 {
+                widen(&ours);
+                widen(&theirs);
+            }
             if !mux.attach(sid, ours, false) {
                 mux.send(CLOSE, sid, &[]);
                 return;
@@ -652,9 +741,9 @@ fn keep_up(w: &Weak<Daemon>, o: &Arc<Out>) {
                 }
             })
         };
-        let up = connect(&d, &peer, &staged).and_then(|ch| {
+        let up = connect(&d, &peer, &staged).and_then(|(ch, lz4)| {
             let (rd, wr) = ch.split(WRITE_TIMEOUT)?;
-            Ok((rd, Mux::new(wr)?))
+            Ok((rd, Mux::new(wr, lz4)?))
         });
         match up {
             Ok((rd, mux)) => {
@@ -711,13 +800,14 @@ fn keep_up(w: &Weak<Daemon>, o: &Arc<Out>) {
     }
 }
 
-/// Connect to `peer` and ask to drive it, reporting each stage.
-fn connect(d: &Daemon, peer: &str, stage: &dyn Fn(DriveStage)) -> Result<Channel, String> {
+/// Connect to `peer` and ask to drive it, reporting each stage; the channel, and whether that Mac
+/// agreed to [`LZ4`] (an older one doesn't answer it: plain DATA).
+fn connect(d: &Daemon, peer: &str, stage: &dyn Fn(DriveStage)) -> Result<(Channel, bool), String> {
     let reach = Reach { finding: &|| stage(DriveStage::Finding), proving: &|| stage(DriveStage::Proving), patient: false };
     let mut ch = link::reach_staged(d, peer, &reach).map_err(|e| e.message)?;
-    ch.send(&Wire::DriveOpen)?;
+    ch.send(&Wire::DriveOpen { compress: vec![LZ4.into()] })?;
     match ch.expect(transport::HANDSHAKE_TIMEOUT)? {
-        Wire::DriveOk => Ok(ch),
+        Wire::DriveOk { compress } => Ok((ch, compress.as_deref() == Some(LZ4))),
         Wire::Refused { reason } if reason == NOT_ALLOWED => {
             let name = lock_name(d, peer);
             Err(format!("{name} doesn't let this Mac drive it: turn it on at {name} in Settings › Nearby"))
@@ -773,4 +863,209 @@ fn serve_out(w: &Weak<Daemon>, o: &Arc<Out>, mux: &Arc<Mux>, rd: RawReader) -> S
         close_out(&d, o, "the app that opened it quit");
     }
     why
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::transport::tests::{ident, pair_up};
+    use midna_proto::frame::{Cell, Frame, RowData};
+    use serde::Deserialize;
+
+    /// A full-screen frame of this file's text at `top`, coloured like code, as midnad encodes it.
+    fn screen(top: usize, cols: usize, rows: usize) -> Vec<u8> {
+        let lines: Vec<&str> = include_str!("relay.rs").lines().collect();
+        let palette = [[0xd8, 0xde, 0xe9], [0x81, 0xa1, 0xc1], [0xa3, 0xbe, 0x8c], [0xeb, 0xcb, 0x8b], [0xbf, 0x61, 0x6a]];
+        let changed = (0..rows)
+            .map(|y| {
+                let chars: Vec<char> = lines.get(top + y).copied().unwrap_or("").chars().collect();
+                let mut fg = palette[0];
+                let cells = (0..cols)
+                    .map(|x| {
+                        let ch = chars.get(x).copied().unwrap_or(' ');
+                        if !ch.is_alphanumeric() && ch != '_' {
+                            fg = palette[ch as usize % palette.len()];
+                        }
+                        Cell { ch, fg, bg: [0x1e, 0x1e, 0x2e], flags: 0 }
+                    })
+                    .collect();
+                (y as u16, RowData { cells, ..Default::default() })
+            })
+            .collect();
+        let f = Frame { cols: cols as u16, rows: rows as u16, full: true, changed, cursor: Some((3, 7)), built_ns: 123_456_789, ..Default::default() };
+        let mut out = Vec::new();
+        f.encode(&mut out);
+        out
+    }
+
+    /// Two ends of a split Noise connection.
+    fn link(tag: &str) -> ((RawReader, RawWriter), (RawReader, RawWriter)) {
+        let (a, b) = (ident(&format!("{tag}-a")), ident(&format!("{tag}-b")));
+        let (ca, cb) = pair_up(&a, &b);
+        (ca.unwrap().split(Duration::from_secs(5)).unwrap(), cb.unwrap().split(Duration::from_secs(5)).unwrap())
+    }
+
+    /// Carry `sends` from a local stream over a link (`lz4` or not) and read the raw messages
+    /// that arrive: (tag, bytes on the wire, the stream bytes they carry).
+    fn carry(tag: &str, lz4: bool, sends: &[&[u8]]) -> Vec<(u8, usize, Vec<u8>)> {
+        let ((_ra, wa), (mut rb, _wb)) = link(tag);
+        let mux = Mux::new(wa, lz4).unwrap();
+        let (ours, mut app) = UnixStream::pair().unwrap();
+        widen(&ours);
+        widen(&app);
+        assert!(mux.attach(9, ours, false));
+        let want: usize = sends.iter().map(|s| s.len()).sum();
+        let mut got = Vec::new();
+        let mut carried = 0;
+        for s in sends {
+            app.write_all(s).unwrap();
+            let target = carried + s.len();
+            while carried < target {
+                let m = rb.recv(Duration::from_secs(5)).unwrap().expect("a message").to_vec();
+                assert_eq!(&m[1..5], &9u32.to_be_bytes());
+                let bytes = match m[0] {
+                    DATA => m[5..].to_vec(),
+                    ZDATA => unpack(&m[5..]).expect("unpacks"),
+                    t => panic!("tag {t}"),
+                };
+                carried += bytes.len();
+                got.push((m[0], m.len(), bytes));
+            }
+        }
+        assert_eq!(carried, want);
+        mux.close("done", false);
+        got
+    }
+
+    #[test]
+    fn a_packing_link_squeezes_frames_and_leaves_keystrokes_plain() {
+        let frame = screen(40, 180, 50);
+        let keys = b"\x03\x00\x00\x00\x01a";
+        let got = carry("pk", true, &[&frame, keys]);
+        let (frames, key) = got.split_at(got.len() - 1);
+        let wire: usize = frames.iter().map(|(_, n, _)| n).sum();
+        let back: Vec<u8> = frames.iter().flat_map(|(_, _, b)| b.clone()).collect();
+        assert_eq!(back, frame, "the frame arrives whole");
+        assert!(frames.iter().all(|(t, _, _)| *t == ZDATA), "{:?}", frames.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>());
+        assert!(wire * 10 < frame.len(), "{} bytes became {wire} on the wire", frame.len());
+        assert_eq!((key[0].0, key[0].2.as_slice()), (DATA, &keys[..]), "a keystroke goes plain");
+        eprintln!("180x50 frame: {} bytes, {wire} on the wire in {} message(s)", frame.len(), frames.len());
+    }
+
+    #[test]
+    fn a_plain_link_sends_what_it_read_as_it_did() {
+        let frame = screen(0, 180, 50);
+        let got = carry("pl", false, &[&frame]);
+        assert!(got.iter().all(|(t, n, _)| *t == DATA && *n <= transport::RAW_MAX));
+        assert_eq!(got.iter().flat_map(|(_, _, b)| b.clone()).collect::<Vec<_>>(), frame);
+        assert_eq!(got.iter().map(|(_, n, _)| n).sum::<usize>(), frame.len() + 5 * got.len(), "no packing");
+    }
+
+    #[test]
+    fn bytes_that_dont_pack_go_plain() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let noise: Vec<u8> = (0..3 * DATA_MAX)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 32) as u8
+            })
+            .collect();
+        let mut out = Vec::new();
+        assert!(!pack(1, &noise[..DATA_MAX], &mut out), "noise doesn't shrink");
+        let got = carry("nz", true, &[&noise]);
+        assert!(got.iter().all(|(t, n, _)| *t == DATA && *n <= transport::RAW_MAX));
+        assert_eq!(got.iter().flat_map(|(_, _, b)| b.clone()).collect::<Vec<_>>(), noise);
+    }
+
+    #[test]
+    fn unpacking_is_bounded() {
+        let mut out = Vec::new();
+        let frame = screen(0, 120, 40);
+        assert!(pack(1, &frame, &mut out));
+        assert_eq!(unpack(&out[5..]).unwrap(), frame);
+        // Claims more than ZDATA_MAX: refused before anything is allocated for it.
+        let mut big = out[5..].to_vec();
+        big[..4].copy_from_slice(&(ZDATA_MAX as u32 + 1).to_be_bytes());
+        assert_eq!(unpack(&big), None);
+        // A block that unpacks to more than it claims (a bomb), less, or is cut short.
+        let zeros = lz4_flex::block::compress(&vec![0u8; 10 << 20]);
+        let mut bomb = 1024u32.to_be_bytes().to_vec();
+        bomb.extend_from_slice(&zeros);
+        assert_eq!(unpack(&bomb), None);
+        let mut short = out[5..].to_vec();
+        short[..4].copy_from_slice(&(frame.len() as u32 + 1).to_be_bytes());
+        assert_eq!(unpack(&short), None);
+        assert_eq!(unpack(&out[5..out.len() - 3]), None);
+        assert_eq!(unpack(&[0, 0]), None);
+    }
+
+    /// Run a mux (`lz4` or not) reading `rd`, delivering what comes for stream 9 to a local socket;
+    /// the socket's other end and the thread that returns why the link ended.
+    fn receiver(rd: RawReader, wr: RawWriter, lz4: bool) -> (UnixStream, std::thread::JoinHandle<String>) {
+        let mux = Mux::new(wr, lz4).unwrap();
+        let (ours, app) = UnixStream::pair().unwrap();
+        assert!(mux.attach(9, ours, false));
+        let t = std::thread::spawn(move || {
+            mux.run(rd, || Ok(()), |mux, tag, sid, data| match tag {
+                DATA => mux.deliver(sid, data),
+                _ => mux.ended(sid),
+            })
+        });
+        (app, t)
+    }
+
+    #[test]
+    fn a_packing_link_delivers_zdata_and_drops_a_peer_that_sends_garbage() {
+        let ((ra, wa), (rb, mut wb)) = link("rx");
+        let (mut app, t) = receiver(ra, wa, true);
+        let frame = screen(10, 180, 50);
+        let mut m = Vec::new();
+        assert!(pack(9, &frame[..DATA_MAX], &mut m));
+        wb.send(&m).unwrap();
+        let mut back = vec![0u8; DATA_MAX];
+        app.read_exact(&mut back).unwrap();
+        assert_eq!(back, frame[..DATA_MAX]);
+        let mut bomb = vec![ZDATA, 0, 0, 0, 9];
+        bomb.extend_from_slice(&u32::MAX.to_be_bytes());
+        bomb.extend_from_slice(&[0; 32]);
+        wb.send(&bomb).unwrap();
+        assert_eq!(t.join().unwrap(), "that Mac sent data that doesn't unpack");
+        drop(rb);
+    }
+
+    #[test]
+    fn a_plain_link_refuses_zdata() {
+        let ((ra, wa), (_rb, mut wb)) = link("pz");
+        let (_app, t) = receiver(ra, wa, false);
+        let mut m = Vec::new();
+        assert!(pack(9, &screen(0, 80, 24), &mut m));
+        wb.send(&m).unwrap();
+        assert_eq!(t.join().unwrap(), "that Mac sent data that doesn't unpack");
+    }
+
+    /// `drive_open` / `drive_ok` as builds before compression knew them.
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "t", rename_all = "snake_case")]
+    enum Before {
+        DriveOpen,
+        DriveOk,
+        #[serde(other)]
+        Unknown,
+    }
+
+    #[test]
+    fn older_builds_and_this_one_still_open_links() {
+        let json = |w: &Wire| serde_json::to_string(w).unwrap();
+        // This build to an older one: the offer and a plain answer read as before.
+        let offer = Wire::DriveOpen { compress: vec![LZ4.into()] };
+        assert_eq!(serde_json::from_str::<Before>(&json(&offer)).unwrap(), Before::DriveOpen);
+        assert_eq!(json(&Wire::DriveOk { compress: None }), r#"{"t":"drive_ok"}"#);
+        assert_eq!(serde_json::from_str::<Before>(&json(&Wire::DriveOk { compress: Some(LZ4.into()) })).unwrap(), Before::DriveOk);
+        // An older build to this one: no offer, no compression.
+        assert_eq!(serde_json::from_str::<Wire>(r#"{"t":"drive_open"}"#).unwrap(), Wire::DriveOpen { compress: vec![] });
+        assert_eq!(serde_json::from_str::<Wire>(r#"{"t":"drive_ok"}"#).unwrap(), Wire::DriveOk { compress: None });
+        assert_eq!(json(&Wire::DriveOpen { compress: vec![] }), r#"{"t":"drive_open"}"#);
+    }
 }

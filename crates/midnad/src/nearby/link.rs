@@ -116,10 +116,10 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
                 transfer::serve(&d, &mut ch, &from, &id, file, offset)
             }
             Wire::FileDone { id, ok, error } => transfer::finished(&d, &ch.fingerprint, &id, ok, error),
-            Wire::DriveOpen => {
+            Wire::DriveOpen { compress } => {
                 drop(d);
                 // The connection becomes the link from here on.
-                return super::relay::serve(w, ch);
+                return super::relay::serve(w, ch, &compress);
             }
             _ => Wire::Refused { reason: "unsupported".into() },
         };
