@@ -2638,21 +2638,20 @@ impl TerminalView {
 
 /// Open `path` at `line`: `$VISUAL`/`$EDITOR` (from the user's login shell) in a new terminal
 /// next to this one, or the default app (`open`) when no editor is set.
+///
+/// In another Mac's window the path is on that Mac: its own login shell picks its editor, and
+/// with none set it opens in `vi` there. `open` would act on this Mac's screen (or that one's,
+/// locked), never in this window.
 pub(crate) fn open_file(backend: Arc<dyn Backend>, session: String, path: String, line: Option<u32>) {
     std::thread::spawn(move || {
-        let editor = login_editor();
-        let Some(editor) = editor else {
-            let _ = std::process::Command::new("/usr/bin/open").arg(&path).status();
-            return;
-        };
-        let q = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
-        let bin = editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
-        let cmd = match (bin.as_str(), line) {
-            ("code" | "cursor" | "zed" | "subl", Some(l)) => {
-                format!("{editor} -g {}", q(&format!("{path}:{l}")))
-            }
-            (_, Some(l)) => format!("{editor} +{l} {}", q(&path)),
-            (_, None) => format!("{editor} {}", q(&path)),
+        let cmd = if backend.mac().is_some() {
+            there_editor_command(&path, line)
+        } else {
+            let Some(editor) = login_editor() else {
+                let _ = std::process::Command::new("/usr/bin/open").arg(&path).status();
+                return;
+            };
+            editor_command(&editor, &path, line)
         };
         let s = backend.call("session.get", json!({ "id": session })).unwrap_or(Value::Null);
         let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -2668,6 +2667,36 @@ pub(crate) fn open_file(backend: Arc<dyn Backend>, session: String, path: String
             let _ = backend.call("session.focus", json!({ "id": id }));
         }
     });
+}
+
+/// Single-quoted for a shell.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `editor` opening `path` at `line`: `-g path:line` for the GUI editors that take it, else
+/// `+line path`.
+fn editor_command(editor: &str, path: &str, line: Option<u32>) -> String {
+    let bin = editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("");
+    match (bin, line) {
+        ("code" | "cursor" | "zed" | "subl", Some(l)) => format!("{editor} -g {}", sh_quote(&format!("{path}:{l}"))),
+        (_, Some(l)) => format!("{editor} +{l} {}", sh_quote(path)),
+        (_, None) => format!("{editor} {}", sh_quote(path)),
+    }
+}
+
+/// [`editor_command`] for another Mac, as a script its login shell (zsh or bash) runs: that
+/// Mac's `$VISUAL`/`$EDITOR`, or `vi` when it has neither, since this Mac's may not be there.
+fn there_editor_command(path: &str, line: Option<u32>) -> String {
+    let pick = r#"e="${VISUAL:-$EDITOR}"; [ -n "$e" ] || e=vi"#;
+    // eval splits the editor's own flags in zsh too; the path stays one word in "$f".
+    let run = match line {
+        Some(l) => format!(
+            r#"case "${{e%% *}}" in code|*/code|cursor|*/cursor|zed|*/zed|subl|*/subl) eval "$e -g \"\${{f}}:{l}\"" ;; *) eval "$e +{l} \"\$f\"" ;; esac"#
+        ),
+        None => r#"eval "$e \"\$f\"""#.to_string(),
+    };
+    format!("f={}; {pick}; {run}", sh_quote(path))
 }
 
 /// `$VISUAL` / `$EDITOR` as the user's login shell sees them (a GUI app's environment usually
@@ -3252,8 +3281,44 @@ fn escaped_path(p: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{caps_text, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text};
+    use super::{caps_text, editor_command, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text, there_editor_command};
     use serde_json::json;
+
+    #[test]
+    fn this_macs_editor_opens_at_the_line() {
+        assert_eq!(editor_command("/usr/local/bin/code -w", "/a b/it's.rs", Some(7)), r"/usr/local/bin/code -w -g '/a b/it'\''s.rs:7'");
+        assert_eq!(editor_command("nvim", "/a b.rs", Some(7)), "nvim +7 '/a b.rs'");
+        assert_eq!(editor_command("nvim", "/a b.rs", None), "nvim '/a b.rs'");
+    }
+
+    /// Runs the script another Mac's login shell would, with fake editors that print their args.
+    #[test]
+    fn another_macs_file_opens_in_that_macs_editor_or_vi() {
+        let dir = std::env::temp_dir().join(format!("midna-there-editor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for bin in ["vi", "code", "hx"] {
+            let p = dir.join(bin);
+            std::fs::write(&p, format!("#!/bin/sh\nprintf '{bin}'; for a in \"$@\"; do printf ' [%s]' \"$a\"; done\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = "/a b/it's $x.rs";
+        let run = |shell: &str, visual: Option<&str>, editor: Option<&str>, line: Option<u32>| {
+            let mut c = std::process::Command::new(shell);
+            c.args(["-f", "-c", &there_editor_command(path, line)]).env("PATH", format!("{}:/usr/bin:/bin", dir.display()));
+            c.env_remove("VISUAL").env_remove("EDITOR");
+            visual.map(|v| c.env("VISUAL", v));
+            editor.map(|v| c.env("EDITOR", v));
+            String::from_utf8(c.output().unwrap().stdout).unwrap()
+        };
+        for shell in ["/bin/zsh", "/bin/bash"].into_iter().filter(|s| std::path::Path::new(s).exists()) {
+            assert_eq!(run(shell, None, None, Some(3)), "vi [+3] [/a b/it's $x.rs]", "{shell}: no editor there opens vi");
+            assert_eq!(run(shell, None, Some("hx"), None), "hx [/a b/it's $x.rs]", "{shell}");
+            assert_eq!(run(shell, Some("code -w"), Some("hx"), Some(3)), "code [-w] [-g] [/a b/it's $x.rs:3]", "{shell}: $VISUAL first");
+            assert_eq!(run(shell, None, Some(&format!("{}/code", dir.display())), Some(3)), "code [-g] [/a b/it's $x.rs:3]", "{shell}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_picked_theme_repaints_that_macs_ansi_colors() {
