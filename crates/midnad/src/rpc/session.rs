@@ -610,9 +610,9 @@ pub fn input(d: &Daemon, ctx: &Ctx, mut p: SessionInputParams) -> R {
     ok(OkResult { ok: true })
 }
 
-/// An image the person driving this Mac from another one pasted or dropped there and confirmed:
+/// An image the person driving this Mac from another one pasted or dropped there, as it's sent:
 /// saved in this Mac's images folder, then its path pasted as `session.input` would. Only a drive
-/// link's person may: the app there sends it after its confirm, and nothing on this Mac (agents,
+/// link's person may: the app there sends it with their message, and nothing on this Mac (agents,
 /// scripts, the CLI, the app here) has an image it would need to send this way.
 pub fn send_image(d: &Daemon, ctx: &Ctx, p: SessionSendImageParams) -> R {
     if ctx.as_actor.as_ref().and_then(|a| a.drive_peer()).is_none() {
@@ -633,7 +633,7 @@ pub fn send_image(d: &Daemon, ctx: &Ctx, p: SessionSendImageParams) -> R {
 
 pub fn send_image_refusal() -> RpcError {
     RpcError::human_only(
-        "session.send_image takes an image from the Mac driving this one, once its person confirms it there; here, attach one with session.input's images",
+        "session.send_image takes an image from the Mac driving this one, sent by its person there; here, attach one with session.input's images",
     )
 }
 

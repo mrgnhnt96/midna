@@ -394,8 +394,28 @@ fn submit(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Contex
     // Images attached to this terminal (`annotate.rs`) wait for its next ↩, which this send
     // replaces: they go with the text, or one of the two would be left behind.
     let out = crate::annotate::take(&id, cx);
-    let images: Vec<String> = out.iter().flat_map(|o| o.paths.iter().map(|p| p.display().to_string())).collect();
     let data = encode(&with_notes(&text, out.as_ref().map_or("", |o| o.text.as_str())), bpaste);
+    let paths: Vec<std::path::PathBuf> = out.map(|o| o.paths).unwrap_or_default();
+    if let Some(mac) = m.backend.mac().map(|m| m.name.clone()).filter(|_| !paths.is_empty()) {
+        // Another Mac's terminal: these paths mean nothing there. Each image goes there first
+        // and that Mac pastes its own path, then the text follows.
+        let backend = m.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::terminal::send_image::send_there(&*backend, &id, &paths, &mac)?;
+                    backend.call("session.input", json!({"id": id, "text": data, "enter": true})).map(drop).map_err(|e| format!("session.input failed: {e:#}"))
+                })
+                .await;
+            if let Err(e) = res {
+                let _ = this.update(cx, |m, cx| m.toast(e, cx));
+            }
+        })
+        .detach();
+        return;
+    }
+    let images: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     m.rpc("session.input", json!({"id": id, "text": data, "enter": true, "images": images}), cx, |_, _, _, _| {});
 }
 
@@ -569,17 +589,19 @@ fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
         return false;
     }
     let sources = crate::annotate::clipboard_sources(cx);
-    if m.remote() {
-        // Another Mac's terminal: asked about in its bar, then sent there (`terminal::send_image`).
-        let target = m.composer.target.clone();
-        crate::annotate::offer_to_mac(m, target, Some(sources), window, cx);
-        return true;
-    }
     match m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) {
         Some(id) if !crate::terminal::image_paste_inline() => {
             release_native_focus(m);
             if crate::annotate::open(m, Some(id), window, cx) {
                 m.annot.update(cx, |v, cx| v.add(sources, window, cx));
+            }
+        }
+        // Another Mac's terminal: a path here means nothing there, so the image goes there and
+        // that Mac pastes its own path into the terminal (`terminal::send_image`).
+        _ if m.remote() => {
+            let target = m.composer.target.clone();
+            if let Some(t) = m.terminal.clone().filter(|t| target.is_none() || target.as_deref() == Some(t.read(cx).session_id.as_str())) {
+                t.update(cx, |t, cx| t.send_images(sources, cx));
             }
         }
         _ => paste_image_paths(sources, cx),
