@@ -35,6 +35,8 @@ mod send_image;
 pub use link_preview::share as share_preview_env;
 pub(crate) use pr_status::stale as link_stale;
 pub use prompt_nav::share as share_prompt_bar;
+#[cfg(test)]
+pub use prompt_nav::shared as prompt_bar_shared;
 
 pub const FONT_SIZE: f32 = 12.5;
 /// Design: line-height 1.6 at 12.5px.

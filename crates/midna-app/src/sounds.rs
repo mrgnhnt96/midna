@@ -36,6 +36,12 @@ pub fn sync(settings: &HashMap<String, Value>, home: Option<&Path>) {
     });
 }
 
+/// A setting as [`sync`] last set it here.
+#[cfg(test)]
+pub fn synced(key: &str) -> Value {
+    CONFIG.with_borrow(|c| get(&c.settings, key))
+}
+
 /// Play a kind's sound: a sound effect (`approved`, `switched`, …) or a notification category.
 pub fn play(kind: &str) {
     let active = app_active();
