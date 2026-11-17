@@ -742,9 +742,9 @@ pub fn open(m: &mut MainWindow, text: String, window: &mut Window, cx: &mut Cont
     start(m, kind, text, None, None, None, window, cx);
 }
 
-/// Open the picker in the home window: for a terminal's selection, which may be in a pop-out.
-pub fn open_in_home(text: String, cx: &mut App) {
-    crate::windows::on_home(cx, move |m, window, cx| open(m, text, window, cx));
+/// Open the picker in `mac`'s home window: for a terminal's selection, which may be in a pop-out.
+pub fn open_in_home(mac: crate::windows::MacId, text: String, cx: &mut App) {
+    crate::windows::on_home(&mac, cx, move |m, window, cx| open(m, text, window, cx));
 }
 
 /// Open the picker to write a message; a reply answers `reply_to` (a share id) from `peer`,
@@ -918,7 +918,7 @@ fn send(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     call(m, "share.send", params, cx, move |m, r, w, cx| match r {
         Ok(_) => {
             close(m, w, cx);
-            if let Some(n) = resolves.filter(|n| m.needs.iter().any(|x| &x.id == n)) {
+            if let Some(n) = resolves.filter(|n| m.needs.iter().any(|x| &x.id == n && !x.local_only)) {
                 m.resolve(n, Resolution::Approve { scope: ApprovalScope::Once }, cx);
             }
             m.toast(sent, cx);
@@ -939,13 +939,9 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     let p = m.share.picker.as_ref()?;
     let replying = p.reply_to.is_some();
     let starting = p.kind == ShareKind::AgentStart;
-    let title = if replying {
-        "Reply"
-    } else if starting {
-        "Ask an agent on a nearby Mac"
-    } else {
-        "Share with a nearby Mac"
-    };
+    let mac = that_mac(m);
+    let words = PickerWords::new(mac.as_deref(), replying, starting);
+    let title = words.title;
 
     let kinds = picker_kinds(&p.text, replying, p.session.is_some());
     let switch = (kinds.len() > 1).then(|| {
@@ -983,7 +979,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
             .gap(px(8.))
             .py(px(6.))
             .text_color(t.dim)
-            .child("You haven't paired this Mac with another Midna yet. Pair one in Settings › Nearby, then share with it here.")
+            .child(words.unpaired_all)
             .into_any_element(),
         Some(peers) => {
             let mut col = div().id("share-peers").flex().flex_col().gap(px(2.)).max_h(px(240.)).overflow_y_scroll();
@@ -1047,19 +1043,23 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
             .gap(px(6.))
             .text_size(px(12.))
             .text_color(t.dim)
-            .child(format!("{n} other Midna{} nearby {} paired with this Mac.", if n == 1 { "" } else { "s" }, if n == 1 { "isn't" } else { "aren't" }))
-            .child(
-                div()
-                    .id("share-pair")
-                    .text_color(t.accent)
-                    .cursor_pointer()
-                    .hover(|s| s.underline())
-                    .on_click(cx.listener(|m, _, w, cx| {
-                        close(m, w, cx);
-                        crate::ui::settings::open(m.backend.clone(), cx);
-                    }))
-                    .child("Pair in Settings"),
-            )
+            .child(unpaired_line(mac.as_deref(), n))
+            // pairing is done at the Mac being paired (`peers.pair` is local-only over a link)
+            .when_some(mac.clone(), |d, mac| d.child(format!("Pair them at {mac}.")))
+            .when(mac.is_none(), |d| {
+                d.child(
+                    div()
+                        .id("share-pair")
+                        .text_color(t.accent)
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .on_click(cx.listener(|m, _, w, cx| {
+                            close(m, w, cx);
+                            crate::ui::settings::open(m.backend.clone(), cx);
+                        }))
+                        .child("Pair in Settings"),
+                )
+            })
     });
 
     let chosen = p.peers.as_ref().and_then(|v| v.get(p.sel)).filter(|x| x.nearby);
@@ -1098,7 +1098,7 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
                 .gap(px(8.))
                 .child(div().flex_1().text_size(px(11.5)).text_color(t.dim).child(if starting { "⇧↩ new line · ↩ send · esc cancel" } else { "↑↓ choose · ↩ send · esc cancel" }))
                 .child(btn(t, "share-cancel", "Cancel").on_click(cx.listener(|m, _, w, cx| close(m, w, cx))))
-                .when(paired_none, |d| {
+                .when(paired_none && mac.is_none(), |d| {
                     d.child(btn_primary(t, "share-settings", "Open Settings").on_click(cx.listener(|m, _, w, cx| {
                         close(m, w, cx);
                         crate::ui::settings::open(m.backend.clone(), cx);
@@ -1338,6 +1338,62 @@ pub fn inbox_rows(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> St
     col
 }
 
+/// The name of the Mac this window drives; None in this Mac's own windows. There, sharing runs
+/// on that Mac (design option C): the picker sends from it to its paired Macs.
+fn that_mac(m: &MainWindow) -> Option<String> {
+    m.backend.mac().map(|x| x.name.clone())
+}
+
+/// The picker's words, naming the Mac it sends from when that's another Mac (`mac`).
+#[derive(Debug, PartialEq)]
+struct PickerWords {
+    title: String,
+    /// With no Mac paired yet.
+    unpaired_all: String,
+}
+
+impl PickerWords {
+    fn new(mac: Option<&str>, replying: bool, starting: bool) -> Self {
+        let title = match (mac, replying, starting) {
+            (None, true, _) => "Reply".into(),
+            (None, _, true) => "Ask an agent on a nearby Mac".into(),
+            (None, _, _) => "Share with a nearby Mac".into(),
+            (Some(mac), true, _) => format!("Reply from {mac}"),
+            (Some(mac), _, true) => format!("Ask an agent from {mac}"),
+            (Some(mac), _, _) => format!("Share from {mac}"),
+        };
+        let unpaired_all = match mac {
+            None => "You haven't paired this Mac with another Midna yet. Pair one in Settings › Nearby, then share with it here.".into(),
+            Some(mac) => format!("{mac} isn't paired with another Midna yet. Pair one at {mac} in Settings › Nearby, then share from it here."),
+        };
+        PickerWords { title, unpaired_all }
+    }
+}
+
+/// "2 other Midnas nearby aren't paired with this Mac.", naming that Mac in its window.
+fn unpaired_line(mac: Option<&str>, n: usize) -> String {
+    let (s, are) = if n == 1 { ("", "isn't") } else { ("s", "aren't") };
+    format!("{n} other Midna{s} nearby {are} paired with {}.", mac.unwrap_or("this Mac"))
+}
+
+/// "Decide at <Mac>" in Accept's and Decline's place on that Mac's incoming share: shaped like
+/// a button, nothing to press.
+fn decide_at(t: &Theme, mac: &str) -> Stateful<Div> {
+    div()
+        .id("nt-share-decide")
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(28.))
+        .px(px(10.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(t.line)
+        .text_size(px(12.))
+        .text_color(t.dim)
+        .child(format!("Decide at {mac}"))
+}
+
 /// The Nearby tab's right side: one share and what you can still do with it.
 pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (badge, color) = state_badge(t, it);
@@ -1345,7 +1401,24 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
     let id = it.id.clone();
     let mut actions = div().flex().flex_wrap().items_center().gap(px(8.));
     let open = it.state != ShareState::Declined;
+    // another Mac's window shows that Mac's inbox: a share is accepted or declined at the Mac it
+    // was sent to (`share.accept` / `share.decline` are local-only), so its card says where
+    let mac = that_mac(m);
+    let decide = incoming && it.state == ShareState::Offered && mac.is_some();
     match (&it.payload, incoming) {
+        _ if mac.is_some() => {
+            if let (SharePayload::Message { .. }, true) = (&it.payload, incoming) {
+                let (r, peer) = (id.clone(), it.peer.clone());
+                actions = actions.child(btn_primary(t, "nt-share-reply", "Reply…").on_click(cx.listener(move |m, _, w, cx| open_message(m, Some(r.clone()), Some(peer.clone()), None, w, cx))));
+            }
+            if let (SharePayload::Link { url, .. }, true) = (&it.payload, incoming)
+                && open
+                && !decide
+            {
+                let url = url.clone();
+                actions = actions.child(btn_primary(t, "nt-share-open", "Open link").on_click(move |_, _, _| crate::notify::open_url(&url)));
+            }
+        }
         (SharePayload::Snippet { .. }, true) if open => {
             let menu = m.share.chooser.then(|| {
                 let id = id.clone();
@@ -1409,7 +1482,9 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
         m.toast("Copied.", cx);
     })));
-    if incoming && it.state == ShareState::Offered {
+    if let Some(mac) = mac.as_deref().filter(|_| decide) {
+        actions = actions.child(decide_at(t, mac));
+    } else if incoming && it.state == ShareState::Offered {
         let d = id.clone();
         actions = actions.child(super::screen_kit::btn_danger(t, "nt-share-decline", "Decline", 28.).on_click(cx.listener(move |m, _, _, cx| decline(m, d.clone(), cx))));
     }
@@ -1441,17 +1516,31 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         .child(payload_box(t, &it.payload))
         .children(answer_box(m, t, it))
         .children(it.transfer.as_ref().map(|x| progress(t, x)))
-        .children(it.result.clone().map(|r| div().text_color(t.dim).child(format!("On this Mac: {r}."))))
+        .children(it.result.clone().map(|r| div().text_color(t.dim).child(format!("On {}: {r}.", mac.as_deref().unwrap_or("this Mac")))))
         .child(actions)
 }
 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one.
-    use super::{Offer, agent_answered, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, picker_kinds, send_params, start_params};
+    use super::{Offer, PickerWords, agent_answered, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, picker_kinds, send_params, start_params, unpaired_line};
     use midna_proto::AgentKind;
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
     use midna_proto::nearby::{PairedPeer, ShareDirection, ShareItem, ShareKind, SharePayload, ShareState, Tier};
+
+    #[test]
+    fn another_macs_picker_names_the_mac_it_sends_from() {
+        assert_eq!(PickerWords::new(None, false, false).title, "Share with a nearby Mac");
+        assert_eq!(PickerWords::new(None, true, false).title, "Reply");
+        assert_eq!(PickerWords::new(None, false, true).title, "Ask an agent on a nearby Mac");
+        assert_eq!(PickerWords::new(Some("Bravo"), false, false).title, "Share from Bravo");
+        assert_eq!(PickerWords::new(Some("Bravo"), true, false).title, "Reply from Bravo");
+        assert_eq!(PickerWords::new(Some("Bravo"), false, true).title, "Ask an agent from Bravo");
+        assert!(PickerWords::new(None, false, false).unpaired_all.starts_with("You haven't paired this Mac"));
+        assert!(PickerWords::new(Some("Bravo"), false, false).unpaired_all.contains("Pair one at Bravo"));
+        assert_eq!(unpaired_line(None, 1), "1 other Midna nearby isn't paired with this Mac.");
+        assert_eq!(unpaired_line(Some("Bravo"), 2), "2 other Midnas nearby aren't paired with Bravo.");
+    }
 
     fn need(title: &str, detail: &str, value: &str) -> NeedsYou {
         NeedsYou {
