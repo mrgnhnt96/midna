@@ -133,7 +133,7 @@ impl Inbox {
         while self.items.len() > MAX_KEPT || (self.items.len() > 1 && bytes(&self.items) > MAX_KEPT_BYTES) {
             let moving = |e: &Entry| e.item.transfer.as_ref().is_some_and(|t| !t.is_over());
             let owes = |e: &Entry| e.owe || e.watch.is_some() || e.reply.is_some();
-            let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && !owes(e) && !moving(e));
+            let done = self.items.iter().position(|e| e.item.state != ShareState::Offered && e.item.state != ShareState::Queued && !owes(e) && !moving(e));
             let Some(at) = done.or_else(|| self.items.iter().position(|e| !moving(e))) else { return };
             let gone = self.items.remove(at);
             // An agent session's transcript snapshot, or an agent start's notes, go with it.
@@ -240,12 +240,46 @@ pub fn send(d: &Daemon, ctx: &Ctx, p: ShareSendParams) -> R {
 
 /// Offer device `fp` a share that may go (the guard let it, or it answers something it asked)
 /// and wait until it is in its inbox; `source` is what serves it from this Mac. `patient` (a
-/// person waits on it) tries again while macOS asks about Local Network access.
+/// person waits on it) tries again while macOS asks about Local Network access. When `fp` is not
+/// visible on the network, the share is kept as [`ShareState::Queued`] and delivered when the
+/// peer next appears.
 pub(super) fn offer(d: &Daemon, fp: &str, id: String, payload: SharePayload, source: Option<PathBuf>, by: Actor, patient: bool) -> Result<ShareItem, RpcError> {
     let fp = fp.to_string();
     let name = peer_name(d, &fp);
     let named = payload.project_name().is_some();
-    let mut ch = if patient { link::connect_peer_waiting(d, &fp)? } else { link::connect_peer(d, &fp)? };
+    let ch = if patient { link::connect_peer_waiting(d, &fp) } else { link::connect_peer(d, &fp) };
+    let ch = match ch {
+        Ok(c) => c,
+        Err(e) if e.code == midna_proto::error::NOT_FOUND => {
+            // Peer isn't on the network right now: queue it and return success.
+            let item = ShareItem {
+                id: id.clone(),
+                direction: ShareDirection::Outgoing,
+                peer: fp.clone(),
+                peer_name: name.clone(),
+                from: identity(d).fingerprint.clone(),
+                size: payload.size(),
+                payload,
+                state: ShareState::Queued,
+                sent_at: time::now_rfc3339(),
+                decided_at: None,
+                result: None,
+                needs_you_id: None,
+                transfer: None,
+                auto: false,
+            };
+            {
+                let mut i = d.nearby.inner();
+                let inbox = i.inbox(&d.cfg.home);
+                inbox.push(Entry::new(item.clone(), source));
+                inbox.save()?;
+            }
+            emit(d, kinds::SHARE_SENT, by, &item);
+            return Ok(item);
+        }
+        Err(e) => return Err(e),
+    };
+    let mut ch = ch;
     let offer = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
     let item = ShareItem {
         id: id.clone(),
@@ -571,6 +605,14 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
             let (tab, then) = agent_ask::approval(d, it);
             (format!("{name} asks {tab} here: {}", first_line(prompt)), format!("{}\n\n{then}", cut(prompt, 2000)), json!({ "id": it.id }))
         }
+        SharePayload::FileRequest { path } => (
+            format!("{name} requests a file: {}", cut(path, 80)),
+            format!(
+                "{}\n\nApproving sends this file to {name}. The file must exist on this Mac at that path.",
+                cut(path, 2000)
+            ),
+            json!({ "id": it.id }),
+        ),
     };
     let who = match tier {
         Tier::MyDevice => "one of your Macs",
@@ -777,6 +819,19 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
                 }
             }
         }
+        SharePayload::FileRequest { path } => {
+            // The peer asked this Mac to send it a file at `path`. Prepare and offer it back.
+            let (file_payload, source) = transfer::prepare(path).map_err(|e| RpcError::refused(e.message))?;
+            let reply_id = format!("sh_{}", crate::state::hex_id(12));
+            let d2 = d.clone();
+            let fp = it.peer.clone();
+            let actor = ctx.actor();
+            // Kick off the reverse offer in a background thread so accept_as returns promptly.
+            let _ = std::thread::Builder::new().name("nearby-file-request".into()).spawn(move || {
+                let _ = offer(&d2, &fp, reply_id, file_payload, Some(source), actor, false);
+            });
+            "sent".to_string()
+        }
     };
     let (item, first, ny) = {
         let mut i = d.nearby.inner();
@@ -831,7 +886,7 @@ pub fn decline(d: &Daemon, ctx: &Ctx, p: ShareDeclineParams) -> R {
     match it.state {
         ShareState::Accepted => Err(RpcError::conflict(format!("{} was already accepted", p.id))),
         ShareState::Declined => ok(it),
-        ShareState::Offered => ok(decline_offered(d, &p.id, ctx.actor(), None).unwrap_or(it)),
+        ShareState::Offered | ShareState::Queued => ok(decline_offered(d, &p.id, ctx.actor(), None).unwrap_or(it)),
     }
 }
 
@@ -1001,6 +1056,66 @@ fn deliver(d: &Daemon) {
     }
     // After the results, so an agent start is accepted on its sender before it is answered.
     agent_start::deliver(d, &seen);
+    // Try to deliver queued outgoing shares to peers that are now visible.
+    deliver_queued(d, &seen);
+}
+
+/// Send any outgoing shares queued while their peer was offline.
+fn deliver_queued(d: &Daemon, seen: &[String]) {
+    let queued: Vec<(String, String, SharePayload, Option<PathBuf>)> = {
+        let mut i = d.nearby.inner();
+        let inbox = i.inbox(&d.cfg.home);
+        inbox
+            .items
+            .iter()
+            .filter(|e| e.item.state == ShareState::Queued && e.item.direction == ShareDirection::Outgoing && seen.contains(&e.item.peer))
+            .map(|e| (e.item.id.clone(), e.item.peer.clone(), e.item.payload.clone(), e.source.clone()))
+            .collect()
+    };
+    for (id, fp, payload, source) in queued {
+        let named = payload.project_name().is_some();
+        // Transition to Offered before connecting so prune won't remove it.
+        {
+            let mut i = d.nearby.inner();
+            let inbox = i.inbox(&d.cfg.home);
+            if let Some(e) = inbox.get_mut(&id) {
+                e.item.state = ShareState::Offered;
+                let _ = inbox.save();
+            }
+        }
+        let Ok(mut ch) = link::connect_peer(d, &fp) else {
+            // Still not reachable: roll back to Queued.
+            let mut i = d.nearby.inner();
+            let inbox = i.inbox(&d.cfg.home);
+            if let Some(e) = inbox.get_mut(&id) {
+                e.item.state = ShareState::Queued;
+                let _ = inbox.save();
+            }
+            continue;
+        };
+        let offer_wire = Wire::ShareOffer { id: id.clone(), payload: serde_json::to_value(&payload).unwrap_or_default() };
+        let sent = ch.send(&offer_wire).and_then(|_| ch.expect(transport::HANDSHAKE_TIMEOUT));
+        let ok = match &sent {
+            Ok(Wire::ShareAck { id: got }) if *got == id => { ch.finish(); true }
+            Ok(Wire::Refused { reason }) if named && reason.ends_with("directory must be an absolute path") => false,
+            _ => false,
+        };
+        if !ok {
+            // Peer refused or something failed: drop the queued item (not retriable).
+            let mut i = d.nearby.inner();
+            let inbox = i.inbox(&d.cfg.home);
+            inbox.items.retain(|e| e.item.id != id);
+            let _ = inbox.save();
+            if source.is_some() {
+                super::session::forget(&d.cfg.home, &id);
+            }
+        } else {
+            let item = d.nearby.inner().inbox(&d.cfg.home).get(&id).map(|e| e.item.clone());
+            if let Some(item) = item {
+                emit(d, kinds::SHARE_SENT, Actor::system(), &item);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

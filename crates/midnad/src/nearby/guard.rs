@@ -21,7 +21,9 @@ pub fn send_value(payload: &SharePayload, fp: &str) -> String {
 }
 
 /// Before an agent's `share.send` connects: refuse a device it can't send to without asking,
-/// then go through policy. The human's own sends pass.
+/// then go through policy. The human's own sends pass. When the peer is a paired device that
+/// isn't visible right now, the guard still passes: `offer` queues the share and delivers it
+/// when the peer appears on the network.
 pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(), RpcError> {
     if ctx.is_human() {
         return Ok(());
@@ -31,12 +33,9 @@ pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(
     }
     let (name, tier) = {
         let mut i = d.nearby.inner();
-        let stored = i.store(&d.cfg.home).get(fp).map(|s| (s.name.clone(), s.tier));
-        let seen = i.peers.contains_key(fp);
-        let Some(stored) = stored else { return Err(RpcError::refused("that device isn't paired with this Mac")) };
-        if !seen {
-            return Err(RpcError::not_found("that device can't be seen on the network now"));
-        }
+        let Some(stored) = i.store(&d.cfg.home).get(fp).map(|s| (s.name.clone(), s.tier)) else {
+            return Err(RpcError::refused("that device isn't paired with this Mac"));
+        };
         stored
     };
     let who = match tier {
@@ -107,6 +106,9 @@ fn ask(name: &str, payload: &SharePayload) -> (String, String) {
         SharePayload::AgentAsk { session, prompt, .. } => {
             let tab = headline(session).0;
             (format!("Ask “{tab}” on {name}: {}?", headline(prompt).0.trim_end_matches('?')), super::agent_ask::describe(payload, SHOWN))
+        }
+        SharePayload::FileRequest { path } => {
+            (format!("Request the file “{path}” from {name}?"), format!("File request: {path}\n\nAsk {name} to send this file to this Mac."))
         }
     }
 }

@@ -666,8 +666,12 @@ impl Worker {
         for p in left {
             d.emit(kinds::PEERS_LEFT, Actor::system(), None, None, serde_json::to_value(&p).unwrap_or_default());
         }
+        let any_appeared = !appeared.is_empty();
         for p in appeared {
             d.emit(kinds::PEERS_APPEARED, Actor::system(), None, None, serde_json::to_value(&p).unwrap_or_default());
+        }
+        if any_appeared {
+            share::nudge(d);
         }
     }
 

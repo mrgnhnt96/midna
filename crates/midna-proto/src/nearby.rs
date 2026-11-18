@@ -736,6 +736,12 @@ pub enum SharePayload {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         want_reply: bool,
     },
+    /// A request for the other Mac to send a file at `path` on its filesystem. The receiving
+    /// Mac's person approves the request, and that Mac then offers the file back as a `File` share.
+    FileRequest {
+        /// Absolute path of the file or folder on the receiving Mac.
+        path: String,
+    },
 }
 
 /// Which project a tab was in, the same on every Mac that has a checkout of it.
@@ -1125,6 +1131,7 @@ impl SharePayload {
             SharePayload::Agent { .. } => ShareKind::Agent,
             SharePayload::AgentStart { .. } => ShareKind::AgentStart,
             SharePayload::AgentAsk { .. } => ShareKind::AgentAsk,
+            SharePayload::FileRequest { .. } => ShareKind::FileRequest,
         }
     }
 
@@ -1151,6 +1158,7 @@ impl SharePayload {
             SharePayload::Agent { transcript, .. } => transcript.size,
             SharePayload::AgentStart { prompt, notes, .. } => (prompt.len() as u64).saturating_add(notes.as_ref().map_or(0, |n| n.file.size)),
             SharePayload::AgentAsk { prompt, .. } => prompt.len() as u64,
+            SharePayload::FileRequest { path } => path.len() as u64,
         }
     }
 
@@ -1266,6 +1274,11 @@ impl SharePayload {
                 }
                 check_prompt(prompt)?;
             }
+            SharePayload::FileRequest { path } => {
+                if !path.starts_with('/') || path.len() > MAX_DIR || !plain(path) {
+                    return Err("a file request's path must be an absolute path".into());
+                }
+            }
         }
         Ok(())
     }
@@ -1273,6 +1286,14 @@ impl SharePayload {
     /// The other Mac's agent answers this share (an agent start or ask sent with `want_reply`).
     pub fn wants_reply(&self) -> bool {
         matches!(self, SharePayload::AgentStart { want_reply: true, .. } | SharePayload::AgentAsk { want_reply: true, .. })
+    }
+
+    /// The path being requested, for a `FileRequest` share.
+    pub fn requested_path(&self) -> Option<&str> {
+        match self {
+            SharePayload::FileRequest { path } => Some(path),
+            _ => None,
+        }
     }
 
     /// A tab or an agent start sent to the receiver's project of this name.
@@ -1370,6 +1391,10 @@ pub enum ShareKind {
     AgentStart,
     /// A prompt for an agent terminal already open on the receiving Mac (`agent-ask`).
     AgentAsk,
+    /// A request for the other device to send a file at the given path on its Mac (`file-request`).
+    /// The receiving device's person approves it, then that Mac sends the file back as a `File`
+    /// share. Never auto-accepted; always requires the human on the serving Mac.
+    FileRequest,
 }
 
 impl ShareKind {
@@ -1399,6 +1424,7 @@ impl ShareKind {
             ShareKind::Agent => "agent",
             ShareKind::AgentStart => "agent_start",
             ShareKind::AgentAsk => "agent_ask",
+            ShareKind::FileRequest => "file_request",
         }
     }
 
@@ -1423,6 +1449,8 @@ pub enum ShareDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ShareState {
+    /// Not yet delivered to the peer: it was not on the network when sent; waiting to retry.
+    Queued,
     /// Waiting for the receiving person.
     Offered,
     /// The receiving person accepted it.
@@ -1582,8 +1610,14 @@ impl ShareSendParams {
         if self.url.is_some() && self.kind != ShareKind::Link {
             return Err("only a link has a `url`".into());
         }
-        if self.path.is_some() != (self.kind == ShareKind::File) {
-            return Err(if self.path.is_some() { "only a file has a `path`".into() } else { "a file needs `path`".into() });
+        if self.path.is_some() && !matches!(self.kind, ShareKind::File | ShareKind::FileRequest) {
+            return Err("only a file or file request has a `path`".into());
+        }
+        if self.path.is_none() && self.kind == ShareKind::File {
+            return Err("a file needs `path`".into());
+        }
+        if self.path.is_none() && self.kind == ShareKind::FileRequest {
+            return Err("a file request needs `path` (the absolute path on the other Mac)".into());
         }
         if self.session.is_some() && !matches!(self.kind, ShareKind::Tab | ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk) {
             return Err("only a tab, an agent session, an agent start or an agent ask takes a `session`".into());
@@ -1626,6 +1660,13 @@ impl ShareSendParams {
             ShareKind::Object => return Err("an object share is read from midnad's stores".into()),
             ShareKind::Agent => return Err("an agent session is read from its terminal by midnad".into()),
             ShareKind::AgentStart => return Err("an agent start's project and directory are read from its terminal by midnad".into()),
+            ShareKind::FileRequest => {
+                if self.text.is_some() || self.url.is_some() || self.title.is_some() || self.reply_to.is_some() {
+                    return Err("a file request takes only `path` (the absolute path on the other Mac)".into());
+                }
+                let path = self.path.as_deref().map(str::trim).filter(|p| !p.is_empty()).ok_or("a file request needs `path`")?;
+                SharePayload::FileRequest { path: path.to_string() }
+            }
             ShareKind::AgentAsk => {
                 if self.text.is_some() || title.is_some() {
                     return Err("an agent ask takes a `session` (the other Mac's terminal) and a `prompt`, not text or a title".into());

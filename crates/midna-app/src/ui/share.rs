@@ -132,7 +132,7 @@ pub fn is_url(text: &str) -> bool {
 /// What the picker sends.
 pub fn payload(kind: ShareKind, text: &str, message: &str, reply_to: Option<String>) -> SharePayload {
     match kind {
-        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk => {
+        ShareKind::Message | ShareKind::File | ShareKind::Tab | ShareKind::Object | ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk | ShareKind::FileRequest => {
             SharePayload::Message { text: message.trim().to_string(), reply_to }
         }
         ShareKind::Snippet => SharePayload::Snippet { text: text.to_string(), title: None },
@@ -151,7 +151,8 @@ pub fn send_params(peer: &str, p: SharePayload) -> ShareSendParams {
         | SharePayload::Object { .. }
         | SharePayload::Agent { .. }
         | SharePayload::AgentStart { .. }
-        | SharePayload::AgentAsk { .. } => (None, None, None, None),
+        | SharePayload::AgentAsk { .. }
+        | SharePayload::FileRequest { .. } => (None, None, None, None),
     };
     ShareSendParams {
         peer: peer.to_string(),
@@ -195,6 +196,7 @@ pub fn noun(k: ShareKind) -> &'static str {
         ShareKind::Agent => "agent session",
         ShareKind::AgentStart => "agent start",
         ShareKind::AgentAsk => "agent ask",
+        ShareKind::FileRequest => "file request",
     }
 }
 
@@ -209,6 +211,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Agent => "Agent session",
         ShareKind::AgentStart => "Agent start",
         ShareKind::AgentAsk => "Agent ask",
+        ShareKind::FileRequest => "File request",
     }
 }
 
@@ -235,7 +238,7 @@ pub fn answered(it: &ShareItem) -> Option<String> {
         }
         (ShareState::Accepted, _) => Some(format!("{} accepted your {what}.", it.peer_name)),
         (ShareState::Declined, _) => Some(format!("{} declined your {what}.", it.peer_name)),
-        (ShareState::Offered, _) => None,
+        (ShareState::Offered, _) | (ShareState::Queued, _) => None,
     }
 }
 
@@ -361,6 +364,7 @@ fn offer_payload(m: &MainWindow, o: &Offer) -> SharePayload {
         ShareKind::Object => SharePayload::Snippet { text: o.body.clone(), title: None },
         // Only the card's words: what it is and where it opens.
         ShareKind::Agent | ShareKind::AgentStart | ShareKind::AgentAsk => SharePayload::Message { text: o.body.clone(), reply_to: None },
+        ShareKind::FileRequest => SharePayload::FileRequest { path: o.body.clone() },
     }
 }
 
@@ -399,6 +403,10 @@ pub fn panel(m: &MainWindow, t: &Theme, o: &Offer) -> Div {
         ShareKind::Agent => "Resume fetches the conversation, puts it where the agent keeps its conversations here (with their paths changed to yours), and opens a tab in your checkout of its project resuming it, idle until you prompt it. Nothing runs before you accept.".into(),
         ShareKind::AgentAsk => format!(
             "Queue prompt puts this prompt in the queue of the agent terminal {} named; it is typed once that agent is idle, never into a busy prompt. If they asked for its answer, the agent's reply when that turn ends goes back to them.",
+            o.name
+        ),
+        ShareKind::FileRequest => format!(
+            "Approve sends the file at the requested path to {}. The file must exist on this Mac.",
             o.name
         ),
     };
@@ -587,6 +595,9 @@ fn payload_box(t: &Theme, p: &SharePayload) -> Div {
                 .child(div().font_weight(FontWeight::BOLD).child(format!("Ask “{session}”")))
                 .child(div().text_color(t.dim).child(format!("Queued in that agent terminal, typed once it's idle{back}")))
                 .child(div().font_family(t.mono_font.clone()).text_size(px(12.)).child(prompt.clone()))
+        }
+        SharePayload::FileRequest { path } => {
+            frame().child(div().font_weight(FontWeight::BOLD).child(format!("Request: {path}")))
         }
     }
 }
@@ -1216,6 +1227,8 @@ fn state_badge(t: &Theme, it: &ShareItem) -> (&'static str, Hsla) {
         (_, ShareState::Accepted) if it.payload.kind() == ShareKind::Message => ("Read", t.ok),
         (_, ShareState::Accepted) => ("Accepted", t.ok),
         (_, ShareState::Declined) => ("Declined", t.err),
+        (ShareDirection::Outgoing, ShareState::Queued) => ("Queued", t.dim),
+        (ShareDirection::Incoming, ShareState::Queued) => ("Waiting", t.need),
     }
 }
 
@@ -1229,6 +1242,7 @@ fn gist(it: &ShareItem) -> String {
         SharePayload::Tab { title, .. } | SharePayload::Agent { title, .. } => title.clone(),
         SharePayload::Object { object } => object.label(),
         SharePayload::AgentStart { prompt, .. } | SharePayload::AgentAsk { prompt, .. } => prompt.clone(),
+        SharePayload::FileRequest { path } => path.clone(),
     };
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
@@ -1477,6 +1491,7 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
         SharePayload::Object { object } => serde_json::to_string_pretty(object).unwrap_or_default(),
         SharePayload::Agent { conversation, .. } => conversation.clone(),
         SharePayload::AgentStart { prompt, .. } | SharePayload::AgentAsk { prompt, .. } => prompt.clone(),
+        SharePayload::FileRequest { path } => path.clone(),
     };
     actions = actions.child(btn(t, "nt-share-copy", "Copy").on_click(cx.listener(move |m, _, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
