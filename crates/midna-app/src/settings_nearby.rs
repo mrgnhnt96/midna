@@ -628,6 +628,12 @@ impl SettingsWindow {
                         _ => (t.need, "Starting…".into(), "Not on the network yet.".into()),
                     }
                 };
+                // Browse is running but sees no one: Local Network access may never have been
+                // asked (the prompt is only shown once, and it's easy to miss). Offer a direct
+                // link so the user doesn't have to hunt for Midna in System Settings.
+                if action.is_none() && me.browsing && list.peers.is_empty() {
+                    action = Some(("Check Local Network".into(), Act::Url(nb::LOCAL_NETWORK_PANE.into()), false));
+                }
                 let mut row = status("Status", dot, text, note(format!("{why} Device ID {}.", nb::short_fingerprint(&me.fingerprint))), "midna peers");
                 if let Control::Text { action: a, .. } = &mut row.control {
                     *a = action;
