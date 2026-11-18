@@ -31,23 +31,25 @@ pub fn prompt_label(p: &Value) -> String {
     format!("permission {}", tool_label(p))
 }
 
-/// The first question of an AskUserQuestion `PermissionRequest`, in full, with its options.
+/// An AskUserQuestion `PermissionRequest`'s questions, in full, with their options: the first,
+/// the rest in its `more`. None when the first has no text.
 pub fn question(p: &Value) -> Option<NeedsYouQuestion> {
     if s(p, "tool_name") != "AskUserQuestion" {
         return None;
     }
-    let q = p.pointer("/tool_input/questions/0")?;
-    let text = s(q, "question").trim();
-    if text.is_empty() {
-        return None;
-    }
-    let options = q.get("options").and_then(Value::as_array).into_iter().flatten();
-    Some(NeedsYouQuestion {
-        text: text.to_string(),
-        header: s(q, "header").to_string(),
-        multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
-        options: options.map(|o| QuestionOption { label: s(o, "label").to_string(), description: s(o, "description").to_string() }).filter(|o| !o.label.is_empty()).collect(),
-    })
+    let mut all = p.pointer("/tool_input/questions")?.as_array()?.iter().map(|q| {
+        let options = q.get("options").and_then(Value::as_array).into_iter().flatten();
+        NeedsYouQuestion {
+            text: s(q, "question").trim().to_string(),
+            header: s(q, "header").to_string(),
+            multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+            options: options.map(|o| QuestionOption { label: s(o, "label").to_string(), description: s(o, "description").to_string() }).filter(|o| !o.label.is_empty()).collect(),
+            more: vec![],
+        }
+    });
+    let mut first = all.next().filter(|q| !q.text.is_empty())?;
+    first.more = all.collect();
+    Some(first)
 }
 
 /// Pure transition: (current state, hook event, payload) -> next (state, reason). None = no change.
@@ -351,6 +353,10 @@ mod tests {
         let q = question(&p).unwrap();
         assert_eq!((q.text.len(), q.header.as_str(), q.multi_select), (300, "Bell opens", true));
         assert_eq!(q.options, [QuestionOption { label: "Popover".into(), description: "A small list".into() }, QuestionOption { label: "Full screen".into(), description: String::new() }]);
+        // The rest ride along, so a card can answer them all.
+        assert_eq!(q.count(), 2);
+        assert_eq!(q.more[0].text, "Second?");
+        assert_eq!(q.all().map(|q| q.text.len()).collect::<Vec<_>>(), [300, 7]);
         assert_eq!(question(&json!({"tool_name": "Bash", "tool_input": {"questions": [{"question": "x"}]}})), None);
     }
 

@@ -357,12 +357,10 @@ struct Waiting {
     detail: Option<String>,
     command: Option<String>,
     approval: bool,
-    /// A question's options (label, description), numbered as in the terminal, and whether
-    /// any number of them can be picked. Clicking one answers it (`session.answer_question`).
-    options: Vec<(String, String)>,
-    multi: bool,
-    /// The question's text: the picker must still show it for a click to answer.
-    question: Option<String>,
+    /// A question (and the picker's others, in its `more`). Its card shows one at a time,
+    /// numbered as in the terminal; once each has an answer they all go together
+    /// (`session.answer_question`). The picker must still show them for that to work.
+    ask: Option<NeedsYouQuestion>,
     /// Its kind's image (`notify.image[.<kind>]`): the list row's thumbnail and the card's.
     image: Option<PathBuf>,
     /// When it came in (RFC 3339): the list shows the newest first.
@@ -587,6 +585,9 @@ pub struct Badge {
     answered: Vec<(String, Instant)>,
     /// A multi-select question's options picked so far on its card, by needs-you id.
     picks: HashMap<String, Vec<usize>>,
+    /// The answers so far to a picker of several questions, by needs-you id: the card shows
+    /// the next one.
+    steps: HashMap<String, Vec<Vec<usize>>>,
     lines: VecDeque<Line>,
     serial: u64,
     /// The count shown, the one it rolled from and the roll's id.
@@ -869,9 +870,7 @@ fn remote_rows(feeds: &[crate::mac_feed::Feed], colors: &HashMap<String, String>
                 detail,
                 command,
                 approval: n.is_approval(),
-                options: options_of(n),
-                multi: n.question.as_ref().is_some_and(|q| q.multi_select),
-                question: n.question.as_ref().map(|q| q.text.clone()),
+                ask: n.question.clone(),
                 image: None,
                 at: n.created_at.clone(),
                 timer: None,
@@ -913,9 +912,7 @@ fn remote_post(f: &crate::mac_feed::Feed, post: &crate::mac_feed::Post, colors: 
         detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
         command: None,
         approval: false,
-        options: vec![],
-        multi: false,
-        question: None,
+        ask: None,
         image: None,
         at: post.at.clone(),
         timer: None,
@@ -979,9 +976,7 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
                 detail,
                 command,
                 approval: n.is_approval(),
-                options: options_of(n),
-                multi: n.question.as_ref().is_some_and(|q| q.multi_select),
-                question: n.question.as_ref().map(|q| q.text.clone()),
+                ask: n.question.clone(),
                 image,
                 at: n.created_at.clone(),
                 timer: None,
@@ -1018,11 +1013,6 @@ pub fn sync(m: &crate::app::MainWindow, cx: &mut App) {
         }
         cx.notify();
     });
-}
-
-/// A question's options (label, description).
-fn options_of(n: &NeedsYou) -> Vec<(String, String)> {
-    n.question.as_ref().map(|q| q.options.iter().map(|o| (o.label.clone(), o.description.trim().to_string())).collect()).unwrap_or_default()
 }
 
 /// A needs-you item's notification kind (as midnad picks it).
@@ -1223,6 +1213,7 @@ impl Badge {
             pending: vec![],
             answered: vec![],
             picks: HashMap::new(),
+            steps: HashMap::new(),
             lines: VecDeque::new(),
             serial: 0,
             count: 0,
@@ -1500,7 +1491,7 @@ impl Badge {
         let now = Instant::now();
         let (tabs, arrival) = mac_tab::follow(&self.macs, feeds, &mut self.arrivals, now);
         let remote = remote_rows(feeds, &self.colors);
-        let same = |a: &[Waiting], b: &[Waiting]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.id == b.id && a.title == b.title && a.detail == b.detail && a.name == b.name && a.on == b.on && a.asleep == b.asleep && a.since == b.since && a.approval == b.approval && a.local_only == b.local_only && a.options == b.options);
+        let same = |a: &[Waiting], b: &[Waiting]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.id == b.id && a.title == b.title && a.detail == b.detail && a.name == b.name && a.on == b.on && a.asleep == b.asleep && a.since == b.since && a.approval == b.approval && a.local_only == b.local_only && a.ask == b.ask);
         if tabs == self.macs && same(&remote, &self.remote) {
             return;
         }
@@ -1993,6 +1984,7 @@ impl Badge {
         }
         self.failed.retain(|id, _| self.needs.iter().chain(self.remote.iter()).any(|w| w.id == *id));
         self.picks.retain(|id, _| self.needs.iter().chain(self.remote.iter()).any(|w| w.id == *id));
+        self.steps.retain(|id, _| self.needs.iter().chain(self.remote.iter()).any(|w| w.id == *id));
         if let Some(id) = self.reopen.clone()
             && let Some(mac) = self.row(&id).map(|w| w.mac.clone())
         {
@@ -2042,9 +2034,7 @@ impl Badge {
                     detail: need.as_ref().map(|n| super::setting_change::summary(n).unwrap_or_else(|| n.detail.trim().to_string())).filter(|d| !d.is_empty()),
                     command: need.as_ref().filter(|n| n.setting.is_none()).and_then(|n| n.approval.as_ref()).map(|a| a.action.value.clone()).filter(|v| !v.is_empty()),
                     approval: need.as_ref().map_or(p.category == "approval", |n| n.is_approval()),
-                    options: need.as_ref().map(options_of).unwrap_or_default(),
-                    multi: need.as_ref().and_then(|n| n.question.as_ref()).is_some_and(|q| q.multi_select),
-                    question: need.as_ref().and_then(|n| n.question.as_ref()).map(|q| q.text.clone()),
+                    ask: need.as_ref().and_then(|n| n.question.clone()),
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                     timer: None,
@@ -2078,9 +2068,7 @@ impl Badge {
                 detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
                 command: None,
                 approval: false,
-                options: vec![],
-                multi: false,
-                question: None,
+                ask: None,
                 image: p.image.clone().map(PathBuf::from),
                 at: midna_proto::time::now_rfc3339(),
                 timer: None,
@@ -2138,9 +2126,7 @@ impl Badge {
                     detail: Some(lines.collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty()),
                     command: None,
                     approval: false,
-                    options: vec![],
-                    multi: false,
-                    question: None,
+                    ask: None,
                     image: p.image.clone().map(PathBuf::from),
                     at: midna_proto::time::now_rfc3339(),
                     timer: Some((now + stay * BUMPED, stay * BUMPED)),
@@ -2266,9 +2252,7 @@ impl Badge {
             detail: l.detail.clone(),
             command: None,
             approval: false,
-            options: vec![],
-            multi: false,
-            question: None,
+            ask: None,
             image: l.image.clone(),
             at: String::new(),
             timer: None,
@@ -2385,14 +2369,24 @@ impl Badge {
         true
     }
 
-    /// Answer a question with these options (0-based), as if picked in its terminal. It goes at
-    /// once; if midnad can't answer (the picker changed, or it asks more than this question),
-    /// it comes back with the reason on its card, as a turned-down approval does.
+    /// Answer the question the card shows with these options (0-based), as if picked in its
+    /// terminal. A picker of several questions moves on to the next; the last answer sends them
+    /// all at once. If midnad can't answer (the picker changed), it comes back with the reason
+    /// on its card, as a turned-down approval does, and the card starts over at the first.
     fn answer(&mut self, w: &Waiting, options: Vec<usize>, cx: &mut Context<Self>) {
         if w.asleep {
             return;
         }
-        let (Some(need), Some(session)) = (w.need.clone(), w.session.clone()) else { return };
+        let (Some(need), Some(session), Some(ask)) = (w.need.clone(), w.session.clone(), w.ask.clone()) else { return };
+        let mut done = self.steps.get(&w.id).cloned().unwrap_or_default();
+        done.push(options);
+        self.picks.remove(&w.id);
+        if done.len() < ask.count() {
+            self.steps.insert(w.id.clone(), done);
+            cx.notify();
+            return;
+        }
+        self.steps.remove(&w.id);
         let Some(backend) = self.backend_of(w.mac.as_deref()) else { return };
         let (id, remote) = (w.id.clone(), w.mac.is_some());
         if remote {
@@ -2404,7 +2398,8 @@ impl Badge {
         self.failed.remove(&id);
         self.picks.remove(&id);
         self.recount(cx);
-        let params = json!({ "id": session, "answers": [{ "options": options, "question": w.question }] });
+        let answers: Vec<Value> = ask.all().zip(&done).map(|(q, o)| json!({ "options": o, "question": q.text })).collect();
+        let params = json!({ "id": session, "answers": answers });
         cx.spawn(async move |this, cx| {
             let r = cx.background_executor().spawn(async move { backend.call("session.answer_question", params) }).await;
             let _ = this.update(cx, |b, cx| {
@@ -2424,6 +2419,21 @@ impl Badge {
             }
         })
         .detach();
+    }
+
+    /// Back to the question before the one the card shows, its answer taken back.
+    fn step_back(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(done) = self.steps.get_mut(id) {
+            done.pop();
+        }
+        self.picks.remove(id);
+        cx.notify();
+    }
+
+    /// The question card `w` shows: which of the picker's (0-based) and the question.
+    fn shown<'a>(&self, w: &'a Waiting) -> Option<(usize, &'a NeedsYouQuestion)> {
+        let k = self.steps.get(&w.id).map_or(0, Vec::len);
+        w.ask.as_ref()?.all().nth(k).map(|q| (k, q))
     }
 
     /// Pick or unpick a multi-select question's option on its card.
@@ -2948,13 +2958,16 @@ fn measure_into(list: Rc<RefCell<Vec<Bounds<Pixels>>>>) -> impl IntoElement {
 }
 
 /// A question's options, numbered as in the terminal. Clicking one answers the question; on a
-/// multi-select one it picks it, and the card's Submit answers.
-fn options(t: &Theme, w: &Waiting, picked: &[usize], cx: &mut Context<Badge>) -> Div {
+/// multi-select one it picks it, and the card's Submit (Next, before the picker's last
+/// question) answers.
+fn options(t: &Theme, w: &Waiting, q: &NeedsYouQuestion, last: bool, picked: &[usize], cx: &mut Context<Badge>) -> Div {
     let mut col = div().flex().flex_col().gap(px(5.));
-    if w.multi {
-        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child("Pick any number of these, then Submit"));
+    let multi = q.multi_select;
+    if multi {
+        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child(if last { "Pick any number of these, then Submit" } else { "Pick any number of these, then Next" }));
     }
-    for (i, (label, description)) in w.options.iter().enumerate() {
+    for (i, o) in q.options.iter().enumerate() {
+        let (label, description) = (o.label.clone(), o.description.trim().to_string());
         let on = picked.contains(&i);
         let w2 = w.clone();
         col = col.child(
@@ -2971,7 +2984,7 @@ fn options(t: &Theme, w: &Waiting, picked: &[usize], cx: &mut Context<Badge>) ->
                 // Its Mac asleep: shown, but nothing to pick till it wakes.
                 .when(w.asleep, |d| d.opacity(0.55))
                 .when(!w.asleep, |d| d.cursor_pointer().hover(|s| s.border_color(t.accent)))
-                .on_click(cx.listener(move |b, _, _, cx| if w2.multi { b.toggle_pick(&w2.id, i, cx) } else { b.answer(&w2, vec![i], cx) }))
+                .on_click(cx.listener(move |b, _, _, cx| if multi { b.toggle_pick(&w2.id, i, cx) } else { b.answer(&w2, vec![i], cx) }))
                 .child(div().flex_none().w(px(14.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(if on { t.accent } else { t.dim }).child(if on { "✓".to_string() } else { (i + 1).to_string() }))
                 .child(
                     div()
@@ -4127,6 +4140,14 @@ impl Badge {
             .when(!w.label.is_empty(), |d| d.child(div().flex_none().text_size(px(12.)).text_color(t.dim).child(w.label.clone())))
             .child(div().flex_1())
             .child(Icon::Chevron.el(12., t.dim).with_transformation(Transformation::rotate(radians(std::f32::consts::PI))));
+        // A question: the one of the picker's the card is on, past the first its own words.
+        let shown = self.shown(w);
+        let count = w.ask.as_ref().map_or(1, NeedsYouQuestion::count);
+        let last = shown.is_none_or(|(k, _)| k + 1 == count);
+        let (title, detail) = match shown {
+            Some((k, q)) if k > 0 => (if q.header.trim().is_empty() { "Asked a question".to_string() } else { q.header.trim().to_string() }, Some(q.text.trim().to_string()).filter(|d| !d.is_empty())),
+            _ => (w.title.clone(), w.detail.clone()),
+        };
         let mut buttons = div().flex().flex_wrap().gap(px(8.)).pt(px(4.));
         let mut menu = None;
         if w.asleep {
@@ -4168,9 +4189,14 @@ impl Badge {
             buttons = buttons.child(div().flex_1());
             menu = open.and_then(|n| slots.get(n)).map(|slot| self.slot_menu(t, w, &sent, slot, cx));
         } else {
-            if let Some(picked) = self.picks.get(&w.id).filter(|p| w.multi && !p.is_empty()) {
+            if let Some(picked) = self.picks.get(&w.id).filter(|p| shown.is_some_and(|(_, q)| q.multi_select) && !p.is_empty()) {
                 let (w2, picked) = (w.clone(), picked.clone());
-                buttons = buttons.child(button(t, "card-submit", "Submit", true).on_click(cx.listener(move |b, _, _, cx| b.answer(&w2, picked.clone(), cx))));
+                let label = if last { "Submit" } else { "Next" };
+                buttons = buttons.child(button(t, "card-submit", label, true).on_click(cx.listener(move |b, _, _, cx| b.answer(&w2, picked.clone(), cx))));
+            }
+            if shown.is_some_and(|(k, _)| k > 0) {
+                let id = w.id.clone();
+                buttons = buttons.child(button(t, "card-back", "Back", false).on_click(cx.listener(move |b, _, _, cx| b.step_back(&id, cx))));
             }
             let (id, there) = (w.id.clone(), w.mac.is_some() && w.need.is_some());
             buttons = buttons
@@ -4256,18 +4282,19 @@ impl Badge {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(w.title.clone()))
-                            .children(w.detail.clone().filter(|_| w.command.is_none()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d))),
+                            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(title.clone()))
+                            .children(detail.clone().filter(|_| w.command.is_none()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d))),
                     )
                     .child(thumb(path, 56., 10.)),
-                None => div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(w.title.clone()),
+                None => div().text_size(px(14.)).font_weight(FontWeight::BOLD).line_height(px(19.)).max_h(px(19. * 3.)).overflow_hidden().child(title.clone()),
             })
             .children(self.failed.get(&w.id).map(|e| {
                 div().px(px(10.)).py(px(7.)).rounded(px(7.)).bg(t.err.opacity(0.14)).text_size(px(12.5)).line_height(px(18.)).text_color(t.err).child(format!("Didn't go through: {e}"))
             }))
             .children(w.command.clone().map(|c| div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(c)))
-            .children(w.detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
-            .when(!w.options.is_empty(), |d| d.child(options(t, w, self.picks.get(&w.id).map_or(&[][..], |p| &p[..]), cx)))
+            .children(detail.clone().filter(|_| w.image.is_none() || w.command.is_some()).map(|d| div().max_h(px(19. * 5.)).overflow_hidden().text_size(px(13.)).line_height(px(19.)).text_color(t.dim).child(d)))
+            .children(shown.filter(|_| count > 1).map(|(k, _)| div().text_size(px(11.5)).text_color(t.dim).child(format!("Question {} of {count}", k + 1))))
+            .children(shown.filter(|(_, q)| !q.options.is_empty()).map(|(_, q)| options(t, w, q, last, self.picks.get(&w.id).map_or(&[][..], |p| &p[..]), cx)))
             .children(w.mac.as_deref().filter(|_| w.asleep).map(|peer| div().text_size(px(12.)).line_height(px(17.)).text_color(t.dim).child(mac_tab::asleep_why(&self.mac_name(peer)))))
             .child(buttons)
             .children(menu);
@@ -4493,6 +4520,36 @@ mod tests {
         cx.run_until_parked();
         follow(&p, cx);
         p.badge.read_with(cx, |b, _| assert!(!b.remote.iter().any(|w| w.id == question.id))).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_card_takes_each_of_several_questions_before_answering(cx: &mut TestAppContext) {
+        let p = pill('7', cx);
+        let golden = row(&p, "n_golden", cx);
+        // The picker asks a second, multi-select question after the golden one.
+        let second = NeedsYouQuestion { text: "Which platforms?".into(), header: "Platforms".into(), multi_select: true, options: crate::backend::fake::fake_question().options, more: vec![] };
+        let id = golden.id.clone();
+        p.badge
+            .update(cx, |b, _, _| {
+                let w = b.remote.iter_mut().find(|w| w.id == id).unwrap();
+                w.ask.as_mut().unwrap().more = vec![second.clone()];
+            })
+            .unwrap();
+        let w = row(&p, "n_golden", cx);
+        let shown = |cx: &mut TestAppContext| p.badge.read_with(cx, |b, _| b.shown(&w).map(|(k, q)| (k, q.text.clone()))).unwrap();
+        assert_eq!(shown(cx).map(|s| s.0), Some(0));
+        // The first answer moves the card on; nothing goes yet.
+        p.badge.update(cx, |b, _, cx| b.answer(&w, vec![2], cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(shown(cx), Some((1, "Which platforms?".into())));
+        p.badge.read_with(cx, |b, _| assert!(b.row(&w.id).is_some() && b.failed.is_empty() && b.cleared.is_empty())).unwrap();
+        // Back takes it back.
+        p.badge.update(cx, |b, _, cx| b.step_back(&w.id, cx)).unwrap();
+        assert_eq!(shown(cx).map(|s| s.0), Some(0));
+        // Both answered: they go together, and the card is done stepping.
+        p.badge.update(cx, |b, _, cx| b.answer(&w, vec![0], cx)).unwrap();
+        p.badge.update(cx, |b, _, cx| b.answer(&w, vec![0, 1], cx)).unwrap();
+        p.badge.read_with(cx, |b, _| assert!(b.steps.is_empty() && b.cleared.contains(&w.id))).unwrap();
     }
 
     #[gpui_kit::test]
