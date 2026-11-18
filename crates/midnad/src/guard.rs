@@ -421,24 +421,79 @@ fn drop_stale_pauses(d: &Daemon) {
 
 // ------------------------------------------------------------------ background mode
 
-/// Note the agent behind a hook: `pid` runs the hook, the agent is its nearest ancestor that
-/// isn't a shell or launcher.
-pub fn note_hook_caller(d: &Daemon, sid: &str, pid: i32) {
-    let known = d.guard.inner().agents.get(sid).copied();
-    if known.is_some_and(|(p, start)| procs::table_start(p) == Some(start)) {
-        return;
+/// Note the agent behind a hook (`pid` runs the hook, the agent is its nearest ancestor that
+/// isn't a shell or launcher) and say whether that agent runs inside the terminal's own agent.
+///
+/// An agent a tool starts (a script's `claude -p` in Claude's Bash tool, say) inherits
+/// `MIDNA_SESSION`, so its hooks name this terminal too. Its `SessionStart` and `Stop` are not
+/// the terminal agent's: true tells the caller to leave status and turns alone. The outermost
+/// agent seen is the terminal's, so a nested one that hooked first (midnad restarted mid-turn)
+/// gives way to it.
+pub fn hook_from_nested_agent(d: &Daemon, sid: &str, pid: i32) -> bool {
+    let Some(agent) = hook_agent(pid, |p| Some((procs::parent(p)?, procs::name(p)?))) else { return false };
+    let alive = |(p, start): (i32, i64)| procs::table_start(p) == Some(start);
+    let known = d.guard.inner().agents.get(sid).copied().filter(|&k| alive(k)).map(|(p, _)| p);
+    match relate(known, agent, |p| procs::parent(p)) {
+        Relation::Nested => true,
+        Relation::Same | Relation::Unrelated => false,
+        Relation::Outer => {
+            if let Some(start) = procs::table_start(agent) {
+                d.guard.inner().agents.insert(sid.to_string(), (agent, start));
+            }
+            false
+        }
     }
+}
+
+/// The agent behind a hook run by `pid`: its nearest ancestor that isn't a shell or launcher.
+/// `info` gives a process's parent and name.
+fn hook_agent(pid: i32, info: impl Fn(i32) -> Option<(i32, String)>) -> Option<i32> {
     let mut p = pid;
     for _ in 0..8 {
-        let Some(up) = procs::parent(p).filter(|&up| up > 1) else { return };
-        p = up;
-        let Some(name) = procs::name(p) else { return };
+        p = info(p).map(|(up, _)| up).filter(|&up| up > 1)?;
+        let (_, name) = info(p)?;
         if !LAUNCHERS.contains(&name.as_str()) {
-            if let Some(start) = procs::table_start(p) {
-                d.guard.inner().agents.insert(sid.to_string(), (p, start));
-            }
-            return;
+            return Some(p);
         }
+    }
+    None
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Relation {
+    /// The terminal's agent sent it.
+    Same,
+    /// An agent running under the terminal's agent sent it.
+    Nested,
+    /// The first agent seen, or one the known agent runs under: it's the terminal's agent.
+    Outer,
+    /// Neither above nor below the known agent; left as it is.
+    Unrelated,
+}
+
+/// Where the hook's `agent` stands to the terminal's `known` agent. `parent` walks up the tree.
+fn relate(known: Option<i32>, agent: i32, parent: impl Fn(i32) -> Option<i32>) -> Relation {
+    let Some(known) = known else { return Relation::Outer };
+    if known == agent {
+        return Relation::Same;
+    }
+    let above = |from: i32, target: i32| {
+        let mut p = from;
+        for _ in 0..64 {
+            match parent(p).filter(|&up| up > 1 && up != p) {
+                Some(up) if up == target => return true,
+                Some(up) => p = up,
+                None => return false,
+            }
+        }
+        false
+    };
+    if above(agent, known) {
+        Relation::Nested
+    } else if above(known, agent) {
+        Relation::Outer
+    } else {
+        Relation::Unrelated
     }
 }
 
@@ -1150,6 +1205,38 @@ pub fn stop_processes(d: &Daemon, actor: Actor, p: StopProcessesParams) -> Resul
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+
+    /// A terminal running claude (20), whose Bash tool (30) runs a script (40) that starts
+    /// another claude (50). Each claude runs its hooks through `sh` (21, 51) → `midna hook`
+    /// (22, 52).
+    fn nested_tree() -> HashMap<i32, (i32, &'static str)> {
+        HashMap::from([
+            (10, (1, "zsh")),
+            (20, (10, "claude")),
+            (21, (20, "sh")),
+            (22, (21, "midna")),
+            (30, (20, "zsh")),
+            (40, (30, "python3")),
+            (50, (40, "claude")),
+            (51, (50, "sh")),
+            (52, (51, "midna")),
+        ])
+    }
+
+    #[test]
+    fn a_claude_started_by_the_terminals_claude_is_nested() {
+        let t = nested_tree();
+        let info = |p: i32| t.get(&p).map(|&(up, n)| (up, n.to_string()));
+        let parent = |p: i32| t.get(&p).map(|&(up, _)| up);
+        assert_eq!(hook_agent(22, info), Some(20));
+        assert_eq!(hook_agent(52, info), Some(50));
+        assert_eq!(relate(None, 20, parent), Relation::Outer);
+        assert_eq!(relate(Some(20), 20, parent), Relation::Same);
+        assert_eq!(relate(Some(20), 50, parent), Relation::Nested);
+        // The nested one hooked first (midnad restarted mid-turn): the outer one takes over.
+        assert_eq!(relate(Some(50), 20, parent), Relation::Outer);
+        assert_eq!(relate(Some(20), 99, parent), Relation::Unrelated);
+    }
 
     #[test]
     fn cpu_from_ticks() {
