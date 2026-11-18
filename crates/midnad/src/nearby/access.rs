@@ -137,6 +137,23 @@ fn waiting_words(name: &str) -> String {
     format!("Allow Local Network access in the macOS prompt to connect to {name}, then try again.")
 }
 
+/// An error for when a paired device isn't in the live peers map. When Local Network access is
+/// blocked or denied that is likely why, so the error says so directly instead of making agents
+/// retry without understanding the cause.
+pub fn not_seen_error(d: &Daemon) -> RpcError {
+    match state(d) {
+        Some(LocalNetwork::Waiting) => RpcError::not_found(
+            "Midna can't see other Macs yet: macOS is asking for Local Network access. \
+             Allow it in the prompt, then try again.",
+        ),
+        Some(LocalNetwork::Denied) => RpcError::not_found(
+            "Midna can't see other Macs: Local Network access is off. Turn it on for Midna in \
+             System Settings › Privacy & Security › Local Network, then try again.",
+        ),
+        _ => RpcError::not_found("that device can't be seen on the network now"),
+    }
+}
+
 /// A blocked connection once the wait is over.
 fn blocked_words(name: &str) -> String {
     format!(
