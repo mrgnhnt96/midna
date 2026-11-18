@@ -296,6 +296,9 @@ fn placeholder(first: &RowData, start: u16) -> bool {
 /// and the cursor count (the agent has typed them; the screen shows none). None when the cursor
 /// isn't in a box or the box shows its placeholder.
 pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
+    if let Some(field) = picker_field(grid, cursor) {
+        return field;
+    }
     let (top, bottom) = input_rows(grid, cursor)?;
     let first = grid.get(top as usize)?;
     let glyph = first.cells.iter().position(|c| matches!(c.ch, '❯' | '›' | '>'))?;
@@ -324,6 +327,75 @@ pub fn input_cursor(grid: &[RowData], cursor: Pos) -> Option<(String, usize)> {
         prev = Some(whole);
     }
     Some((text, at))
+}
+
+/// The "Type something" field of Claude Code's question picker (AskUserQuestion), when the
+/// cursor is in it: `❯ 4. what I typed` (`❯ 4. [ ] …` in a multi-select one), any rows below
+/// it indented to its text, then the picker's `Enter to select … Esc to cancel` footer. The
+/// option's number is the picker's, not the human's, so only the typed text counts: Some(None)
+/// for an empty field. None when the cursor isn't in a picker's field.
+fn picker_field(grid: &[RowData], cursor: Pos) -> Option<Option<(String, usize)>> {
+    let row = |y: u16| grid.get(y as usize);
+    let footer = |r: &RowData| {
+        let t = text_of(r, 0, text_end(r));
+        let t = t.trim_start();
+        t.starts_with("Enter to select") && t.contains("Esc to cancel")
+    };
+    if !grid.iter().skip(cursor.1 as usize + 1).any(footer) {
+        return None;
+    }
+    // The field's first row: the cursor's, or the nearest `❯ N. ` row above it.
+    let mut top = cursor.1;
+    let col = loop {
+        let r = row(top)?;
+        if let Some(col) = field_start(r) {
+            break col;
+        }
+        if top == 0 || leading_blanks(r) < 2 {
+            return None;
+        }
+        top -= 1;
+    };
+    let under = |r: &RowData| leading_blanks(r) >= col && text_end(r) > col && text_of(r, col, text_end(r)).trim() != "Submit";
+    let bottom = top + (top + 1..).take_while(|&y| row(y).is_some_and(under)).count() as u16;
+    if cursor.1 > bottom {
+        return None;
+    }
+    let first = row(top)?;
+    if text_end(first) <= col || placeholder(first, col) || text_of(first, col, text_end(first)) == "Type something." {
+        return Some(None);
+    }
+    let mut text = String::new();
+    let mut at = 0;
+    for y in top..=bottom {
+        let r = row(y)?;
+        if y > top {
+            text.push('\n');
+        }
+        let mut line = text_of(r, col, text_end(r).max(col));
+        if y == cursor.1 {
+            let n = chars_between(r, col, cursor.0.max(col));
+            let shown = line.chars().count();
+            line.extend(std::iter::repeat_n(' ', n.saturating_sub(shown)));
+            at = text.len() + line.char_indices().nth(n).map_or(line.len(), |(i, _)| i);
+        }
+        text.push_str(&line);
+    }
+    Some(Some((text, at)))
+}
+
+/// Where the text starts on a picker's option row with the cursor on it (`❯ 4. `, `❯ 4. [ ] `).
+fn field_start(r: &RowData) -> Option<u16> {
+    let glyph = r.cells.iter().take(3).position(|c| c.ch == '❯')?;
+    let rest = text_of(r, glyph as u16 + 1, r.cells.len() as u16);
+    let rest = rest.strip_prefix(' ')?;
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let after = rest[digits..].strip_prefix(". ")?;
+    if digits == 0 {
+        return None;
+    }
+    let boxed = ["[ ] ", "[✔] ", "[✓] "].iter().any(|b| after.starts_with(b));
+    Some((glyph + 2 + digits + 2 + if boxed { 4 } else { 0 }) as u16)
 }
 
 /// Row `y` of the text in an agent's box whose prompt row is `top`: past the prompt glyph
@@ -1876,6 +1948,29 @@ mod tests {
         let g = grid(&[&rule, "❯ the quick brown fox jumps", "  over", &rule]);
         assert_eq!(input_cursor(&g, (4, 2)), Some(("the quick brown fox jumps over".into(), 28)));
         assert_eq!(input_cursor(&g, (0, 0)), None, "not in the box");
+    }
+
+    #[test]
+    fn the_question_pickers_field_isnt_a_numbered_list() {
+        let sep = "─".repeat(30);
+        let foot = "Enter to select · Esc to cancel";
+        // The option's "3." is the picker's: ⇧↩ there is a plain line break.
+        let g = grid(&["  1. Red", "  2. Green", "❯ 3. teal please", &sep, "  4. Chat about this", "", foot]);
+        assert_eq!(input_cursor(&g, (16, 2)), Some(("teal please".into(), 11)));
+        assert_eq!(crate::list_edit::newline("teal please", 11), None);
+        // The human's own list in it still counts on.
+        let g = grid(&["  1. Red", "❯ 2. 1. first", "     2. second", &sep, "  3. Chat about this", foot]);
+        assert_eq!(input_cursor(&g, (14, 2)), Some(("1. first\n2. second".into(), 18)));
+        // A multi-select field, its Submit row below.
+        let g = grid(&["  1. [ ] Cat", "❯ 2. [ ] zebra", "     Submit", &sep, "  3. Chat about this", foot]);
+        assert_eq!(input_cursor(&g, (14, 1)), Some(("zebra".into(), 5)));
+        // Empty: nothing to continue.
+        let g = grid(&["  1. Red", "❯ 2. Type something.", &sep, "  3. Chat about this", foot]);
+        assert_eq!(input_cursor(&g, (5, 1)), None);
+        // Claude's own input box is unchanged.
+        let rule = "─".repeat(30);
+        let g = grid(&[&rule, "❯ 1. a", "  2. b", &rule]);
+        assert_eq!(input_cursor(&g, (6, 2)), Some(("1. a\n2. b".into(), 9)));
     }
 
     #[test]

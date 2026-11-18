@@ -917,6 +917,22 @@ pub struct NeedsYouQuestion {
     pub multi_select: bool,
     #[serde(default)]
     pub options: Vec<QuestionOption>,
+    /// The call's other questions, in order (each with no `more` of its own). Answering it
+    /// (`session.answer_question`) takes an answer for every one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<NeedsYouQuestion>,
+}
+
+impl NeedsYouQuestion {
+    /// This question and the ones after it, in the picker's order.
+    pub fn all(&self) -> impl Iterator<Item = &NeedsYouQuestion> {
+        std::iter::once(self).chain(&self.more)
+    }
+
+    /// How many questions the picker asks.
+    pub fn count(&self) -> usize {
+        1 + self.more.len()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

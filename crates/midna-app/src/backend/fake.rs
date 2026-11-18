@@ -1541,6 +1541,7 @@ pub fn fake_question() -> NeedsYouQuestion {
             o("Regenerate on CI's version", "Update the goldens to 3.24.1; yours break until you downgrade"),
             o("Only fix the shimmer", "Pause the animation in tests and leave the version question for later"),
         ],
+        more: vec![],
     }
 }
 

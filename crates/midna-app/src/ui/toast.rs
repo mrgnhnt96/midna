@@ -71,6 +71,10 @@ pub struct Card {
     need: Option<NeedsYou>,
     /// Folded to its header (clicked there): it stays until it's opened, answered or dismissed.
     collapsed: bool,
+    /// A picker of several questions: the answers so far (the card shows the next question),
+    /// and the options picked on a multi-select one.
+    steps: Vec<Vec<usize>>,
+    picks: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -159,7 +163,7 @@ pub fn push(m: &mut MainWindow, seq: u64, session: Option<String>, p: Posted, cx
         None => m.cards.list.retain(|c| c.session != session || c.posted.category != p.category),
     }
     let stay = stay_of(&p);
-    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need: None, collapsed: false });
+    m.cards.list.insert(0, Card { seq, session, posted: p, at: now, stay, until: stay.map(|s| now + s), need: None, collapsed: false, steps: vec![], picks: vec![] });
     m.cards.expanded = false;
     m.cards.generation += 1;
     m.cards.listing = false;
@@ -694,6 +698,15 @@ fn stack(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement 
 fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leaving>, cx: &mut Context<MainWindow>) -> AnyElement {
     let Look { headline, detail, command, question, approval: need, go_label } = look.clone();
     let live = ghost.is_none();
+    // A picker of several questions: the one the card is on, past the first in its own words.
+    let count = question.as_ref().map_or(1, NeedsYouQuestion::count);
+    let step = c.steps.len();
+    let question = question.and_then(|q| q.all().nth(step).cloned());
+    let (headline, detail) = match &question {
+        Some(q) if step > 0 => (if q.header.trim().is_empty() { "Asked a question".to_string() } else { q.header.trim().to_string() }, Some(q.text.trim().to_string()).filter(|d| !d.is_empty())),
+        _ => (headline, detail),
+    };
+    let steps = (count > 1).then(|| Steps { seq: c.seq, step, count, picks: c.picks.clone() });
     let long = detail.as_ref().is_some_and(|d| d.lines().count() > CLAMP_LINES || d.chars().count() > CLAMP_LINES * 60);
     let expanded = ghost.map_or(m.cards.expanded, |g| g.expanded);
     let more = if live { m.cards.list.len() - 1 } else { 0 };
@@ -907,7 +920,7 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
                     div().px(px(10.)).py(px(8.)).rounded(px(7.)).bg(t.term).font_family(t.mono_font.clone()).text_size(px(12.)).truncate().child(cmd)
                 }))
                 .children(text)
-                .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q, c.session.clone().filter(|_| live), cx))),
+                .children(question.filter(|q| !q.options.is_empty()).map(|q| options(t, &q, c.session.clone().filter(|_| live), steps, cx))),
         )
         .children(actions)
         .child(buttons)
@@ -968,12 +981,30 @@ fn card_el(m: &MainWindow, t: &Theme, c: &Card, look: &Look, ghost: Option<&Leav
     }
 }
 
+/// Where a card is in a picker of several questions (`Card::steps`).
+#[derive(Clone)]
+struct Steps {
+    seq: u64,
+    step: usize,
+    count: usize,
+    picks: Vec<usize>,
+}
+
 /// A question's options, numbered as in the terminal. With its terminal (`session`), clicking
-/// one types its number there, as picking it in the terminal does.
-fn options(t: &Theme, q: &NeedsYouQuestion, session: Option<String>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
+/// one types its number there, as picking it in the terminal does. In a picker of several
+/// questions (`steps`) a click answers the question on the card instead and it moves on to the
+/// next (a multi-select one takes its picks with Next); the last answer sends them all
+/// (`session.answer_question`).
+fn options(t: &Theme, q: &NeedsYouQuestion, session: Option<String>, steps: Option<Steps>, cx: &mut Context<MainWindow>) -> impl IntoElement + use<> {
     let mut col = div().flex().flex_col().gap(px(6.)).pt(px(2.));
     let multi = q.multi_select;
-    if multi {
+    if let Some(st) = &steps {
+        col = col.child(div().text_size(px(11.5)).text_color(t.dim).child(format!("Question {} of {}", st.step + 1, st.count)));
+        if multi {
+            let hint = if st.step + 1 == st.count { "Pick any number of these, then Submit" } else { "Pick any number of these, then Next" };
+            col = col.child(div().text_size(px(11.5)).text_color(t.dim).child(hint));
+        }
+    } else if multi {
         let hint = if session.is_some() { "Pick any number of these, then submit in the terminal" } else { "Pick any number of these in the terminal" };
         col = col.child(div().text_size(px(11.5)).text_color(t.dim).child(hint));
     }
@@ -998,15 +1029,96 @@ fn options(t: &Theme, q: &NeedsYouQuestion, session: Option<String>, cx: &mut Co
                     .child(div().font_weight(FontWeight::BOLD).child(o.label.clone()))
                     .when(!o.description.trim().is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.dim).child(o.description.clone()))),
             );
-        col = col.child(match session.clone() {
-            Some(sid) => row.cursor_pointer().hover(|s| s.border_color(t.accent)).on_click(cx.listener(move |m, _, _, cx| {
+        let on = steps.as_ref().is_some_and(|st| st.picks.contains(&i));
+        let row = row.when(on, |r| r.border_color(t.accent).bg(t.accent_soft));
+        col = col.child(match (session.clone(), steps.clone()) {
+            (Some(sid), Some(st)) => row.cursor_pointer().hover(|s| s.border_color(t.accent)).on_click(cx.listener(move |m, _, _, cx| {
+                cx.stop_propagation();
+                if multi {
+                    toggle_pick(m, st.seq, i, cx);
+                } else {
+                    take_answer(m, &sid, st.seq, vec![i], cx);
+                }
+            })),
+            (Some(sid), None) => row.cursor_pointer().hover(|s| s.border_color(t.accent)).on_click(cx.listener(move |m, _, _, cx| {
                 cx.stop_propagation();
                 choose(m, &sid, i + 1, multi, cx);
             })),
-            None => row,
+            (None, _) => row,
         });
     }
-    col
+    let Some((sid, st)) = session.zip(steps) else { return col };
+    let mut row = div().flex().gap(px(8.));
+    if st.step > 0 {
+        let seq = st.seq;
+        row = row.child(step_button(t, "toast-back", "Back", false).on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            step_back(m, seq, cx);
+        })));
+    }
+    if multi && !st.picks.is_empty() {
+        let label = if st.step + 1 == st.count { "Submit" } else { "Next" };
+        row = row.child(step_button(t, "toast-next", label, true).on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            take_answer(m, &sid, st.seq, st.picks.clone(), cx);
+        })));
+    }
+    col.child(row)
+}
+
+fn step_button(t: &Theme, id: &'static str, label: &'static str, primary: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(12.))
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .rounded(px(8.))
+        .text_size(px(12.5))
+        .cursor_pointer()
+        .when(primary, |d| d.bg(t.accent).text_color(t.bg))
+        .when(!primary, |d| d.border_1().border_color(t.line).bg(t.panel))
+        .child(label)
+}
+
+fn card_mut(m: &mut MainWindow, seq: u64) -> Option<&mut Card> {
+    m.cards.list.iter_mut().find(|c| c.seq == seq)
+}
+
+fn toggle_pick(m: &mut MainWindow, seq: u64, i: usize, cx: &mut Context<MainWindow>) {
+    let Some(c) = card_mut(m, seq) else { return };
+    match c.picks.iter().position(|&p| p == i) {
+        Some(at) => _ = c.picks.remove(at),
+        None => c.picks.push(i),
+    }
+    c.picks.sort_unstable();
+    cx.notify();
+}
+
+fn step_back(m: &mut MainWindow, seq: u64, cx: &mut Context<MainWindow>) {
+    let Some(c) = card_mut(m, seq) else { return };
+    c.steps.pop();
+    c.picks.clear();
+    cx.notify();
+}
+
+/// Answer the question card `seq` shows with these options (0-based). Before the picker's last
+/// question it moves on to the next; the last sends every answer to terminal `sid` at once and
+/// the card goes. If midnad can't answer (the picker changed), a toast says why.
+fn take_answer(m: &mut MainWindow, sid: &str, seq: u64, options: Vec<usize>, cx: &mut Context<MainWindow>) {
+    let ask = m.cards.list.iter().find(|c| c.seq == seq).and_then(|c| look(m, c, false).question);
+    let Some(ask) = ask else { return };
+    let Some(c) = card_mut(m, seq) else { return };
+    c.steps.push(options);
+    c.picks.clear();
+    if c.steps.len() < ask.count() {
+        cx.notify();
+        return;
+    }
+    let done = std::mem::take(&mut c.steps);
+    let answers: Vec<serde_json::Value> = ask.all().zip(&done).map(|(q, o)| serde_json::json!({ "options": o, "question": q.text })).collect();
+    m.rpc("session.answer_question", serde_json::json!({ "id": sid, "answers": answers }), cx, |_, _, _, _| {});
+    dismiss(m, seq, cx);
 }
 
 /// Pick option `n` of a question in terminal `sid` by typing its number. One pick answers it, so
