@@ -158,7 +158,9 @@ pub fn reach_staged(d: &Daemon, fp: &str, stages: &Reach) -> Result<Channel, Rpc
         return Err(RpcError::refused("that device isn't paired with this Mac"));
     }
     (stages.finding)();
-    let peer = d.nearby.inner().peers.get(fp).cloned().ok_or_else(|| access::not_seen_error(d))?;
+    // Let go of `inner` before `not_seen_error`: it takes that lock again.
+    let peer = d.nearby.inner().peers.get(fp).cloned();
+    let peer = peer.ok_or_else(|| access::not_seen_error(d))?;
     let addrs = pairing::addresses(d, peer.host.as_deref(), peer.port)?;
     (stages.proving)();
     let ch = access::dial(d, &addrs, &peer.name, stages.patient)?;
