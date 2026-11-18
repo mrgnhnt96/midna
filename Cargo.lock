@@ -4090,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "midna-app"
-version = "0.1.0-beta.54"
+version = "0.1.0-beta.55"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4117,7 +4117,7 @@ dependencies = [
 
 [[package]]
 name = "midna-cli"
-version = "0.1.0-beta.54"
+version = "0.1.0-beta.55"
 dependencies = [
  "libc",
  "midna-proto",
@@ -4128,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "midna-proto"
-version = "0.1.0-beta.54"
+version = "0.1.0-beta.55"
 dependencies = [
  "libc",
  "regex",
@@ -4139,7 +4139,7 @@ dependencies = [
 
 [[package]]
 name = "midnad"
-version = "0.1.0-beta.54"
+version = "0.1.0-beta.55"
 dependencies = [
  "base64",
  "core-foundation 0.10.1",
