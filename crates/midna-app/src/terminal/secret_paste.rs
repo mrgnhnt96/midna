@@ -87,7 +87,12 @@ impl TerminalView {
 
     /// The composer is about to send `text` here (with ↩). True = the sheet took it.
     pub fn submit_checks_secrets(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.checks_secrets_for(text.trim_end_matches(['\n', '\r']), Out::Submit, window, cx)
+        let trimmed = text.trim_end_matches(['\n', '\r']);
+        if self.composer_vetted.as_deref() == Some(trimmed) {
+            self.composer_vetted = None;
+            return false;
+        }
+        self.checks_secrets_for(trimmed, Out::Submit, window, cx)
     }
 
     /// ⌘V in the composer over this terminal: ask about a secret now, not at ↩. Whatever the
@@ -200,6 +205,7 @@ impl TerminalView {
                 self.call("session.input", json!({ "id": self.session_id, "text": data, "enter": true }), window, cx, |_, _, _, _| {});
             }
             Out::Composer => {
+                self.composer_vetted = Some(text.clone());
                 crate::composer::emit(crate::composer::ComposerEvent::Insert(text));
                 cx.notify();
                 return;

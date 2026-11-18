@@ -180,6 +180,9 @@ pub struct TerminalView {
     project_id: Option<String>,
     /// Asking whether to store the secrets in a paste (`terminal/secret_paste.rs`).
     secret_sheet: Option<secret_paste::Sheet>,
+    /// Text the composer's secret sheet already reviewed (Out::Composer): the next submit with
+    /// the same text skips the scan so the sheet doesn't open twice.
+    composer_vetted: Option<String>,
     /// Claude Code or Codex found running in this terminal's full-screen app (started from a
     /// shell), probed each time the alternate screen turns on.
     agent_proc: Option<&'static str>,
@@ -502,6 +505,7 @@ impl TerminalView {
             agent: None,
             project_id: None,
             secret_sheet: None,
+            composer_vetted: None,
             agent_press: None,
             press_at: None,
             agent_proc: None,
