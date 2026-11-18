@@ -1402,7 +1402,7 @@ impl ShareKind {
     /// asks (its transcript would replace what the agent remembers here); an agent start may be
     /// auto-accepted from one of my devices, which then runs its prompt without asking, and so
     /// may an agent ask, which then queues its prompt in that terminal.
-    pub const ALL: [ShareKind; 8] = [
+    pub const ALL: [ShareKind; 9] = [
         ShareKind::Message,
         ShareKind::Snippet,
         ShareKind::Link,
@@ -1411,6 +1411,7 @@ impl ShareKind {
         ShareKind::Object,
         ShareKind::AgentStart,
         ShareKind::AgentAsk,
+        ShareKind::FileRequest,
     ];
 
     pub fn as_str(self) -> &'static str {
