@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 /// Card slots shown.
 const SLOTS: usize = 3;
 const MAX_BUTTONS: usize = 4;
+/// The sidebar width under which the card shows its stats' short labels.
+const LONG_LABEL_WIDTH: f32 = 250.;
 
 /// The picker's groups.
 const STAT_GROUPS: [(&str, &[&str]); 2] = [("Activity", &["turns", "messages", "spend", "approvals", "triggers"]), ("Time", &["working", "waiting", "reply", "longest", "peak"])];
@@ -187,16 +189,22 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> impl I
 }
 
 fn card(m: &MainWindow, t: &Theme, stats: &[String], cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let mut row = div().flex().justify_between().gap(px(8.));
+    // Below this sidebar width the long labels ("messages sent") don't fit three across, so the
+    // card uses the short ones. Values never wrap; if a slot still overflows (a big spend), the
+    // row wraps instead of the stats running into each other.
+    let narrow = m.sidebar_width < LONG_LABEL_WIDTH;
+    let mut row = div().flex().flex_wrap().justify_between().gap_x(px(10.)).gap_y(px(6.));
     for k in stats {
-        let (v, label, _) = shown_stat(m, k);
+        let (v, label, short) = shown_stat(m, k);
+        let label = if narrow && !short.is_empty() { short } else { label };
         row = row.child(
             div()
                 .flex()
                 .flex_col()
-                .min_w_0()
+                .flex_none()
+                .whitespace_nowrap()
                 .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(v))
-                .child(div().text_size(px(11.5)).text_color(t.dim).whitespace_nowrap().child(label)),
+                .child(div().text_size(px(11.5)).text_color(t.dim).child(label)),
         );
     }
     div()
