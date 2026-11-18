@@ -176,6 +176,36 @@ fn hook_bridge_prints_claude_decision() {
     assert!(cmd.contains(env!("CARGO_BIN_EXE_midna")) && cmd.ends_with("hook claude"));
 }
 
+/// A claude the terminal's agent starts (a script's `claude -p` in its Bash tool) inherits
+/// MIDNA_SESSION. Its hooks must not end the outer agent's turn. Here this test process is
+/// the terminal's agent and a `perl` it starts is the nested one.
+#[test]
+fn hooks_from_an_agent_inside_the_terminals_agent_leave_its_status_alone() {
+    let d = D::start();
+    let s = d.sock();
+    let mut h = d.human();
+    let sess = h.call_value("session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] })).unwrap();
+    let sid = sess["id"].as_str().unwrap();
+    let state = |h: &mut midna_proto::Client| h.call_value("session.get", json!({ "id": sid })).unwrap()["status"]["state"].clone();
+    midna(&s, &["hook", "claude"], Some(r#"{"hook_event_name":"UserPromptSubmit","prompt":"review it"}"#), Some(sid));
+    assert_eq!(state(&mut h), "working");
+    let nested = |event: &str| {
+        let mut cmd = Command::new("/usr/bin/perl");
+        cmd.args(["-e", "exit(system(@ARGV) >> 8)", env!("CARGO_BIN_EXE_midna"), "hook", "claude"]);
+        cmd.env("MIDNA_SOCKET", &s).env("MIDNA_SESSION", sid).env_remove("MIDNA_HOME");
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(format!(r#"{{"hook_event_name":"{event}"}}"#).as_bytes()).unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
+    };
+    for event in ["SessionStart", "Stop", "SessionEnd"] {
+        nested(event);
+        assert_eq!(state(&mut h), "working", "after the nested agent's {event}");
+    }
+    midna(&s, &["hook", "claude"], Some(r#"{"hook_event_name":"Stop"}"#), Some(sid));
+    assert_eq!(state(&mut h), "done");
+}
+
 #[test]
 fn global_hook_stands_down_when_midna_injected_its_own() {
     let d = D::start();

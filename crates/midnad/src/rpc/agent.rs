@@ -22,11 +22,15 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
         }
         return ok(AgentHookResult { ok: true, status: None });
     };
+    // A claude that the terminal's own agent started (a script's `claude -p` in its Bash tool)
+    // inherits MIDNA_SESSION. Its SessionEnd and Stop would show this terminal done mid-turn.
+    if let Some(pid) = ctx.pid.filter(|_| p.session.is_none())
+        && crate::guard::hook_from_nested_agent(d, &sid, pid)
+    {
+        return ok(AgentHookResult { ok: true, status: Some(cur) });
+    }
     if ev == "SessionEnd" {
         session_ended(d, &sid, &project, &actor, p.agent, payload, d.ends.take(&sid));
-    }
-    if let Some(pid) = ctx.pid.filter(|_| p.session.is_none()) {
-        crate::guard::note_hook_caller(d, &sid, pid);
     }
     note_hooked(d, &sid, ctx.pid);
     if !(p.agent == AgentKind::Codex && is_codex_title_turn(payload)) {
