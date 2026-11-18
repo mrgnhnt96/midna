@@ -340,9 +340,10 @@ const TOPICS: &[(&str, &str)] = &[
         Turning it off, keeping the device as a contact or forgetting it cuts its drive links at once. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
         keys; a device that isn't paired can only ask to pair, and one that uses a paired device's name with another key \
         is listed with claims_name_of set and is never trusted. The installed Midna uses _midna._tcp; Midna Dev and other homes use _midna-dev._tcp, so \
-        they never see each other. Shares: share.send {peer, kind: message|snippet|link|file|tab|agent, text|url|path|session, title?, reply_to?} \
-        (`midna share send <name|id> <text>`, stdin = snippet, --link <url>, a file or folder's path, --tab or --agent [--session <terminal>]) offers a \
-        paired device that's nearby now something. From an agent it first asks the human on this Mac (a needs-you approval showing what would \
+        they never see each other. Shares: share.send {peer, kind: message|snippet|link|file|tab|agent|file_request, text|url|path|session, title?, reply_to?} \
+        (`midna share send <name|id> <text>`, stdin = snippet, --link <url>, a file or folder's path, --tab or --agent [--session <terminal>], \
+        or `midna share pull --from <name|id> --file <remote-path>` to request a file from that Mac) offers a \
+        paired device something; if the peer isn't visible right now, the share is queued (state queued) and delivered when they appear. From an agent it first asks the human on this Mac (a needs-you approval showing what would \
         leave; a rule the human gave can allow `share send <kind> <device id>`, an agent's own allow rule never does) and \
         waits; denied or unanswered, nothing is sent. It lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
         needs-you approval. Nothing a share carries types into, runs in or opens anything until a person there accepts: \
@@ -369,7 +370,9 @@ const TOPICS: &[(&str, &str)] = &[
         one of their ids or names. Once a person there accepts (or auto-accept for agent asks, off by default), the prompt is queued \
         in that terminal and typed when its agent is idle, never into a busy prompt; with want_reply the end of that turn comes back \
         the same way. A session that isn't there or isn't an agent refuses the offer, or declines it with the reason (the item's \
-        result) if it went before it was accepted. `midna skill nearby` has the how-to."),
+        result) if it went before it was accepted. A file request (kind file_request: share.send {peer, kind: file_request, path}, \
+        `midna share pull --from <name|id> --file <remote-path>`) asks a paired device to send this Mac the file at that absolute \
+        path on their Mac; the human there must approve it and the file arrives as an incoming file share when they do. `midna skill nearby` has the how-to."),
     ("keep-awake", "Keep-awake stops the Mac from idle-sleeping during the human's work hours so agents, queued messages, \
         schedule triggers and resumes keep going while they're away (`midna keep-awake`, keep_awake.status / keep_awake.set, \
         settings keep_awake.*; off until keep_awake.enabled). midnad holds a PreventUserIdleSystemSleep assertion \

@@ -1076,6 +1076,7 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
             ShareKind::Agent => actions.child(primary_btn("Resume")),
             ShareKind::AgentStart => actions.child(primary_btn("Start agent")),
             ShareKind::AgentAsk => actions.child(primary_btn("Queue prompt")),
+            ShareKind::FileRequest => actions.child(primary_btn("Send file")),
         };
         actions = actions.child(button("ny-deny", format!("Decline {deny_key}")).on_click(cx.listener(|m, _, _, cx| secondary(m, cx))));
     } else if mt.approve {

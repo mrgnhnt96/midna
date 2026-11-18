@@ -683,7 +683,8 @@ pub fn share(a: &Args, out: OutFn) -> Res {
         Some("send") if agent_kind(a).is_some() => return agent_start(a, out),
         Some("send") => {}
         Some("answer") => return answer(a, out),
-        Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send or answer; incoming shares: midna inbox)"))),
+        Some("pull") => return pull(a, out),
+        Some(other) => return Err(Fail::Usage(format!("unknown share subcommand `{other}` (send, pull, or answer; incoming shares: midna inbox)"))),
         None => return Err(Fail::Usage("share send <peer> [text…] (or text on stdin, or --link <url>)".into())),
     }
     a.check(&["link", "file", "object", "title", "snippet", "message", "tab", "agent", "session", "project"])?;
@@ -897,6 +898,28 @@ fn wait_for_answer(id: &str, timeout: u64, out: OutFn) -> Res {
         };
         return Err(Fail::Pending(format!("{id} {at}; ask again: midna share answer {id} --wait")));
     }
+    Ok(())
+}
+
+/// `midna share pull --from <device> --file <remote-path>`: ask a paired device to send a file.
+/// The request goes to the other Mac and waits for the human there to approve it. When approved
+/// the file is offered back and lands in this Mac's inbox as an incoming file share.
+fn pull(a: &Args, out: OutFn) -> Res {
+    a.check(&["from", "file"])?;
+    let who = a.get("from").ok_or_else(|| Fail::Usage("--from <device> (midna peers lists them)".into()))?;
+    let path = a.get("file").ok_or_else(|| Fail::Usage("--file <remote-path> (the absolute path on their Mac)".into()))?;
+    if !path.starts_with('/') {
+        return Err(Fail::Usage(format!("`{path}` isn't an absolute path; use the full path as it appears on their Mac")));
+    }
+    let v = call("share.send", json!({ "peer": paired(who)?, "kind": "file_request", "path": path }))?;
+    out(&v, &|v| {
+        let state = v["state"].as_str().unwrap_or_default();
+        if state == "queued" {
+            println!("Requested; {} isn't visible right now — will send when they appear.", s(v, "peer_name"));
+        } else {
+            println!("Requested from {}; waiting for them to approve it.", s(v, "peer_name"));
+        }
+    });
     Ok(())
 }
 

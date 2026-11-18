@@ -124,6 +124,7 @@ fn kind_label(k: ShareKind) -> &'static str {
         ShareKind::Agent => "Agent sessions",
         ShareKind::AgentStart => "Agent starts",
         ShareKind::AgentAsk => "Agent asks",
+        ShareKind::FileRequest => "File requests",
     }
 }
 
@@ -139,6 +140,7 @@ fn kind_tip(k: ShareKind) -> &'static str {
         ShareKind::Agent => "Agent sessions always ask",
         ShareKind::AgentStart => "A new agent terminal opens in your checkout and runs their prompt, supervised like any agent here",
         ShareKind::AgentAsk => "Their prompt is queued in the agent terminal they name, typed once that agent is idle",
+        ShareKind::FileRequest => "Asks this Mac to send a file; always requires human approval here",
     }
 }
 
