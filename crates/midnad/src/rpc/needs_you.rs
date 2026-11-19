@@ -210,6 +210,10 @@ fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result
             Ok(())
         }
         Resolution::Done | Resolution::Deny if raised_by_me && matches!(item.kind, NeedsYouKind::Note | NeedsYouKind::Blocked | NeedsYouKind::Approval) => Ok(()),
+        // Dismiss records the human waving it off; the agent that raised it clears it as done.
+        Resolution::Dismiss if raised_by_me && matches!(item.kind, NeedsYouKind::Note | NeedsYouKind::Blocked | NeedsYouKind::Approval) => {
+            Err(RpcError::bad_params("you raised this item: clear it with resolution done (`midna approve <id> --done`), not dismiss"))
+        }
         _ => Err(RpcError::human_only("only the human can resolve this item this way")),
     }
 }

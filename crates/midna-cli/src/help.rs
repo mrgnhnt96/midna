@@ -477,7 +477,8 @@ pub static VERBS: &[Verb] = &[
         usage: "approve <needs-you-id> [--scope once|session|always|<N>m] [--deny]\n       approve <needs-you-id> --done | --restart",
         summary: "answer a needs-you item (usually the human's job)",
         details: "Agents may approve only their own session's requests, and only when the human turned on\n\
-                  approve.from_cli. --done marks a blocked item handled; --restart restarts a failed terminal.\n\
+                  approve.from_cli. --done marks a blocked item handled; an agent clears an item it raised\n\
+                  itself (note, blocked) with --done. --restart restarts a failed terminal.\n\
                   Approvals of human-only actions can only be answered by the human.",
         methods: &["needs_you.resolve"],
     },
