@@ -597,7 +597,10 @@ fn needs_you_raise_and_agent_resolve_own() {
     let mut a = d.agent(Some(&sid));
     let n = call(&mut a, "needs_you.raise", json!({ "kind": "blocked", "message": "need the API key" }));
     assert_eq!((n["session_id"].as_str(), n["asked_by"]["kind"].as_str()), (Some(sid.as_str()), Some("agent")));
-    assert_eq!(call_err(&mut a, "needs_you.resolve", json!({ "id": n["id"], "resolution": { "kind": "dismiss" } })).code, HUMAN_ONLY);
+    // Dismiss is the human's word; the refusal points the agent at done.
+    let e = call_err(&mut a, "needs_you.resolve", json!({ "id": n["id"], "resolution": { "kind": "dismiss" } }));
+    assert_eq!(e.code, -32602);
+    assert!(e.message.contains("--done"), "{}", e.message);
     call(&mut a, "needs_you.resolve", json!({ "id": n["id"], "resolution": { "kind": "done" } }));
     assert!(call(&mut h, "needs_you.list", json!({})).as_array().unwrap().is_empty());
     assert_eq!(call_err(&mut a, "needs_you.raise", json!({ "kind": "approval", "message": "x" })).code, -32602);

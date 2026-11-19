@@ -66,7 +66,8 @@ HUMAN ONLY (calling these makes a request the human sees; nothing happens until 
   settings   {}
   also       removing rules (use `midna rules request-removal <id> --reason …`), webhook secrets, enabling
              webhook triggers, approving approvals (unless the human enabled approve.from_cli, own session only),
-             dismissing needs-you items, macOS permission grants (ask with `midna attention`).
+             answering needs-you items you didn't raise, macOS permission grants (ask with `midna attention`).
+             An item you raised and no longer need: clear it yourself with `midna approve <id> --done`.
 
 RULES OF THE ROAD
   - Agents add, humans remove. A refusal tells you the next step; follow it, don't retry another way.
@@ -123,8 +124,10 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
              the one you sent. Never put secrets in commands or prompts; tell the human what the secret is for."
             .into(),
         (HUMAN_ONLY, "needs_you.resolve") => format!(
-            "Only the human answers this item. Leave it; if you are blocked meanwhile, say so once with {}.",
-            cmd(surface, "attention \"…\"", "needs_you_raise")
+            "Only the human answers this item. Leave it; if you are blocked meanwhile, say so once with {}. (Items you \
+             raised from this terminal you clear yourself with {}.)",
+            cmd(surface, "attention \"…\"", "needs_you_raise"),
+            cmd(surface, &format!("approve {id} --done"), "needs_you_resolve")
         ),
         (HUMAN_ONLY, _) if needs_you.is_some() => wait(needs_you.as_deref().unwrap_or("")),
         (HUMAN_ONLY, _) => format!(
@@ -267,8 +270,10 @@ const TOPICS: &[(&str, &str)] = &[
         a value an agent passes itself is marked exposed. Replacing a secret the human stored asks the human; only \
         the human removes secrets. Never ask for a value in chat."),
     ("needs-you", "Needs-you items are what the human must look at: approval, permission_prompt, blocked, note, failed, \
-        trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`. The human \
-        resolves: approve{scope}, deny, dismiss, done, restart. An agent's \"trust this folder?\" startup dialog is a \
+        trigger_waiting, rule_removal, secret_needed. Agents raise blocked/note with `midna attention`, and clear one \
+        they raised once they no longer need the human with `midna approve <id> --done` (a new prompt to the agent \
+        clears its blocked items by itself). The human resolves the rest: approve{scope}, deny, dismiss, done, restart. \
+        An agent's \"trust this folder?\" startup dialog is a \
         permission_prompt too (approve = Yes, deny = No; any Yes, here or in the terminal, adds the folder to agents.trust_folders); \
         a folder agents.trust_folders covers is answered Yes without one. `midna needs get <id>` says where one item stands."),
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
@@ -397,7 +402,8 @@ const TOPICS: &[(&str, &str)] = &[
         are policy-checked as `window` actions, so a rule can still deny one."),
     ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
-        dismissing items, macOS permissions. Calling one never does it: it becomes a needs-you request (or tells you \
+        answering or dismissing items you didn't raise (your own you clear with --done), macOS permissions. \
+        Calling one never does it: it becomes a needs-you request (or tells you \
         the request path) and the human decides. Never route around a refusal."),
     ("mcp", "`midna mcp` is a stdio MCP server; agents midna launches get it automatically (setting agents.mcp). Tool \
         names are method names with `.` → `_` (session_open, rule_add, …) plus capabilities, explain and guide. A \
@@ -728,6 +734,7 @@ fn explain_needs_you(call: Caller, id: &str) -> Result<String, RpcError> {
     let who = match kind.as_str() {
         "approval" if s(&n, "detail").starts_with("Human-only") => "only the human (it confirms a human-only action)",
         "approval" | "permission_prompt" => "the human; an agent only for its own session when approve.from_cli is on",
+        "blocked" | "note" if n["asked_by"]["kind"] == "agent" => "the human, or the agent that raised it (`midna approve <id> --done`)",
         "blocked" | "failed" => "the human (done / restart / dismiss)",
         _ => "the human",
     };

@@ -153,8 +153,9 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             trigger). The `guide` tool (topic `triggers`) has worked examples.",
         "trigger.update" | "trigger.list" | "trigger.test" => "Local triggers: see trigger_add and the `guide` tool \
             (topic `triggers`).",
-        "needs_you.resolve" => "Agents normally don't call this: answering is the human's job. Refused unless the human enabled \
-            approve.from_cli, and then only for your own session's approvals.",
+        "needs_you.resolve" => "Clear an item you raised yourself (note, blocked, approval) once you no longer need the human: \
+            resolution {\"kind\":\"done\"} (dismiss is the human's). Everything else is the human's to answer; approving is \
+            refused unless the human enabled approve.from_cli, and then only for your own session's approvals.",
         "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action. \
             Add no_wait: true (works on any tool) to get the needs-you id back at once (error 6) and follow it with needs_you_get.",
         "session.close" => "Closing a working terminal or another one may ask the human and block meanwhile; add no_wait: true \

@@ -118,6 +118,7 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
 | change a human-only setting | `midna settings set ...`, which asks the human |
 | remove a project, stop, upgrade or reset the daemon, configure webhooks, install an app update or hooks | call it; it becomes a needs-you approval (a project midna created for your `open --cwd` you may remove yourself once its terminals are closed) |
 | approve your own request | wait; the human answers it |
+| clear a `midna attention` item you no longer need | `midna approve <id> --done` (yours only; `--dismiss` is the human's) |
 | grant macOS permissions | `midna attention` and say what you need |
 
 When a call is refused (exit 1, error code 1 or 2), the message says what happened and what to
