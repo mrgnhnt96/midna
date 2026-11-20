@@ -6,6 +6,11 @@
 //! started, or its headless run) is recorded with `caused_by` on its envelope and fires no
 //! triggers, so a trigger whose command publishes to the stream it listens on fires once.
 //!
+//! A declared stream (one midna runs, `streams.add`) only takes its own producer's publishes:
+//! a call carrying the token midnad gave it at its last start (`MIDNA_STREAM_TOKEN`, sent as
+//! `caller.stream_token`), or the human's. Anyone else's is dropped with verdict `refused`, so
+//! an agent can't fake its events and fire its triggers. Other names stay open to anyone.
+//!
 //! The intake (`crate::streams`) drops duplicates, publishes over the stream's rate limit and
 //! everything while its queue is full; streams.events lists each publish's verdict.
 //!
@@ -23,6 +28,18 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn publish(d: &Daemon, ctx: &Ctx, p: StreamsPublishParams) -> R {
+    if !ctx.is_human() && d.core().state.streams.iter().any(|s| s.name == p.stream) && !crate::producers::token_ok(d, &p.stream, ctx.stream_token.as_deref()) {
+        // Listed in the stream's events when the rest of the publish is well formed.
+        let head = StreamsPublishParams { stream: p.stream.clone(), kind: p.kind.clone(), id: p.id.clone(), data: Value::Null };
+        if check_publish(&head).is_ok() {
+            d.streams.reject(&p.stream, &p.kind, p.id.clone(), StreamVerdict::Refused, "not its producer or the human".into());
+        }
+        return Err(RpcError::refused(format!(
+            "stream `{}` is one midna runs: only its producer (with its MIDNA_STREAM_TOKEN) or the human can publish to it; dropped",
+            p.stream
+        ))
+        .with_data(json!({ "verdict": StreamVerdict::Refused })));
+    }
     ok(admit(d, p, ctx.caused_by(), ctx.actor())?)
 }
 

@@ -641,6 +641,32 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
     assert_eq!(code(&o), 2, "{o:?}");
 }
 
+/// `midna stream publish` run by a stream's producer sends its MIDNA_STREAM_TOKEN, so it gets
+/// in; the same command from anywhere else is refused (exit 1) once midna runs that stream.
+#[test]
+fn only_a_stream_s_own_producer_publishes_to_it_from_the_cli() {
+    let d = D::start();
+    let s = d.sock();
+    let cli = env!("CARGO_BIN_EXE_midna");
+    let script = format!("{cli} stream publish tail ready --id p1 --data '{{\"from\":\"producer\"}}' && exec sleep 60");
+    d.human().call_value("streams.add", json!({ "name": "tail", "command": ["/bin/sh", "-c", script], "cwd": "/tmp" })).unwrap();
+    let mut got = String::new();
+    for _ in 0..100 {
+        got = stdout(&midna(&s, &["events", "--kind", "stream.tail.ready", "--json"], None, None));
+        if got.contains("producer") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(got.contains(r#""from":"producer""#), "the producer's publish got in: {got}");
+    let o = midna(&s, &["stream", "publish", "tail", "ready", "--id", "x1", "--data", "{}"], None, None);
+    assert_eq!(code(&o), 1, "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("stream `tail` is one midna runs") && err.contains("MIDNA_STREAM_TOKEN"), "{err}");
+    let o = midna(&s, &["stream", "publish", "elsewhere", "ready", "--data", "{}"], None, None);
+    assert_eq!(code(&o), 0, "a name midna doesn't run is open: {o:?}");
+}
+
 #[test]
 fn stream_add_is_the_human_s_and_the_rest_manage_it() {
     let d = D::start();

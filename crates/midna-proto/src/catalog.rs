@@ -494,7 +494,9 @@ fn build() -> Vec<MethodSpec> {
              templates {{data.<path>}} and {{stream.name|kind|id}}. stream: 1-32 of a-z 0-9 -; kind: 1-64 of a-z 0-9 _ . -; \
              id (optional): yours for the event, e.g. a Slack message ts. The event belongs to no terminal. A publish a trigger \
              caused (a process its action started, which has MIDNA_TRIGGER set and the CLI forwards as caller.caused_by) is \
-             recorded with stream.caused_by and result caused_by, and fires no triggers. \
+             recorded with stream.caused_by and result caused_by, and fires no triggers. A stream midna runs (streams.add) \
+             only takes its own producer's publishes (the CLI sends its MIDNA_STREAM_TOKEN as caller.stream_token) or the \
+             human's: anyone else's is refused (error code 1, data {verdict: refused}); other names are open to anyone. \
              Limits per stream: an id it took in the last 24 hours is a duplicate (result verdict `duplicate`, the first event's seq, \
              not logged again); past 60 events a minute (bursts of 20) a publish is dropped with error code 7 (busy) and \
              data {verdict: rate_limited, retry_after_ms}; with 1000 events waiting for the trigger worker it is dropped \
@@ -511,7 +513,8 @@ fn build() -> Vec<MethodSpec> {
              {\"kind\":\"message\",\"id\":\"…\",\"data\":{…}} (id and data optional), each published to stream `name` like \
              streams.publish (same dedupe and limits). Lines that aren't events and its stderr go to \
              $MIDNA_HOME/streams/<name>.log (capped at 1 MB, one older file kept). It runs in its own process group in `cwd` with \
-             the terminal environment plus MIDNA_STREAM=<name>, and each named stored secret in its environment (looked up \
+             the terminal environment plus MIDNA_STREAM=<name>, MIDNA_STREAM_TOKEN (new each start; `midna stream publish` \
+             run by the producer sends it, and only it or the human may publish to this stream), and each named stored secret in its environment (looked up \
              each start: the project's own, else a global one; values never stored or logged). When it exits midnad starts it \
              again after 1s, doubling to 5 minutes (back to 1s once a run lasts 10 minutes), and starts every stream again \
              when the daemon starts and after the Mac wakes. Streams are kept in state.json. For now only the human can add \

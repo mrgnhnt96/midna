@@ -13,6 +13,12 @@
 //! old producer stops its group (SIGTERM, SIGKILL after a grace) and ends. When the leader exits
 //! on its own, what's left of its group is stopped too, so nothing it started outlives it.
 //!
+//! Each start gives the producer a new random token in `MIDNA_STREAM_TOKEN`, kept only here in
+//! memory (masked in its log like a secret): once a stream is declared, `streams.publish` to it
+//! takes only calls that carry it (the CLI forwards it as `caller.stream_token`) or the human's,
+//! so nobody else on the socket can fake its events ([`token_ok`]). A restart, pause or exit
+//! drops the old one.
+//!
 //! Never orphaned: each producer's pid (and its start time, against pid reuse) is in
 //! `streams/<name>.pid` while it runs. The daemon stops every group when it stops
 //! ([`stop_all`]), and on start ([`start`]) stops any a previous daemon left behind (a crash, an
@@ -69,6 +75,8 @@ struct Slot {
     last_exit: Option<StreamExit>,
     retry_at: Option<String>,
     error: Option<String>,
+    /// The running producer's `MIDNA_STREAM_TOKEN`. Never stored, logged or shown.
+    token: Option<String>,
 }
 
 impl Producers {
@@ -139,6 +147,7 @@ pub fn start_one(d: &Arc<Daemon>, name: &str) {
         s.epoch = epoch;
         s.state = StreamState::Starting;
         s.retry_at = None;
+        s.token = None;
         if let Some(pid) = s.pid {
             signal_group(pid, libc::SIGTERM);
         }
@@ -154,6 +163,7 @@ pub fn pause(d: &Daemon, name: &str) {
     s.epoch = next_epoch();
     s.state = StreamState::Paused;
     s.retry_at = None;
+    s.token = None;
     if let Some(pid) = s.pid {
         signal_group(pid, libc::SIGTERM);
     }
@@ -180,6 +190,17 @@ pub fn stop_all(d: &Daemon) {
     for n in names {
         let _ = std::fs::remove_file(pid_path(d, &n));
     }
+}
+
+/// Whether `token` is stream `name`'s running producer's (`MIDNA_STREAM_TOKEN`).
+pub fn token_ok(d: &Daemon, name: &str, token: Option<&str>) -> bool {
+    let Some(token) = token else { return false };
+    d.producers.lock().get(name).and_then(|s| s.token.as_deref()).is_some_and(|t| same(t.as_bytes(), token.as_bytes()))
+}
+
+/// Compare in time that doesn't depend on where they differ.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Stream `name` as `streams.list` shows it.
@@ -233,7 +254,19 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
         }
         let Some(spec) = d.core().state.streams.iter().find(|s| s.name == name && s.enabled).cloned() else { return };
         let log = Log::open(log_path(&d, &name));
-        let ran = match spawn(&d, &spec, &log) {
+        // Set before it starts, so its first publish already has it.
+        let token = crate::state::hex_id(64);
+        if !d.producers.update(&name, epoch, |s| s.token = Some(token.clone())) {
+            return;
+        }
+        let drop_token = |d: &Daemon| {
+            if let Some(s) = d.producers.lock().get_mut(&name)
+                && s.token.as_deref() == Some(token.as_str())
+            {
+                s.token = None;
+            }
+        };
+        let ran = match spawn(&d, &spec, &log, &token) {
             Ok(child) => {
                 let pid = child.id() as i32;
                 let began = Instant::now();
@@ -261,6 +294,7 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
                 log.line(&format!("exited: {} after {}", describe(&exit), human(ran)));
                 let Some(d) = w.upgrade() else { return };
                 remove_pidfile(&pid_path(&d, &name), pid);
+                drop_token(&d);
                 let mut g = d.producers.lock();
                 if let Some(s) = g.get_mut(&name) {
                     if s.pid == Some(pid) {
@@ -274,6 +308,7 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
             }
             Err(e) => {
                 log.line(&format!("couldn't start: {e}"));
+                drop_token(&d);
                 d.producers.update(&name, epoch, |s| s.error = Some(e));
                 Duration::ZERO
             }
@@ -326,7 +361,7 @@ fn wait(w: &Weak<Daemon>, name: &str, epoch: u64, mut child: Child, pid: i32) ->
     }
 }
 
-fn spawn(d: &Arc<Daemon>, spec: &StreamSpec, log: &Arc<Log>) -> Result<Child, String> {
+fn spawn(d: &Arc<Daemon>, spec: &StreamSpec, log: &Arc<Log>, token: &str) -> Result<Child, String> {
     if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("its folder {} isn't there", spec.cwd));
     }
@@ -349,7 +384,7 @@ fn spawn(d: &Arc<Daemon>, spec: &StreamSpec, log: &Arc<Log>) -> Result<Child, St
         }
     }
     // Not a terminal's, and no trigger caused it: what it publishes fires triggers.
-    cmd.env_remove("MIDNA_SESSION").env_remove("MIDNA_TRIGGER").env_remove("MIDNA_DELIVERY").env("MIDNA_STREAM", &spec.name);
+    cmd.env_remove("MIDNA_SESSION").env_remove("MIDNA_TRIGGER").env_remove("MIDNA_DELIVERY").env("MIDNA_STREAM", &spec.name).env("MIDNA_STREAM_TOKEN", token);
     for (k, v) in &secrets {
         cmd.env(k, v);
     }
@@ -367,7 +402,8 @@ fn spawn(d: &Arc<Daemon>, spec: &StreamSpec, log: &Arc<Log>) -> Result<Child, St
         let _spawns = crate::pty::spawn_lock();
         cmd.spawn().map_err(|e| format!("{}: {e}", spec.command.join(" ")))?
     };
-    let masks: Vec<(String, Vec<u8>)> = secrets.into_iter().map(|(k, v)| (k, v.into_bytes())).collect();
+    let mut masks: Vec<(String, Vec<u8>)> = secrets.into_iter().map(|(k, v)| (k, v.into_bytes())).collect();
+    masks.push(("MIDNA_STREAM_TOKEN".into(), token.as_bytes().to_vec()));
     let mask = || Scrubber::new(masks.iter().map(|(k, v)| (k.as_str(), v.as_slice())));
     if let Some(out) = child.stdout.take() {
         let (log, mut scrub, name) = (log.clone(), mask(), spec.name.clone());
