@@ -33,7 +33,7 @@ scripts/slate.sh shoot --out shot.png --size 1280x800 --wait 2500
 scripts/slate.sh drive --steps steps.json --out shots/ --size 1280x800 --wait 2500
 ```
 
-It runs the fake backend unless `--home <temp MIDNA_HOME>` comes first, and passes the `MIDNA_DEBUG_*` / `MIDNA_FAKE_*` screenshot variables through. A steps file lists keys (`{"key": "cmd-k"}`), typing, clicks at window points, scrolls, waits and `{"shot": "name"}` steps; see Slate's README. Only the first main window is hidden: a drive that opens Settings, a pop-out or another window shows that one on screen.
+It runs the fake backend unless `--home <temp MIDNA_HOME>` comes first, and passes the `MIDNA_DEBUG_*` / `MIDNA_FAKE_*` screenshot variables through. A steps file lists keys (`{"key": "cmd-k"}`), typing, clicks at window points, scrolls, waits and `{"shot": "name"}` steps; see Slate's README. Only the first main window is hidden: a drive that opens Settings, a pop-out or another window shows that one on screen. Slate's repo is private, so the workspace builds a stand-in that never hides (`crates/slate-stub`); only `scripts/slate.sh` builds the real one, and it needs your GitHub access to slate.
 
 ## Test what you touched
 

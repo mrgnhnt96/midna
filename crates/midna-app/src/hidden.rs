@@ -1,7 +1,8 @@
 //! Hidden runs for agents (Slate, https://github.com/mrgnhnt96/slate): `slate shoot` and
 //! `slate drive` launch the app with `SLATE=1`, and the first main window opens below the
 //! desktop, never focused, while the app stays an accessory app that is never frontmost.
-//! `scripts/slate.sh` runs them against this checkout's build.
+//! `scripts/slate.sh` runs them against this checkout's build; every other build links a
+//! stand-in that never hides (`crates/slate-stub`), since slate is private.
 //!
 //! Only builds with dev drivers honour it (`dev.rs`): a drive presses keys and clicks in the
 //! app, whose connection is the human's. A release build ignores `SLATE=1`.

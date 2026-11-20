@@ -19,5 +19,10 @@ libghostty-vt = "0.2.2"
 schemars = "1.2"
 regex = "1"
 
+# Slate is private while midna is public, so builds use the stand-in in crates/slate-stub and never
+# fetch it. scripts/slate.sh patches the real crate back in for its own build.
+[patch."https://github.com/mrgnhnt96/slate"]
+slate = { path = "crates/slate-stub" }
+
 [profile.dev.package."*"]
 opt-level = 2

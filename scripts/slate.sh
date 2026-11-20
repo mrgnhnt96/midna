@@ -13,7 +13,8 @@
 # connects as the human. Other MIDNA_* screenshot variables (MIDNA_DEBUG_SCREEN,
 # MIDNA_FAKE_SETTINGS, MIDNA_W, …) pass through to the app.
 #
-# It builds midna-app with the `snapshot` feature, so the app renders its own shots (no Screen
+# It builds midna-app with the real slate crate (the workspace has a stand-in, since slate is
+# private) and the `snapshot` feature, so the app renders its own shots (no Screen
 # Recording permission, no native traffic lights), and installs the `slate` command at the rev
 # crates/midna-app/Cargo.toml pins into <target>/slate.
 set -euo pipefail
@@ -48,14 +49,34 @@ fi
 . ./env.sh
 # This checkout's own target dir: a Midna terminal may point cargo at another checkout's.
 export CARGO_TARGET_DIR="$ROOT/target"
-echo "slate.sh: building midna-app" >&2
-cargo build --quiet -p midna-app --features snapshot
-app="$CARGO_TARGET_DIR/debug/midna-app"
-
+SLATE_GIT=https://github.com/mrgnhnt96/slate
 rev=$(sed -n 's/^slate = {.*rev = "\([0-9a-f]*\)".*/\1/p' crates/midna-app/Cargo.toml)
 [ -n "$rev" ] || { echo "slate.sh: can't find slate's rev in crates/midna-app/Cargo.toml" >&2; exit 1; }
+
+# Slate is private, so the workspace builds against a stand-in (crates/slate-stub). This build
+# patches the real crate back in, from a checkout of that rev kept outside this one (inside it,
+# cargo would take it for a workspace member).
+src="${XDG_CACHE_HOME:-$HOME/Library/Caches}/midna-slate/$rev"
+if [ ! -e "$src/crates/slate/Cargo.toml" ]; then
+  rm -rf "$src.part"
+  git clone --quiet "$SLATE_GIT" "$src.part"
+  git -C "$src.part" checkout --quiet "$rev"
+  mv "$src.part" "$src"
+fi
+
+echo "slate.sh: building midna-app" >&2
+# The patch rewrites Cargo.lock; put the checked-in one back afterwards.
+lock="$(mktemp "${TMPDIR:-/tmp}/midna-slate-lock.XXXXXX")"
+cp Cargo.lock "$lock"
+trap 'cp "$lock" "$ROOT/Cargo.lock"; rm -f "$lock"' EXIT
+cargo build --quiet -p midna-app --features snapshot --config "patch.'$SLATE_GIT'.slate.path='$src/crates/slate'"
+cp "$lock" Cargo.lock
+rm -f "$lock"
+trap - EXIT
+app="$CARGO_TARGET_DIR/debug/midna-app"
+
 # cargo skips the install when that rev is already there.
-cargo install --quiet --locked --git https://github.com/mrgnhnt96/slate --rev "$rev" --root "$CARGO_TARGET_DIR/slate" slate-cli
+cargo install --quiet --locked --git "$SLATE_GIT" --rev "$rev" --root "$CARGO_TARGET_DIR/slate" slate-cli
 slate="$CARGO_TARGET_DIR/slate/bin/slate"
 
 # The app runs in a folder of its own (below), so paths given to slate are made absolute first.
