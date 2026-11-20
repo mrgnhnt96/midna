@@ -42,6 +42,9 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
     if ev == "PreToolUse" {
         crate::crons::on_pre_tool(d, &sid, p.agent, payload);
     }
+    if ev == "SessionStart" && matches!(payload.get("source").and_then(Value::as_str), Some("startup" | "resume")) {
+        crate::usage::forget_process(d, &sid);
+    }
     match ev {
         "statusline" => {
             record_cost(d, &sid, &project, &actor, payload);

@@ -12,6 +12,11 @@
 //! run, or a window left out, keeps what is stored. Different Claude accounts in different
 //! terminals would mix: the higher numbers stick until their window resets.
 //!
+//! Anthropic can also reset a plan's limits early without moving `resets_at`, so usage does go
+//! down within a run. A terminal whose own numbers just moved (since that agent process's last
+//! report) is reading a fresh API response, so its numbers win even when lower. Once one has
+//! lowered a window, a report that hasn't moved and sits above it is from before the reset.
+//!
 //! Each time the merged numbers move (a percentage changes or a new window run starts), a
 //! `usage.sampled` event logs them, for Insights' usage chart. A repeat of the same numbers logs
 //! nothing: the chart holds a reading until its window resets.
@@ -32,6 +37,9 @@ pub struct StoredUsage {
     /// window -> the `resets_at` a `usage.limit_reached` was emitted for (once per window run).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reached: BTreeMap<String, String>,
+    /// window -> the `resets_at` of the run a fresh report lowered (an early reset).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lowered: BTreeMap<String, String>,
 }
 
 /// Fold one Claude status line into the account's usage; emits `usage.limit_reached` when a
@@ -40,8 +48,11 @@ pub fn observe(d: &Daemon, sid: &str, project: &str, payload: &Value) {
     let Some(limits) = crate::agent_work::rate_limits(payload, &time::now_rfc3339()) else { return };
     let (changed, sampled, reached) = {
         let mut core = d.core();
+        let rt = core.agents.entry(sid.to_string()).or_default();
+        let moved_here = moved_windows(rt.limits_seen.as_ref(), &limits);
+        rt.limits_seen = Some(limits.clone());
         let u = core.state.usage.get_or_insert_with(Default::default);
-        let (merged, fresh) = merge(u.claude.as_ref(), limits);
+        let (merged, fresh) = merge(u.claude.as_ref(), limits, &moved_here, &mut u.lowered);
         let session = if fresh { Some(sid.to_string()) } else { u.session.clone() };
         let changed = u.claude.as_ref().is_none_or(|c| !c.same_as(&merged)) || u.session != session;
         let sampled = u.claude.as_ref().is_none_or(|c| moved(c, &merged)).then(|| merged.clone());
@@ -71,46 +82,88 @@ const SAME_RUN_SECS: i64 = 600;
 
 /// `new` folded into `old` window by window (see the module docs), and whether `new` was current
 /// (no window of it older than what is stored): only a current report moves `observed_at` and
-/// `session`, so an idle terminal repeating old numbers doesn't keep them looking fresh.
-fn merge(old: Option<&RateLimits>, new: RateLimits) -> (RateLimits, bool) {
+/// `session`, so an idle terminal repeating old numbers doesn't keep them looking fresh. `moved`
+/// names the windows whose numbers the reporting process just changed; `lowered` remembers runs
+/// an early reset brought down.
+fn merge(old: Option<&RateLimits>, new: RateLimits, moved: &[&str], lowered: &mut BTreeMap<String, String>) -> (RateLimits, bool) {
     let Some(old) = old else { return (new, true) };
     let mut current = true;
-    let mut pick = |o: &Option<RateLimitWindow>, n: Option<RateLimitWindow>| match (o, n) {
+    let mut pick = |name: &str, o: &Option<RateLimitWindow>, n: Option<RateLimitWindow>| match (o, n) {
         (o, None) => o.clone(),
         (None, n) => n,
-        (Some(o), Some(n)) => {
-            let reset = |w: &RateLimitWindow| w.resets_at.as_deref().and_then(time::parse_rfc3339);
-            match (reset(o), reset(&n)) {
-                (Some(ro), Some(rn)) if rn - ro > SAME_RUN_SECS => Some(n),
-                (Some(ro), Some(rn)) if ro - rn > SAME_RUN_SECS => {
-                    current = false;
-                    Some(o.clone())
-                }
-                (Some(_), Some(_)) if o.used_percentage > n.used_percentage => {
-                    current = false;
-                    Some(o.clone())
-                }
-                _ => Some(n),
+        (Some(o), Some(n)) => match (reset(o), reset(&n)) {
+            (Some(ro), Some(rn)) if rn - ro > SAME_RUN_SECS => Some(n),
+            (Some(ro), Some(rn)) if ro - rn > SAME_RUN_SECS => {
+                current = false;
+                Some(o.clone())
             }
-        }
+            // A fresh API response: right even below what is stored (an early reset).
+            _ if moved.contains(&name) => {
+                if n.used_percentage < o.used_percentage {
+                    lowered.insert(name.to_string(), n.resets_at.clone().unwrap_or_default());
+                }
+                Some(n)
+            }
+            _ if o.used_percentage > n.used_percentage => {
+                current = false;
+                Some(o.clone())
+            }
+            // Unmoved and above a run an early reset lowered: numbers from before the reset.
+            _ if o.used_percentage < n.used_percentage && lowered_run(lowered, name, &n) => {
+                current = false;
+                Some(o.clone())
+            }
+            _ => Some(n),
+        },
     };
-    let seven_day = pick(&old.seven_day, new.seven_day);
+    let seven_day = pick("seven_day", &old.seven_day, new.seven_day);
     // Claude is retiring the 5-hour window: a current report without one clears it, and a stored
     // one that has expired with nothing newer is dropped. A stale report keeps what is stored.
     let now = time::now_unix();
     let five_hour = match new.five_hour {
-        n @ Some(_) => pick(&old.five_hour, n),
+        n @ Some(_) => pick("five_hour", &old.five_hour, n),
         None if current => None,
-        None => old.five_hour.clone().filter(|w| !w.resets_at.as_deref().and_then(time::parse_rfc3339).is_some_and(|r| r <= now)),
+        None => old.five_hour.clone().filter(|w| !reset(w).is_some_and(|r| r <= now)),
     };
     let observed_at = if current { new.observed_at } else { old.observed_at.clone() };
     (RateLimits { five_hour, seven_day, observed_at }, current)
 }
 
+fn reset(w: &RateLimitWindow) -> Option<i64> {
+    w.resets_at.as_deref().and_then(time::parse_rfc3339)
+}
+
+/// Whether an early reset lowered `w`'s window run.
+fn lowered_run(lowered: &BTreeMap<String, String>, name: &str, w: &RateLimitWindow) -> bool {
+    let run = lowered.get(name).and_then(|r| time::parse_rfc3339(r));
+    run.zip(reset(w)).is_some_and(|(a, b)| (a - b).abs() <= SAME_RUN_SECS)
+}
+
+/// The windows whose numbers changed since this agent process's last report, in the same run:
+/// numbers that come from a fresh API response, not a repeat of old ones.
+fn moved_windows(prev: Option<&RateLimits>, new: &RateLimits) -> Vec<&'static str> {
+    let Some(prev) = prev else { return vec![] };
+    let at = |l: &RateLimits, name: &str| l.windows().find(|(n, _)| *n == name).map(|(_, w)| w.clone());
+    new.windows()
+        .filter(|(name, n)| {
+            at(prev, name).is_some_and(|p| {
+                p.used_percentage != n.used_percentage && reset(&p).zip(reset(n)).is_some_and(|(a, b)| (a - b).abs() <= SAME_RUN_SECS)
+            })
+        })
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Forget what an agent process reported: a new one (startup or resume) may repeat old numbers.
+pub fn forget_process(d: &Daemon, sid: &str) {
+    if let Some(rt) = d.core().agents.get_mut(sid) {
+        rt.limits_seen = None;
+    }
+}
+
 /// Whether `new` says something `old` didn't: a window's percentage changed, one came or went, or
 /// a new window run started (`resets_at` alone drifts by seconds between reports).
 fn moved(old: &RateLimits, new: &RateLimits) -> bool {
-    let reset = |w: &RateLimitWindow| w.resets_at.as_deref().and_then(time::parse_rfc3339);
     let differ = |o: &Option<RateLimitWindow>, n: &Option<RateLimitWindow>| match (o, n) {
         (Some(o), Some(n)) => o.used_percentage != n.used_percentage || reset(o).zip(reset(n)).is_some_and(|(a, b)| (a - b).abs() > SAME_RUN_SECS),
         (o, n) => o.is_some() != n.is_some(),
@@ -182,22 +235,61 @@ mod tests {
         let pct = |w: &Option<RateLimitWindow>| w.as_ref().map(|w| w.used_percentage);
 
         // An idle terminal repeating its last numbers: same run, lower usage.
-        let (m, current) = merge(Some(&fresh), l(win(92.0, now + 600), win(28.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&fresh), l(win(92.0, now + 600), win(28.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert_eq!((pct(&m.five_hour), pct(&m.seven_day), m.observed_at.as_str(), current), (Some(97.0), Some(29.0), "t2", false));
 
         // A resumed terminal from days ago: its 5-hour window is gone, its weekly is far behind.
-        let (m, current) = merge(Some(&fresh), l(None, win(8.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&fresh), l(None, win(8.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert_eq!((pct(&m.five_hour), pct(&m.seven_day), current), (Some(97.0), Some(29.0), false));
 
         // A report from an older window run.
-        let (m, _) = merge(Some(&fresh), l(win(99.0, now - 18_000), None, "t3"));
+        let (m, _) = merge(Some(&fresh), l(win(99.0, now - 18_000), None, "t3"), &[], &mut BTreeMap::new());
         assert_eq!(pct(&m.five_hour), Some(97.0));
 
         // Fresher numbers win, and a new window run wins however low it starts.
-        let (m, current) = merge(Some(&fresh), l(win(98.0, now + 630), win(29.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&fresh), l(win(98.0, now + 630), win(29.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert_eq!((pct(&m.five_hour), m.observed_at.as_str(), current), (Some(98.0), "t3", true));
-        let (m, current) = merge(Some(&fresh), l(win(2.0, now + 18_600), win(29.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&fresh), l(win(2.0, now + 18_600), win(29.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert_eq!((pct(&m.five_hour), current), (Some(2.0), true));
+    }
+
+    #[test]
+    fn an_early_reset_that_keeps_resets_at_is_taken_from_a_fresh_report() {
+        let now = time::now_unix();
+        let week = |used: f64| RateLimits { five_hour: None, seven_day: win(used, now + 9000), observed_at: "t".into() };
+        let pct = |l: &RateLimits| l.seven_day.as_ref().map(|w| w.used_percentage);
+        let mut lowered = BTreeMap::new();
+        let stored = week(97.0);
+
+        // The reset's first reports repeat the same numbers in each process: not proof yet.
+        assert!(moved_windows(None, &week(1.0)).is_empty(), "a new process's first report");
+        assert!(moved_windows(Some(&week(1.0)), &week(1.0)).is_empty(), "a repeat");
+        let (m, current) = merge(Some(&stored), week(1.0), &[], &mut lowered);
+        assert_eq!((pct(&m), current), (Some(97.0), false));
+
+        // A process whose own numbers dropped (or moved at all) read a fresh API response.
+        let moved = moved_windows(Some(&week(97.0)), &week(1.0));
+        assert_eq!(moved, ["seven_day"]);
+        let (m, current) = merge(Some(&stored), week(1.0), &moved, &mut lowered);
+        assert_eq!((pct(&m), current), (Some(1.0), true));
+        let moved = moved_windows(Some(&week(1.0)), &week(2.0));
+        let (m2, _) = merge(Some(&stored), week(2.0), &moved, &mut BTreeMap::new());
+        assert_eq!(pct(&m2), Some(2.0), "a rise still below the stored numbers is fresh too");
+
+        // An idle terminal still repeating its pre-reset numbers can't bring them back.
+        let (m, current) = merge(Some(&m), week(84.0), &[], &mut lowered);
+        assert_eq!((pct(&m), current), (Some(1.0), false));
+        // Real usage after the reset climbs through fresh reports.
+        let (m, _) = merge(Some(&m), week(5.0), &["seven_day"], &mut lowered);
+        assert_eq!(pct(&m), Some(5.0));
+
+        // A new window run is not a move within the run, and forgets nothing it shouldn't.
+        let next = RateLimits { seven_day: win(0.0, now + 9000 + 604_800), ..week(0.0) };
+        assert!(moved_windows(Some(&week(5.0)), &next).is_empty());
+        let (m, _) = merge(Some(&m), next, &[], &mut lowered);
+        assert_eq!(pct(&m), Some(0.0));
+        let later = RateLimits { seven_day: win(40.0, now + 9000 + 604_800), ..week(0.0) };
+        assert_eq!(pct(&merge(Some(&m), later, &[], &mut lowered).0), Some(40.0), "the lowered mark is per run");
     }
 
     #[test]
@@ -206,12 +298,12 @@ mod tests {
         let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
         let old = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
 
-        let (m, current) = merge(Some(&old), l(None, win(30.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&old), l(None, win(30.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert!(m.five_hour.is_none() && current, "current report drops the stale 5h");
         assert_eq!(m.seven_day.map(|w| w.used_percentage), Some(30.0));
 
         // seven_day missing too: still falls back to the old weekly value.
-        let (m, _) = merge(Some(&old), l(None, None, "t3"));
+        let (m, _) = merge(Some(&old), l(None, None, "t3"), &[], &mut BTreeMap::new());
         assert!(m.five_hour.is_none());
         assert_eq!(m.seven_day.map(|w| w.used_percentage), Some(29.0));
     }
@@ -222,10 +314,10 @@ mod tests {
         let l = |five: Option<RateLimitWindow>, week: Option<RateLimitWindow>, at: &str| RateLimits { five_hour: five, seven_day: week, observed_at: at.into() };
         // Stale (weekly far behind): the live 5h is kept, the expired one is dropped.
         let live = l(win(97.0, now + 600), win(29.0, now + 9000), "t2");
-        let (m, current) = merge(Some(&live), l(None, win(8.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&live), l(None, win(8.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert!(!current && m.five_hour.is_some());
         let expired = l(win(97.0, now - 60), win(29.0, now + 9000), "t2");
-        let (m, current) = merge(Some(&expired), l(None, win(8.0, now + 9000), "t3"));
+        let (m, current) = merge(Some(&expired), l(None, win(8.0, now + 9000), "t3"), &[], &mut BTreeMap::new());
         assert!(!current && m.five_hour.is_none());
     }
 

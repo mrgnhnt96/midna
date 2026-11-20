@@ -74,3 +74,28 @@ fn a_report_without_five_hour_drops_the_stored_one() {
     assert!(c["five_hour"].is_null(), "{c}");
     assert_eq!(c["seven_day"]["used_percentage"], 9.0);
 }
+
+#[test]
+fn an_early_reset_that_keeps_resets_at_comes_through() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let five = |h: &mut midna_proto::Client| call(h, "usage.get", json!({}))["claude"]["five_hour"]["used_percentage"].as_f64();
+    let (sid, idle) = (open_sh(&mut h), open_sh(&mut h));
+    let (mut a, mut b) = (d.agent(Some(&sid)), d.agent(Some(&idle)));
+    statusline(&mut a, 97.0, 3600);
+    statusline(&mut b, 84.0, 3600);
+    assert_eq!(five(&mut h), Some(97.0));
+
+    // A process that resumes after the reset hasn't shown its own numbers drop yet.
+    call(&mut a, "agent.hook", json!({ "agent": "claude", "event": "SessionStart", "payload": { "session_id": "c1", "source": "resume" } }));
+    statusline(&mut a, 1.0, 3600);
+    assert_eq!(five(&mut h), Some(97.0), "a new process's first report");
+    // Its own numbers move: a fresh API response, lower than what is stored.
+    statusline(&mut a, 2.0, 3600);
+    assert_eq!(five(&mut h), Some(2.0));
+    // The idle terminal's pre-reset numbers don't come back.
+    statusline(&mut b, 84.0, 3600);
+    assert_eq!(five(&mut h), Some(2.0));
+    let c = call(&mut h, "usage.get", json!({}))["claude"].clone();
+    assert_eq!(c["session"].as_str(), Some(sid.as_str()));
+}
