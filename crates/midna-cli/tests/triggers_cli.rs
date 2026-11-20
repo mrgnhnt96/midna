@@ -24,7 +24,7 @@ impl D {
     }
     fn midna(&self, args: &[&str], stdin: Option<&str>) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_midna"));
-        cmd.args(args).env("MIDNA_SOCKET", self.home.join("midnad.sock")).env_remove("MIDNA_SESSION").env_remove("MIDNA_HOME");
+        cmd.args(args).env("MIDNA_SOCKET", self.home.join("midnad.sock")).env_remove("MIDNA_SESSION").env_remove("MIDNA_HOME").env_remove("MIDNA_TRIGGER").env_remove("MIDNA_DELIVERY");
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         if let Some(input) = stdin {
@@ -223,4 +223,71 @@ fn stream_publish_cli() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("object"), "{}", String::from_utf8_lossy(&o.stderr));
     let o = d.midna(&["stream", "publish", "slack"], None);
     assert_ne!(o.status.code(), Some(0));
+}
+
+/// A trigger whose command publishes to the stream it listens on fires once, not in a loop:
+/// what its run_command starts (in a terminal or headless) carries MIDNA_TRIGGER, the CLI
+/// forwards it, and the event it publishes is recorded with `caused_by` but matched by nothing.
+/// The human publishing again still fires it.
+#[test]
+fn trigger_caused_publishes_fire_no_triggers() {
+    let d = D::start("loop");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}{}", out(o), String::from_utf8_lossy(&o.stderr));
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = midna_proto::Client::connect(d.home.join("midnad.sock")).unwrap();
+    h.set_caller(None);
+    let p: Value = h.call("project.add", json!({ "path": dir })).unwrap();
+    let pid = p["id"].as_str().unwrap();
+    let cli = env!("CARGO_BIN_EXE_midna");
+    let mut add = |name: &str, stream: &str, extra: Value| -> String {
+        let mut action = json!({ "kind": "run_command", "project_id": pid, "command": format!("{cli} stream publish {stream} again --data '{{\"n\":1}}'") });
+        action.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let t: Value = h.call("trigger.add", json!({ "name": name, "source": "local", "event": format!("stream.{stream}.*"), "action": action, "enabled": true })).unwrap();
+        t["id"].as_str().unwrap().to_string()
+    };
+    let in_terminal = add("Echo in a terminal", "loop", json!({ "background": true }));
+    let headless = add("Echo headless", "hl", json!({ "headless": true }));
+    let fired = |h: &mut midna_proto::Client, id: &str| -> u64 {
+        let list: Value = h.call("trigger.list", json!({})).unwrap();
+        let list = list.get("triggers").cloned().unwrap_or(list);
+        list.as_array().unwrap().iter().find(|t| t["id"] == id).map(|t| t["fired"].as_u64().unwrap_or(0)).unwrap()
+    };
+    // One JSON event per line.
+    let events = |kind: &str| -> Vec<Value> {
+        out(&d.midna(&["events", "--kind", kind, "--json"], None)).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+    };
+    let wait_for = |kind: &str, n: usize| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while events(kind).len() < n && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        events(kind)
+    };
+
+    for (stream, id) in [("loop", &in_terminal), ("hl", &headless)] {
+        ok(&d.midna(&["stream", "publish", stream, "start"], None));
+        let again = wait_for(&format!("stream.{stream}.again"), 1);
+        assert_eq!(again.len(), 1, "{stream}: the trigger's command published once");
+        assert_eq!(again[0]["stream"]["caused_by"]["trigger"], json!(id), "{stream}: {}", again[0]);
+        // Long enough for a loop to show: each round is a few hundred ms.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!(events(&format!("stream.{stream}.again")).len(), 1, "{stream}: the trigger-caused publish fired nothing");
+        assert_eq!(fired(&mut h, id), 1, "{stream}: fired once");
+    }
+    // The terminal carries the trigger to anything run in it; its delivery too.
+    let again = &events("stream.loop.again")[0]["stream"]["caused_by"];
+    assert!(again["delivery"].as_str().is_some_and(|d| d.starts_with("d_")), "{again}");
+
+    // A publish nothing started still fires, and a forwarded MIDNA_TRIGGER is reported back.
+    let o = d.midna(&["stream", "publish", "loop", "start"], None);
+    ok(&o);
+    assert!(!out(&o).contains("fires no triggers"), "{}", out(&o));
+    assert_eq!(wait_for("stream.loop.again", 2).len(), 2);
+    assert_eq!(fired(&mut h, &in_terminal), 2);
+    let mut cmd = Command::new(cli);
+    cmd.args(["stream", "publish", "quiet", "x"]).env("MIDNA_SOCKET", d.home.join("midnad.sock")).env_remove("MIDNA_SESSION").env("MIDNA_TRIGGER", "t_x");
+    let o = cmd.output().unwrap();
+    ok(&o);
+    assert!(out(&o).contains("trigger t_x started this publisher, so the event fires no triggers"), "{}", out(&o));
 }

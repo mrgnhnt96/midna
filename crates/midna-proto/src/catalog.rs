@@ -492,7 +492,9 @@ fn build() -> Vec<MethodSpec> {
              log as kind `stream.<stream>.<kind>` with data = your payload (a JSON object, at most 64 KB), and local triggers \
              match it like any event: event `stream.slack.message` or a glob (`stream.slack.*`), filter.match on payload paths, \
              templates {{data.<path>}} and {{stream.name|kind|id}}. stream: 1-32 of a-z 0-9 -; kind: 1-64 of a-z 0-9 _ . -; \
-             id (optional): yours for the event, e.g. a Slack message ts. The event belongs to no terminal. CLI: \
+             id (optional): yours for the event, e.g. a Slack message ts. The event belongs to no terminal. A publish a trigger \
+             caused (a process its action started, which has MIDNA_TRIGGER set and the CLI forwards as caller.caused_by) is \
+             recorded with stream.caused_by and result caused_by, and fires no triggers. CLI: \
              `midna stream publish <name> <kind> [--id ID] [--data JSON|@file]` (stdin when --data is left out)."),
         // events
         m::<EventsListParams, Vec<Event>>("events.list").d(

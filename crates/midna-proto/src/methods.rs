@@ -18,6 +18,10 @@ pub struct Caller {
     /// answers. Poll it with needs_you.get.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_wait: bool,
+    /// The call comes from something a trigger's action started (`MIDNA_TRIGGER`): a stream
+    /// event it publishes is recorded but fires no triggers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caused_by: Option<crate::streams::TriggerCause>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

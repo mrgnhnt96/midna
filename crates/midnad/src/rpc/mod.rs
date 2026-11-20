@@ -60,6 +60,9 @@ pub struct Ctx {
     /// The verified Midna app itself, on this Mac (not an agent, the CLI or a drive link): the
     /// only caller that may open a drive link (`drive.open`). Set by [`crate::conn`].
     pub app: bool,
+    /// The call comes from something a trigger's action started (`caller.caused_by`), or is a
+    /// trigger's own action opening a terminal. See [`Ctx::caused_by`].
+    pub caused_by: Option<TriggerCause>,
 }
 
 /// What a detached `caller.no_wait` call reports back to the connection that made it.
@@ -110,6 +113,7 @@ fn call_no_wait(d: &Arc<Daemon>, ctx: &Ctx, method: &str, params: Value) -> R {
         detached: Some(nw.clone()),
         client: ctx.client.clone(),
         supervised: ctx.supervised,
+        caused_by: ctx.caused_by.clone(),
         app: ctx.app,
     };
     let (d2, m) = (d.clone(), method.to_string());
@@ -147,26 +151,37 @@ impl Ctx {
         let caller: Caller = params.get("caller").cloned().and_then(|c| serde_json::from_value(c).ok()).unwrap_or_default();
         let downgrade = caller.session.is_some() || caller.role.as_deref() == Some("agent");
         let role = if downgrade { Role::Agent } else { base };
-        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None, client: None, supervised: false, app: false }
+        Ctx { role, session: caller.session, conn_id, out, pid, as_actor: None, no_wait: caller.no_wait, detached: None, client: None, supervised: false, app: false, caused_by: caller.caused_by }
     }
 
     /// A human context for executing approved deferred actions (no connection).
     pub fn internal_human() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None, client: None, supervised: false, app: false }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: None, no_wait: false, detached: None, client: None, supervised: false, app: false, caused_by: None }
     }
 
     /// midnad acting on its own (actor kind `system`), e.g. closing a `close_on_exit` terminal.
     pub fn internal_system() -> Ctx {
-        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None, supervised: false, app: false }
+        Ctx { role: Role::Human, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(Actor::system()), no_wait: false, detached: None, client: None, supervised: false, app: false, caused_by: None }
     }
 
     /// A trigger acting on its own (agent-level privileges, actor kind `trigger`).
     pub fn internal_trigger(actor: Actor) -> Ctx {
-        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None, supervised: false, app: false }
+        Ctx { role: Role::Agent, session: None, conn_id: 0, out: OutTx::detached(), pid: None, as_actor: Some(actor), no_wait: false, detached: None, client: None, supervised: false, app: false, caused_by: None }
     }
 
     pub fn is_human(&self) -> bool {
         self.role == Role::Human
+    }
+
+    /// The trigger behind this call, if any: the one it acts as (its own action, or a process of
+    /// its headless run), else what the caller said (`caller.caused_by`). A stream event it
+    /// publishes fires no triggers, and a terminal it opens carries `MIDNA_TRIGGER` on.
+    pub fn caused_by(&self) -> Option<TriggerCause> {
+        match (&self.caused_by, &self.as_actor) {
+            (Some(c), _) => Some(c.clone()),
+            (None, Some(Actor { kind: ActorKind::Trigger, trigger: Some(id), .. })) => Some(TriggerCause { trigger: id.clone(), delivery: None }),
+            _ => None,
+        }
     }
 
     pub fn actor(&self) -> Actor {

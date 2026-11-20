@@ -19,7 +19,12 @@ fn publish(a: &Args, out: OutFn) -> Res {
     let kind = a.need(3, "event kind (e.g. message)")?;
     let data = payload(a.get("data"), std::io::stdin().is_terminal())?;
     let v = call("streams.publish", json!({ "stream": name, "kind": kind, "id": a.get("id"), "data": data }))?;
-    out(&v, &|v| println!("published {} (event {})", v["event"].as_str().unwrap_or(""), v["seq"]));
+    out(&v, &|v| {
+        println!("published {} (event {})", v["event"].as_str().unwrap_or(""), v["seq"]);
+        if let Some(t) = v["caused_by"]["trigger"].as_str() {
+            println!("trigger {t} started this publisher, so the event fires no triggers");
+        }
+    });
     Ok(())
 }
 

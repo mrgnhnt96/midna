@@ -59,10 +59,9 @@ impl Client {
     /// Connect to the daemon socket. The caller hint is taken from `MIDNA_SESSION` if set.
     pub fn connect(socket: impl AsRef<Path>) -> std::io::Result<Client> {
         let s = UnixStream::connect(socket)?;
-        let caller = std::env::var("MIDNA_SESSION")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|session| Caller { session: Some(session), ..Default::default() });
+        let session = std::env::var("MIDNA_SESSION").ok().filter(|s| !s.is_empty());
+        let caused_by = crate::streams::TriggerCause::from_env();
+        let caller = (session.is_some() || caused_by.is_some()).then_some(Caller { session, caused_by, ..Default::default() });
         Ok(Client { reader: BufReader::new(s.try_clone()?), writer: s, next_id: 1, caller, queued: VecDeque::new() })
     }
 
@@ -78,7 +77,8 @@ impl Client {
 
     /// Voluntarily act as an agent (optionally for a session), even from a human binary.
     pub fn as_agent(mut self, session: Option<String>) -> Client {
-        self.caller = Some(Caller { session, role: Some("agent".into()), ..Default::default() });
+        let caused_by = self.caller.take().and_then(|c| c.caused_by);
+        self.caller = Some(Caller { session, role: Some("agent".into()), caused_by, ..Default::default() });
         self
     }
 
