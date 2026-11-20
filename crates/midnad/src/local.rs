@@ -544,8 +544,15 @@ pub fn fire_once(d: &Arc<Daemon>, t: &Trigger, event: &str, sid: Option<&str>, d
 
 fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, line: String) -> (Id, String) {
     let id = format!("d_{}", hex_id(6));
+    let guid = format!("local-{}", hex_id(8));
+    // A run_command gets the hook payload or event data in $MIDNA_PAYLOAD, kept and pruned with
+    // the delivery, as a webhook's command gets its body.
+    let json = data.to_string();
+    let file = crate::webhooks::process::body_file(d, &id);
+    let body = (matches!(t.action, TriggerAction::RunCommand { .. }) && crate::webhooks::process::write_private(&file, json.as_bytes()).is_ok())
+        .then(|| crate::headless::Body { json: &json, file: &file, event, action: None, guid: &guid });
     let mut runs = vec![];
-    let (started, outcome) = run(d, t, event, s, data, &id, &mut runs);
+    let (started, outcome) = run(d, t, event, s, data, &id, body.as_ref(), &mut runs);
     let summary = s.map(|s| s.name.clone());
     {
         let mut core = d.core();
@@ -560,7 +567,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         id,
         source: TriggerSource::Local,
         event: event.to_string(),
-        delivery_guid: format!("local-{}", hex_id(8)),
+        delivery_guid: guid,
         received_at: time::now_rfc3339(),
         verdict: Verdict::Verified,
         trigger_id: Some(t.id.clone()),
@@ -591,8 +598,9 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
 }
 
 /// Run one local trigger's action for delivery `del_id`. Returns (terminal started, one-line
-/// outcome); a headless command's run goes in `runs`.
-fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, del_id: &str, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
+/// outcome); a headless command's run goes in `runs`. A `run_command` gets `body`.
+#[allow(clippy::too_many_arguments)]
+fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, del_id: &str, body: Option<&crate::headless::Body>, runs: &mut Vec<CommandRun>) -> (Option<Id>, String) {
     let actor = actor_of(t);
     let prompt = if uses_last_prompt(t) { s.and_then(|s| last_prompt(d, &s.id)) } else { None };
     let r = |tpl: &str, quote: bool| render(tpl, event, s, data, prompt.as_deref(), quote);
@@ -628,7 +636,7 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
         TriggerAction::RunCommand { project_id, command, background, headless, timeout_secs } => {
             let n = name();
             if *headless {
-                let run = crate::headless::start(d, t, del_id, project_id, &r(command, true), *timeout_secs, None);
+                let run = crate::headless::start(d, t, del_id, project_id, &r(command, true), *timeout_secs, body);
                 let out = match &run.error {
                     Some(e) => Err(e.clone()),
                     None => Ok((None, format!("Running with no terminal › {n}"))),
@@ -636,7 +644,12 @@ fn run(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data
                 runs.push(run);
                 out
             } else {
-                open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [r(command, true)], "background": background }))
+                let cmd = r(command, true);
+                let cmd = match body {
+                    Some(b) => b.exported(&t.id, del_id, &cmd),
+                    None => cmd,
+                };
+                open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [cmd], "background": background }))
                     .map(|id| (Some(id), format!("Ran command{} › {n}", if *background { " in Background" } else { "" })))
             }
         }
@@ -889,7 +902,11 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
     let on = s.as_ref().map(|s| format!(" on {}", s.name)).unwrap_or_default();
     let would = match &t.action {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent.as_str(), r(prompt_template, false)),
-        TriggerAction::RunCommand { command, background, headless, .. } => format!("would run{}: {}", run_where(*background, *headless), r(command, true)),
+        TriggerAction::RunCommand { command, background, headless, .. } => {
+            let size = data.to_string().len();
+            let payload = if *headless { format!("the {size}-byte payload on stdin and in $MIDNA_PAYLOAD") } else { format!("the {size}-byte payload in $MIDNA_PAYLOAD") };
+            format!("would run{}: {} · with {payload}", run_where(*background, *headless), r(command, true))
+        }
         TriggerAction::Attention { message } => format!("would raise attention: {}", r(message, false)),
         TriggerAction::SendToSession { steps } => {
             let shown: Vec<String> = steps.iter().map(|x| format!("“{}”", clip(&r(&x.text, false), 80))).collect();

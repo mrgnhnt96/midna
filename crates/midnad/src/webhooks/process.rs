@@ -67,11 +67,11 @@ fn payload_dir(d: &Daemon) -> PathBuf {
 }
 
 /// Where a delivery's body is kept for its `run_command`s (`$MIDNA_PAYLOAD`), pruned with it.
-fn body_file(d: &Daemon, delivery_id: &str) -> PathBuf {
+pub(crate) fn body_file(d: &Daemon, delivery_id: &str) -> PathBuf {
     payload_dir(d).join(format!("{delivery_id}.body.json"))
 }
 
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -467,16 +467,8 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
                 runs.push(run);
                 return out;
             }
-            // A terminal's stdin is the terminal, so the body is only in $MIDNA_PAYLOAD there.
             let cmd = match body {
-                Some(b) => {
-                    let env: Vec<String> = [("MIDNA_TRIGGER", t.id.clone()), ("MIDNA_DELIVERY", del_id.to_string())]
-                        .into_iter()
-                        .chain(b.env())
-                        .map(|(k, v)| format!("{k}={}", payload::shell_quote(&v)))
-                        .collect();
-                    format!("export {}; {cmd}", env.join(" "))
-                }
+                Some(b) => b.exported(&t.id, del_id, &cmd),
                 None => cmd,
             };
             match open(json!({ "project_id": project_id, "kind": "monitor", "name": n, "command": [cmd], "background": background })) {
