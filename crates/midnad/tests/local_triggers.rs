@@ -714,3 +714,58 @@ fn claude_crons_become_schedules_that_follow_the_terminal() {
     assert_eq!(r["source"], "default", "{r}");
     assert!(cron_trigger(&mut h).is_none());
 }
+
+#[test]
+fn stream_and_schedule_triggers_act_on_a_named_terminal() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    call(&mut h, "session.rename", json!({ "id": sid, "name": "build" }));
+    let mut a = d.agent(Some(&sid));
+    let deliveries = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"] })).as_array().cloned().unwrap_or_default();
+    let send = |to: &str| json!({ "kind": "send_to_session", "steps": [{ "text": "echo rebuilt-{{data.n}}" }], "to": to });
+
+    let e = call_err(&mut a, "trigger.add", json!({ "name": "x", "source": "local", "event": "stream.ci.*", "action": send(" ") })).message;
+    assert!(e.contains("to must name a terminal"), "{e}");
+    let e = call_err(&mut a, "trigger.add", json!({ "name": "x", "source": "local", "event": "schedule", "filter": { "cron": "@daily", "session": sid }, "action": send("build") }))
+        .message;
+    assert!(e.contains("leave out filter.session"), "{e}");
+
+    // A stream event has no terminal: `to` names the one to type into, looked up when it fires.
+    let t = call(&mut a, "trigger.add", json!({ "name": "Rebuild", "source": "local", "event": "stream.ci.*", "action": send("build"), "enabled": true }));
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "event": "stream.ci.done", "payload": { "n": 1 } }));
+    assert_eq!(r["summary"].as_str(), Some(format!("Matches · would send on build ({sid}): “echo rebuilt-1”").as_str()), "{r}");
+    call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "data": { "n": 7 } }));
+    wait_for(10, "sent to the named terminal", || Some(read(&mut h, &sid)).filter(|t| t.contains("rebuilt-7")));
+    let del = wait_for(5, "delivery", || Some(deliveries(&mut h, &t)).filter(|d| !d.is_empty()));
+    assert_eq!(del[0]["subject"], "build", "{del:?}");
+
+    // No terminal by that name: nothing is sent, and the delivery says why.
+    let none = call(&mut a, "trigger.add", json!({ "name": "Nope", "source": "local", "event": "stream.nope.*", "action": send("nope"), "enabled": true }));
+    let r = call(&mut h, "trigger.test", json!({ "trigger_id": none["id"], "event": "stream.nope.done", "payload": {} }));
+    assert!(r["summary"].as_str().unwrap().contains("on nope (but there's no terminal named nope right now"), "{r}");
+    call(&mut h, "streams.publish", json!({ "stream": "nope", "kind": "done", "data": { "n": 8 } }));
+    let del = wait_for(5, "delivery", || Some(deliveries(&mut h, &none)).filter(|d| !d.is_empty()));
+    assert_eq!(del[0]["summary"], "Could not send to session: no terminal named nope", "{del:?}");
+    assert!(!read(&mut h, &sid).contains("rebuilt-8"));
+
+    // Two terminals with that name: the most recently active, and the delivery says so.
+    let other = open_sh(&mut h);
+    call(&mut h, "session.rename", json!({ "id": other, "name": "build" }));
+    call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "data": { "n": 9 } }));
+    let del = wait_for(5, "second delivery", || Some(deliveries(&mut h, &t)).filter(|d| d.len() == 2));
+    let said = del.iter().filter_map(|d| d["summary"].as_str()).collect::<Vec<_>>().join(" | ");
+    assert!(said.contains("2 terminals named build; picked the most recently active"), "{said}");
+
+    // A schedule with `to` fires once, about that terminal: the attention points at it.
+    let n = call(
+        &mut a,
+        "trigger.add",
+        json!({ "name": "Check", "source": "local", "event": "schedule", "filter": { "cron": "@daily" }, "action": { "kind": "attention", "message": "Look at {{session.name}}", "to": sid }, "enabled": true }),
+    );
+    let at = midna_proto::cron::Cron::parse("@daily").unwrap().next_after(midna_proto::time::now_unix()).unwrap();
+    midnad::local::fire_schedule_now(&d.daemon(), n["id"].as_str().unwrap(), at);
+    let items = call(&mut h, "needs_you.list", json!({}));
+    let item = items.as_array().unwrap().iter().find(|i| i["title"] == "Look at build").unwrap_or_else(|| panic!("{items}"));
+    assert_eq!(item["session_id"], sid, "{item}");
+}

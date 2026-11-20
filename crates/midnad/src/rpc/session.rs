@@ -14,7 +14,7 @@ fn not_found(id: &str) -> RpcError {
 }
 
 /// Session with live fields (pid, last activity) filled from the runtime.
-fn live(d: &Daemon, s: &Session) -> Session {
+pub(crate) fn live(d: &Daemon, s: &Session) -> Session {
     let mut s = s.clone();
     if let Some(rt) = d.core().rt.get(&s.id) {
         let t = rt.activity.load(Ordering::Relaxed);

@@ -140,6 +140,10 @@ pub fn callbacks(d: &Daemon, sid: Option<&str>, title: &str, actions: &[String],
         if reserved && actions.contains(&key) {
             return Err(RpcError::bad_params(format!("on {key:?}: a button is named {key:?} too, so it can't tell them apart; rename the button")));
         }
+        // A button acts on its own notification's terminal; its sender doesn't pick another.
+        if action.to().is_some() {
+            return Err(RpcError::bad_params(format!("on {key:?}: to isn't for notification buttons; they act on the notification's terminal (session)")));
+        }
         if action.needs_session() && sid.is_none() {
             return Err(RpcError::bad_params(format!("on {key:?}: {} acts on the notification's terminal; give it one (session)", crate::local::action_name(&action))));
         }

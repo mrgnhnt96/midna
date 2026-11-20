@@ -40,18 +40,29 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             "event must not be empty, e.g. pull_request.opened or pullrequest:created"
         }));
     }
-    if action.needs_session() && !local {
-        return Err(RpcError::bad_params(format!("{} acts on the terminal that fired, so it needs source local", crate::local::action_name(action))));
+    if action.acts_on_terminal() && !local {
+        return Err(RpcError::bad_params(format!("{} acts on a terminal on this Mac, so it needs source local", crate::local::action_name(action))));
+    }
+    if let Some(to) = action.to() {
+        if !local {
+            return Err(RpcError::bad_params("to names a terminal on this Mac, so it needs source local"));
+        }
+        if to.trim().is_empty() {
+            return Err(RpcError::bad_params("to must name a terminal (its name or session id), or be left out"));
+        }
     }
     // `stream.<name>.<kind>` (streams.publish): such an event belongs to no terminal.
     if local && midna_proto::streams::check_event_glob(event).map_err(RpcError::bad_params)? {
         let f = &t.filter;
-        if f.session.is_some() || f.project.is_some() || f.agent.is_some() {
-            return Err(RpcError::bad_params("stream events belong to no terminal, so filter.session, project and agent never match; filter on the payload with filter.match"));
+        if f.session.is_some() || f.agent.is_some() || (f.project.is_some() && action.to().is_none()) {
+            return Err(RpcError::bad_params(
+                "stream events belong to no terminal, so filter.session, project and agent never match; filter on the payload with filter.match \
+                 (filter.project only goes with to, where it says which project's terminal to look for)",
+            ));
         }
         if action.needs_session() {
             return Err(RpcError::bad_params(format!(
-                "{} acts on the terminal that fired, and stream events have none: use notify, attention, run_command or start_agent",
+                "{} acts on the terminal that fired, and stream events have none: name one with to (e.g. \"to\": \"build-angel\"), or use notify, attention, run_command or start_agent",
                 crate::local::action_name(action)
             )));
         }
@@ -72,9 +83,14 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             let f = &t.filter;
             if action.needs_session() && f.session.is_none() && f.project.is_none() {
                 return Err(RpcError::bad_params(format!(
-                    "a schedule isn't about a terminal: {} needs filter.session (or filter.project, for every terminal in it)",
+                    "a schedule isn't about a terminal: {} needs filter.session (or filter.project, for every terminal in it), or to (one terminal's name or id)",
                     crate::local::action_name(action)
                 )));
+            }
+            if action.to().is_some() && (f.session.is_some() || f.agent.is_some()) {
+                return Err(RpcError::bad_params(
+                    "a schedule with to fires once, on that terminal: leave out filter.session and agent (filter.project says which project's terminal to look for)",
+                ));
             }
         }
         (None, false) => {}
@@ -113,12 +129,12 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             }
             d.core().state.project(project_id).ok_or_else(|| RpcError::not_found(format!("no project {project_id}")))?;
         }
-        TriggerAction::Attention { message } => {
+        TriggerAction::Attention { message, .. } => {
             if message.trim().is_empty() {
                 return Err(RpcError::bad_params("attention needs a message"));
             }
         }
-        TriggerAction::SendToSession { steps } => {
+        TriggerAction::SendToSession { steps, .. } => {
             if steps.is_empty() || steps.iter().any(|s| s.text.is_empty() && !s.enter) {
                 return Err(RpcError::bad_params("send_to_session needs steps, e.g. [{\"text\":\"/compact\"},{\"text\":\"{{last_prompt}}\"}]"));
             }
@@ -134,7 +150,7 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
                 return Err(RpcError::bad_params("base must be idle, working, needs_you, done or failed"));
             }
         }
-        TriggerAction::ClearStatus {} => {}
+        TriggerAction::ClearStatus { .. } => {}
         TriggerAction::Notify { title, category, open, id, .. } => {
             if title.trim().is_empty() {
                 return Err(RpcError::bad_params("notify needs a title"));

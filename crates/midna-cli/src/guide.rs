@@ -638,7 +638,10 @@ fn action_text(a: &Value) -> String {
         }
         Some("run_command") => format!("runs `{}` in a monitor terminal in project {}", s(a, "command"), s(a, "project_id")),
         Some("attention") => format!("raises a note for the human: “{}”", s(a, "message")),
-        Some("send_to_session" | "set_status" | "clear_status") => format!("acts on the terminal that fired: {}", crate::triggers::action_text(a)),
+        Some("send_to_session" | "set_status" | "clear_status") => match a["to"].as_str() {
+            Some(_) => format!("acts on a named terminal: {}", crate::triggers::action_text(a)),
+            None => format!("acts on the terminal that fired: {}", crate::triggers::action_text(a)),
+        },
         _ => a.to_string(),
     }
 }
@@ -664,6 +667,9 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
         out.push_str(&format!(" ({filters})"));
     }
     out.push_str(&format!(", it {}.\n", action_text(&t["action"])));
+    if let Some(to) = t["action"]["to"].as_str() {
+        out.push_str(&format!("{}\n", to_text(call, to, t["filter"]["project"].as_str())));
+    }
     if stream.is_some() {
         out.push_str("stream events belong to no terminal; templates: {{stream.name|kind|id}} and {{data.<path>}} (the payload)\n");
     } else if local {
@@ -702,6 +708,26 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
     } else if local { format!("triggers test {id} --session <terminal-id> --payload '{{\"message\":\"…\"}}'") } else { format!("triggers test {id} --payload sample.json") };
     out.push_str(&format!("try it: {}", cmd(surface, &sample, "trigger_test")));
     Ok(out)
+}
+
+/// Which running terminal a trigger's `to` names right now, resolved as midnad does when it fires.
+fn to_text(call: Caller, to: &str, project: Option<&str>) -> String {
+    let Ok(list) = call("session.list", json!({})) else { return format!("to: {to} (looked up when it fires)") };
+    let running: Vec<&Value> = list.as_array().into_iter().flatten().filter(|x| x["status"]["state"] != "exited").collect();
+    let found: Vec<midna_proto::ToCandidate> = running
+        .iter()
+        .map(|x| midna_proto::ToCandidate {
+            id: x["id"].as_str().unwrap_or(""),
+            name: x["name"].as_str().unwrap_or(""),
+            project_id: x["project_id"].as_str().unwrap_or(""),
+            active_at: x["last_activity_at"].as_str().and_then(time::parse_rfc3339).unwrap_or(0),
+        })
+        .collect();
+    match midna_proto::pick_to(to, project, &found) {
+        Ok(p) if p.matches > 1 => format!("to: {to} → {} now ({} terminals have that name; it picks the most recently active when it fires)", found[p.index].id, p.matches),
+        Ok(p) => format!("to: {to} → {} now (looked up again each time it fires)", found[p.index].id),
+        Err(e) => format!("to: {to} → {e} right now, so firing would do nothing until one is running"),
+    }
 }
 
 fn kind_meaning(kind: &str) -> &'static str {

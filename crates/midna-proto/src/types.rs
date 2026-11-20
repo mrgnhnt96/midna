@@ -1082,12 +1082,28 @@ pub enum TriggerAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
     },
-    Attention { message: String },
-    /// Local only: type `steps` into the terminal that fired, in order. Each step after the
-    /// first waits until the agent is ready for input again.
-    SendToSession { steps: Vec<SendStep> },
+    Attention {
+        message: String,
+        /// Local only: the terminal to act on instead of the one that fired, by name (exact) or
+        /// session id, looked up when it fires among running terminals (within `filter.project`
+        /// when set). For events about no terminal (`stream.*`, `schedule`). Several with that
+        /// name: the most recently active one. None: nothing happens and the delivery says so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+    },
+    /// Local only: type `steps` into the terminal that fired (or `to`), in order. Each step after
+    /// the first waits until the agent is ready for input again.
+    SendToSession {
+        steps: Vec<SendStep>,
+        /// Local only: the terminal to act on instead of the one that fired, by name (exact) or
+        /// session id, looked up when it fires among running terminals (within `filter.project`
+        /// when set). For events about no terminal (`stream.*`, `schedule`). Several with that
+        /// name: the most recently active one. None: nothing happens and the delivery says so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+    },
     /// Local only: show `label` in `color` (named: red, orange, amber, yellow, green, teal, blue,
-    /// purple, pink, gray; or `#rrggbb`) on the terminal that fired, on top of the built-in
+    /// purple, pink, gray; or `#rrggbb`) on the terminal that fired (or `to`), on top of the built-in
     /// `base` state (which keeps driving sorting, notifications and Needs You).
     SetStatus {
         label: String,
@@ -1097,9 +1113,22 @@ pub enum TriggerAction {
         base: StatusState,
         #[serde(default)]
         clear_on: StatusClear,
+        /// Local only: the terminal to act on instead of the one that fired, by name (exact) or
+        /// session id, looked up when it fires among running terminals (within `filter.project`
+        /// when set). For events about no terminal (`stream.*`, `schedule`). Several with that
+        /// name: the most recently active one. None: nothing happens and the delivery says so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
     },
-    /// Local only: remove the custom status from the terminal that fired.
-    ClearStatus {},
+    /// Local only: remove the custom status from the terminal that fired (or `to`).
+    ClearStatus {
+        /// Local only: the terminal to act on instead of the one that fired, by name (exact) or
+        /// session id, looked up when it fires among running terminals (within `filter.project`
+        /// when set). For events about no terminal (`stream.*`, `schedule`). Several with that
+        /// name: the most recently active one. None: nothing happens and the delivery says so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+    },
     /// Post a notification (category `from_trigger`: its sound, volume, image and mute switches
     /// apply). Clicking it selects the terminal that fired, if any. Templates work in both texts.
     Notify {
@@ -1120,6 +1149,12 @@ pub enum TriggerAction {
         /// one still showing (see `notify.send`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        /// Local only: the terminal to act on instead of the one that fired, by name (exact) or
+        /// session id, looked up when it fires among running terminals (within `filter.project`
+        /// when set). For events about no terminal (`stream.*`, `schedule`). Several with that
+        /// name: the most recently active one. None: nothing happens and the delivery says so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
     },
 }
 
@@ -1132,9 +1167,31 @@ impl TriggerAction {
         }
     }
 
-    /// Acts on the terminal that fired (local triggers only).
+    /// Acts on a terminal: the one that fired, or `to` (local triggers only).
+    pub fn acts_on_terminal(&self) -> bool {
+        matches!(self, TriggerAction::SendToSession { .. } | TriggerAction::SetStatus { .. } | TriggerAction::ClearStatus { .. })
+    }
+
+    /// Acts on the terminal that fired, since it names no other (`to`).
     pub fn needs_session(&self) -> bool {
-        matches!(self, TriggerAction::SendToSession { .. } | TriggerAction::SetStatus { .. } | TriggerAction::ClearStatus {})
+        self.acts_on_terminal() && self.to().is_none()
+    }
+
+    /// The terminal it names to act on (`to`), if any.
+    pub fn to(&self) -> Option<&str> {
+        match self {
+            TriggerAction::Attention { to, .. }
+            | TriggerAction::SendToSession { to, .. }
+            | TriggerAction::SetStatus { to, .. }
+            | TriggerAction::ClearStatus { to }
+            | TriggerAction::Notify { to, .. } => to.as_deref(),
+            TriggerAction::StartAgent { .. } | TriggerAction::RunCommand { .. } => None,
+        }
+    }
+
+    /// Whether this kind of action takes a `to`.
+    pub fn takes_to(&self) -> bool {
+        !matches!(self, TriggerAction::StartAgent { .. } | TriggerAction::RunCommand { .. })
     }
 
     /// A `start_agent`'s `permission_mode` and `allowed_tools` (human only), if it sets either.
@@ -1171,6 +1228,42 @@ pub const STATUS_COLORS: &[&str] = &["red", "orange", "amber", "yellow", "green"
 
 pub fn valid_status_color(c: &str) -> bool {
     STATUS_COLORS.contains(&c) || (c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit()))
+}
+
+/// A running terminal a trigger's `to` could name.
+#[derive(Clone, Copy, Debug)]
+pub struct ToCandidate<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub project_id: &'a str,
+    /// Unix seconds of its last activity (ties between same-named terminals).
+    pub active_at: i64,
+}
+
+/// Which terminal a trigger's `to` names: `index` into the candidates, out of `matches` that did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToPick {
+    pub index: usize,
+    pub matches: usize,
+}
+
+/// Resolve a trigger's `to` among running terminals: an exact name first, then a session id,
+/// only in `project` when given. Several with the name: the most recently active.
+pub fn pick_to(to: &str, project: Option<&str>, terms: &[ToCandidate]) -> Result<ToPick, String> {
+    let to = to.trim();
+    let here = |c: &ToCandidate| project.is_none_or(|p| c.project_id == p);
+    let named: Vec<usize> = (0..terms.len()).filter(|&i| here(&terms[i]) && terms[i].name == to).collect();
+    // The most recently active; the first listed of equals.
+    if let Some(&index) = named.iter().max_by_key(|&&i| (terms[i].active_at, std::cmp::Reverse(i))) {
+        return Ok(ToPick { index, matches: named.len() });
+    }
+    if let Some(index) = terms.iter().position(|c| here(c) && c.id == to) {
+        return Ok(ToPick { index, matches: 1 });
+    }
+    Err(match project {
+        Some(p) => format!("no terminal named {to} in project {p}"),
+        None => format!("no terminal named {to}"),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1736,5 +1829,36 @@ impl Segment {
     pub fn icon(mut self, icon: &str) -> Segment {
         self.icon = Some(icon.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_to_takes_a_name_then_an_id_within_the_project() {
+        let c = |id, name, project_id, active_at| ToCandidate { id, name, project_id, active_at };
+        let terms = [c("aaaa1111", "build", "p1", 10), c("bbbb2222", "build", "p2", 30), c("cccc3333", "api", "p1", 20), c("build", "x", "p1", 0)];
+        // A name before an id; of several, the most recently active.
+        assert_eq!(pick_to(" build ", None, &terms), Ok(ToPick { index: 1, matches: 2 }));
+        assert_eq!(pick_to("build", Some("p1"), &terms), Ok(ToPick { index: 0, matches: 1 }));
+        assert_eq!(pick_to("cccc3333", None, &terms), Ok(ToPick { index: 2, matches: 1 }));
+        assert_eq!(pick_to("api", Some("p2"), &terms), Err("no terminal named api in project p2".into()));
+        assert_eq!(pick_to("nope", None, &terms), Err("no terminal named nope".into()));
+        // Equally active: the first listed.
+        let tied = [c("a", "w", "p", 5), c("b", "w", "p", 5)];
+        assert_eq!(pick_to("w", None, &tied).unwrap().index, 0);
+    }
+
+    #[test]
+    fn to_is_optional_and_left_out_when_unset() {
+        let old: TriggerAction = serde_json::from_str(r#"{"kind":"clear_status"}"#).unwrap();
+        assert_eq!(old.to(), None);
+        assert!(old.needs_session());
+        assert_eq!(serde_json::to_value(&old).unwrap(), serde_json::json!({ "kind": "clear_status" }));
+        let named: TriggerAction = serde_json::from_str(r#"{"kind":"attention","message":"m","to":"build"}"#).unwrap();
+        assert_eq!(named.to(), Some("build"));
+        assert!(!named.needs_session() && named.takes_to());
     }
 }

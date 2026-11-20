@@ -521,7 +521,7 @@ pub static VERBS: &[Verb] = &[
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
                 [--clear-on prompt|turn|status|never] [--icon I] | --clear-status | --notify TITLE [--notify-body B] [--notify-kind K] [--notify-open URL] [--notify-id ID] [--silent]\n             \
                 | --attention MSG | --run CMD --project P [--background | --headless [--timeout 30m]])\n            \
-                [--cooldown 60s] [--enable]\n       \
+                [--to NAME|ID] [--cooldown 60s] [--enable]\n       \
                 triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \
                 triggers update <id> [same flags] | enable <id> | disable <id> | remove <id>\n       \
                 triggers set-secret <id>   (human only; reads stdin)\n       \
@@ -558,6 +558,10 @@ pub static VERBS: &[Verb] = &[
                   and keeps it awake while the work goes on; needs `midna keep-awake wake on` (--no-wake on update).\n\
                   stream.<name>.<kind> (globs: stream.slack.*) fires on what a program hands midna with `midna stream\n\
                   publish`; such an event has no terminal, and its envelope is {{stream.name|kind|id}}.\n\
+                  --to NAME|ID makes --send, --set-status, --clear-status, --notify and --attention act on that\n\
+                  terminal instead of the one that fired (for stream and schedule events, which have none): an\n\
+                  exact name, else a session id, looked up when it fires (in --in-project's project when set; of\n\
+                  several, the most recently active). No such terminal: nothing happens; the delivery says why.\n\
                   Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or {{<path>}}.\n\
                   Example: triggers add --name \"Auto-compact\" --event agent.prompt_blocked \\\n\
                   \x20 --match 'message=*Compact first*' --send /compact --send '{{last_prompt}}' --enable\n\
