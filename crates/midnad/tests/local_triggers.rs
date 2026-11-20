@@ -732,7 +732,8 @@ fn stream_and_schedule_triggers_act_on_a_named_terminal() {
     assert!(e.contains("leave out filter.session"), "{e}");
 
     // A stream event has no terminal: `to` names the one to type into, looked up when it fires.
-    let t = call(&mut a, "trigger.add", json!({ "name": "Rebuild", "source": "local", "event": "stream.ci.*", "action": send("build"), "enabled": true }));
+    // No cooldown: the stream is published to again below, within the minute.
+    let t = call(&mut a, "trigger.add", json!({ "name": "Rebuild", "source": "local", "event": "stream.ci.*", "action": send("build"), "enabled": true, "cooldown_secs": 0 }));
     let r = call(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "event": "stream.ci.done", "payload": { "n": 1 } }));
     assert_eq!(r["summary"].as_str(), Some(format!("Matches · would send on build ({sid}): “echo rebuilt-1”").as_str()), "{r}");
     call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "data": { "n": 7 } }));
