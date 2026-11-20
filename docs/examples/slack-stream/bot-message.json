@@ -1,0 +1,34 @@
+{
+  "type": "message",
+  "subtype": "bot_message",
+  "channel": "C0CI",
+  "bot_id": "B07CIBOT",
+  "username": "Azure Pipelines",
+  "text": "",
+  "ts": "1795120000.000100",
+  "attachments": [
+    {
+      "id": 1,
+      "color": "#d93f3c",
+      "fallback": "roon_mobile #20261120.3 failed",
+      "pretext": "*roon_mobile* failed to build on pipeline *roon_mobile* on branch `master`",
+      "title": "Build 20261120.3",
+      "title_link": "https://dev.azure.com/acme/roon/_build/results?buildId=4512",
+      "fields": [
+        { "title": "Requested for", "value": "Sam Rivera", "short": true },
+        { "title": "Duration", "value": "14m 02s", "short": true }
+      ],
+      "footer": "<https://dev.azure.com/acme/roon/_build/results?buildId=4512&amp;view=logs|View logs>"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "section",
+      "text": { "type": "mrkdwn", "text": "*roon_mobile* failed to build on pipeline *roon_mobile* on branch `master`" }
+    },
+    {
+      "type": "context",
+      "elements": [ { "type": "mrkdwn", "text": "Stage: Build iOS · Job: fastlane beta" } ]
+    }
+  ]
+}

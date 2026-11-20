@@ -61,7 +61,7 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
 `topic`, or `midna://skill/<topic>`; the files sit beside `$MIDNA_SKILL`.
 
 - `triggers`: the human says "whenever X, do Y", wants something on a schedule, or wants a webhook
-  to start work.
+  or a program on this Mac (a Slack channel, a CI watcher) to start work.
 - `keep-awake`: work has to run while the human is away or the Mac would sleep.
 - `load`: before heavy work, when a command is held because the Mac is busy, before you wait on a
   process, and for worktrees and what midna cleans up when a terminal closes.

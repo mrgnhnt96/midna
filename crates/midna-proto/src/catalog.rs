@@ -601,7 +601,9 @@ fn build() -> Vec<MethodSpec> {
              that matches). filter (globs): repo, branch, action, label; local session, project, agent, match {dotted.path: glob} \
              (case-insensitive, every entry must match). action kind: start_agent | run_command | attention | notify, and for \
              local triggers, acting on the terminal that fired, send_to_session (on agent.prompt_blocked the refused prompt Claude \
-             put back in its input box is cleared first) | set_status | clear_status. Templates: {{pr.number}} {{pr.title}} \
+             put back in its input box is cleared first) | set_status | clear_status. action.to (a terminal name or session id) \
+             aims those, notify and attention at that terminal; a stream trigger needs it and refuses session and agent \
+             filters. Templates: {{pr.number}} {{pr.title}} \
              {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path ({{payload}} and object/array paths render as \
              JSON); local {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, {{session.id|name|project_id|agent|status}}, \
              {{stream.name|kind|id}} (a stream event's envelope), {{data.<path>}} or {{<path>}}. run_command shell-quotes each value and gets the delivery's JSON body in the file \
@@ -609,7 +611,7 @@ fn build() -> Vec<MethodSpec> {
              (the delivery id). A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use \
              the human's normal config. start_agent's permission_mode and allowed_tools are human only: an agent setting or \
              changing them asks the human, and the trigger is added or changed only if they approve. Set github_hook_id to enable \
-             missed-delivery recovery. cooldown_secs (default 60) spaces firings per terminal; what a trigger causes never fires \
+             missed-delivery recovery. cooldown_secs (default 60) spaces firings per terminal (per stream); what a trigger causes never fires \
              triggers. Example (compact, then resend): {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact \
              first*\"}}, action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
         m::<TriggerUpdateParams, Trigger>("trigger.update").mutating().d(

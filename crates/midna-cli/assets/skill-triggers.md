@@ -1,15 +1,15 @@
 ## Local triggers ("when X happens, do Y")
 
 When the human says "whenever my agent …, do …", write a local trigger. It fires on this Mac
-and acts on the terminal that fired. You may add, enable and pause local triggers yourself (no
+and acts on the terminal that fired (or on `--to`'s, for stream and schedule events). You may add, enable and pause local triggers yourself (no
 approval) when the human asked for one: add `--enable` so it is on at once, or
 `midna triggers enable|disable <id>` later. `--source local` is inferred for the
 events below and for any local-only flag; passing it is always fine.
 
 - **Event** (`--event`, globs ok): `hook.<HookEvent>` (the agent's hook, e.g. `hook.Stop`,
   `hook.UserPromptSubmit`, `hook.Notification`), a midna event kind (`agent.prompt_blocked`,
-  `agent.turn_ended`, `agent.turn_started`, `session.status`, …; see `midna events`), `idle`, or
-  `schedule`.
+  `agent.turn_ended`, `agent.turn_started`, `session.status`, …; see `midna events`), `idle`,
+  `schedule`, or `stream.<name>.<kind>` (see "Stream triggers" below).
   `agent.prompt_blocked` fires when a hook refuses a prompt; its data is `{hook, message, prompt}`.
 - **Filters**: `--session ID` (one terminal), `--in-project P`, `--for-agent claude|codex`,
   `--idle-for 55m` (implies `--event idle`: no turn started or ended for that long),
@@ -87,6 +87,108 @@ Every weekday at 9, start a Claude terminal that summarizes overnight PRs:
 midna triggers add --name "Morning PRs" --cron '0 9 * * mon-fri' --project <project-id> \
   --agent claude --prompt "Summarize PRs opened since yesterday 9am" --enable
 ```
+
+## Stream triggers (events from a program on this Mac)
+
+A stream hands midna events from a program on this Mac (a Slack client, a CI watcher, a script),
+with no public URL: they go over midna's socket, and nothing listens on the network. Each one is
+the midna event `stream.<name>.<kind>`, its data the JSON object the program sent. Local triggers
+react to it like any other event. Use one when the human wants something outside midna to start
+or nudge work.
+
+- **Publish one**: `midna stream publish ci build_failed --id 4512 --data '{"branch":"master"}'`
+  (`--data @file`, or `-`/left out for stdin). Names are 1–32 of `a-z 0-9 -`, kinds 1–64 of
+  `a-z 0-9 _ . -`, the data a JSON object of at most 64 KB.
+- **Keep a producer running**: `midna stream add <name> [--secret NAME]... [--cwd DIR] [--project P]
+  -- <command…>`. midnad runs the command in a login shell's environment (so `node` is on the
+  PATH), with stdin from `/dev/null` and `$MIDNA_STREAM` set to the name. It starts it again
+  1s after it exits, doubling up to 5 minutes (1s again after a 10-minute run), and when midnad
+  starts or the Mac wakes. A stream an agent adds or changes waits, paused, until the human
+  approves the needs-you item it raises. Tell them it's waiting.
+- **Producer protocol**: each stdout line that is a JSON object
+  `{"kind":"message","id":"Ev123","data":{…}}` is published. `kind` is required, `id` (string or
+  number) is optional and is what dedupes, and `data` left out is `{}`. Flush each line (Python:
+  `print(…, flush=True)`). Other lines, and all of stderr, go to `$MIDNA_HOME/streams/<name>.log`
+  (1 MB, one older file kept).
+- **Secrets**: `--secret NAME` puts the stored secret in the command's environment as `$NAME`,
+  read each time it starts: the project's secret (the `--project`, or the terminal or folder you
+  ran `stream add` from), else a global one. Only the names are saved. The values are masked
+  (`‹NAME›`) in its output and log.
+- **Limits**, per stream: an `id` among its last 1000 in 24 hours is a duplicate and isn't
+  published again. Over 60 events a minute (bursts of 20), or with 1000 waiting, a publish is
+  dropped (`midna stream publish` exits 1). A stream added with `stream add` only takes its own
+  producer's publishes and the human's; anyone may publish to a name that isn't added.
+  `midna stream events <name>` lists the last 200 publishes with what midna did with each:
+  `accepted`, `duplicate`, `rate_limited`, `too_large`, `busy` or `refused`.
+- **Health**: `midna stream list` shows each stream's state (`starting`, `running`, `backoff`,
+  `failing`, `paused`, `awaiting_approval`), restarts and last event. `failing` means its
+  producer exited 5 times in 10 minutes. midna raises one `stream_failing` needs-you item and
+  keeps trying, and the state clears after a 10-minute run, a pause or a remove.
+  `midna explain stream <name>` says why, with the log's last lines.
+- **Triggers on a stream**: `--event stream.slack.message` (globs: `stream.slack.*`). A stream
+  event has no terminal, so `--send`, `--set-status` and `--clear-status` need `--to NAME|ID`, the
+  terminal to act on. It is an exact terminal name, else a session id, looked up when the trigger
+  fires (within `--in-project` when set; of several, the most recently active). When none is
+  running, nothing happens and the delivery says why. `--notify` and `--attention` take `--to`
+  too. `--session` and `--for-agent` are refused. Templates add `{{data.<path>}}` and
+  `{{stream.name}}`, `{{stream.kind}}`, `{{stream.id}}`. The cooldown (default 60s) counts per
+  stream.
+- `--match` holds one glob per path. To need two words in one field, put both in one glob in
+  the order they appear: `--match 'text=*failed*master*'`. Its paths start inside the data
+  (`text`, not `data.text`).
+- **Test it**: `midna triggers test <id> --stream slack --kind message --data '{"text":"…"}'`
+  says whether the trigger would fire and what it would do. Nothing is published or run. To run
+  a real event through the triggers again, `midna stream events slack` shows its seq, then
+  `midna stream events slack --replay <seq|id>` (past dedupe and cooldown).
+
+### Example: a Slack channel's messages into a terminal
+
+`docs/examples/slack-stream/` in midna's repository holds a Slack Socket Mode client. It is one
+file, needs Node 22 or later and no packages, and forwards each message in one channel as
+`stream.slack.message`. CI bots that post an empty text with the words in attachments or blocks
+are covered: `data.text` holds all of them as plain text. Its README has the details.
+
+1. **The Slack app** (the human does this at api.slack.com/apps: Create New App, From scratch):
+   turn Socket Mode on and make an app-level token with `connections:write` (`xapp-…`). Under
+   Event Subscriptions, subscribe to the bot event `message.channels` (`message.groups` for a
+   private channel). Under OAuth & Permissions add `channels:history` (`groups:history`), then
+   install the app to get the bot token (`xoxb-…`). Invite the app into the channel
+   (`/invite @app`). The channel ID (`C0…`) is at the bottom of the channel's details.
+2. **The tokens**: ask the human to paste each one into this terminal (never into the chat) and
+   store them as `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`. `midna secret list` shows them.
+3. **The script**:
+   ```
+   mkdir -p ~/.midna-streams && cd ~/.midna-streams && \
+     for f in slack-stream.mjs bot-message.json; do curl -fsSLO \
+       https://raw.githubusercontent.com/mrgnhnt96/midna/main/docs/examples/slack-stream/$f; done
+   node --version   # v22 or later
+   ```
+4. **The stream**, from the same terminal, with the channel's ID:
+   ```
+   midna stream add slack --secret SLACK_APP_TOKEN --secret SLACK_BOT_TOKEN \
+     -- env CHANNEL=C0123ABCD node ~/.midna-streams/slack-stream.mjs
+   ```
+   Once the human approves it, `midna stream list` shows it `running`, and its log says
+   `connected`. The script exits, so the stream ends up `failing`, when a token is wrong or the
+   app isn't in the channel.
+5. **The trigger**: when a CI failure for `roon_mobile` on `master` is posted, type a line into
+   the terminal named "build angel":
+   ```
+   midna triggers add --name "roon_mobile master failed" --event stream.slack.message \
+     --match 'text=*failed to build on pipeline roon_mobile*master*' --to "build angel" \
+     --send 'CI failed on master: {{data.text}}' --enable
+   ```
+   A bot that posts "building" and edits it to "failed" sends the edit as `message_changed`:
+   use `--event 'stream.slack.message*'` to catch both.
+6. **Check it**:
+   ```
+   node ~/.midna-streams/slack-stream.mjs --data < ~/.midna-streams/bot-message.json \
+     | midna triggers test <id> --stream slack --kind message --data -
+   ```
+   `--data` turns a saved Slack message event (`bot-message.json` is a CI bot's post with an
+   empty `text` and the failure in an attachment) into what the script publishes. Then post a
+   matching line in the channel. `midna stream events slack` shows it `accepted`, and
+   `midna triggers deliveries` shows the firing.
 
 ## Webhook triggers
 
