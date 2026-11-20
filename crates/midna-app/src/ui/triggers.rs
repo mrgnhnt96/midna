@@ -186,6 +186,18 @@ impl TriggerItem {
     /// "Start Claude in midna", "Run a command in api", "Raise attention",
     /// `Send "/compact" → "{{last_prompt}}"`, "Set status Prompt blocked", "Clear status".
     fn action_label(&self, n: &Names) -> String {
+        match self.to() {
+            Some(to) => format!("{} on {to}", self.what_label(n)),
+            None => self.what_label(n),
+        }
+    }
+
+    /// The terminal the action names (`to`), instead of the one that fired.
+    fn to(&self) -> Option<String> {
+        self.action.get("to").and_then(Value::as_str).map(String::from)
+    }
+
+    fn what_label(&self, n: &Names) -> String {
         let proj = self.project_id().map(|p| format!(" in {}", n.project(&p))).unwrap_or_default();
         match self.action_kind().as_str() {
             "start_agent" => format!("Start {}{proj}", if self.s("agent") == "codex" { "Codex" } else { "Claude" }),
@@ -350,6 +362,9 @@ impl TriggerItem {
                 }
             }
             _ => a.push(format!("--action-json {}", sh_quote(&self.action.to_string()))),
+        }
+        if let Some(to) = self.to().filter(|_| !a.last().is_some_and(|x| x.starts_with("--action-json"))) {
+            a.push(format!("--to {}", sh_quote(&to)));
         }
         if let Some(c) = self.cooldown_secs {
             a.push(format!("--cooldown {c}s"));
@@ -1868,6 +1883,7 @@ mod tests {
         tr.filter = p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() };
         tr.action = p::TriggerAction::SendToSession {
             steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
+            to: None,
         };
         let got: Vec<TriggerItem> = parse_list(&json!([tr.clone()]));
         let g = &got[0];
@@ -1883,7 +1899,7 @@ mod tests {
 
         tr.builtin = Some("prompt_blocked_status".into());
         tr.filter = p::TriggerFilter { idle_minutes: Some(55), agent: Some(p::AgentKind::Claude), ..Default::default() };
-        tr.action = p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt };
+        tr.action = p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt, to: None };
         let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
         assert_eq!(g.builtin.as_deref(), Some("prompt_blocked_status"));
         assert_eq!(g.set_status().unwrap().base, "needs_you");
@@ -1896,12 +1912,17 @@ mod tests {
 
         tr.event = "schedule".into();
         tr.filter = p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() };
-        tr.action = p::TriggerAction::Notify { title: "Standup".into(), body: String::new(), sound: true, category: None, open: None, id: None };
-        let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
+        tr.action = p::TriggerAction::Notify { title: "Standup".into(), body: String::new(), sound: true, category: None, open: None, id: None, to: None };
+        let g = parse_list::<TriggerItem>(&json!([tr.clone()]))[0].clone();
         assert_eq!(g.scope(&names), "no terminal");
         let text = g.filter_text().unwrap();
         assert!(text.starts_with("cron \"0 9 * * mon-fri\" · next ") && text.ends_with(" 09:00"), "{text}");
         assert!(g.cli().contains("--event schedule --cron '0 9 * * mon-fri' --notify Standup"), "{}", g.cli());
+
+        tr.action = p::TriggerAction::SendToSession { steps: vec![p::SendStep { text: "rebuild".into(), enter: true }], to: Some("build angel".into()) };
+        let g = parse_list::<TriggerItem>(&json!([tr]))[0].clone();
+        assert_eq!(g.action_label(&names), "Send “rebuild” on build angel");
+        assert!(g.cli().ends_with("--send rebuild --to 'build angel' --enable"), "{}", g.cli());
     }
 
     #[test]

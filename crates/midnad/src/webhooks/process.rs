@@ -476,7 +476,7 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
                 Err(e) => (None, format!("Could not run command: {e}")),
             }
         }
-        TriggerAction::Attention { message } => {
+        TriggerAction::Attention { message, .. } => {
             let msg = payload::render(message, f, payload, false);
             let mut item = d.new_needs_you(NeedsYouKind::Note, if msg.trim().is_empty() { t.name.clone() } else { msg }, trigger_actor(t), None);
             item.detail = [f.subject.clone(), f.url.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
@@ -485,7 +485,7 @@ pub fn run_action(d: &Arc<Daemon>, t: &Trigger, f: &Facts, payload: &Value, del_
             let item = d.raise_needs_you(item);
             (None, format!("Raised attention ({})", item.id))
         }
-        TriggerAction::Notify { title, body, sound, category, open, id } => {
+        TriggerAction::Notify { title, body, sound, category, open, id, .. } => {
             let (title, body) = (payload::render(title, f, payload, false), payload::render(body, f, payload, false));
             let body = if body.trim().is_empty() { [f.subject.clone(), f.url.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ") } else { body };
             // Clicking a webhook's notification opens what it's about, unless it says otherwise.
@@ -570,7 +570,7 @@ pub fn dry_run(t: &Trigger, event: &str, payload: Value) -> Delivery {
             let body = if *headless { format!("the {size}-byte body on stdin and in $MIDNA_PAYLOAD") } else { format!("the {size}-byte body in $MIDNA_PAYLOAD") };
             format!("would run{}: {} · with {body}", crate::local::run_where(*background, *headless), payload::render(command, &facts, &payload, true))
         }
-        TriggerAction::Attention { message } => format!("would raise attention: {}", payload::render(message, &facts, &payload, false)),
+        TriggerAction::Attention { message, .. } => format!("would raise attention: {}", payload::render(message, &facts, &payload, false)),
         TriggerAction::Notify { title, body, .. } => format!("would notify: {} {}", payload::render(title, &facts, &payload, false), payload::render(body, &facts, &payload, false)).trim().to_string(),
         a => format!("would do nothing: {} needs a local trigger", crate::local::action_name(a)),
     };

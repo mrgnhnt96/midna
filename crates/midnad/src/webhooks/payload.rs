@@ -312,7 +312,7 @@ mod tests {
             source: TriggerSource::Github,
             event: event.into(),
             filter,
-            action: TriggerAction::Attention { message: "x".into() },
+            action: TriggerAction::Attention { message: "x".into(), to: None },
             enabled: true,
             state: TriggerState::Active,
             secret_set: true,

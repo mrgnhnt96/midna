@@ -31,8 +31,17 @@ fn q(v: &str) -> String {
     if short.is_empty() || short.contains(char::is_whitespace) || short.contains('"') { format!("{short:?}") } else { short }
 }
 
-/// One line saying what a trigger action does (`send: "/compact" → "{{last_prompt}}"`).
+/// One line saying what a trigger action does (`send: "/compact" → "{{last_prompt}}"`), and the
+/// terminal it names (`… on terminal build-angel`).
 pub fn action_text(a: &Value) -> String {
+    let what = what_text(a);
+    match a["to"].as_str() {
+        Some(to) => format!("{what} on terminal {}", q(to)),
+        None => what,
+    }
+}
+
+fn what_text(a: &Value) -> String {
     match a["kind"].as_str() {
         Some("start_agent") => format!("start {} in {}", s(a, "agent"), s(a, "project_id")),
         Some("run_command") => {
@@ -257,8 +266,38 @@ const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_yo
 /// Flags that only make sense on a local trigger; any of them makes `add` default to `--source local`.
 const LOCAL_FLAGS: &[&str] = &[
     "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
-    "set-status", "clear-status", "cooldown", "enable",
+    "set-status", "clear-status", "cooldown", "enable", "to",
 ];
+
+/// Actions that act on (or point at) a terminal, so they take `--to`.
+const TO_KINDS: &[&str] = &["send_to_session", "set_status", "clear_status", "attention", "notify"];
+
+/// `--to NAME|ID`: the terminal the action acts on instead of the one that fired (`""` clears
+/// it). On update, alone it changes the current action's, and a new action keeps the current
+/// one's unless it's `--action-json`.
+pub fn with_to(a: &Args, act: Option<Value>, cur: Option<&Value>) -> Result<Option<Value>, Fail> {
+    let keep = cur.and_then(|c| c.get("to")).filter(|t| t.is_string() && !a.has("action-json")).cloned();
+    let (act, to) = match (act, a.get("to")) {
+        (act, None) => {
+            let Some(mut act) = act else { return Ok(None) };
+            if let (Some(t), true) = (keep, act.get("to").is_none() && TO_KINDS.contains(&act["kind"].as_str().unwrap_or(""))) {
+                act["to"] = t;
+            }
+            return Ok(Some(act));
+        }
+        (act, Some(to)) => (act.or_else(|| cur.cloned()), to.trim()),
+    };
+    let Some(mut act) = act.filter(|x| TO_KINDS.contains(&x["kind"].as_str().unwrap_or(""))) else {
+        return Err(Fail::Usage("--to goes with --send, --set-status, --clear-status, --notify or --attention".into()));
+    };
+    match act.as_object_mut() {
+        Some(o) if to.is_empty() => {
+            o.remove("to");
+        }
+        _ => act["to"] = json!(to),
+    }
+    Ok(Some(act))
+}
 
 fn is_local_event(e: &str) -> bool {
     e == "idle" || e == "schedule" || LOCAL_EVENT_PREFIXES.iter().any(|p| e.starts_with(p))
@@ -610,7 +649,7 @@ const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
     "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
     "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
-    "background", "headless", "timeout", "permission-mode", "allow-tool",
+    "background", "headless", "timeout", "permission-mode", "allow-tool", "to",
 ];
 
 /// Read a secret: hidden from a TTY, else all of stdin (one trailing newline dropped).
@@ -683,7 +722,7 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
                 None if local_flag.is_some() || is_local_event(event) => "local",
                 None => "github",
             };
-            let action = action_from(a, a.get("project").map(str::to_string), None)?.ok_or_else(|| {
+            let action = with_to(a, action_from(a, a.get("project").map(str::to_string), None)?, None)?.ok_or_else(|| {
                 Fail::Usage(if source == "local" {
                     "pick an action: --send TEXT (repeatable), --set-status LABEL --color C --base B, --clear-status, --notify TITLE, \
                      --attention MSG, --run CMD --project P [--background|--headless], --agent claude|codex --prompt T --project P, or --action-json JSON"
@@ -722,7 +761,7 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
                 None
             });
             let mut p = json!({ "id": id, "name": a.get("name"), "event": event, "source": a.get("source"),
-                "action": action_from(a, project, Some(&cur["action"]))?, "github_hook_id": a.num::<u64>("hook-id")?,
+                "action": with_to(a, action_from(a, project, Some(&cur["action"]))?, Some(&cur["action"]))?, "github_hook_id": a.num::<u64>("hook-id")?,
                 "session_name_template": a.get("session-name"), "cooldown_secs": cooldown(a)? });
             if touched {
                 p["filter"] = filter;
@@ -913,6 +952,24 @@ mod tests {
         assert_eq!(edited["label"], "Prompt blocked");
         assert!(action_from(&args(&["t", "--color", "red"]), None, None).is_err());
         assert!(action_from(&args(&["t", "--color", "red", "--send", "x"]), None, Some(&act)).is_err());
+    }
+
+    #[test]
+    fn to_names_the_terminal() {
+        let to = |v: &[&str], cur: Option<&Value>| with_to(&args(v), action_from(&args(v), None, cur)?, cur);
+        let sent = ok(to(&["t", "--send", "rebuild", "--to", " build-angel "], None)).unwrap();
+        assert_eq!(sent, json!({ "kind": "send_to_session", "steps": [{ "text": "rebuild", "enter": true }], "to": "build-angel" }));
+        assert_eq!(action_text(&sent), "send: \"rebuild\" on terminal build-angel");
+        assert!(to(&["t", "--run", "make", "--to", "x"], None).is_err(), "run_command acts on no terminal");
+        assert!(to(&["t", "--to", "x"], None).is_err(), "add: --to needs an action");
+        // Update: alone it changes the current action's; empty clears it; a new action keeps it.
+        let moved = ok(to(&["t", "--to", "api"], Some(&sent))).unwrap();
+        assert_eq!((moved["to"].as_str(), &moved["steps"]), (Some("api"), &sent["steps"]));
+        assert_eq!(ok(to(&["t", "--to", ""], Some(&sent))).unwrap().get("to"), None);
+        assert_eq!(ok(to(&["t", "--clear-status"], Some(&sent))), Some(json!({ "kind": "clear_status", "to": "build-angel" })));
+        assert_eq!(ok(to(&["t", "--action-json", r#"{"kind":"clear_status"}"#], Some(&sent))), Some(json!({ "kind": "clear_status" })));
+        assert_eq!(ok(to(&["t", "--color", "red"], Some(&json!({ "kind": "set_status", "to": "a" })))).unwrap()["to"], "a");
+        assert!(to(&["t", "--to", "x"], Some(&json!({ "kind": "run_command", "command": "make" }))).is_err());
     }
 
     #[test]

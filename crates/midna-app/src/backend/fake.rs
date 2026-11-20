@@ -169,7 +169,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
             "t_lblock",
             "Prompt blocked status",
             p::TriggerFilter::default(),
-            p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt },
+            p::TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: p::StatusState::NeedsYou, clear_on: p::StatusClear::Prompt, to: None },
             Some("prompt_blocked_status"),
             3,
         ),
@@ -179,6 +179,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
             p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() },
             p::TriggerAction::SendToSession {
                 steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
+                to: None,
             },
             None,
             0,
@@ -189,7 +190,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
                 "t_lstandup",
                 "Morning standup",
                 p::TriggerFilter { cron: Some("0 9 * * mon-fri".into()), ..Default::default() },
-                p::TriggerAction::Notify { title: "Standup in 5".into(), body: "{{local_time}}".into(), sound: true, category: None, open: None, id: None },
+                p::TriggerAction::Notify { title: "Standup in 5".into(), body: "{{local_time}}".into(), sound: true, category: None, open: None, id: None, to: None },
                 None,
                 0,
             )

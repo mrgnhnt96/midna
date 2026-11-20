@@ -142,7 +142,7 @@ pub fn seed_builtins(d: &Daemon) {
         source: TriggerSource::Local,
         event: kinds::AGENT_PROMPT_BLOCKED.into(),
         filter: TriggerFilter::default(),
-        action: TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: StatusState::NeedsYou, clear_on: StatusClear::Prompt },
+        action: TriggerAction::SetStatus { label: "Prompt blocked".into(), color: "amber".into(), icon: None, base: StatusState::NeedsYou, clear_on: StatusClear::Prompt, to: None },
         enabled: true,
         state: TriggerState::Active,
         secret_set: false,
@@ -307,11 +307,12 @@ pub fn schedule_data(cron: &str, at: i64) -> Value {
 }
 
 /// A schedule with a session, project or agent filter acts on every running terminal that
-/// matches; without one it fires once, about no terminal.
+/// matches; without one, or when its action names a terminal (`to`), it fires once, about no
+/// terminal.
 fn fire_schedule(d: &Arc<Daemon>, t: &Trigger, at: i64) {
     let data = schedule_data(t.filter.cron.as_deref().unwrap_or_default(), at);
     let f = &t.filter;
-    if f.session.is_none() && f.project.is_none() && f.agent.is_none() {
+    if t.action.to().is_some() || (f.session.is_none() && f.project.is_none() && f.agent.is_none()) {
         let ev = evaluate(t, "schedule", None, &data);
         if ev.fires() {
             fire(d, t, "schedule", None, &data, None, ev.line);
@@ -390,7 +391,10 @@ pub fn evaluate(t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value
         }
     };
     check("session", &f.session, s.map(|s| s.id.as_str()));
-    check("project", &f.project, s.map(|s| s.project_id.as_str()));
+    // About no terminal, a project only says where to look for the `to` terminal.
+    if s.is_some() || t.action.to().is_none() {
+        check("project", &f.project, s.map(|s| s.project_id.as_str()));
+    }
     check("agent", &f.agent.map(|a| a.as_str().to_string()), s.and_then(|s| s.agent).map(|a| a.as_str()));
     for (path, want) in &f.fields {
         let got = lookup(data, path);
@@ -468,7 +472,7 @@ pub fn render(tpl: &str, event: &str, stream: Option<&StreamRef>, s: Option<&Ses
 
 fn uses_last_prompt(t: &Trigger) -> bool {
     match &t.action {
-        TriggerAction::SendToSession { steps } => steps.iter().any(|s| s.text.contains("last_prompt")),
+        TriggerAction::SendToSession { steps, .. } => steps.iter().any(|s| s.text.contains("last_prompt")),
         TriggerAction::StartAgent { prompt_template, .. } => prompt_template.contains("last_prompt"),
         _ => false,
     }
@@ -531,7 +535,7 @@ pub fn action_name(a: &TriggerAction) -> &'static str {
         TriggerAction::Attention { .. } => "attention",
         TriggerAction::SendToSession { .. } => "send_to_session",
         TriggerAction::SetStatus { .. } => "set_status",
-        TriggerAction::ClearStatus {} => "clear_status",
+        TriggerAction::ClearStatus { .. } => "clear_status",
         TriggerAction::Notify { .. } => "notify",
     }
 }
@@ -551,6 +555,32 @@ pub fn fire_once(d: &Arc<Daemon>, t: &Trigger, event: &str, sid: Option<&str>, d
     fire(d, t, event, s.as_ref(), data, None, line)
 }
 
+/// A trigger's `to`, looked up now among running terminals (within `project`): the terminal,
+/// and a note when several have that name.
+pub fn resolve_to(d: &Daemon, to: &str, project: Option<&str>) -> Result<(SessionFacts, Option<String>), String> {
+    let running: Vec<Session> = {
+        let core = d.core();
+        core.state.sessions.iter().filter(|s| core.rt.contains_key(&s.id)).cloned().collect()
+    };
+    let running: Vec<Session> = running.iter().map(|s| crate::rpc::session::live(d, s)).collect();
+    let found: Vec<ToCandidate> = running
+        .iter()
+        .map(|s| ToCandidate { id: &s.id, name: &s.name, project_id: &s.project_id, active_at: time::parse_rfc3339(&s.last_activity_at).unwrap_or(0) })
+        .collect();
+    let pick = pick_to(to, project, &found)?;
+    let s = &running[pick.index];
+    let note = (pick.matches > 1).then(|| format!("{} terminals named {}; picked the most recently active ({})", pick.matches, s.name, s.id));
+    Ok((SessionFacts::of(s), note))
+}
+
+/// The terminal `t` acts on: its `to`, resolved now, or else the event's own (`s`).
+fn acting_on(d: &Daemon, t: &Trigger, s: Option<&SessionFacts>) -> Result<(Option<SessionFacts>, Option<String>), String> {
+    match t.action.to() {
+        Some(to) => resolve_to(d, to, t.filter.project.as_deref()).map(|(x, note)| (Some(x), note)),
+        None => Ok((s.cloned(), None)),
+    }
+}
+
 fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, line: String) -> (Id, String) {
     let id = format!("d_{}", hex_id(6));
     let guid = format!("local-{}", hex_id(8));
@@ -561,7 +591,17 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
     let body = (matches!(t.action, TriggerAction::RunCommand { .. }) && crate::webhooks::process::write_private(&file, json.as_bytes()).is_ok())
         .then(|| crate::headless::Body { json: &json, file: &file, event, action: None, guid: &guid });
     let mut runs = vec![];
-    let (started, outcome) = run(d, t, event, s, data, stream, &id, body.as_ref(), &mut runs);
+    // A `to` that names no running terminal: nothing is done, and the delivery says why.
+    let on = acting_on(d, t, s);
+    let (started, outcome) = match &on {
+        Ok((on, note)) => {
+            let (started, out) = run(d, t, event, s, on.as_ref(), data, stream, &id, body.as_ref(), &mut runs);
+            (started, note.as_ref().map_or(out.clone(), |n| format!("{out} · {n}")))
+        }
+        Err(e) => (None, format!("Could not {}: {e}", action_name(&t.action).replace('_', " "))),
+    };
+    let on = on.ok().and_then(|(x, _)| x);
+    let s = on.as_ref().or(s);
     let summary = s.map(|s| s.name.clone());
     {
         let mut core = d.core();
@@ -606,17 +646,20 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
     (del.id, outcome)
 }
 
-/// Run one local trigger's action for delivery `del_id`. Returns (terminal started, one-line
-/// outcome); a headless command's run goes in `runs`. A `run_command` gets `body`.
+/// Run one local trigger's action for delivery `del_id`, on terminal `on` (its `to`, or the
+/// event's `s`). Returns (terminal started, one-line outcome); a headless command's run goes in
+/// `runs`. A `run_command` gets `body`.
 #[allow(clippy::too_many_arguments)]
 fn run(
-    d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, del_id: &str, body: Option<&crate::headless::Body>,
-    runs: &mut Vec<CommandRun>,
+    d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, on: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, del_id: &str,
+    body: Option<&crate::headless::Body>, runs: &mut Vec<CommandRun>,
 ) -> (Option<Id>, String) {
     let actor = actor_of(t);
-    let prompt = if uses_last_prompt(t) { s.and_then(|s| last_prompt(d, &s.id)) } else { None };
-    let r = |tpl: &str, quote: bool| render(tpl, event, stream, s, data, prompt.as_deref(), quote);
-    let target = || s.ok_or_else(|| format!("{}: event {event} isn't about a terminal", action_name(&t.action)));
+    let prompt = if uses_last_prompt(t) { on.and_then(|s| last_prompt(d, &s.id)) } else { None };
+    // `{{session.*}}`: the event's terminal, or for an event about none, the `to` one.
+    let facts = s.or(on);
+    let r = |tpl: &str, quote: bool| render(tpl, event, stream, facts, data, prompt.as_deref(), quote);
+    let target = || on.ok_or_else(|| format!("{}: event {event} isn't about a terminal (name one with `to`)", action_name(&t.action)));
     let open = |params: Value| -> Result<Id, String> {
         let p: SessionOpenParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
         let mut ctx = Ctx::internal_trigger(actor.clone());
@@ -667,15 +710,15 @@ fn run(
                     .map(|id| (Some(id), format!("Ran command{} › {n}", if *background { " in Background" } else { "" })))
             }
         }
-        TriggerAction::Attention { message } => {
+        TriggerAction::Attention { message, .. } => {
             let msg = r(message, false);
-            let mut item = d.new_needs_you(NeedsYouKind::Note, if msg.trim().is_empty() { t.name.clone() } else { msg }, actor.clone(), s.map(|s| s.id.clone()));
+            let mut item = d.new_needs_you(NeedsYouKind::Note, if msg.trim().is_empty() { t.name.clone() } else { msg }, actor.clone(), on.map(|s| s.id.clone()));
             item.bulk_safe = true;
             item.trigger_id = Some(t.id.clone());
             let item = d.raise_needs_you(item);
             Ok((None, format!("Raised attention ({})", item.id)))
         }
-        TriggerAction::SendToSession { steps } => target().and_then(|s| {
+        TriggerAction::SendToSession { steps, .. } => target().and_then(|s| {
             if steps.iter().any(|x| x.text.contains("last_prompt")) && prompt.is_none() {
                 return Err(format!("{} has no prompt to resend yet", s.name));
             }
@@ -684,7 +727,7 @@ fn run(
             let n = crate::queue::add_steps(d, &s.id, t, actor_of(t), rendered, restored)?;
             Ok((None, format!("Queued {n} step{} for {}", if n == 1 { "" } else { "s" }, s.name)))
         }),
-        TriggerAction::SetStatus { label, color, icon, base, clear_on } => target().map(|s| {
+        TriggerAction::SetStatus { label, color, icon, base, clear_on, .. } => target().map(|s| {
             let label = r(label, false);
             let detail = lookup(data, "message").map(|m| clip(&m, 300));
             let cs = CustomStatus {
@@ -701,11 +744,11 @@ fn run(
             set_custom(d, &s.id, cs, actor.clone());
             (None, format!("Status “{label}” on {}", s.name))
         }),
-        TriggerAction::Notify { title, body, sound, category, open, id } => {
+        TriggerAction::Notify { title, body, sound, category, open, id, .. } => {
             let extras = crate::notify::Extras { id: id.as_deref().map(|i| r(i, false)), open: open.as_deref().map(|u| r(u, false)), actions: vec![], ..Default::default() };
-            Ok((None, notify(d, t, s.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref(), extras)))
+            Ok((None, notify(d, t, on.map(|s| s.id.clone()), &r(title, false), &r(body, false), *sound, category.as_deref(), extras)))
         }
-        TriggerAction::ClearStatus {} => target().map(|s| {
+        TriggerAction::ClearStatus { .. } => target().map(|s| {
             let had = clear_custom(d, &s.id, actor.clone(), "clear_status", true);
             (None, if had { format!("Cleared the status on {}", s.name) } else { format!("{} had no custom status", s.name) })
         }),
@@ -910,16 +953,23 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
     }
     let data = sched.as_ref().unwrap_or(data);
     let ev = evaluate(t, event, s.as_ref(), data);
+    // The terminal it would act on: its `to`, looked up now, or the event's.
+    let acting = acting_on(d, t, s.as_ref());
+    let target = acting.as_ref().ok().and_then(|(x, _)| x.clone());
     // Without a terminal (or before its first prompt) show where the prompt would go.
-    let prompt = s.as_ref().and_then(|s| last_prompt(d, &s.id)).unwrap_or_else(|| "‹last prompt›".into());
+    let prompt = target.as_ref().and_then(|s| last_prompt(d, &s.id)).unwrap_or_else(|| "‹last prompt›".into());
     // A stream event: its stream and kind from the event; the publisher's id isn't known yet.
     let stream = StreamRef::of_event(event).map(|x| StreamRef { id: Some("‹id›".into()), ..x });
-    let r = |tpl: &str, quote: bool| render(tpl, event, stream.as_ref(), s.as_ref(), data, Some(&prompt), quote);
-    let mut on = s.as_ref().map(|s| format!(" on {}", s.name)).unwrap_or_default();
-    // These act on the event's terminal, and a stream event has none.
-    let on_terminal = matches!(t.action, TriggerAction::SendToSession { .. } | TriggerAction::SetStatus { .. } | TriggerAction::ClearStatus {});
-    if let (None, Some(x), true) = (&s, &stream, on_terminal) {
-        on = format!(" (but stream `{}`'s events belong to no terminal, so there is none to act on)", x.name);
+    let facts = s.as_ref().or(target.as_ref());
+    let r = |tpl: &str, quote: bool| render(tpl, event, stream.as_ref(), facts, data, Some(&prompt), quote);
+    let mut on = match (&acting, t.action.to()) {
+        (Ok((Some(x), note)), Some(_)) => format!(" on {} ({}){}", x.name, x.id, note.as_ref().map(|n| format!(" — {n}")).unwrap_or_default()),
+        (Err(e), Some(to)) => format!(" on {to} (but there's {e} right now, so it would do nothing)"),
+        _ => s.as_ref().map(|s| format!(" on {}", s.name)).unwrap_or_default(),
+    };
+    // These act on the event's terminal unless they name one, and a stream event has none.
+    if let (None, Some(x), true) = (&s, &stream, t.action.needs_session()) {
+        on = format!(" (but stream `{}`'s events belong to no terminal, so there is none to act on: name one with `to`)", x.name);
     }
     let would = match &t.action {
         TriggerAction::StartAgent { agent, prompt_template, .. } => format!("would start {} with prompt: {}", agent.as_str(), r(prompt_template, false)),
@@ -928,13 +978,13 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
             let payload = if *headless { format!("the {size}-byte payload on stdin and in $MIDNA_PAYLOAD") } else { format!("the {size}-byte payload in $MIDNA_PAYLOAD") };
             format!("would run{}: {} · with {payload}", run_where(*background, *headless), r(command, true))
         }
-        TriggerAction::Attention { message } => format!("would raise attention: {}", r(message, false)),
-        TriggerAction::SendToSession { steps } => {
+        TriggerAction::Attention { message, .. } => format!("would raise attention{on}: {}", r(message, false)),
+        TriggerAction::SendToSession { steps, .. } => {
             let shown: Vec<String> = steps.iter().map(|x| format!("“{}”", clip(&r(&x.text, false), 80))).collect();
             format!("would send{on}: {}", shown.join(" → "))
         }
         TriggerAction::SetStatus { label, color, base, clear_on, .. } => format!("would set status{on}: “{}” ({color}, {}, clears on {clear_on:?})", r(label, false), base.as_str()),
-        TriggerAction::ClearStatus {} => format!("would clear the status{on}"),
+        TriggerAction::ClearStatus { .. } => format!("would clear the status{on}"),
         TriggerAction::Notify { title, body, .. } => format!("would notify{on}: {}", [r(title, false), r(body, false)].iter().filter(|x| !x.trim().is_empty()).cloned().collect::<Vec<_>>().join(" — ")),
     };
     let fires = ev.fires();
@@ -955,7 +1005,7 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
         },
         action: None,
         repo: None,
-        subject: s.map(|s| s.name),
+        subject: target.or(s).map(|s| s.name),
         http_status: None,
         eval: vec![ev.line],
         triggers_fired: vec![],
@@ -978,7 +1028,7 @@ mod tests {
             source: TriggerSource::Local,
             event: event.into(),
             filter,
-            action: TriggerAction::SendToSession { steps: vec![SendStep { text: "/compact".into(), enter: true }, SendStep { text: "{{last_prompt}}".into(), enter: true }] },
+            action: TriggerAction::SendToSession { steps: vec![SendStep { text: "/compact".into(), enter: true }, SendStep { text: "{{last_prompt}}".into(), enter: true }], to: None },
             enabled: true,
             state: TriggerState::Active,
             secret_set: false,
