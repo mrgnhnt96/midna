@@ -83,7 +83,7 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
             let f = &t.filter;
             if action.needs_session() && f.session.is_none() && f.project.is_none() {
                 return Err(RpcError::bad_params(format!(
-                    "a schedule isn't about a terminal: {} needs to (the terminal's name or id), or filter.session (or filter.project, for every terminal in it)",
+                    "a schedule isn't about a terminal: {} needs filter.session (or filter.project, for every terminal in it), or to (one terminal's name or id)",
                     crate::local::action_name(action)
                 )));
             }

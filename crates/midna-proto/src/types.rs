@@ -1831,3 +1831,34 @@ impl Segment {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_to_takes_a_name_then_an_id_within_the_project() {
+        let c = |id, name, project_id, active_at| ToCandidate { id, name, project_id, active_at };
+        let terms = [c("aaaa1111", "build", "p1", 10), c("bbbb2222", "build", "p2", 30), c("cccc3333", "api", "p1", 20), c("build", "x", "p1", 0)];
+        // A name before an id; of several, the most recently active.
+        assert_eq!(pick_to(" build ", None, &terms), Ok(ToPick { index: 1, matches: 2 }));
+        assert_eq!(pick_to("build", Some("p1"), &terms), Ok(ToPick { index: 0, matches: 1 }));
+        assert_eq!(pick_to("cccc3333", None, &terms), Ok(ToPick { index: 2, matches: 1 }));
+        assert_eq!(pick_to("api", Some("p2"), &terms), Err("no terminal named api in project p2".into()));
+        assert_eq!(pick_to("nope", None, &terms), Err("no terminal named nope".into()));
+        // Equally active: the first listed.
+        let tied = [c("a", "w", "p", 5), c("b", "w", "p", 5)];
+        assert_eq!(pick_to("w", None, &tied).unwrap().index, 0);
+    }
+
+    #[test]
+    fn to_is_optional_and_left_out_when_unset() {
+        let old: TriggerAction = serde_json::from_str(r#"{"kind":"clear_status"}"#).unwrap();
+        assert_eq!(old.to(), None);
+        assert!(old.needs_session());
+        assert_eq!(serde_json::to_value(&old).unwrap(), serde_json::json!({ "kind": "clear_status" }));
+        let named: TriggerAction = serde_json::from_str(r#"{"kind":"attention","message":"m","to":"build"}"#).unwrap();
+        assert_eq!(named.to(), Some("build"));
+        assert!(!named.needs_session() && named.takes_to());
+    }
+}
