@@ -1,9 +1,11 @@
 //! Streams midnad runs (`streams.add`): the producer's stdout lines are published like
 //! `streams.publish`, everything else goes to its log, it starts again after exiting (with a
-//! backoff), when midnad starts and after a wake, and nothing it started outlives it.
+//! backoff), when midnad starts and after a wake, and nothing it started outlives it. An agent's
+//! stream waits for the human's approval.
 mod common;
 use common::*;
 use midna_proto::Client;
+use midna_proto::error::{CONFLICT, HUMAN_ONLY};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -185,16 +187,162 @@ fn streams_start_again_after_a_wake_and_with_midnad_and_never_outlive_it() {
     assert_eq!((&s["command"], s["cwd"].as_str()), (&json!(["/bin/sh", "-c", "exec sleep 60"]), d.home.to_str()), "{s}");
 }
 
+fn approvals(h: &mut Client) -> Vec<Value> {
+    call(h, "needs_you.list", json!({})).as_array().unwrap().iter().filter(|n| n["kind"] == "approval").cloned().collect()
+}
+
+fn approve(h: &mut Client, id: &str) {
+    call(h, "needs_you.resolve", json!({ "id": id, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+}
+
+fn approve_err(h: &mut Client, id: &str) -> i64 {
+    call_err(h, "needs_you.resolve", json!({ "id": id, "resolution": { "kind": "approve", "scope": { "kind": "once" } } })).code
+}
+
+/// A script that writes `marker`'s name into it each time it starts, then waits.
+fn marking(d: &TestDaemon, marker: &str) -> Value {
+    json!(["/bin/sh", "-c", format!("echo started >> {} ; exec sleep 60", d.home.join(marker).display())])
+}
+
+fn starts(d: &TestDaemon, marker: &str) -> usize {
+    std::fs::read_to_string(d.home.join(marker)).map(|t| t.lines().count()).unwrap_or(0)
+}
+
 #[test]
-fn only_the_human_adds_a_stream_and_bad_ones_are_refused() {
+fn an_agent_s_stream_waits_for_the_human_s_approval() {
     let d = start();
     let mut h = d.human();
     let sid = open_sh(&mut h);
     let mut a = d.agent(Some(&sid));
-    let e = call_err(&mut a, "streams.add", json!({ "name": "x", "command": ["/bin/true"], "cwd": d.home }));
-    assert!(e.message.contains("only the human can add a stream"), "{e:?}");
-    assert_eq!(call(&mut a, "streams.list", json!({})), json!([]), "listing is fine");
+    call(&mut h, "secret.set", json!({ "name": "TOK", "value": "t0ken-v4lue-for-approval" }));
+    let s = call(&mut a, "streams.add", json!({ "name": "tail", "command": marking(&d, "m"), "cwd": d.home, "secrets": ["TOK"] }));
+    assert_eq!((s["state"].as_str(), s["enabled"].as_bool(), s["pid"].as_i64()), (Some("awaiting_approval"), Some(false), None), "{s}");
+    // One approval, naming what it would run.
+    let items = approvals(&mut h);
+    assert_eq!(items.len(), 1, "{items:?}");
+    let nid = items[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(s["approval"], nid.as_str());
+    let detail = items[0]["detail"].as_str().unwrap();
+    let exact = detail.split("Approving runs exactly: ").nth(1).and_then(|r| r.lines().next()).unwrap_or("");
+    let shown: Value = serde_json::from_str(exact.trim_start_matches("streams.set_enabled ")).unwrap_or(Value::Null);
+    assert_eq!(shown, json!({ "name": "tail", "enabled": true }), "{detail}");
+    for part in ["command: /bin/sh -c 'echo started", &format!("cwd: {}", d.home.display()), "project: ", "secrets: TOK"] {
+        assert!(detail.contains(part), "{part} in {detail}");
+    }
+    assert!(!detail.contains("t0ken-v4lue"), "{detail}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(starts(&d, "m"), 0, "nothing runs before the human approves");
+    // Asking again is the same item; it can't be restarted or approved by the agent.
+    let e = call_err(&mut a, "streams.set_enabled", json!({ "name": "tail", "enabled": true }));
+    assert_eq!(e.code, HUMAN_ONLY);
+    assert_eq!(e.data.unwrap()["needs_you_id"], nid.as_str());
+    assert_eq!(approvals(&mut h).len(), 1);
+    assert!(call_err(&mut a, "streams.restart", json!({ "name": "tail" })).message.contains("approval"));
+    assert_eq!(approve_err(&mut a, &nid), HUMAN_ONLY);
+    // The human approves: it runs.
+    approve(&mut h, &nid);
+    running_pid(&mut h, "tail");
+    wait_for(10, "it started", || (starts(&d, "m") == 1).then_some(()));
+    let s = status(&mut h, "tail");
+    assert_eq!((s["enabled"].as_bool(), s.get("approval")), (Some(true), None), "{s}");
+    assert!(approvals(&mut h).is_empty());
+    // Agents may pause, resume what was approved, and restart.
+    assert_eq!(call(&mut a, "streams.set_enabled", json!({ "name": "tail", "enabled": false }))["state"], "paused");
+    call(&mut a, "streams.set_enabled", json!({ "name": "tail", "enabled": true }));
+    let pid = running_pid(&mut h, "tail");
+    call(&mut a, "streams.restart", json!({ "name": "tail" }));
+    wait_for(10, "restarted", || (running_pid(&mut h, "tail") != pid).then_some(()));
+    assert!(approvals(&mut h).is_empty());
+    // Changing what it runs pauses it and asks again.
+    let before = starts(&d, "m");
+    let pid = running_pid(&mut h, "tail");
+    let s = call(&mut a, "streams.update", json!({ "name": "tail", "command": marking(&d, "m2") }));
+    assert_eq!((s["state"].as_str(), s["enabled"].as_bool()), (Some("awaiting_approval"), Some(false)), "{s}");
+    wait_for(10, "stopped", || gone(pid).then_some(()));
+    let items = approvals(&mut h);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(s["approval"], items[0]["id"]);
+    assert!(items[0]["detail"].as_str().unwrap().contains("m2"), "{}", items[0]["detail"]);
+    assert_eq!(starts(&d, "m"), before);
+    // Changing the secrets does too, replacing the open approval with one for the new definition.
+    let s = call(&mut a, "streams.update", json!({ "name": "tail", "secrets": [] }));
+    let items = approvals(&mut h);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(s["approval"], items[0]["id"]);
+    assert!(items[0]["detail"].as_str().unwrap().contains("secrets: none"), "{}", items[0]["detail"]);
+    // Removing a stream that isn't running is the agent's call; its approval goes with it.
+    call(&mut a, "streams.remove", json!({ "name": "tail" }));
+    assert_eq!(call(&mut h, "streams.list", json!({})), json!([]));
+    assert!(approvals(&mut h).is_empty());
+    assert_eq!(starts(&d, "m2"), 0);
+}
 
+#[test]
+fn an_agent_removing_a_running_stream_asks_the_human() {
+    let d = start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    add(&mut h, &d, "run", "exec sleep 60");
+    let pid = running_pid(&mut h, "run");
+    let e = call_err(&mut a, "streams.remove", json!({ "name": "run" }));
+    assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
+    let nid = e.data.unwrap()["needs_you_id"].as_str().unwrap().to_string();
+    assert_eq!(running_pid(&mut h, "run"), pid, "still running");
+    let item = approvals(&mut h).into_iter().find(|n| n["id"] == nid.as_str()).unwrap();
+    assert!(item["detail"].as_str().unwrap().contains("command: /bin/sh -c 'exec sleep 60'"), "{}", item["detail"]);
+    approve(&mut h, &nid);
+    assert_eq!(call(&mut h, "streams.list", json!({})), json!([]));
+    wait_for(10, "stopped", || gone(pid).then_some(()));
+    // A paused one the agent removes itself.
+    add(&mut h, &d, "paused", "exec sleep 60");
+    call(&mut a, "streams.set_enabled", json!({ "name": "paused", "enabled": false }));
+    call(&mut a, "streams.remove", json!({ "name": "paused" }));
+    assert_eq!(call(&mut h, "streams.list", json!({})), json!([]));
+}
+
+#[test]
+fn approving_a_stream_runs_only_what_the_human_was_shown() {
+    let d = start();
+    let mut h = d.human();
+    // Keep the stale approval below open for the human to answer (the sweep would take it back).
+    call(&mut h, "settings.set", json!({ "key": "needs_you.withdraw_orphans", "value": false }));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    call(&mut a, "streams.add", json!({ "name": "s", "command": marking(&d, "first"), "cwd": d.home }));
+    let nid = approvals(&mut h)[0]["id"].as_str().unwrap().to_string();
+    // The agent swaps the command after asking: that approval is taken back, a new one shows it.
+    call(&mut a, "streams.update", json!({ "name": "s", "command": ["/bin/sh", "-c", "echo swapped > /dev/null; exec sleep 60"] }));
+    assert_eq!(approve_err(&mut h, &nid), 3, "the first approval is gone");
+    let items = approvals(&mut h);
+    assert_eq!(items.len(), 1);
+    assert!(items[0]["detail"].as_str().unwrap().contains("swapped"), "{}", items[0]["detail"]);
+    assert_eq!(status(&mut h, "s")["state"], "awaiting_approval");
+    // The human resuming it approves it; the open approval no longer matches and is refused.
+    let nid2 = items[0]["id"].as_str().unwrap().to_string();
+    call(&mut h, "streams.set_enabled", json!({ "name": "s", "enabled": true }));
+    running_pid(&mut h, "s");
+    assert_eq!(approve_err(&mut h, &nid2), CONFLICT);
+    // The human changing a running stream restarts it with the change, no approval needed.
+    let pid = running_pid(&mut h, "s");
+    let s = call(&mut h, "streams.update", json!({ "name": "s", "command": marking(&d, "second") }));
+    assert_eq!(s["enabled"], true, "{s}");
+    wait_for(10, "started with the new command", || (starts(&d, "second") == 1).then_some(()));
+    assert!(gone(pid) || running_pid(&mut h, "s") != pid);
+    assert!(approvals(&mut h).is_empty());
+    assert_eq!(starts(&d, "first"), 0);
+    // A change to nothing is no change; bad changes are refused.
+    assert_eq!(call(&mut a, "streams.update", json!({ "name": "s", "command": marking(&d, "second") }))["state"], "running");
+    assert!(call_err(&mut a, "streams.update", json!({ "name": "s", "cwd": "rel" })).message.contains("absolute"));
+    assert!(call_err(&mut a, "streams.update", json!({ "name": "s", "secrets": ["NOPE"] })).message.contains("no secret NOPE"));
+    assert_eq!(call_err(&mut a, "streams.update", json!({ "name": "nope", "command": ["/bin/true"] })).code, 3);
+    assert!(approvals(&mut h).is_empty());
+}
+
+#[test]
+fn bad_streams_are_refused() {
+    let d = start();
+    let mut h = d.human();
     let bad = |h: &mut Client, p: Value| call_err(h, "streams.add", p).message;
     let home = d.home.to_str().unwrap();
     assert!(bad(&mut h, json!({ "name": "Bad Name", "command": ["/bin/true"], "cwd": home })).contains("a-z"));

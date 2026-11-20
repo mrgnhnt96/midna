@@ -9,14 +9,22 @@
 //! The intake (`crate::streams`) drops duplicates, publishes over the stream's rate limit and
 //! everything while its queue is full; streams.events lists each publish's verdict.
 //!
-//! streams.add / list / remove / set_enabled / restart manage the streams midnad runs itself
-//! (`crate::producers`): their producers' stdout lines come in through [`admit`] too.
+//! streams.add / update / list / remove / set_enabled / restart manage the streams midnad runs
+//! itself (`crate::producers`): their producers' stdout lines come in through [`admit`] too.
+//!
+//! A stream runs a command in the background with the secrets it names, so an agent's
+//! `streams.add` is kept paused (`needs_approval`) and raises one needs-you approval naming its
+//! command, cwd, project and secrets; approving it runs `streams.set_enabled` as the human,
+//! guarded by a fingerprint of those ([`approval_target`]), so a stream changed after the ask
+//! isn't started. An agent's `streams.update` sends it back for approval the same way. Agents may
+//! pause, resume an approved stream, restart, and remove a paused one; removing a running one
+//! asks the human.
 use super::{Ctx, R, ok};
 use crate::daemon::Daemon;
 use midna_proto::error::BUSY;
 use midna_proto::streams::{
     EVENTS_KEPT, MAX_PAYLOAD_BYTES, StreamSpec, StreamsAddParams, StreamsEventsParams, StreamsEventsResult, StreamsNameParams, StreamsPublishParams, StreamsPublishResult,
-    StreamsSetEnabledParams, check_publish, oversize, valid_name,
+    StreamsSetEnabledParams, StreamsUpdateParams, check_publish, oversize, valid_name,
 };
 use midna_proto::{Actor, OkResult, RpcError, StreamVerdict, TriggerCause, time};
 use serde_json::{Value, json};
@@ -72,28 +80,22 @@ fn bad_name(name: &str) -> RpcError {
 
 fn spec(d: &Daemon, name: &str) -> Result<StreamSpec, RpcError> {
     let found = d.core().state.streams.iter().find(|s| s.name == name).cloned();
-    found.ok_or_else(|| {
-        let names: Vec<String> = d.core().state.streams.iter().map(|s| s.name.clone()).collect();
-        let known = if names.is_empty() { "midna runs none (`midna stream add`)".to_string() } else { format!("midna runs: {}", names.join(", ")) };
-        RpcError::not_found(format!("no stream `{name}` ({known})"))
-    })
+    found.ok_or_else(|| not_found(d, name))
+}
+
+fn not_found(d: &Daemon, name: &str) -> RpcError {
+    let names: Vec<String> = d.core().state.streams.iter().map(|s| s.name.clone()).collect();
+    let known = if names.is_empty() { "midna runs none (`midna stream add`)".to_string() } else { format!("midna runs: {}", names.join(", ")) };
+    RpcError::not_found(format!("no stream `{name}` ({known})"))
 }
 
 pub fn add(d: &Arc<Daemon>, ctx: &Ctx, p: StreamsAddParams) -> R {
-    if !ctx.is_human() {
-        return Err(RpcError::refused(
-            "only the human can add a stream for now: it runs a command in the background with the secrets it names, so it needs \
-             the human's approval, and asking for that isn't built yet",
-        ));
-    }
     if !valid_name(&p.name) {
         return Err(bad_name(&p.name));
     }
-    if p.command.is_empty() || p.command[0].trim().is_empty() {
-        return Err(RpcError::bad_params("command is empty: give the producer's argv (`midna stream add <name> -- <command...>`)"));
-    }
+    check_command(&p.command)?;
     if d.core().state.streams.iter().any(|s| s.name == p.name) {
-        return Err(RpcError::bad_params(format!("stream `{}` exists; remove it first (`midna stream remove {}`)", p.name, p.name)));
+        return Err(exists(&p.name));
     }
     let explicit = p.project_id.as_deref().map(|id| super::project::resolve(d, id)).transpose()?;
     let cwd = match (&p.cwd, &explicit) {
@@ -101,31 +103,69 @@ pub fn add(d: &Arc<Daemon>, ctx: &Ctx, p: StreamsAddParams) -> R {
         (None, Some(proj)) => proj.path.clone(),
         (None, None) => ctx.session.as_deref().and_then(|sid| d.core().state.sessions.iter().find(|s| s.id == sid).map(|s| s.cwd.clone())).ok_or_else(|| RpcError::bad_params("give cwd (an absolute folder) or a project"))?,
     };
-    if !std::path::Path::new(&cwd).is_absolute() || !std::path::Path::new(&cwd).is_dir() {
-        return Err(RpcError::bad_params(format!("cwd `{cwd}` must be an absolute folder that exists")));
-    }
+    check_cwd(&cwd)?;
     let project_id = super::secret::project_of(d, ctx, explicit.as_ref().map(|p| &p.id), Some(&cwd));
-    let mut secrets: Vec<String> = vec![];
-    for n in &p.secrets {
-        if !midna_proto::secrets::valid_name(n) {
-            return Err(RpcError::bad_params(format!("`{n}` isn't a secret name (A-Z 0-9 _, e.g. SLACK_TOKEN)")));
-        }
-        // Stored now, or the producer could never start.
-        super::secret::resolve(d, n, project_id.as_ref())?;
-        if !secrets.contains(n) {
-            secrets.push(n.clone());
-        }
-    }
-    let spec = StreamSpec { name: p.name.clone(), command: p.command, cwd, project_id, secrets, enabled: true, created_at: time::now_rfc3339() };
+    let secrets = check_secrets(d, &p.secrets, project_id.as_ref())?;
+    // An agent's stream runs a command in the background with secrets: it waits for the human.
+    let agent = !ctx.is_human();
+    let spec = StreamSpec { name: p.name.clone(), command: p.command, cwd, project_id, secrets, enabled: !agent, needs_approval: agent, created_at: time::now_rfc3339() };
     {
         let mut core = d.core();
         if core.state.streams.iter().any(|s| s.name == spec.name) {
-            return Err(RpcError::bad_params(format!("stream `{}` exists; remove it first (`midna stream remove {}`)", spec.name, spec.name)));
+            return Err(exists(&spec.name));
         }
         core.state.streams.push(spec);
     }
     d.save_now();
-    crate::producers::start_one(d, &p.name);
+    if agent {
+        ask_approval(d, ctx, &p.name, &format!("Agent asks to run stream “{}”", p.name));
+    } else {
+        crate::producers::start_one(d, &p.name);
+    }
+    ok(crate::producers::status(d, &p.name))
+}
+
+/// Change a stream's producer. An agent's change pauses it and asks the human again.
+pub fn update(d: &Arc<Daemon>, ctx: &Ctx, p: StreamsUpdateParams) -> R {
+    let old = spec(d, &p.name)?;
+    let mut next = old.clone();
+    if let Some(c) = p.command {
+        check_command(&c)?;
+        next.command = c;
+    }
+    if let Some(id) = p.project_id.as_deref() {
+        next.project_id = Some(super::project::resolve(d, id)?.id);
+    }
+    if let Some(c) = p.cwd {
+        check_cwd(&c)?;
+        next.cwd = c;
+    }
+    // Checked against the (maybe new) project even when unchanged, or it could never start.
+    next.secrets = check_secrets(d, p.secrets.as_deref().unwrap_or(&old.secrets), next.project_id.as_ref())?;
+    if producer(&next) == producer(&old) {
+        return ok(crate::producers::status(d, &p.name));
+    }
+    let agent = !ctx.is_human();
+    if agent {
+        next.enabled = false;
+        next.needs_approval = true;
+    }
+    {
+        let mut core = d.core();
+        let Some(s) = core.state.streams.iter_mut().find(|s| s.name == p.name) else { return Err(not_found(d, &p.name)) };
+        *s = next.clone();
+    }
+    d.save_now();
+    if agent {
+        crate::producers::pause(d, &p.name);
+        ask_approval(d, ctx, &p.name, &format!("Agent changed stream “{}”: approve to run it", p.name));
+    } else {
+        // What an earlier approval would have started isn't what it runs now.
+        withdraw_approvals(d, &p.name, "the stream was changed after it was asked");
+        if next.enabled {
+            crate::producers::start_one(d, &p.name);
+        }
+    }
     ok(crate::producers::status(d, &p.name))
 }
 
@@ -134,21 +174,38 @@ pub fn list(d: &Daemon) -> R {
     ok(names.iter().filter_map(|n| crate::producers::status(d, n)).collect::<Vec<_>>())
 }
 
-pub fn remove(d: &Daemon, p: StreamsNameParams) -> R {
-    spec(d, &p.name)?;
+pub fn remove(d: &Daemon, ctx: &Ctx, p: StreamsNameParams) -> R {
+    let s = spec(d, &p.name)?;
+    if !ctx.is_human() && s.enabled {
+        let params = json!({ "name": p.name });
+        let title = format!("Agent asks to remove running stream “{}”", p.name);
+        return Err(super::defer_to_human(d, ctx, &title, &format!("stream remove {}", p.name), "streams.remove", &params));
+    }
     d.core().state.streams.retain(|s| s.name != p.name);
     d.save_now();
     crate::producers::forget(d, &p.name);
+    withdraw_approvals(d, &p.name, "the stream was removed");
     ok(OkResult { ok: true })
 }
 
-pub fn set_enabled(d: &Arc<Daemon>, p: StreamsSetEnabledParams) -> R {
-    if spec(d, &p.name)?.enabled == p.enabled {
+/// Pause or resume. Resuming a stream that awaits approval is the human's approval; an agent's
+/// asks the human (one needs-you approval per stream). Agents may pause and resume a stream the
+/// human approved: it runs what they approved.
+pub fn set_enabled(d: &Arc<Daemon>, ctx: &Ctx, p: StreamsSetEnabledParams) -> R {
+    let s = spec(d, &p.name)?;
+    if p.enabled && s.needs_approval && !ctx.is_human() {
+        let id = ask_approval(d, ctx, &p.name, &format!("Agent asks to run stream “{}”", p.name));
+        return Err(RpcError::human_only(format!("stream {} waits for the human's approval; asked them (needs-you {id})", p.name)).with_data(json!({ "needs_you_id": id })));
+    }
+    if s.enabled == p.enabled {
         // Already so: resuming a running stream doesn't restart it (that's `streams.restart`).
         return ok(crate::producers::status(d, &p.name));
     }
     if let Some(s) = d.core().state.streams.iter_mut().find(|s| s.name == p.name) {
         s.enabled = p.enabled;
+        if p.enabled {
+            s.needs_approval = false;
+        }
     }
     d.save_now();
     if p.enabled {
@@ -160,9 +217,121 @@ pub fn set_enabled(d: &Arc<Daemon>, p: StreamsSetEnabledParams) -> R {
 }
 
 pub fn restart(d: &Arc<Daemon>, p: StreamsNameParams) -> R {
-    if !spec(d, &p.name)?.enabled {
+    let s = spec(d, &p.name)?;
+    if s.needs_approval {
+        let waiting = approval_of(d, &p.name).map(|id| format!(" (needs-you {id})")).unwrap_or_default();
+        return Err(RpcError::bad_params(format!("stream `{}` waits for the human's approval{waiting}", p.name)));
+    }
+    if !s.enabled {
         return Err(RpcError::bad_params(format!("stream `{}` is paused; resume it (`midna stream resume {}`)", p.name, p.name)));
     }
     crate::producers::start_one(d, &p.name);
     ok(crate::producers::status(d, &p.name))
+}
+
+fn exists(name: &str) -> RpcError {
+    RpcError::bad_params(format!("stream `{name}` exists; change it (`midna stream update {name}`) or remove it first (`midna stream remove {name}`)"))
+}
+
+fn check_command(command: &[String]) -> Result<(), RpcError> {
+    if command.is_empty() || command[0].trim().is_empty() {
+        return Err(RpcError::bad_params("command is empty: give the producer's argv (`midna stream add <name> -- <command...>`)"));
+    }
+    Ok(())
+}
+
+fn check_cwd(cwd: &str) -> Result<(), RpcError> {
+    let p = std::path::Path::new(cwd);
+    if !p.is_absolute() || !p.is_dir() {
+        return Err(RpcError::bad_params(format!("cwd `{cwd}` must be an absolute folder that exists")));
+    }
+    Ok(())
+}
+
+/// Secret names, each stored now (or the producer could never start), without repeats.
+fn check_secrets(d: &Daemon, names: &[String], project: Option<&midna_proto::Id>) -> Result<Vec<String>, RpcError> {
+    let mut out: Vec<String> = vec![];
+    for n in names {
+        if !midna_proto::secrets::valid_name(n) {
+            return Err(RpcError::bad_params(format!("`{n}` isn't a secret name (A-Z 0-9 _, e.g. SLACK_TOKEN)")));
+        }
+        super::secret::resolve(d, n, project)?;
+        if !out.contains(n) {
+            out.push(n.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// What a stream runs, the part the human approves.
+fn producer(s: &StreamSpec) -> (&[String], &str, Option<&midna_proto::Id>, &[String]) {
+    (&s.command, &s.cwd, s.project_id.as_ref(), &s.secrets)
+}
+
+/// What a `streams.set_enabled` / `streams.remove` approval acts on, for `deferred_guard`:
+/// the stream's command, cwd, project and secrets (and whether it still waits), as the text
+/// fingerprinted and as what the human reads. None when there's no such stream.
+pub(crate) fn approval_target(d: &Daemon, name: &str) -> Option<(String, String)> {
+    let core = d.core();
+    let s = core.state.streams.iter().find(|s| s.name == name)?;
+    let def = json!({ "command": s.command, "cwd": s.cwd, "project": s.project_id, "secrets": s.secrets, "needs_approval": s.needs_approval });
+    let project = match &s.project_id {
+        Some(id) => core.state.projects.iter().find(|p| &p.id == id).map_or_else(|| id.to_string(), |p| format!("{} ({id})", p.name)),
+        None => "none".into(),
+    };
+    let secrets = if s.secrets.is_empty() { "none".to_string() } else { format!("{} (their values go only into its environment)", s.secrets.join(", ")) };
+    let shown = format!(
+        "Stream “{name}” runs in the background, started again whenever it exits:\n  command: {}\n  cwd: {}\n  project: {project}\n  secrets: {secrets}",
+        shell_words(&s.command),
+        s.cwd
+    );
+    Some((def.to_string(), shown))
+}
+
+/// argv as one line, quoting words a shell would split.
+fn shell_words(argv: &[String]) -> String {
+    let quote = |w: &String| {
+        if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c)) { w.clone() } else { format!("'{}'", w.replace('\'', r"'\''")) }
+    };
+    argv.iter().map(quote).collect::<Vec<_>>().join(" ")
+}
+
+/// Open approvals that would start stream `name` (deferred `streams.set_enabled`).
+fn approvals(d: &Daemon, name: &str) -> Vec<(midna_proto::Id, Option<String>)> {
+    let core = d.core();
+    let is_start = |def: &crate::state::Deferred| def.method == "streams.set_enabled" && def.params["name"] == name && def.params["enabled"] == true;
+    core.state.deferred.iter().filter(|(_, def)| is_start(def)).map(|(id, def)| (id.clone(), def.guard.clone())).collect()
+}
+
+/// Stream `name`'s open approval, while it awaits one (`StreamStatus::approval`).
+pub(crate) fn approval_of(d: &Daemon, name: &str) -> Option<midna_proto::Id> {
+    approvals(d, name).into_iter().next().map(|(id, _)| id)
+}
+
+/// Take back stream `name`'s open approvals: it was removed or changed.
+fn withdraw_approvals(d: &Daemon, name: &str, why: &str) {
+    for (id, _) in approvals(d, name) {
+        d.withdraw_needs_you(&id, why);
+    }
+}
+
+/// Ask the human to start stream `name` as it is now: one needs-you approval per stream, which
+/// runs `streams.set_enabled` as the human. An open one for what it runs now is reused; one for
+/// something it no longer runs is taken back. Returns the approval's id.
+fn ask_approval(d: &Daemon, ctx: &Ctx, name: &str, title: &str) -> midna_proto::Id {
+    let params = json!({ "name": name, "enabled": true });
+    let now = super::deferred_guard(d, "streams.set_enabled", &params).0;
+    let mut reuse = None;
+    for (id, guard) in approvals(d, name) {
+        if reuse.is_none() && guard == now {
+            reuse = Some(id);
+        } else {
+            d.withdraw_needs_you(&id, "the agent asked again for what the stream runs now");
+        }
+    }
+    if let Some(id) = reuse {
+        return id;
+    }
+    let e = super::defer_to_human(d, ctx, title, &format!("stream resume {name}"), "streams.set_enabled", &params);
+    e.data.as_ref().and_then(|v| v["needs_you_id"].as_str()).unwrap_or_default().into()
 }

@@ -2,8 +2,8 @@
 //! (`streams.publish`); local triggers on `stream.<name>.<kind>` react to it. `events` lists a
 //! stream's recent publishes and what midna did with each (`streams.events`), and `--replay`
 //! runs one of them through the local triggers again (`trigger.replay`). `add` has midnad run a
-//! producer whose stdout lines are events (`streams.add`); `list`, `pause`, `resume`, `restart`
-//! and `remove` manage those.
+//! producer whose stdout lines are events (`streams.add`); `update`, `list`, `pause`, `resume`,
+//! `restart` and `remove` manage those. An agent's add or update waits for the human's approval.
 use crate::args::Args;
 use crate::{Fail, OutFn, Res, call};
 use serde_json::{Value, json};
@@ -14,6 +14,7 @@ pub fn stream(a: &Args, out: OutFn) -> Res {
         Some("publish" | "pub") => publish(a, out),
         Some("events" | "log") => events(a, out),
         Some("add") => add(a, out),
+        Some("update" | "edit") => update(a, out),
         Some("list" | "ls") => list(a, out),
         Some("remove" | "rm") => named(a, out, "streams.remove", |n, _| println!("removed stream {n}; its producer was stopped")),
         Some("pause") => named(a, out, "streams.set_enabled", |_, v| println!("paused: {}", status_line(v))),
@@ -26,6 +27,7 @@ pub fn stream(a: &Args, out: OutFn) -> Res {
 
 const USAGE: &str = "midna stream publish <name> <kind> [--id ID] [--data JSON|@file|-] | events <name> [--limit N] [--replay SEQ|ID]\n\
                      \x20      | add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>\n\
+                     \x20      | update <name> [--project P] [--secret NAME]... [--no-secrets] [--cwd DIR] [-- <command...>]\n\
                      \x20      | list | pause <name> | resume <name> | restart <name> | remove <name>";
 
 fn add(a: &Args, out: OutFn) -> Res {
@@ -45,6 +47,33 @@ fn add(a: &Args, out: OutFn) -> Res {
         println!("added stream {name}: {}", status_line(v));
         println!("its events are stream.{name}.<kind>; its log is {}", v["log"].as_str().unwrap_or(""));
     });
+    Ok(())
+}
+
+fn update(a: &Args, out: OutFn) -> Res {
+    a.check(&["project", "secret", "no-secrets", "cwd", "json"])?;
+    let name = a.need(2, "stream name")?;
+    let mut p = json!({ "name": name });
+    if !a.rest.is_empty() {
+        p["command"] = json!(a.rest);
+    }
+    if let Some(c) = a.get("cwd") {
+        p["cwd"] = json!(std::path::absolute(c).map_err(|e| Fail::Usage(format!("--cwd {c}: {e}")))?.to_string_lossy());
+    }
+    if let Some(proj) = a.get("project") {
+        p["project_id"] = json!(proj);
+    }
+    match (a.all("secret"), a.has("no-secrets")) {
+        ([], false) => {}
+        ([], true) => p["secrets"] = json!([]),
+        (_, true) => return Err(Fail::Usage("--secret and --no-secrets don't go together".into())),
+        (names, false) => p["secrets"] = json!(names),
+    }
+    if p.as_object().is_some_and(|o| o.len() == 1) {
+        return Err(Fail::Usage("midna stream update <name> [--project P] [--secret NAME]... [--no-secrets] [--cwd DIR] [-- <command...>]: say what changes".into()));
+    }
+    let v = call("streams.update", p)?;
+    out(&v, &|v| println!("updated stream {name}: {}", status_line(v)));
     Ok(())
 }
 
@@ -89,6 +118,10 @@ fn status_line(v: &Value) -> String {
     let mut parts = vec![match (v["state"].as_str().unwrap_or(""), v["pid"].as_u64()) {
         ("running", Some(pid)) => format!("running (pid {pid})"),
         ("backoff", _) => format!("waiting to start again ({})", v["retry_at"].as_str().map(|t| format!("at {t}")).unwrap_or_default()),
+        ("awaiting_approval", _) => match v["approval"].as_str() {
+            Some(id) => format!("waiting for the human's approval (needs-you {id}; `midna approve {id}`)"),
+            None => "waiting for the human's approval (`midna stream resume` from the app approves it)".into(),
+        },
         (s, _) => s.to_string(),
     }];
     if let Some(e) = v["error"].as_str() {

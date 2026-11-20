@@ -47,7 +47,7 @@ pub use system::{
 };
 pub use streams::{
     StreamCounts, StreamExit, StreamPublishRecord, StreamRef, StreamSpec, StreamState, StreamStatus, StreamVerdict, StreamsAddParams, StreamsEventsParams, StreamsEventsResult,
-    StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams, TriggerCause,
+    StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams, StreamsUpdateParams, TriggerCause,
 };
 pub use types::*;
 

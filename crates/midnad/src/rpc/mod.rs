@@ -385,9 +385,10 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "streams.publish" => streams::publish(d, ctx, parse(p)?),
         "streams.events" => streams::events(d, parse(p)?),
         "streams.add" => streams::add(d, ctx, parse(p)?),
+        "streams.update" => streams::update(d, ctx, parse(p)?),
         "streams.list" => streams::list(d),
-        "streams.remove" => streams::remove(d, parse(p)?),
-        "streams.set_enabled" => streams::set_enabled(d, parse(p)?),
+        "streams.remove" => streams::remove(d, ctx, parse(p)?),
+        "streams.set_enabled" => streams::set_enabled(d, ctx, parse(p)?),
         "streams.restart" => streams::restart(d, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),
         "needs_you.list" => needs_you::list(d, parse(p)?),
@@ -623,6 +624,13 @@ pub fn deferred_guard(d: &Daemon, method: &str, params: &Value) -> (Option<Strin
                     let shown = format!("Trigger “{}”: on {} {} {} → {}", t.name, process_source(&t), t.event, json!(t.filter), json!(t.action));
                     (Some(hex(def.to_string().as_bytes())), Some(shown))
                 }
+                None => (Some("missing".into()), None),
+            }
+        }
+        "streams.set_enabled" | "streams.remove" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            match streams::approval_target(d, name) {
+                Some((def, shown)) => (Some(hex(def.as_bytes())), Some(shown)),
                 None => (Some("missing".into()), None),
             }
         }

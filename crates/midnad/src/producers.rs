@@ -20,7 +20,7 @@
 //! starts again ([`on_wake`]).
 use crate::daemon::Daemon;
 use midna_proto::secrets::Scrubber;
-use midna_proto::streams::{EVENTS_KEPT, MAX_PAYLOAD_BYTES, parse_producer_line};
+use midna_proto::streams::{EVENTS_KEPT, MAX_PAYLOAD_BYTES, StreamSpec, parse_producer_line};
 use midna_proto::*;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -113,10 +113,15 @@ fn pid_path(d: &Daemon, name: &str) -> PathBuf {
     dir(d).join(format!("{name}.pid"))
 }
 
+/// Should midnad run this stream: on, and not waiting for the human's approval.
+fn runs(s: &StreamSpec) -> bool {
+    s.enabled && !s.needs_approval
+}
+
 /// On daemon start: stop what an earlier daemon left running, then start every enabled stream.
 pub fn start(d: &Arc<Daemon>) {
     reap_leftovers(&dir(d));
-    let names: Vec<String> = d.core().state.streams.iter().filter(|s| s.enabled).map(|s| s.name.clone()).collect();
+    let names: Vec<String> = d.core().state.streams.iter().filter(|s| runs(s)).map(|s| s.name.clone()).collect();
     for n in names {
         start_one(d, &n);
     }
@@ -124,7 +129,7 @@ pub fn start(d: &Arc<Daemon>) {
 
 /// After a wake: start every enabled stream again (its connections may be long dead).
 pub fn on_wake(d: &Arc<Daemon>) {
-    let names: Vec<String> = d.core().state.streams.iter().filter(|s| s.enabled).map(|s| s.name.clone()).collect();
+    let names: Vec<String> = d.core().state.streams.iter().filter(|s| runs(s)).map(|s| s.name.clone()).collect();
     for n in names {
         start_one(d, &n);
     }
@@ -186,9 +191,14 @@ pub fn stop_all(d: &Daemon) {
 pub fn status(d: &Daemon, name: &str) -> Option<StreamStatus> {
     let spec = d.core().state.streams.iter().find(|s| s.name == name).cloned()?;
     let last_event = d.streams.events(name, EVENTS_KEPT).0.into_iter().find(|r| r.verdict == StreamVerdict::Accepted);
+    let approval = spec.needs_approval.then(|| crate::rpc::streams::approval_of(d, name)).flatten();
     let g = d.producers.lock();
     let s = g.get(name);
-    let state = if !spec.enabled { StreamState::Paused } else { s.map_or(StreamState::Starting, |s| s.state) };
+    let state = match () {
+        _ if spec.needs_approval => StreamState::AwaitingApproval,
+        _ if !spec.enabled => StreamState::Paused,
+        _ => s.map_or(StreamState::Starting, |s| s.state),
+    };
     Some(StreamStatus {
         log: log_path(d, name).to_string_lossy().into_owned(),
         name: spec.name,
@@ -198,6 +208,7 @@ pub fn status(d: &Daemon, name: &str) -> Option<StreamStatus> {
         secrets: spec.secrets,
         enabled: spec.enabled,
         state,
+        approval,
         pid: s.and_then(|s| s.pid).map(|p| p as u32),
         started_at: s.and_then(|s| s.pid.and(s.started_at.clone())),
         restarts: s.map_or(0, |s| s.restarts),
@@ -231,7 +242,7 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
         if d.shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        let Some(spec) = d.core().state.streams.iter().find(|s| s.name == name && s.enabled).cloned() else { return };
+        let Some(spec) = d.core().state.streams.iter().find(|s| s.name == name && runs(s)).cloned() else { return };
         let log = Log::open(log_path(&d, &name));
         let ran = match spawn(&d, &spec, &log) {
             Ok(child) => {
