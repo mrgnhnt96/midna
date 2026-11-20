@@ -635,7 +635,9 @@ pub static VERBS: &[Verb] = &[
         name: "stream",
         aliases: &["streams"],
         usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]\n       \
-                stream events <name> [--limit N] [--replay SEQ|ID]",
+                stream events <name> [--limit N] [--replay SEQ|ID]\n       \
+                stream add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>\n       \
+                stream list | pause <name> | resume <name> | restart <name> | remove <name>",
         summary: "hand midna an event from a program on this Mac, for local triggers",
         details: "Logs event `stream.<name>.<kind>` with the JSON object as its data (at most 64 KB; --data left out\n\
                   reads stdin, `{}` from a terminal). Local triggers react to it like any midna event:\n\
@@ -649,8 +651,19 @@ pub static VERBS: &[Verb] = &[
                   \x20       accepted, duplicate, rate_limited, too_large, busy or refused.\n\
                   --replay  run a recorded event (its seq or --id) through the local triggers again, past dedupe\n\
                   \x20         and cooldown; each firing is a delivery marked replayed. Events a trigger caused\n\
-                  \x20         still fire nothing. Test a trigger first: `midna triggers test <id> --stream …`.",
-        methods: &["streams.publish", "streams.events", "trigger.replay"],
+                  \x20         still fire nothing. Test a trigger first: `midna triggers test <id> --stream …`.\n\
+                  add     midnad runs <command> (in --cwd, else the project's folder, else here) and keeps it\n\
+                  \x20       running: each stdout line {{\"kind\":\"…\",\"id\":\"…\",\"data\":{{…}}}} is published like\n\
+                  \x20       `stream publish`. Other lines and stderr go to $MIDNA_HOME/streams/<name>.log (1 MB, one\n\
+                  \x20       older file kept). On exit it starts again after 1s, doubling to 5 minutes (back to 1s after\n\
+                  \x20       10 minutes up); every stream starts again when midnad starts and after the Mac wakes.\n\
+                  \x20       --secret NAME (repeatable): the stored secret goes in its environment as $NAME, resolved\n\
+                  \x20       like `secret exec` (--project first); only the names are saved, and the values are masked\n\
+                  \x20       in what it prints. Only the human can add a stream for now (from the app).\n\
+                  list    each stream's state (running, backoff, paused), pid, restarts, last exit and last event.\n\
+                  pause/resume/restart/remove  stop it and keep it stopped / start it / start it again now / stop\n\
+                  \x20       and forget it. Stopping one stops everything it started.",
+        methods: &["streams.publish", "streams.events", "trigger.replay", "streams.add", "streams.list", "streams.set_enabled", "streams.restart", "streams.remove"],
     },
     Verb {
         name: "insights",

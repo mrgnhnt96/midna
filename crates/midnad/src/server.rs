@@ -52,6 +52,7 @@ pub fn stop_daemon(d: &Daemon) -> bool {
     for rt in rts {
         let _ = rt.tx.send(crate::term::EngineMsg::Stop);
     }
+    crate::producers::stop_all(d);
     d.save_now();
     let _ = UnixStream::connect(&d.cfg.socket); // wake the accept loop
     let _ = std::fs::remove_file(&d.cfg.socket);
@@ -236,6 +237,7 @@ fn background(d: &Arc<Daemon>) {
     let published: Vec<midna_proto::Event> = d.log.with_events(|events| events.iter().filter(|e| e.stream.is_some()).cloned().collect());
     d.streams.seed(&published);
     crate::local::start(d);
+    crate::producers::start(d);
     crate::queue::start(d);
     crate::resume::start(d);
     crate::clock::start(d);

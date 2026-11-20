@@ -196,6 +196,153 @@ pub struct StreamsEventsResult {
     pub counts: StreamCounts,
 }
 
+/// A stream midnad runs (`streams.add`): it starts `command` and reads its stdout, one JSON
+/// object per line (`{"kind":"…","id":"…","data":{…}}`), into the same intake as
+/// `streams.publish`. Kept in state.json; secrets by name only, their values are looked up
+/// each time it starts and go only into its environment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamSpec {
+    pub name: String,
+    /// The producer's argv. A one-string command with spaces, or a bare program name, runs
+    /// through the login shell (so the human's PATH applies); an absolute program runs as is.
+    pub command: Vec<String>,
+    /// The folder it runs in.
+    pub cwd: String,
+    /// The project its secrets are looked up in (a project's own first, then a global one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<crate::types::Id>,
+    /// Stored secrets' names, put in its environment under those names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
+    /// False while paused: midnad doesn't run it.
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+/// Where a stream's producer is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamState {
+    /// About to start.
+    #[default]
+    Starting,
+    /// Its producer is running (`pid`).
+    Running,
+    /// It exited or couldn't start; midnad starts it again at `retry_at` (after 1s, doubling to
+    /// 5 minutes; back to 1s once a run lasts 10 minutes).
+    Backoff,
+    /// Paused (`midna stream pause`): not running until resumed.
+    Paused,
+}
+
+impl StreamState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StreamState::Starting => "starting",
+            StreamState::Running => "running",
+            StreamState::Backoff => "backoff",
+            StreamState::Paused => "paused",
+        }
+    }
+}
+
+/// How a producer's last run ended.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamExit {
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    /// How long it ran, in seconds.
+    pub ran_secs: u64,
+}
+
+/// A stream midnad runs and how its producer is doing (`streams.list`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamStatus {
+    pub name: String,
+    pub command: Vec<String>,
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<crate::types::Id>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
+    pub enabled: bool,
+    pub state: StreamState,
+    /// The producer's pid (its process group's) while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Times midnad started it again after it exited or failed to start, since the daemon started.
+    pub restarts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<StreamExit>,
+    /// In backoff: when it starts again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    /// Why its last start failed (a missing secret, a command that isn't there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The stream's newest accepted event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<StreamPublishRecord>,
+    /// Its stderr and the stdout lines that weren't events: `$MIDNA_HOME/streams/<name>.log`.
+    pub log: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsAddParams {
+    /// The stream's name: 1–32 of `a-z 0-9 -`. Its events are `stream.<name>.<kind>`.
+    pub name: String,
+    /// The producer's argv (e.g. `["node", "slack.js"]`).
+    pub command: Vec<String>,
+    /// The folder it runs in (absolute). Default: the project's folder, else the caller's cwd
+    /// in its terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The project (id or name) its secrets come from. Default: the caller's terminal's, else
+    /// the one whose folder holds `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Names of stored secrets to put in its environment (`midna secret list`).
+    #[serde(default)]
+    pub secrets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsNameParams {
+    /// The stream's name.
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsSetEnabledParams {
+    pub name: String,
+    /// False pauses it (its producer is stopped); true resumes it.
+    pub enabled: bool,
+}
+
+/// One line of a producer's stdout as a publish to stream `name`: a JSON object with `kind`,
+/// optional `id` (a string or number) and optional `data` (an object). `Err` says why it isn't.
+pub fn parse_producer_line(name: &str, line: &[u8]) -> Result<StreamsPublishParams, String> {
+    let v: Value = serde_json::from_slice(line).map_err(|_| "not JSON".to_string())?;
+    let Value::Object(mut o) = v else { return Err("not a JSON object".into()) };
+    let kind = match o.remove("kind") {
+        Some(Value::String(k)) => k,
+        Some(_) => return Err("`kind` isn't a string".into()),
+        None => return Err("no `kind`".into()),
+    };
+    let id = match o.remove("id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(_) => return Err("`id` isn't a string or number".into()),
+    };
+    Ok(StreamsPublishParams { stream: name.into(), kind, id, data: o.remove("data").unwrap_or(Value::Null) })
+}
+
 /// A stream name: 1–32 of `a-z 0-9 -`.
 pub fn valid_name(s: &str) -> bool {
     (1..=MAX_NAME).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -291,6 +438,20 @@ mod tests {
         assert!(check_publish(&p("s", "k", None, big)).unwrap_err().contains("64 KB"));
         let fits = json!({ "t": "x".repeat(MAX_PAYLOAD_BYTES - 10) });
         assert!(check_publish(&p("s", "k", None, fits)).is_ok());
+    }
+
+    #[test]
+    fn producer_lines() {
+        let p = parse_producer_line("slack", br#"{"kind":"message","id":"17.1","data":{"text":"hi"},"stream":"other"}"#).unwrap();
+        assert_eq!((p.stream.as_str(), p.kind.as_str(), p.id.as_deref(), p.data.clone()), ("slack", "message", Some("17.1"), json!({ "text": "hi" })));
+        let p = parse_producer_line("ci", br#"{"kind":"build","id":42}"#).unwrap();
+        assert_eq!((p.id.as_deref(), p.data), (Some("42"), Value::Null));
+        assert_eq!(parse_producer_line("s", b"hello").unwrap_err(), "not JSON");
+        assert_eq!(parse_producer_line("s", b"[1]").unwrap_err(), "not a JSON object");
+        assert_eq!(parse_producer_line("s", br#"{"id":"1"}"#).unwrap_err(), "no `kind`");
+        assert!(parse_producer_line("s", br#"{"kind":"k","id":[1]}"#).is_err());
+        // The kind and payload are checked like any publish.
+        assert!(check_publish(&parse_producer_line("s", br#"{"kind":"Bad Kind"}"#).unwrap()).is_err());
     }
 
     #[test]

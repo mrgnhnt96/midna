@@ -1,7 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::cleanup::*;
-use crate::streams::{StreamsEventsParams, StreamsEventsResult, StreamsPublishParams, StreamsPublishResult};
+use crate::streams::{StreamStatus, StreamsAddParams, StreamsEventsParams, StreamsEventsResult, StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams};
 use crate::summary::*;
 use crate::methods::*;
 use crate::nearby::*;
@@ -506,6 +506,28 @@ fn build() -> Vec<MethodSpec> {
              `seq`), duplicate (`seq` is the first one's), rate_limited, too_large, busy or refused, plus counts per verdict \
              since the daemon started. Accepted events from before it started come from the event log. A stream nobody has \
              published to lists nothing. CLI: `midna stream events <name> [--limit N] [--json]`."),
+        m::<StreamsAddParams, StreamStatus>("streams.add").mutating().d(
+            "Have midna run a stream's producer: a command whose stdout is one JSON object per line, \
+             {\"kind\":\"message\",\"id\":\"…\",\"data\":{…}} (id and data optional), each published to stream `name` like \
+             streams.publish (same dedupe and limits). Lines that aren't events and its stderr go to \
+             $MIDNA_HOME/streams/<name>.log (capped at 1 MB, one older file kept). It runs in its own process group in `cwd` with \
+             the terminal environment plus MIDNA_STREAM=<name>, and each named stored secret in its environment (looked up \
+             each start: the project's own, else a global one; values never stored or logged). When it exits midnad starts it \
+             again after 1s, doubling to 5 minutes (back to 1s once a run lasts 10 minutes), and starts every stream again \
+             when the daemon starts and after the Mac wakes. Streams are kept in state.json. For now only the human can add \
+             one: an agent's call is refused. CLI: `midna stream add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>`."),
+        m::<NoParams, Vec<StreamStatus>>("streams.list").d(
+            "The streams midna runs (streams.add), each with its producer's state (starting, running, backoff, paused), pid, \
+             restarts, last exit, when it starts again, its last start error, its newest accepted event and its log file. \
+             CLI: `midna stream list [--json]`."),
+        m::<StreamsNameParams, OkResult>("streams.remove").mutating().d(
+            "Stop a stream's producer (its whole process group) and forget the stream. Its log file stays. CLI: `midna stream remove <name>`."),
+        m::<StreamsSetEnabledParams, StreamStatus>("streams.set_enabled").mutating().d(
+            "Pause (enabled false: its producer's process group is stopped) or resume a stream midna runs. \
+             CLI: `midna stream pause <name>`, `midna stream resume <name>`."),
+        m::<StreamsNameParams, StreamStatus>("streams.restart").mutating().d(
+            "Stop a running stream's producer and start it again now (a stream in backoff starts at once). A paused one is \
+             refused: resume it. CLI: `midna stream restart <name>`."),
         // events
         m::<EventsListParams, Vec<Event>>("events.list").d(
             "List events from the append-only log (seq > since_seq), oldest first. Every state change and every acting call (audit) is an event."),

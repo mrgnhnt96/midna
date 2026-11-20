@@ -48,6 +48,9 @@ pub struct State {
     /// The human's stored secrets (metadata; values are in the Keychain).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<Secret>,
+    /// Streams midnad runs (`streams.add`): their commands, folders, projects and secret names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streams: Vec<midna_proto::StreamSpec>,
     #[serde(default)]
     pub needs_you: Vec<NeedsYou>,
     /// Only values that differ from the catalog default are stored.
