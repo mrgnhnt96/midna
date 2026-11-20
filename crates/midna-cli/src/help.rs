@@ -525,7 +525,8 @@ pub static VERBS: &[Verb] = &[
                 triggers add|update … [--action-json '<TriggerAction>'] [--filter-json '<TriggerFilter>']\n       \
                 triggers update <id> [same flags] | enable <id> | disable <id> | remove <id>\n       \
                 triggers set-secret <id>   (human only; reads stdin)\n       \
-                triggers test <id> [--payload FILE|-|JSON] [--event E] [--session ID]",
+                triggers test <id> [--payload FILE|-|JSON] [--event E] [--session ID]\n       \
+                triggers test <id> --stream NAME --kind KIND [--id ID] [--data JSON|@file|-]",
         summary: "triggers: GitHub/Bitbucket webhooks, or local agent hooks / midna events / idle terminals / schedules, that act",
         details: "Webhook triggers: agents draft freely; they start as needs_secret. Only the human pastes the signing\n\
                   secret and enables one (`enable` from an agent asks the human). Anyone may pause.\n\
@@ -557,7 +558,9 @@ pub static VERBS: &[Verb] = &[
                   --wake wakes a sleeping Mac for each run, even outside the keep-awake hours (a nightly restart),\n\
                   and keeps it awake while the work goes on; needs `midna keep-awake wake on` (--no-wake on update).\n\
                   stream.<name>.<kind> (globs: stream.slack.*) fires on what a program hands midna with `midna stream\n\
-                  publish`; such an event has no terminal, and its envelope is {{stream.name|kind|id}}.\n\
+                  publish`; such an event has no terminal, and its envelope is {{stream.name|kind|id}}. `test\n\
+                  --stream slack --kind message --data JSON` dry-runs one without publishing it; `midna stream events\n\
+                  <name> --replay SEQ|ID` runs a recorded one through the triggers again.\n\
                   --to NAME|ID makes --send, --set-status, --clear-status, --notify and --attention act on that\n\
                   terminal instead of the one that fired (for stream and schedule events, which have none): an\n\
                   exact name, else a session id, looked up when it fires (in --in-project's project when set; of\n\
@@ -632,7 +635,7 @@ pub static VERBS: &[Verb] = &[
         name: "stream",
         aliases: &["streams"],
         usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]\n       \
-                stream events <name> [--limit N]",
+                stream events <name> [--limit N] [--replay SEQ|ID]",
         summary: "hand midna an event from a program on this Mac, for local triggers",
         details: "Logs event `stream.<name>.<kind>` with the JSON object as its data (at most 64 KB; --data left out\n\
                   reads stdin, `{}` from a terminal). Local triggers react to it like any midna event:\n\
@@ -643,8 +646,11 @@ pub static VERBS: &[Verb] = &[
                   events a minute (bursts of 20), or with 1000 events waiting, a publish is dropped (exit 1); a\n\
                   trigger fires at most once per its cooldown (default 60s) for a stream.\n\
                   events  the stream's last 200 publishes, newest first, with what midna did with each:\n\
-                  \x20       accepted, duplicate, rate_limited, too_large, busy or refused.",
-        methods: &["streams.publish", "streams.events"],
+                  \x20       accepted, duplicate, rate_limited, too_large, busy or refused.\n\
+                  --replay  run a recorded event (its seq or --id) through the local triggers again, past dedupe\n\
+                  \x20         and cooldown; each firing is a delivery marked replayed. Events a trigger caused\n\
+                  \x20         still fire nothing. Test a trigger first: `midna triggers test <id> --stream …`.",
+        methods: &["streams.publish", "streams.events", "trigger.replay"],
     },
     Verb {
         name: "insights",

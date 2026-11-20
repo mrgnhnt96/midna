@@ -153,3 +153,123 @@ fn a_flood_is_deduped_rate_limited_cooled_down_and_listed() {
     call(&mut h, "streams.publish", json!({ "stream": "other", "kind": "message" }));
     wait_for(5, "the other stream fires it", || (deliveries(&mut h, &once) == 2).then_some(()));
 }
+
+#[test]
+fn trigger_test_dry_runs_a_stream_event_without_publishing_it() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    call(&mut h, "session.rename", json!({ "id": sid, "name": "build" }));
+    let t = call(
+        &mut h,
+        "trigger.add",
+        json!({
+            "name": "CI failed", "source": "local", "event": "stream.slack.*",
+            "filter": { "match": { "text": "*failed to build on pipeline roon_mobile*", "branch": "master" } },
+            "action": { "kind": "send_to_session", "steps": [{ "text": "fix {{data.text}} ({{stream.name}}/{{stream.kind}}/{{stream.id}})" }], "to": "build" },
+            "enabled": true
+        }),
+    );
+    let test = |h: &mut Client, stream: Value, payload: Value| call(h, "trigger.test", json!({ "trigger_id": t["id"], "stream": stream, "payload": payload }));
+    let failed = json!({ "text": "x failed to build on pipeline roon_mobile", "branch": "master" });
+
+    // The envelope fills {{stream.*}}, the payload filter.match and {{data.*}}, and `to` resolves now.
+    let r = test(&mut h, json!({ "name": "slack", "kind": "message", "id": "1700.1" }), failed.clone());
+    assert_eq!(r["event"], "stream.slack.message", "{r}");
+    assert_eq!(r["verdict"], "verified", "{r}");
+    assert_eq!(
+        r["summary"].as_str(),
+        Some(format!("Matches · would send on build ({sid}): “fix x failed to build on pipeline roon_mobile (slack/message/1700.1)”").as_str()),
+        "{r}"
+    );
+    assert_eq!(r["subject"], "build", "{r}");
+    // No id: {{stream.id}} is empty, as it would be for a publish without one.
+    let r = test(&mut h, json!({ "name": "slack", "kind": "message" }), failed.clone());
+    assert!(r["summary"].as_str().unwrap().ends_with("(slack/message/)”"), "{r}");
+    // The filter is on the payload.
+    let r = test(&mut h, json!({ "name": "slack", "kind": "message" }), json!({ "text": "x failed to build on pipeline roon_mobile", "branch": "dev" }));
+    assert_eq!(r["verdict"], "filtered", "{r}");
+    assert!(r["summary"].as_str().unwrap().starts_with("Doesn't match"), "{r}");
+    // Another stream doesn't match the trigger's event.
+    let r = test(&mut h, json!({ "name": "ci", "kind": "message" }), failed.clone());
+    assert_eq!(r["verdict"], "filtered", "{r}");
+
+    // Nothing was published, fired or recorded.
+    assert!(events(&mut h, "stream.").is_empty());
+    assert_eq!(call(&mut h, "streams.events", json!({ "stream": "slack" }))["events"], json!([]));
+    assert_eq!(call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] })), json!([]));
+
+    // Checked as a publish would be.
+    let e = bad(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "stream": { "name": "Slack", "kind": "message" } }));
+    assert!(e.contains("a-z 0-9 -"), "{e}");
+    let e = bad(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "stream": { "name": "slack", "kind": "message" }, "payload": [1] }));
+    assert!(e.contains("JSON object"), "{e}");
+    let e = bad(&mut h, "trigger.test", json!({ "trigger_id": t["id"], "stream": { "name": "slack", "kind": "message" }, "event": "stream.ci.x" }));
+    assert!(e.contains("leave event out"), "{e}");
+    let gh = call(&mut h, "trigger.add", json!({ "name": "gh", "source": "github", "event": "pull_request.opened", "action": { "kind": "attention", "message": "PR" } }));
+    let e = bad(&mut h, "trigger.test", json!({ "trigger_id": gh["id"], "stream": { "name": "slack", "kind": "message" } }));
+    assert!(e.contains("only local triggers"), "{e}");
+}
+
+#[test]
+fn trigger_replay_reruns_a_recorded_stream_event() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let deliveries = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"], "limit": 100 })).as_array().cloned().unwrap_or_default();
+    // The default cooldown: a replay within the minute still fires.
+    let t = call(&mut h, "trigger.add", json!({ "name": "Note", "source": "local", "event": "stream.ci.*", "action": { "kind": "notify", "title": "{{stream.id}} {{data.n}}" }, "enabled": true }));
+    let p = call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "id": "b1", "data": { "n": 3 } }));
+    let seq = p["seq"].as_u64().unwrap();
+    wait_for(5, "the first firing", || Some(deliveries(&mut h, &t)).filter(|d| d.len() == 1));
+    // Deduped as a publish: a replay is the way to run it again.
+    assert_eq!(call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "id": "b1", "data": { "n": 3 } }))["verdict"], "duplicate");
+
+    let r = call(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "b1" }));
+    assert_eq!((r["verdict"].as_str(), r["event"].as_str()), (Some("replayed"), Some("stream.ci.done")), "{r}");
+    assert_eq!(r["replay_of"], format!("event:{seq}"), "{r}");
+    assert_eq!(r["triggers_fired"], json!([t["id"]]), "{r}");
+    assert_eq!(r["summary"], format!("Replayed event {seq} · fired 1 trigger: Note"), "{r}");
+    let del = deliveries(&mut h, &t);
+    assert_eq!(del.len(), 2, "{del:?}");
+    let last = &del[1];
+    assert_eq!((last["verdict"].as_str(), last["replay_of"].as_str()), (Some("replayed"), Some(format!("event:{seq}").as_str())), "{last}");
+    assert!(last["summary"].as_str().unwrap().starts_with("Replayed · "), "{last}");
+    // The publisher's id and data fill the templates (the notifier drops the replay's identical text).
+    let posted = wait_for(5, "a notification", || Some(events(&mut h, "notify.posted")).filter(|e| !e.is_empty()));
+    assert!(posted[0]["data"].to_string().contains("b1 3"), "{posted:?}");
+    // By seq too.
+    let r = call(&mut h, "trigger.replay", json!({ "stream": "ci", "event": seq.to_string() }));
+    assert_eq!(r["triggers_fired"], json!([t["id"]]), "{r}");
+    assert_eq!(deliveries(&mut h, &t).len(), 3);
+    // Replaying publishes nothing.
+    assert_eq!(events(&mut h, "stream.ci.done").len(), 1);
+
+    // A trigger that doesn't match is listed, not fired.
+    call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": { "match": { "n": "4" } } }));
+    let r = call(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "b1" }));
+    assert_eq!(r["triggers_fired"], json!(null), "{r}");
+    assert_eq!(r["summary"], format!("Replayed event {seq} · 1 trigger listens for stream.ci.done, but none matched its filters"), "{r}");
+    call(&mut h, "trigger.update", json!({ "id": t["id"], "filter": {} }));
+
+    // The loop guard holds: an event a trigger caused fires nothing, replayed or not.
+    let mut caused = Client::connect(d.socket()).unwrap();
+    caused.set_caller(Some(midna_proto::Caller { caused_by: Some(midna_proto::TriggerCause { trigger: "t_x".into(), delivery: None }), ..Default::default() }));
+    let looped = call(&mut caused, "streams.publish", json!({ "stream": "ci", "kind": "done", "id": "loop" }));
+    let r = call(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "loop" }));
+    assert_eq!(r["summary"], format!("Not replayed · trigger t_x caused event {}, so it never fires triggers", looped["seq"]), "{r}");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(deliveries(&mut h, &t).len(), 3);
+
+    // Only what the stream recorded: a dropped publish, an unknown event, a bad request.
+    call_err(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "id": "big", "data": { "t": "x".repeat(70_000) } }));
+    let e = bad(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "big" }));
+    assert!(e.contains("dropped event big (too_large)"), "{e}");
+    let e = bad(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "nope" }));
+    assert!(e.contains("no event nope") && e.contains("midna stream events ci"), "{e}");
+    let e = bad(&mut h, "trigger.replay", json!({ "stream": "other", "event": seq.to_string() }));
+    assert!(e.contains(&format!("no event {seq}")), "{e}");
+    let e = bad(&mut h, "trigger.replay", json!({ "stream": "ci" }));
+    assert!(e.contains("name the event"), "{e}");
+    let e = bad(&mut h, "trigger.replay", json!({ "stream": "ci", "event": "b1", "delivery_id": del[0]["id"] }));
+    assert!(e.contains("not both"), "{e}");
+}

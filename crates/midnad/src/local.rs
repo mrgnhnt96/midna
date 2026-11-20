@@ -561,6 +561,69 @@ pub fn fire_once(d: &Arc<Daemon>, t: &Trigger, event: &str, sid: Option<&str>, d
     fire(d, t, event, s.as_ref(), data, None, line)
 }
 
+/// `trigger.replay` of a recorded stream event: run it through the local triggers again, past
+/// the stream's dedupe (it was taken once) and each trigger's cooldown (a replay is asked for),
+/// but not the loop guard: an event a trigger caused still fires nothing. Each firing is
+/// recorded as its own delivery (verdict replayed, replay_of `event:<seq>`); the result sums
+/// them up and isn't recorded.
+pub fn replay_stream(d: &Arc<Daemon>, e: &Event) -> Delivery {
+    let of = format!("event:{}", e.seq);
+    let mut sum = Delivery {
+        id: "d_replay".into(),
+        source: TriggerSource::Local,
+        event: e.kind.clone(),
+        delivery_guid: "replay".into(),
+        received_at: time::now_rfc3339(),
+        verdict: Verdict::Replayed,
+        trigger_id: None,
+        session_started: None,
+        summary: String::new(),
+        action: None,
+        repo: None,
+        subject: None,
+        http_status: None,
+        eval: vec![],
+        triggers_fired: vec![],
+        sessions_started: vec![],
+        recovered: false,
+        replay_of: Some(of.clone()),
+        body_sha256: None,
+        command_runs: vec![],
+    };
+    let stream = e.stream.as_deref();
+    if let Some(c) = stream.and_then(|x| x.caused_by.as_ref()) {
+        sum.summary = format!("Not replayed · trigger {} caused event {}, so it never fires triggers", c.trigger, e.seq);
+        return sum;
+    }
+    let candidates: Vec<Trigger> = d.core().state.triggers.iter().filter(|t| is_live(t) && glob_ci(t.event.trim(), &e.kind)).cloned().collect();
+    let mut outcomes = vec![];
+    for t in &candidates {
+        let ev = evaluate(t, &e.kind, None, &e.data);
+        if !ev.fires() {
+            sum.eval.push(ev.line);
+            continue;
+        }
+        let (id, outcome) = fire_as(d, t, &e.kind, None, &e.data, stream, ev.line, Some(&of));
+        sum.eval.push(format!("{}: {outcome} (delivery {id})", t.name));
+        sum.triggers_fired.push(t.id.clone());
+        let started = d.core().state.deliveries.iter().rev().find(|x| x.id == id).and_then(|x| x.session_started.clone());
+        sum.sessions_started.extend(started);
+        outcomes.push(t.name.clone());
+    }
+    sum.trigger_id = sum.triggers_fired.first().cloned();
+    sum.session_started = sum.sessions_started.first().cloned();
+    sum.summary = match (outcomes.len(), candidates.len()) {
+        (0, 0) => format!("Replayed event {} · no live local trigger listens for {}", e.seq, e.kind),
+        (0, n) => format!("Replayed event {} · {n} trigger{} listen{} for {}, but none matched its filters", e.seq, plural(n), if n == 1 { "s" } else { "" }, e.kind),
+        (n, _) => format!("Replayed event {} · fired {n} trigger{}: {}", e.seq, plural(n), outcomes.join(", ")),
+    };
+    sum
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
 /// A trigger's `to`, looked up now among running terminals (within `project`): the terminal,
 /// and a note when several have that name.
 pub fn resolve_to(d: &Daemon, to: &str, project: Option<&str>) -> Result<(SessionFacts, Option<String>), String> {
@@ -588,6 +651,14 @@ fn acting_on(d: &Daemon, t: &Trigger, s: Option<&SessionFacts>) -> Result<(Optio
 }
 
 fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, line: String) -> (Id, String) {
+    fire_as(d, t, event, s, data, stream, line, None)
+}
+
+/// [`fire`], as a replay of `replay_of` (`event:<seq>`) when it is one.
+#[allow(clippy::too_many_arguments)]
+fn fire_as(
+    d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, line: String, replay_of: Option<&str>,
+) -> (Id, String) {
     let id = format!("d_{}", hex_id(6));
     let guid = format!("local-{}", hex_id(8));
     // A run_command gets the hook payload or event data in $MIDNA_PAYLOAD, kept and pruned with
@@ -606,6 +677,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         }
         Err(e) => (None, format!("Could not {}: {e}", action_name(&t.action).replace('_', " "))),
     };
+    let outcome = if replay_of.is_some() { format!("Replayed · {outcome}") } else { outcome };
     let on = on.ok().and_then(|(x, _)| x);
     let s = on.as_ref().or(s);
     let summary = s.map(|s| s.name.clone());
@@ -624,7 +696,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         event: event.to_string(),
         delivery_guid: guid,
         received_at: time::now_rfc3339(),
-        verdict: Verdict::Verified,
+        verdict: if replay_of.is_some() { Verdict::Replayed } else { Verdict::Verified },
         trigger_id: Some(t.id.clone()),
         session_started: started.clone(),
         summary: outcome.clone(),
@@ -636,7 +708,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         triggers_fired: vec![t.id.clone()],
         sessions_started: started.clone().into_iter().collect(),
         recovered: false,
-        replay_of: None,
+        replay_of: replay_of.map(str::to_string),
         body_sha256: None,
         command_runs: runs,
     };
@@ -646,7 +718,7 @@ fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, dat
         actor_of(t),
         project,
         s.map(|s| s.id.clone()).or(started.clone()),
-        json!({ "trigger_id": t.id, "delivery_id": del.id, "session_id": started, "outcome": outcome, "event": event, "local": true }),
+        json!({ "trigger_id": t.id, "delivery_id": del.id, "session_id": started, "outcome": outcome, "event": event, "local": true, "replay": replay_of.is_some() }),
     );
     crate::webhooks::process::record(d, &del, None);
     (del.id, outcome)
@@ -939,7 +1011,8 @@ fn watch_silent_prompt(d: &Arc<Daemon>, sid: &str, seen: u64) {
 // ------------------------------------------------------------------ dry run
 
 /// `trigger.test` for a local trigger: how it evaluates, and what it would do. Nothing runs.
-pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &Value) -> Delivery {
+/// `stream`: the stream event's envelope, when the test names one.
+pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &Value, stream: Option<&StreamRef>) -> Delivery {
     let s = sid.and_then(|sid| SessionFacts::lookup(d, sid));
     // A schedule: test against its next run, and say when the next few are.
     let mut next = String::new();
@@ -964,8 +1037,9 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
     let target = acting.as_ref().ok().and_then(|(x, _)| x.clone());
     // Without a terminal (or before its first prompt) show where the prompt would go.
     let prompt = target.as_ref().and_then(|s| last_prompt(d, &s.id)).unwrap_or_else(|| "‹last prompt›".into());
-    // A stream event: its stream and kind from the event; the publisher's id isn't known yet.
-    let stream = StreamRef::of_event(event).map(|x| StreamRef { id: Some("‹id›".into()), ..x });
+    // A stream event: the envelope given, or its stream and kind from the event with the
+    // publisher's id not known yet.
+    let stream = stream.cloned().or_else(|| StreamRef::of_event(event).map(|x| StreamRef { id: Some("‹id›".into()), ..x }));
     let facts = s.as_ref().or(target.as_ref());
     let r = |tpl: &str, quote: bool| render(tpl, event, stream.as_ref(), facts, data, Some(&prompt), quote);
     let mut on = match (&acting, t.action.to()) {

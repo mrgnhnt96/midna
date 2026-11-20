@@ -223,6 +223,32 @@ fn stream_publish_cli() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("object"), "{}", String::from_utf8_lossy(&o.stderr));
     let o = d.midna(&["stream", "publish", "slack"], None);
     assert_ne!(o.status.code(), Some(0));
+
+    // A trigger test takes a stream event and publishes nothing.
+    let id = t["id"].as_str().unwrap();
+    let o = d.midna(&["triggers", "test", id, "--stream", "slack", "--kind", "message", "--id", "9", "--data", r#"{"text":"it failed"}"#], None);
+    ok(&o);
+    assert!(out(&o).contains("would notify: slack: it failed"), "{}", out(&o));
+    let o = d.midna(&["triggers", "test", id, "--stream", "slack", "--kind", "message"], Some(r#"{"text":"all good"}"#));
+    ok(&o);
+    assert!(out(&o).contains("Doesn't match"), "{}", out(&o));
+    let o = d.midna(&["triggers", "test", id, "--kind", "message"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--kind goes with --stream"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = d.midna(&["triggers", "test", id, "--stream", "slack"], None);
+    assert_eq!(o.status.code(), Some(2));
+    let logged = |kind: &str| out(&d.midna(&["events", "--kind", kind, "--json"], None)).lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(logged("stream.slack.message"), 2);
+
+    // `stream events --replay` runs a recorded event through the triggers again (an agent's
+    // trigger waits for the human to enable it, so nothing fires here; tests/streams.rs fires one).
+    let o = d.midna(&["stream", "events", "slack", "--replay", "17.1"], None);
+    ok(&o);
+    assert!(out(&o).starts_with("d_replay replayed  Replayed event ") && out(&o).contains("no live local trigger listens for stream.slack.message"), "{}", out(&o));
+    assert_eq!(logged("stream.slack.message"), 2, "a replay publishes nothing");
+    let o = d.midna(&["stream", "events", "slack", "--replay", "404"], None);
+    assert_ne!(o.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no event 404"), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// A trigger whose command publishes to the stream it listens on fires once, not in a loop:

@@ -595,11 +595,16 @@ fn build() -> Vec<MethodSpec> {
              timed_out, output (last 50 lines), error}; `trigger.command_finished` is emitted when one ends."),
         m::<TriggerReplayParams, Delivery>("trigger.replay").mutating().d(
             "Run a past delivery through the triggers again (same filters, no signature check since it was verified when it \
-             arrived). Deliveries that failed signature checks can't be replayed."),
+             arrived). Deliveries that failed signature checks can't be replayed. Or stream + event (its seq or publisher id, \
+             from streams.events' last 200): run a recorded stream event through the local triggers again, past dedupe and \
+             cooldown; each firing is recorded as a delivery with verdict replayed, and the result sums them up. An event a \
+             trigger caused still fires nothing."),
         m::<TriggerTestParams, Delivery>("trigger.test").d(
             "Dry-run one trigger against a sample payload: shows how the event and filters evaluate and the rendered \
              prompt/command. Local triggers: payload is the hook payload or event data, event defaults to the trigger's, and \
-             session names the terminal (filters, {{session.*}}, {{last_prompt}}). Nothing runs and nothing is recorded."),
+             session names the terminal (filters, {{session.*}}, {{last_prompt}}). stream {name, kind, id} tests a stream event \
+             without publishing it: payload is its data (filter.match, {{data.*}}), {{stream.*}} its envelope, and a `to` \
+             shows the terminal it resolves to now. Nothing runs and nothing is recorded."),
         // secrets
         m::<SecretListParams, Vec<Secret>>("secret.list").d(
             "Stored secrets (names and metadata only; values never leave midnad). `[secret:NAME]` in a prompt is one of \

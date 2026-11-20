@@ -1434,7 +1434,7 @@ pub struct Delivery {
     /// Recovered from GitHub's delivery log after it was missed (e.g. while asleep).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recovered: bool,
-    /// For replays: the delivery that was replayed.
+    /// For replays: the delivery that was replayed, or `event:<seq>` for a stream event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_of: Option<Id>,
     /// sha256 of a verified live body. Delivery GUID headers aren't signed, so a captured

@@ -15,8 +15,8 @@ const VALUE_FLAGS: &[&str] = &[
     "open", "wait", "on",
     // links actions register
     "owner", "file",
-    // stream publish
-    "data",
+    // stream publish, triggers test --stream, stream events --replay
+    "data", "stream", "replay",
 ];
 
 /// Flags that take a value only when one follows (`read --screen` vs `commands add --screen S`).
