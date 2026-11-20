@@ -243,7 +243,8 @@ fn trigger_caused_publishes_fire_no_triggers() {
     let mut add = |name: &str, stream: &str, extra: Value| -> String {
         let mut action = json!({ "kind": "run_command", "project_id": pid, "command": format!("{cli} stream publish {stream} again --data '{{\"n\":1}}'") });
         action.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        let t: Value = h.call("trigger.add", json!({ "name": name, "source": "local", "event": format!("stream.{stream}.*"), "action": action, "enabled": true })).unwrap();
+        // No cooldown: the human's second publish below must fire it again within the minute.
+        let t: Value = h.call("trigger.add", json!({ "name": name, "source": "local", "event": format!("stream.{stream}.*"), "action": action, "enabled": true, "cooldown_secs": 0 })).unwrap();
         t["id"].as_str().unwrap().to_string()
     };
     let in_terminal = add("Echo in a terminal", "loop", json!({ "background": true }));
