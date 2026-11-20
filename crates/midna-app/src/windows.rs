@@ -779,7 +779,12 @@ pub fn open(backend: Arc<dyn Backend>, bounds: Option<Bounds<Pixels>>, cx: &mut 
         window_background: if std::env::var("MIDNA_SNAPSHOT").is_ok() { WindowBackgroundAppearance::Opaque } else { WindowBackgroundAppearance::Transparent },
         ..Default::default()
     };
-    cx.open_window(opts, |window, cx| cx.new(|cx| MainWindow::new(backend, window, cx))).ok()
+    let opts = crate::hidden::window_options(opts, cx);
+    cx.open_window(opts, |window, cx| {
+        crate::hidden::attach(window, cx);
+        cx.new(|cx| MainWindow::new(backend, window, cx))
+    })
+    .ok()
 }
 
 /// The entity id of a main window's root.

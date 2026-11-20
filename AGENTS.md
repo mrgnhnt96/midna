@@ -24,6 +24,17 @@ Using the `midna` CLI from a production terminal the way any agent would (`midna
 
 Claude Code enforces these rules with `.claude/hooks/protect-production.py`. Other agents must follow them by hand.
 
+## Look at the app
+
+To see or check a UI change, shoot or drive this checkout's app hidden with Slate. Its window opens below the desktop, never takes focus, and midna never becomes the frontmost app, so nothing appears on the human's screen and their keys stay theirs:
+
+```sh
+scripts/slate.sh shoot --out shot.png --size 1280x800 --wait 2500
+scripts/slate.sh drive --steps steps.json --out shots/ --size 1280x800 --wait 2500
+```
+
+It runs the fake backend unless `--home <temp MIDNA_HOME>` comes first, and passes the `MIDNA_DEBUG_*` / `MIDNA_FAKE_*` screenshot variables through. A steps file lists keys (`{"key": "cmd-k"}`), typing, clicks at window points, scrolls, waits and `{"shot": "name"}` steps; see Slate's README. Only the first main window is hidden: a drive that opens Settings, a pop-out or another window shows that one on screen.
+
 ## Test what you touched
 
 The full suite is slow (the midnad and CLI integration tests start real temp daemons), so run only the tests that cover the code you changed. Start from the modules you touched: their unit tests (`scripts/test.sh -p midnad --lib agent_work::`) and the integration tests that exercise them (`scripts/test.sh -p midnad --test guard`, `scripts/test.sh -p midna-app insights::`). That is enough when the change stays inside a module's internals, such as a private helper, a fix-up when `state.json` loads, or a parsing detail with no other callers.

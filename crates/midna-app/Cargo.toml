@@ -14,7 +14,8 @@ default = ["fake-engine"]
 fake-engine = ["dep:libghostty-vt"]
 # `MIDNA_SNAPSHOT=out.png`: draw the main window offscreen and save it, then quit. Works
 # while the screen is locked (occluded windows don't draw). Dev only.
-snapshot = ["gpui-kit/test-support"]
+# Also has Slate render its shots in the app, with no Screen Recording permission (src/hidden.rs).
+snapshot = ["gpui-kit/test-support", "slate/render"]
 # Honour the MIDNA_DEBUG_* / updater-override driver env vars in a release build (src/dev.rs).
 # Only for test bundles (packaging/e2e); never for a build you ship: those drivers act as the
 # human.
@@ -29,6 +30,9 @@ libc.workspace = true
 libghostty-vt = { workspace = true, optional = true }
 gpui-kit = { version = "0.7", default-features = false }
 async-channel = "2"
+# `slate shoot` / `slate drive` run the app hidden below the desktop, never focused (src/hidden.rs,
+# scripts/slate.sh, which installs the `slate` command at this same rev). Dev-driver builds only.
+slate = { git = "https://github.com/mrgnhnt96/slate", rev = "34b9471f4ce2828733589d8377336043ff47eba2" }
 # install / auto-update (src/install.rs, src/updater.rs)
 # (objc2 / objc2-foundation are declared below with the composer deps)
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }

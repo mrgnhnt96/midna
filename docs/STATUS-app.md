@@ -29,7 +29,13 @@ Dev env (the `MIDNA_DEBUG_*`, `MIDNA_SELECT` and updater-override variables work
 | `MIDNA_NO_ACTIVATE=1` | Doesn't take focus on launch |
 | `MIDNA_DEBUG=1` | Logs backend events |
 
-Offscreen screenshot (works while the screen is locked):
+Hidden screenshot or drive (nothing shows on screen, focus never moves; see "Look at the app" in `AGENTS.md`):
+
+```sh
+MIDNA_DEBUG_SCREEN=rules scripts/slate.sh shoot --out out.png --size 1280x800 --wait 2500
+```
+
+Offscreen screenshot of other windows (`MIDNA_SNAPSHOT_WINDOW=last|badge`) with the older hook:
 
 ```sh
 cargo build -p midna-app --features snapshot

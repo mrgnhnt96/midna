@@ -12,7 +12,9 @@
 //! - `MIDNA_FAKE_NEEDS=<n>` / `MIDNA_FAKE_MAC_NEEDS=<n>` — keep that many needs-you items on this
 //!   Mac / the Mac mini (the other Macs get none); `MIDNA_FAKE_MAC_ARRIVE=<s>` — one comes in on
 //!   the Mac mini after that.
-//! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch (automated screenshots).
+//! - `MIDNA_NO_ACTIVATE=1` — don't take focus on launch.
+//! - `SLATE=1` (set by `slate shoot` / `slate drive`, see `scripts/slate.sh`) — run hidden below
+//!   the desktop, never focused, and shoot or drive the main window (`hidden.rs`).
 //! - `MIDNA_DEBUG_BADGE_DOCK=1` — the needs-you pill docks in the window though midna isn't in front.
 //! - `MIDNA_DEBUG_BADGE=list|card|menu|mac|switch:<ms>|tip` — once something's waiting, open this
 //!   Mac's list (with its first card) or the menu; the first other Mac's list (`mac`); or this
@@ -30,6 +32,7 @@ mod dev;
 mod finder;
 mod frame;
 mod haptics;
+mod hidden;
 mod icons;
 mod ide;
 mod install;
@@ -69,7 +72,7 @@ fn main() {
     // Folders from Finder's "Open in Midna" (finder.rs) or dropped on the Dock icon; they can
     // arrive before the windows exist, so they wait in a channel.
     let (otx, orx) = async_channel::unbounded::<Vec<String>>();
-    let app = gpui_kit::application().with_assets(icons::Assets);
+    let app = hidden::application(gpui_kit::application()).with_assets(icons::Assets);
     app.on_open_urls(move |urls| drop(otx.try_send(urls)));
     app.run(move |cx| {
         let (ui_font, mono_font) = theme::load_fonts(cx);
@@ -121,9 +124,11 @@ fn main() {
         macs::refresh(backend.clone(), cx);
         // This Mac's picks for its other Macs' windows (Settings → Nearby).
         theme::refresh_picks(backend.clone(), cx);
-        // The windows, places and terminals from last time (or one centered window).
+        // The windows, places and terminals from last time (or one centered window). A hidden
+        // run opens just the one window Slate shoots.
         let fallback = Bounds::centered(None, size(px(w), px(h)), cx);
-        let handle = windows::restore(backend.clone(), fallback, cx).expect("open main window");
+        let handle = if hidden::enabled() { windows::open(backend.clone(), Some(fallback), cx) } else { windows::restore(backend.clone(), fallback, cx) };
+        let handle = handle.expect("open main window");
         // A clicked notification shows its terminal, in whichever window has it (notify.rs).
         let (ntx, nrx) = async_channel::unbounded::<notify::Clicked>();
         notify::start(ntx);
@@ -156,8 +161,10 @@ fn main() {
         if crate::dev::var("MIDNA_DEBUG_SETTINGS").is_ok() {
             settings_window::open(backend.clone(), cx);
         }
-        // The floating badge (hidden until there's something to show).
-        ui::badge::init(backend.clone(), cx);
+        // The floating badge (hidden until there's something to show), never in a hidden run.
+        if !hidden::enabled() {
+            ui::badge::init(backend.clone(), cx);
+        }
         let b = backend.clone();
         cx.on_window_closed(move |cx, _| {
             // The badge alone doesn't keep midna running.
@@ -167,9 +174,7 @@ fn main() {
             }
         })
         .detach();
-        if std::env::var("MIDNA_NO_ACTIVATE").is_err() {
-            cx.activate(true);
-        }
+        hidden::activate(cx);
     });
 }
 

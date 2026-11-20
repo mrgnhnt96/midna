@@ -4112,6 +4112,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "slate",
  "ureq",
 ]
 
@@ -6583,6 +6584,19 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slate"
+version = "0.1.0"
+source = "git+https://github.com/mrgnhnt96/slate?rev=34b9471f4ce2828733589d8377336043ff47eba2#34b9471f4ce2828733589d8377336043ff47eba2"
+dependencies = [
+ "gpui-kit",
+ "image",
+ "objc",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "slotmap"

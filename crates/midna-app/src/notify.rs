@@ -176,6 +176,10 @@ pub fn request_permission() {
 
 /// Show one notification about `session` (None: about midna in general).
 pub fn post(p: &Posted, session: Option<&str>) {
+    // A hidden run (Slate) shows nothing outside its window.
+    if crate::hidden::enabled() {
+        return;
+    }
     if !native() {
         return post_osascript(p);
     }
