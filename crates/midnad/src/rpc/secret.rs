@@ -13,7 +13,7 @@ use std::os::unix::fs::OpenOptionsExt;
 
 /// Explicit, else the caller's terminal's project, else the project whose folder holds `cwd`
 /// (the deepest one).
-fn project_of(d: &Daemon, ctx: &Ctx, explicit: Option<&Id>, cwd: Option<&str>) -> Option<Id> {
+pub(crate) fn project_of(d: &Daemon, ctx: &Ctx, explicit: Option<&Id>, cwd: Option<&str>) -> Option<Id> {
     explicit.cloned().or_else(|| session_project(d, ctx.session.as_deref())).or_else(|| {
         let cwd = std::fs::canonicalize(cwd?).ok()?;
         let core = d.core();
@@ -28,7 +28,7 @@ fn project_of(d: &Daemon, ctx: &Ctx, explicit: Option<&Id>, cwd: Option<&str>) -
 }
 
 /// The secret `name` as seen from `project`: the project's own, else the global one.
-fn resolve(d: &Daemon, name: &str, project: Option<&Id>) -> Result<Secret, RpcError> {
+pub(crate) fn resolve(d: &Daemon, name: &str, project: Option<&Id>) -> Result<Secret, RpcError> {
     let core = d.core();
     let all = &core.state.secrets;
     let hit = project.and_then(|p| all.iter().find(|s| s.name == name && s.project_id.as_ref() == Some(p))).or_else(|| all.iter().find(|s| s.name == name && s.project_id.is_none()));
@@ -226,6 +226,23 @@ pub fn exec_env(d: &Daemon, ctx: &Ctx, p: SecretExecEnvParams) -> R {
     let cmd = if cmd.chars().count() > 200 { format!("{}…", cmd.chars().take(200).collect::<String>()) } else { cmd };
     mark_used(d, ctx, &ids, json!({ "names": p.names, "how": "exec", "command": cmd }), None);
     ok(SecretExecEnvResult { values })
+}
+
+/// The values of secrets `names` for stream `stream`'s producer, looked up in `project` like
+/// `secret exec` does (the project's own, else a global one). They go only into its
+/// environment; the use is recorded as `secret.used` with how `stream`.
+pub(crate) fn stream_env(d: &Daemon, stream: &str, names: &[String], project: Option<&Id>) -> Result<Vec<(String, String)>, RpcError> {
+    let mut env = vec![];
+    let mut ids = vec![];
+    for n in names {
+        let s = resolve(d, n, project)?;
+        env.push((n.clone(), value_of(d, &s)?));
+        ids.push(s.id);
+    }
+    if !ids.is_empty() {
+        mark_used(d, &Ctx::internal_system(), &ids, json!({ "names": names, "how": "stream", "stream": stream }), None);
+    }
+    Ok(env)
 }
 
 pub fn write(d: &Daemon, ctx: &Ctx, p: SecretWriteParams) -> R {

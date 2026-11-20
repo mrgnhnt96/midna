@@ -142,6 +142,7 @@ pub fn start(d: &Arc<crate::daemon::Daemon>) {
             }
             if let Some(slept_at) = d.clock.take_wake() {
                 crate::resume::on_wake(&d, slept_at);
+                crate::producers::on_wake(&d);
             }
         }
     });

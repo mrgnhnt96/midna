@@ -640,3 +640,40 @@ fn share_and_inbox_parse_and_agents_cant_decide() {
     let o = midna(&s, &["call", "share.send", r#"{"peer":"ab","kind":"link","url":"javascript:alert(1)"}"#], None, None);
     assert_eq!(code(&o), 2, "{o:?}");
 }
+
+#[test]
+fn stream_add_is_the_human_s_and_the_rest_manage_it() {
+    let d = D::start();
+    let s = d.sock();
+    let err = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    // The CLI is an agent: adding a stream (a background command with secrets) is refused.
+    let o = midna(&s, &["stream", "add", "tail", "--secret", "TOK", "--cwd", "/tmp", "--", "/bin/sleep", "60"], None, None);
+    assert_eq!(code(&o), 1, "{o:?}");
+    assert!(err(&o).contains("only the human can add a stream"), "{}", err(&o));
+    let o = midna(&s, &["stream", "add", "tail"], None, None);
+    assert_eq!(code(&o), 2, "the command goes after --: {o:?}");
+    assert!(stdout(&midna(&s, &["stream", "list"], None, None)).starts_with("no streams"));
+
+    d.human().call_value("streams.add", json!({ "name": "tail", "command": ["/bin/sleep", "60"], "cwd": "/tmp" })).unwrap();
+    let ok = |o: &Output| assert_eq!(code(o), 0, "{}{}", stdout(o), err(o));
+    let mut listed = String::new();
+    for _ in 0..50 {
+        listed = stdout(&midna(&s, &["stream", "ls"], None, None));
+        if listed.contains("running (pid ") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(listed.starts_with("tail ") && listed.contains("running (pid ") && listed.contains("$ /bin/sleep 60"), "{listed}");
+    let o = midna(&s, &["stream", "pause", "tail"], None, None);
+    ok(&o);
+    assert!(stdout(&o).starts_with("paused: paused"), "{}", stdout(&o));
+    let o = midna(&s, &["stream", "resume", "tail", "--json"], None, None);
+    ok(&o);
+    assert_eq!(serde_json::from_str::<Value>(&stdout(&o)).unwrap()["enabled"], true);
+    ok(&midna(&s, &["stream", "restart", "tail"], None, None));
+    let o = midna(&s, &["stream", "rm", "tail"], None, None);
+    ok(&o);
+    assert_eq!(stdout(&o).trim(), "removed stream tail; its producer was stopped");
+    assert_eq!(code(&midna(&s, &["stream", "remove", "tail"], None, None)), 1, "not found");
+}

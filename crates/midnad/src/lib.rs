@@ -33,6 +33,7 @@ pub mod panic;
 pub mod peer;
 pub mod policy;
 pub mod procs;
+pub mod producers;
 pub mod prompts;
 pub mod pty;
 pub mod question;

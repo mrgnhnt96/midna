@@ -207,6 +207,8 @@ pub struct Daemon {
     /// Stream intake: dedupe, rate limits, the intake queue and each publish's verdict
     /// (`streams.rs`). Lock before `log`; never held with `core`.
     pub streams: crate::streams::Intake,
+    /// The producers midnad runs for streams (`producers.rs`). Never held with `core` or `streams`.
+    pub producers: crate::producers::Producers,
     /// The queued-message sender's book-keeping (`queue.rs`). Never held together with `core`.
     pub queue: crate::queue::Runtime,
     /// Agents watched after a wake (`resume.rs`). Lock after `core`, never before it.
@@ -282,6 +284,7 @@ impl Daemon {
             notify: Mutex::new(Default::default()),
             local: Default::default(),
             streams: Default::default(),
+            producers: Default::default(),
             queue: Default::default(),
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),
