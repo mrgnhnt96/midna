@@ -15,6 +15,7 @@ pub fn daemon_info(d: &Daemon, ctx: &Ctx) -> R {
         role: if ctx.role == Role::Human { "human" } else { "agent" }.into(),
         session: ctx.session.clone(),
         binary: crate::install::running_binary().map(|p| p.to_string_lossy().into_owned()),
+        streams: crate::producers::summary(d),
     })
 }
 

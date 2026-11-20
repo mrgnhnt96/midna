@@ -98,7 +98,8 @@ fn named(a: &Args, out: OutFn, method: &str, text: fn(&str, &Value)) -> Res {
     Ok(())
 }
 
-/// Every stream midnad runs, one line each, then its command.
+/// Every stream midnad runs, one line each, then its command, and for one that isn't healthy,
+/// why and its needs-you item.
 fn list_text(v: &Value) -> String {
     let rows = v.as_array().cloned().unwrap_or_default();
     if rows.is_empty() {
@@ -109,8 +110,26 @@ fn list_text(v: &Value) -> String {
         s.push_str(&format!("{:<16} {}\n", r["name"].as_str().unwrap_or(""), status_line(r)));
         let words: Vec<&str> = r["command"].as_array().map(|c| c.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         s.push_str(&format!("{:<16} $ {}\n", "", words.join(" ")));
+        if let Some(why) = r["why"].as_str() {
+            s.push_str(&format!("{:<16} why: {why}\n", ""));
+        }
+        if let Some(id) = r["needs_you"].as_str() {
+            s.push_str(&format!("{:<16} needs you: {id} (resolves itself once it runs 10 minutes, or when paused)\n", ""));
+        }
     }
     s
+}
+
+/// `12 accepted, 3 dropped` (dropped: refused, rate limited, too large, busy or a duplicate).
+fn counts_text(c: &Value) -> Option<String> {
+    let n = |k: &str| c[k].as_u64().unwrap_or(0);
+    let accepted = n("accepted");
+    let dropped = n("duplicate") + n("rate_limited") + n("too_large") + n("busy") + n("refused");
+    match (accepted, dropped) {
+        (0, 0) => None,
+        (a, 0) => Some(format!("events {a} accepted")),
+        (a, d) => Some(format!("events {a} accepted, {d} dropped")),
+    }
 }
 
 /// `running (pid 42), 3 restarts, last exit code 1 2m ago, last event 5s ago`.
@@ -122,6 +141,14 @@ fn status_line(v: &Value) -> String {
             Some(id) => format!("waiting for the human's approval (needs-you {id}; `midna approve {id}`)"),
             None => "waiting for the human's approval (`midna stream resume` from the app approves it)".into(),
         },
+        ("failing", _) => {
+            let next = match (v["pid"].as_u64(), v["retry_at"].as_str()) {
+                (Some(pid), _) => format!("; trying again now, pid {pid}"),
+                (_, Some(t)) => format!("; next try at {t}"),
+                _ => String::new(),
+            };
+            format!("FAILING ({} exits in 10 min{next})", v["exits_recent"].as_u64().unwrap_or(0))
+        }
         (s, _) => s.to_string(),
     }];
     if let Some(e) = v["error"].as_str() {
@@ -143,6 +170,9 @@ fn status_line(v: &Value) -> String {
     }
     if let Some(at) = v["last_event"]["at"].as_str() {
         parts.push(format!("last event {} {}", v["last_event"]["kind"].as_str().unwrap_or(""), crate::guide::ago(at)));
+    }
+    if let Some(c) = counts_text(&v["counts"]) {
+        parts.push(c);
     }
     if !v["secrets"].as_array().is_none_or(Vec::is_empty) {
         let names: Vec<&str> = v["secrets"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
@@ -282,6 +312,23 @@ mod tests {
         assert!(lines[1].trim_start().starts_with("$ slack-tail --json"), "{s}");
         assert!(lines[2].starts_with("ci") && lines[2].ends_with(" paused"), "{s}");
         assert!(list_text(&json!([])).starts_with("no streams"));
+    }
+
+    #[test]
+    fn a_failing_stream_shows_why_counts_and_its_item() {
+        let v = json!([{
+            "name": "slack", "state": "failing", "restarts": 6, "exits_recent": 5, "command": ["slack-tail"],
+            "retry_at": "2020-01-01T00:00:08Z", "why": "invalid_auth", "needs_you": "n_7",
+            "counts": { "accepted": 12, "duplicate": 1, "rate_limited": 2 }
+        }]);
+        let s = list_text(&v);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("FAILING (5 exits in 10 min; next try at 2020-01-01T00:00:08Z), 6 restarts"), "{s}");
+        assert!(lines[0].ends_with("events 12 accepted, 3 dropped"), "{s}");
+        assert_eq!(lines[2].trim(), "why: invalid_auth");
+        assert!(lines[3].trim().starts_with("needs you: n_7"), "{s}");
+        let running = json!({ "state": "failing", "pid": 9, "exits_recent": 5 });
+        assert!(status_line(&running).starts_with("FAILING (5 exits in 10 min; trying again now, pid 9)"));
     }
 
     #[test]

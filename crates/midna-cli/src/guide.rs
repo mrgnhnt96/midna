@@ -81,6 +81,42 @@ Guide: `midna skill` (also $MIDNA_SKILL) has the core rules and lists its topics
     )
 }
 
+/// The capabilities' streams section, from `daemon.info`'s `streams` (`None` when midnad
+/// couldn't be asked: capabilities work offline).
+pub fn streams_section(info: Option<&Value>) -> Option<String> {
+    let h = &info?["streams"];
+    let total = h["total"].as_u64()?;
+    if total == 0 {
+        return Some("STREAMS    none; `midna stream add <name> -- <cmd>` runs a producer whose stdout lines become stream.<name>.<kind> events".into());
+    }
+    let bad = h["unhealthy"].as_array().cloned().unwrap_or_default();
+    let mut out = format!("STREAMS    {total} ({} healthy) · midna stream list · midna explain <stream name>", h["healthy"].as_u64().unwrap_or(0));
+    for b in &bad {
+        let name = b["name"].as_str().unwrap_or("");
+        let mut line = format!("\n  {name:<9}{}", b["state"].as_str().unwrap_or(""));
+        if let Some(why) = b["why"].as_str() {
+            line.push_str(&format!(": {}", clip(why, 100)));
+        }
+        if let Some(at) = b["retry_at"].as_str() {
+            line.push_str(&format!(" (next try {at})"));
+        }
+        out.push_str(&line);
+    }
+    Some(out)
+}
+
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() }
+}
+
+/// `capabilities()` with the streams section when midnad answered `daemon.info`.
+pub fn capabilities_with(info: Option<&Value>) -> String {
+    match streams_section(info) {
+        Some(st) => format!("{}\n\n{st}", capabilities()),
+        None => capabilities(),
+    }
+}
+
 /// `midna capabilities --json` / the MCP `capabilities` tool's structured content.
 pub fn capabilities_json() -> Value {
     let methods: Vec<Value> = catalog()
@@ -740,8 +776,103 @@ fn kind_meaning(kind: &str) -> &'static str {
         "trigger_waiting" => "a trigger wants to start something and waits for the human",
         "rule_removal" => "an agent asked the human to remove a rule",
         "secret_needed" => "a trigger needs its webhook secret pasted by the human",
+        "stream_failing" => "a stream's producer keeps exiting (5 times in 10 minutes); it resolves itself once the stream runs 10 minutes or is paused",
         _ => "",
     }
+}
+
+/// Whether a trigger's event glob can match `stream.<name>.<some kind>`.
+fn listens_to(event: &str, name: &str) -> bool {
+    match event.strip_prefix("stream.") {
+        Some(rest) => {
+            let name_glob = rest.split_once('.').map_or(rest, |(n, _)| n);
+            glob(name_glob, name)
+        }
+        None => event == "*",
+    }
+}
+
+/// `*` any run, `?` one char.
+fn glob(p: &str, t: &str) -> bool {
+    match p.chars().next() {
+        None => t.is_empty(),
+        Some('*') => (0..=t.len()).filter(|i| t.is_char_boundary(*i)).any(|i| glob(&p[1..], &t[i..])),
+        Some(c) => t.chars().next().is_some_and(|tc| (c == '?' || c == tc) && glob(&p[c.len_utf8()..], &t[tc.len_utf8()..])),
+    }
+}
+
+/// A stream midnad runs: its state and why, its last log lines and the triggers that react to it.
+fn explain_stream(call: Caller, st: &Value, surface: Surface) -> Result<String, RpcError> {
+    let name = s(st, "name");
+    let state = s(st, "state");
+    let mut out = format!("stream {name}: its producer's stdout lines are events stream.{name}.<kind>\n");
+    let words: Vec<&str> = st["command"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    out.push_str(&format!("  $ {}\n", words.join(" ")));
+    let meaning = match state.as_str() {
+        "running" => format!("running (pid {}) since {}", s(st, "pid"), ago(&s(st, "started_at"))),
+        "starting" => "starting".into(),
+        "backoff" => format!("not running: its producer stopped; midna starts it again at {}", s(st, "retry_at")),
+        "failing" => format!(
+            "FAILING since {}: {} exits in 10 minutes. midna keeps starting it again (backoff up to 5 minutes; next try {}); it's healthy again once a run lasts 10 minutes",
+            ago(&s(st, "failing_since")),
+            s(st, "exits_recent"),
+            st["retry_at"].as_str().unwrap_or("now")
+        ),
+        "paused" => format!("paused: its producer is stopped until {}", cmd(surface, &format!("stream resume {name}"), "streams_set_enabled")),
+        other => other.to_string(),
+    };
+    out.push_str(&format!("state: {meaning}\n"));
+    if let Some(why) = st["why"].as_str() {
+        out.push_str(&format!("why: {why}\n"));
+    }
+    if let Some(id) = st["needs_you"].as_str() {
+        out.push_str(&format!("needs you: {id} (stream_failing; resolves itself once healthy, or when paused or removed)\n"));
+    }
+    let mut facts = vec![format!("{} restart(s)", s(st, "restarts"))];
+    let e = &st["last_exit"];
+    if e.is_object() {
+        let how = match (e["code"].as_i64(), e["signal"].as_i64()) {
+            (Some(c), _) => format!("code {c}"),
+            (_, Some(sig)) => format!("signal {sig}"),
+            _ => "unknown".into(),
+        };
+        facts.push(format!("last exit {how} {} after {}s", ago(&s(e, "at")), s(e, "ran_secs")));
+    }
+    let c = &st["counts"];
+    let n = |k: &str| c[k].as_u64().unwrap_or(0);
+    facts.push(format!(
+        "events {} accepted, {} dropped (duplicate {}, rate limited {}, too large {}, busy {}, refused {})",
+        n("accepted"),
+        n("duplicate") + n("rate_limited") + n("too_large") + n("busy") + n("refused"),
+        n("duplicate"),
+        n("rate_limited"),
+        n("too_large"),
+        n("busy"),
+        n("refused")
+    ));
+    if let Some(at) = st["last_event"]["at"].as_str() {
+        facts.push(format!("last event {} {}", st["last_event"]["kind"].as_str().unwrap_or(""), ago(at)));
+    }
+    out.push_str(&format!("{}\n", facts.join("; ")));
+    let tail: Vec<&str> = st["log_tail"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if !tail.is_empty() {
+        out.push_str(&format!("last log lines ({}):\n", s(st, "log")));
+        for l in tail {
+            out.push_str(&format!("  {l}\n"));
+        }
+    }
+    let triggers = call("trigger.list", json!({})).unwrap_or(Value::Null);
+    let listening: Vec<&Value> =
+        triggers.as_array().into_iter().flatten().filter(|t| t["source"] == "local" && listens_to(t["event"].as_str().unwrap_or(""), &name)).collect();
+    if listening.is_empty() {
+        out.push_str(&format!("no trigger listens to stream.{name}.*; add one with `midna triggers add --event stream.{name}.<kind> …`"));
+    } else {
+        out.push_str(&format!("triggers on stream.{name}.*:\n"));
+        let lines: Vec<String> =
+            listening.iter().map(|t| format!("  {} “{}” on {} ({}): {}", s(t, "id"), s(t, "name"), s(t, "event"), s(t, "state"), action_text(&t["action"]))).collect();
+        out.push_str(&lines.join("\n"));
+    }
+    Ok(out)
 }
 
 fn explain_needs_you(call: Caller, id: &str) -> Result<String, RpcError> {
@@ -866,12 +997,22 @@ fn explain_setting(call: Caller, key: &str) -> Option<String> {
 pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String, RpcError> {
     let Some(target) = args.first().map(String::as_str) else {
         return Err(RpcError::bad_params(
-            "explain what? pass an id (terminal, r_…, t_…, n_…, p_…, d_…), a method, a setting key, a topic \
+            "explain what? pass an id (terminal, r_…, t_…, n_…, p_…, d_…), a method, a setting key, a stream name, a topic \
              (status, rules, approvals, triggers, needs-you, settings, scripts, themes, keep-awake, windows, human-only, mcp), or <kind> <value>",
         ));
     };
     if matches!(target, "command" | "tool" | "path" | "cli" | "window") && args.len() > 1 {
         return explain_action(call, target, &args[1..].join(" "));
+    }
+    // `explain stream <name>` (or `stream.<name>`): a stream even when its name is also a topic.
+    let stream_name = match (target, args.get(1)) {
+        ("stream", Some(n)) => Some(n.as_str()),
+        _ => target.strip_prefix("stream.").filter(|n| !n.is_empty() && !n.contains('.')),
+    };
+    if let Some(n) = stream_name {
+        let list = call("streams.list", json!({}))?;
+        let st = list.as_array().into_iter().flatten().find(|x| x["name"] == n).ok_or_else(|| RpcError::not_found(format!("no stream {n} (`midna stream list` lists them)")))?;
+        return explain_stream(call, &st.clone(), surface);
     }
     let hexish = target.len() == 8 && target.chars().all(|c| c.is_ascii_hexdigit());
     match target.split_once('_').map(|(p, _)| p) {
@@ -895,8 +1036,13 @@ pub fn explain(call: Caller, args: &[String], surface: Surface) -> Result<String
     if let Some(sv) = explain_setting(call, target) {
         return Ok(sv);
     }
+    if let Ok(list) = call("streams.list", json!({}))
+        && let Some(st) = list.as_array().into_iter().flatten().find(|x| x["name"] == target)
+    {
+        return explain_stream(call, &st.clone(), surface);
+    }
     Err(RpcError::not_found(format!(
-        "nothing called `{target}`: not an id, method, setting or topic. Topics: {}",
+        "nothing called `{target}`: not an id, method, setting, stream or topic. Topics: {}",
         TOPICS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")
     )))
 }
@@ -928,6 +1074,60 @@ pub fn skill_resource(uri: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_triggers_are_found_by_their_event_glob() {
+        assert!(listens_to("stream.slack.message", "slack"));
+        assert!(listens_to("stream.slack.*", "slack"));
+        assert!(listens_to("stream.*", "slack"));
+        assert!(listens_to("stream.*.message", "slack"));
+        assert!(listens_to("stream.sl?ck.*", "slack"));
+        assert!(!listens_to("stream.ci.*", "slack"));
+        assert!(!listens_to("hook.Stop", "slack"));
+    }
+
+    #[test]
+    fn capabilities_list_unhealthy_streams_when_midnad_answers() {
+        assert_eq!(capabilities_with(None), capabilities());
+        let info = json!({ "streams": { "total": 3, "healthy": 2, "unhealthy": [
+            { "name": "slack", "state": "failing", "why": "invalid_auth", "retry_at": "2026-11-20T10:00:00Z" }
+        ] } });
+        let st = streams_section(Some(&info)).unwrap();
+        assert!(st.starts_with("STREAMS    3 (2 healthy)"), "{st}");
+        assert!(st.contains("\n  slack    failing: invalid_auth (next try 2026-11-20T10:00:00Z)"), "{st}");
+        assert!(capabilities_with(Some(&info)).ends_with(&st));
+        let none = streams_section(Some(&json!({ "streams": { "total": 0, "healthy": 0, "unhealthy": [] } }))).unwrap();
+        assert!(none.contains("none"), "{none}");
+    }
+
+    #[test]
+    fn explain_stream_shows_state_why_log_and_listening_triggers() {
+        let stream = json!({
+            "name": "slack", "state": "failing", "command": ["slack-tail"], "restarts": 6, "exits_recent": 5,
+            "failing_since": "2026-11-20T10:00:00Z", "why": "invalid_auth", "needs_you": "n_7", "log": "/x/slack.log",
+            "counts": { "accepted": 4, "refused": 1 }, "log_tail": ["t1 started: pid 3", "t2 stderr: invalid_auth"],
+            "last_exit": { "at": "2026-11-20T10:00:00Z", "code": 1, "ran_secs": 0 }
+        });
+        let mut call = |m: &str, _: Value| -> Result<Value, RpcError> {
+            match m {
+                "streams.list" => Ok(json!([stream.clone()])),
+                "trigger.list" => Ok(json!([
+                    { "id": "t_1", "name": "ping", "source": "local", "event": "stream.slack.message", "state": "active", "action": { "kind": "notify" } },
+                    { "id": "t_2", "name": "ci", "source": "local", "event": "stream.ci.*", "state": "active", "action": { "kind": "notify" } }
+                ])),
+                _ => Err(RpcError::not_found("no")),
+            }
+        };
+        let out = explain(&mut call, &["slack".into()], Surface::Cli).unwrap();
+        assert!(out.contains("state: FAILING since "), "{out}");
+        assert!(out.contains("why: invalid_auth\nneeds you: n_7"), "{out}");
+        assert!(out.contains("events 4 accepted, 1 dropped"), "{out}");
+        assert!(out.contains("last log lines (/x/slack.log):\n  t1 started: pid 3\n  t2 stderr: invalid_auth"), "{out}");
+        assert!(out.contains("t_1 “ping” on stream.slack.message") && !out.contains("t_2"), "{out}");
+        assert_eq!(explain(&mut call, &["stream".into(), "slack".into()], Surface::Cli).unwrap(), out);
+        assert!(explain(&mut call, &["stream".into(), "nope".into()], Surface::Cli).is_err());
+        assert!(explain(&mut call, &["nope".into()], Surface::Cli).unwrap_err().message.contains("stream"));
+    }
 
     #[test]
     fn hints_name_the_request_path() {

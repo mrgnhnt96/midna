@@ -198,10 +198,17 @@ fn run(a: &Args) -> Res {
     };
     match verb {
         "capabilities" => {
+            // Best effort: with midnad down it still prints, without the streams section.
+            let info = connect().ok().and_then(|mut c| c.call_value("daemon.info", json!({})).ok());
             if json {
-                println!("{}", serde_json::to_string_pretty(&guide::capabilities_json()).unwrap_or_default());
+                let mut v = guide::capabilities_json();
+                v["overview"] = json!(guide::capabilities_with(info.as_ref()));
+                if let Some(i) = &info {
+                    v["streams"] = i["streams"].clone();
+                }
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             } else {
-                println!("{}", guide::capabilities());
+                println!("{}", guide::capabilities_with(info.as_ref()));
             }
             Ok(())
         }

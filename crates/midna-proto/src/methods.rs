@@ -863,6 +863,9 @@ pub struct DaemonInfo {
     /// runs the installed `bin/current` build).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
+    /// How the streams midnad runs are doing (`midna stream list` has the details).
+    #[serde(default)]
+    pub streams: crate::streams::StreamsHealth,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

@@ -129,7 +129,8 @@ pub fn raise(d: &Daemon, ctx: &Ctx, p: NeedsYouRaiseParams) -> R {
 
 /// Kinds that never expire: requests the human acts on in their own time.
 fn lasts(k: NeedsYouKind) -> bool {
-    matches!(k, NeedsYouKind::RuleRemoval | NeedsYouKind::SecretNeeded | NeedsYouKind::TriggerWaiting)
+    // A failing stream's item resolves itself once the stream is healthy (or paused).
+    matches!(k, NeedsYouKind::RuleRemoval | NeedsYouKind::SecretNeeded | NeedsYouKind::TriggerWaiting | NeedsYouKind::StreamFailing)
 }
 
 /// The open items that may expire and have been open more than `hours` of awake time
@@ -321,6 +322,7 @@ mod expire_tests {
             bulk_safe: false,
             approval: None,
             trigger_id: None,
+            stream: None,
             question: None,
             setting: None,
             local_only: false,

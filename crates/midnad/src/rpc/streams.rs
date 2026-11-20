@@ -136,6 +136,7 @@ pub fn add(d: &Arc<Daemon>, ctx: &Ctx, p: StreamsAddParams) -> R {
     d.save_now();
     if agent {
         ask_approval(d, ctx, &p.name, &format!("Agent asks to run stream “{}”", p.name));
+        crate::producers::publish_health(d, &p.name);
     } else {
         crate::producers::start_one(d, &p.name);
     }

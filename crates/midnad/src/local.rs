@@ -202,8 +202,13 @@ fn on_event(d: &Arc<Daemon>, e: &Event) {
         }
     }
     // What a trigger did (and trigger bookkeeping) never fires triggers, nor does a stream
-    // event published by something a trigger started.
-    if e.actor.kind == ActorKind::Trigger || e.kind.starts_with("trigger.") || e.stream.as_ref().is_some_and(|s| s.caused_by.is_some()) {
+    // event published by something a trigger started, nor a stream's health (`stream.*` is
+    // for its events).
+    if e.actor.kind == ActorKind::Trigger
+        || e.kind.starts_with("trigger.")
+        || e.kind == kinds::STREAM_HEALTH
+        || e.stream.as_ref().is_some_and(|s| s.caused_by.is_some())
+    {
         return;
     }
     fire_matching(d, &e.kind, e.session_id.as_deref(), None, &e.data, e.stream.as_deref());
