@@ -137,6 +137,103 @@ fn fake_inbox() -> Value {
     })
 }
 
+/// `MIDNA_FAKE_STREAMS=healthy|restarting|failing|paused|approval`: the design's three streams
+/// (design/stream-health) in that state. Unset: no streams.
+fn fake_streams_state() -> Option<String> {
+    crate::dev::var("MIDNA_FAKE_STREAMS").ok().filter(|v| !v.is_empty())
+}
+
+fn secs_from_now(secs: i64) -> String {
+    rfc3339_from_unix(midna_proto::time::now_unix() + secs)
+}
+
+fn fake_streams() -> Value {
+    let Some(state) = fake_streams_state() else {
+        return json!([]);
+    };
+    let s = |name: &str, cmd: &[&str], secrets: &[&str], last_mins: i64, kind: &str| {
+        json!({
+            "name": name, "command": cmd, "cwd": "/Users/me", "secrets": secrets, "enabled": true, "state": "running",
+            "pid": 4100 + name.len(), "started_at": ago(3 * 60 + 12), "restarts": 0,
+            "last_event": {"at": ago(last_mins), "kind": kind, "verdict": "accepted", "seq": 900},
+            "counts": {"accepted": 148, "duplicate": 2, "rate_limited": 0, "too_large": 0, "busy": 0, "refused": 0}, "exits_recent": 0, "log": format!("/Users/me/Library/Application Support/midna/streams/{name}.log"),
+            "log_tail": [
+                format!("{} connected", rfc3339_from_unix(midna_proto::time::now_unix() - 11520)),
+                format!("{} listening for events", rfc3339_from_unix(midna_proto::time::now_unix() - 11519)),
+            ],
+        })
+    };
+    let mut list = vec![
+        s("slack", &["node", "/Users/me/bin/slack-ci-listener.js"], &["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"], 2, "message"),
+        s("buildkite", &["bk-events", "--org", "roon", "--json"], &["BUILDKITE_TOKEN"], 41, "build"),
+        s("calendar", &["python3", "/Users/me/bin/cal-feed.py"], &["GOOGLE_CAL_TOKEN"], 6 * 60, "event"),
+    ];
+    match state.as_str() {
+        "restarting" => {
+            let b = &mut list[1];
+            b["state"] = json!("backoff");
+            b["restarts"] = json!(3);
+            b["pid"] = Value::Null;
+            b["retry_at"] = json!(secs_from_now(8));
+            b["why"] = json!("Exited 1: ECONNRESET");
+            b["exits_recent"] = json!(3);
+            b["log_tail"] = json!(["Error: read ECONNRESET", "    at TLSWrap.onStreamRead (node:internal/stream_base_commons:217:20)", "exit 1"]);
+        }
+        "failing" => {
+            let a = &mut list[0];
+            a["state"] = json!("failing");
+            a["restarts"] = json!(7);
+            a["pid"] = Value::Null;
+            a["exits_recent"] = json!(7);
+            a["why"] = json!("invalid_auth");
+            a["retry_at"] = json!(secs_from_now(4 * 60 + 20));
+            a["failing_since"] = json!(ago(9));
+            a["last_event"]["at"] = json!(ago(38));
+            a["log_tail"] = json!(["[socket-mode] connecting", "Error: An API error occurred: invalid_auth", "exit 1"]);
+        }
+        "paused" => {
+            let c = &mut list[2];
+            c["state"] = json!("paused");
+            c["enabled"] = json!(false);
+            c["pid"] = Value::Null;
+        }
+        "approval" => list.push(json!({
+            "name": "github-notifications", "command": ["gh", "api", "notifications", "--paginate"], "cwd": "/Users/me", "secrets": ["GITHUB_TOKEN"],
+            "enabled": false, "state": "awaiting_approval", "approval": "ny_stream01", "restarts": 0, "log": "/Users/me/Library/Application Support/midna/streams/github-notifications.log",
+        })),
+        _ => {}
+    }
+    Value::Array(list)
+}
+
+/// The selected stream's recent publishes (`streams.events`) and their payloads (`events.list`).
+fn fake_stream_events(name: &str) -> (Value, Vec<Value>) {
+    let rows: &[(i64, &str, &str, &str)] = match name {
+        "slack" => &[
+            (2 * 60, "message", "accepted", "failed to build on pipeline roon_mobile · branch master"),
+            (9 * 60, "message", "accepted", "deploy finished: roon_api 4.12.0"),
+            (9 * 60 + 1, "message", "duplicate", ""),
+            (31 * 60, "reaction", "accepted", ":white_check_mark: on \"release notes\""),
+            (58 * 60, "message", "accepted", "failed to build on pipeline roon_web · branch feat/login"),
+        ],
+        "buildkite" => &[(41 * 60, "build", "accepted", "roon_mobile #8812 passed"), (90 * 60, "build", "accepted", "roon_mobile #8811 failed")],
+        "calendar" => &[(6 * 3600, "event", "accepted", "Standup in 15 min")],
+        _ => &[],
+    };
+    let now = midna_proto::time::now_unix();
+    let (mut recs, mut events) = (vec![], vec![]);
+    for (i, (secs, kind, verdict, text)) in rows.iter().enumerate() {
+        let at = rfc3339_from_unix(now - secs);
+        let seq = 900 - i as u64;
+        let accepted = *verdict == "accepted";
+        recs.push(json!({"at": at, "kind": kind, "id": format!("ev{seq}"), "verdict": verdict, "seq": accepted.then_some(seq), "detail": (!accepted).then_some("same id as ev900")}));
+        if accepted {
+            events.push(json!({"seq": seq, "at": at, "kind": format!("stream.{name}.{kind}"), "data": {"text": text}}));
+        }
+    }
+    (json!({"stream": name, "events": recs, "counts": {"accepted": recs.len()}}), events)
+}
+
 /// Local triggers for the Triggers screen: the built-in prompt-blocked status, an
 /// auto-compact one and a schedule.
 fn fake_triggers() -> Vec<midna_proto::Trigger> {
@@ -184,6 +281,17 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
             None,
             0,
         ),
+        p::Trigger {
+            event: "stream.slack.message".into(),
+            ..t(
+                "t_lci",
+                "CI failure → build angel",
+                p::TriggerFilter { fields: [("data.text".to_string(), "*failed to build*".to_string())].into(), ..Default::default() },
+                p::TriggerAction::SendToSession { steps: vec![p::SendStep { text: "{{data.text}}".into(), enter: true }], to: Some("build angel".into()) },
+                None,
+                4,
+            )
+        },
         p::Trigger {
             event: "schedule".into(),
             ..t(
@@ -924,7 +1032,20 @@ impl Backend for FakeBackend {
                 json!({ "sounds": sounds, "images": [], "dir": "/tmp/midna-fake/notify" })
             }
             "rule.list" => Value::Array(st.rules.clone()),
-            "trigger.list" => serde_json::to_value(fake_triggers())?,
+            "trigger.list" => serde_json::to_value(fake_triggers().into_iter().filter(|t| t.id != "t_lci" || fake_streams_state().is_some()).collect::<Vec<_>>())?,
+            "streams.list" => fake_streams(),
+            "streams.events" => fake_stream_events(&p("stream").unwrap_or_default()).0,
+            "streams.restart" | "streams.set_enabled" | "streams.remove" => json!({"ok": true}),
+            "events.list" => {
+                let kinds = params.pointer("/filter/kinds/0").and_then(Value::as_str).unwrap_or_default();
+                let name = kinds.strip_prefix("stream.").map(|r| r.trim_end_matches('.')).unwrap_or_default();
+                Value::Array(fake_stream_events(name).1)
+            }
+            // A local firing of the Slack trigger a second after its newest event.
+            "trigger.deliveries" if fake_streams_state().is_some() => json!([
+                {"id": "d_s1", "source": "local", "event": "stream.slack.message", "delivery_guid": "local-1", "received_at": rfc3339_from_unix(midna_proto::time::now_unix() - 119),
+                 "verdict": "fired", "trigger_id": "t_lci", "summary": "build angel"},
+            ]),
             "insights.summary" => {
                 json!({"range": "today", "totals": {"turns": 38, "messages": 52, "spend_usd": 4.12, "triggers_fired": 2}})
             }

@@ -91,7 +91,8 @@ pub mod refresh {
     pub const HOOKS: u32 = 512;
     pub const KEEP_AWAKE: u32 = 1024;
     pub const USAGE: u32 = 2048;
-    pub const ALL: u32 = 0xfff;
+    pub const STREAMS: u32 = 4096;
+    pub const ALL: u32 = 0x1fff;
 }
 
 pub struct MainWindow {
@@ -144,6 +145,9 @@ pub struct MainWindow {
     /// they arrive, or when that Mac can't send them; its theme then comes from this Mac's copy.
     pub mac_themes: Option<Vec<midna_proto::themes::ThemeDef>>,
     pub triggers_count: usize,
+    /// `streams.list`: the producers midnad runs and how they're doing (the Triggers screen and
+    /// the footer's Triggers button, `ui::triggers::streams`).
+    pub streams: Vec<midna_proto::StreamStatus>,
     /// Inline rename in progress (double-click a terminal's name).
     pub renaming: Option<crate::ui::rename::Rename>,
     /// A busy terminal ⌘W was pressed on; a second ⌘W within 2 s closes it.
@@ -446,6 +450,7 @@ impl MainWindow {
             today: Today::default(),
             rules_count: 0,
             triggers_count: 0,
+            streams: vec![],
             renaming: None,
             close_armed: None,
             quit_hold: None,
@@ -879,6 +884,10 @@ impl MainWindow {
                 if k.starts_with("rule.") {
                     what |= refresh::RULES;
                 }
+                // stream.health, and a stream's own events (its last event's age).
+                if k.starts_with("stream.") {
+                    what |= refresh::STREAMS;
+                }
                 if k == midna_proto::kinds::HOOKS_CHANGED {
                     self.hooks = e.data.clone();
                 }
@@ -1293,6 +1302,9 @@ impl MainWindow {
                         r.webhooks = call("webhooks.status", json!({}));
                         r.triggers = call("trigger.list", json!({})).map(|v| parse_list::<Value>(&v).len());
                     }
+                    if what & refresh::STREAMS != 0 {
+                        r.streams = call("streams.list", json!({})).map(|v| parse_list(&v));
+                    }
                     if what & refresh::HOOKS != 0 {
                         r.hooks = call("hooks.status", json!({}));
                     }
@@ -1455,6 +1467,9 @@ impl MainWindow {
         }
         if let Some(n) = r.triggers {
             self.triggers_count = n;
+        }
+        if let Some(s) = r.streams {
+            self.streams = s;
         }
         if let Some(w) = r.webhooks {
             self.webhooks = w;
@@ -2820,6 +2835,7 @@ struct RefreshResult {
     keep_awake: Option<Value>,
     usage: Option<midna_proto::UsageGetResult>,
     triggers: Option<usize>,
+    streams: Option<Vec<midna_proto::StreamStatus>>,
     header: Option<(String, Vec<Segment>)>,
     status: Option<(String, HashMap<String, Vec<Segment>>)>,
     buttons: Option<(String, HashMap<String, Vec<Segment>>)>,
