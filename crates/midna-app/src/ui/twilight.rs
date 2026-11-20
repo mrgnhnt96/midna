@@ -46,7 +46,7 @@ const REDUCED_ALPHA: f32 = 0.85;
 /// Only the first main window of a launch plays it.
 pub fn wanted() -> bool {
     static PLAYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let want = std::env::var("MIDNA_INTRO").map(|v| v != "0").unwrap_or(true) && std::env::var("MIDNA_SNAPSHOT").is_err();
+    let want = std::env::var("MIDNA_INTRO").map(|v| v != "0").unwrap_or(true) && std::env::var("MIDNA_SNAPSHOT").is_err() && !crate::hidden::enabled();
     want && !PLAYED.swap(true, std::sync::atomic::Ordering::SeqCst)
 }
 

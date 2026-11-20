@@ -1,0 +1,14 @@
+# A stand-in for Slate (https://github.com/mrgnhnt96/slate), which is private while midna is public.
+# The workspace patches it in for slate's git URL, so midna's builds, CI and release never fetch
+# slate. scripts/slate.sh builds with the real crate instead.
+[package]
+name = "slate"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+render = []
+
+[dependencies]
+gpui-kit = { version = "0.7", default-features = false }

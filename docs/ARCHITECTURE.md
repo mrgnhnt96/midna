@@ -239,7 +239,7 @@ Build it with GPUI via `gpui-kit` 0.7 (see `spikes/gpui-terminal` for a working 
 
 - Tests use a temp `MIDNA_HOME`. Never touch the real one, `~/.claude`, `~/.codex`, Saggar's config, or any global config.
 - GUI checks:
-  - Screenshot only your own window, with `screencapture -l <windowid>`. Never take a full-screen screenshot.
+  - Look at the app with `scripts/slate.sh shoot` and drive it with `scripts/slate.sh drive`: the window stays hidden below the desktop and midna never takes focus (see "Look at the app" in `AGENTS.md`). Never open a visible test window over the human's work, and never take a full-screen screenshot.
   - Never send keystrokes or clicks to other apps' windows.
 - Clean up after yourself: background processes you started, temp dirs, and test windows.
 - Don't run `git commit` or push. The user reviews the work.
