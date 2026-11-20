@@ -1,0 +1,723 @@
+<template id="uh-screen">
+<style>
+:host { color-scheme: light dark; }
+[data-screen] {
+  /* Midna Twilight (dark) / Midna Daylight (light), from midna-proto themes.rs */
+  --bg: light-dark(#E6E9EF, #0F1117);
+  --panel: light-dark(#F5F6F8, #151821);
+  --raised: light-dark(#FFFFFF, #1D2130);
+  --line: light-dark(#D3D8E0, #282D3B);
+  --fg: light-dark(#151922, #E4E7EE);
+  --dim: light-dark(#535D6E, #9AA2B3);
+  --accent: light-dark(#6237A0, #B79AE8);
+  --accent-fg: light-dark(#FFFFFF, #15111C);
+  --need: light-dark(#9A5300, #F2A93B);
+  --need-text: light-dark(#7A4100, #F2A93B);
+  --ok: light-dark(#1B7346, #4CC38A);
+  --err: light-dark(#AE2219, #F2665C);
+  --work: light-dark(#2758B8, #6EA2FF);
+  --term: light-dark(#FCFCFD, #0B0D12);
+  --note: light-dark(#FFF6D6, #2A2614);
+  --note-line: light-dark(#B08A1E, #8A7430);
+  height: 100%;
+  overflow: hidden;
+  font: 400 0.8125rem/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+button { font: inherit; color: inherit; background: none; border: 0; margin: 0; padding: 0; cursor: pointer; text-align: start; }
+button:disabled { cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+svg { flex: none; display: block; }
+[hidden] { display: none !important; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* ── Window ── */
+.app { position: relative; height: 100%; display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+@container screen (width < 900px) { .app { grid-template-columns: 228px minmax(0, 1fr); } }
+.sb { grid-row: 1; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
+/* the titlebar strip (AppKit draws the traffic lights in the frame above) */
+.tl { height: 8px; flex: none; }
+.needpill { margin: 0 10px 10px; min-height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1.5px solid var(--need); border-radius: 8px; background: color-mix(in srgb, var(--need) 10%, transparent); color: var(--need-text); font-weight: 700; }
+.needpill:hover { background: color-mix(in srgb, var(--need) 16%, transparent); }
+.needpill kbd { margin-left: auto; font: 600 0.6875rem ui-monospace, monospace; }
+.needpill i { width: 7px; height: 7px; border-radius: 50%; background: var(--need); }
+.needpill .roll { display: inline-block; }
+.needpill.bump .roll { animation: bump 420ms cubic-bezier(.34,1.56,.64,1); }
+@keyframes bump { from { transform: translateY(70%); opacity: 0; } }
+.needpill.none { border-color: var(--line); background: none; color: var(--dim); font-weight: 600; }
+.needpill.none i { display: none; }
+.list { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.hd { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 14px; margin-top: 6px; }
+.gcap { flex: 1; min-width: 0; font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--need); color: light-dark(#fff, #15111C); font-size: 0.6875rem; font-weight: 700; display: grid; place-items: center; }
+.ib { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: var(--dim); }
+.ib:hover { background: var(--raised); color: var(--fg); }
+.row { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr) 18px; column-gap: 8px; align-items: center; width: 100%; min-height: 32px; padding: 5px 12px 5px 14px; font-weight: 600; }
+.row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
+.row.on { background: var(--raised); }
+.row.on::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.row:focus-visible { outline-offset: -2px; border-radius: 0; }
+.row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ag { color: var(--dim); }
+.row .sub { grid-column: 2 / 4; font-weight: 500; font-size: 0.75rem; overflow-wrap: anywhere; }
+.dot { width: 9px; height: 9px; border-radius: 50%; justify-self: center; flex: none; }
+.dot.work { background: var(--work); }
+.dot.need { background: var(--need); box-shadow: 0 0 0 3px color-mix(in srgb, var(--need) 25%, transparent); }
+.dot.ok { background: var(--ok); } .dot.idle { border: 1.5px solid var(--dim); }
+.dot.err { background: var(--err); }
+/* restarting: a blue ring that turns while it waits for the next try */
+.dot.rst { border: 2px solid var(--work); border-right-color: transparent; }
+@media (prefers-reduced-motion: no-preference) { .dot.rst { animation: spin 1.2s linear infinite; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sub.need { color: var(--need-text); } .sub.dim { color: var(--dim); } .sub.err { color: var(--err); } .sub.work { color: var(--work); } .sub.ok { color: var(--ok); }
+
+/* ── STREAMS group: pinned above the footer, outside the list's scroll (like Background) ── */
+.sgrp { flex: none; display: flex; flex-direction: column; border-top: 1px solid var(--line); padding-bottom: 6px; background: color-mix(in srgb, var(--panel) 40%, var(--bg)); }
+.ghd { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; width: 100%; min-height: 32px; padding: 6px 14px 4px 12px; color: var(--dim); }
+.ghd:hover, .ghd[aria-expanded="true"]:hover { color: var(--fg); }
+.ghd:hover .gcap, .ghd:hover .gsum { color: var(--fg); }
+.ghd .chev { transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
+.ghd[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+.ghd .gcap { flex: 0 1 auto; }
+.ghd .gsum { margin-left: auto; font-size: 0.75rem; color: var(--dim); white-space: nowrap; }
+.ghd .gd { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ghd .gd.err { background: var(--err); } .ghd .gd.need { background: var(--need); }
+.ghd:focus-visible { outline-offset: -2px; border-radius: 0; }
+.srows { display: flex; flex-direction: column; max-height: min(220px, 30cqh); overflow-y: auto; }
+.srow .nm.quiet { color: var(--dim); font-weight: 500; }
+.srow .ag { color: var(--dim); }
+@media (prefers-reduced-motion: no-preference) {
+  .srow.in { animation: rowOut 260ms cubic-bezier(.2,.8,.2,1) both; }
+  .srows.unfold > .srow { animation: rowOut 200ms cubic-bezier(.2,.8,.2,1) both; }
+  .srow.leave { animation: rowIn 240ms ease-in both; }
+}
+@keyframes rowOut { from { opacity: 0; max-height: 0; padding-block: 0; } to { max-height: 60px; opacity: 1; } }
+@keyframes rowIn { from { max-height: 60px; } to { opacity: 0; max-height: 0; padding-block: 0; } }
+
+/* ── Footer ── */
+.foot { flex: none; border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 8px; }
+.today { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.today .th { display: flex; flex-wrap: wrap; align-items: center; }
+.today .th .gcap { flex: 1; }
+.today .th button { min-height: 24px; padding: 0 4px; border-radius: 6px; color: var(--dim); font-size: 0.75rem; }
+.today .th button:hover { color: var(--fg); background: var(--raised); }
+.today .stats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 8px; }
+.today .stats b { display: block; font: 700 0.875rem ui-monospace, "SF Mono", Menlo, monospace; }
+.today .stats span { color: var(--dim); font-size: 0.6875rem; white-space: nowrap; }
+.fbtns { display: flex; justify-content: space-around; }
+.fbtns button { display: grid; justify-items: center; gap: 2px; min-width: 56px; padding: 4px; border-radius: 6px; font-size: 0.6875rem; color: var(--dim); }
+.fbtns button:hover { background: var(--raised); color: var(--fg); }
+
+/* ── Main pane ── */
+.pane { grid-row: 1; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term); }
+.ph { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); min-width: 0; }
+.ph .t { font-weight: 700; font-size: 0.9375rem; white-space: nowrap; }
+.ph .ag { color: var(--dim); }
+.ph .mid { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; padding-left: 10px; margin-left: 2px; border-left: 1px solid var(--line); color: var(--dim); font-size: 0.75rem; white-space: nowrap; }
+.ph .mid .sw { font-weight: 700; }
+.ph .mid .sep { color: var(--dim); }
+.sw.ok { color: var(--ok); } .sw.err { color: var(--err); } .sw.work { color: var(--work); } .sw.need { color: var(--need-text); } .sw.dim { color: var(--dim); }
+.ph .tools { margin-left: auto; display: flex; gap: 2px; flex: none; }
+.ph .tools .ib { width: 30px; height: 30px; }
+@container screen (width < 1180px) { .ph .mid .m3 { display: none; } }
+@container screen (width < 1000px) { .ph .mid .m2 { display: none; } }
+@container screen (width < 820px) { .ph .mid { display: none; } }
+.body { position: relative; flex: 1; min-height: 0; overflow: hidden; padding: 14px 18px; font: 0.78rem/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--fg); }
+.body p { margin: 0; white-space: pre; }
+.body .b { color: var(--accent); } .body .g { color: var(--ok); } .body .d { color: var(--dim); }
+.body .lnk { text-decoration: underline; color: var(--work); }
+.prompt { margin-top: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 4px 0; }
+
+/* The stream view: not a terminal, so no prompt; command + secrets, then one timeline */
+.facts { flex: none; display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 0.75rem; }
+.facts .fk { color: var(--dim); margin-right: 6px; }
+.facts code { font: 0.75rem ui-monospace, "SF Mono", Menlo, monospace; }
+.facts .fi { display: flex; align-items: center; min-width: 0; }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; margin-right: 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); font: 600 0.6875rem ui-monospace, "SF Mono", Menlo, monospace; color: var(--fg); }
+.chip svg { color: var(--dim); }
+.seg { margin-left: auto; display: flex; gap: 2px; padding: 2px; border-radius: 8px; border: 1px solid var(--dim); background: var(--bg); }
+.seg button { min-height: 24px; padding: 0 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; color: var(--dim); }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-checked="true"] { background: var(--raised); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.lg { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 0 14px; font: 0.75rem/1.75 ui-monospace, "SF Mono", Menlo, monospace; }
+.ll { display: grid; grid-template-columns: 5.2rem 3.9rem minmax(0, 1fr) auto; column-gap: 10px; padding: 0 18px; }
+.ll:hover { background: color-mix(in srgb, var(--raised) 60%, transparent); }
+.ll .tm { color: var(--dim); }
+.ll .src { color: var(--dim); }
+.ll .src.midna { color: var(--accent); } .ll .src.event { color: var(--work); }
+.ll .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ll .tx.dim { color: var(--dim); }
+.ll .tx.err { color: var(--err); }
+.ll .vd { white-space: nowrap; color: var(--dim); }
+.ll .vd.fired { color: var(--ok); font-weight: 700; }
+.ll .vd.rate { color: var(--need-text); }
+.ll.live .tx { color: var(--work); }
+.ll.new { animation: flash 900ms ease-out; }
+@keyframes flash { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } }
+.lday { padding: 6px 18px 2px; color: var(--dim); font-size: 0.6875rem; }
+.empty { margin: auto; max-width: 30rem; padding: 24px; text-align: center; color: var(--dim); font: 0.8125rem/1.5 -apple-system, system-ui, sans-serif; }
+.empty b { display: block; color: var(--fg); font-size: 0.875rem; margin-bottom: 4px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); font-weight: 600; font-size: 0.8125rem; white-space: nowrap; }
+.btn:hover { border-color: var(--dim); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.danger { background: var(--err); border-color: var(--err); color: light-dark(#fff, #1A0B0A); }
+.btn kbd { font: 0.6875rem ui-monospace, monospace; opacity: .8; }
+.appr { flex: none; margin: 0 12px 12px; padding: 12px 14px; border: 1.5px solid var(--need); border-radius: 10px; background: var(--panel); display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+.appr .q { flex: 1; min-width: 14rem; }
+.appr .q b { display: block; font-size: 0.875rem; }
+.appr .q code { color: var(--dim); font-size: 0.75rem; }
+.appr .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.quiet-bar { flex: none; margin: 0 12px 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.quiet-bar span { flex: 1; min-width: 14rem; color: var(--dim); }
+.quiet-bar span b { color: var(--fg); }
+
+.st { grid-column: 1 / -1; grid-row: 2; min-height: 26px; display: flex; align-items: center; gap: 16px; padding: 0 12px; border-top: 1px solid var(--line); background: var(--bg); font-size: 0.75rem; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.st .it { display: inline-flex; align-items: center; gap: 6px; }
+.st .it b { color: var(--fg); font-weight: 600; }
+.st .it .sd { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.st .it .sd.off { background: var(--dim); }
+.st .sp { flex: 1; }
+@container screen (width < 900px) { .st .opt { display: none; } }
+
+/* ── Menus and dialog ── */
+.menu { position: absolute; z-index: 20; min-width: 236px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--fg); box-shadow: 0 12px 32px rgba(0,0,0,.35); display: flex; flex-direction: column; }
+.menu .mh { padding: 4px 10px 6px; font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.mi { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 30px; padding: 4px 10px; border-radius: 7px; }
+.mi:hover, .mi:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: none; }
+.mi .ml { flex: 1; }
+.mi .mk { font-size: 0.71875rem; color: var(--dim); }
+.mi.danger { color: var(--err); }
+.msep { height: 1px; margin: 4px 6px; background: var(--line); }
+.scrim { position: absolute; inset: 0; z-index: 30; display: grid; place-items: start center; padding-top: 120px; background: color-mix(in srgb, #000 35%, transparent); }
+.dlg { width: min(400px, calc(100% - 32px)); padding: 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 20px 50px rgba(0,0,0,.45); display: grid; gap: 10px; }
+.dlg h2 { margin: 0; font-size: 0.9375rem; }
+.dlg p { margin: 0; color: var(--dim); }
+.dlg .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+/* Design annotation (not app UI) */
+.note { position: absolute; z-index: 9; right: 16px; bottom: 40px; width: min(330px, calc(100% - 280px)); border: 1.5px dashed var(--note-line); border-radius: 8px; background: var(--note); color: var(--fg); font-size: 0.75rem; box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.note > button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 4px 10px; font-weight: 700; }
+.note > button .k { margin-left: auto; font: 0.6875rem ui-monospace, monospace; color: var(--dim); }
+.note .nbd { padding: 0 10px 10px; display: grid; gap: 6px; }
+.note .nbd p { margin: 0; }
+.note .nbd ul { margin: 0; padding-left: 16px; display: grid; gap: 3px; }
+.note[data-closed] .nbd { display: none; }
+.note .q { font-size: 0.6875rem; color: var(--dim); }
+.note .btn { justify-self: start; min-height: 24px; font-size: 0.75rem; }
+.app.has-appr .note { bottom: 120px; }
+@container screen (width < 900px) { .note { width: min(300px, calc(100% - 252px)); } }
+</style>
+
+<section data-screen="main" data-title="1 · Main window: STREAMS above the footer"><div class="app" data-k="main"></div></section>
+<section data-screen="log" data-title="2 · Clicked a stream: its log in the main pane"><div class="app" data-k="log"></div></section>
+</template>
+
+<script>
+window.ultrahandSetup = function (canvas) {
+  var I = {
+    claude: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1v12M1 7h12M2.8 2.8l8.4 8.4M11.2 2.8l-8.4 8.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    codex: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.2l5 2.9v5.8l-5 2.9-5-2.9V4.1z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    shell: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 4l3.5 3L2 10M7.5 11H12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    stream: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="3" cy="11" r="1.4" fill="currentColor"/><path d="M2.4 6.8a4.8 4.8 0 0 1 4.8 4.8M2.4 2.6a9 9 0 0 1 9 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    chev: '<svg class="chev" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    dots: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="3" cy="7" r="1.2" fill="currentColor"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/><circle cx="11" cy="7" r="1.2" fill="currentColor"/></svg>',
+    split: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2" width="11" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 2v10" stroke="currentColor" stroke-width="1.2"/></svg>',
+    pop: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="4" width="8.5" height="8.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 1.5h4.5V6M12.5 1.5L7 7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    restart: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M11.5 7A4.5 4.5 0 1 1 9.8 3.5M10 1.5v2.3h-2.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    pause: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 3v8M9 3v8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    play: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M4.5 2.8l7 4.2-7 4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    bolt: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M8 1.5L3 8h4l-1 4.5L11 6H7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+    shield: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5l4.5 2v3.5c0 3-2 4.6-4.5 5.5-2.5-.9-4.5-2.5-4.5-5.5V3.5z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    gear: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.8 2.8l1.4 1.4M9.8 9.8l1.4 1.4M2.8 11.2l1.4-1.4M9.8 4.2l1.4-1.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    lock: '<svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    branch: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="3" cy="2.5" r="1.3" fill="none" stroke="currentColor"/><circle cx="3" cy="9.5" r="1.3" fill="none" stroke="currentColor"/><circle cx="9" cy="4" r="1.3" fill="none" stroke="currentColor"/><path d="M3 3.8v4.4M9 5.3c0 2-6 1.5-6 3" fill="none" stroke="currentColor"/></svg>'
+  };
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function mmss(s) { s = Math.max(0, s); return s >= 60 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s + 's'; }
+
+  /* ── Terminals (unchanged Midna rows) ── */
+  var PROJECTS = [
+    { cap: 'midna', rows: [
+      { id: 'build-angel', nm: 'build angel', dot: 'work', ag: 'claude' },
+      { id: 'spike', nm: 'spike', dot: 'need', ag: 'claude', sub: ['need', 'Asked a question · 2m'] } ] },
+    { cap: 'api', rows: [
+      { id: 'server', nm: 'server', dot: 'ok', ag: 'shell' } ] }
+  ];
+  var TERM_BODY = {
+    'build-angel': ['<span class="d">❯</span> web #812 failed on master. Find the cause and open a fix PR.', '', '<span class="b">●</span> Bash(buildkite-cli logs web 812 --step test)', '   <span class="d">FAIL src/cart/total.test.ts › rounds currency</span>', '<span class="b">●</span> Reading <span class="lnk">src/cart/total.ts:31</span>', '<span class="b">●</span> Update(src/cart/total.ts)', '   <span class="g">+   return Math.round(cents) / 100;</span>', '', '<span class="d">✻ Running the cart tests… (1m 12s)</span>'],
+    spike: ['<span class="d">❯</span> sketch the stream supervisor', '', '<span class="b">●</span> Two ways to store backoff state. Which do you want?', '   1. In state.json, so it survives a midnad restart', '   2. In memory only, reset on restart'],
+    server: ['<span class="d">$</span> cargo run -p api', '<span class="g">   Compiling</span> api v0.3.1', '<span class="g">    Finished</span> dev profile in 4.21s', '     Running `target/debug/api`', 'listening on 127.0.0.1:8080']
+  };
+  function termRow(id) { var r; PROJECTS.forEach(function (g) { g.rows.forEach(function (x) { if (x.id === id) r = x; }); }); return r; }
+
+  /* ── Streams: only signals midna has ── */
+  var ORDER = ['slack', 'buildkite', 'calendar', 'github-notifications'];
+  var BASE = {
+    slack: { cmd: 'node ~/bin/slack-ci-listener.js', secrets: ['SLACK_APP_TOKEN', 'SLACK_BOT_TOKEN'], last: '2m ago', count: 148, restarts: 0, st: 'running' },
+    buildkite: { cmd: 'python3 ~/bin/buildkite_events.py --org acme', secrets: ['BUILDKITE_API_TOKEN'], last: '41m ago', count: 12, restarts: 0, st: 'running' },
+    calendar: { cmd: 'node ~/bin/calendar-watch.js', secrets: ['GOOGLE_CALENDAR_TOKEN'], last: '6h ago', count: 3, restarts: 0, st: 'running' },
+    'github-notifications': { cmd: 'gh api --paginate -X GET notifications --jq … (polls every 60s)', secrets: ['GITHUB_TOKEN'], last: null, count: 0, restarts: 0, st: 'approval', by: 'spike', absent: true }
+  };
+  var STATES = {
+    healthy: {},
+    restarting: { buildkite: { st: 'restarting', attempt: 3, err: 'exited 1: ECONNRESET', restarts: 2 } },
+    failing: { slack: { st: 'failing', restarts: 7, err: 'invalid_auth', last: '14m ago', count: 131 } },
+    paused: { calendar: { st: 'paused', by: 'you', at: '10:14' } },
+    approval: { 'github-notifications': { absent: false } }
+  };
+
+  var ui;
+  function reset() {
+    ui = { open: false, hidden: false, ov: {}, removed: {}, menu: null, dialog: null, filter: 'all', noteClosed: ui ? ui.noteClosed : false,
+      sel: { main: 'build-angel', log: { healthy: 'slack', restarting: 'buildkite', failing: 'slack', paused: 'calendar', approval: 'github-notifications' }[canvas.state] || 'slack' },
+      phase: 'wait', cd: 8, fcd: 252, extra: {}, entering: {}, leaving: null, unfolding: false, lastNeed: null };
+  }
+  function eff(id) {
+    if (ui.removed[id]) return null;
+    var s = Object.assign({ id: id }, BASE[id], (STATES[canvas.state] || {})[id] || {}, ui.ov[id] || {});
+    if (s.absent) return null;
+    if (id === 'buildkite' && canvas.state === 'restarting' && !ui.ov[id]) {
+      if (ui.phase === 'connecting') s.connecting = true;
+      if (ui.phase === 'recovered' || ui.phase === 'done') { s.st = 'running'; s.restarts = 3; s.recovered = ui.phase === 'recovered'; }
+    }
+    return s;
+  }
+  function streams() { return ORDER.map(eff).filter(Boolean); }
+  function isStream(id) { return ORDER.indexOf(id) >= 0; }
+  function needCount() { var n = 1; streams().forEach(function (s) { if (s.st === 'failing' || s.st === 'approval') n++; }); return n; }
+  var DOT = { running: 'ok', restarting: 'rst', failing: 'err', paused: 'idle', approval: 'need' };
+  function sub(s) {
+    if (s.recovered) return ['ok', 'running again'];
+    if (s.st === 'restarting') return s.connecting ? ['work', 'starting · attempt ' + s.attempt] : ['work', 'restarting · next try in <span data-cd="r">' + mmss(ui.cd) + '</span>'];
+    if (s.st === 'failing') return ['err', 'failing · ' + s.err];
+    if (s.st === 'approval') return ['need', 'waiting for your approval'];
+    if (s.st === 'paused') return ['dim', 'paused by ' + s.by];
+    return null;
+  }
+  function tip(s) {
+    var w = { running: 'running', restarting: 'restarting', failing: 'failing', paused: 'paused', approval: 'waiting for approval' }[s.st];
+    return s.id + ' · ' + w + (s.last ? ' · last event ' + s.last + ' · ' + s.count + ' today' : '') + ' (right-click for more)';
+  }
+  function out(s) { return s.st === 'restarting' || s.st === 'failing' || s.st === 'approval' || s.recovered; }
+
+  /* ── Sidebar ── */
+  function sidebar(k) {
+    var sel = ui.sel[k], nc = needCount();
+    var h = '<nav class="sb" aria-label="Sidebar"><div class="tl" aria-hidden="true"></div>';
+    h += '<button class="needpill' + (ui.lastNeed !== null && ui.lastNeed !== nc ? ' bump' : '') + '" data-act="pill" data-f="pill" title="Go to the next item that needs you (⌘J)"><i></i><span class="roll">' + nc + '</span> need you<kbd>⌘J</kbd></button>';
+    h += '<div class="list" role="list">';
+    PROJECTS.forEach(function (g) {
+      var b = g.rows.filter(function (r) { return r.dot === 'need'; }).length;
+      h += '<div class="hd"><span class="gcap">' + g.cap + '</span>' + (b ? '<span class="badge">' + b + '</span>' : '') + '<button class="ib" aria-label="' + g.cap + ' actions" title="Project actions">' + I.dots + '</button></div>';
+      g.rows.forEach(function (r) {
+        h += '<button class="row' + (r.id === sel ? ' on' : '') + '" data-act="sel" data-id="' + r.id + '" data-f="row:' + r.id + '" data-nav-row' + (r.id === sel ? ' aria-current="true"' : '') + '><span class="dot ' + r.dot + '"></span><span class="nm">' + r.nm + '</span><span class="ag">' + I[r.ag] + '</span>' + (r.sub ? '<span class="sub ' + r.sub[0] + '">' + r.sub[1] + '</span>' : '') + '</button>';
+      });
+    });
+    h += '</div>';
+    h += streamGroup(k);
+    h += '<div class="foot"><div class="today"><div class="th"><span class="gcap">Today</span><button>Insights ›</button></div><div class="stats"><div><b>42</b><span>agent turns</span></div><div><b>18</b><span>messages sent</span></div><div><b>$3.20</b><span>spent</span></div></div></div>';
+    h += '<div class="fbtns"><button>' + I.bolt + 'Triggers</button><button>' + I.shield + 'Rules</button><button>' + I.gear + 'Settings</button></div></div>';
+    return h + '</nav>';
+  }
+  function streamGroup(k) {
+    var all = streams();
+    if (ui.hidden || !all.length) return '';
+    var sel = ui.sel[k];
+    var run = all.filter(function (s) { return s.st === 'running'; }).length;
+    var pau = all.filter(function (s) { return s.st === 'paused'; }).length;
+    var fail = all.some(function (s) { return s.st === 'failing'; });
+    var appr = all.some(function (s) { return s.st === 'approval'; });
+    var sum = run + ' running' + (pau ? ' · ' + pau + ' paused' : '');
+    var label = 'Streams, ' + sum + (fail ? ', one failing' : '') + (appr ? ', one waiting for approval' : '');
+    var h = '<div class="sgrp" role="group" aria-label="Streams">';
+    h += '<button class="ghd" data-act="fold" data-f="ghd" data-nav-row aria-expanded="' + ui.open + '" aria-label="' + esc(label) + '" title="' + (ui.open ? 'Fold streams' : 'Show all streams') + ' (right-click for more)">' + I.chev + '<span class="gcap">Streams</span><span class="gsum">' + sum + '</span>' + (fail ? '<span class="gd err" aria-hidden="true"></span>' : appr ? '<span class="gd need" aria-hidden="true"></span>' : '') + '</button>';
+    var rows = all.filter(function (s) { return ui.open || out(s) || s.id === sel || s.id === ui.leaving; });
+    if (rows.length) {
+      h += '<div class="srows' + (ui.unfolding ? ' unfold' : '') + '">';
+      rows.forEach(function (s) {
+        var sb = sub(s), on = s.id === sel;
+        var cls = 'row srow' + (on ? ' on' : '') + (ui.entering[s.id] ? ' in' : '') + (ui.leaving === s.id ? ' leave' : '');
+        var quiet = !sb && !on;
+        h += '<button class="' + cls + '" data-act="sel" data-id="' + s.id + '" data-sid="' + s.id + '" data-f="row:' + s.id + '" data-nav-row' + (on ? ' aria-current="true"' : '') + ' title="' + esc(tip(s)) + '">';
+        h += '<span class="dot ' + (s.recovered ? 'ok' : DOT[s.st]) + '"></span><span class="nm' + (quiet ? ' quiet' : '') + '">' + s.id + '</span><span class="ag">' + I.stream + '</span>';
+        if (sb) h += '<span class="sub ' + sb[0] + '">' + sb[1] + '</span>';
+        h += '</button>';
+      });
+      h += '</div>';
+    }
+    return h + '</div>';
+  }
+
+  /* ── Main pane: a terminal ── */
+  function termPane(id) {
+    var r = termRow(id);
+    var h = '<main class="pane" aria-label="' + r.nm + '"><div class="ph"><span class="dot ' + r.dot + '"></span><span class="t">' + r.nm + '</span><span class="ag">' + I[r.ag] + '</span>';
+    h += '<span class="mid"><span style="display:flex;gap:4px;align-items:center">' + I.branch + (id === 'server' ? 'main' : 'fix/cart-rounding') + '</span></span>';
+    h += '<span class="tools"><button class="ib" aria-label="Split" title="Split (⌘D)">' + I.split + '</button><button class="ib" aria-label="Pop out" title="Pop out">' + I.pop + '</button><button class="ib" aria-label="Restart" title="Restart">' + I.restart + '</button><button class="ib" aria-label="More" title="More">' + I.dots + '</button></span></div>';
+    h += '<div class="body">' + (TERM_BODY[id] || []).map(function (l) { return '<p>' + (l || ' ') + '</p>'; }).join('') + '<div class="prompt"><p><span class="d">❯</span> </p></div></div></main>';
+    return h;
+  }
+
+  /* ── Main pane: a stream (not a terminal: no prompt; command, secrets, one timeline) ── */
+  function L(tm, src, tx, vd, cls) { return { tm: tm, src: src, tx: tx, vd: vd || '', cls: cls || '' }; }
+  var EV = function (o) { return JSON.stringify(o); };
+  function logFor(s) {
+    var id = s.id, st = canvas.state;
+    if (id === 'slack') {
+      var a = [L('10:02:11', 'midna', 'started · pid 48113'), L('10:02:12', 'stderr', '⚡️ Bolt app is running (Socket Mode)'), L('10:02:12', 'stderr', 'listening to #ci-builds'),
+        L('11:38:40', 'event', EV({ channel: 'ci-builds', text: '✅ web #811 passed on master' }), 'no trigger matched'),
+        L('11:52:03', 'event', EV({ channel: 'ci-builds', text: '❌ web #812 failed on master' }), '→ build angel', 'fired'),
+        L('11:52:09', 'event', EV({ channel: 'ci-builds', text: '❌ web #812 failed on master' }), 'deduped'),
+        L('12:20:17', 'event', EV({ channel: 'ci-builds', text: '❌ api #440 failed on feat/auth' }), 'no trigger matched'),
+        L('12:31:55', 'event', EV({ channel: 'ci-builds', text: '❌ web #813 failed on master' }), 'rate limited', 'rate')];
+      if (st === 'failing' && s.st === 'failing') {
+        return a.concat([L('12:32:40', 'stderr', '[ERROR] socket-mode: An API error occurred: invalid_auth', '', 'err'), L('12:32:40', 'midna', 'exited 1 · restarting in 1s (attempt 1)'),
+          L('12:32:42', 'stderr', '[ERROR] socket-mode: An API error occurred: invalid_auth', '', 'err'), L('12:32:42', 'midna', 'exited 1 · restarting in 2s (attempt 2)'),
+          L('…', '', '4 more restarts, same error', '', 'dim'),
+          L('12:42:10', 'stderr', '[ERROR] socket-mode: An API error occurred: invalid_auth', '', 'err'), L('12:42:10', 'midna', 'exited 1 · 7 restarts in 10 min · backing off 5m'),
+          L('12:42:10', 'midna', 'raised needs-you: slack keeps failing (invalid_auth)')]).concat(ui.extra[id] || []);
+      }
+      return a.concat([L('12:44:02', 'event', EV({ channel: 'ci-builds', text: '✅ web #813 passed on master' }), 'no trigger matched')]).concat(ui.extra[id] || []);
+    }
+    if (id === 'buildkite') {
+      var b = [L('08:15:30', 'midna', 'started · pid 47002'), L('08:15:31', 'stderr', 'connected to Buildkite (org acme)'),
+        L('09:58:12', 'event', EV({ pipeline: 'web', build: 809, state: 'passed', branch: 'master' }), 'no trigger matched'),
+        L('11:52:01', 'event', EV({ pipeline: 'web', build: 812, state: 'failed', branch: 'master' }), '→ build angel', 'fired'),
+        L('12:05:30', 'event', EV({ pipeline: 'api', build: 440, state: 'failed', branch: 'feat/auth' }), 'no trigger matched')];
+      if (st === 'restarting' && !ui.ov[id]) {
+        b = b.concat([L('12:45:02', 'stderr', 'ConnectionResetError: [Errno 54] read ECONNRESET', '', 'err'), L('12:45:02', 'midna', 'exited 1: ECONNRESET · restarting in 2s (attempt 1)'),
+          L('12:45:04', 'midna', 'started · pid 48870'), L('12:45:05', 'stderr', 'ConnectionResetError: [Errno 54] read ECONNRESET', '', 'err'), L('12:45:05', 'midna', 'exited 1: ECONNRESET · restarting in 4s (attempt 2)'),
+          L('12:45:09', 'midna', 'started · pid 48874'), L('12:45:10', 'stderr', 'ConnectionResetError: [Errno 54] read ECONNRESET', '', 'err'), L('12:45:10', 'midna', 'exited 1: ECONNRESET · restarting in 8s (attempt 3)')]);
+        if (ui.phase === 'wait') b.push(L('', '', 'next try in <span data-cd="r">' + mmss(ui.cd) + '</span>', '', 'live'));
+        if (ui.phase !== 'wait') b.push(L('12:45:18', 'midna', 'started · pid 48881 (attempt 3)', '', 'new'));
+        if (ui.phase === 'recovered' || ui.phase === 'done') b.push(L('12:45:19', 'stderr', 'connected to Buildkite (org acme)', '', 'new'), L('12:45:49', 'midna', 'running again · backoff reset', '', 'new'));
+      }
+      return b.concat(ui.extra[id] || []);
+    }
+    if (id === 'calendar') {
+      var c = [L('06:00:02', 'midna', 'started · pid 46610'), L('06:00:03', 'stderr', 'watching primary calendar'),
+        L('06:20:00', 'event', EV({ summary: 'Standup', starts_in_min: 15 }), 'no trigger matched'),
+        L('06:45:00', 'event', EV({ summary: 'Deploy window', starts_in_min: 15 }), '→ server', 'fired'),
+        L('06:46:10', 'event', EV({ summary: 'Deploy window', starts_in_min: 14 }), 'deduped')];
+      if (s.st === 'paused' && st === 'paused') c.push(L('10:14:22', 'midna', 'paused by you · stopped pid 46610'));
+      return c.concat(ui.extra[id] || []);
+    }
+    return ui.extra[id] || [];
+  }
+  function streamPane(s) {
+    var id = s.id, sw = DOT[s.st] === 'rst' ? 'work' : ({ ok: 'ok', err: 'err', idle: 'dim', need: 'need' })[DOT[s.st]];
+    if (s.recovered) sw = 'ok';
+    var word = s.recovered ? 'running again' : { running: 'running', restarting: s.connecting ? 'starting · attempt ' + s.attempt : 'restarting · attempt ' + s.attempt, failing: 'failing', paused: 'paused by ' + s.by, approval: 'waiting for your approval' }[s.st];
+    var mid = '<span class="sw ' + sw + '">' + word + '</span>';
+    if (s.st === 'restarting' && !s.connecting) mid += '<span class="sep">·</span><span>next try in <span data-cd="r">' + mmss(ui.cd) + '</span></span>';
+    if (s.st === 'failing') mid += '<span class="sep">·</span><span>next try in <span data-cd="f">' + mmss(ui.fcd) + '</span></span>';
+    if (s.st === 'approval') mid += '<span class="sep">·</span><span>added by an agent in <b style="color:var(--fg)">' + s.by + '</b> · 3m ago</span>';
+    else {
+      mid += '<span class="sep m2">·</span><span class="m2">last event ' + s.last + '</span><span class="sep m2">·</span><span class="m2">' + s.count + ' events today</span>';
+      mid += '<span class="sep m3">·</span><span class="m3">' + s.restarts + ' restart' + (s.restarts === 1 ? '' : 's') + (s.st === 'failing' ? ' in 10 min' : ' today') + '</span>';
+    }
+    var tools = '';
+    if (s.st !== 'approval') {
+      var rl = s.st === 'restarting' ? 'Try now' : s.st === 'paused' ? 'Start' : 'Restart';
+      tools += '<button class="ib" data-act="restart" data-id="' + id + '" data-f="t:restart" aria-label="' + rl + ' ' + id + '" title="' + rl + ' (⇧⌘R)">' + (s.st === 'paused' ? I.play : I.restart) + '</button>';
+      if (s.st !== 'paused') tools += '<button class="ib" data-act="pause" data-id="' + id + '" data-f="t:pause" aria-label="Pause ' + id + '" title="Pause (⇧⌘P)">' + I.pause + '</button>';
+    }
+    tools += '<button class="ib" data-act="more" data-id="' + id + '" data-f="t:more" aria-label="More for ' + id + '" aria-haspopup="menu" title="More">' + I.dots + '</button>';
+    var h = '<main class="pane" aria-label="Stream ' + id + '"><div class="ph"><span class="dot ' + (s.recovered ? 'ok' : DOT[s.st]) + '"></span><span class="t">' + id + '</span><span class="ag" title="Stream">' + I.stream + '</span><span class="mid">' + mid + '</span><span class="tools">' + tools + '</span></div>';
+    h += '<div class="facts"><span class="fi"><span class="fk">Runs</span><code>' + esc(s.cmd) + '</code></span><span class="fi"><span class="fk">Secrets</span>' + s.secrets.map(function (n) { return '<span class="chip" title="Value kept in midna; never shown">' + I.lock + n + '</span>'; }).join('') + '</span>';
+    if (s.st !== 'approval') h += '<span class="seg" role="radiogroup" aria-label="Show">' + [['all', 'All'], ['events', 'Events'], ['log', 'Log']].map(function (f) { return '<button role="radio" data-act="filter" data-v="' + f[0] + '" data-f="flt:' + f[0] + '" aria-checked="' + (ui.filter === f[0]) + '" tabindex="' + (ui.filter === f[0] ? 0 : -1) + '">' + f[1] + '</button>'; }).join('') + '</span>';
+    h += '</div>';
+    if (s.st === 'approval') {
+      h += '<div class="lg" style="display:flex"><div class="empty"><b>Not started</b>An agent added this stream. midna starts it only after you approve. Its events then go to triggers like any other stream.</div></div>';
+    } else {
+      var lines = logFor(s).filter(function (l) { return ui.filter === 'all' || (ui.filter === 'events' ? l.src === 'event' : l.src !== 'event'); });
+      h += '<div class="lg" role="log" aria-label="' + id + ' log" tabindex="0" data-f="lg"><div class="lday">Today</div>';
+      lines.forEach(function (l) {
+        var txc = l.cls === 'err' ? ' err' : l.cls === 'dim' ? ' dim' : '';
+        var vdc = l.cls === 'fired' ? ' fired' : l.cls === 'rate' ? ' rate' : '';
+        h += '<div class="ll' + (l.cls === 'live' ? ' live' : '') + (l.cls === 'new' ? ' new' : '') + '"><span class="tm">' + l.tm + '</span><span class="src ' + l.src + '">' + l.src + '</span><span class="tx' + txc + '"' + (l.cls === 'live' ? '' : ' title="' + esc(l.tx) + '"') + '>' + (l.cls === 'live' ? l.tx : esc(l.tx)) + '</span><span class="vd' + vdc + '">' + l.vd + '</span></div>';
+      });
+      h += '</div>';
+    }
+    if (s.st === 'failing') {
+      h += '<div class="appr" role="group" aria-label="Needs you"><div class="q"><b>slack keeps failing: invalid_auth</b><code class="mono">7 restarts in 10 min · still retrying every 5m · next try in <span data-cd="f">' + mmss(ui.fcd) + '</span></code></div><div class="acts"><button class="btn pri" data-act="secrets" data-f="b:secrets">Check secrets…</button><button class="btn" data-act="restart" data-id="slack" data-f="b:try">Try now</button><button class="btn" data-act="pause" data-id="slack" data-f="b:pause">Pause</button></div></div>';
+    } else if (s.st === 'approval') {
+      h += '<div class="appr" role="group" aria-label="Needs you"><div class="q"><b>Start the github-notifications stream?</b><code class="mono">' + esc(s.cmd) + ' · uses GITHUB_TOKEN</code></div><div class="acts"><button class="btn pri" data-act="approve" data-id="' + id + '" data-f="b:approve">Approve <kbd>⌘↩</kbd></button><button class="btn" data-act="deny" data-id="' + id + '" data-f="b:deny">Deny <kbd>⌘⌫</kbd></button></div></div>';
+    } else if (s.st === 'paused') {
+      h += '<div class="quiet-bar"><span><b>Paused by ' + s.by + (s.at ? ' at ' + s.at : '') + '.</b> It isn’t running, so no events arrive until you resume.</span><button class="btn" data-act="resume" data-id="' + id + '" data-f="b:resume">' + I.play + 'Resume</button></div>';
+    }
+    return h + '</main>';
+  }
+
+  function statusBar() {
+    return '<footer class="st"><span class="it"><span class="sd"></span>midnad · 3 terminals</span><span class="it opt">Policy <b>auto</b> · 3 approval rules</span><span class="it opt"><span class="sd off"></span>Webhooks off</span><span class="it opt">2 triggers today</span><span class="sp"></span><span class="it">⌘K commands · ⌘J next</span></footer>';
+  }
+
+  /* Design notes (not app UI) */
+  var NOTES = {
+    healthy: ['All healthy: one quiet line', '<p>Three streams run, so STREAMS stays folded to one dim line above the footer: “3 running”. No rows, no colour.</p><ul><li>Click the line (or ⌘K “Show streams”) to see all three, dimmed.</li><li>Hover a row for last event and count; click it to open its log.</li></ul>'],
+    restarting: ['buildkite restarting: a row comes out', '<p>The row slides out of the folded group with a turning blue ring and a live countdown. Not urgent, so no needs-you.</p><ul><li>When it reconnects the row says “running again” for a moment, then folds back in.</li></ul><button class="btn" data-act="replay">Replay</button>'],
+    failing: ['slack failing: needs-you + a red row', '<p>After 7 restarts in 10 min midna raises a needs-you item, so the top pill goes from 1 to 2. The row is red; the header gets a red dot.</p><ul><li>⌘J or the pill opens slack’s log with the needs-you bar.</li><li>It keeps retrying every 5m; fixing the secret ends it.</li></ul>'],
+    paused: ['calendar paused: still quiet', '<p>You paused it, so it isn’t trouble: no row comes out. The folded line says “2 running · 1 paused” so it can’t be forgotten.</p><ul><li>Unfold, or open calendar’s log, to Resume.</li></ul>'],
+    approval: ['Agent added a stream: approve it', '<p>An agent in spike added github-notifications. It won’t start until you approve, so it raises needs-you (pill 1 → 2) and comes out amber.</p><ul><li>Approve/Deny sit at the bottom of its view, like a command approval.</li></ul>']
+  };
+  var LOG_NOTES = {
+    healthy: ['Clicking a stream row', '<p>The main pane shows the stream, not a terminal: header with state and counts, what it runs, secrets by name, and one timeline of midna’s lines, stderr and events with their verdicts.</p><ul><li>Restart, Pause and More sit where a terminal’s tools sit.</li><li>Click a terminal row to go back.</li></ul>']
+  };
+  function note(k) {
+    var n = (k === 'log' && LOG_NOTES[canvas.state]) || NOTES[canvas.state] || NOTES.healthy;
+    return '<aside class="note" aria-label="Design note"' + (ui.noteClosed ? ' data-closed' : '') + '><button data-act="note" aria-expanded="' + !ui.noteClosed + '">' + n[0] + '<span class="k">N</span></button><div class="nbd">' + n[1] + '</div></aside>';
+  }
+
+  function menuHtml() {
+    var m = ui.menu; if (!m) return '';
+    var h = '<div class="menu" role="menu" aria-label="' + (m.kind === 'hd' ? 'Streams' : m.id) + '" style="left:' + m.x + 'px;top:' + m.y + 'px">';
+    function it(act, label, key, extra) { return '<button class="mi' + (extra || '') + '" role="menuitem" data-act="' + act + '" data-id="' + (m.id || '') + '" tabindex="-1"><span class="ml">' + label + '</span>' + (key ? '<span class="mk">' + key + '</span>' : '') + '</button>'; }
+    if (m.kind === 'hd') {
+      h += it('fold', ui.open ? 'Fold streams' : 'Show all streams', '');
+      h += it('triggers', 'Open Triggers', '');
+      h += '<div class="msep"></div>' + it('hide', 'Hide from sidebar', 'show again from ⌘K');
+    } else {
+      var s = eff(m.id); if (!s) return '';
+      h += '<div class="mh">' + m.id + '</div>';
+      h += it('sel', 'Open log', '↩');
+      if (s.st === 'approval') h += it('approve', 'Approve and start', '⌘↩');
+      if (s.st === 'restarting') h += it('restart', 'Try now', '⇧⌘R');
+      else if (s.st === 'failing' || s.st === 'running') h += it('restart', 'Restart', '⇧⌘R');
+      if (s.st === 'paused') h += it('resume', 'Resume', '⇧⌘P');
+      else if (s.st !== 'approval') h += it('pause', 'Pause', '⇧⌘P');
+      h += it('copy', 'Copy command', '');
+      h += '<div class="msep"></div>' + it('remove', 'Remove stream…', '', ' danger');
+    }
+    return h + '</div>';
+  }
+  function dialogHtml() {
+    var d = ui.dialog; if (!d) return '';
+    return '<div class="scrim" data-act="dlg-scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">Remove the ' + d.id + ' stream?</h2><p>midna stops it and forgets its command. Triggers that listen to it stay but get no events. Its secrets stay in Settings › Secrets.</p><div class="acts"><button class="btn" data-act="dlg-cancel" data-f="d:cancel">Cancel</button><button class="btn danger" data-act="dlg-remove" data-id="' + d.id + '" data-f="d:remove">Remove ' + d.id + '</button></div></div></div>';
+  }
+
+  /* ── Render ── */
+  function appFor(k) {
+    var sel = ui.sel[k], s = isStream(sel) ? eff(sel) : null;
+    if (isStream(sel) && !s) { ui.sel[k] = 'build-angel'; sel = 'build-angel'; }
+    var pane = s ? streamPane(s) : termPane(sel);
+    var h = sidebar(k) + pane + statusBar() + note(k);
+    if (canvas.screen === k) h += menuHtml() + dialogHtml();
+    return h;
+  }
+  function render() {
+    var ae = canvas.root.activeElement, fk = ae && ae.getAttribute && ae.getAttribute('data-f');
+    var lgEls = canvas.$$('.lg'), keepScroll = {};
+    lgEls.forEach(function (el) { var k = el.closest('.app').getAttribute('data-k'); keepScroll[k] = el.scrollHeight - el.scrollTop - el.clientHeight < 4; });
+    canvas.$$('.app').forEach(function (app) {
+      var k = app.getAttribute('data-k');
+      app.innerHTML = appFor(k);
+      var s = isStream(ui.sel[k]) && eff(ui.sel[k]);
+      app.classList.toggle('has-appr', !!(s && (s.st === 'failing' || s.st === 'approval' || s.st === 'paused')));
+      var lg = app.querySelector('.lg[role=log]');
+      if (lg && keepScroll[k] !== false) lg.scrollTop = lg.scrollHeight;
+    });
+    ui.entering = {}; ui.unfolding = false; ui.lastNeed = needCount();
+    var cur = canvas.$('[data-screen="' + canvas.screen + '"] .app');
+    if (ui.menu && cur) {
+      var mn = cur.querySelector('.menu');
+      if (mn) {
+        var W = cur.clientWidth, H = cur.clientHeight;
+        if (ui.menu.up) mn.style.top = Math.max(8, ui.menu.y - mn.offsetHeight - 4) + 'px';
+        if (ui.menu.right) mn.style.left = Math.max(8, ui.menu.x - mn.offsetWidth) + 'px';
+        if (mn.offsetLeft + mn.offsetWidth > W - 8) mn.style.left = (W - 8 - mn.offsetWidth) + 'px';
+        if (mn.offsetTop + mn.offsetHeight > H - 8) mn.style.top = Math.max(8, H - 8 - mn.offsetHeight) + 'px';
+        var first = mn.querySelector('.mi'); if (first) first.focus();
+      }
+    } else if (ui.dialog && cur) {
+      var c = cur.querySelector('[data-f="d:cancel"]'); if (c) c.focus();
+    } else if (fk && cur) {
+      var el = cur.querySelector('[data-f="' + fk + '"]'); if (el) el.focus();
+    }
+    canvas.refresh();
+  }
+
+  /* ── Countdowns and the restart → recovery transition ── */
+  var timers = [];
+  function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  setInterval(function () {
+    if (!ui) return;
+    if (canvas.state === 'restarting' && ui.phase === 'wait' && !ui.ov.buildkite) {
+      ui.cd--;
+      if (ui.cd <= 0) { tryNowBuildkite(); return; }
+      canvas.$$('[data-cd="r"]').forEach(function (e) { e.textContent = mmss(ui.cd); });
+    }
+    if (canvas.state === 'failing' && eff('slack') && eff('slack').st === 'failing') {
+      ui.fcd = ui.fcd <= 1 ? 300 : ui.fcd - 1;
+      canvas.$$('[data-cd="f"]').forEach(function (e) { e.textContent = mmss(ui.fcd); });
+    }
+  }, 1000);
+  function tryNowBuildkite() {
+    ui.phase = 'connecting'; render();
+    later(function () { ui.phase = 'recovered'; render(); }, 1400);
+    later(function () {
+      var shown = ui.open || ui.sel[canvas.screen] === 'buildkite';
+      if (shown) { ui.phase = 'done'; render(); return; }
+      ui.leaving = 'buildkite'; ui.phase = 'done'; render();
+      later(function () { ui.leaving = null; render(); }, 260);
+    }, 4400);
+  }
+  function startState() {
+    clearTimers();
+    reset();
+    if (canvas.state === 'restarting') ui.entering.buildkite = true;
+    if (canvas.state === 'failing') ui.entering.slack = true;
+    if (canvas.state === 'approval') ui.entering['github-notifications'] = true;
+    ui.lastNeed = 1;
+    render();
+  }
+
+  /* ── Actions ── */
+  function addLine(id, line) { (ui.extra[id] = ui.extra[id] || []).push(line); }
+  function nowT() { return '12:46:' + String(10 + Math.floor(Math.random() * 40)); }
+  function select(id) {
+    ui.menu = null;
+    if (isStream(id)) {
+      ui.sel.log = id;
+      if (canvas.screen !== 'log') { canvas.navigate('log'); return; }
+    } else {
+      ui.sel.main = id;
+      if (canvas.screen !== 'main') { canvas.navigate('main', { replace: true }); return; }
+    }
+    render();
+  }
+  function act(a, id, el) {
+    var s = id && eff(id);
+    switch (a) {
+      case 'sel': select(id); return;
+      case 'fold': ui.menu = null; ui.open = !ui.open; ui.unfolding = ui.open; render(); return;
+      case 'hide': ui.menu = null; ui.hidden = true; render(); canvas.toast('Streams hidden from the sidebar. ⌘K “Show streams” brings them back. They keep running and failures still reach needs-you.', 5000); return;
+      case 'triggers': ui.menu = null; render(); canvas.toast('Opens the Triggers screen (overlay in this window)'); return;
+      case 'pill':
+        var f = streams().filter(function (x) { return x.st === 'failing' || x.st === 'approval'; })[0];
+        select(f ? f.id : 'spike'); return;
+      case 'restart':
+        ui.menu = null;
+        if (id === 'buildkite' && canvas.state === 'restarting' && ui.phase === 'wait' && !ui.ov.buildkite) { tryNowBuildkite(); return; }
+        if (s.st === 'failing') {
+          addLine(id, L(nowT(), 'midna', 'restart by you · started · pid 49012'));
+          addLine(id, L(nowT(), 'stderr', '[ERROR] socket-mode: An API error occurred: invalid_auth', '', 'err'));
+          addLine(id, L(nowT(), 'midna', 'exited 1 · still failing · next try in 5m'));
+          ui.fcd = 300; render(); canvas.toast('slack failed again: invalid_auth'); return;
+        }
+        ui.ov[id] = Object.assign({}, ui.ov[id], { st: 'running', restarts: (s.restarts || 0) + 1 });
+        addLine(id, L(nowT(), 'midna', (s.st === 'paused' ? 'started by you' : 'restarted by you') + ' · pid 49' + Math.floor(100 + Math.random() * 800)));
+        render(); canvas.toast((s.st === 'paused' ? 'Started ' : 'Restarted ') + id); return;
+      case 'pause':
+        ui.menu = null;
+        ui.ov[id] = Object.assign({}, ui.ov[id], { st: 'paused', by: 'you', at: '12:46' });
+        addLine(id, L(nowT(), 'midna', 'paused by you · stopped'));
+        render(); canvas.toast('Paused ' + id + (s.st === 'failing' ? '. Its needs-you item is cleared.' : '')); return;
+      case 'resume':
+        ui.menu = null;
+        ui.ov[id] = Object.assign({}, ui.ov[id], { st: 'running' });
+        addLine(id, L(nowT(), 'midna', 'resumed by you · started · pid 49233'));
+        render(); canvas.toast('Resumed ' + id); return;
+      case 'approve':
+        ui.menu = null;
+        ui.ov[id] = Object.assign({}, ui.ov[id], { st: 'running', last: 'just now', count: 0 });
+        addLine(id, L(nowT(), 'midna', 'approved by you · started · pid 49301'));
+        addLine(id, L(nowT(), 'stderr', 'polling notifications every 60s'));
+        render(); canvas.toast('github-notifications approved and started'); return;
+      case 'deny':
+        ui.removed[id] = true; ui.menu = null; render(); canvas.toast('Denied. github-notifications was removed; spike is told.'); return;
+      case 'copy': ui.menu = null; render(); canvas.toast('Copied: ' + s.cmd); return;
+      case 'secrets': canvas.toast('Opens Settings › Secrets (its own window) on SLACK_APP_TOKEN'); return;
+      case 'remove': ui.menu = null; ui.dialog = { id: id, back: id }; render(); return;
+      case 'dlg-cancel': var b = ui.dialog && ui.dialog.back; ui.dialog = null; render(); focusRow(b); return;
+      case 'dlg-remove': ui.dialog = null; ui.removed[id] = true; render(); canvas.toast('Removed the ' + id + ' stream'); return;
+      case 'more': openMenu('row', id, el, true); return;
+      case 'filter': ui.filter = el.getAttribute('data-v'); render(); return;
+      case 'note': ui.noteClosed = !ui.noteClosed; render(); return;
+      case 'replay': startState(); return;
+    }
+  }
+  function focusRow(id) { var cur = canvas.$('[data-screen="' + canvas.screen + '"] .app'); var el = cur && cur.querySelector('[data-f="row:' + id + '"]'); if (el) el.focus(); }
+
+  function openMenu(kind, id, el, fromButton, pt) {
+    var cur = el.closest('.app'), ar = cur.getBoundingClientRect(), sc = ar.width / cur.offsetWidth;
+    var r = el.getBoundingClientRect(), m = { kind: kind, id: id, back: el.getAttribute('data-f') };
+    if (pt) { m.x = (pt.x - ar.left) / sc; m.y = (pt.y - ar.top) / sc; }
+    else if (fromButton) { m.x = (r.right - ar.left) / sc; m.y = (r.bottom - ar.top) / sc + 4; m.right = true; }
+    else { m.x = (r.left - ar.left) / sc + 24; m.y = (r.top - ar.top) / sc; m.up = true; }
+    if (kind === 'hd' && !pt) { m.x = (r.left - ar.left) / sc + 8; m.y = (r.top - ar.top) / sc; m.up = true; }
+    if (pt && kind === 'hd') m.up = true;
+    if (pt && kind === 'row') m.up = (r.top - ar.top) / sc > cur.offsetHeight * 0.55;
+    ui.menu = m; render();
+  }
+  function closeMenu() {
+    var back = ui.menu && ui.menu.back; ui.menu = null; render();
+    var cur = canvas.$('[data-screen="' + canvas.screen + '"] .app'); var el = back && cur && cur.querySelector('[data-f="' + back + '"]'); if (el) el.focus();
+  }
+
+  var root = canvas.root;
+  root.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-act]');
+    if (ui.menu && !e.target.closest('.menu')) { var hadMenu = true; ui.menu = null; if (!t || t.getAttribute('data-act') === 'more') { render(); return; } }
+    if (!t) return;
+    var a = t.getAttribute('data-act');
+    if (a === 'dlg-scrim') { if (e.target === t) act('dlg-cancel'); return; }
+    act(a, t.getAttribute('data-id'), t);
+  });
+  root.addEventListener('contextmenu', function (e) {
+    var row = e.target.closest('[data-sid]'), hd = e.target.closest('.ghd');
+    if (!row && !hd) return;
+    e.preventDefault();
+    openMenu(row ? 'row' : 'hd', row ? row.getAttribute('data-sid') : null, row || hd, false, { x: e.clientX, y: e.clientY });
+  });
+  root.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (ui.dialog) {
+      if (e.key === 'Escape') { e.preventDefault(); act('dlg-cancel'); return; }
+      if (e.key === 'Tab') { var bs = canvas.$$('.dlg button'); var i = bs.indexOf ? bs.indexOf(t) : Array.prototype.indexOf.call(bs, t); e.preventDefault(); bs[(i + (e.shiftKey ? bs.length - 1 : 1)) % bs.length].focus(); }
+      return;
+    }
+    if (ui.menu) {
+      var items = Array.prototype.slice.call(canvas.$$('.menu .mi')), ix = items.indexOf(t);
+      if (e.key === 'Escape') { e.preventDefault(); closeMenu(); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); items[(ix + 1) % items.length].focus(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); items[(ix - 1 + items.length) % items.length].focus(); return; }
+      if (e.key === 'Home') { e.preventDefault(); items[0].focus(); return; }
+      if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus(); return; }
+      if (e.key === 'Tab') { e.preventDefault(); closeMenu(); return; }
+      return;
+    }
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      var row = t.closest && t.closest('[data-sid]'), hd = t.closest && t.closest('.ghd');
+      if (row || hd) { e.preventDefault(); openMenu(row ? 'row' : 'hd', row ? row.getAttribute('data-sid') : null, row || hd, false); }
+      return;
+    }
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && t.hasAttribute && t.hasAttribute('data-nav-row')) {
+      var list = Array.prototype.slice.call(t.closest('.sb').querySelectorAll('[data-nav-row]')), j = list.indexOf(t);
+      var nx = list[j + (e.key === 'ArrowDown' ? 1 : -1)]; if (nx) { e.preventDefault(); nx.focus(); }
+      return;
+    }
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && t.getAttribute && t.getAttribute('role') === 'radio') {
+      var rs = Array.prototype.slice.call(t.parentNode.children), k = rs.indexOf(t);
+      var n2 = rs[(k + (e.key === 'ArrowRight' ? 1 : rs.length - 1)) % rs.length]; e.preventDefault(); ui.filter = n2.getAttribute('data-v'); render(); return;
+    }
+    if (e.key === 'ArrowLeft' && t.classList && t.classList.contains('ghd') && ui.open) { e.preventDefault(); act('fold'); return; }
+    if (e.key === 'ArrowRight' && t.classList && t.classList.contains('ghd') && !ui.open) { e.preventDefault(); act('fold'); return; }
+    var sid = isStream(ui.sel[canvas.screen]) && ui.sel[canvas.screen], s = sid && eff(sid);
+    if (canvas.screen === 'log' && s && e.metaKey) {
+      if (s.st === 'approval' && e.key === 'Enter') { e.preventDefault(); act('approve', sid); return; }
+      if (s.st === 'approval' && e.key === 'Backspace') { e.preventDefault(); act('deny', sid); return; }
+      if (e.shiftKey && (e.key === 'r' || e.key === 'R') && s.st !== 'approval') { e.preventDefault(); act('restart', sid); return; }
+      if (e.shiftKey && (e.key === 'p' || e.key === 'P') && s.st !== 'approval') { e.preventDefault(); act(s.st === 'paused' ? 'resume' : 'pause', sid); return; }
+    }
+    if (e.metaKey && (e.key === 'j' || e.key === 'J')) { e.preventDefault(); act('pill'); return; }
+    if ((e.key === 'n' || e.key === 'N') && !e.metaKey && !e.ctrlKey && !e.altKey) { act('note'); return; }
+  });
+
+  canvas.onState(function () { startState(); });
+  canvas.onNavigate(function () { ui.menu = null; ui.dialog = null; render(); });
+};
+</script>

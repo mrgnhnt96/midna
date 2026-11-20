@@ -1,0 +1,7 @@
+{
+  "concepts": [
+    { "id": "a", "label": "Sidebar group", "position": "A dimmed STREAMS group above the footer, folded to one quiet line when all are healthy; a stream with trouble comes out as a row; clicking a row shows its log in the main pane", "screen": "a/screen.html" },
+    { "id": "b", "label": "Status-bar item", "position": "One status-bar item next to Webhooks, dim when healthy and coloured with the worst stream's state otherwise; it opens a popover of every stream with Restart, Pause and Log; Log opens a read-only log window", "screen": "b/screen.html" },
+    { "id": "c", "label": "Triggers screen", "position": "Streams live in the Triggers screen as trigger sources, with a detail pane (state, log, recent events with verdicts); the sidebar shows nothing when healthy, and the footer's Triggers button carries a dot and short label when a stream isn't", "screen": "c/screen.html" }
+  ]
+}
