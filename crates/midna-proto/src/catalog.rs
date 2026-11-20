@@ -1,7 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::cleanup::*;
-use crate::streams::{StreamStatus, StreamsAddParams, StreamsEventsParams, StreamsEventsResult, StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams};
+use crate::streams::{StreamStatus, StreamsAddParams, StreamsEventsParams, StreamsEventsResult, StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams, StreamsUpdateParams};
 use crate::summary::*;
 use crate::methods::*;
 use crate::nearby::*;
@@ -514,17 +514,26 @@ fn build() -> Vec<MethodSpec> {
              the terminal environment plus MIDNA_STREAM=<name>, and each named stored secret in its environment (looked up \
              each start: the project's own, else a global one; values never stored or logged). When it exits midnad starts it \
              again after 1s, doubling to 5 minutes (back to 1s once a run lasts 10 minutes), and starts every stream again \
-             when the daemon starts and after the Mac wakes. Streams are kept in state.json. For now only the human can add \
-             one: an agent's call is refused. CLI: `midna stream add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>`."),
+             when the daemon starts and after the Mac wakes. Streams are kept in state.json. An agent's stream is kept paused \
+             (state awaiting_approval) and raises one needs-you approval naming its command, cwd, project and secrets; it \
+             starts when the human approves it (or resumes it). \
+             CLI: `midna stream add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>`."),
+        m::<StreamsUpdateParams, StreamStatus>("streams.update").mutating().d(
+            "Change a stream's command, cwd, project or secrets (left out: unchanged). A running stream starts again with \
+             them. An agent's change pauses it and asks the human again (awaiting_approval, a needs-you approval), even if \
+             it was approved before. CLI: `midna stream update <name> [--project P] [--secret NAME]... [--cwd DIR] [-- <command...>]`."),
         m::<NoParams, Vec<StreamStatus>>("streams.list").d(
-            "The streams midna runs (streams.add), each with its producer's state (starting, running, backoff, paused), pid, \
+            "The streams midna runs (streams.add), each with its producer's state (starting, running, backoff, paused, \
+             awaiting_approval with the needs-you `approval` that starts it), pid, \
              restarts, last exit, when it starts again, its last start error, its newest accepted event and its log file. \
              CLI: `midna stream list [--json]`."),
         m::<StreamsNameParams, OkResult>("streams.remove").mutating().d(
-            "Stop a stream's producer (its whole process group) and forget the stream. Its log file stays. CLI: `midna stream remove <name>`."),
+            "Stop a stream's producer (its whole process group) and forget the stream. Its log file stays. An agent removing \
+             one that isn't paused asks the human (a needs-you approval). CLI: `midna stream remove <name>`."),
         m::<StreamsSetEnabledParams, StreamStatus>("streams.set_enabled").mutating().d(
-            "Pause (enabled false: its producer's process group is stopped) or resume a stream midna runs. \
-             CLI: `midna stream pause <name>`, `midna stream resume <name>`."),
+            "Pause (enabled false: its producer's process group is stopped) or resume a stream midna runs. The human resuming \
+             a stream awaiting approval approves it; an agent's resume of one asks the human (a needs-you approval; error \
+             human_only with data.needs_you_id). CLI: `midna stream pause <name>`, `midna stream resume <name>`."),
         m::<StreamsNameParams, StreamStatus>("streams.restart").mutating().d(
             "Stop a running stream's producer and start it again now (a stream in backoff starts at once). A paused one is \
              refused: resume it. CLI: `midna stream restart <name>`."),

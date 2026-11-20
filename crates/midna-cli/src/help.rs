@@ -637,6 +637,7 @@ pub static VERBS: &[Verb] = &[
         usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]\n       \
                 stream events <name> [--limit N] [--replay SEQ|ID]\n       \
                 stream add <name> [--project P] [--secret NAME]... [--cwd DIR] -- <command...>\n       \
+                stream update <name> [--project P] [--secret NAME]... [--no-secrets] [--cwd DIR] [-- <command...>]\n       \
                 stream list | pause <name> | resume <name> | restart <name> | remove <name>",
         summary: "hand midna an event from a program on this Mac, for local triggers",
         details: "Logs event `stream.<name>.<kind>` with the JSON object as its data (at most 64 KB; --data left out\n\
@@ -659,11 +660,17 @@ pub static VERBS: &[Verb] = &[
                   \x20       10 minutes up); every stream starts again when midnad starts and after the Mac wakes.\n\
                   \x20       --secret NAME (repeatable): the stored secret goes in its environment as $NAME, resolved\n\
                   \x20       like `secret exec` (--project first); only the names are saved, and the values are masked\n\
-                  \x20       in what it prints. Only the human can add a stream for now (from the app).\n\
-                  list    each stream's state (running, backoff, paused), pid, restarts, last exit and last event.\n\
+                  \x20       in what it prints. An agent's stream waits, paused, for the human's approval: one\n\
+                  \x20       needs-you naming its command, cwd, project and secrets (`midna approve <id>` runs it).\n\
+                  update  change its command (after --), --cwd, --project or secrets (--secret replaces them,\n\
+                  \x20       --no-secrets drops them); a running one starts again with them. An agent's change pauses\n\
+                  \x20       it and asks the human again, even if it was approved before.\n\
+                  list    each stream's state (running, backoff, paused, awaiting_approval), pid, restarts, last\n\
+                  \x20       exit and last event.\n\
                   pause/resume/restart/remove  stop it and keep it stopped / start it / start it again now / stop\n\
-                  \x20       and forget it. Stopping one stops everything it started.",
-        methods: &["streams.publish", "streams.events", "trigger.replay", "streams.add", "streams.list", "streams.set_enabled", "streams.restart", "streams.remove"],
+                  \x20       and forget it. Stopping one stops everything it started. Agents may pause, resume an\n\
+                  \x20       approved stream, restart, and remove a paused one; removing a running one asks the human.",
+        methods: &["streams.publish", "streams.events", "trigger.replay", "streams.add", "streams.update", "streams.list", "streams.set_enabled", "streams.restart", "streams.remove"],
     },
     Verb {
         name: "insights",

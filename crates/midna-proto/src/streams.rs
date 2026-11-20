@@ -216,6 +216,10 @@ pub struct StreamSpec {
     pub secrets: Vec<String>,
     /// False while paused: midnad doesn't run it.
     pub enabled: bool,
+    /// An agent added it, or changed its command, cwd, project or secrets: it stays paused until
+    /// the human approves it (a needs-you approval) or resumes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_approval: bool,
     pub created_at: String,
 }
 
@@ -233,6 +237,8 @@ pub enum StreamState {
     Backoff,
     /// Paused (`midna stream pause`): not running until resumed.
     Paused,
+    /// An agent added or changed it: not running until the human approves it (`approval`).
+    AwaitingApproval,
 }
 
 impl StreamState {
@@ -242,6 +248,7 @@ impl StreamState {
             StreamState::Running => "running",
             StreamState::Backoff => "backoff",
             StreamState::Paused => "paused",
+            StreamState::AwaitingApproval => "awaiting_approval",
         }
     }
 }
@@ -270,6 +277,9 @@ pub struct StreamStatus {
     pub secrets: Vec<String>,
     pub enabled: bool,
     pub state: StreamState,
+    /// Awaiting approval: the needs-you approval that starts it (`midna approve <id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::types::Id>,
     /// The producer's pid (its process group's) while running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
@@ -309,6 +319,24 @@ pub struct StreamsAddParams {
     /// Names of stored secrets to put in its environment (`midna secret list`).
     #[serde(default)]
     pub secrets: Vec<String>,
+}
+
+/// Change a stream's producer. Fields left out stay as they are.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsUpdateParams {
+    pub name: String,
+    /// The producer's new argv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Its new folder (absolute). A new project without one keeps the folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The project (id or name) its secrets come from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// The stored secrets' names it gets, replacing the ones it has (`[]` for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
