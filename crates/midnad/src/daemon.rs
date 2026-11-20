@@ -143,6 +143,9 @@ pub struct AgentRt {
     pub hooked: bool,
     /// Cron calls between their `agent.hook` and `policy.request` (`crons.rs`).
     pub crons: Vec<crate::crons::Parked>,
+    /// The plan usage this agent process's status line last reported (`usage.rs`). Cleared when
+    /// the process starts or resumes, so only a drop within one process reads as a reset.
+    pub limits_seen: Option<RateLimits>,
 }
 
 /// What a caller blocked on an approval (`waiters`) is woken with.
