@@ -592,7 +592,10 @@ fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<
         Some(_) => return Err(json!({ "code": -32602, "message": "tools/call arguments must be an object" })),
     };
     match tool {
-        "capabilities" => return Ok(text_result(guide::capabilities(), false)),
+        "capabilities" => {
+            let info = rpc(client, "daemon.info", json!({})).ok();
+            return Ok(text_result(guide::capabilities_with(info.as_ref()), false));
+        }
         "guide" => {
             return Ok(match guide::skill_text(args.get("topic").and_then(Value::as_str)) {
                 Ok(text) => text_result(text.to_string(), false),

@@ -461,3 +461,91 @@ exec sleep 60"#, out.display());
         assert!(!text.contains(&token) && !text.contains(&fresh), "a token is in {f}");
     }
 }
+
+fn failing_items(h: &mut Client) -> Vec<Value> {
+    call(h, "needs_you.list", json!({})).as_array().unwrap().iter().filter(|n| n["kind"] == "stream_failing").cloned().collect()
+}
+
+fn health(h: &mut Client, name: &str) -> Vec<String> {
+    events(h, "stream.health").iter().filter(|e| e["data"]["stream"] == name).map(|e| e["data"]["state"].as_str().unwrap_or("").to_string()).collect()
+}
+
+#[test]
+fn a_stream_that_keeps_exiting_is_failing_with_one_needs_you_item_until_paused() {
+    let mut d = start();
+    midnad::producers::quick_backoff(&d.daemon());
+    let mut h = d.human();
+    // `stream.*` is for a stream's events: its health never fires a trigger.
+    let t = call(&mut h, "trigger.add", json!({ "name": "Any", "source": "local", "event": "stream.*", "action": { "kind": "notify", "title": "x" }, "enabled": true, "cooldown_secs": 0 }));
+    add(&mut h, &d, "slack", "echo invalid_auth >&2; exit 1");
+
+    let s = wait_for(20, "failing", || Some(status(&mut h, "slack")).filter(|s| s["state"] == "failing"));
+    assert_eq!(s["why"], "invalid_auth", "{s}");
+    assert!(s["exits_recent"].as_u64() >= Some(5) && s["failing_since"].is_string(), "{s}");
+    let items = wait_for(5, "one item", || Some(failing_items(&mut h)).filter(|i| !i.is_empty()));
+    assert_eq!(items.len(), 1, "{items:?}");
+    let item = &items[0];
+    assert_eq!((item["stream"].as_str(), item["asked_by"]["name"].as_str()), (Some("slack"), Some("stream slack")), "{item}");
+    assert_eq!(item["title"], "Stream slack keeps failing: invalid_auth", "{item}");
+    assert!(item["detail"].as_str().unwrap().contains("midna stream pause slack"), "{item}");
+    let id = item["id"].as_str().unwrap().to_string();
+    let s = wait_for(5, "item on the status", || Some(status(&mut h, "slack")).filter(|s| s["needs_you"].is_string()));
+    assert_eq!(s["needs_you"], id.as_str());
+    assert!(s["log_tail"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("stderr: invalid_auth")), "{s}");
+
+    // It keeps retrying, and raises nothing more.
+    let restarts = s["restarts"].as_u64().unwrap();
+    wait_for(20, "more restarts", || (status(&mut h, "slack")["restarts"].as_u64() > Some(restarts + 1)).then_some(()));
+    assert_eq!(failing_items(&mut h).len(), 1);
+    let states = health(&mut h, "slack");
+    assert!(states.contains(&"backoff".to_string()) && states.iter().filter(|s| *s == "failing").count() == 1, "{states:?}");
+
+    let info = call(&mut h, "daemon.info", json!({}));
+    assert_eq!((info["streams"]["total"].as_u64(), info["streams"]["healthy"].as_u64()), (Some(1), Some(0)), "{info}");
+    assert_eq!((info["streams"]["unhealthy"][0]["name"].as_str(), info["streams"]["unhealthy"][0]["state"].as_str()), (Some("slack"), Some("failing")), "{info}");
+
+    // A restart of midnad keeps the same item: still failing, nothing raised twice.
+    restart(&mut d);
+    midnad::producers::quick_backoff(&d.daemon());
+    let mut h = d.human();
+    let s = wait_for(10, "failing after restart", || Some(status(&mut h, "slack")).filter(|s| s["state"] == "failing" && s["restarts"].as_u64() >= Some(2)));
+    assert_eq!(s["needs_you"], id.as_str(), "{s}");
+    let items = failing_items(&mut h);
+    assert_eq!((items.len(), items[0]["id"].as_str()), (1, Some(id.as_str())), "{items:?}");
+
+    // Pausing it is the human's answer: the item resolves.
+    let p = call(&mut h, "streams.set_enabled", json!({ "name": "slack", "enabled": false }));
+    assert_eq!((p["state"].as_str(), p["needs_you"].as_str(), p["why"].as_str()), (Some("paused"), None, None), "{p}");
+    assert!(failing_items(&mut h).is_empty());
+    assert_eq!(health(&mut h, "slack").last().map(String::as_str), Some("paused"));
+    // Resumed, it starts afresh: healthy until it fails 5 more times.
+    let r = call(&mut h, "streams.set_enabled", json!({ "name": "slack", "enabled": true }));
+    assert_ne!(r["state"], "failing", "{r}");
+    call(&mut h, "streams.set_enabled", json!({ "name": "slack", "enabled": false }));
+    let fired = call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] }));
+    assert_eq!(fired, json!([]), "stream.health fired a trigger");
+}
+
+#[test]
+fn a_failing_stream_is_healthy_again_once_a_run_lasts_ten_minutes() {
+    let d = start();
+    midnad::producers::quick_backoff(&d.daemon());
+    let mut h = d.human();
+    add(&mut h, &d, "ci", "if [ -f ok ]; then exec sleep 60; fi; echo 'no token' >&2; exit 2");
+    wait_for(20, "failing", || (status(&mut h, "ci")["state"] == "failing").then_some(()));
+    let id = wait_for(5, "item", || failing_items(&mut h).first().map(|i| i["id"].as_str().unwrap().to_string()));
+
+    // Fixed: the next run stays up, but it's still failing until it has run 10 minutes.
+    std::fs::write(d.home.join("ok"), "").unwrap();
+    let s = wait_for(20, "up again", || Some(status(&mut h, "ci")).filter(|s| s["pid"].is_i64()));
+    assert_eq!((s["state"].as_str(), s["needs_you"].as_str()), (Some("failing"), Some(id.as_str())), "{s}");
+    midnad::producers::backdate_up(&d.daemon(), "ci", 600);
+    let s = wait_for(5, "healthy", || Some(status(&mut h, "ci")).filter(|s| s["state"] == "running"));
+    assert!(s["needs_you"].is_null() && s["failing_since"].is_null() && s["why"].is_null(), "{s}");
+    assert!(failing_items(&mut h).is_empty());
+    let resolved = events(&mut h, "needs_you.resolved");
+    assert!(resolved.iter().any(|e| e["data"]["id"] == id.as_str()), "{resolved:?}");
+    assert_eq!(health(&mut h, "ci").last().map(String::as_str), Some("running"));
+    let info = call(&mut h, "daemon.info", json!({}));
+    assert_eq!((info["streams"]["healthy"].as_u64(), info["streams"]["unhealthy"].as_array().map_or(0, Vec::len)), (Some(1), 0), "{info}");
+}

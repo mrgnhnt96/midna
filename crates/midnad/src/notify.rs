@@ -210,7 +210,7 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
             let category = match item.kind {
                 NeedsYouKind::Approval | NeedsYouKind::PermissionPrompt => "approval",
                 NeedsYouKind::Blocked | NeedsYouKind::Note => "attention",
-                NeedsYouKind::Failed => "failed",
+                NeedsYouKind::Failed | NeedsYouKind::StreamFailing => "failed",
                 NeedsYouKind::TriggerWaiting | NeedsYouKind::SecretNeeded | NeedsYouKind::RuleRemoval => "requests",
             };
             let mut body = capitalize(&item.title);

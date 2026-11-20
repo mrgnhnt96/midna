@@ -100,7 +100,8 @@ fn build() -> Vec<MethodSpec> {
         m::<NoParams, Value>("rpc.discover").result_any().d(
             "Return the OpenRPC document describing every midna method. Start here to learn what you can do."),
         m::<NoParams, DaemonInfo>("daemon.info").d(
-            "Daemon version, pid, uptime, MIDNA_HOME, socket path, and the role (human/agent) the daemon assigned to your connection."),
+            "Daemon version, pid, uptime, MIDNA_HOME, socket path, the role (human/agent) the daemon assigned to your connection, \
+             and how the streams it runs are doing (count, and any waiting to start again or failing)."),
         m::<UpgradeParams, UpgradeResult>("daemon.upgrade").mutating().human().d(
             "Replace the running daemon with another midnad binary without killing terminals: the new binary must pass \
              `--selftest`, then every terminal's screen is saved and the daemon re-execs in place (same pid), keeping \
@@ -527,9 +528,12 @@ fn build() -> Vec<MethodSpec> {
              it was approved before. CLI: `midna stream update <name> [--project P] [--secret NAME]... [--cwd DIR] [-- <command...>]`."),
         m::<NoParams, Vec<StreamStatus>>("streams.list").d(
             "The streams midna runs (streams.add), each with its producer's state (starting, running, backoff, paused, \
-             awaiting_approval with the needs-you `approval` that starts it), pid, \
-             restarts, last exit, when it starts again, its last start error, its newest accepted event and its log file. \
-             CLI: `midna stream list [--json]`."),
+             awaiting_approval with the needs-you `approval` that starts it, failing), pid, restarts, last exit, when it starts \
+             again, its last start error, why it isn't running, its newest accepted event, its publishes per verdict, and its \
+             log file with its last lines. A stream is failing once its producer exits 5 times within 10 minutes: midna keeps \
+             starting it again, raises one `stream_failing` needs-you item and publishes `stream.health` on each state change; \
+             both clear once a run lasts 10 minutes, or when it is paused or removed. \
+             CLI: `midna stream list [--json]`, `midna explain <stream name>`."),
         m::<StreamsNameParams, OkResult>("streams.remove").mutating().d(
             "Stop a stream's producer (its whole process group) and forget the stream. Its log file stays. An agent removing \
              one that isn't paused asks the human (a needs-you approval). CLI: `midna stream remove <name>`."),

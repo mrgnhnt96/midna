@@ -46,8 +46,9 @@ pub use system::{
     WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,
 };
 pub use streams::{
-    StreamCounts, StreamExit, StreamPublishRecord, StreamRef, StreamSpec, StreamState, StreamStatus, StreamVerdict, StreamsAddParams, StreamsEventsParams, StreamsEventsResult,
-    StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams, StreamsUpdateParams, TriggerCause,
+    StreamBrief, StreamCounts, StreamExit, StreamHealth, StreamPublishRecord, StreamRef, StreamSpec, StreamState, StreamStatus, StreamVerdict, StreamsAddParams,
+    StreamsEventsParams, StreamsEventsResult, StreamsHealth, StreamsNameParams, StreamsPublishParams, StreamsPublishResult, StreamsSetEnabledParams,
+    StreamsUpdateParams, TriggerCause,
 };
 pub use types::*;
 

@@ -24,16 +24,23 @@
 //! ([`stop_all`]), and on start ([`start`]) stops any a previous daemon left behind (a crash, an
 //! upgrade's exec) before starting every enabled stream. After the Mac wakes every stream
 //! starts again ([`on_wake`]).
+//!
+//! Health: a stream whose producer exits (or can't start) 5 times within 10 minutes is failing.
+//! midnad keeps starting it again, raises one `stream_failing` needs-you item (never a second:
+//! an open one is found by its `stream`, also after the daemon restarts) and resolves it once a
+//! run lasts 10 minutes, or when the stream is paused or removed. Each change of a stream's
+//! state is published as a `stream.health` event.
 use crate::daemon::Daemon;
 use midna_proto::secrets::Scrubber;
-use midna_proto::streams::{EVENTS_KEPT, MAX_PAYLOAD_BYTES, StreamSpec, parse_producer_line};
+use midna_proto::streams::{EVENTS_KEPT, FAILING_EXITS, FAILING_WINDOW_SECS, HEALTHY_AFTER_SECS, LOG_TAIL_LINES, MAX_PAYLOAD_BYTES, StreamSpec, parse_producer_line};
 use midna_proto::*;
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use serde_json::json;
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -50,6 +57,12 @@ const POLL: Duration = Duration::from_millis(100);
 const MAX_LINE: usize = MAX_PAYLOAD_BYTES + 4096;
 /// How much of a line goes in the log.
 const LOG_CLIP: usize = 2000;
+const FAILING_WINDOW: Duration = Duration::from_secs(FAILING_WINDOW_SECS);
+const HEALTHY_AFTER: Duration = Duration::from_secs(HEALTHY_AFTER_SECS);
+/// How much of a log's end is read for its last lines.
+const TAIL_BYTES: u64 = 16 * 1024;
+/// How much of the reason a `stream_failing` item's title shows.
+const WHY_CLIP: usize = 160;
 
 /// Epochs are global, so a stream removed and added again never matches an old thread.
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -62,6 +75,8 @@ fn next_epoch() -> u64 {
 #[derive(Default)]
 pub struct Producers {
     slots: Mutex<HashMap<String, Slot>>,
+    /// Tests: backoffs are a twentieth as long ([`quick_backoff`]).
+    quick: AtomicBool,
 }
 
 #[derive(Default)]
@@ -77,6 +92,53 @@ struct Slot {
     error: Option<String>,
     /// The running producer's `MIDNA_STREAM_TOKEN`. Never stored, logged or shown.
     token: Option<String>,
+    /// When its producer exited (or couldn't start) within the last [`FAILING_WINDOW`].
+    exits: VecDeque<Instant>,
+    /// Since when its producer has been running.
+    up_since: Option<Instant>,
+    /// Failing ([`FAILING_EXITS`] exits within [`FAILING_WINDOW`]): since when.
+    failing_since: Option<String>,
+    /// Its open `stream_failing` item.
+    needs_you: Option<Id>,
+    /// The state last published as `stream.health`.
+    shown: Option<StreamState>,
+}
+
+impl Slot {
+    /// Its state as shown: failing sticks through its restarts until it runs
+    /// [`HEALTHY_AFTER`], unless it is paused.
+    fn health(&self) -> StreamState {
+        match self.state {
+            StreamState::Paused => StreamState::Paused,
+            _ if self.failing_since.is_some() => StreamState::Failing,
+            s => s,
+        }
+    }
+
+    /// An exit at `now`: drop the ones older than [`FAILING_WINDOW`]. True when this one makes
+    /// the stream failing.
+    fn exited(&mut self, now: Instant) -> bool {
+        self.exits.push_back(now);
+        while self.exits.front().is_some_and(|t| now.duration_since(*t) > FAILING_WINDOW) {
+            self.exits.pop_front();
+        }
+        if self.failing_since.is_none() && self.exits.len() >= FAILING_EXITS {
+            self.failing_since = Some(time::now_rfc3339());
+            return true;
+        }
+        false
+    }
+
+    fn exits_recent(&self) -> u32 {
+        self.exits.iter().filter(|t| t.elapsed() <= FAILING_WINDOW).count() as u32
+    }
+
+    /// No longer failing: forget its exits. True if it was failing.
+    fn clear_failing(&mut self) -> bool {
+        self.exits.clear();
+        self.needs_you = None;
+        self.failing_since.take().is_some()
+    }
 }
 
 impl Producers {
@@ -129,6 +191,7 @@ fn runs(s: &StreamSpec) -> bool {
 /// On daemon start: stop what an earlier daemon left running, then start every enabled stream.
 pub fn start(d: &Arc<Daemon>) {
     reap_leftovers(&dir(d));
+    adopt_failing(d);
     let names: Vec<String> = d.core().state.streams.iter().filter(|s| runs(s)).map(|s| s.name.clone()).collect();
     for n in names {
         start_one(d, &n);
@@ -153,25 +216,34 @@ pub fn start_one(d: &Arc<Daemon>, name: &str) {
         s.state = StreamState::Starting;
         s.retry_at = None;
         s.token = None;
+        s.up_since = None;
         if let Some(pid) = s.pid {
             signal_group(pid, libc::SIGTERM);
         }
     }
+    publish_health(d, name);
     let (w, n) = (Arc::downgrade(d), name.to_string());
     let _ = std::thread::Builder::new().name(format!("stream-{name}")).spawn(move || supervise(w, n, epoch));
 }
 
-/// Stop stream `name`'s producer and keep it stopped (paused).
+/// Stop stream `name`'s producer and keep it stopped (paused). A failing stream's item
+/// resolves: the human chose to stop it.
 pub fn pause(d: &Daemon, name: &str) {
-    let mut g = d.producers.lock();
-    let s = g.entry(name.to_string()).or_default();
-    s.epoch = next_epoch();
-    s.state = StreamState::Paused;
-    s.retry_at = None;
-    s.token = None;
-    if let Some(pid) = s.pid {
-        signal_group(pid, libc::SIGTERM);
+    {
+        let mut g = d.producers.lock();
+        let s = g.entry(name.to_string()).or_default();
+        s.epoch = next_epoch();
+        s.state = StreamState::Paused;
+        s.retry_at = None;
+        s.up_since = None;
+        s.token = None;
+        s.clear_failing();
+        if let Some(pid) = s.pid {
+            signal_group(pid, libc::SIGTERM);
+        }
     }
+    resolve_failing(d, name, "paused");
+    publish_health(d, name);
 }
 
 /// Stop stream `name`'s producer and forget it (removed).
@@ -179,6 +251,7 @@ pub fn forget(d: &Daemon, name: &str) {
     if let Some(pid) = d.producers.lock().remove(name).and_then(|s| s.pid) {
         signal_group(pid, libc::SIGTERM);
     }
+    resolve_failing(d, name, "removed");
 }
 
 /// The daemon is stopping: stop every producer's group and wait for them (SIGKILL after a grace).
@@ -211,14 +284,19 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 /// Stream `name` as `streams.list` shows it.
 pub fn status(d: &Daemon, name: &str) -> Option<StreamStatus> {
     let spec = d.core().state.streams.iter().find(|s| s.name == name).cloned()?;
-    let last_event = d.streams.events(name, EVENTS_KEPT).0.into_iter().find(|r| r.verdict == StreamVerdict::Accepted);
+    let (records, counts) = d.streams.events(name, EVENTS_KEPT);
+    let last_event = records.into_iter().find(|r| r.verdict == StreamVerdict::Accepted);
     let approval = spec.needs_approval.then(|| crate::rpc::streams::approval_of(d, name)).flatten();
+    let log_tail = log_tail(&log_path(d, name), LOG_TAIL_LINES);
     let g = d.producers.lock();
     let s = g.get(name);
-    let state = match () {
-        _ if spec.needs_approval => StreamState::AwaitingApproval,
-        _ if !spec.enabled => StreamState::Paused,
-        _ => s.map_or(StreamState::Starting, |s| s.state),
+    let state = shown_state(&spec, s);
+    let raw = s.map_or(StreamState::Starting, |s| s.state);
+    let backoff = runs(&spec) && raw == StreamState::Backoff;
+    let why = match state {
+        _ if state.healthy() => None,
+        StreamState::AwaitingApproval => Some(AWAITING_WHY.into()),
+        _ => why_of(s.and_then(|s| s.error.as_deref()), &log_tail, s.and_then(|s| s.last_exit.as_ref())),
     };
     Some(StreamStatus {
         log: log_path(d, name).to_string_lossy().into_owned(),
@@ -234,10 +312,201 @@ pub fn status(d: &Daemon, name: &str) -> Option<StreamStatus> {
         started_at: s.and_then(|s| s.pid.and(s.started_at.clone())),
         restarts: s.map_or(0, |s| s.restarts),
         last_exit: s.and_then(|s| s.last_exit.clone()),
-        retry_at: s.and_then(|s| s.retry_at.clone()).filter(|_| state == StreamState::Backoff),
+        retry_at: s.and_then(|s| s.retry_at.clone()).filter(|_| backoff),
         error: s.and_then(|s| s.error.clone()),
         last_event,
+        counts,
+        exits_recent: s.map_or(0, Slot::exits_recent),
+        failing_since: s.and_then(|s| s.failing_since.clone()).filter(|_| state == StreamState::Failing),
+        why,
+        needs_you: s.and_then(|s| s.needs_you.clone()).filter(|_| state == StreamState::Failing),
+        log_tail,
     })
+}
+
+/// How every stream is doing, in short (`daemon.info`).
+pub fn summary(d: &Daemon) -> StreamsHealth {
+    let names: Vec<String> = d.core().state.streams.iter().map(|s| s.name.clone()).collect();
+    let mut out = StreamsHealth { total: names.len() as u32, ..Default::default() };
+    for st in names.iter().filter_map(|n| status(d, n)) {
+        if st.state.healthy() {
+            out.healthy += 1;
+        } else {
+            out.unhealthy.push(StreamBrief { name: st.name, state: st.state, why: st.why, retry_at: st.retry_at });
+        }
+    }
+    out
+}
+
+const AWAITING_WHY: &str = "an agent added or changed it: it waits for the human's approval";
+
+/// A stream's state as shown: awaiting approval, paused, else its producer's (failing sticks).
+fn shown_state(spec: &StreamSpec, s: Option<&Slot>) -> StreamState {
+    match s {
+        _ if spec.needs_approval => StreamState::AwaitingApproval,
+        _ if !spec.enabled => StreamState::Paused,
+        Some(s) => s.health(),
+        None => StreamState::Starting,
+    }
+}
+
+/// Publish `stream.health` if stream `name`'s state changed since it was last published.
+pub fn publish_health(d: &Daemon, name: &str) {
+    let Some(spec) = d.core().state.streams.iter().find(|s| s.name == name).cloned() else { return };
+    let (mut health, error, last_exit) = {
+        let mut g = d.producers.lock();
+        let s = g.entry(name.to_string()).or_default();
+        let state = shown_state(&spec, Some(&*s));
+        if s.shown == Some(state) {
+            return;
+        }
+        let from = s.shown.replace(state);
+        let health = StreamHealth {
+            stream: name.to_string(),
+            state,
+            from,
+            why: None,
+            retry_at: s.retry_at.clone().filter(|_| s.state == StreamState::Backoff),
+            restarts: s.restarts,
+            exits_recent: s.exits_recent(),
+            needs_you: s.needs_you.clone().filter(|_| state == StreamState::Failing),
+        };
+        (health, s.error.clone(), s.last_exit.clone())
+    };
+    if health.state == StreamState::AwaitingApproval {
+        health.why = Some(AWAITING_WHY.into());
+    } else if !health.state.healthy() {
+        health.why = why_of(error.as_deref(), &log_tail(&log_path(d, name), LOG_TAIL_LINES), last_exit.as_ref());
+    }
+    d.emit(kinds::STREAM_HEALTH, stream_actor(name), spec.project_id, None, serde_json::to_value(&health).unwrap_or_default());
+}
+
+fn stream_actor(name: &str) -> Actor {
+    Actor { name: Some(format!("stream {name}")), ..Actor::system() }
+}
+
+/// Stream `name` just became failing (`epoch`'s run): raise its `stream_failing` item, or
+/// take the one already open.
+fn raise_failing(d: &Daemon, name: &str, epoch: u64) {
+    let open = d.core().state.needs_you.iter().find(|n| n.kind == NeedsYouKind::StreamFailing && n.stream.as_deref() == Some(name)).map(|n| n.id.clone());
+    let id = match open {
+        Some(id) => id,
+        None => {
+            let Some(st) = status(d, name) else { return };
+            let why = st.why.clone().unwrap_or_else(|| "its producer keeps exiting".into());
+            let why = if why.chars().count() > WHY_CLIP { format!("{}…", why.chars().take(WHY_CLIP).collect::<String>()) } else { why };
+            let mut item = d.new_needs_you(NeedsYouKind::StreamFailing, format!("Stream {name} keeps failing: {why}"), stream_actor(name), None);
+            item.project_id = st.project_id.clone();
+            item.stream = Some(name.to_string());
+            item.detail = format!(
+                "Its producer exited {} times in 10 minutes ({} restarts in all). midna keeps starting it again, waiting up to 5 \
+                 minutes between tries. Its log: {}. Fix the cause, then `midna stream restart {name}`, or stop it with \
+                 `midna stream pause {name}`. This clears itself once it runs 10 minutes.",
+                st.exits_recent, st.restarts, st.log
+            );
+            d.raise_needs_you(item).id
+        }
+    };
+    if !d.producers.update(name, epoch, |s| s.needs_you = Some(id.clone())) {
+        // Paused, removed or restarted meanwhile: whatever did that settles it.
+        resolve_failing(d, name, "stopped");
+    }
+}
+
+/// Close stream `name`'s open `stream_failing` items (it is healthy, paused or removed).
+fn resolve_failing(d: &Daemon, name: &str, how: &str) {
+    let ids: Vec<Id> = d.core().state.needs_you.iter().filter(|n| n.kind == NeedsYouKind::StreamFailing && n.stream.as_deref() == Some(name)).map(|n| n.id.clone()).collect();
+    for id in ids {
+        d.close_needs_you(&id, json!({ "kind": "done", "auto": true, "stream": how }), stream_actor(name));
+    }
+}
+
+/// `epoch`'s producer has run [`HEALTHY_AFTER`]: a failing stream is healthy again.
+fn recovered(d: &Daemon, name: &str, epoch: u64) {
+    let mut was = false;
+    d.producers.update(name, epoch, |s| was = s.clear_failing());
+    if was {
+        resolve_failing(d, name, "healthy");
+        publish_health(d, name);
+    }
+}
+
+/// On daemon start: open `stream_failing` items (from before a restart or an upgrade) belong
+/// to their streams again, still failing until a run lasts [`HEALTHY_AFTER`]. One for a stream
+/// that's gone or paused resolves.
+fn adopt_failing(d: &Daemon) {
+    let items: Vec<(Id, Option<String>, String)> =
+        d.core().state.needs_you.iter().filter(|n| n.kind == NeedsYouKind::StreamFailing).map(|n| (n.id.clone(), n.stream.clone(), n.created_at.clone())).collect();
+    for (id, stream, at) in items {
+        let runs = stream.as_deref().is_some_and(|n| d.core().state.streams.iter().any(|s| s.name == n && runs(s)));
+        let adopted = runs && {
+            let mut g = d.producers.lock();
+            let s = g.entry(stream.clone().unwrap_or_default()).or_default();
+            match &s.needs_you {
+                Some(_) => false,
+                None => {
+                    s.needs_you = Some(id.clone());
+                    s.failing_since = Some(at);
+                    true
+                }
+            }
+        };
+        if !adopted {
+            d.close_needs_you(&id, json!({ "kind": "done", "auto": true, "stream": if runs { "duplicate" } else { "gone" } }), Actor::system());
+        }
+    }
+}
+
+/// Tests: backoffs a twentieth as long, so a stream fails within a second or two.
+#[doc(hidden)]
+pub fn quick_backoff(d: &Daemon) {
+    d.producers.quick.store(true, Ordering::Relaxed);
+}
+
+/// Tests: stream `name`'s producer started `secs` earlier than it did.
+#[doc(hidden)]
+pub fn backdate_up(d: &Daemon, name: &str, secs: u64) {
+    if let Some(s) = d.producers.lock().get_mut(name) {
+        s.up_since = s.up_since.and_then(|t| t.checked_sub(Duration::from_secs(secs)));
+    }
+}
+
+/// The last `n` lines of a stream's log, oldest first.
+fn log_tail(path: &Path, n: usize) -> Vec<String> {
+    let Ok(mut f) = std::fs::File::open(path) else { return vec![] };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(TAIL_BYTES);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return vec![];
+    }
+    let mut buf = vec![];
+    let _ = f.take(TAIL_BYTES).read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if from > 0 && !lines.is_empty() {
+        // Read from the middle of a line.
+        lines.remove(0);
+    }
+    lines[lines.len().saturating_sub(n)..].iter().map(|l| l.to_string()).collect()
+}
+
+/// Why a stream isn't running, in a line: why it couldn't start, else its last run's last
+/// stderr line (from its log's `tail`), else how it last exited.
+pub fn why_of(error: Option<&str>, tail: &[String], last_exit: Option<&StreamExit>) -> Option<String> {
+    if let Some(e) = error {
+        return Some(format!("couldn't start: {e}"));
+    }
+    for line in tail.iter().rev() {
+        // `<time> <text>`
+        let text = line.split_once(' ').map_or(line.as_str(), |(_, t)| t);
+        if let Some(err) = text.strip_prefix("stderr: ") {
+            return Some(err.to_string());
+        }
+        if text.starts_with("started: ") {
+            break;
+        }
+    }
+    last_exit.map(describe)
 }
 
 /// One stream's thread: start the producer, wait for it, and start it again after a backoff,
@@ -287,10 +556,12 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
                     s.state = StreamState::Running;
                     s.pid = Some(pid);
                     s.started_at = Some(time::now_rfc3339());
+                    s.up_since = Some(began);
                     s.error = None;
                     s.retry_at = None;
                 });
                 log.line(&format!("started: pid {pid}"));
+                publish_health(&d, &name);
                 drop(d);
                 let status = wait(&w, &name, epoch, child, pid);
                 // Whatever it started goes with it.
@@ -313,6 +584,7 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
                     }
                     if s.epoch == epoch {
                         s.last_exit = Some(exit);
+                        s.up_since = None;
                     }
                 }
                 ran
@@ -324,20 +596,28 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
                 Duration::ZERO
             }
         };
-        let wait_for = next_backoff(delay, ran);
-        delay = Some(wait_for);
+        let backoff = next_backoff(delay, ran);
+        delay = Some(backoff);
+        let Some(d) = w.upgrade() else { return };
+        let wait_for = if d.producers.quick.load(Ordering::Relaxed) { backoff / 20 } else { backoff };
         let at = time::format_unix(time::now_unix() + wait_for.as_secs().max(1) as i64);
-        let scheduled = w.upgrade().is_some_and(|d| {
-            !d.shutting_down.load(Ordering::Relaxed)
-                && d.producers.update(&name, epoch, |s| {
-                    s.state = StreamState::Backoff;
-                    s.retry_at = Some(at);
-                    s.restarts += 1;
-                })
-        });
+        let mut failing = false;
+        let scheduled = !d.shutting_down.load(Ordering::Relaxed)
+            && d.producers.update(&name, epoch, |s| {
+                s.state = StreamState::Backoff;
+                s.retry_at = Some(at);
+                s.restarts += 1;
+                failing = s.exited(Instant::now());
+            });
         if !scheduled {
             return;
         }
+        if failing {
+            log.line(&format!("failing: {FAILING_EXITS} exits within {}", human(FAILING_WINDOW)));
+            raise_failing(&d, &name, epoch);
+        }
+        publish_health(&d, &name);
+        drop(d);
         log.line(&format!("starting again in {}", human(wait_for)));
         let until = Instant::now() + wait_for;
         while Instant::now() < until {
@@ -353,11 +633,20 @@ fn supervise(w: Weak<Daemon>, name: String, epoch: u64) {
 /// stopping), stop its group: SIGTERM, then SIGKILL after [`GRACE`].
 fn wait(w: &Weak<Daemon>, name: &str, epoch: u64, mut child: Child, pid: i32) -> Option<ExitStatus> {
     let mut term_at: Option<Instant> = None;
+    let mut steady = false;
     loop {
         match child.try_wait() {
             Ok(Some(s)) => return Some(s),
             Ok(None) => {}
             Err(_) => return None,
+        }
+        // A run of HEALTHY_AFTER makes a failing stream healthy again.
+        if !steady && let Some(d) = w.upgrade() {
+            let up = d.producers.lock().get(name).is_some_and(|s| s.epoch == epoch && s.up_since.is_some_and(|t| t.elapsed() >= HEALTHY_AFTER));
+            if up {
+                steady = true;
+                recovered(&d, name, epoch);
+            }
         }
         let stale = w.upgrade().is_none_or(|d| d.shutting_down.load(Ordering::Relaxed) || !d.producers.current(name, epoch));
         match term_at {
@@ -635,6 +924,52 @@ impl Log {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn five_exits_within_ten_minutes_make_a_stream_failing_once() {
+        let mut s = Slot::default();
+        let t0 = Instant::now();
+        // Spread out: never 5 inside the window.
+        for i in 0..8u64 {
+            assert!(!s.exited(t0 + Duration::from_secs(i * 200)));
+        }
+        assert_eq!(s.exits.len(), 4);
+        assert!(s.failing_since.is_none());
+        let t1 = t0 + Duration::from_secs(5000);
+        let fails: Vec<bool> = (0..7u64).map(|i| s.exited(t1 + Duration::from_secs(i))).collect();
+        assert_eq!(fails.iter().filter(|f| **f).count(), 1, "{fails:?}");
+        assert_eq!(s.health(), StreamState::Failing);
+        s.state = StreamState::Running;
+        assert_eq!(s.health(), StreamState::Failing, "failing sticks through a restart");
+        s.state = StreamState::Paused;
+        assert_eq!(s.health(), StreamState::Paused);
+        assert!(s.clear_failing());
+        assert!(s.exits.is_empty() && !s.clear_failing());
+    }
+
+    #[test]
+    fn why_takes_the_start_error_then_the_last_runs_stderr_then_the_exit() {
+        let exit = StreamExit { at: "t".into(), code: Some(3), signal: None, ran_secs: 1 };
+        let tail = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(why_of(Some("no such file"), &[], Some(&exit)).unwrap(), "couldn't start: no such file");
+        let t = tail(&["t0 stderr: old", "t1 started: pid 4", "t2 stderr: invalid_auth", "t3 exited: exit code 3 after 1s"]);
+        assert_eq!(why_of(None, &t, Some(&exit)).unwrap(), "invalid_auth");
+        let t = tail(&["t0 stderr: old", "t1 started: pid 4", "t3 exited: exit code 3 after 1s"]);
+        assert_eq!(why_of(None, &t, Some(&exit)), Some(describe(&exit)));
+        assert_eq!(why_of(None, &[], None), None);
+    }
+
+    #[test]
+    fn log_tail_reads_the_last_lines_of_a_big_log() {
+        let p = std::env::temp_dir().join(format!("midna-tail-{}.log", std::process::id()));
+        let body: String = (0..5000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&p, body).unwrap();
+        assert_eq!(log_tail(&p, 3), ["line 4997", "line 4998", "line 4999"]);
+        std::fs::write(&p, "a\nb\n").unwrap();
+        assert_eq!(log_tail(&p, 10), ["a", "b"]);
+        std::fs::remove_file(&p).ok();
+        assert!(log_tail(&p, 3).is_empty());
+    }
 
     #[test]
     fn backoff_doubles_to_five_minutes_and_resets_after_a_steady_run() {

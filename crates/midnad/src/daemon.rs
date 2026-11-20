@@ -434,6 +434,7 @@ impl Daemon {
             bulk_safe: false,
             approval: None,
             trigger_id: None,
+            stream: None,
             question: None,
             setting: None,
             local_only: false,

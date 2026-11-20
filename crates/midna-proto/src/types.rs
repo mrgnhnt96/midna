@@ -830,6 +830,8 @@ pub enum NeedsYouKind {
     TriggerWaiting,
     RuleRemoval,
     SecretNeeded,
+    /// A stream midnad runs keeps failing (`stream`); resolves itself once it runs 10 minutes.
+    StreamFailing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -881,6 +883,9 @@ pub struct NeedsYou {
     /// The trigger this item is about (e.g. `secret_needed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<Id>,
+    /// The stream this item is about (`stream_failing`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
     /// What an agent's question dialog asks (Claude's AskUserQuestion): the full text and its
     /// options, which the title only summarizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1539,6 +1544,9 @@ pub mod kinds {
     /// A headless `run_command` finished: {trigger_id, delivery_id, run}.
     pub const TRIGGER_COMMAND_FINISHED: &str = "trigger.command_finished";
     pub const TRIGGER_REMOVED: &str = "trigger.removed";
+    /// A stream midnad runs changed state (data = `StreamHealth`: running, backoff, failing,
+    /// paused, …). Never fires triggers: it isn't a `stream.<name>.<kind>` event.
+    pub const STREAM_HEALTH: &str = "stream.health";
     pub const SECRET_SET: &str = "secret.set";
     pub const SECRET_REMOVED: &str = "secret.removed";
     pub const SECRET_USED: &str = "secret.used";

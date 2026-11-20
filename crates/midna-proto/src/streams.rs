@@ -16,6 +16,14 @@ pub const MAX_KIND: usize = 64;
 pub const MAX_ID: usize = 128;
 /// How many recent publishes `streams.events` keeps per stream.
 pub const EVENTS_KEPT: usize = 200;
+/// A stream whose producer exits this many times within [`FAILING_WINDOW_SECS`] is failing:
+/// midnad raises one `stream_failing` needs-you item and keeps starting it again.
+pub const FAILING_EXITS: usize = 5;
+pub const FAILING_WINDOW_SECS: u64 = 600;
+/// A failing stream whose producer stays up this long is healthy again (its item resolves).
+pub const HEALTHY_AFTER_SECS: u64 = 600;
+/// How many lines of a stream's log `streams.list` shows (`log_tail`).
+pub const LOG_TAIL_LINES: usize = 10;
 
 /// What `streams.publish` said about an event, kept on it (`Event.stream`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -239,6 +247,10 @@ pub enum StreamState {
     Paused,
     /// An agent added or changed it: not running until the human approves it (`approval`).
     AwaitingApproval,
+    /// Its producer exited 5 times within 10 minutes. midnad keeps starting it again (`pid`
+    /// while it runs, `retry_at` while it waits) and has one `stream_failing` needs-you item
+    /// open; both clear once a run lasts 10 minutes, or when it is paused.
+    Failing,
 }
 
 impl StreamState {
@@ -249,6 +261,16 @@ impl StreamState {
             StreamState::Backoff => "backoff",
             StreamState::Paused => "paused",
             StreamState::AwaitingApproval => "awaiting_approval",
+            StreamState::Failing => "failing",
+        }
+    }
+
+    /// Fine as it is: running, about to, or paused on purpose. A stream waiting to start
+    /// again, failing, or waiting for the human's approval is not.
+    pub fn healthy(self) -> bool {
+        match self {
+            StreamState::Starting | StreamState::Running | StreamState::Paused => true,
+            StreamState::Backoff | StreamState::Failing | StreamState::AwaitingApproval => false,
         }
     }
 }
@@ -298,8 +320,71 @@ pub struct StreamStatus {
     /// The stream's newest accepted event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_event: Option<StreamPublishRecord>,
+    /// Its publishes per verdict since the daemon started (`dropped()` = the ones lost).
+    #[serde(default)]
+    pub counts: StreamCounts,
+    /// How often its producer exited (or couldn't start) in the last 10 minutes; 5 make it
+    /// failing.
+    #[serde(default)]
+    pub exits_recent: u32,
+    /// Failing: since when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing_since: Option<String>,
+    /// Why it isn't running, in a line: its last stderr line, why it couldn't start, or how it
+    /// last exited. Set while it waits to start again or is failing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Failing: its open `stream_failing` needs-you item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you: Option<crate::types::Id>,
+    /// The last lines of its log, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log_tail: Vec<String>,
     /// Its stderr and the stdout lines that weren't events: `$MIDNA_HOME/streams/<name>.log`.
     pub log: String,
+}
+
+/// `stream.health`'s data: a stream's state changed (published on each change).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamHealth {
+    /// The stream's name.
+    pub stream: String,
+    pub state: StreamState,
+    /// The state it was in before, if midnad had shown one since it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<StreamState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Waiting to start again: when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    pub restarts: u32,
+    pub exits_recent: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you: Option<crate::types::Id>,
+}
+
+/// One stream that isn't healthy, in short.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamBrief {
+    pub name: String,
+    pub state: StreamState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+}
+
+/// How the streams midnad runs are doing (`daemon.info`'s `streams`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsHealth {
+    /// Streams midnad runs (paused ones included).
+    pub total: u32,
+    /// The ones running, starting or paused.
+    pub healthy: u32,
+    /// The rest: waiting to start again or failing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unhealthy: Vec<StreamBrief>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
