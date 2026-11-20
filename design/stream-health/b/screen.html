@@ -1,0 +1,741 @@
+<template id="uh-screen">
+<style>
+:host { color-scheme: light dark; }
+[data-screen] {
+  /* Midna Twilight (dark) / Midna Daylight (light), from midna-proto themes.rs */
+  --bg: light-dark(#E6E9EF, #0F1117);
+  --panel: light-dark(#F5F6F8, #151821);
+  --raised: light-dark(#FFFFFF, #1D2130);
+  --line: light-dark(#D3D8E0, #282D3B);
+  --fg: light-dark(#151922, #E4E7EE);
+  --dim: light-dark(#535D6E, #9AA2B3);
+  --accent: light-dark(#6237A0, #B79AE8);
+  --accent-fg: light-dark(#FFFFFF, #15111C);
+  --need: light-dark(#9A5300, #F2A93B);
+  --need-text: light-dark(#7A4100, #F2A93B);
+  --ok: light-dark(#1B7346, #4CC38A);
+  --err: light-dark(#AE2219, #F2665C);
+  --work: light-dark(#2758B8, #6EA2FF);
+  --term: light-dark(#FCFCFD, #0B0D12);
+  /* design annotation only (not app UI) */
+  --note: light-dark(#FFF6D6, #2A2614);
+  --note-line: light-dark(#B08A1E, #8A7430);
+  height: 100%;
+  overflow: hidden;
+  font: 400 0.8125rem/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+button { font: inherit; color: inherit; background: none; border: 0; margin: 0; padding: 0; cursor: pointer; text-align: start; }
+button:disabled { cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+svg { flex: none; display: block; }
+[hidden] { display: none !important; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* ── Window (shipping layout) ── */
+.app { position: relative; height: 100%; display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+.sb { grid-row: 1; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
+.tb { height: 36px; flex: none; }
+.needpill { margin: 2px 10px 10px; height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1.5px solid var(--need); border-radius: 8px; background: color-mix(in srgb, var(--need) 10%, transparent); color: var(--need-text); font-weight: 700; }
+.needpill kbd { margin-left: auto; font: 600 0.6875rem ui-monospace, monospace; }
+.needpill i { width: 7px; height: 7px; border-radius: 50%; background: var(--need); }
+.needpill .roll { display: inline-block; overflow: hidden; height: 1.35em; }
+.needpill .roll > span { display: block; }
+.list { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.hd { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 14px; margin-top: 6px; }
+.hd .gcap { flex: 1; min-width: 0; font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hd .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--need); color: light-dark(#fff, #15111C); font-size: 0.6875rem; font-weight: 700; display: grid; place-items: center; }
+.ib { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: var(--dim); }
+.ib:hover { background: var(--raised); color: var(--fg); }
+.row { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr) 18px; column-gap: 8px; align-items: center; width: 100%; min-height: 32px; padding: 5px 12px 5px 14px; font-weight: 600; }
+.row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
+.row.on { background: var(--raised); }
+.row.on::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ag { color: var(--dim); }
+.row .sub { grid-column: 2 / 4; font-weight: 500; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 9px; height: 9px; border-radius: 50%; justify-self: center; flex: none; }
+.dot.work { background: var(--work); } .dot.need { background: var(--need); box-shadow: 0 0 0 3px color-mix(in srgb, var(--need) 25%, transparent); }
+.dot.ok { background: var(--ok); } .dot.idle { border: 1.5px solid var(--dim); } .dot.err { background: var(--err); }
+.sub.need { color: var(--need-text); } .sub.dim { color: var(--dim); }
+.foot { flex: none; border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 10px; }
+.today { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.today .th { display: flex; align-items: center; font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.today .th button { margin-left: auto; min-height: 24px; padding: 0 4px; border-radius: 4px; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 0.75rem; color: var(--dim); }
+.today .th button:hover { color: var(--fg); }
+.today .ss { display: flex; justify-content: space-between; gap: 6px; }
+.today .ss b { display: block; font: 700 0.875rem ui-monospace, "SF Mono", monospace; }
+.today .ss span { font-size: 0.6875rem; color: var(--dim); }
+.fbtns { display: flex; justify-content: space-around; }
+.fbtns button { display: grid; justify-items: center; gap: 2px; min-width: 52px; padding: 4px; border-radius: 6px; font-size: 0.6875rem; color: var(--dim); }
+.fbtns button:hover { background: var(--raised); color: var(--fg); }
+.pane { grid-row: 1; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term); }
+.ph { height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); min-width: 0; }
+.ph .t { font-weight: 700; font-size: 0.875rem; white-space: nowrap; }
+.ph .tools { margin-left: auto; display: flex; gap: 2px; flex: none; }
+.body { position: relative; flex: 1; min-height: 0; overflow: hidden; padding: 14px 18px; font: 0.78rem/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--fg); }
+.body p { margin: 0; white-space: pre; }
+.body .b { color: var(--accent); } .body .g { color: var(--ok); } .body .d { color: var(--dim); } .body .r { color: var(--err); }
+.body .lnk { text-decoration: underline; color: var(--work); }
+.prompt { margin-top: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 4px 0; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); font-weight: 600; font-size: 0.8125rem; white-space: nowrap; }
+.btn:hover { border-color: var(--dim); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.danger { color: var(--err); }
+.btn.danger.solid { background: var(--err); border-color: var(--err); color: light-dark(#FFFFFF, #15111C); }
+.btn.sm { height: 26px; padding: 0 10px; font-size: 0.75rem; }
+.btn kbd { font: 0.6875rem ui-monospace, monospace; opacity: .8; }
+
+/* ── Status bar ── */
+.st { grid-column: 1 / -1; grid-row: 2; height: 28px; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel); font-size: 0.71875rem; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.st .it { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 4px; }
+.st .it b { color: var(--fg); font-weight: 600; }
+.st .sd { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.st .sd.off { background: var(--dim); }
+.st .sp { flex: 1; }
+.st .lk { border-radius: 5px; cursor: pointer; }
+.st .lk:hover { color: var(--fg); }
+@container screen (width < 980px) { .st .opt { display: none; } }
+
+/* The streams item */
+.si { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 24px; min-width: 24px; max-width: 290px; padding: 0 7px; margin: 0 -3px; border-radius: 5px; color: var(--dim); overflow: hidden; }
+.si:hover { background: var(--raised); color: var(--fg); }
+.si[aria-expanded="true"] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+.si .tx { display: inline-block; overflow: hidden; height: 1.35em; line-height: 1.35em; }
+.si .tx > span { display: flex; gap: 4px; white-space: nowrap; }
+.si .tx .nm { max-width: 150px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.si .more { color: var(--dim); font-weight: 600; }
+.si.s-failing { color: var(--err); } .si.s-failing:hover, .si.s-failing[aria-expanded="true"] { color: var(--err); }
+.si.s-restarting { color: var(--work); } .si.s-restarting:hover, .si.s-restarting[aria-expanded="true"] { color: var(--work); }
+.si.s-approval { color: var(--need-text); } .si.s-approval:hover, .si.s-approval[aria-expanded="true"] { color: var(--need-text); }
+.si.s-back { color: var(--ok); }
+.si.s-failing { background: color-mix(in srgb, var(--err) 10%, transparent); }
+.si .cd { font-variant-numeric: tabular-nums; }
+.sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
+.sdot.err { background: var(--err); }
+.sdot.need { background: var(--need); box-shadow: 0 0 0 2px color-mix(in srgb, var(--need) 25%, transparent); }
+.sdot.idle { background: none; border: 1.5px solid var(--dim); }
+.sdot.spin { width: 9px; height: 9px; background: none; border: 1.5px solid var(--work); border-right-color: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  .sdot.spin { animation: spin 900ms linear infinite; }
+  .si.chg .tx > span { animation: rollUp 380ms cubic-bezier(.34,1.4,.64,1) both; }
+  .si.chg.s-failing .sdot { animation: ping 900ms ease-out 2; }
+  .needpill.chg .roll > span { animation: rollUp 380ms cubic-bezier(.34,1.4,.64,1) both; }
+  .si.fade .tx > span { animation: fadeIn 500ms ease both; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rollUp { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--err) 60%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
+
+/* ── Streams popover (opens up from the item) ── */
+.pop { position: absolute; z-index: 8; bottom: 34px; left: var(--px, 300px); width: min(420px, calc(100% - 16px)); max-height: calc(100% - 34px - 48px); display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); box-shadow: 0 14px 36px rgba(0,0,0,.38); }
+.pop::after { content: ""; position: absolute; bottom: -6px; left: var(--nx, 24px); width: 11px; height: 11px; margin-left: -6px; transform: rotate(45deg); background: var(--raised); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0 0 2px 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .pop.in { animation: popIn 170ms cubic-bezier(.2,.8,.2,1) both; transform-origin: var(--nx, 24px) calc(100% + 8px); }
+  .pop.in .srow { animation: rowIn 220ms cubic-bezier(.2,.8,.2,1) both; }
+  .pop.in .srow:nth-child(2) { animation-delay: 30ms; } .pop.in .srow:nth-child(3) { animation-delay: 60ms; } .pop.in .srow:nth-child(n+4) { animation-delay: 90ms; }
+}
+@keyframes popIn { from { opacity: 0; transform: translateY(6px) scale(.96); } }
+@keyframes rowIn { from { opacity: 0; transform: translateY(4px); } }
+.pophd { flex: none; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); }
+.pophd .cap { font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.pophd .sum { color: var(--dim); font-size: 0.75rem; }
+.pophd .sp { flex: 1; }
+.srows { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 4px; list-style: none; }
+.srow { border-radius: 7px; }
+.srow + .srow { margin-top: 2px; }
+.srow .line { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; align-items: start; padding: 0 4px 0 0; border-radius: 7px; }
+.srow .line:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.srow.open .line { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.srow .smb { grid-column: 1 / 3; display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 32px; padding: 6px 0 6px 10px; border-radius: 7px; }
+.srow .smb:focus-visible { outline-offset: -2px; }
+.srow .smb .dot { align-self: start; margin-top: 4px; }
+.srow .smb .dot.spin { width: 10px; height: 10px; border: 1.5px solid var(--work); border-right-color: transparent; background: none; }
+@media (prefers-reduced-motion: no-preference) { .srow .smb .dot.spin { animation: spin 900ms linear infinite; } }
+.srow .nmr { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-weight: 600; }
+.srow .nmr .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .nmr .chev { margin-left: auto; color: var(--dim); transition: transform 160ms; }
+.srow.open .nmr .chev { transform: rotate(180deg); }
+.srow .l2, .srow .l3 { grid-column: 2; font-size: 0.75rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srow .l2 { margin-top: 1px; }
+.srow .l3 { color: var(--dim); }
+.l2.ok, .l2.dim { color: var(--dim); } .l2.err { color: var(--err); } .l2.work { color: var(--work); } .l2.need { color: var(--need-text); }
+.cd { font-variant-numeric: tabular-nums; }
+.acts { display: flex; gap: 2px; align-self: center; }
+.acts .ib:disabled { opacity: .4; }
+.acts .ib.hot { color: var(--fg); }
+.det { margin: 2px 6px 6px 32px; padding: 8px 0 4px; display: grid; gap: 8px; font-size: 0.75rem; }
+.kv { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px 8px; align-items: baseline; }
+.kv > span:nth-child(odd) { color: var(--dim); }
+.kv code { font: 0.75rem ui-monospace, "SF Mono", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); font: 0.6875rem ui-monospace, "SF Mono", monospace; color: var(--fg); }
+.chip svg { color: var(--dim); }
+.evh { font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+.evh::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.evs { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.evs li { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
+.evs .tm { color: var(--dim); font-variant-numeric: tabular-nums; }
+.evs code { font: 0.6875rem ui-monospace, "SF Mono", monospace; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vd { white-space: nowrap; color: var(--dim); }
+.vd.fired { color: var(--fg); font-weight: 600; }
+.vd.fired::before { content: "→ "; color: var(--accent); }
+.dacts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 2px; }
+.dacts .sp { flex: 1; }
+.lnk2 { min-height: 24px; padding: 0 4px; border-radius: 4px; color: var(--dim); font-size: 0.75rem; }
+.lnk2:hover { color: var(--fg); text-decoration: underline; }
+.lnk2.danger:hover { color: var(--err); }
+.needln { display: flex; align-items: center; gap: 6px; color: var(--need-text); font-weight: 600; }
+.why { margin: 0; color: var(--dim); }
+.confirm { margin: 2px 6px 6px 32px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--err) 50%, var(--line)); border-radius: 8px; display: grid; gap: 8px; font-size: 0.75rem; }
+.confirm b { font-size: 0.8125rem; }
+.popft { flex: none; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 14px; border-top: 1px solid var(--line); color: var(--dim); font-size: 0.6875rem; }
+.popft kbd { font: 0.6875rem ui-monospace, monospace; }
+
+/* ── Context menu (menu_box / menu_item) ── */
+.cm { position: absolute; z-index: 9; min-width: 220px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35); display: flex; flex-direction: column; font-size: 0.78125rem; }
+.cm button { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 0 10px; border-radius: 7px; white-space: nowrap; }
+.cm button:hover, .cm button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: none; }
+.cm button .k { margin-left: auto; color: var(--dim); font: 0.6875rem ui-monospace, monospace; }
+.cm button.danger { color: var(--err); }
+.cm hr { width: 100%; height: 1px; border: 0; margin: 4px 0; background: var(--line); }
+
+/* ── Log window (its own macOS window, read-only) ── */
+.lwin { position: absolute; z-index: 10; left: clamp(16px, 22%, 300px); right: clamp(16px, 6%, 120px); top: 44px; bottom: 64px; max-width: 860px; display: flex; flex-direction: column; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 24px 60px rgba(0,0,0,.45), 0 0 0 .5px rgba(0,0,0,.3); overflow: hidden; }
+@media (prefers-reduced-motion: no-preference) { .lwin.in { animation: winIn 220ms cubic-bezier(.2,.8,.2,1) both; } }
+@keyframes winIn { from { opacity: 0; transform: scale(.97); } }
+.ltb { flex: none; position: relative; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights button, .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; position: relative; }
+.lights button::before { content: ""; position: absolute; inset: -6px; }
+.lights .c { background: #FF5F57; } .lights i:nth-child(2) { background: #FEBC2E; } .lights i:nth-child(3) { background: #28C840; }
+.ltb .ttl { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.75rem; font-weight: 600; color: var(--dim); white-space: nowrap; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.lhd { flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 48px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.lhd .nm { font-weight: 700; font-size: 0.875rem; }
+.lhd .stt { font-size: 0.75rem; font-weight: 600; }
+.stt.ok, .stt.dim { color: var(--dim); } .stt.err { color: var(--err); } .stt.work { color: var(--work); } .stt.need { color: var(--need-text); }
+.lhd .sp { flex: 1; }
+.seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); }
+.seg button { height: 24px; padding: 0 10px; border-radius: 5px; font-size: 0.75rem; font-weight: 600; color: var(--dim); }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-selected="true"] { background: var(--raised); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.lmeta { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 6px 14px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 0.75rem; }
+.lmeta code { font: 0.75rem ui-monospace, "SF Mono", monospace; color: var(--fg); }
+.lbody { flex: 1; min-height: 0; overflow: auto; background: var(--term); padding: 8px 0; font: 0.75rem/1.65 ui-monospace, "SF Mono", Menlo, monospace; user-select: text; }
+.lbody:focus-visible { outline-offset: -2px; border-radius: 0; }
+.ll { display: grid; grid-template-columns: 64px 46px minmax(0, 1fr); gap: 10px; padding: 0 14px; white-space: pre-wrap; word-break: break-word; }
+.ll .tm { color: var(--dim); }
+.ll .src { color: var(--dim); }
+.ll.sup .src { color: var(--accent); }
+.ll.sup .msg { color: var(--dim); }
+.ll.sup.bad .msg { color: var(--err); }
+.ll.sup.good .msg { color: var(--ok); }
+.ll.stderr.e .msg { color: var(--err); }
+.ll.new { background: color-mix(in srgb, var(--work) 10%, transparent); }
+.ev { display: grid; grid-template-columns: 64px minmax(0, 1fr) minmax(9rem, auto); gap: 10px; padding: 3px 14px; align-items: baseline; }
+.ev .tm { color: var(--dim); }
+.ev code { font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev .vd { font-family: -apple-system, system-ui, sans-serif; font-size: 0.75rem; }
+.lempty { margin: auto; max-width: 30rem; padding: 32px 16px; display: grid; gap: 10px; justify-items: center; text-align: center; font-family: -apple-system, system-ui, sans-serif; font-size: 0.8125rem; color: var(--dim); }
+.lempty b { color: var(--fg); font-size: 0.875rem; }
+.lft { flex: none; display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 0 14px; border-top: 1px solid var(--line); color: var(--dim); font-size: 0.71875rem; }
+.lft .sp { flex: 1; }
+.tgl { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; color: var(--dim); }
+.tgl .sw { width: 26px; height: 15px; border-radius: 8px; background: var(--line); box-shadow: inset 0 0 0 1px var(--dim); position: relative; transition: background 150ms; }
+.tgl .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: light-dark(#fff, #E4E7EE); transition: transform 150ms; }
+.tgl[aria-checked="true"] .sw { background: var(--accent); box-shadow: none; }
+.tgl[aria-checked="true"] .sw::after { transform: translateX(11px); background: var(--accent-fg); }
+.tgl:hover { color: var(--fg); }
+@container screen (width < 900px) { .lwin { left: 12px; right: 12px; } .ll { grid-template-columns: 58px minmax(0, 1fr); } .ll .src { display: none; } }
+
+/* Design annotation (not app UI) */
+.note { position: absolute; z-index: 12; right: 14px; top: 52px; width: min(340px, calc(100% - 290px)); border: 1.5px dashed var(--note-line); border-radius: 8px; background: var(--note); color: var(--fg); font-size: 0.75rem; box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.note > button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 4px 10px; font-weight: 700; }
+.note > button .k { margin-left: auto; font: 0.6875rem ui-monospace, monospace; color: var(--dim); }
+.note .nbd { padding: 0 10px 10px; display: grid; gap: 6px; }
+.note .nbd p { margin: 0; }
+.note .nbd ul { margin: 0; padding-left: 16px; display: grid; gap: 3px; }
+.note[data-closed] .nbd { display: none; }
+.note .q { font-size: 0.6875rem; color: var(--dim); }
+.note .btn { justify-self: start; }
+[data-k="log"] .note { top: auto; right: auto; left: 6px; bottom: 40px; width: 236px; }
+.toast { position: absolute; z-index: 11; left: 50%; bottom: 44px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 6px 0 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 8px 22px rgba(0,0,0,.35); font-size: 0.75rem; white-space: nowrap; }
+.toast .btn { height: 24px; }
+</style>
+
+<section data-screen="main" data-title="1 · Main window: the Streams item"><div class="app" data-k="main"></div></section>
+<section data-screen="pop" data-title="2 · Clicked: the streams popover"><div class="app" data-k="pop"></div></section>
+<section data-screen="log" data-title="3 · Log: the read-only log window"><div class="app" data-k="log"></div></section>
+</template>
+
+<script>
+window.ultrahandSetup = function (canvas) {
+  var I = {
+    claude: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1v12M1 7h12M2.8 2.8l8.4 8.4M11.2 2.8l-8.4 8.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    codex: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.2l5 2.9v5.8l-5 2.9-5-2.9V4.1z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="1.6" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    shell: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 4l3.5 3L2 10M7.5 11H12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    pulse: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1 7h3l1.5-3.5 3 7L10 7h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    chev: '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    dots: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="3" cy="7" r="1.2" fill="currentColor"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/><circle cx="11" cy="7" r="1.2" fill="currentColor"/></svg>',
+    split: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="2" width="11" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 2v10" stroke="currentColor" stroke-width="1.2"/></svg>',
+    popout: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="4" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5h5v5M12.5 1.5L7 7" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    restart: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M11.5 7A4.5 4.5 0 1 1 9.8 3.5M10 1.5v2.3h-2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    pause: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 3v8M9 3v8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    play: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M4.5 2.8v8.4L11 7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    log: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="2" y="1.5" width="10" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 4.5h5M4.5 7h5M4.5 9.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    bolt: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M8 1.5L3 8h4l-1 4.5L11 6H7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+    shield: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5l4.5 2v3.5c0 3-2 4.6-4.5 5.5-2.5-.9-4.5-2.5-4.5-5.5V3.5z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    gear: '<svg width="15" height="15" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.8 2.8l1.4 1.4M9.8 9.8l1.4 1.4M2.8 11.2l1.4-1.4M9.8 4.2l1.4-1.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    lock: '<svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>'
+  };
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function fmt(s) { s = Math.max(0, s); if (s < 60) return s + 's'; var m = Math.floor(s / 60), r = s % 60; return m + 'm' + (r ? ' ' + (r < 10 ? '0' : '') + r + 's' : ''); }
+  function reduced() { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+
+  /* ── Streams: only signals midna has ── */
+  var BASE = {
+    slack: { nm: 'slack', cmd: 'node ~/bin/slack-ci-listener.js', sec: ['SLACK_APP_TOKEN'], last: '2m ago', count: 148, restarts: 0,
+      evs: [['10:41', '{"channel":"ci","text":"web #4812 failed on master"}', 'build angel', true], ['10:39', '{"channel":"ci","text":"web #4811 passed"}', 'no trigger matched'], ['10:39', '{"channel":"ci","text":"web #4811 passed"}', 'deduped']] },
+    buildkite: { nm: 'buildkite', cmd: 'node ~/bin/buildkite-stream.js --org acme', sec: ['BUILDKITE_API_TOKEN'], last: '41m ago', count: 12, restarts: 0,
+      evs: [['10:02', '{"event":"build.finished","pipeline":"api","state":"passed"}', 'no trigger matched'], ['09:48', '{"event":"build.finished","pipeline":"web","state":"failed"}', 'build angel', true], ['09:48', '{"event":"build.finished","pipeline":"web","state":"failed"}', 'rate limited']] },
+    calendar: { nm: 'calendar', cmd: 'python3 ~/bin/calendar-stream.py', sec: ['GOOGLE_CALENDAR_TOKEN'], last: '6h ago', count: 3, restarts: 0,
+      evs: [['04:30', '{"event":"starts_soon","title":"Standup","in":"15m"}', 'no trigger matched']] },
+    'github-notifications': { nm: 'github-notifications', cmd: 'node ~/bin/gh-notifications-stream.js', sec: ['GITHUB_TOKEN'], last: null, count: 0, restarts: 0, evs: [] }
+  };
+  var SEV = { failing: 0, approval: 1, restarting: 2, paused: 3, running: 4 };
+  var live = {};
+  function build(st) {
+    live = {};
+    ['slack', 'buildkite', 'calendar'].forEach(function (k) { live[k] = Object.assign({ st: 'running' }, BASE[k]); });
+    if (st === 'restarting') Object.assign(live.buildkite, { st: 'restarting', attempt: 3, next: 8, why: 'exited 1: ECONNRESET', restarts: 3 });
+    if (st === 'failing') Object.assign(live.slack, { st: 'failing', next: 290, why: 'invalid_auth', restarts: 7, last: '14m ago', count: 131 });
+    if (st === 'paused') Object.assign(live.calendar, { st: 'paused', by: 'you', since: '20m ago' });
+    if (st === 'approval') live['github-notifications'] = Object.assign({ st: 'approval' }, BASE['github-notifications']);
+  }
+  function sorted() {
+    return Object.keys(live).map(function (k) { return live[k]; }).sort(function (a, b) { return (SEV[a.st] - SEV[b.st]) || a.nm.localeCompare(b.nm); });
+  }
+  function trouble() { return sorted().filter(function (s) { return s.st !== 'running'; }); }
+  function needs() { return 2 + (live.slack && live.slack.st === 'failing' ? 1 : 0); }
+
+  /* ── Per-screen UI state ── */
+  var ui = {};
+  function resetUi() {
+    ui = { main: { pop: false }, pop: { pop: true }, log: { pop: false } };
+    Object.keys(ui).forEach(function (k) { ui[k].exp = defaultExp(); ui[k].menu = null; ui[k].confirm = null; });
+    logOf = (trouble()[0] || live.slack).nm; logTab = 'log'; follow = true;
+  }
+  function defaultExp() { var t = trouble()[0]; return t && t.st !== 'paused' ? t.nm : null; }
+  var logOf = 'slack', logTab = 'log', follow = true, closedNotes = false, flash = null, toastMsg = null;
+
+  /* ── Window chrome ── */
+  function sidebar(k) {
+    var h = '<nav class="sb" aria-label="Terminals"><div class="tb"></div>';
+    h += '<button class="needpill' + (flash && flash.pill ? ' chg' : '') + '"><i></i><span class="roll"><span>' + needs() + ' need you</span></span><kbd>⌘J</kbd></button>';
+    h += '<div class="list">';
+    h += '<div class="hd"><span class="gcap">midna</span><span class="badge">1</span><button class="ib" aria-label="midna actions" title="Project actions">' + I.dots + '</button></div>';
+    h += row('build angel', 'work', 'claude', true) + row('spike', 'need', 'claude', false, ['need', 'Asked a question · 2m']) + row('zsh', 'idle', 'shell');
+    h += '<div class="hd"><span class="gcap">api</span><span class="badge">1</span><button class="ib" aria-label="api actions" title="Project actions">' + I.dots + '</button></div>';
+    h += row('server', 'ok', 'pulse') + row('migrate', 'need', 'codex', false, ['need', 'Approve db:migrate? · 4m']);
+    h += '</div><div class="foot"><div class="today"><div class="th">Today<button>Insights ›</button></div><div class="ss"><div><b>42</b><span>agent turns</span></div><div><b>18</b><span>messages sent</span></div><div><b>$3.20</b><span>spent</span></div></div></div>';
+    h += '<div class="fbtns"><button>' + I.bolt + 'Triggers</button><button>' + I.shield + 'Rules</button><button>' + I.gear + 'Settings</button></div></div></nav>';
+    return h;
+  }
+  function row(nm, dot, ag, on, sub) {
+    return '<button class="row' + (on ? ' on' : '') + '"><span class="dot ' + dot + '"></span><span class="nm">' + nm + '</span><span class="ag">' + I[ag] + '</span>' + (sub ? '<span class="sub ' + sub[0] + '">' + sub[1] + '</span>' : '') + '</button>';
+  }
+  function pane() {
+    var L = ['<span class="d">❯</span> watch master builds; when one fails, find the cause and open a fix PR', '',
+      '<span class="b">●</span> Waiting for build failures from the <span class="lnk">ci-failed</span> trigger.', '',
+      '<span class="b">●</span> Received: web #4812 failed on master (test:unit)',
+      '<span class="b">●</span> Reading <span class="lnk">.buildkite/pipeline.yml</span>',
+      '<span class="b">●</span> Bash(npm run test:unit -- --filter checkout)',
+      '   <span class="g">✓ 214 passed</span>  <span class="r">✗ 1 failed: checkout/tax.spec.ts</span>',
+      '<span class="b">●</span> Update(src/checkout/tax.ts)',
+      '   <span class="g">+   return Math.round(cents * rate) / 100;</span>', '',
+      '<span class="d">✻ Fixing the rounding in calcTax… (1m 12s)</span>'];
+    return '<main class="pane" aria-label="build angel"><div class="ph"><span class="dot work"></span><span class="t">build angel</span><span style="color:var(--dim)">' + I.claude + '</span><span class="tools"><button class="ib" aria-label="Split" title="Split ⌘D">' + I.split + '</button><button class="ib" aria-label="Pop out" title="Pop out">' + I.popout + '</button><button class="ib" aria-label="Restart" title="Restart">' + I.restart + '</button><button class="ib" aria-label="More" title="More">' + I.dots + '</button></span></div><div class="body">' + L.map(function (l) { return '<p>' + (l || ' ') + '</p>'; }).join('') + '<div class="prompt"><p><span class="d">❯</span> </p></div></div></main>';
+  }
+
+  /* ── The streams item ── */
+  function itemParts() {
+    var t = trouble(), n = Object.keys(live).length;
+    if (flash && flash.back) return { cls: 's-back', dot: '<span class="sdot"></span>', html: '<span class="nm">' + flash.back + '</span> running again' };
+    if (!t.length) return { cls: '', dot: '<span class="sdot"></span>', html: n + ' streams' };
+    var w = t[0], more = t.length > 1 ? ' <span class="more">+' + (t.length - 1) + '</span>' : '';
+    var nm = '<span class="nm">' + esc(w.nm) + '</span>';
+    if (w.st === 'failing') return { cls: 's-failing', dot: '<span class="sdot err"></span>', html: nm + ' failing' + more };
+    if (w.st === 'approval') return { cls: 's-approval', dot: '<span class="sdot need"></span>', html: nm + ' needs approval' + more };
+    if (w.st === 'restarting') return { cls: 's-restarting', dot: '<span class="sdot spin"></span>', html: nm + ' restarting · <span class="cd" data-cd="' + w.nm + '">' + (w.next > 0 ? fmt(w.next) : 'now') + '</span>' + more };
+    return { cls: 's-paused', dot: '<span class="sdot idle"></span>', html: nm + ' paused' + more };
+  }
+  function itemTip() {
+    return 'Streams: ' + sorted().map(function (s) { return s.nm + ' ' + stateWord(s); }).join(' · ') + '. Click for streams (also “Streams” in ⌘K).';
+  }
+  function stateWord(s) { return { running: 'running', restarting: 'restarting', failing: 'failing', paused: 'paused', approval: 'waiting for approval' }[s.st]; }
+  function streamItem(k) {
+    var p = itemParts(), u = ui[k];
+    return '<button class="si ' + p.cls + (flash && flash.item ? ' chg' : '') + (flash && flash.fade ? ' fade' : '') + '" data-act="si" aria-haspopup="dialog" aria-expanded="' + !!u.pop + '" aria-label="' + esc(itemTip()) + '" title="' + esc(itemTip()) + '">' + p.dot + '<span class="tx"><span>' + p.html + '</span></span></button>';
+  }
+  function status(k) {
+    return '<footer class="st"><span class="it"><span class="sd"></span>midnad · 5 terminals</span><span class="it opt">Policy <b>auto</b> · 3 approval rules</span><span class="it lk"><span class="sd off"></span>Webhooks off</span>' + streamItem(k) + '<span class="it lk opt">0 triggers today</span><span class="sp"></span><span class="it">⌘K commands · ⌘J next</span></footer>';
+  }
+
+  /* ── Popover ── */
+  function l2(s) {
+    if (s.st === 'running') return ['ok', 'last event ' + s.last + ' · ' + s.count + ' today'];
+    if (s.st === 'restarting') return ['work', 'restarting · attempt ' + s.attempt + ' · next try in <span class="cd" data-cd="' + s.nm + '">' + fmt(s.next) + '</span>'];
+    if (s.st === 'failing') return ['err', 'failing · ' + s.restarts + ' restarts in 10 min · next try in <span class="cd" data-cd="' + s.nm + '">' + fmt(s.next) + '</span>'];
+    if (s.st === 'paused') return ['dim', 'paused by ' + s.by + ' · ' + s.since];
+    return ['need', 'waiting for your approval'];
+  }
+  function l3(s) {
+    if (s.st === 'restarting') return s.why + ' · last event ' + s.last;
+    if (s.st === 'failing') return s.why + ' · last event ' + s.last;
+    if (s.st === 'paused') return 'last event ' + s.last + ' · ' + s.count + ' today';
+    if (s.st === 'approval') return 'added by an agent · hasn’t run yet';
+    return '';
+  }
+  function dotOf(s) { return { running: 'ok', restarting: 'spin', failing: 'err', paused: 'idle', approval: 'need' }[s.st]; }
+  function srow(k, s) {
+    var u = ui[k], open = u.exp === s.nm, a = l2(s), c3 = l3(s), id = k + '-' + s.nm;
+    var h = '<li class="srow' + (open ? ' open' : '') + '" data-s="' + s.nm + '"><div class="line">';
+    h += '<button class="smb" data-act="exp" aria-expanded="' + open + '" aria-controls="d-' + id + '" aria-label="' + esc(s.nm + ', ' + stateWord(s)) + '"><span class="dot ' + dotOf(s) + '"></span><span class="nmr"><span class="n">' + esc(s.nm) + '</span><span class="chev">' + I.chev + '</span></span><span class="l2 ' + a[0] + '">' + a[1] + '</span>' + (c3 ? '<span class="l3">' + esc(c3) + '</span>' : '') + '</button>';
+    h += '<span class="acts">';
+    if (s.st === 'approval') {
+      h += '<button class="ib" data-act="log" aria-label="Open ' + s.nm + ' log" title="Open log (L)">' + I.log + '</button>';
+    } else {
+      h += '<button class="ib' + (s.st === 'failing' || s.st === 'restarting' ? ' hot' : '') + '" data-act="restart" aria-label="Restart ' + s.nm + (s.st === 'restarting' || s.st === 'failing' ? ' now' : '') + '" title="' + (s.st === 'restarting' || s.st === 'failing' ? 'Try now' : 'Restart') + ' (R)">' + I.restart + '</button>';
+      h += s.st === 'paused'
+        ? '<button class="ib hot" data-act="pause" aria-label="Resume ' + s.nm + '" title="Resume (P)">' + I.play + '</button>'
+        : '<button class="ib" data-act="pause" aria-label="Pause ' + s.nm + '" title="Pause (P)">' + I.pause + '</button>';
+      h += '<button class="ib" data-act="log" aria-label="Open ' + s.nm + ' log" title="Open log (L)">' + I.log + '</button>';
+    }
+    h += '</span></div>';
+    if (u.confirm === s.nm) {
+      h += '<div class="confirm" role="group" aria-label="Remove ' + s.nm + '"><b>Remove ' + esc(s.nm) + '?</b><span style="color:var(--dim)">midna stops it and forgets its command and secret names. Triggers that use it stay, with nothing feeding them.</span><div class="dacts"><button class="btn sm danger solid" data-act="rm-yes">Remove</button><button class="btn sm" data-act="rm-no">Cancel</button></div></div>';
+    } else if (open) {
+      h += '<div class="det" id="d-' + id + '">';
+      if (s.st === 'failing') h += '<div class="needln"><span class="dot need" style="width:7px;height:7px"></span>Raised in needs-you, so it waits with the rest (⌘J)</div>';
+      if (s.st === 'approval') h += '<p class="why">An agent added this stream. It won’t start until you approve the command and the secrets it reads.</p>';
+      h += '<div class="kv"><span>Command</span><code title="' + esc(s.cmd) + '">' + esc(s.cmd) + '</code><span>Secrets</span><span class="chips">' + s.sec.map(function (x) { return '<span class="chip">' + I.lock + x + '</span>'; }).join('') + '</span>';
+      if (s.st !== 'approval') h += '<span>Restarts</span><span>' + (s.restarts ? s.restarts + (s.st === 'failing' ? ' in the last 10 min' : ' since 10:52') : 'none since it started') + '</span>';
+      h += '</div>';
+      if (s.evs.length) {
+        h += '<div class="evh">Recent events</div><ul class="evs">' + s.evs.map(function (e) { return '<li><span class="tm">' + e[0] + '</span><code title="' + esc(e[1]) + '">' + esc(e[1]) + '</code><span class="vd' + (e[3] ? ' fired' : '') + '">' + e[2] + '</span></li>'; }).join('') + '</ul>';
+      }
+      h += '<div class="dacts">';
+      if (s.st === 'approval') h += '<button class="btn sm pri" data-act="approve">Approve and start</button><button class="btn sm danger" data-act="rm">Remove</button>';
+      else h += '<button class="lnk2" data-act="log">Open log…</button><span class="sp"></span><button class="lnk2 danger" data-act="rm">Remove…</button>';
+      h += '</div></div>';
+    }
+    return h + '</li>';
+  }
+  function popover(k) {
+    var all = sorted(), run = all.filter(function (s) { return s.st === 'running'; }).length;
+    var h = '<div class="pop' + (ui[k].popIn ? ' in' : '') + '" role="dialog" aria-label="Streams"><div class="pophd"><span class="cap">Streams</span><span class="sum">' + (run === all.length ? 'all ' + all.length + ' running' : run + ' of ' + all.length + ' running') + '</span><span class="sp"></span></div>';
+    h += '<ul class="srows">' + all.map(function (s) { return srow(k, s); }).join('') + '</ul>';
+    h += '<div class="popft">↑↓ move · ↩ details · R restart · P pause · L log · Esc close</div></div>';
+    return h;
+  }
+
+  /* ── Context menus ── */
+  function menu(k) {
+    var m = ui[k].menu; if (!m) return '';
+    var s = m.s ? live[m.s] : null, h = '<div class="cm" role="menu" aria-label="' + esc(m.label) + '" style="left:' + m.x + 'px;bottom:' + m.b + 'px">';
+    function mi(act, label, key, cls) { return '<button role="menuitem" tabindex="-1" data-mact="' + act + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + label + (key ? '<span class="k">' + key + '</span>' : '') + '</button>'; }
+    if (m.kind === 'item') {
+      h += mi('show', 'Show streams', '');
+      if (s) {
+        if (s.st === 'approval') h += mi('review', 'Review ' + esc(s.nm) + '…', '');
+        else {
+          h += mi('restart', (s.st === 'restarting' || s.st === 'failing' ? 'Try ' : 'Restart ') + esc(s.nm) + (s.st === 'restarting' || s.st === 'failing' ? ' now' : ''), '');
+          h += mi('pause', (s.st === 'paused' ? 'Resume ' : 'Pause ') + esc(s.nm), '');
+        }
+        h += mi('log', 'Open ' + esc(s.nm) + ' log', '');
+      }
+      h += '<hr>' + mi('items', 'Status bar items…', '');
+    } else {
+      if (s.st === 'approval') h += mi('approve', 'Approve and start', '');
+      else {
+        h += mi('restart', s.st === 'restarting' || s.st === 'failing' ? 'Try now' : 'Restart', 'R');
+        h += mi('pause', s.st === 'paused' ? 'Resume' : 'Pause', 'P');
+      }
+      h += mi('log', 'Open log', 'L') + mi('copy', 'Copy command', '⌘C') + '<hr>' + mi('rm', 'Remove…', '', 'danger');
+    }
+    return h + '</div>';
+  }
+
+  /* ── Log window ── */
+  var LOGS = {
+    buildkite: [
+      ['10:02:14', 'stderr', 'connected · org acme · 4 pipelines'],
+      ['10:51:58', 'stderr', 'heartbeat ok'],
+      ['10:52:17', 'stderr', 'Error: read ECONNRESET', 'e'],
+      ['10:52:17', 'midna', 'exited 1 · restarting in 2s (attempt 1)', 'bad'],
+      ['10:52:19', 'midna', 'started · pid 48211'],
+      ['10:52:21', 'stderr', 'Error: read ECONNRESET', 'e'],
+      ['10:52:21', 'midna', 'exited 1 · restarting in 4s (attempt 2)', 'bad'],
+      ['10:52:25', 'midna', 'started · pid 48230'],
+      ['10:52:26', 'stderr', '    at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)'],
+      ['10:52:26', 'stderr', 'Error: read ECONNRESET', 'e'],
+      ['10:52:26', 'midna', 'exited 1 · restarting in 8s (attempt 3)', 'bad']],
+    slack: [
+      ['10:28:03', 'midna', 'started · pid 47102'],
+      ['10:28:04', 'stderr', 'socket mode: connected (1 channel: #ci)'],
+      ['10:39:51', 'stderr', 'event: message #ci'],
+      ['10:41:07', 'stderr', 'event: message #ci']],
+    calendar: [
+      ['04:29:58', 'stderr', 'polling every 60s · 1 calendar'],
+      ['04:30:00', 'stderr', 'event: starts_soon “Standup”'],
+      ['10:32:40', 'midna', 'paused by you · stopped pid 39920'],
+    ]
+  };
+  var SLACK_FAIL = [
+    ['10:28:04', 'stderr', 'socket mode: connected (1 channel: #ci)'],
+    ['10:41:07', 'stderr', 'event: message #ci'],
+    ['10:44:30', 'stderr', 'Error: An API error occurred: invalid_auth', 'e'],
+    ['10:44:30', 'midna', 'exited 1 · restarting in 2s (attempt 1)', 'bad'],
+    ['10:44:32', 'midna', 'started · pid 47410'],
+    ['10:44:33', 'stderr', 'Error: An API error occurred: invalid_auth', 'e'],
+    ['10:44:33', 'midna', 'exited 1 · restarting in 4s (attempt 2)', 'bad'],
+    ['10:44:37', 'stderr', 'Error: An API error occurred: invalid_auth', 'e'],
+    ['10:44:37', 'midna', '… 4 more exits with the same error (attempts 3–6)', ''],
+    ['10:52:01', 'stderr', 'Error: An API error occurred: invalid_auth', 'e'],
+    ['10:52:01', 'midna', 'exited 1 · 7 restarts in 10 min · marked failing · raised needs-you', 'bad'],
+    ['10:52:01', 'midna', 'retrying on a long backoff · next try in 5m', '']];
+  function logLines(s) {
+    if (s.nm === 'slack' && s.st === 'failing') return SLACK_FAIL;
+    if (s.nm === 'buildkite' && s.st !== 'restarting') return [LOGS.buildkite[0], LOGS.buildkite[1], ['10:52:30', 'stderr', 'event: build.finished api passed']];
+    return LOGS[s.nm] || [];
+  }
+  function logWindow() {
+    var s = live[logOf] || live.slack, a = l2(s);
+    var h = '<div class="lwin' + (logIn ? ' in' : '') + '" role="dialog" aria-label="' + esc(s.nm) + ' stream log">';
+    h += '<div class="ltb"><span class="lights"><button class="c" data-act="lclose" aria-label="Close window" title="Close (Esc)"></button><i></i><i></i></span><span class="ttl">' + esc(s.nm) + ' — stream log</span></div>';
+    h += '<div class="lhd"><span class="dot ' + dotOf(s) + '" style="' + (dotOf(s) === 'spin' ? 'width:10px;height:10px;border:1.5px solid var(--work);border-right-color:transparent;background:none' : '') + '"></span><span class="nm">' + esc(s.nm) + '</span><span class="stt ' + a[0] + '">' + a[1] + '</span><span class="sp"></span>';
+    if (s.st === 'approval') h += '<button class="btn sm pri" data-act="approve" data-s="' + s.nm + '">Approve and start</button>';
+    else h += '<button class="btn sm" data-act="restart" data-s="' + s.nm + '">' + I.restart + (s.st === 'restarting' || s.st === 'failing' ? 'Try now' : 'Restart') + '</button><button class="btn sm" data-act="pause" data-s="' + s.nm + '">' + (s.st === 'paused' ? I.play + 'Resume' : I.pause + 'Pause') + '</button>';
+    h += '<span class="seg" role="tablist" aria-label="Show"><button role="tab" data-act="tab" data-tab="log" aria-selected="' + (logTab === 'log') + '" tabindex="' + (logTab === 'log' ? 0 : -1) + '">Log</button><button role="tab" data-act="tab" data-tab="events" aria-selected="' + (logTab === 'events') + '" tabindex="' + (logTab === 'events' ? 0 : -1) + '">Events</button></span></div>';
+    h += '<div class="lmeta"><code>' + esc(s.cmd) + '</code><span style="display:inline-flex;gap:4px;align-items:center">' + s.sec.map(function (x) { return '<span class="chip">' + I.lock + x + '</span>'; }).join('') + '</span>';
+    if (s.st !== 'approval') h += '<span>' + s.count + ' events today</span><span>' + s.restarts + ' restart' + (s.restarts === 1 ? '' : 's') + '</span>';
+    h += '</div>';
+    h += '<div class="lbody" tabindex="0" role="' + (logTab === 'log' ? 'log' : 'table') + '" aria-label="' + (logTab === 'log' ? 'Log lines' : 'Recent events') + '">';
+    if (s.st === 'approval') {
+      h += '<div class="lempty"><b>Nothing logged yet</b><span>This stream hasn’t run. Approve it and its output and midna’s supervisor lines appear here as they happen.</span><button class="btn sm pri" data-act="approve" data-s="' + s.nm + '">Approve and start</button></div>';
+    } else if (logTab === 'log') {
+      h += logLines(s).map(function (l, i, arr) { return '<div class="ll ' + (l[1] === 'midna' ? 'sup' : 'stderr') + (l[3] ? ' ' + l[3] : '') + '"><span class="tm">' + l[0] + '</span><span class="src">' + l[1] + '</span><span class="msg">' + esc(l[2]) + '</span></div>'; }).join('');
+      if (s.st === 'restarting') h += '<div class="ll sup"><span class="tm"></span><span class="src">midna</span><span class="msg">next try in <span class="cd" data-cd="' + s.nm + '">' + fmt(s.next) + '</span>…</span></div>';
+    } else {
+      h += s.evs.map(function (e) { return '<div class="ev"><span class="tm">' + e[0] + '</span><code title="' + esc(e[1]) + '">' + esc(e[1]) + '</code><span class="vd' + (e[3] ? ' fired' : '') + '">' + (e[3] ? e[2] + ' · ci-failed' : e[2]) + '</span></div>'; }).join('') || '<div class="lempty">No events today.</div>';
+    }
+    h += '</div><div class="lft"><span>Read-only · ' + (logTab === 'log' ? 'stderr and midna’s supervisor lines' : 'each event and what the triggers did with it') + '</span><span class="sp"></span><button class="tgl" role="switch" data-act="follow" aria-checked="' + follow + '"><span class="sw"></span>Follow new lines</button></div></div>';
+    return h;
+  }
+  var logIn = false;
+
+  /* ── Design notes ── */
+  function noteFor(k) {
+    var st = canvas.state;
+    var body = {
+      main: {
+        healthy: '<p>All three streams are running, so the item is one dim line like its neighbours: a green dot and “3 streams”. Nothing else in the window mentions streams.</p><ul><li>Hover gives every stream’s state; click opens the popover.</li><li>Right-click: Show streams and Status bar items…; with trouble, the worst stream’s Try now, Pause and Open log too.</li><li>No streams set up: the item doesn’t show.</li></ul>',
+        restarting: '<p>The item takes the worst stream’s colour and words: a spinning blue ring and “buildkite restarting · 8s”, counting down. Restarting isn’t urgent, so it doesn’t raise needs-you.</p><ul><li>When it comes back: “buildkite running again” in green for 4s, then back to the dim “3 streams”. Replay shows it.</li></ul>',
+        failing: '<p>slack kept failing, so midna raised needs-you: the pill goes 2 → 3, and that’s the only loud part. The item goes red, “slack failing”, with a faint red tint so the bar shows where it came from.</p><ul><li>The needs-you item opens the streams popover with slack expanded.</li></ul>',
+        paused: '<p>Paused is your own choice, so the item stays dim: a hollow dot and “calendar paused”. It reminds you without asking for anything.</p>',
+        approval: '<p>An agent added github-notifications. It won’t run until you approve it, so the item goes amber, “github-notifications needs approval”. The long name is cut at 150px; the tooltip has it in full.</p>'
+      }[st],
+      pop: '<p>Click the item, or ⌘K → Streams. A popover opens up from the item, worst stream first, and the one in trouble expanded with its command, secret names, restarts and recent events with their verdicts.</p><ul><li>Each row: Restart (Try now while it’s backing off), Pause/Resume, Log. R, P, L do the same on the focused row.</li><li>Right-click a row: those plus Copy command and Remove… (confirmed in the row).</li><li>Esc or a click outside closes it.</li></ul>',
+      log: '<p>Log opens a separate, read-only window per stream, so it can sit beside the terminal it feeds. Log shows stderr with midna’s supervisor lines between; Events shows each event and its verdict.</p><ul><li>Restart and Pause are repeated in its header. Follow keeps the newest line in view.</li><li>Esc or the red button closes it.</li></ul>'
+    }[k];
+    var t = { main: 'Status-bar item · ' + { healthy: 'quiet when healthy', restarting: 'restarting', failing: 'failing', paused: 'paused', approval: 'awaiting approval' }[st], pop: 'Clicked: the streams popover', log: 'Log: a read-only window' }[k];
+    var replay = k === 'main' && st !== 'paused' ? '<button class="btn sm" data-act="replay">Replay the change</button>' : '';
+    return '<aside class="note" aria-label="Design note"' + (closedNotes ? ' data-closed' : '') + '><button data-act="note" aria-expanded="' + !closedNotes + '">' + t + '<span class="k">N</span></button><div class="nbd">' + body + replay + '</div></aside>';
+  }
+
+  /* ── Render ── */
+  function render(k) {
+    var el = canvas.root.querySelector('[data-k="' + k + '"]'); if (!el) return;
+    var u = ui[k];
+    var h = k === 'log' ? logWindow() + '<div class="behind" inert style="display:contents">' + sidebar(k) + pane() + status(k) + '</div>' : sidebar(k) + pane() + status(k);
+    if (u.pop) h += popover(k);
+    h += menu(k);
+    if (toastMsg && toastMsg.k === k) h += '<div class="toast" role="status">' + toastMsg.t + (toastMsg.undo ? '<button class="btn" data-act="undo">Undo</button>' : '') + '</div>';
+    h += noteFor(k);
+    el.innerHTML = h;
+    u.popIn = false; logIn = k === 'log' ? false : logIn;
+    place(el);
+    canvas.refresh && canvas.refresh();
+  }
+  function renderAll() { ['main', 'pop', 'log'].forEach(render); }
+  function place(el) {
+    var it = el.querySelector('.si'), p = el.querySelector('.pop');
+    if (!it || !p) return;
+    var aw = el.offsetWidth, pw = p.offsetWidth, x = it.offsetLeft - 10;
+    x = Math.max(8, Math.min(x, aw - pw - 8));
+    p.style.setProperty('--px', x + 'px');
+    p.style.setProperty('--nx', Math.max(16, Math.min(pw - 16, it.offsetLeft + it.offsetWidth / 2 - x)) + 'px');
+  }
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(function (es) { es.forEach(function (e) { place(e.target); }); });
+    canvas.root.querySelectorAll('[data-k]').forEach(function (el) { ro.observe(el); });
+  }
+
+  /* ── Live countdown ── */
+  setInterval(function () {
+    var changed = false;
+    Object.keys(live).forEach(function (n) {
+      var s = live[n];
+      if (s.st !== 'restarting' && s.st !== 'failing') return;
+      s.next -= 1;
+      if (s.next <= 0 && s.st === 'restarting') { s.attempt += 1; s.restarts += 1; s.next = Math.min(60, Math.pow(2, s.attempt)); changed = true; }
+      if (s.next <= 0 && s.st === 'failing') { s.next = 300; s.restarts += 1; changed = true; }
+    });
+    if (changed) { renderAll(); return; }
+    canvas.root.querySelectorAll('[data-cd]').forEach(function (c) { var s = live[c.getAttribute('data-cd')]; if (s) c.textContent = fmt(s.next); });
+  }, 1000);
+
+  /* ── Actions ── */
+  function screenOf(el) { var sc = el.closest('[data-k]'); return sc && sc.getAttribute('data-k'); }
+  function focusSel(k, sel) { var el = canvas.root.querySelector('[data-k="' + k + '"] ' + sel); el && el.focus(); }
+  function toast(k, t, undo) { toastMsg = { k: k, t: t, undo: undo }; clearTimeout(toast.tm); toast.tm = setTimeout(function () { toastMsg = null; render(k); }, 4000); }
+  var undoState = null;
+  function doAct(k, act, name) {
+    var s = live[name];
+    if (!s) return;
+    if (act === 'restart') {
+      var prev = Object.assign({}, s);
+      Object.assign(s, { st: 'running', next: 0 });
+      if (prev.st === 'restarting' || prev.st === 'failing') { s.restarts += 1; s.last = 'just now'; }
+      toast(k, (prev.st === 'restarting' || prev.st === 'failing' ? 'Trying ' : 'Restarted ') + esc(s.nm) + (prev.st === 'restarting' || prev.st === 'failing' ? ' now: it’s running' : ''));
+      if (prev.st !== 'running') { flash = { back: s.nm, item: true }; setTimeout(function () { flash = { fade: true }; renderAll(); setTimeout(function () { flash = null; }, 600); }, 4000); }
+      if (ui[k].exp === s.nm) ui[k].exp = null;
+    }
+    if (act === 'pause') {
+      if (s.st === 'paused') { s.st = 'running'; toast(k, 'Resumed ' + esc(s.nm)); }
+      else { s.st = 'paused'; s.by = 'you'; s.since = 'just now'; toast(k, 'Paused ' + esc(s.nm)); }
+    }
+    if (act === 'approve') { s.st = 'running'; s.last = 'just now'; s.count = 0; ui[k].exp = null; toast(k, 'Approved ' + esc(s.nm) + ': it’s starting'); }
+    if (act === 'log') { logOf = name; logTab = 'log'; logIn = true; ui[k].pop = false; ui[k].menu = null; if (k !== 'log') { canvas.navigate('log'); } renderAll(); setTimeout(function () { focusSel('log', '.lbody'); }, 30); return; }
+    if (act === 'copy') toast(k, 'Copied the command');
+    if (act === 'rm') { ui[k].confirm = name; render(k); focusSel(k, '[data-act="rm-no"]'); return; }
+    renderAll();
+    var b = canvas.root.querySelector('[data-k="' + k + '"] .srow[data-s="' + name + '"] .smb'); b ? b.focus() : focusSel(k, '.si');
+  }
+  function openPop(k, on, focus) {
+    ui[k].pop = on; ui[k].menu = null; ui[k].popIn = on && !reduced(); ui[k].confirm = null;
+    if (on) ui[k].exp = defaultExp();
+    render(k);
+    if (focus !== false) on ? focusSel(k, '.srow .smb') : focusSel(k, '.si');
+  }
+  function openMenu(k, kind, anchor, name, label) {
+    var el = canvas.root.querySelector('[data-k="' + k + '"]'), ar = anchor.getBoundingClientRect(), er = el.getBoundingClientRect(), z = er.width / el.offsetWidth;
+    var x = (ar.left - er.left) / z, b = (er.bottom - ar.top) / z + 4;
+    ui[k].menu = { kind: kind, s: name, label: label, x: Math.max(8, Math.min(x, el.offsetWidth - 240)), b: b };
+    render(k);
+    focusSel(k, '.cm [role=menuitem]');
+  }
+
+  canvas.root.addEventListener('click', function (e) {
+    var mt = e.target.closest('[data-mact]');
+    if (mt) {
+      var km = screenOf(mt), m = ui[km].menu, a = mt.getAttribute('data-mact'); ui[km].menu = null;
+      if (a === 'show') return openPop(km, true);
+      if (a === 'review') { openPop(km, true); return; }
+      if (a === 'items') { render(km); canvas.toast('Opens the status bar’s own item list (today’s right-click menu)'); return; }
+      return doAct(km, a, m.s);
+    }
+    var t = e.target.closest('[data-act]'); if (!t) return;
+    var k = screenOf(t), a = t.getAttribute('data-act'), rowEl = t.closest('.srow'), nm = t.getAttribute('data-s') || (rowEl && rowEl.getAttribute('data-s'));
+    if (a === 'si') return openPop(k, !ui[k].pop);
+    if (a === 'note') { closedNotes = !closedNotes; renderAll(); return; }
+    if (a === 'replay') return replay();
+    if (a === 'exp') { ui[k].exp = ui[k].exp === nm ? null : nm; ui[k].confirm = null; render(k); focusSel(k, '.srow[data-s="' + nm + '"] .smb'); return; }
+    if (a === 'rm-no') { ui[k].confirm = null; render(k); focusSel(k, '.srow[data-s="' + nm + '"] .smb'); return; }
+    if (a === 'rm-yes') { undoState = { nm: nm, s: live[nm] }; delete live[nm]; ui[k].confirm = null; toast(k, 'Removed ' + esc(nm), true); renderAll(); focusSel(k, '.srow .smb'); return; }
+    if (a === 'undo') { if (undoState) live[undoState.nm] = undoState.s; undoState = null; toastMsg = null; renderAll(); return; }
+    if (a === 'tab') { logTab = t.getAttribute('data-tab'); render('log'); focusSel('log', '[data-tab="' + logTab + '"]'); return; }
+    if (a === 'follow') { follow = !follow; render('log'); focusSel('log', '[data-act="follow"]'); return; }
+    if (a === 'lclose') { canvas.navigate('main'); setTimeout(function () { focusSel('main', '.si'); }, 30); return; }
+    if (nm) doAct(k, a, nm);
+  });
+  canvas.root.addEventListener('contextmenu', function (e) {
+    var it = e.target.closest('.si'), r = e.target.closest('.srow');
+    if (!it && !r) return;
+    e.preventDefault();
+    var k = screenOf(e.target);
+    if (it) { var w = trouble()[0]; openMenu(k, 'item', it, w && w.nm, 'Streams'); }
+    else openMenu(k, 'row', r.querySelector('.smb'), r.getAttribute('data-s'), r.getAttribute('data-s'));
+  });
+  canvas.root.addEventListener('pointerdown', function (e) {
+    var t = e.target; if (!t.closest) return;
+    var k = screenOf(t); if (!k) return;
+    if (ui[k].menu && !t.closest('.cm')) { ui[k].menu = null; render(k); }
+    if (ui[k].pop && !t.closest('.pop, .si, .cm, .note, .toast')) openPop(k, false, false);
+  });
+  canvas.root.addEventListener('keydown', function (e) {
+    var src = e.composedPath && e.composedPath()[0] || e.target;
+    var k = src.closest && screenOf(src); if (!k) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var u = ui[k];
+    if (u.menu) {
+      var items = Array.prototype.slice.call(canvas.root.querySelectorAll('[data-k="' + k + '"] .cm [role=menuitem]')), i = items.indexOf(src);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); var d = e.key === 'ArrowDown' ? 1 : -1; items[(i + d + items.length) % items.length].focus(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); var back = u.menu.kind === 'item' ? '.si' : '.srow[data-s="' + u.menu.s + '"] .smb'; u.menu = null; render(k); focusSel(k, back); return; }
+      if (e.key === 'Tab') { e.preventDefault(); return; }
+      return;
+    }
+    if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      if (src.classList.contains('si')) { e.preventDefault(); var w = trouble()[0]; openMenu(k, 'item', src, w && w.nm, 'Streams'); return; }
+      var rr = src.closest('.srow'); if (rr) { e.preventDefault(); openMenu(k, 'row', rr.querySelector('.smb'), rr.getAttribute('data-s'), rr.getAttribute('data-s')); return; }
+    }
+    if (k === 'log' && src.closest('.lwin')) {
+      if (e.key === 'Escape') { e.preventDefault(); canvas.navigate('main'); setTimeout(function () { focusSel('main', '.si'); }, 30); return; }
+      if (src.getAttribute('role') === 'tab' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); logTab = logTab === 'log' ? 'events' : 'log'; render('log'); focusSel('log', '[data-tab="' + logTab + '"]'); return; }
+      return;
+    }
+    if (u.pop && src.closest('.pop')) {
+      if (e.key === 'Escape') { e.preventDefault(); if (u.confirm) { var c = u.confirm; u.confirm = null; render(k); focusSel(k, '.srow[data-s="' + c + '"] .smb'); return; } openPop(k, false); return; }
+      var rowEl = src.closest('.srow'), nm = rowEl && rowEl.getAttribute('data-s');
+      if (src.classList.contains('smb') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        var rs = Array.prototype.slice.call(canvas.root.querySelectorAll('[data-k="' + k + '"] .srow .smb')), j = rs.indexOf(src) + (e.key === 'ArrowDown' ? 1 : -1);
+        if (rs[j]) rs[j].focus(); return;
+      }
+      if (nm && !u.confirm && src.classList.contains('smb')) {
+        var key = e.key.toLowerCase(), s = live[nm];
+        if (key === 'r' && s.st !== 'approval') { e.preventDefault(); return doAct(k, 'restart', nm); }
+        if (key === 'p' && s.st !== 'approval') { e.preventDefault(); return doAct(k, 'pause', nm); }
+        if (key === 'l') { e.preventDefault(); return doAct(k, 'log', nm); }
+      }
+      return;
+    }
+    if (e.key === 'n' || e.key === 'N') { closedNotes = !closedNotes; renderAll(); }
+  });
+
+  /* The change, replayed on the main screen: from the quiet line to this state (or the recovery). */
+  function replay() {
+    var st = canvas.state;
+    if (st === 'healthy') {
+      var keep = live.buildkite.st; live.buildkite.st = 'restarting'; live.buildkite.attempt = 3; live.buildkite.next = 2; live.buildkite.why = 'exited 1: ECONNRESET';
+      flash = null; render('main');
+      setTimeout(function () { live.buildkite.st = keep; flash = { back: 'buildkite', item: true }; render('main');
+        setTimeout(function () { flash = { fade: true }; render('main'); setTimeout(function () { flash = null; }, 600); }, 4000); }, 1800);
+      return;
+    }
+    var saved = live; build('healthy'); flash = null; render('main');
+    setTimeout(function () { live = saved; flash = { item: true, pill: st === 'failing' }; render('main'); setTimeout(function () { flash = null; }, 1200); }, 900);
+  }
+
+  canvas.onState(function (st) {
+    build(['healthy', 'restarting', 'failing', 'paused', 'approval'].indexOf(st) >= 0 ? st : 'healthy');
+    flash = null; toastMsg = null; resetUi(); renderAll();
+  });
+  canvas.onNavigate && canvas.onNavigate(function (n) {
+    if (n.screen === 'log') { logIn = !reduced(); render('log'); }
+    if (n.screen === 'pop') { ui.pop.pop = true; ui.pop.popIn = !reduced(); render('pop'); }
+  });
+};
+</script>

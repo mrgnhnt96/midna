@@ -1,0 +1,12 @@
+{
+  "title": "Stream health",
+  "initialPreset": "macbook",
+  "limits": { "minWidth": 640, "minHeight": 480, "maxWidth": 2560, "maxHeight": 1440 },
+  "states": [
+    { "id": "healthy", "label": "All healthy" },
+    { "id": "restarting", "label": "buildkite restarting" },
+    { "id": "failing", "label": "slack failing (needs you)" },
+    { "id": "paused", "label": "calendar paused" },
+    { "id": "approval", "label": "Agent-added, awaiting approval" }
+  ]
+}
