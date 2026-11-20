@@ -1047,7 +1047,7 @@ pub enum StatusClear {
     Never,
 }
 
-/// What a trigger does. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`.
+/// What a trigger does. Templates use `{{pr.number}}`, `{{pr.title}}`, `{{repo}}`, `{{branch}}`, `{{sender}}`, `{{url}}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TriggerAction {

@@ -665,8 +665,8 @@ pub static VERBS: &[Verb] = &[
                   update  change its command (after --), --cwd, --project or secrets (--secret replaces them,\n\
                   \x20       --no-secrets drops them); a running one starts again with them. An agent's change pauses\n\
                   \x20       it and asks the human again, even if it was approved before.\n\
-                  list    each stream's state (running, backoff, paused, awaiting_approval), pid, restarts, last\n\
-                  \x20       exit and last event.\n\
+                  list    each stream's state (starting, running, backoff, failing, paused, awaiting_approval), pid,\n\
+                  \x20       restarts, last exit and last event.\n\
                   pause/resume/restart/remove  stop it and keep it stopped / start it / start it again now / stop\n\
                   \x20       and forget it. Stopping one stops everything it started. Agents may pause, resume an\n\
                   \x20       approved stream, restart, and remove a paused one; removing a running one asks the human.",
