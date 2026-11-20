@@ -25,6 +25,29 @@ pub struct StreamRef {
     /// The publisher's id for the event, if it gave one (e.g. Slack's message ts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Set when a trigger caused the publish (a process one of its actions started): the event
+    /// is recorded but never fires triggers, so a trigger can't feed itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caused_by: Option<TriggerCause>,
+}
+
+/// The trigger (and its delivery) behind a call: from `MIDNA_TRIGGER` / `MIDNA_DELIVERY`, which
+/// midnad sets on everything a trigger's action starts (a run_command, a start_agent's
+/// terminal) and the midna CLI and MCP server forward as `caller.caused_by`. Taken at its word:
+/// claiming one only stops a publish from firing triggers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerCause {
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
+}
+
+impl TriggerCause {
+    /// From `MIDNA_TRIGGER` (and `MIDNA_DELIVERY`), when set.
+    pub fn from_env() -> Option<TriggerCause> {
+        let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        var("MIDNA_TRIGGER").map(|trigger| TriggerCause { trigger, delivery: var("MIDNA_DELIVERY") })
+    }
 }
 
 impl StreamRef {
@@ -36,7 +59,7 @@ impl StreamRef {
     /// The stream and kind of a published event's kind (`stream.slack.message`); no id.
     pub fn of_event(event: &str) -> Option<StreamRef> {
         let (name, kind) = event.strip_prefix(EVENT_PREFIX)?.split_once('.')?;
-        (valid_name(name) && valid_kind(kind)).then(|| StreamRef { name: name.into(), kind: kind.into(), id: None })
+        (valid_name(name) && valid_kind(kind)).then(|| StreamRef { name: name.into(), kind: kind.into(), id: None, caused_by: None })
     }
 }
 
@@ -62,6 +85,10 @@ pub struct StreamsPublishResult {
     pub seq: u64,
     /// Its kind: `stream.<name>.<kind>`, what a local trigger's `event` matches.
     pub event: String,
+    /// The trigger that caused this publish (its action started the publisher): the event is
+    /// recorded but fires no triggers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caused_by: Option<TriggerCause>,
 }
 
 /// A stream name: 1–32 of `a-z 0-9 -`.
@@ -96,7 +123,7 @@ pub fn check_publish(p: &StreamsPublishParams) -> Result<StreamRef, String> {
     if size > MAX_PAYLOAD_BYTES {
         return Err(format!("data is {size} bytes as JSON; the most a stream event carries is {MAX_PAYLOAD_BYTES} (64 KB)"));
     }
-    Ok(StreamRef { name: p.stream.clone(), kind: p.kind.clone(), id: p.id.clone() })
+    Ok(StreamRef { name: p.stream.clone(), kind: p.kind.clone(), id: p.id.clone(), caused_by: None })
 }
 
 /// A local trigger's `event` that names streams (`stream.slack.message`, `stream.slack.*`,

@@ -225,6 +225,14 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
     }
     let sid = hex_id(8);
     let mut env = session_env(d, &sid, &project.id);
+    // Opened by a trigger's action, or by something one started: the CLI forwards these, so a
+    // stream event published from in here fires no triggers.
+    if let Some(c) = ctx.caused_by() {
+        env.push(("MIDNA_TRIGGER".into(), c.trigger));
+        if let Some(del) = c.delivery {
+            env.push(("MIDNA_DELIVERY".into(), del));
+        }
+    }
     let (command, agent) = match p.kind {
         SessionKind::Agent => {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;

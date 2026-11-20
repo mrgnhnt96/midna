@@ -38,6 +38,10 @@ pub(crate) const ENV_SCRUB: &[&str] = &[
     "CODEX_THREAD_ID",
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",
+    // Set only on what a trigger starts; inherited by midnad, they'd mute every terminal's
+    // stream publishes.
+    "MIDNA_TRIGGER",
+    "MIDNA_DELIVERY",
     "SAGGAR",
     "SAGGAR_SESSION",
     "SAGGAR_CLI_DIR",

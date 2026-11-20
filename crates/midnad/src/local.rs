@@ -197,8 +197,9 @@ fn on_event(d: &Arc<Daemon>, e: &Event) {
             b.status_seq.remove(sid);
         }
     }
-    // What a trigger did (and trigger bookkeeping) never fires triggers.
-    if e.actor.kind == ActorKind::Trigger || e.kind.starts_with("trigger.") {
+    // What a trigger did (and trigger bookkeeping) never fires triggers, nor does a stream
+    // event published by something a trigger started.
+    if e.actor.kind == ActorKind::Trigger || e.kind.starts_with("trigger.") || e.stream.as_ref().is_some_and(|s| s.caused_by.is_some()) {
         return;
     }
     fire_matching(d, &e.kind, e.session_id.as_deref(), None, &e.data, e.stream.as_deref());
@@ -619,6 +620,8 @@ fn run(
     let open = |params: Value| -> Result<Id, String> {
         let p: SessionOpenParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
         let mut ctx = Ctx::internal_trigger(actor.clone());
+        // The terminal carries MIDNA_TRIGGER / MIDNA_DELIVERY, so what it publishes fires nothing.
+        ctx.caused_by = Some(TriggerCause { trigger: t.id.clone(), delivery: Some(del_id.to_string()) });
         // The human wrote a local trigger's prompt; a notification button's came from its sender.
         ctx.supervised = crate::notify::is_callback(t);
         let v = crate::rpc::session::open(d, &ctx, p).map_err(|e| e.message)?;
@@ -1037,7 +1040,7 @@ mod tests {
     #[test]
     fn renders_a_stream_events_envelope() {
         let data = json!({ "text": "failed to build", "stream": { "name": "payload's own" } });
-        let st = StreamRef { name: "slack".into(), kind: "message".into(), id: Some("1700.01".into()) };
+        let st = StreamRef { name: "slack".into(), kind: "message".into(), id: Some("1700.01".into()), caused_by: None };
         let tpl = "{{stream.name}}/{{stream.kind}}/{{stream.id}} {{data.text}} {{data.stream.name}}";
         assert_eq!(render(tpl, "stream.slack.message", Some(&st), None, &data, None, false), "slack/message/1700.01 failed to build payload's own");
         // Without the envelope (a dry run): the name and kind from the event, no id.
