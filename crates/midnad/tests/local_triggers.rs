@@ -475,6 +475,51 @@ fn run_command_in_background_or_with_no_terminal() {
 }
 
 #[test]
+fn run_command_gets_the_payload_in_midna_payload() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let dir = d.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = call(&mut h, "project.add", json!({ "path": dir.canonicalize().unwrap() }));
+    let pid = p["id"].as_str().unwrap().to_string();
+    let out = d.home.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    // Each run writes what it got to out/<tag>.{stdin,file,env}.
+    let cmd = |tag: &str, stdin: bool| {
+        let read = if stdin { format!("cat > {tag}.stdin; ") } else { String::new() };
+        format!("cd {} && {read}cp \"$MIDNA_PAYLOAD\" {tag}.file; printf '%s %s %s' \"$MIDNA_EVENT\" \"$MIDNA_DELIVERY_GUID\" \"$MIDNA_DELIVERY\" > {tag}.env", out.display())
+    };
+    let add = |h: &mut Client, name: &str, action: Value| {
+        let t = call(h, "trigger.add", json!({ "name": name, "source": "local", "event": "hook.Stop", "filter": { "match": { "note": "*done*" } }, "action": action, "enabled": true }));
+        t["id"].as_str().unwrap().to_string()
+    };
+    let headless = add(&mut h, "Relay", json!({ "kind": "run_command", "project_id": pid, "command": cmd("headless", true), "headless": true, "timeout_secs": 30 }));
+    let term = add(&mut h, "Relay in a tab", json!({ "kind": "run_command", "project_id": pid, "command": cmd("term", false) }));
+
+    let payload = json!({ "note": "it's done", "nested": { "n": 2 } });
+    let dry = call(&mut h, "trigger.test", json!({ "trigger_id": headless, "session": sid, "payload": payload }));
+    let size = payload.to_string().len();
+    assert!(dry["summary"].as_str().unwrap().ends_with(&format!(" · with the {size}-byte payload on stdin and in $MIDNA_PAYLOAD")), "{dry}");
+    let dry = call(&mut h, "trigger.test", json!({ "trigger_id": term, "session": sid, "payload": payload }));
+    assert!(dry["summary"].as_str().unwrap().ends_with(&format!(" · with the {size}-byte payload in $MIDNA_PAYLOAD")), "{dry}");
+
+    hook(&mut a, "Stop", payload.clone());
+    let read = |name: &str| wait_for(15, name, || std::fs::read_to_string(out.join(name)).ok().filter(|s| !s.is_empty()));
+    let delivery = |h: &mut Client, tid: &str| wait_for(5, "delivery", || call(h, "trigger.deliveries", json!({ "trigger_id": tid })).as_array().and_then(|a| a.first().cloned()));
+    for (tag, tid) in [("headless", &headless), ("term", &term)] {
+        let del = delivery(&mut h, tid);
+        let (id, guid) = (del["id"].as_str().unwrap(), del["delivery_guid"].as_str().unwrap());
+        assert_eq!(serde_json::from_str::<Value>(&read(&format!("{tag}.file"))).unwrap(), payload, "{tag}");
+        assert_eq!(read(&format!("{tag}.env")), format!("hook.Stop {guid} {id}"), "{tag}");
+        // Kept with the delivery, as a webhook's body is.
+        assert!(d.home.join("deliveries").join(format!("{id}.body.json")).is_file(), "{tag}");
+    }
+    assert_eq!(read("headless.stdin"), payload.to_string(), "headless also gets it on stdin");
+}
+
+#[test]
 fn a_script_sets_and_clears_a_status_without_a_trigger() {
     let d = TestDaemon::start();
     let mut h = d.human();

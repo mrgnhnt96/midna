@@ -1,9 +1,9 @@
 //! Headless `run_command`: a trigger's command run with no terminal (`TriggerAction::RunCommand`
 //! with `headless`). It runs through the login shell in the project's folder with the env a
 //! terminal gets (less `MIDNA_SESSION`, plus `MIDNA_TRIGGER` / `MIDNA_DELIVERY`), in its own
-//! process group. For a webhook delivery its stdin is the delivery's JSON body, which is also in
-//! the file `$MIDNA_PAYLOAD`, with `MIDNA_EVENT`, `MIDNA_ACTION` and `MIDNA_DELIVERY_GUID` set
-//! (`Body`); otherwise stdin is closed. Its exit code and the end of its output go on the delivery that
+//! process group. Its stdin is the delivery's JSON body (a webhook's body, or a local trigger's
+//! hook payload or event data), which is also in the file `$MIDNA_PAYLOAD`, with `MIDNA_EVENT`,
+//! `MIDNA_ACTION` and `MIDNA_DELIVERY_GUID` set (`Body`); with no body stdin is closed. Its exit code and the end of its output go on the delivery that
 //! fired it (`Delivery::command_runs`), then `trigger.command_finished` is emitted.
 //!
 //! While it runs, midnad calls from its processes act as the trigger (`Runs::owner`).
@@ -67,9 +67,9 @@ impl Runs {
     }
 }
 
-/// The webhook delivery a command runs for.
+/// The delivery a command runs for: a webhook's, or a local trigger's firing.
 pub struct Body<'a> {
-    /// The delivery's JSON body.
+    /// The delivery's JSON body (a local trigger's hook payload or event data).
     pub json: &'a str,
     /// Where that body is kept while the delivery is (`$MIDNA_PAYLOAD`).
     pub file: &'a std::path::Path,
@@ -87,6 +87,17 @@ impl Body<'_> {
         }
         v.push(("MIDNA_DELIVERY_GUID", self.guid.to_string()));
         v
+    }
+
+    /// `command` for a terminal, with `MIDNA_TRIGGER`, `MIDNA_DELIVERY` and `env` exported
+    /// ahead of it. A terminal's stdin is the terminal, so there the body is only in `$MIDNA_PAYLOAD`.
+    pub fn exported(&self, trigger_id: &str, delivery_id: &str, command: &str) -> String {
+        let env: Vec<String> = [("MIDNA_TRIGGER", trigger_id.to_string()), ("MIDNA_DELIVERY", delivery_id.to_string())]
+            .into_iter()
+            .chain(self.env())
+            .map(|(k, v)| format!("{k}={}", crate::webhooks::payload::shell_quote(&v)))
+            .collect();
+        format!("export {}; {command}", env.join(" "))
     }
 }
 
