@@ -397,3 +397,67 @@ exec sleep 60"#;
         assert!(!text.contains(value) && !text.contains(other), "a secret value is in {}", f.display());
     }
 }
+
+/// Once midna runs a stream, only its producer (the token it got at its last start) or the
+/// human can publish to it; an agent's publish is refused and listed. Other names stay open.
+#[test]
+fn a_declared_stream_takes_only_its_producer_s_and_the_human_s_publishes() {
+    let d = start();
+    let mut h = d.human();
+    let out = d.home.join("token");
+    let script = format!(r#"printf '%s' "$MIDNA_STREAM_TOKEN" > {}
+echo "token $MIDNA_STREAM_TOKEN" >&2
+exec sleep 60"#, out.display());
+    add(&mut h, &d, "ci", &script);
+    let read_token = || wait_for(10, "producer wrote its token", || std::fs::read_to_string(&out).ok().filter(|t| !t.is_empty()));
+    let token = read_token();
+    assert_eq!(token.len(), 64, "{token}");
+    let with = |t: Option<&str>| {
+        let mut c = d.agent(None);
+        c.set_caller(Some(midna_proto::Caller { role: Some("agent".into()), stream_token: t.map(Into::into), ..Default::default() }));
+        c
+    };
+    let publish = |c: &mut Client, stream: &str, id: &str| c.call_value("streams.publish", json!({ "stream": stream, "kind": "build.failed", "id": id }));
+    let refused = |r: Result<Value, midna_proto::ClientError>| match r {
+        Err(midna_proto::ClientError::Rpc(e)) => {
+            assert_eq!(e.code, midna_proto::error::REFUSED, "{e:?}");
+            assert_eq!(e.data.as_ref().map(|v| v["verdict"].clone()), Some(json!("refused")), "{e:?}");
+            assert!(e.message.contains("stream `ci` is one midna runs"), "{}", e.message);
+        }
+        other => panic!("not refused: {other:?}"),
+    };
+
+    // An agent, with no token or another one, is refused; its producer's token and the human get in.
+    refused(publish(&mut d.agent(None), "ci", "a1"));
+    refused(publish(&mut with(Some("f00d")), "ci", "a2"));
+    assert_eq!(publish(&mut with(Some(&token)), "ci", "p1").unwrap()["verdict"], "accepted");
+    assert_eq!(publish(&mut h, "ci", "h1").unwrap()["verdict"], "accepted");
+    // A name midna doesn't run is open to anyone; the token doesn't matter there.
+    assert_eq!(publish(&mut d.agent(None), "adhoc", "x1").unwrap()["verdict"], "accepted");
+    let ev = call(&mut h, "streams.events", json!({ "stream": "ci" }));
+    assert_eq!((ev["counts"]["refused"].as_u64(), ev["counts"]["accepted"].as_u64()), (Some(2), Some(2)), "{ev}");
+    let rows = ev["events"].as_array().unwrap();
+    assert_eq!((rows[3]["verdict"].as_str(), rows[3]["id"].as_str()), (Some("refused"), Some("a1")), "{ev}");
+    assert_eq!(events(&mut h, "stream.ci.build.failed").len(), 2, "refused publishes aren't logged");
+
+    // A restart gives the producer a new token; the old one stops working at once.
+    std::fs::remove_file(&out).unwrap();
+    call(&mut h, "streams.restart", json!({ "name": "ci" }));
+    refused(publish(&mut with(Some(&token)), "ci", "p2"));
+    let fresh = read_token();
+    assert_ne!(fresh, token);
+    refused(publish(&mut with(Some(&token)), "ci", "p3"));
+    assert_eq!(publish(&mut with(Some(&fresh)), "ci", "p4").unwrap()["verdict"], "accepted");
+    // Paused, the stream is still declared and nobody but the human publishes to it.
+    call(&mut h, "streams.set_enabled", json!({ "name": "ci", "enabled": false }));
+    refused(publish(&mut with(Some(&fresh)), "ci", "p5"));
+    assert_eq!(publish(&mut h, "ci", "h2").unwrap()["verdict"], "accepted");
+
+    // Never stored or logged: its log shows it masked.
+    wait_for(10, "masked in the log", || Some(log(&d, "ci")).filter(|l| l.matches("token ‹MIDNA_STREAM_TOKEN›").count() == 2));
+    d.daemon().save_now();
+    for f in ["state.json", "events.jsonl", "streams/ci.log"] {
+        let text = std::fs::read_to_string(d.home.join(f)).unwrap();
+        assert!(!text.contains(&token) && !text.contains(&fresh), "a token is in {f}");
+    }
+}

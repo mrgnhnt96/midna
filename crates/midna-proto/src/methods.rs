@@ -22,6 +22,11 @@ pub struct Caller {
     /// event it publishes is recorded but fires no triggers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<crate::streams::TriggerCause>,
+    /// The token midnad gave the stream producer this call comes from (`MIDNA_STREAM_TOKEN`,
+    /// new at each start): a declared stream (`streams.add`) only takes publishes that carry
+    /// its producer's current token, or the human's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
