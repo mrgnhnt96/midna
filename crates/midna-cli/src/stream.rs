@@ -1,6 +1,7 @@
 //! `midna stream …`: local event streams. `publish` hands midna an event from this Mac
 //! (`streams.publish`); local triggers on `stream.<name>.<kind>` react to it. `events` lists a
-//! stream's recent publishes and what midna did with each (`streams.events`).
+//! stream's recent publishes and what midna did with each (`streams.events`), and `--replay`
+//! runs one of them through the local triggers again (`trigger.replay`).
 use crate::args::Args;
 use crate::{Fail, OutFn, Res, call};
 use serde_json::{Value, json};
@@ -11,7 +12,7 @@ pub fn stream(a: &Args, out: OutFn) -> Res {
         Some("publish" | "pub") => publish(a, out),
         Some("events" | "log") => events(a, out),
         Some(other) => Err(Fail::Usage(format!("unknown stream subcommand `{other}` (try `midna stream publish <name> <kind>` or `midna stream events <name>`)"))),
-        None => Err(Fail::Usage("midna stream publish <name> <kind> [--id ID] [--data JSON|@file|-] | events <name> [--limit N]".into())),
+        None => Err(Fail::Usage("midna stream publish <name> <kind> [--id ID] [--data JSON|@file|-] | events <name> [--limit N] [--replay SEQ|ID]".into())),
     }
 }
 
@@ -34,8 +35,14 @@ fn publish(a: &Args, out: OutFn) -> Res {
 }
 
 fn events(a: &Args, out: OutFn) -> Res {
-    a.check(&["limit", "json"])?;
+    a.check(&["limit", "json", "replay"])?;
     let name = a.need(2, "stream name (e.g. slack)")?;
+    if let Some(event) = a.get("replay") {
+        // Run a recorded event (its seq or id) through the local triggers again.
+        let v = call("trigger.replay", json!({ "stream": name, "event": event }))?;
+        out(&v, &crate::triggers::print_delivery);
+        return Ok(());
+    }
     let v = call("streams.events", json!({ "stream": name, "limit": a.num::<usize>("limit")? }))?;
     out(&v, &|v| print!("{}", events_text(v)));
     Ok(())
@@ -70,7 +77,7 @@ fn events_text(v: &Value) -> String {
 
 /// `--data`: inline JSON, `@file`, or `-` / left out for stdin (`{}` when stdin is a terminal or
 /// empty).
-fn payload(flag: Option<&str>, tty: bool) -> Result<Value, Fail> {
+pub(crate) fn payload(flag: Option<&str>, tty: bool) -> Result<Value, Fail> {
     let (from, text) = match flag {
         Some(f) if f.starts_with('@') => {
             let path = &f[1..];

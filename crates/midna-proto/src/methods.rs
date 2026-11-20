@@ -1668,7 +1668,30 @@ pub struct TriggerDeliveriesParams {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TriggerReplayParams {
-    pub delivery_id: Id,
+    /// The delivery to run again (`trigger.deliveries`). Or name a stream event with `stream`
+    /// and `event` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<Id>,
+    /// A stream whose recorded event to run through the local triggers again (`slack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    /// With `stream`: the event, as its seq or the publisher's id (`streams.events` lists both
+    /// for the stream's last 200 publishes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+}
+
+/// A stream event for `trigger.test` to dry-run, as `streams.publish` would take it (its data is
+/// `payload`). Nothing is published.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TriggerTestStream {
+    /// The stream's name (`slack`).
+    pub name: String,
+    /// The event's kind (`message`).
+    pub kind: String,
+    /// The publisher's id for it (`{{stream.id}}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -1685,6 +1708,10 @@ pub struct TriggerTestParams {
     /// Local triggers: the terminal the event is about (filters and `{{session.*}}`).
     #[serde(default)]
     pub session: Option<Id>,
+    /// Local triggers: test a stream event: `event` is then `stream.<name>.<kind>` and
+    /// `payload` its data, and `{{stream.*}}` shows this envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<TriggerTestStream>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

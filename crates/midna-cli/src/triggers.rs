@@ -204,7 +204,7 @@ fn print_deliveries(v: &Value) {
     table(rows);
 }
 
-fn print_delivery(d: &Value) {
+pub(crate) fn print_delivery(d: &Value) {
     println!("{} {}  {}", s(d, "id"), s(d, "verdict"), s(d, "summary"));
     for e in d["eval"].as_array().into_iter().flatten() {
         println!("  {}", plain(e));
@@ -800,8 +800,23 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             out(&v, &print_delivery);
         }
         "test" => {
-            a.check(&["payload", "event", "session"])?;
+            a.check(&["payload", "event", "session", "stream", "kind", "id", "data"])?;
             let id = a.need(2, "trigger id")?;
+            if let Some(name) = a.get("stream") {
+                // A stream event, as `midna stream publish` would send it; nothing is published.
+                let kind = a.get("kind").ok_or_else(|| Fail::Usage("--stream needs --kind (e.g. --stream slack --kind message)".into()))?;
+                if a.get("payload").is_some() {
+                    return Err(Fail::Usage("with --stream, give the event's data with --data".into()));
+                }
+                let data = crate::stream::payload(a.get("data"), std::io::stdin().is_terminal())?;
+                let stream = json!({ "name": name, "kind": kind, "id": a.get("id") });
+                let v = call("trigger.test", json!({ "trigger_id": id, "payload": data, "stream": stream, "session": a.get("session") }))?;
+                out(&v, &print_delivery);
+                return Ok(());
+            }
+            if let Some(f) = ["kind", "id", "data"].into_iter().find(|f| a.get(f).is_some()) {
+                return Err(Fail::Usage(format!("--{f} goes with --stream (e.g. --stream slack --kind message --data '{{\"text\":\"…\"}}')")));
+            }
             let raw = match a.get("payload") {
                 Some(inline) if inline.trim_start().starts_with(['{', '[']) => inline.to_string(),
                 None if std::io::stdin().is_terminal() => "{}".into(),
