@@ -631,14 +631,20 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "stream",
         aliases: &["streams"],
-        usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]",
+        usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]\n       \
+                stream events <name> [--limit N]",
         summary: "hand midna an event from a program on this Mac, for local triggers",
         details: "Logs event `stream.<name>.<kind>` with the JSON object as its data (at most 64 KB; --data left out\n\
                   reads stdin, `{}` from a terminal). Local triggers react to it like any midna event:\n\
                   `midna triggers add --event 'stream.slack.*' --match text='*failed*' --notify '{{data.text}}'`.\n\
                   name: a-z 0-9 - (1-32); kind: a-z 0-9 _ . - (1-64); --id: yours for the event ({{stream.id}}).\n\
-                  Local only: it goes over midna's socket; nothing listens on the network.",
-        methods: &["streams.publish"],
+                  Local only: it goes over midna's socket; nothing listens on the network.\n\
+                  Per stream: an --id taken in the last 24 hours is a duplicate (not published again); over 60\n\
+                  events a minute (bursts of 20), or with 1000 events waiting, a publish is dropped (exit 1); a\n\
+                  trigger fires at most once per its cooldown (default 60s) for a stream.\n\
+                  events  the stream's last 200 publishes, newest first, with what midna did with each:\n\
+                  \x20       accepted, duplicate, rate_limited, too_large, busy or refused.",
+        methods: &["streams.publish", "streams.events"],
     },
     Verb {
         name: "insights",

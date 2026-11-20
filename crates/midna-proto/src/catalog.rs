@@ -1,7 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::cleanup::*;
-use crate::streams::{StreamsPublishParams, StreamsPublishResult};
+use crate::streams::{StreamsEventsParams, StreamsEventsResult, StreamsPublishParams, StreamsPublishResult};
 use crate::summary::*;
 use crate::methods::*;
 use crate::nearby::*;
@@ -494,8 +494,18 @@ fn build() -> Vec<MethodSpec> {
              templates {{data.<path>}} and {{stream.name|kind|id}}. stream: 1-32 of a-z 0-9 -; kind: 1-64 of a-z 0-9 _ . -; \
              id (optional): yours for the event, e.g. a Slack message ts. The event belongs to no terminal. A publish a trigger \
              caused (a process its action started, which has MIDNA_TRIGGER set and the CLI forwards as caller.caused_by) is \
-             recorded with stream.caused_by and result caused_by, and fires no triggers. CLI: \
+             recorded with stream.caused_by and result caused_by, and fires no triggers. \
+             Limits per stream: an id it took in the last 24 hours is a duplicate (result verdict `duplicate`, the first event's seq, \
+             not logged again); past 60 events a minute (bursts of 20) a publish is dropped with error code 7 (busy) and \
+             data {verdict: rate_limited, retry_after_ms}; with 1000 events waiting for the trigger worker it is dropped \
+             with code 7 and verdict busy; a payload over 64 KB is verdict too_large. A trigger fires at most once per \
+             cooldown_secs (default 60) for a stream. streams.events lists each publish's verdict. CLI: \
              `midna stream publish <name> <kind> [--id ID] [--data JSON|@file]` (stdin when --data is left out)."),
+        m::<StreamsEventsParams, StreamsEventsResult>("streams.events").d(
+            "A stream's recent publishes, newest first (the last 200), each with its verdict: accepted (logged as event \
+             `seq`), duplicate (`seq` is the first one's), rate_limited, too_large, busy or refused, plus counts per verdict \
+             since the daemon started. Accepted events from before it started come from the event log. A stream nobody has \
+             published to lists nothing. CLI: `midna stream events <name> [--limit N] [--json]`."),
         // events
         m::<EventsListParams, Vec<Event>>("events.list").d(
             "List events from the append-only log (seq > since_seq), oldest first. Every state change and every acting call (audit) is an event."),

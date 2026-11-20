@@ -232,6 +232,9 @@ fn background(d: &Arc<Daemon>) {
     crate::restart::start(d);
     crate::webhooks::start(d);
     crate::notify::start(d);
+    // Copied out first: a publish locks the intake, then the log.
+    let published: Vec<midna_proto::Event> = d.log.with_events(|events| events.iter().filter(|e| e.stream.is_some()).cloned().collect());
+    d.streams.seed(&published);
     crate::local::start(d);
     crate::queue::start(d);
     crate::resume::start(d);

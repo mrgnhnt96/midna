@@ -14,6 +14,8 @@ pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_NAME: usize = 32;
 pub const MAX_KIND: usize = 64;
 pub const MAX_ID: usize = 128;
+/// How many recent publishes `streams.events` keeps per stream.
+pub const EVENTS_KEPT: usize = 200;
 
 /// What `streams.publish` said about an event, kept on it (`Event.stream`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -81,7 +83,7 @@ pub struct StreamsPublishParams {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StreamsPublishResult {
-    /// The event's seq in the log (`events.list`).
+    /// The event's seq in the log (`events.list`); for a duplicate, the first one's.
     pub seq: u64,
     /// Its kind: `stream.<name>.<kind>`, what a local trigger's `event` matches.
     pub event: String,
@@ -89,6 +91,109 @@ pub struct StreamsPublishResult {
     /// recorded but fires no triggers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<TriggerCause>,
+    /// `accepted`, or `duplicate` when the stream already took an event with this id in the
+    /// last 24 hours (it isn't logged or matched again). Every other verdict is an error.
+    #[serde(default)]
+    pub verdict: StreamVerdict,
+}
+
+/// What midna did with a publish. Only `accepted` events are logged and reach triggers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamVerdict {
+    /// Logged as `stream.<name>.<kind>`; local triggers see it.
+    #[default]
+    Accepted,
+    /// The stream took an event with the same id in the last 24 hours (of its last 1000 ids).
+    Duplicate,
+    /// Over the stream's rate limit (60 a minute, bursts of 20); dropped.
+    RateLimited,
+    /// The payload is over 64 KB; dropped.
+    TooLarge,
+    /// midna's intake queue is full (1000 events waiting for the trigger worker); dropped.
+    Busy,
+    /// A declared stream only takes its own producer's (or the human's) publishes; dropped.
+    Refused,
+}
+
+impl StreamVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StreamVerdict::Accepted => "accepted",
+            StreamVerdict::Duplicate => "duplicate",
+            StreamVerdict::RateLimited => "rate_limited",
+            StreamVerdict::TooLarge => "too_large",
+            StreamVerdict::Busy => "busy",
+            StreamVerdict::Refused => "refused",
+        }
+    }
+}
+
+/// One publish to a stream and its verdict (`streams.events`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamPublishRecord {
+    /// When midna got it (RFC 3339).
+    pub at: String,
+    /// The kind it was published as (`message`).
+    pub kind: String,
+    /// The publisher's id for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub verdict: StreamVerdict,
+    /// The logged event's seq: an accepted one's own, a duplicate's first one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// Why it was dropped, in a line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Publishes per verdict since the daemon started.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StreamCounts {
+    pub accepted: u64,
+    pub duplicate: u64,
+    pub rate_limited: u64,
+    pub too_large: u64,
+    pub busy: u64,
+    pub refused: u64,
+}
+
+impl StreamCounts {
+    pub fn add(&mut self, v: StreamVerdict) {
+        *match v {
+            StreamVerdict::Accepted => &mut self.accepted,
+            StreamVerdict::Duplicate => &mut self.duplicate,
+            StreamVerdict::RateLimited => &mut self.rate_limited,
+            StreamVerdict::TooLarge => &mut self.too_large,
+            StreamVerdict::Busy => &mut self.busy,
+            StreamVerdict::Refused => &mut self.refused,
+        } += 1;
+    }
+
+    /// Publishes that were dropped (everything but accepted and duplicate).
+    pub fn dropped(&self) -> u64 {
+        self.rate_limited + self.too_large + self.busy + self.refused
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsEventsParams {
+    /// The stream's name (`slack`).
+    pub stream: String,
+    /// At most this many, newest first (default and most: 200).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct StreamsEventsResult {
+    pub stream: String,
+    /// The stream's recent publishes, newest first, each with its verdict. Accepted events
+    /// from before the daemon started come from the event log.
+    pub events: Vec<StreamPublishRecord>,
+    /// Publishes per verdict since the daemon started.
+    pub counts: StreamCounts,
 }
 
 /// A stream name: 1–32 of `a-z 0-9 -`.
@@ -119,11 +224,16 @@ pub fn check_publish(p: &StreamsPublishParams) -> Result<StreamRef, String> {
         Value::Object(_) | Value::Null => {}
         _ => return Err("data must be a JSON object (e.g. {\"text\":\"…\"})".into()),
     }
-    let size = p.data.to_string().len();
-    if size > MAX_PAYLOAD_BYTES {
+    if let Some(size) = oversize(p) {
         return Err(format!("data is {size} bytes as JSON; the most a stream event carries is {MAX_PAYLOAD_BYTES} (64 KB)"));
     }
     Ok(StreamRef { name: p.stream.clone(), kind: p.kind.clone(), id: p.id.clone(), caused_by: None })
+}
+
+/// The payload's size as JSON when it is over [`MAX_PAYLOAD_BYTES`].
+pub fn oversize(p: &StreamsPublishParams) -> Option<usize> {
+    let size = p.data.to_string().len();
+    (size > MAX_PAYLOAD_BYTES).then_some(size)
 }
 
 /// A local trigger's `event` that names streams (`stream.slack.message`, `stream.slack.*`,

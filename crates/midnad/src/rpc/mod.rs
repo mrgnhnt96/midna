@@ -383,6 +383,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "notify.play" => notify::play(d, ctx, parse(p)?),
         "events.list" => events::list(d, parse(p)?),
         "streams.publish" => streams::publish(d, ctx, parse(p)?),
+        "streams.events" => streams::events(d, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),
         "needs_you.list" => needs_you::list(d, parse(p)?),
         "needs_you.get" => needs_you::get(d, parse(p)?),

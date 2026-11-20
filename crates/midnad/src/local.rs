@@ -6,7 +6,8 @@
 //! One worker thread takes events (the event log's listener) and hooks (`agent.hook`) in order,
 //! clears custom statuses whose condition passed, and fires matching triggers. Events a trigger
 //! caused never fire triggers (no chains, no loops), and a trigger waits `cooldown_secs`
-//! (default 60) before firing again for the same terminal. `send_to_session` adds its steps to
+//! (default 60) before firing again for the same terminal, or for the same stream when a
+//! published event has no terminal. `send_to_session` adds its steps to
 //! the terminal's message queue (`queue.rs`), which types each once the agent is ready.
 //!
 //! It also notices prompts a UserPromptSubmit hook refused: Claude erases the prompt, writes a
@@ -45,7 +46,7 @@ pub enum Input {
 struct Book {
     /// Unix time of each terminal's last prompt or turn start/end (the idle clock).
     activity: HashMap<Id, i64>,
-    /// (trigger, terminal) -> when it last fired.
+    /// (trigger, terminal or `stream:<name>`) -> when it last fired.
     fired: HashMap<(Id, Id), Instant>,
     /// (trigger, terminal) -> the activity time an idle trigger already fired for.
     idle_fired: HashMap<(Id, Id), i64>,
@@ -184,6 +185,9 @@ fn is_activity(kind: &str) -> bool {
 // ------------------------------------------------------------------ inputs
 
 fn on_event(d: &Arc<Daemon>, e: &Event) {
+    if e.stream.is_some() {
+        d.streams.taken();
+    }
     if let Some(sid) = &e.session_id {
         if is_activity(&e.kind)
             && let Some(at) = time::parse_rfc3339(&e.at)
@@ -500,9 +504,11 @@ fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<
         if !ev.fires() {
             continue;
         }
-        if let Some(s) = &s {
+        // Per terminal; a stream event has none, so per stream.
+        let on = s.as_ref().map(|s| s.id.clone()).or_else(|| stream.map(|x| format!("stream:{}", x.name)));
+        if let Some(on) = on {
             let cooldown = Duration::from_secs(t.cooldown_secs.unwrap_or(DEFAULT_COOLDOWN_SECS));
-            let key = (t.id.clone(), s.id.clone());
+            let key = (t.id.clone(), on);
             let mut b = d.local.book();
             if b.fired.get(&key).is_some_and(|at| at.elapsed() < cooldown) {
                 continue;

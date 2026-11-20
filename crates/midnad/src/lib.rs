@@ -43,6 +43,7 @@ pub mod schemes;
 pub mod server;
 pub mod state;
 pub mod stream;
+pub mod streams;
 pub mod subagent_log;
 pub mod summary;
 pub mod term;
