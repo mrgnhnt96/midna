@@ -7,6 +7,9 @@
 //! While midnad still answers trigger/webhook methods with error 5 ("not implemented"),
 //! the screen says so and rechecks every 20s.
 mod schedule;
+mod streams;
+
+pub use streams::{flag as stream_flag, open_stream};
 
 use super::rules::{Names, ask};
 use super::screen_kit::{self as kit, KeyOutcome, LineInput};
@@ -548,6 +551,15 @@ pub struct TriggersView {
     sel_cron: Option<String>,
     /// The schedule editor, open in place of the detail pane.
     editor: Option<schedule::ScheduleEditor>,
+    /// The selected stream (`streams::`), shown in place of a trigger's detail.
+    sel_stream: Option<String>,
+    stream_tab: streams::StreamTab,
+    stream_events: Option<streams::StreamEvents>,
+    events_fetching: bool,
+    /// The stream ⋯ / right-click menu: which stream, where.
+    stream_menu: Option<(String, Point<Pixels>)>,
+    /// "Remove stream…" asked; the detail shows Remove / Keep.
+    confirm_remove: Option<String>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -595,6 +607,12 @@ impl TriggersView {
             tab: if crate::dev::var("MIDNA_DEBUG_TRIGGERS_TAB").is_ok_and(|v| v == "crons") { Tab::Crons } else { Tab::Triggers },
             sel_cron: None,
             editor: None,
+            sel_stream: None,
+            stream_tab: streams::StreamTab::Events,
+            stream_events: None,
+            events_fetching: false,
+            stream_menu: None,
+            confirm_remove: None,
             _tasks: vec![tick],
         };
         v.refetch(cx);
@@ -663,6 +681,13 @@ impl TriggersView {
                 if k.starts_with("trigger.") || k.starts_with("webhooks.") || wh {
                     self.refetch(cx);
                 }
+                // The selected stream published or changed state: its events and facts moved.
+                if k.starts_with("stream.") {
+                    if self.sel_stream.is_some() {
+                        self.fetch_stream_events(cx);
+                    }
+                    cx.notify();
+                }
                 // A terminal's crons changed (or it went away).
                 if [kinds::SESSION_AGENT, kinds::SESSION_EXITED, kinds::SESSION_CLOSED, kinds::SESSION_RENAMED].contains(&k) {
                     cx.notify();
@@ -713,6 +738,15 @@ impl TriggersView {
                 "enable" => self.set_enabled(v.to_string(), true, cx),
                 "disable" => self.set_enabled(v.to_string(), false, cx),
                 "select" => self.selected = Some(v.to_string()),
+                // Streams: `stream:slack`, `stream-tab:log`, `stream-menu`, `stream-remove`.
+                "stream" => self.select_stream(v.to_string(), cx),
+                "stream-tab" => self.stream_tab = if v == "log" { streams::StreamTab::Log } else { streams::StreamTab::Events },
+                "stream-menu" => {
+                    if let Some(n) = self.sel_stream.clone() {
+                        self.stream_menu = Some((n, point(px(980.), px(170.))));
+                    }
+                }
+                "stream-remove" => self.confirm_remove = self.sel_stream.clone(),
                 "replace" => self.replacing = Some(v.to_string()),
                 "replay" => {
                     if let Some(d) = self.deliveries.iter().find(|d| d.id == v).cloned() {
@@ -829,7 +863,7 @@ pub fn on_backend_event(m: &mut MainWindow, ev: &BackendEvent, cx: &mut Context<
     }
 }
 
-fn view(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> Entity<TriggersView> {
+pub(super) fn view(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> Entity<TriggersView> {
     match &m.triggers_view {
         Some(v) => v.clone(),
         None => {
@@ -863,7 +897,8 @@ impl Render for TriggersView {
         let names = self.main.upgrade().map(|m| Names::from_main(m.read(cx))).unwrap_or_default();
         let cmdk = self.main.upgrade().map(|m| m.read(cx).key_label("keys.command_bar")).unwrap_or_else(|| "⌘K".into());
         let crons = self.main.upgrade().map(|m| schedule::cron_rows(m.read(cx)).len()).unwrap_or(0);
-        let empty = self.loaded && self.triggers.is_empty() && crons == 0 && self.editor.is_none() && self.list_error.is_none();
+        let streams = self.streams(cx);
+        let empty = self.loaded && self.triggers.is_empty() && crons == 0 && streams.is_empty() && self.editor.is_none() && self.list_error.is_none();
         let down = self.status.as_ref().is_some_and(|s| s.health == "down");
         let recon = self.status.as_ref().map(|s| &s.reconcile).filter(|r| r.recovered > 0 && r.last_run_at != self.recon_dismissed).cloned();
         div()
@@ -883,6 +918,7 @@ impl Render for TriggersView {
             .when(empty, |d| d.child(self.render_empty(&t, &names)))
             .when(!empty && self.loaded && self.list_error.is_none(), |d| d.child(self.render_body(&t, &names, window, cx)))
             .when(self.path_menu, |d| d.child(self.render_path_menu(&t, cx)))
+            .children(self.render_stream_menu(&t, cx))
     }
 }
 
@@ -1191,6 +1227,8 @@ impl TriggersView {
         let sel = self.selected.as_ref().and_then(|id| self.triggers.iter().find(|t| &t.id == id)).cloned().or_else(|| self.triggers.first().cloned());
         let crons = self.main.upgrade().map(|m| schedule::cron_rows(m.read(cx))).unwrap_or_default();
         let cron_sel = self.sel_cron.as_ref().and_then(|k| crons.iter().find(|c| &c.key() == k)).or(crons.first()).cloned();
+        let streams = self.streams(cx);
+        let stream_sel = self.sel_stream.as_ref().filter(|n| streams.iter().any(|s| &s.name == *n)).cloned();
         let column = div()
             .flex()
             .flex_col()
@@ -1201,11 +1239,14 @@ impl TriggersView {
             .border_color(t.line)
             .child(self.render_tabs(t, crons.len(), cx))
             .child(match self.tab {
-                Tab::Triggers => self.render_list(t, n, sel.as_ref().map(|s| s.id.clone()), cx).into_any_element(),
+                Tab::Triggers => self.render_list(t, n, sel.as_ref().map(|s| s.id.clone()).filter(|_| stream_sel.is_none()), &streams, cx).into_any_element(),
                 Tab::Crons => self.render_cron_list(t, &crons, cron_sel.as_ref().map(|c| c.key()), cx).into_any_element(),
             });
+        let stream = (self.tab == Tab::Triggers).then(|| self.sel_stream.as_ref().and_then(|n| streams.iter().find(|s| &s.name == n))).flatten();
         let detail = if self.editor.is_some() {
             Some(self.render_editor(t, window, cx).into_any_element())
+        } else if let Some(s) = stream {
+            Some(self.render_stream_detail(t, s, cx).into_any_element())
         } else {
             match self.tab {
                 Tab::Triggers => sel.map(|s| self.render_detail(t, n, &s, window, cx).into_any_element()),
@@ -1249,10 +1290,13 @@ impl TriggersView {
             .child(tab("trig-tab-crons", "Crons", crons, Tab::Crons, cx))
     }
 
-    fn render_list(&self, t: &Theme, n: &Names, sel: Option<String>, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_list(&self, t: &Theme, n: &Names, sel: Option<String>, streams: &[midna_proto::StreamStatus], cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let pending: Vec<&TriggerItem> = self.triggers.iter().filter(|t| t.pending().is_some()).collect();
         let active: Vec<&TriggerItem> = self.triggers.iter().filter(|t| t.pending().is_none()).collect();
         let mut list = div().id("trig-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll();
+        if !streams.is_empty() {
+            list = list.child(self.render_stream_rows(t, streams, cx));
+        }
         let row_bg = |on: bool, d: Stateful<Div>| {
             if on { d.bg(t.raised).border_l_2().border_color(t.accent) } else { d.border_l_2().border_color(transparent_black()) }
         };
@@ -1281,6 +1325,7 @@ impl TriggersView {
                     )
                     .on_click(cx.listener(move |v, _, _, cx| {
                         v.selected = Some(id.clone());
+                        v.sel_stream = None;
                         v.secret.clear(cx);
                         v.replacing = None;
                         cx.notify();
@@ -1320,6 +1365,7 @@ impl TriggersView {
                 )
                 .on_click(cx.listener(move |v, _, _, cx| {
                     v.selected = Some(id.clone());
+                    v.sel_stream = None;
                     v.secret.clear(cx);
                     v.replacing = None;
                     cx.notify();

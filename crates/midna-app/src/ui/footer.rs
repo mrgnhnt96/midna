@@ -254,10 +254,16 @@ fn compact_card(m: &MainWindow, t: &Theme, stats: &[String], cx: &mut Context<Ma
 
 fn button_row(m: &MainWindow, t: &Theme, buttons: &[String], compact: bool, cx: &mut Context<MainWindow>) -> Div {
     let mut row = div().flex().gap(px(if compact { 2. } else { 4. }));
+    // A stream that's failing, waiting for approval or restarting flags the Triggers button
+    // (design/stream-health, concept C). Healthy and paused streams leave it alone.
+    let flag = crate::ui::triggers::stream_flag(&m.streams, super::screen_kit::now_unix());
     for b in buttons {
         let (icon, label, setting) = button_info(b);
         let on = active(m, b);
         let key = b.clone();
+        let flag = flag.clone().filter(|_| b == "triggers");
+        let tip = super::header::tip_keys(flag.as_ref().map(|f| SharedString::from(f.tip.clone())).unwrap_or_else(|| label.into()), if flag.is_some() { "" } else { setting });
+        let open = flag.as_ref().map(|f| f.stream.clone());
         let btn = div()
             .id(SharedString::from(format!("btn-{b}")))
             .flex()
@@ -268,12 +274,28 @@ fn button_row(m: &MainWindow, t: &Theme, buttons: &[String], compact: bool, cx: 
             .when(on, |d| d.bg(t.raised))
             .cursor_pointer()
             .hover(|s| s.bg(t.raised))
-            .tooltip(super::header::tip_keys(label, setting))
-            .on_click(cx.listener(move |m, _, w, cx| press(m, &key, w, cx)));
+            .tooltip(tip)
+            .on_click(cx.listener(move |m, _, w, cx| match &open {
+                Some(name) => crate::ui::triggers::open_stream(m, name, w, cx),
+                None => press(m, &key, w, cx),
+            }));
+        let color = if on { t.fg } else { t.dim };
+        let icon = match &flag {
+            Some(f) => div()
+                .relative()
+                .child(icon.el(16., color))
+                .child(div().absolute().top(px(-3.)).right(px(-5.)).size(px(8.)).rounded_full().bg(f.tone.color(t)).border_2().border_color(t.bg))
+                .into_any_element(),
+            None => icon.el(16., color).into_any_element(),
+        };
         row = row.child(if compact {
-            btn.w(px(32.)).h(px(28.)).child(icon.el(16., if on { t.fg } else { t.dim }))
+            btn.w(px(32.)).h(px(28.)).child(icon)
         } else {
-            btn.flex_1().flex_col().gap(px(3.)).pt(px(7.)).pb(px(5.)).text_size(px(10.5)).child(icon.el(16., if on { t.fg } else { t.dim })).child(label)
+            let label = match &flag {
+                Some(f) => div().font_weight(FontWeight::BOLD).text_color(f.tone.color(t)).child(f.word),
+                None => div().child(label),
+            };
+            btn.flex_1().flex_col().gap(px(3.)).pt(px(7.)).pb(px(5.)).text_size(px(10.5)).child(icon).child(label)
         });
     }
     row
