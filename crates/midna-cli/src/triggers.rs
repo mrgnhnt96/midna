@@ -252,7 +252,7 @@ fn print_status(v: &Value) {
 }
 
 /// Event namespaces that can only be local (GitHub/Bitbucket never send these).
-const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_you."];
+const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_you.", "stream."];
 
 /// Flags that only make sense on a local trigger; any of them makes `add` default to `--source local`.
 const LOCAL_FLAGS: &[&str] = &[
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn local_events() {
-        for e in ["hook.Stop", "agent.prompt_blocked", "session.status", "needs_you.raised", "idle", "schedule", "hook.*"] {
+        for e in ["hook.Stop", "agent.prompt_blocked", "session.status", "needs_you.raised", "idle", "schedule", "hook.*", "stream.slack.*"] {
             assert!(is_local_event(e), "{e}");
         }
         for e in ["pull_request.opened", "push", "pullrequest:created", "project.created"] {

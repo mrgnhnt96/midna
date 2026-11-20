@@ -1397,6 +1397,10 @@ pub struct Event {
     pub session_id: Option<Id>,
     #[serde(default)]
     pub data: Value,
+    /// A published stream event's envelope (`streams.publish`): its stream, kind and id. The
+    /// publisher is `actor`; the payload is `data`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<Box<crate::streams::StreamRef>>,
 }
 
 /// Event kinds (dotted). Kept as constants so the daemon and clients agree on spelling.

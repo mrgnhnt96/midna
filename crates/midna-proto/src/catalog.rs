@@ -1,6 +1,7 @@
 //! The method catalog: the single list of every RPC method. `rpc.discover`, `midna schema`
 //! and `midna mcp` are all generated from it. Add a feature = add a row here.
 use crate::cleanup::*;
+use crate::streams::{StreamsPublishParams, StreamsPublishResult};
 use crate::summary::*;
 use crate::methods::*;
 use crate::nearby::*;
@@ -485,6 +486,14 @@ fn build() -> Vec<MethodSpec> {
             "Turn this connection into a binary frame stream for a terminal (GUI renderers). After the {ok:true} line the \
              connection carries u32-LE length-prefixed frames; send 0x01 for credit, 0x02 to resize, 0x03 to type, \
              0x04 key, 0x05 scroll, 0x06 mouse, 0x07 focus, 0x08 paste (see midna_proto::frame::ClientMsg)."),
+        // streams
+        m::<StreamsPublishParams, StreamsPublishResult>("streams.publish").mutating().d(
+            "Hand midna an event from a program on this Mac (local only: it rides the daemon's socket). It lands in the event \
+             log as kind `stream.<stream>.<kind>` with data = your payload (a JSON object, at most 64 KB), and local triggers \
+             match it like any event: event `stream.slack.message` or a glob (`stream.slack.*`), filter.match on payload paths, \
+             templates {{data.<path>}} and {{stream.name|kind|id}}. stream: 1-32 of a-z 0-9 -; kind: 1-64 of a-z 0-9 _ . -; \
+             id (optional): yours for the event, e.g. a Slack message ts. The event belongs to no terminal. CLI: \
+             `midna stream publish <name> <kind> [--id ID] [--data JSON|@file]` (stdin when --data is left out)."),
         // events
         m::<EventsListParams, Vec<Event>>("events.list").d(
             "List events from the append-only log (seq > since_seq), oldest first. Every state change and every acting call (audit) is an event."),
@@ -535,7 +544,8 @@ fn build() -> Vec<MethodSpec> {
              (source: local) need no secret; pass enabled: true to turn one on at once (agents may, when the human asked for it). \
              event: GitHub `pull_request.opened`/`push` (event[.action]), Bitbucket `pullrequest:created`; local `hook.<HookEvent>` \
              (hook.Stop, hook.Notification; data = the hook payload), a midna event kind (agent.prompt_blocked {hook, message, \
-             prompt}, agent.turn_ended, session.status; data = the event data), `idle` (filter.idle_minutes; once per idle stretch) \
+             prompt}, agent.turn_ended, session.status; data = the event data), `stream.<name>.<kind>` (an event a program \
+             published with streams.publish, e.g. stream.slack.* ; data = its payload; no terminal), `idle` (filter.idle_minutes; once per idle stretch) \
              or `schedule` (filter.cron, window, starts_at, ends_at, max_runs, wake; data {cron, scheduled_for, local_time}; \
              without a session/project/agent filter it fires once about no terminal, with one it acts on every running terminal \
              that matches). filter (globs): repo, branch, action, label; local session, project, agent, match {dotted.path: glob} \
@@ -544,7 +554,7 @@ fn build() -> Vec<MethodSpec> {
              put back in its input box is cleared first) | set_status | clear_status. Templates: {{pr.number}} {{pr.title}} \
              {{repo}} {{branch}} {{sender}} {{url}} {{action}} or any payload path ({{payload}} and object/array paths render as \
              JSON); local {{last_prompt}} (the terminal's latest prompt, in full), {{event}}, {{session.id|name|project_id|agent|status}}, \
-             {{data.<path>}} or {{<path>}}. run_command shell-quotes each value and gets the delivery's JSON body in the file \
+             {{stream.name|kind|id}} (a stream event's envelope), {{data.<path>}} or {{<path>}}. run_command shell-quotes each value and gets the delivery's JSON body in the file \
              $MIDNA_PAYLOAD (headless: also on stdin) with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY \
              (the delivery id). A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use \
              the human's normal config. start_agent's permission_mode and allowed_tools are human only: an agent setting or \

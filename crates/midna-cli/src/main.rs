@@ -10,6 +10,7 @@ mod print;
 mod queue;
 mod secret;
 mod shim;
+mod stream;
 mod summary;
 mod triggers;
 
@@ -490,6 +491,7 @@ fn run(a: &Args) -> Res {
         "permissions" => permissions(a, &out),
         "hooks" => hooks(a, &out),
         "events" => events(a),
+        "stream" | "streams" => stream::stream(a, &out),
         "insights" => insights(a, &out),
         "keep-awake" | "keepawake" | "awake" => keep_awake(a, &out),
         "peers" | "peer" | "nearby" => nearby::peers(a, &out),

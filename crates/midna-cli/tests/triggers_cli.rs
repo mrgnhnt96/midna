@@ -192,3 +192,35 @@ fn run_command_background_and_headless_cli() {
     let t: Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(t["action"], json!({ "kind": "run_command", "project_id": pid, "command": "echo compacted", "background": true }));
 }
+
+#[test]
+fn stream_publish_cli() {
+    let d = D::start("stream");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}{}", out(o), String::from_utf8_lossy(&o.stderr));
+    let o = d.midna(&["triggers", "add", "--name", "CI", "--event", "stream.slack.*", "--match", "text=*failed*", "--notify", "{{stream.name}}: {{data.text}}", "--json"], None);
+    ok(&o);
+    let t: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(t["source"], "local", "stream events are local");
+    // Inline, from stdin and from a file; --json gives the seq and kind.
+    let o = d.midna(&["stream", "publish", "slack", "message", "--id", "17.1", "--data", r#"{"text":"build failed"}"#], None);
+    ok(&o);
+    assert!(out(&o).contains("published stream.slack.message"), "{}", out(&o));
+    let o = d.midna(&["stream", "publish", "slack", "message", "--json"], Some(r#"{"text":"from stdin"}"#));
+    ok(&o);
+    let r: Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(r["event"], "stream.slack.message");
+    let f = d.home.join("payload.json");
+    std::fs::write(&f, r#"{"text":"from a file"}"#).unwrap();
+    ok(&d.midna(&["stream", "publish", "ci", "build.done", "--data", &format!("@{}", f.display())], None));
+    let o = d.midna(&["events", "--kind", "stream.slack.message", "--json"], None);
+    let texts = out(&o);
+    assert!(texts.contains("build failed") && texts.contains("from stdin") && texts.contains("17.1"), "{texts}");
+    // Refused: a bad name, a payload that isn't an object, a missing kind.
+    let o = d.midna(&["stream", "publish", "Slack", "message"], None);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("a-z 0-9 -") && o.status.code() != Some(0), "{}", out(&o));
+    let o = d.midna(&["stream", "publish", "slack", "message", "--data", "[1]"], None);
+    assert_ne!(o.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("object"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = d.midna(&["stream", "publish", "slack"], None);
+    assert_ne!(o.status.code(), Some(0));
+}
