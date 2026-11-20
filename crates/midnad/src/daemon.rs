@@ -204,6 +204,9 @@ pub struct Daemon {
     notify: Mutex<crate::notify::State>,
     /// Local triggers' worker and book-keeping (`local.rs`). Lock after `core`, never before it.
     pub local: crate::local::Runtime,
+    /// Stream intake: dedupe, rate limits, the intake queue and each publish's verdict
+    /// (`streams.rs`). Lock before `log`; never held with `core`.
+    pub streams: crate::streams::Intake,
     /// The queued-message sender's book-keeping (`queue.rs`). Never held together with `core`.
     pub queue: crate::queue::Runtime,
     /// Agents watched after a wake (`resume.rs`). Lock after `core`, never before it.
@@ -278,6 +281,7 @@ impl Daemon {
             summary: Default::default(),
             notify: Mutex::new(Default::default()),
             local: Default::default(),
+            streams: Default::default(),
             queue: Default::default(),
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),

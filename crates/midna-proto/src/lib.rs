@@ -45,7 +45,7 @@ pub use system::{
     HeavyTerminal, OtherProcess, Paused, RunAnywayParams, RunAnywayResult, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
     WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,
 };
-pub use streams::{StreamRef, StreamsPublishParams, StreamsPublishResult, TriggerCause};
+pub use streams::{StreamCounts, StreamPublishRecord, StreamRef, StreamVerdict, StreamsEventsParams, StreamsEventsResult, StreamsPublishParams, StreamsPublishResult, TriggerCause};
 pub use types::*;
 
 /// The midna release version: `MIDNA_BUILD_VERSION` at build time (set by
