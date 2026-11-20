@@ -923,7 +923,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(seq: u64, at: i64, kind: &str, sid: &str, data: Value) -> Event {
-        Event { seq, at: time::format_unix(at), kind: kind.into(), actor: Actor::system(), project_id: Some("p_1".into()), session_id: Some(sid.into()), data }
+        Event { seq, at: time::format_unix(at), kind: kind.into(), actor: Actor::system(), project_id: Some("p_1".into()), session_id: Some(sid.into()), data, stream: None }
     }
 
     #[test]
@@ -951,7 +951,7 @@ mod tests {
     }
 
     fn evp(seq: u64, at: i64, kind: &str, project: &str, sid: &str, data: Value) -> Event {
-        Event { seq, at: time::format_unix(at), kind: kind.into(), actor: Actor::system(), project_id: Some(project.into()), session_id: Some(sid.into()), data }
+        Event { seq, at: time::format_unix(at), kind: kind.into(), actor: Actor::system(), project_id: Some(project.into()), session_id: Some(sid.into()), data, stream: None }
     }
 
     fn params(range: InsightsRange, metric: InsightsMetric, by: Option<InsightsBy>) -> InsightsSeriesParams {

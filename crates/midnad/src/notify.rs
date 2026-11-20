@@ -176,7 +176,7 @@ fn texts(templates: (&str, &str), draft: &Draft, session: Option<&Session>, proj
         m.insert("project".into(), json!(project.unwrap_or("")));
     }
     let facts = session.map(|s| crate::local::SessionFacts { id: s.id.clone(), name: s.name.clone(), project_id: s.project_id.clone(), agent: s.agent, status: s.status.state });
-    let render = |tpl: &str| crate::local::render(tpl, &draft.event, facts.as_ref(), &vars, None, false).trim().to_string();
+    let render = |tpl: &str| crate::local::render(tpl, &draft.event, None, facts.as_ref(), &vars, None, false).trim().to_string();
     let title = Some(title_tpl).filter(|t| !t.is_empty()).map(render).filter(|t| !t.is_empty()).unwrap_or_else(|| heading.clone());
     let body = match body_tpl {
         "" => draft.body.clone(),
@@ -790,7 +790,7 @@ mod tests {
 
     fn turn_done() -> Draft {
         let data = json!({ "reason": "Stop", "message": "All done.\nmore" });
-        let e = Event { seq: 1, at: "2026-10-06T12:00:00Z".into(), kind: "agent.turn_ended".into(), actor: Actor::system(), project_id: None, session_id: None, data };
+        let e = Event { seq: 1, at: "2026-10-06T12:00:00Z".into(), kind: "agent.turn_ended".into(), actor: Actor::system(), project_id: None, session_id: None, data, stream: None };
         Draft::new("turn_done", &e, "Finished in 2m 5s: All done.").var("elapsed", "2m 5s").var("reply", "All done.")
     }
 

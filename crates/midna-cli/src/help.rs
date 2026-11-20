@@ -514,7 +514,7 @@ pub static VERBS: &[Verb] = &[
                 [--label L] (--agent claude|codex --prompt TEMPLATE [--permission-mode M] [--allow-tool T]...\n            \
                 | --run CMD [--background | --headless [--timeout 30m]] | --attention MSG)\n            \
                 [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
-                triggers add --name N --event hook.<Hook>|<midna event kind>|idle|schedule [--source local]\n            \
+                triggers add --name N --event hook.<Hook>|<midna event kind>|stream.<name>.<kind>|idle|schedule [--source local]\n            \
                 [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
                 [--between 13:00-17:00] [--starts '2026-10-06 13:00'] [--ends 2026-10-31] [--max-runs N] [--wake]\n            \
                 [--match path=glob]...\n            \
@@ -541,8 +541,8 @@ pub static VERBS: &[Verb] = &[
                   update, alone they change the current agent; an empty value clears one. --prompt TEMPLATE alone\n\
                   replaces the current agent's prompt and keeps the rest.\n\
                   \n\
-                  Local triggers (source local; inferred for hook.*, agent.*, session.*, needs_you.*, idle, schedule, or any\n\
-                  local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\
+                  Local triggers (source local; inferred for hook.*, agent.*, session.*, needs_you.*, stream.*, idle, schedule,\n\
+                  or any local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\
                   (--enable) and disable them when the human asked for one. --send steps run in order, each waiting\n\
                   until the agent is ready. --match path=glob (repeatable) matches the hook payload / event data,\n\
                   case-insensitive; an empty glob removes the key on update; an empty value clears a filter flag.\n\
@@ -556,6 +556,8 @@ pub static VERBS: &[Verb] = &[
                   and --ends (local `2026-10-06 13:00` or a date), --max-runs N (1 = once; a new limit counts again).\n\
                   --wake wakes a sleeping Mac for each run, even outside the keep-awake hours (a nightly restart),\n\
                   and keeps it awake while the work goes on; needs `midna keep-awake wake on` (--no-wake on update).\n\
+                  stream.<name>.<kind> (globs: stream.slack.*) fires on what a program hands midna with `midna stream\n\
+                  publish`; such an event has no terminal, and its envelope is {{stream.name|kind|id}}.\n\
                   Templates: {{last_prompt}} {{event}} {{session.id|name|project_id|agent|status}} {{data.<path>}} or {{<path>}}.\n\
                   Example: triggers add --name \"Auto-compact\" --event agent.prompt_blocked \\\n\
                   \x20 --match 'message=*Compact first*' --send /compact --send '{{last_prompt}}' --enable\n\
@@ -621,6 +623,18 @@ pub static VERBS: &[Verb] = &[
         details: "--follow streams live events. Kinds: session.*, needs_you.*, rule.*, trigger.*, settings.changed,\n\
                   agent.*, window.command, daemon.*, audit.",
         methods: &["events.list", "events.subscribe"],
+    },
+    Verb {
+        name: "stream",
+        aliases: &["streams"],
+        usage: "stream publish <name> <kind> [--id ID] [--data JSON|@file|-]",
+        summary: "hand midna an event from a program on this Mac, for local triggers",
+        details: "Logs event `stream.<name>.<kind>` with the JSON object as its data (at most 64 KB; --data left out\n\
+                  reads stdin, `{}` from a terminal). Local triggers react to it like any midna event:\n\
+                  `midna triggers add --event 'stream.slack.*' --match text='*failed*' --notify '{{data.text}}'`.\n\
+                  name: a-z 0-9 - (1-32); kind: a-z 0-9 _ . - (1-64); --id: yours for the event ({{stream.id}}).\n\
+                  Local only: it goes over midna's socket; nothing listens on the network.",
+        methods: &["streams.publish"],
     },
     Verb {
         name: "insights",

@@ -21,6 +21,7 @@ pub mod preview_cmd;
 pub mod prompts;
 pub mod secrets;
 pub mod settings;
+pub mod streams;
 pub mod summary;
 pub mod system;
 pub mod themes;
@@ -44,6 +45,7 @@ pub use system::{
     HeavyTerminal, OtherProcess, Paused, RunAnywayParams, RunAnywayResult, SessionPauseParams, SessionPauseResult, StopProcessesParams, StopProcessesResult, StoppedProcess, SystemLoad,
     WorktreeFailure, WorktreeInfo, WorktreesCleanParams, WorktreesCleanResult, WorktreesList, WorktreesListParams,
 };
+pub use streams::{StreamRef, StreamsPublishParams, StreamsPublishResult};
 pub use types::*;
 
 /// The midna release version: `MIDNA_BUILD_VERSION` at build time (set by

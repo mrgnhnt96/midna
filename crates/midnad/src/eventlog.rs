@@ -148,9 +148,19 @@ impl EventLog {
     }
 
     pub fn append(&self, kind: &str, actor: Actor, project_id: Option<Id>, session_id: Option<Id>, data: Value) -> Event {
+        self.append_event(kind, actor, project_id, session_id, data, None)
+    }
+
+    /// A published stream event (`streams.publish`): kind `stream.<name>.<kind>`, the payload
+    /// as data and the envelope kept on it. It has no terminal or project.
+    pub fn append_stream(&self, stream: StreamRef, actor: Actor, data: Value) -> Event {
+        self.append_event(&stream.event_kind(), actor, None, None, data, Some(stream))
+    }
+
+    fn append_event(&self, kind: &str, actor: Actor, project_id: Option<Id>, session_id: Option<Id>, data: Value, stream: Option<StreamRef>) -> Event {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.seq += 1;
-        let e = Event { seq: g.seq, at: time::now_rfc3339(), kind: kind.to_string(), actor, project_id, session_id, data };
+        let e = Event { seq: g.seq, at: time::now_rfc3339(), kind: kind.to_string(), actor, project_id, session_id, data, stream: stream.map(Box::new) };
         let month = month_of(&e.at);
         if month != g.file_month {
             g.rotate(&month);
@@ -395,7 +405,7 @@ mod tests {
     use super::*;
 
     fn ev(seq: u64, at: &str) -> Event {
-        Event { seq, at: at.into(), kind: "settings.changed".into(), actor: Actor::system(), project_id: None, session_id: None, data: json!({ "n": seq }) }
+        Event { seq, at: at.into(), kind: "settings.changed".into(), actor: Actor::system(), project_id: None, session_id: None, data: json!({ "n": seq }), stream: None }
     }
 
     fn tmp(name: &str) -> PathBuf {
@@ -475,7 +485,7 @@ mod tests {
     }
 
     fn sev(seq: u64, kind: &str, session: Option<&str>) -> Event {
-        Event { seq, at: "2020-01-05T00:00:00Z".into(), kind: kind.into(), actor: Actor::system(), project_id: None, session_id: session.map(Into::into), data: json!({ "kind": "decoy" }) }
+        Event { seq, at: "2020-01-05T00:00:00Z".into(), kind: kind.into(), actor: Actor::system(), project_id: None, session_id: session.map(Into::into), data: json!({ "kind": "decoy" }), stream: None }
     }
 
     #[test]

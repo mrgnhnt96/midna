@@ -16,6 +16,7 @@ pub mod script;
 pub mod secret;
 pub mod session;
 pub mod settings;
+pub mod streams;
 pub mod themes;
 pub mod trigger;
 pub mod ui;
@@ -366,6 +367,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "notify.read" => notify::read(d, ctx, parse(p)?),
         "notify.play" => notify::play(d, ctx, parse(p)?),
         "events.list" => events::list(d, parse(p)?),
+        "streams.publish" => streams::publish(d, ctx, parse(p)?),
         "events.subscribe" => events::subscribe(d, ctx, parse(p)?),
         "needs_you.list" => needs_you::list(d, parse(p)?),
         "needs_you.get" => needs_you::get(d, parse(p)?),
@@ -443,9 +445,11 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
 }
 
 /// Per-call audit would drown the log for these high-frequency calls; they emit their own events.
+/// A published stream event is its own record (kind, publisher, envelope).
 fn skip_audit(method: &str, params: &Value) -> bool {
     match method {
         "agent.hook" => params.get("event").and_then(Value::as_str) == Some("statusline"),
+        "streams.publish" => true,
         "session.resize" | "session.scroll" | "session.selection" | "session.select_all" | "session.link_at" | "links.served_by" | "links.preview" | "session.find" | "session.jump_prompt" => true,
         _ => false,
     }

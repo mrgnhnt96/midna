@@ -648,7 +648,14 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
     let t = find_in(&list, id).ok_or_else(|| RpcError::not_found(format!("no trigger {id}")))?;
     let local = t["source"] == "local";
     let filters = crate::triggers::filter_text(&t["filter"]);
-    let mut out = if local {
+    let event = s(&t, "event");
+    let stream = event.strip_prefix("stream.").filter(|_| local);
+    let mut out = if let Some(rest) = stream {
+        let (name, kind) = rest.split_once('.').unwrap_or((rest, "*"));
+        let what = if kind == "*" { "anything".to_string() } else { format!("`{kind}`") };
+        let who = if name == "*" { "any stream".to_string() } else { format!("stream `{name}`") };
+        format!("{id} “{}”: when {who} publishes {what} (`{event}`, from `midna stream publish` or streams.publish)", s(&t, "name"))
+    } else if local {
         format!("{id} “{}”: when `{}` happens on this Mac", s(&t, "name"), s(&t, "event"))
     } else {
         format!("{id} “{}”: when {} sends `{}`", s(&t, "name"), s(&t, "source"), s(&t, "event"))
@@ -657,7 +664,9 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
         out.push_str(&format!(" ({filters})"));
     }
     out.push_str(&format!(", it {}.\n", action_text(&t["action"])));
-    if local {
+    if stream.is_some() {
+        out.push_str("stream events belong to no terminal; templates: {{stream.name|kind|id}} and {{data.<path>}} (the payload)\n");
+    } else if local {
         out.push_str(&format!("cooldown: {}s per terminal\n", t["cooldown_secs"].as_u64().unwrap_or(60)));
     }
     if let Some(b) = t["builtin"].as_str() {
@@ -687,7 +696,10 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
             out.push_str(&format!("  {} {} {}: {}\n", s(x, "id"), ago(&s(x, "received_at")), s(x, "verdict"), s(x, "summary")));
         }
     }
-    let sample = if local { format!("triggers test {id} --session <terminal-id> --payload '{{\"message\":\"…\"}}'") } else { format!("triggers test {id} --payload sample.json") };
+    let sample = if let Some(rest) = stream {
+        let ev = if rest.contains('*') || !rest.contains('.') { "stream.<name>.<kind>".to_string() } else { event.clone() };
+        format!("triggers test {id} --event {ev} --payload '{{\"text\":\"…\"}}'")
+    } else if local { format!("triggers test {id} --session <terminal-id> --payload '{{\"message\":\"…\"}}'") } else { format!("triggers test {id} --payload sample.json") };
     out.push_str(&format!("try it: {}", cmd(surface, &sample, "trigger_test")));
     Ok(out)
 }

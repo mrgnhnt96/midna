@@ -50,7 +50,7 @@ struct Log {
 
 impl Log {
     fn push(&mut self, at: i64, kind: &str, actor: Actor, project: Option<&str>, session: Option<&str>, data: Value) {
-        let e = Event { seq: 0, at: time::format_unix(at), kind: kind.into(), actor, project_id: project.map(Into::into), session_id: session.map(Into::into), data };
+        let e = Event { seq: 0, at: time::format_unix(at), kind: kind.into(), actor, project_id: project.map(Into::into), session_id: session.map(Into::into), data, stream: None };
         self.events.push((at, e));
     }
 }

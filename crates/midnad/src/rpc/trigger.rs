@@ -35,13 +35,26 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
     let local = t.source == TriggerSource::Local;
     if event.trim().is_empty() {
         return Err(RpcError::bad_params(if local {
-            "event must not be empty, e.g. agent.prompt_blocked, hook.Stop, idle or schedule"
+            "event must not be empty, e.g. agent.prompt_blocked, hook.Stop, stream.slack.*, idle or schedule"
         } else {
             "event must not be empty, e.g. pull_request.opened or pullrequest:created"
         }));
     }
     if action.needs_session() && !local {
         return Err(RpcError::bad_params(format!("{} acts on the terminal that fired, so it needs source local", crate::local::action_name(action))));
+    }
+    // `stream.<name>.<kind>` (streams.publish): such an event belongs to no terminal.
+    if local && midna_proto::streams::check_event_glob(event).map_err(RpcError::bad_params)? {
+        let f = &t.filter;
+        if f.session.is_some() || f.project.is_some() || f.agent.is_some() {
+            return Err(RpcError::bad_params("stream events belong to no terminal, so filter.session, project and agent never match; filter on the payload with filter.match"));
+        }
+        if action.needs_session() {
+            return Err(RpcError::bad_params(format!(
+                "{} acts on the terminal that fired, and stream events have none: use notify, attention, run_command or start_agent",
+                crate::local::action_name(action)
+            )));
+        }
     }
     if local && event.trim().eq_ignore_ascii_case("idle") && t.filter.idle_minutes.unwrap_or(0) == 0 {
         return Err(RpcError::bad_params("idle triggers need filter.idle_minutes (e.g. 55)"));
