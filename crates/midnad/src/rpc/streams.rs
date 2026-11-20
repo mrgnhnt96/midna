@@ -10,7 +10,7 @@
 //! everything while its queue is full; streams.events lists each publish's verdict.
 use super::{Ctx, R, ok};
 use crate::daemon::Daemon;
-use midna_proto::streams::{EVENTS_KEPT, MAX_PAYLOAD_BYTES, StreamsEventsParams, StreamsEventsResult, StreamsPublishParams, StreamsPublishResult, check_publish, oversize, valid_kind, valid_name};
+use midna_proto::streams::{EVENTS_KEPT, MAX_PAYLOAD_BYTES, StreamsEventsParams, StreamsEventsResult, StreamsPublishParams, StreamsPublishResult, check_publish, oversize, valid_name};
 use midna_proto::error::BUSY;
 use midna_proto::{RpcError, StreamVerdict};
 use serde_json::{Value, json};
@@ -20,7 +20,8 @@ pub fn publish(d: &Daemon, ctx: &Ctx, p: StreamsPublishParams) -> R {
         Ok(s) => s,
         Err(m) => {
             // Too big but otherwise fine: the stream's events list shows it was dropped.
-            if valid_name(&p.stream) && valid_kind(&p.kind) && p.data.is_object() && let Some(size) = oversize(&p) {
+            let rest_ok = || p.data.is_object() && check_publish(&StreamsPublishParams { stream: p.stream.clone(), kind: p.kind.clone(), id: p.id.clone(), data: Value::Null }).is_ok();
+            if let Some(size) = oversize(&p).filter(|_| rest_ok()) {
                 d.streams.reject(&p.stream, &p.kind, p.id.clone(), StreamVerdict::TooLarge, format!("{size} bytes, over {MAX_PAYLOAD_BYTES}"));
                 return Err(RpcError::bad_params(m).with_data(json!({ "verdict": StreamVerdict::TooLarge })));
             }

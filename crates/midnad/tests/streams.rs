@@ -125,6 +125,9 @@ fn a_flood_is_deduped_rate_limited_cooled_down_and_listed() {
     // Too big: dropped and listed.
     let big = call_err(&mut h, "streams.publish", json!({ "stream": "flood", "kind": "message", "id": "big", "data": { "t": "x".repeat(70_000) } }));
     assert_eq!(big.data.unwrap()["verdict"], "too_large");
+    // Too big with a bad id is just a bad publish, not listed.
+    let e = call_err(&mut h, "streams.publish", json!({ "stream": "flood", "kind": "message", "id": "", "data": { "t": "x".repeat(70_000) } }));
+    assert!(e.message.contains("id must be") && e.data.is_none(), "{e:?}");
     // Another stream has its own limit.
     assert_eq!(call(&mut h, "streams.publish", json!({ "stream": "calm", "kind": "message" }))["verdict"], "accepted");
 
