@@ -520,13 +520,23 @@ fn moving(item: &Value) -> Option<String> {
     })
 }
 
+/// ` (this terminal)` when accept `result` opened terminal `me`, so an agent that share started
+/// reads it as itself, not as another session doing the same work.
+fn here_mark(result: &str, me: Option<&str>) -> &'static str {
+    let opened = result.strip_prefix("opened as ").and_then(|r| r.split(' ').next());
+    match (opened, me) {
+        (Some(t), Some(me)) if !me.is_empty() && t == me => " (this terminal)",
+        _ => "",
+    }
+}
+
 fn share_line(item: &Value) -> String {
     let dir = if item["direction"] == "incoming" { "from" } else { "to" };
     let state = match (item["state"].as_str().unwrap_or(""), item["result"].as_str(), moving(item)) {
         ("offered", _, _) if item["direction"] == "incoming" => "waiting for you".to_string(),
         ("offered", _, _) => "waiting for them".to_string(),
         (st, _, Some(m)) => format!("{st}: {m}"),
-        (st, Some(r), None) => format!("{st}: {r}"),
+        (st, Some(r), None) => format!("{st}: {r}{}", here_mark(r, std::env::var("MIDNA_SESSION").ok().as_deref())),
         (st, None, None) => st.to_string(),
     };
     format!(
@@ -1007,5 +1017,21 @@ pub fn inbox(a: &Args, out: OutFn) -> Res {
             Ok(())
         }
         other => Err(Fail::Usage(format!("unknown inbox subcommand `{other}` (list, show, accept, decline or reply)"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::here_mark;
+
+    #[test]
+    fn marks_the_terminal_a_share_opened_when_it_reads_the_inbox() {
+        let r = "opened as da0579a3 in /Users/me/Development/lens";
+        assert_eq!(here_mark(r, Some("da0579a3")), " (this terminal)");
+        assert_eq!(here_mark(r, Some("1a98e049")), "");
+        assert_eq!(here_mark(r, None), "");
+        assert_eq!(here_mark(r, Some("")), "");
+        assert_eq!(here_mark("opened as da0579a3 resuming the Claude conversation in ~", Some("da0579a3")), " (this terminal)");
+        assert_eq!(here_mark("pasted into da0579a3", Some("da0579a3")), "");
     }
 }
