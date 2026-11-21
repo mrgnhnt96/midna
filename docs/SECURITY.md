@@ -14,10 +14,12 @@ midnad, midna-app, every terminal and every agent run as **the same macOS user**
 So the human/agent boundary is **not a security boundary against a malicious local process**. It is a guardrail. It makes sure that an agent using midna's own interfaces (CLI, MCP, JSON-RPC, the app binary, `commands.json`) can't act as the human, even when it is confused or prompt-injected:
 
 - It can't approve its own requests.
-- It can't remove rules or arm triggers.
+- It can't remove rules or arm webhook triggers.
 - It can't change human-only settings.
 
 Every human-only action an agent asks for becomes a needs-you item that the human answers in the GUI.
+
+Local triggers (schedule, hook, event, idle) are the exception: an agent may add and arm one itself, with no secret and no approval (`trigger.add` with `enabled`, or `trigger.set_enabled`). They fire on this Mac's own events, and their actions are ones the agent could already take directly: run a command, send to a terminal, open an agent terminal with a prompt (an agent's own `session.open` is unsupervised too). Arming one only lets it do the same thing later. Giving a trigger a `permission_mode` or `allowed_tools` still needs the human. **Test:** `local_triggers::refused_prompt_gets_the_builtin_status_and_auto_compact_resends_it`
 
 Things that would make this real authentication are out of scope today: a separate user for agents, the App Sandbox, or an XPC service with entitlements. If agents ever run untrusted code at scale, run them as a different macOS user.
 
@@ -61,7 +63,7 @@ The audit entry and the `session.input_by_agent` event carry the matched entry a
 **Conditional checks were reviewed per method:**
 - `settings.set` / `reset` on human-only keys
 - `needs_you.resolve`: agents only on their own session, only with `approve.from_cli`, never deferred items
-- `trigger.set_enabled`, `trigger.remove` (enabled triggers), and `trigger.update` (back to draft)
+- `trigger.set_enabled` (webhook triggers; local ones arm freely, see above), `trigger.remove` (enabled triggers), and `trigger.update` (back to draft)
 - `session.close` / `restart` (policy-gated)
 - `window.command` (`agents.may_move_windows`)
 - `share.send` (Nearby): anything an agent sends to another device is checked as the `cli` action `share send <kind> <device id>` (`nearby::guard`). With no rule it asks the human, whatever `policy.default` says; the approval shows the text or link and the device. Only an allow the human gave (approving "always", or a rule added in the app) lets it through without asking. An agent may add rules, so its own allow never counts; its deny or ask does. The device must be paired and nearby before anyone is asked. **Test:** `nearby::an_agents_share_leaves_only_with_the_humans_ok`
@@ -152,13 +154,13 @@ Webhook content is attacker-controlled: anyone who can open a PR or push a branc
    - Claude gets `--permission-mode default`.
    - Codex gets `approval_policy="on-request"` and `sandbox_mode="workspace-write"`.
 
-   Their tool calls still ask, as needs-you items, even when the user's global config bypasses permissions. That matters for this user, whose global Claude `defaultMode` is `bypassPermissions`.
+   Their tool calls still ask, as needs-you items, even when the user's global config bypasses permissions (a global Claude `defaultMode` of `bypassPermissions`, say).
 
-   Agents a notification's button starts are supervised the same way: the notification's sender wrote their prompt. Agents a local trigger starts (schedule, hook, event, idle) are not, because the human wrote their prompt; they use the human's normal config.
+   Agents a notification's button starts are supervised the same way: the notification's sender wrote their prompt. Agents a local trigger starts (schedule, hook, event, idle) are not, because their prompt was written on this Mac, by the human or by an agent that could open that terminal itself; they use the human's normal config.
 
    A Claude `start_agent` trigger may carry its own `permission_mode` (wins over `triggers.agent_mode`) and `allowed_tools` (`--allowedTools`, only in the terminals that trigger opens). Both are human only: an agent adding a trigger with them, or changing them, raises an approval, and nothing happens unless the human approves. Notification buttons can't carry them at all. A global or project `ask` rule on one of those tools steps aside in that terminal (a session `ask` or any `deny` still holds). Tools an agent passes to `session.open` itself never do.
 3. **Scope.** They run in the trigger's project, so project and global rules apply, under the default policy.
-4. **Who controls the template.** Templates are written by whoever drafted the trigger. Agents can draft one, but only the human sets the secret and enables it. Changing an enabled trigger's action sends it back to draft, and H4 covers changes between ask and approve.
+4. **Who controls the template.** Templates are written by whoever drafted the trigger. Agents can draft a webhook trigger, but only the human sets the secret and enables it. Changing an enabled trigger's action sends it back to draft, and H4 covers changes between ask and approve.
 
 **Tests:** `payload::tests` (delimiting can't be closed or escaped), `triggers::signed_github_delivery_starts_agent_with_rendered_prompt` (delimited prompt + supervised flags), and smoke.
 

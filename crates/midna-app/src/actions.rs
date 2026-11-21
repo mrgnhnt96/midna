@@ -410,6 +410,9 @@ pub const OVERLAY_KEYS: &[Shortcut] = &[
     shortcut!("keys.deny", crate::ui::command_bar::ClearQuery, Some("overlay == command_bar")),
     shortcut!("keys.approve", crate::annotate::AttachImages, Some("overlay == annotate")),
     shortcut!("keys.close", crate::annotate::RemoveImage, Some("overlay == annotate")),
+    // The Summary reopens or removes the record on screen.
+    shortcut!("keys.approve", crate::ui::summary::ResumeRecord, Some("overlay == summary")),
+    shortcut!("keys.deny", crate::ui::summary::RemoveRecord, Some("overlay == summary")),
 ];
 
 /// Keys that aren't settings: standard editing keys and the keys a screen handles itself.
@@ -798,10 +801,11 @@ mod tests {
 mod dispatch {
     // Not `super::*`: GPUI's test macro would come in with it and shadow `#[test]`.
     use super::{
-        ApproveOnce, CTX_MAIN, CloseWindow, Dismiss, HoldToQuit, Kind, NewAgent, OpenSettings, SelectProject, SplitRight,
+        ApproveOnce, CTX_MAIN, CloseWindow, Deny, Dismiss, HoldToQuit, Kind, NewAgent, OpenSettings, SelectProject, SplitRight,
         bind_keys, overlay, overlay_context,
     };
     use crate::annotate::{AttachImages, RemoveImage};
+    use crate::ui::summary::{RemoveRecord, ResumeRecord};
     use crate::ui::links::ToggleLinks;
     use gpui_kit::prelude::*;
     use gpui_kit::{Action, App, Context, FocusHandle, TestAppContext, Window, div};
@@ -832,6 +836,7 @@ mod dispatch {
                 .on_action(record::<SplitRight>(l, "split"))
                 .on_action(record::<SelectProject>(l, "select_project"))
                 .on_action(record::<ApproveOnce>(l, "approve"))
+                .on_action(record::<Deny>(l, "deny"))
                 .on_action(record::<CloseWindow>(l, "close_window"))
                 .on_action(record::<OpenSettings>(l, "settings"))
                 .on_action(record::<HoldToQuit>(l, "quit"))
@@ -843,7 +848,9 @@ mod dispatch {
                         .on_action(record::<RemoveImage>(l, "remove_image"))
                         .on_action(record::<AttachImages>(l, "attach"))
                         .on_action(record::<Dismiss>(l, "dismiss"))
-                        .on_action(record::<ToggleLinks>(l, "toggle_links")),
+                        .on_action(record::<ToggleLinks>(l, "toggle_links"))
+                        .on_action(record::<ResumeRecord>(l, "resume_record"))
+                        .on_action(record::<RemoveRecord>(l, "remove_record")),
                 )
         }
     }
@@ -914,6 +921,15 @@ mod dispatch {
     fn screens_keep_main_shortcuts(cx: &mut TestAppContext) {
         let got = press(Kind::Screen, overlay::RULES, &["cmd-t", "cmd-1", "cmd-w"], cx);
         assert_eq!(got, vec![ran("cmd-t", &["new_agent"]), ran("cmd-1", &["select_project"]), ran("cmd-w", &["close_window"])]);
+    }
+
+    #[gpui_kit::test]
+    fn summary_takes_approve_and_deny_for_its_record(cx: &mut TestAppContext) {
+        let got = press(Kind::Screen, overlay::SUMMARY, &["cmd-enter", "cmd-backspace", "cmd-t"], cx);
+        assert_eq!(got, vec![ran("cmd-enter", &["resume_record"]), ran("cmd-backspace", &["remove_record"]), ran("cmd-t", &["new_agent"])]);
+        // Any other screen leaves them to the main window.
+        let got = press(Kind::Screen, overlay::RULES, &["cmd-enter", "cmd-backspace"], cx);
+        assert_eq!(got, vec![ran("cmd-enter", &["approve"]), ran("cmd-backspace", &["deny"])]);
     }
 
     #[gpui_kit::test]

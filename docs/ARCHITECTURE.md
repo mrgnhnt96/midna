@@ -31,11 +31,11 @@ Cargo.toml            workspace
 env.sh                source before building (Zig 0.15.2 + SDK shim + LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast)
 .toolchain/           (gitignored) zig, fakebin/xcrun, ghostty-src
 crates/
-  midna-proto/        serde types, method catalog, OpenRPC generation, blocking + async client
+  midna-proto/        serde types, method catalog, OpenRPC generation, blocking client
   midnad/             daemon binary (lib + bin; the lib holds modules so they're testable)
   midna-cli/          `midna` binary: CLI verbs, `midna mcp` (stdio MCP bridge), `midna hook <agent>`
   midna-app/          GPUI app (gpui-kit 0.7), binary `midna-app`, bundled as Midna.app
-  midna-relay/        self-hostable webhook relay (later phase)
+  slate-stub/         stand-in for the private Slate crate (not a member; `scripts/slate.sh` patches the real one in)
 docs/
   ARCHITECTURE.md     this file
   design/             approved .dc.html boards (Main, CommandBar-A, NeedsYou-C, Rules-B, Triggers-A, Insights-A, Settings-A, Onboarding-B; Settings-C is the older one-table Settings)
@@ -81,7 +81,7 @@ spikes/               proven prototypes; reuse code from here freely
 - **Document the limitation honestly.** Same-user processes can't be fully authenticated, so human-only actions requested over the CLI always become a needs-you confirmation in the GUI and never execute directly.
 - **Hardening (see `docs/SECURITY.md`).** Signed builds check the GUI's code signature (Team ID + identifier) instead of its name; `MIDNA_APP_PATH` is debug-only; a GUI binary running inside a midna terminal is an agent; `caller.session` must match the terminal the calling process runs in; the app's `MIDNA_DEBUG_*` drivers compile out of release builds.
 
-**Errors.** JSON-RPC error codes: `-32601` unknown method, `-32602` bad params, `1` refused by policy, `2` human-only, `3` not found, `4` conflict, `6` pending (a `caller.no_wait` call is waiting on the human: `data.needs_you_id`; the call carries on when they answer and `needs_you.get` reports how it ended).
+**Errors.** JSON-RPC error codes: `-32601` unknown method, `-32602` bad params, `1` refused by policy, `2` human-only, `3` not found, `4` conflict, `5` not implemented, `6` pending (a `caller.no_wait` call is waiting on the human: `data.needs_you_id`; the call carries on when they answer and `needs_you.get` reports how it ended), `7` busy (the Mac is too loaded for `daemon.upgrade` / `daemon.restart`; `data` says how busy, and `force` does it anyway).
 
 ## Domain model (midna-proto)
 
@@ -110,8 +110,8 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
 - **PolicyAction** `{ kind: command|tool|path|cli|window, value: string, session?: id, project?: id }`
   - **Evaluation**:
     - The most specific scope wins (session > project > global).
-    - Within a scope, deny beats ask beats allow.
-    - With no match, the default comes from the setting `policy.default` (default `ask` for `cli` destructive verbs, `allow` otherwise; keep the defaults table in code).
+    - Within a scope: deny, then an allow the human gave by approving that action ("always": `origin` set, `added_by` human), then ask, then any other allow. So "approve always" on an `ask` rule takes hold at that scope, and a deny still wins.
+    - With no match, the default comes from the setting `policy.default`: `allow`, `ask` or `deny`, or `auto` (the default: `ask` for `cli` destructive verbs, `allow` otherwise; keep the defaults table in code).
     - `policy.check` returns `{ decision, rule?: Rule, trace: [{rule_id, matched, reason}] }`. The trace powers the "test a command" view.
 - **Trigger**
   - Fields: `{ id, name, source: github|bitbucket, event: string, filter: {repo?, branch?, action?, label?}, action: TriggerAction, enabled: bool, state: draft|needs_secret|active|paused, secret_set: bool, created_by: Actor, created_at, last_fired_at?, fired: u64 }`
@@ -139,7 +139,7 @@ All ids are short lowercase strings: 8 hex chars for sessions, `p_xxxxxx` for pr
     - `agents.may_force_close` (human_only, default false): agents close any terminal (working ones, `close --force`, someone else's) with no default ask; rules on `close …` still apply
     - `agents.may_install_updates` (human_only, default false): an agent's `updates.install` goes to the GUI without a needs-you approval; the app's signature checks still apply
     - `approve.from_cli` (human_only)
-    - `keys.*` keybindings: `keys.command_bar` = cmd-k, `keys.next_needs_you` = cmd-j, `keys.new_terminal` = cmd-t, `keys.new_agent` = cmd-shift-t, `keys.new_terminal_root` = cmd-alt-t, `keys.new_agent_root` = cmd-alt-shift-t, `keys.approve` = cmd-enter, `keys.deny` = cmd-backspace, `keys.settings` = cmd-comma, `keys.rules`, `keys.triggers`, `keys.insights`. ⌘1–9 are reserved for projects.
+    - `keys.*` keybindings: `keys.command_bar` = cmd-k, `keys.next_needs_you` = cmd-j, `keys.new_agent` = cmd-t, `keys.new_terminal` = cmd-shift-t, `keys.new_agent_root` = cmd-alt-t, `keys.new_terminal_root` = cmd-alt-shift-t, `keys.approve` = cmd-enter, `keys.deny` = cmd-backspace, `keys.settings` = cmd-comma, `keys.rules` = cmd-shift-r, `keys.triggers` = cmd-shift-g, `keys.insights` = cmd-shift-i, and more (the full list and defaults are in `midna-proto/src/settings.rs`). ⌘1–9 are reserved for projects.
 - **Event** `{ seq: u64, at, kind: string, actor: Actor, project_id?, session_id?, data: serde_json::Value }`
   - Kinds, dotted: `project.added|updated|removed`, `session.opened|renamed|closed|status|title|exited|input_by_agent`, `needs_you.raised|resolved`, `rule.added|fired|removal_requested|removed|expired`, `trigger.added|updated|delivery|fired`, `settings.changed`, `window.command`, `agent.turn_started|turn_ended|prompt_submitted|cost`, `daemon.started|upgraded`, `audit` (data: `{method, params_summary, outcome: ok|denied|error}`).
 - **Insights** are computed in the daemon from events: `insights.summary{ range: today|yesterday|week, by?: project|agent|terminal|day }`.

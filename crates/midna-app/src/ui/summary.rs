@@ -20,6 +20,17 @@ use midna_proto::{ActorKind, AgentKind, ClosedTerminal, LinkKind, SessionKind, S
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
+actions!(
+    midna,
+    [
+        /// ⌘↩ on the Summary (`keys.approve`, bound in `actions::OVERLAY_KEYS`): reopen the
+        /// record on screen.
+        ResumeRecord,
+        /// ⌘⌫ on the Summary (`keys.deny`): remove the record on screen.
+        RemoveRecord,
+    ]
+);
+
 #[derive(Default)]
 pub struct SummaryPage {
     /// Every project's records, newest first.
@@ -469,13 +480,12 @@ pub fn render(m: &mut MainWindow, t: &Theme, _window: &mut Window, cx: &mut Cont
                 m.set_screen(Screen::Terminal, w, cx);
             }
         }))
-        // ⌘↩ and ⌘⌫ (the approve and deny keys) act on the record on screen.
-        .on_action(cx.listener(|m, _: &crate::actions::ApproveOnce, _, cx| {
+        .on_action(cx.listener(|m, _: &ResumeRecord, _, cx| {
             if let Some(c) = current(m) {
                 resume(m, c.id, cx);
             }
         }))
-        .on_action(cx.listener(|m, _: &crate::actions::Deny, _, cx| {
+        .on_action(cx.listener(|m, _: &RemoveRecord, _, cx| {
             if let Some(c) = current(m) {
                 remove(m, c.id, cx);
             }
@@ -720,9 +730,12 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
         div().flex().flex_col().child(caps(t, "Your prompts")).child(col).children(more)
     });
 
-    let main = div().flex_1().min_w_0().flex().flex_col().gap(px(18.)).child(grid).children(prompts);
+    // Grows from 360px; when that and the apps' 300px column don't both fit, the column wraps
+    // under it rather than squeezing the facts to a few characters a line.
+    let main = div().flex_grow(1.).flex_shrink(1.).flex_basis(px(360.)).min_w_0().flex().flex_col().gap(px(18.)).child(grid).children(prompts);
 
-    let mut side = div().flex_none().w(px(300.)).flex().flex_col().gap(px(12.));
+    let mut side = div().flex_none().w(px(300.)).max_w_full().flex().flex_col().gap(px(12.));
+    let has_side = !c.apps.is_empty() || !c.links.is_empty();
     for (owner, p) in &c.apps {
         side = side.child(panel(t, owner, p));
     }
@@ -756,7 +769,22 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
         .flex()
         .flex_col()
         .child(header)
-        .child(div().id("sum-detail-body").flex_1().min_h_0().overflow_y_scroll().flex().items_start().gap(px(18.)).px(px(20.)).py(px(18.)).child(main).child(side))
+        .child(
+            div()
+                .id("sum-detail-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_wrap()
+                .content_start()
+                .items_start()
+                .gap(px(18.))
+                .px(px(20.))
+                .py(px(18.))
+                .child(main)
+                .when(has_side, |d| d.child(side)),
+        )
 }
 
 /// "today 14:02" or "26 Oct 14:02".
