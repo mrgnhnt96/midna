@@ -2750,7 +2750,7 @@ impl SettingsWindow {
                         )
                     })
                     .when(!crumb, |d| d.child(g.name))
-                    .when_some(g.note, |d, n| d.child(div().font_weight(FontWeight::NORMAL).text_size(px(11.5)).child(format!("· {n}"))))
+                    .when_some(g.note, |d, n| d.items_baseline().child(div().flex_1().min_w_0().font_weight(FontWeight::NORMAL).text_size(px(11.5)).child(format!("· {n}"))))
             });
             let mut card = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).bg(t.panel).overflow_hidden();
             for (i, hit) in g.rows.into_iter().enumerate() {

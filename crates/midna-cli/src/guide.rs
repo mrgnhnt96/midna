@@ -192,6 +192,12 @@ pub fn next_step(method: &str, params: &Value, e: &RpcError, surface: Surface) -
              is gone. Check with {} before asking again.",
             cmd(surface, "list", "session_list")
         ),
+        (REFUSED, "streams.publish") => format!(
+            "This stream is one midna runs: only its own producer (or the human) can publish to it, so yours was dropped and \
+             fired nothing. No rule or approval changes that. To try a trigger on it, use {} (nothing is published); for \
+             events of your own, publish to a stream name midna doesn't run.",
+            cmd(surface, "triggers test <trigger-id> --stream <name> --kind <kind>", "trigger_test")
+        ),
         (REFUSED, _) if needs_you.is_some() => format!(
             "The human denied it (or didn't answer in time). Don't retry another way. If it matters, explain why in one line \
              with {}.",
@@ -1180,6 +1186,18 @@ mod tests {
         let e = RpcError::refused("denied by rule r_1");
         let h = next_step("window.command", &params, &e, Surface::Cli).unwrap_or_default();
         assert!(!h.contains("agents.may_move_windows"), "{h}");
+    }
+
+    #[test]
+    fn a_refused_stream_publish_points_at_trigger_tests_not_deny_rules() {
+        let e = RpcError::refused("stream `ci` is one midna runs: only its producer (with its MIDNA_STREAM_TOKEN) or the human can publish to it; dropped");
+        let params = json!({"stream": "ci", "kind": "done"});
+        let h = next_step("streams.publish", &params, &e, Surface::Cli).unwrap();
+        assert!(h.contains("midna triggers test") && !h.contains("deny rule") && !h.contains("request-removal"), "{h}");
+        let h = next_step("streams.publish", &params, &e, Surface::Mcp).unwrap();
+        assert!(h.contains("trigger_test") && !h.contains("rule_request_removal"), "{h}");
+        let h = next_step("rule.add", &json!({}), &RpcError::refused("denied by rule r_1"), Surface::Cli).unwrap();
+        assert!(h.contains("deny rule"), "{h}");
     }
 
     #[test]

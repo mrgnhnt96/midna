@@ -525,15 +525,15 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
             format!("{}\n\nApproving opens it in your browser. To pin it to a terminal's links instead: midna inbox accept {} --pin --into <terminal>", cut(url, 2000), it.id),
             json!({ "id": it.id, "action": "open" }),
         ),
-        SharePayload::File { name, folder, files, .. } => {
+        SharePayload::File { name: file, folder, files, .. } => {
             let what = if *folder { "folder" } else { "file" };
             let count = if *folder { format!(", {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }) } else { String::new() };
             let to = transfer::downloads(d).map(|p| p.display().to_string()).unwrap_or_else(|_| "your downloads folder".into());
             (
-                format!("{name} sent a {what}: {} ({}{count})", cut(&nb::safe_name(name), 80), nb::size_label(it.size)),
+                format!("{name} sent a {what}: {} ({}{count})", cut(&nb::safe_name(file), 80), nb::size_label(it.size)),
                 format!(
                     "{}{count}, {}.\n\nApproving saves it into {to}, marked as downloaded; nothing is opened or run.",
-                    nb::safe_name(name),
+                    nb::safe_name(file),
                     nb::size_label(it.size)
                 ),
                 json!({ "id": it.id }),
