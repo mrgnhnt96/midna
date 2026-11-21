@@ -8,7 +8,7 @@
 use crate::daemon::Daemon;
 use crate::rpc::{Ctx, trigger};
 use midna_proto::types::{NeedsYou, NeedsYouKind, TriggerSource};
-use midna_proto::{RpcError, TriggerAddParams, TriggerUpdateParams};
+use midna_proto::{RpcError, StreamsAddParams, StreamsUpdateParams, TriggerAddParams, TriggerUpdateParams};
 use serde_json::{Value, json};
 
 /// Human-only methods the person driving may still call: they approve, close and pause like the
@@ -53,6 +53,21 @@ pub fn method(d: &Daemon, method: &str, params: &Value) -> bool {
             let Ok(p) = serde_json::from_value::<TriggerUpdateParams>(params.clone()) else { return false };
             let t = d.core().state.triggers.iter().find(|t| t.id == p.id).cloned();
             t.is_some_and(|t| trigger::changes_access(&t, &p) || trigger::edits_live_webhook(&t, &p))
+        }
+        // A stream runs its command in the background with this Mac's secrets in its environment:
+        // adding one with secrets, changing one that has or gets them, and starting one with them
+        // that awaits approval (what an agent's would ask the human for). Agents resume an
+        // approved one themselves.
+        "streams.add" => serde_json::from_value::<StreamsAddParams>(params.clone()).is_ok_and(|p| !p.secrets.is_empty()),
+        "streams.update" => {
+            let Ok(p) = serde_json::from_value::<StreamsUpdateParams>(params.clone()) else { return false };
+            let old = d.core().state.streams.iter().find(|s| s.name == p.name).map(|s| s.secrets.clone());
+            old.is_some_and(|old| !p.secrets.unwrap_or(old).is_empty())
+        }
+        "streams.set_enabled" => {
+            let on = params.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+            on && d.core().state.streams.iter().find(|s| s.name == name).is_some_and(|s| s.needs_approval && !s.secrets.is_empty())
         }
         _ => midna_proto::method(method).is_some_and(|s| s.human_only) && !OVER_A_LINK.contains(&method),
     }
