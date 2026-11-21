@@ -221,11 +221,11 @@ pub fn start_on(d: &Arc<Daemon>, mut l: Launch, snap: Option<crate::engine::Term
     // The reaper waits on the pid (not the Child), so adopted sessions after an upgrade work
     // the same way. Dropping a Child neither waits nor kills.
     drop(sp.child);
-    let (m, cols, rows) = (sp.master, l.cols, l.rows);
+    let (cols, rows) = (l.cols, l.rows);
     let make: MakeEngine = match snap {
         // The caller launches at the snapshot's size: its VT is laid out for it.
-        Some(s) => Box::new(move || Engine::restored(&s, Some(m))),
-        None => Box::new(move || Engine::new(cols, rows, Some(m))),
+        Some(s) => Box::new(move |replies| Engine::restored(&s, Some(replies))),
+        None => Box::new(move |replies| Engine::new(cols, rows, Some(replies))),
     };
     Ok(run(d, &l.sid, sp.master, pid, true, make, String::new()))
 }
@@ -239,9 +239,9 @@ pub fn start_with_preface(d: &Arc<Daemon>, mut l: Launch, preface: Vec<u8>) -> s
     let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows)?;
     let pid = sp.child.id() as i32;
     drop(sp.child);
-    let (m, cols, rows) = (sp.master, l.cols, l.rows);
-    let make: MakeEngine = Box::new(move || {
-        let mut e = Engine::new(cols, rows, Some(m));
+    let (cols, rows) = (l.cols, l.rows);
+    let make: MakeEngine = Box::new(move |replies| {
+        let mut e = Engine::new(cols, rows, Some(replies));
         e.feed(&preface, crate::engine::now_ns());
         e
     });
@@ -254,11 +254,12 @@ pub fn start_with_preface(d: &Arc<Daemon>, mut l: Launch, preface: Vec<u8>) -> s
 pub fn adopt(d: &Arc<Daemon>, sid: &str, master: RawFd, pid: i32, alive: bool, snap: &crate::engine::TermSnap) -> RtHandle {
     let snap = snap.clone();
     let title = snap.title.clone();
-    run(d, sid, master, pid, alive, Box::new(move || Engine::restored(&snap, Some(master))), title)
+    run(d, sid, master, pid, alive, Box::new(move |replies| Engine::restored(&snap, Some(replies))), title)
 }
 
-/// Builds the engine on its own thread (libghostty's Terminal is !Send).
-type MakeEngine = Box<dyn FnOnce() -> Engine + Send>;
+/// Builds the engine on its own thread (libghostty's Terminal is !Send), given the session's
+/// input queue for its replies to the app.
+type MakeEngine = Box<dyn FnOnce(Sender<Vec<u8>>) -> Engine + Send>;
 
 fn run(d: &Arc<Daemon>, sid: &str, master: RawFd, pid: i32, reap: bool, eng: MakeEngine, title: String) -> RtHandle {
     let fd = Arc::new(PtyFd(master));
@@ -487,7 +488,7 @@ fn input_thread(sid: &str, fd: Arc<PtyFd>) -> Sender<Vec<u8>> {
 fn engine_thread(sid: String, generation: u64, make: MakeEngine, title: String, fd: Arc<PtyFd>, rx: Receiver<EngineMsg>, d: Weak<Daemon>, kitty: Arc<AtomicU8>) {
     let input = input_thread(&sid, fd.clone());
     let _ = std::thread::Builder::new().name(format!("engine-{sid}")).spawn(move || {
-        let mut eng = make();
+        let mut eng = make(input.clone());
         kitty.store(eng.kitty_flags(), Ordering::Relaxed);
         let mut clients: HashMap<u64, Client> = HashMap::new();
         let mut title = title;
