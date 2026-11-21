@@ -2880,7 +2880,9 @@ impl Badge {
         }
         // Something other than a click on the badge brought midna forward (an app switcher like
         // Charmstone, ⌘-Tab) and AppKit made the badge, midna's frontmost window, its key window:
-        // midna's active but none of its windows came up. Its last-used main window takes over.
+        // midna's active but none of its windows came up. Its last-used main window on screen
+        // takes over. Minimizing the only main window on screen lands here too (the badge is
+        // all that's left to be key), so a minimized window is never brought back.
         let badge_key = crate::sounds::app_active()
             && objc2::MainThreadMarker::new()
                 .and_then(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow())
@@ -2888,7 +2890,7 @@ impl Badge {
         let stray = badge_key && self.hover.is_none() && self.pressing.is_none();
         if stray && !self.handed_off {
             crate::lifecycle::log("midna came forward with the badge as its key window: focusing the main window");
-            crate::windows::with_active(cx, |_, window, _| window.activate_window());
+            crate::windows::focus_shown(cx);
         }
         self.handed_off = stray;
         // The list: × and arrow linger, then shrink; finished animations end.
