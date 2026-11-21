@@ -2410,6 +2410,53 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
 }
 
 #[test]
+fn a_stream_with_this_mac_s_secrets_is_started_or_changed_only_at_that_mac() {
+    let svc = service();
+    let (_a, b, _fa, _fb, socket) = driving(&svc);
+    let mut hb = b.human();
+    let mut there = Client::connect(&socket).unwrap();
+    call(&mut hb, "secret.set", json!({ "name": "TOK", "value": "t0ken-that-stays-at-bravo" }));
+    let sleeper = json!(["/bin/sh", "-c", "exec sleep 60"]);
+    let stream = |c: &mut Client, name: &str| call(c, "streams.list", json!({})).as_array().unwrap().iter().find(|s| s["name"] == name).cloned();
+
+    // Adding one with secrets, or giving one secrets, is done at B; one without them isn't.
+    at_bravo(&mut there, "streams.add", json!({ "name": "leak", "command": sleeper, "cwd": b.home, "secrets": ["TOK"] }));
+    assert!(stream(&mut hb, "leak").is_none());
+    call(&mut there, "streams.add", json!({ "name": "plain", "command": sleeper, "cwd": b.home }));
+    at_bravo(&mut there, "streams.update", json!({ "name": "plain", "secrets": ["TOK"] }));
+    call(&mut there, "streams.update", json!({ "name": "plain", "command": ["/bin/sh", "-c", "exec sleep 61"] }));
+    call(&mut there, "streams.remove", json!({ "name": "plain" }));
+
+    // Changing what one with secrets runs is done at B; taking its secrets away isn't.
+    call(&mut hb, "streams.add", json!({ "name": "held", "command": sleeper, "cwd": b.home, "secrets": ["TOK"] }));
+    at_bravo(&mut there, "streams.update", json!({ "name": "held", "command": ["/bin/sh", "-c", "env > /tmp/x"] }));
+    at_bravo(&mut there, "streams.update", json!({ "name": "held", "cwd": "/" }));
+    assert_eq!(stream(&mut hb, "held").unwrap()["command"], sleeper);
+    // Pausing it and resuming it once approved are fine (agents may do both).
+    call(&mut there, "streams.set_enabled", json!({ "name": "held", "enabled": false }));
+    call(&mut there, "streams.set_enabled", json!({ "name": "held", "enabled": true }));
+    call(&mut there, "streams.update", json!({ "name": "held", "secrets": [] }));
+
+    // An agent's stream with secrets waits for the human at B: neither resuming it nor approving
+    // its needs-you is done from A; denying is.
+    let asker = open_sh(&mut hb);
+    let s = call(&mut b.agent(Some(&asker)), "streams.add", json!({ "name": "agents", "command": sleeper, "cwd": b.home, "secrets": ["TOK"] }));
+    let asked = s["approval"].as_str().unwrap_or_else(|| panic!("awaits approval: {s}")).to_string();
+    let item = open_items(&mut there).into_iter().find(|n| n["id"] == asked.as_str()).unwrap();
+    assert_eq!(item["local_only"], true, "{item}");
+    at_bravo(&mut there, "streams.set_enabled", json!({ "name": "agents", "enabled": true }));
+    at_bravo(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    assert_eq!(stream(&mut hb, "agents").unwrap()["state"], "awaiting_approval");
+    call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "deny" } }));
+    // One without secrets is the human's to approve from A.
+    let s = call(&mut b.agent(Some(&asker)), "streams.add", json!({ "name": "bare", "command": sleeper, "cwd": b.home }));
+    let asked = s["approval"].as_str().unwrap().to_string();
+    let item = open_items(&mut there).into_iter().find(|n| n["id"] == asked.as_str()).unwrap();
+    assert!(item.get("local_only").is_none(), "{item}");
+    call(&mut there, "streams.set_enabled", json!({ "name": "bare", "enabled": true }));
+}
+
+#[test]
 fn an_image_crosses_only_from_the_person_driving_and_only_an_image_under_the_cap() {
     use base64::Engine;
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
