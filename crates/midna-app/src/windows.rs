@@ -91,6 +91,13 @@ impl Places {
         self.mac_of(me).is_some_and(|mac| self.place(&mac, session) == Some(me))
     }
 
+    /// Another window on screen shows `me`'s Mac (`leaving`: windows already on their way out),
+    /// so `me`'s terminals have somewhere to move.
+    fn mac_has_other(&self, me: EntityId, leaving: &[EntityId]) -> bool {
+        let Some(mac) = self.mac_of(me) else { return false };
+        self.shown().any(|w| w.0 != me && !leaving.contains(&w.0) && w.1 == mac)
+    }
+
     /// `me` is its Mac's home window.
     pub fn is_home(&self, me: EntityId) -> bool {
         match self.mac_of(me) {
@@ -195,6 +202,11 @@ impl Registry {
     /// Another main window is open (closing this one isn't quitting).
     pub fn has_other(&self, me: EntityId) -> bool {
         self.places.shown().any(|w| w.0 != me && !self.leaving.contains(&w.0))
+    }
+
+    /// Another window on screen shows `me`'s Mac (closing `me` can move its terminals there).
+    pub fn mac_has_other(&self, me: EntityId) -> bool {
+        self.places.mac_has_other(me, &self.leaving)
     }
 
     /// Closing `me` hides it instead (see `Places::hidden`).
@@ -883,6 +895,18 @@ mod tests {
         p.focused(2u64.into());
         assert!(!p.is_hidden(2u64.into()));
         assert_eq!(p.shown().next().map(|w| w.0), Some(2u64.into()));
+    }
+
+    #[test]
+    fn only_a_window_with_a_sibling_of_its_mac_can_hand_its_terminals_over() {
+        let mut p = four();
+        assert!(p.mac_has_other(1u64.into(), &[]));
+        assert!(p.mac_has_other(3u64.into(), &[]));
+        assert!(!p.mac_has_other(3u64.into(), &[4u64.into()]), "4 is on its way out");
+        p.closed(4u64.into());
+        // The Mac mini's only window: this Mac's windows can't take its terminals.
+        assert!(!p.mac_has_other(3u64.into(), &[]));
+        assert!(p.mac_has_other(1u64.into(), &[]));
     }
 
     #[test]
