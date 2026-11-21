@@ -4,7 +4,11 @@
 //! confirms (as a contact or as one of their own Macs, then with a box to also let it drive this
 //! one: Confirm asks for Touch ID first and sends `allow_drive`) or cancels. A request from another Mac
 //! opens the sheet when this section is showing; it's also a needs-you card (ui/nearby.rs).
-//! Under each of my devices, the kinds of share it may send without asking (all off at first).
+//! Under each of my devices, one row for what goes between it and this Mac without asking: the
+//! kinds of share accepted from it, and the kinds agents here send it (each line with an All
+//! chip; all off at first). Turning a send kind on opens a sheet, then asks macOS for Touch ID or
+//! the password before `peers.set_agent_send`; turning it off needs no check. A note counts the
+//! "Always" approvals that also let agents send to it, with a link to the Rules screen.
 //! Under Driving this Mac, a switch per device kept as my device lets it drive this one: turning
 //! it on asks macOS for Touch ID or the password, on a sheet naming both Macs, then calls
 //! `peers.set_drive`; turning it off needs no check and cuts its drive links at once. A contact
@@ -31,6 +35,16 @@ pub(super) struct State {
     armed_forget: Option<String>,
     /// Letting a device drive this Mac: the sheet naming both Macs while macOS checks it's you.
     drive: Option<DriveSheet>,
+    /// Letting agents here send to one of my devices without asking: the sheet, then macOS's check.
+    send: Option<SendSheet>,
+}
+
+struct SendSheet {
+    fingerprint: String,
+    name: String,
+    /// The kinds being turned on.
+    kinds: Vec<ShareKind>,
+    step: DriveStep,
 }
 
 struct DriveSheet {
@@ -41,7 +55,7 @@ struct DriveSheet {
 }
 
 enum DriveStep {
-    /// Nothing asked yet, or the prompt was cancelled: Allow asks (again).
+    /// Nothing asked yet, or the prompt was cancelled: Allow (Continue) asks (again).
     Ready,
     /// macOS's Touch ID or password prompt is up (dropping it takes the prompt down).
     Asking(#[allow(dead_code)] local_auth::Asking),
@@ -71,8 +85,10 @@ pub(super) enum Ctl {
     Pair { fingerprint: String, name: String, open: Option<String> },
     /// A paired device: its tier and Forget.
     Paired { fingerprint: String, tier: Tier },
-    /// One of my devices: the kinds of share accepted from it without asking.
-    AutoAccept { fingerprint: String, on: Vec<ShareKind> },
+    /// One of my devices: the kinds of share accepted from it without asking (`accept`), the
+    /// kinds agents here send it without asking (`send`), and how many "Always" rules also let
+    /// agents send to it.
+    Between { fingerprint: String, name: String, accept: Vec<ShareKind>, send: Vec<ShareKind>, always: u32 },
     /// Each paired device and whether it may drive this Mac (a switch for my devices only).
     Drive { devices: Vec<DriveDevice> },
     /// One of my Macs: the theme its windows show on this Mac (`nearby.mac_themes`), None for
@@ -97,7 +113,11 @@ impl Ctl {
             Ctl::Visibility { .. } => VISIBILITY.iter().map(|(_, l)| ("Option", l.to_string())).collect(),
             Ctl::Pair { .. } => vec![("Button", "Pair".into())],
             Ctl::Paired { .. } => vec![("Option", "Contact".into()), ("Option", "My device".into()), ("Button", "Forget".into())],
-            Ctl::AutoAccept { .. } => ShareKind::ALL.iter().map(|k| ("Option", kind_label(*k).to_string())).collect(),
+            Ctl::Between { .. } => [("Option", "All".to_string())]
+                .into_iter()
+                .chain(ShareKind::SENDABLE.iter().map(|k| ("Option", kind_label(*k).to_string())))
+                .chain([("Line", "Accept from it".into()), ("Line", "Agents send to it".into())])
+                .collect(),
             Ctl::Drive { devices } => devices.iter().map(|d| ("Device", d.name.clone())).collect(),
             Ctl::Look { .. } => std::iter::once("That Mac's theme".to_string())
                 .chain(crate::theme::cached_themes().into_iter().map(|d| d.name))
@@ -108,7 +128,7 @@ impl Ctl {
 
     /// It goes under the row's name, like chips.
     pub(super) fn wide(&self) -> bool {
-        matches!(self, Ctl::AutoAccept { .. } | Ctl::Look { .. })
+        matches!(self, Ctl::Between { .. } | Ctl::Look { .. })
     }
 }
 
@@ -216,6 +236,15 @@ impl SettingsWindow {
                     // dev (screenshots): the drive sheet for the first of my devices, before asking
                     if let Some(p) = s.nearby.list.as_ref().and_then(|l| l.paired.iter().find(|p| p.tier == Tier::MyDevice)) {
                         s.nearby.drive = Some(DriveSheet { fingerprint: p.fingerprint.clone(), name: p.name.clone(), step: DriveStep::Ready });
+                    }
+                }
+                if let Ok(v) = crate::dev::var("MIDNA_SETTINGS_AGENT_SEND")
+                    && s.nearby.send.is_none()
+                {
+                    // dev (screenshots): the agent-send sheet for the first of my devices (`all`: every kind)
+                    if let Some(p) = s.nearby.list.as_ref().and_then(|l| l.paired.iter().find(|p| p.tier == Tier::MyDevice)) {
+                        let kinds = if v == "all" { ShareKind::SENDABLE.to_vec() } else { vec![ShareKind::Message] };
+                        s.nearby.send = Some(SendSheet { fingerprint: p.fingerprint.clone(), name: p.name.clone(), kinds, step: DriveStep::Ready });
                     }
                 }
                 cx.notify();
@@ -394,6 +423,14 @@ impl SettingsWindow {
 
     /// ↩ and esc while the sheet is open. True when the sheet took the key.
     pub(super) fn sheet_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.nearby.send.is_some() {
+            match key {
+                "escape" => self.cancel_send(cx),
+                "enter" => self.ask_send(cx),
+                _ => return false,
+            }
+            return true;
+        }
         if self.nearby.drive.is_some() {
             match key {
                 "escape" => self.cancel_drive(cx),
@@ -437,6 +474,110 @@ impl SettingsWindow {
     fn set_auto_accept(&mut self, fingerprint: String, kind: ShareKind, on: bool, cx: &mut Context<Self>) {
         let cmd = format!("midna peers auto-accept {} {} {}", id12(&fingerprint), kind.as_str(), if on { "on" } else { "off" });
         self.kind_call("peers.set_auto_accept", json!({ "fingerprint": fingerprint, "kind": kind, "on": on }), cmd, cx);
+    }
+
+    /// "All" on the accept line: every kind that isn't `on` yet, one call each.
+    fn set_auto_accept_all(&mut self, fingerprint: String, kinds: Vec<ShareKind>, on: bool, cx: &mut Context<Self>) {
+        let cmd = format!("midna peers auto-accept {} all {}", id12(&fingerprint), if on { "on" } else { "off" });
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    kinds.into_iter().try_for_each(|kind| backend.call("peers.set_auto_accept", json!({ "fingerprint": fingerprint, "kind": kind, "on": on })).map(|_| ()))
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                let result = match &r {
+                    Ok(_) => "✓ applied".into(),
+                    Err(e) => s.call_error(e),
+                };
+                s.last = Some(Last { cmd, ok: r.is_ok(), result, who: "you, from this window".into(), at: Instant::now() });
+                s.load_peers(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// A chip on the "Agents send to it" line. Off goes through at once; on opens the sheet,
+    /// whose Continue asks macOS for Touch ID or the password.
+    fn agent_send_chip(&mut self, fingerprint: String, name: String, kinds: Vec<ShareKind>, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            self.set_agent_send(fingerprint, kinds, false, cx);
+            return;
+        }
+        self.nearby.send = Some(SendSheet { fingerprint, name, kinds, step: DriveStep::Ready });
+        cx.notify();
+    }
+
+    /// The send sheet's Continue: macOS checks it's you, then `peers.set_agent_send` on. Nothing
+    /// changes unless the sheet is still open on that device when the answer comes.
+    fn ask_send(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = &mut self.nearby.send else { return };
+        if !matches!(d.step, DriveStep::Ready | DriveStep::Failed(_)) {
+            return;
+        }
+        let asking = local_auth::ask(&format!("let agents send to “{}” without asking", d.name));
+        let answer = asking.answer.clone();
+        d.step = DriveStep::Asking(asking);
+        let fp = d.fingerprint.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = answer.recv().await.unwrap_or(Outcome::Cancelled);
+            let _ = this.update(cx, |s, cx| {
+                let Some(d) = &mut s.nearby.send else { return };
+                if d.fingerprint != fp || !matches!(d.step, DriveStep::Asking(_)) {
+                    return;
+                }
+                match outcome {
+                    Outcome::Allowed => {
+                        d.step = DriveStep::Saving;
+                        let kinds = d.kinds.clone();
+                        s.set_agent_send(fp, kinds, true, cx);
+                    }
+                    Outcome::Cancelled => d.step = DriveStep::Ready,
+                    Outcome::Failed(e) => d.step = DriveStep::Failed(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// `peers.set_agent_send`. On closes the sheet once it went through.
+    fn set_agent_send(&mut self, fingerprint: String, kinds: Vec<ShareKind>, on: bool, cx: &mut Context<Self>) {
+        let which = if kinds.len() == ShareKind::SENDABLE.len() { "all".to_string() } else { kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(",") };
+        let cmd = format!("midna peers agent-send {} {which} {}", id12(&fingerprint), if on { "on" } else { "off" });
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let params = json!({ "fingerprint": fingerprint, "kinds": kinds, "on": on });
+            let r = cx.background_executor().spawn(async move { backend.call("peers.set_agent_send", params) }).await;
+            let _ = this.update(cx, |s, cx| {
+                let result = match &r {
+                    Ok(_) if on => "✓ agents here send it without asking".to_string(),
+                    Ok(_) => "✓ agents here ask first again".into(),
+                    Err(e) => s.call_error(e),
+                };
+                if on && let Some(d) = &mut s.nearby.send {
+                    match &r {
+                        Ok(_) => s.nearby.send = None,
+                        Err(_) => d.step = DriveStep::Failed(result.trim_start_matches("✗ ").to_string()),
+                    }
+                }
+                s.last = Some(Last { cmd, ok: r.is_ok(), result, who: "you, from this window".into(), at: Instant::now() });
+                s.load_peers(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The send sheet's Cancel: a prompt that's still up goes away, and nothing changes.
+    fn cancel_send(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.nearby.send.as_ref().map(|d| &d.step), Some(DriveStep::Saving)) {
+            self.nearby.send = None;
+            cx.notify();
+        }
     }
 
     /// Forget: armed by the first click, done by the second.
@@ -699,10 +840,16 @@ impl SettingsWindow {
                     });
                     if p.tier == Tier::MyDevice {
                         rows.push(RowSpec {
-                            label: format!("Auto-accept from {}", p.name),
-                            note: note(auto_accept_note(&p.auto_accept)),
-                            control: Control::Nearby(Ctl::AutoAccept { fingerprint: p.fingerprint.clone(), on: p.auto_accept.clone() }),
-                            cli: format!("midna peers auto-accept {} <kinds|all> on|off", id12(&p.fingerprint)),
+                            label: format!("Without asking, between {} and {}", p.name, me.name),
+                            note: note("What it sends lands here, and what agents here send it leaves, with no prompt.".into()),
+                            control: Control::Nearby(Ctl::Between {
+                                fingerprint: p.fingerprint.clone(),
+                                name: p.name.clone(),
+                                accept: p.auto_accept.clone(),
+                                send: p.agent_send.clone(),
+                                always: p.always_rules,
+                            }),
+                            cli: format!("midna peers agent-send {} <kinds|all> on|off", id12(&p.fingerprint)),
                             who: Who::Human,
                             warn: false,
                         });
@@ -788,39 +935,109 @@ impl SettingsWindow {
         self.set("nearby.mac_themes", json!(rules), cx);
     }
 
-    /// Toggle chips like the settings' own lists: one per kind of share, on when it's accepted
-    /// without asking.
-    fn nearby_auto_chips(&self, t: &Theme, id: usize, fingerprint: String, on: Vec<ShareKind>, cx: &mut Context<Self>) -> Div {
-        let mut row = div().flex().flex_wrap().gap(px(6.)).w_full();
+    /// A toggle chip like the settings' own lists (`all`: the dashed one that sets every kind).
+    fn nearby_chip(t: &Theme, id: String, label: &str, on: bool, all: bool, tip: String) -> Stateful<Div> {
+        div()
+            .id(SharedString::from(id))
+            .h(px(26.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(7.))
+            .text_size(px(12.))
+            .whitespace_nowrap()
+            .border_1()
+            .when(all, |c| c.border_dashed())
+            .cursor_pointer()
+            .map(|c| {
+                if on {
+                    c.bg(t.accent).border_color(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD)
+                } else {
+                    c.bg(t.raised).border_color(t.line).text_color(t.dim).hover(|s| s.text_color(t.fg).border_color(t.dim))
+                }
+            })
+            .tooltip(crate::ui::header::tip(tip))
+            .child(label.to_string())
+    }
+
+    /// The two lines under one of my devices: what's accepted from it without asking, and what
+    /// agents here send it without asking, each with an All chip; then the "Always" rules that
+    /// also let agents send to it.
+    fn nearby_between(&self, t: &Theme, id: usize, ctl: (String, String, Vec<ShareKind>, Vec<ShareKind>, u32), window: &Window, cx: &mut Context<Self>) -> Div {
+        let (fingerprint, name, accept, send, always) = ctl;
+        let narrow = window.viewport_size().width < px(832.);
+        let line = |key: &str, chips: Div| {
+            let k = div().text_size(px(12.)).text_color(t.dim).when(!narrow, |d| d.w(px(144.)).flex_none().pt(px(5.))).child(key.to_string());
+            div().flex().when(narrow, |d| d.flex_col().gap(px(6.))).when(!narrow, |d| d.gap(px(12.))).child(k).child(chips.flex_1().min_w_0())
+        };
+        let chips = || div().flex().flex_wrap().gap(px(6.));
+
+        let all_in = accept.len() == ShareKind::ALL.len();
+        let fp = fingerprint.clone();
+        let kinds: Vec<ShareKind> = ShareKind::ALL.into_iter().filter(|k| all_in || !accept.contains(k)).collect();
+        let mut a = chips().child(
+            Self::nearby_chip(t, format!("nearby-auto-{id}-all"), "All", all_in, true, if all_in { "Ask first again for every kind".into() } else { "Accept every kind without asking".into() })
+                .on_click(cx.listener(move |s, _, _, cx| s.set_auto_accept_all(fp.clone(), kinds.clone(), !all_in, cx))),
+        );
         for (n, kind) in ShareKind::ALL.into_iter().enumerate() {
-            let is_on = on.contains(&kind);
+            let is_on = accept.contains(&kind);
             let fp = fingerprint.clone();
             let tip = format!("{}. Click to {}", kind_tip(kind), if is_on { "ask first again" } else { "accept without asking" });
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!("nearby-auto-{id}-{n}")))
-                    .h(px(26.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(7.))
-                    .text_size(px(12.))
-                    .whitespace_nowrap()
-                    .border_1()
-                    .cursor_pointer()
-                    .map(|c| {
-                        if is_on {
-                            c.bg(t.accent).border_color(t.accent).text_color(t.accent_fg).font_weight(FontWeight::BOLD)
-                        } else {
-                            c.bg(t.raised).border_color(t.line).text_color(t.dim).hover(|s| s.text_color(t.fg).border_color(t.dim))
-                        }
-                    })
-                    .tooltip(crate::ui::header::tip(tip))
-                    .on_click(cx.listener(move |s, _, _, cx| s.set_auto_accept(fp.clone(), kind, !is_on, cx)))
-                    .child(kind_label(kind)),
+            a = a.child(
+                Self::nearby_chip(t, format!("nearby-auto-{id}-{n}"), kind_label(kind), is_on, false, tip)
+                    .on_click(cx.listener(move |s, _, _, cx| s.set_auto_accept(fp.clone(), kind, !is_on, cx))),
             );
         }
-        row
+
+        let all_out = send.len() == ShareKind::SENDABLE.len();
+        let (fp, nm) = (fingerprint.clone(), name.clone());
+        let missing: Vec<ShareKind> = ShareKind::SENDABLE.into_iter().filter(|k| all_out || !send.contains(k)).collect();
+        let all_tip = if all_out { "Agents here ask first again for every kind".to_string() } else { format!("Let agents here send {name} anything without asking. Asks for Touch ID or your password.") };
+        let mut b = chips().child(
+            Self::nearby_chip(t, format!("nearby-send-{id}-all"), "All", all_out, true, all_tip).on_click(cx.listener(move |s, _, window, cx| {
+                s.focus.focus(window, cx);
+                s.agent_send_chip(fp.clone(), nm.clone(), missing.clone(), !all_out, cx)
+            })),
+        );
+        for (n, kind) in ShareKind::SENDABLE.into_iter().enumerate() {
+            let is_on = send.contains(&kind);
+            let (fp, nm) = (fingerprint.clone(), name.clone());
+            let what = kind_label(kind).to_lowercase();
+            let tip = if is_on { format!("Agents here send {name} {what} without asking. Click to ask first again") } else { format!("Let agents here send {name} {what} without asking. Asks for Touch ID or your password") };
+            b = b.child(Self::nearby_chip(t, format!("nearby-send-{id}-{n}"), kind_label(kind), is_on, false, tip).on_click(cx.listener(move |s, _, window, cx| {
+                s.focus.focus(window, cx);
+                s.agent_send_chip(fp.clone(), nm.clone(), vec![kind], !is_on, cx)
+            })));
+        }
+
+        let mut col = div().flex().flex_col().gap(px(8.)).w_full().child(div().flex().flex_col().gap(px(6.)).child(line("Accept from it", a)).child(line("Agents send to it", b)));
+        if always > 0 {
+            let approvals = if always == 1 { "1 “Always” approval".to_string() } else { format!("{always} “Always” approvals") };
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(4.))
+                    .text_size(px(12.))
+                    .text_color(t.dim)
+                    .child(format!("Also allowed by {approvals}."))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("nearby-rules-{id}")))
+                            .text_color(t.accent)
+                            .cursor_pointer()
+                            .hover(|s| s.underline())
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                crate::windows::with_active_local(cx, |m, window, cx| {
+                                    window.activate_window();
+                                    m.set_screen(crate::app::Screen::Rules, window, cx);
+                                })
+                            }))
+                            .child("Show in Rules"),
+                    ),
+            );
+        }
+        col
     }
 
     /// A segmented choice like the settings' own (the picked one raised).
@@ -856,7 +1073,6 @@ impl SettingsWindow {
     }
 
     pub(super) fn nearby_control(&self, t: &Theme, ctl: Ctl, id: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let _ = window;
         match ctl {
             Ctl::Visibility { current, left } => {
                 let options = VISIBILITY
@@ -932,7 +1148,7 @@ impl SettingsWindow {
                     )
                     .into_any_element()
             }
-            Ctl::AutoAccept { fingerprint, on } => self.nearby_auto_chips(t, id, fingerprint, on, cx).into_any_element(),
+            Ctl::Between { fingerprint, name, accept, send, always } => self.nearby_between(t, id, (fingerprint, name, accept, send, always), window, cx).into_any_element(),
             Ctl::Drive { devices } => self.drive_devices(t, id, devices, cx).into_any_element(),
             Ctl::Look { fingerprint, name, current } => {
                 const OWN: &str = "";
@@ -1026,6 +1242,45 @@ impl SettingsWindow {
             .child(btn(t, "drive-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.cancel_drive(cx))))
             .child(btn_primary(t, "drive-allow", primary).on_click(cx.listener(|s, _, _, cx| s.ask_drive(cx))));
         Some(sheet_overlay(t, "drive", card, buttons, 3))
+    }
+
+    /// The sheet before agents here may send to one of my devices without asking.
+    pub(super) fn send_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let d = self.nearby.send.as_ref()?;
+        let what = if d.kinds.len() == ShareKind::SENDABLE.len() {
+            "anything".to_string()
+        } else {
+            let names: Vec<String> = d.kinds.iter().map(|k| kind_label(*k).to_lowercase()).collect();
+            names.join(", ")
+        };
+        let status = match &d.step {
+            DriveStep::Ready => None,
+            DriveStep::Asking(_) => Some(("Confirm with Touch ID or your password…".to_string(), t.need)),
+            DriveStep::Saving => Some(("Allowing…".into(), t.dim)),
+            DriveStep::Failed(e) => Some((sentence(e), t.err)),
+        };
+        let card = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(format!("Let agents here send to {} without asking?", d.name)))
+            .child(div().text_color(t.dim).child(format!("Agents on this Mac could send it {what} with no prompt here.")))
+            .child(div().text_color(t.dim).child("macOS asks for Touch ID or your password next. Turn it off here any time; that takes effect at once."))
+            .children(status.map(|(text, color)| div().flex().items_center().gap(px(8.)).text_color(color).child(Icon::Lock.el(14., color)).child(text)));
+        let primary = match &d.step {
+            DriveStep::Ready => "Continue…  ↩",
+            DriveStep::Failed(_) => "Try again  ↩",
+            DriveStep::Asking(_) => "Waiting…",
+            DriveStep::Saving => "Allowing…",
+        };
+        let buttons = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1())
+            .child(btn(t, "send-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| s.cancel_send(cx))))
+            .child(btn_primary(t, "send-allow", primary).on_click(cx.listener(|s, _, _, cx| s.ask_send(cx))));
+        Some(sheet_overlay(t, "agent-send", card, buttons, 3))
     }
 
     /// Local Network access as the last `peers.list` said.
@@ -1220,16 +1475,6 @@ fn sentence(s: &str) -> String {
     out
 }
 
-/// What an auto-accept row says under its name.
-fn auto_accept_note(on: &[ShareKind]) -> String {
-    let always = "Rules, triggers, settings and queued prompts always ask.";
-    if on.is_empty() {
-        return format!("Off: everything it sends asks you first. Turn on a kind to accept it without asking. {always}");
-    }
-    let names: Vec<String> = on.iter().map(|k| kind_label(*k).to_lowercase()).collect();
-    format!("Accepted without asking: {}. Everything else asks first. {always}", names.join(", "))
-}
-
 /// A sheet over the settings window: a card with its buttons under it, on a dimmed backdrop
 /// that takes the clicks.
 fn sheet_overlay(t: &Theme, id: &str, card: Div, buttons: Div, priority: usize) -> AnyElement {
@@ -1266,15 +1511,7 @@ fn sheet_overlay(t: &Theme, id: &str, card: Div, buttons: Div, priority: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::{ShareKind, auto_accept_note, mmss, sentence};
-
-    #[test]
-    fn auto_accept_says_what_still_asks() {
-        assert!(auto_accept_note(&[]).starts_with("Off: everything it sends asks you first."));
-        let n = auto_accept_note(&[ShareKind::Message, ShareKind::Object]);
-        assert!(n.starts_with("Accepted without asking: messages, summaries & themes."), "{n}");
-        assert!(n.ends_with("Rules, triggers, settings and queued prompts always ask."), "{n}");
-    }
+    use super::{mmss, sentence};
 
     #[test]
     fn countdown() {

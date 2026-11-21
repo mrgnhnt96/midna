@@ -21,7 +21,8 @@ pub fn send_value(payload: &SharePayload, fp: &str) -> String {
 }
 
 /// Before an agent's `share.send` connects: refuse a device it can't send to without asking,
-/// then go through policy. The human's own sends pass. When the peer is a paired device that
+/// then go through policy. Where no rule decides, a kind the human let agents send one of my
+/// devices without asking (Settings › Nearby) goes; anything else asks. The human's own sends pass. When the peer is a paired device that
 /// isn't visible right now, the guard still passes: `offer` queues the share and delivers it
 /// when the peer appears on the network.
 pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(), RpcError> {
@@ -31,9 +32,9 @@ pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(
     if !link::trusted(d, fp) {
         return Err(RpcError::refused("that device isn't paired with this Mac"));
     }
-    let (name, tier) = {
+    let (name, tier, without_asking) = {
         let mut i = d.nearby.inner();
-        let Some(stored) = i.store(&d.cfg.home).get(fp).map(|s| (s.name.clone(), s.tier)) else {
+        let Some(stored) = i.store(&d.cfg.home).get(fp).map(|s| (s.name.clone(), s.tier, s.agents_send(payload.kind()))) else {
             return Err(RpcError::refused("that device isn't paired with this Mac"));
         };
         stored
@@ -49,7 +50,7 @@ pub fn send(d: &Daemon, ctx: &Ctx, payload: &SharePayload, fp: &str) -> Result<(
          \"always\" lets agents here send {name} this kind of share without asking. Deny to keep it here.",
         nb::short_fingerprint(fp)
     );
-    crate::rpc::policy::gate_off_machine(d, ctx, &value, title, detail)
+    crate::rpc::policy::gate_off_machine(d, ctx, &value, title, detail, without_asking)
 }
 
 /// The approval's title and what it shows of the share. The first line of what it shows is a
@@ -134,6 +135,7 @@ fn cut(s: &str) -> String {
 
 /// `peers.set_drive`.
 pub const DRIVE_METHOD: &str = "peers.set_drive";
+pub const AGENT_SEND_METHOD: &str = "peers.set_agent_send";
 
 /// An agent called a human-only Nearby method: the refusal names the needs-you item the human
 /// answers instead (each pairing and each incoming share raised one), so the agent can point at
@@ -154,6 +156,15 @@ pub fn refusal(d: &Daemon, method: &str, params: &Value) -> Option<RpcError> {
             return Some(RpcError::human_only(
                 "peers.set_drive is human only: only the human can let another Mac drive this one (Settings › Nearby, \
                  or `midna peers drive <name> on|off` in their own shell); agents can't ask for it",
+            ));
+        }
+        // Never deferred either: approving it would let an agent stop asking for every share
+        // after.
+        AGENT_SEND_METHOD => {
+            return Some(RpcError::human_only(
+                "peers.set_agent_send is human only: only the human can let agents send their devices things without \
+                 asking (Settings › Nearby, or `midna peers agent-send <name> <kinds|all> on|off` in their own shell); \
+                 agents can't ask for it",
             ));
         }
         // Only the Midna app opens and closes drive links; nothing to approve for anyone else.

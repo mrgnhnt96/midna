@@ -800,6 +800,14 @@ fn build() -> Vec<MethodSpec> {
              settings and queued prompts always wait for the human's review. An agent session always asks (kind \
              agent is refused as bad params). If auto-accepting fails the share asks \
              as usual. Returns the device (auto_accept lists what is on); event peers.changed. Human only."),
+        m::<PeersSetAgentSendParams, PairedPeer>("peers.set_agent_send").mutating().human().d(
+            "Nearby: let agents on this Mac send one of my devices some kinds of share without asking (on true), \
+             or ask the human first again (on false). `kinds` lists them: message, snippet, link, file, tab, object, \
+             agent, agent_start, agent_ask, file_request. Everything is off by default. Only a device kept as \
+             my_device can have any (a contact is refused), and keeping it as a contact or forgetting it turns them \
+             all off. It stands in for the human's approval only where no rule decides: a rule that denies or asks \
+             still applies. Returns the device (agent_send lists what is on); event peers.changed. Human only: an \
+             agent's call is refused, never deferred to the human."),
         m::<ShareSendParams, ShareItem>("share.send").mutating().d(
             "Nearby: offer a paired device that is on the network now a message (kind message, `text`, optional \
              reply_to: the sh_… it answers), a snippet (kind snippet, `text`, optional title: text the other person can \

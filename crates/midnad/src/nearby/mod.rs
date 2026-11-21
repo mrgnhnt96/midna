@@ -45,7 +45,7 @@ pub mod transport;
 use crate::daemon::Daemon;
 use crate::rpc::{R, ok};
 use midna_proto::nearby::{self as nb, NearbyMe, Peer, PeerLeft, PeersListResult, Visibility};
-use midna_proto::{Actor, kinds, paths, time};
+use midna_proto::{ActionKind, Actor, ActorKind, Effect, kinds, paths, time};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -196,6 +196,20 @@ pub fn display_name(d: &Daemon) -> String {
     }
 }
 
+/// The patterns of the allow rules the human gave for agents' shares (`share send <kind>
+/// <device id>`, from approving "always"), live ones only.
+fn always_patterns(d: &Daemon) -> Vec<String> {
+    let now = time::now_unix();
+    d.core()
+        .state
+        .rules
+        .iter()
+        .filter(|r| r.effect == Effect::Allow && r.added_by.kind == ActorKind::Human && r.matcher.kind == ActionKind::Cli)
+        .filter(|r| r.matcher.pattern.starts_with("share send ") && !crate::policy::is_expired(r, now))
+        .map(|r| r.matcher.pattern.clone())
+        .collect()
+}
+
 /// `peers.list`.
 pub fn list(d: &Daemon) -> R {
     let fingerprint = identity(d).fingerprint.clone();
@@ -206,12 +220,22 @@ pub fn list(d: &Daemon) -> R {
     };
     let name = display_name(d);
     let local_network = access::state(d);
+    let always = always_patterns(d);
     let mut i = d.nearby.inner();
     pairing::prune(&mut i);
     let store = i.store(&d.cfg.home).clone();
     let mut peers: Vec<Peer> = i.peers.values().cloned().map(|p| annotate(p, &store)).collect();
     peers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.fingerprint.cmp(&b.fingerprint)));
-    let paired = store.peers.values().map(|s| s.paired(i.peers.contains_key(&s.fingerprint))).collect();
+    let paired = store
+        .peers
+        .values()
+        .map(|s| {
+            let mut p = s.paired(i.peers.contains_key(&s.fingerprint));
+            let to = format!(" {}", p.fingerprint);
+            p.always_rules = always.iter().filter(|pat| pat.ends_with(&to)).count() as u32;
+            p
+        })
+        .collect();
     let mut pairings: Vec<_> = i.pairings.values().map(|s| s.info.clone()).collect();
     pairings.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     ok(PeersListResult {

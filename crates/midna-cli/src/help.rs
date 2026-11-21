@@ -757,7 +757,7 @@ pub static VERBS: &[Verb] = &[
         aliases: &["nearby"],
         usage: "peers [list] | sessions <name|id> | pair <name|id> | confirm [<pairing>] [--as contact|my-device [--allow-drive]] [--no]\n\
                 \x20     | forget <name|id> | tier <name|id> --as contact|my-device | auto-accept <name|id> <kinds|all> on|off\n\
-                \x20     | drive <name|id> on|off\n\
+                \x20     | agent-send <name|id> <kinds|all> on|off | drive <name|id> on|off\n\
                 \x20     | visibility off|paired|everyone | name [<name>]",
         summary: "other Midnas on the same network (Nearby), and who can find this Mac",
         details: "list        this Mac's name, device id and visibility, then the Midnas it can see over Bonjour.\n\
@@ -776,12 +776,16 @@ pub static VERBS: &[Verb] = &[
                   \x20           declines. Each pairing also raises a needs-you approval that confirms as a contact.\n\
                   \x20           Agents can start a pairing but never confirm one.\n\
                   tier        (human only) peers tier <name or id> --as contact|my-device: change how a paired\n\
-                  \x20           device is kept. Keeping it as a contact turns off all its auto-accept and driving.\n\
+                  \x20           device is kept. Keeping it as a contact turns off its auto-accept, agent-send and driving.\n\
                   auto-accept (human only) peers auto-accept <name or id> message,file on|off (or all): shares of\n\
                   \x20           those kinds from one of your own devices are accepted without asking. All are off by\n\
                   \x20           default, and a contact can't have any. Of Midna's own things only summaries and themes\n\
                   \x20           are; rules, triggers, settings and queued prompts always ask. Agent sessions always ask;\n\
                   \x20           agent starts (agent-start) and asks (agent-ask) can be auto-accepted.\n\
+                  agent-send  (human only) peers agent-send <name or id> message,file on|off (or all): agents\n\
+                  \x20           here send one of your own devices those kinds without asking you first (kinds as for\n\
+                  \x20           auto-accept, plus agent and file-request). All are off by default, and a contact can't\n\
+                  \x20           have any. A rule that denies or asks still applies. Agents are refused: they can't ask.\n\
                   drive       (human only) peers drive <name or id> on|off: let one of your own devices drive\n\
                   \x20           this Mac (open, use and approve terminals and agents here), or stop it. Off by\n\
                   \x20           default; a contact can't. Turning it off cuts its drive links at once. Agents are\n\
@@ -793,7 +797,7 @@ pub static VERBS: &[Verb] = &[
                   for up to a minute while it's waiting. Events peers.appeared, peers.left, peers.pairing,\n\
                   peers.pairing_ended, peers.paired, peers.changed, peers.drive, peers.forgotten and peers.local_network (midna\n\
                   events --kind peers.) follow all of this.",
-        methods: &["peers.list", "peers.sessions", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.set_drive", "peers.forget"],
+        methods: &["peers.list", "peers.sessions", "peers.pair", "peers.confirm", "peers.set_tier", "peers.set_auto_accept", "peers.set_agent_send", "peers.set_drive", "peers.forget"],
     },
     Verb {
         name: "share",
