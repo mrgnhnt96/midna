@@ -1082,6 +1082,11 @@ impl TerminalView {
             return false;
         }
         let (cmd, alt, key) = (m.platform, m.alt, ks.key.as_str());
+        // ⌘A's selection of all of a long input starts out of view, where ⇧ can't move it from:
+        // a ⇧ move starts a new selection at the cursor instead, so ⌫ erases only what's shown.
+        if m.shift && matches!(key, "up" | "down" | "left" | "right") && self.kbd_sel.is_some_and(|k| k.all) {
+            self.kbd_sel = None;
+        }
         // ⌘↑ ⌘↓: to the start or end of an agent's text (⇧ selects). A shell's line is one
         // line, so there ⇧⌘↑ ⇧⌘↓ select to its start or end and plain ⌘↑ ⌘↓ still scroll.
         if cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
@@ -1104,6 +1109,18 @@ impl TerminalView {
         }
         if m.shift && !cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
+            if self.agent_kind() == Some("codex")
+                && self.long_sel.as_ref().is_none_or(LongSel::settled)
+                && let Some(moves) = term_edit::codex_vertical_at_edge(key, &self.grid, c)
+            {
+                if !self.selecting() {
+                    self.select_from(c);
+                }
+                for mv in moves {
+                    self.send_move(mv);
+                }
+                return true;
+            }
             if let Some(long) = self.codex_long_sel(c) {
                 if let Some(mv) = long.vertical(key) {
                     self.send_move(mv);
@@ -1387,9 +1404,9 @@ impl TerminalView {
                 self.settle(Some(Pending::Follow { tries: WALK_TRIES, then }), cx);
                 self.check_erase(cx);
             }
-            Some((Some(Pending::Follow { .. }), _)) => {}
+            Some((Some(Pending::Follow { then: ref mut queued, .. }), _)) => *queued = queued.and(then),
             Some((Some(Pending::ToEdge(ref mut walk)), _)) => {
-                walk.then.get_or_insert(then);
+                walk.then = Some(walk.then.map_or(then, |queued| queued.and(then)));
             }
             Some(_) => self.say_lost_sel(then, cx),
         }
