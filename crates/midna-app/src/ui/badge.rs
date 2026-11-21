@@ -804,14 +804,15 @@ pub fn go_newest(mac: crate::windows::MacId, cx: &mut App) {
     let Some(h) = handle(cx) else { return };
     let _ = h.update(cx, |b, _, cx| {
         let Some(l) = b.front_line(&mac) else { return };
-        let (session, need, sent) = (l.session.clone(), l.need.clone(), l.sent.clone());
-        match l.peer.clone() {
-            Some(peer) => b.open_on(peer, session, need, cx),
-            None => {
-                let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
-                b.open(session, need, held, sent, false, cx);
+        if l.peer.is_some() {
+            if let Some(w) = b.line_row(l).cloned() {
+                b.open_row_on(&w, cx);
             }
+            return;
         }
+        let (session, need, sent) = (l.session.clone(), l.need.clone(), l.sent.clone());
+        let held = l.need.is_none().then(|| l.waiting.clone()).flatten();
+        b.open(session, need, held, sent, false, cx);
     });
 }
 
@@ -841,6 +842,13 @@ fn words(n: &NeedsYou) -> (String, Option<String>, Option<String>) {
     };
     let detail = n.question.as_ref().map(|q| q.text.trim().to_string()).or_else(|| super::setting_change::summary(n)).or_else(|| Some(n.detail.trim().to_string())).filter(|d| !d.is_empty() && Some(d) != command.as_ref());
     (title, detail, command)
+}
+
+/// Another Mac's row its card opens there ("Open on <Mac>"): an item, or a post from a terminal
+/// there with no web link (that one opens here).
+fn opens_on_mac(w: &Waiting) -> bool {
+    let web = w.sent.as_ref().and_then(|s| s.open.as_deref()).is_some_and(web_url);
+    w.mac.is_some() && (w.need.is_some() || (w.session.is_some() && !web))
 }
 
 /// What waits on my other Macs, as their lists' rows. Their cards act on them over that Mac's
@@ -1571,12 +1579,18 @@ impl Badge {
     }
 
     /// The capsule beside the badge, when it's showing, is about a terminal or an item, and is
-    /// from `mac` (None this Mac, or another's peer). Another Mac's needs its item to go to.
+    /// from `mac` (None this Mac, or another's peer). Another Mac's goes by its row, which its
+    /// card opens there (its line holds no ids: those are that Mac's, not this one's).
     fn front_line(&self, mac: &crate::windows::MacId) -> Option<&Line> {
         self.lines
             .front()
             .filter(|l| l.leaving.is_none() && l.peer == *mac)
-            .filter(|l| if l.peer.is_some() { l.need.is_some() } else { l.session.is_some() || l.need.is_some() })
+            .filter(|l| if l.peer.is_some() { self.line_row(l).is_some_and(opens_on_mac) } else { l.session.is_some() || l.need.is_some() })
+    }
+
+    /// The list's row a capsule is about, while it's still waiting.
+    fn line_row(&self, l: &Line) -> Option<&Waiting> {
+        l.waiting.as_deref().and_then(|id| self.row(id))
     }
 
     /// The Macs' tabs that show: those with something waiting.
@@ -2477,6 +2491,19 @@ impl Badge {
             }),
         }
         cx.notify();
+    }
+
+    /// Another Mac's row, opened there as its card's "Open on <Mac>" does. A post is seen (that
+    /// Mac hears it was clicked, and it leaves the list), unless that Mac is asleep.
+    fn open_row_on(&mut self, w: &Waiting, cx: &mut Context<Self>) {
+        let Some(peer) = w.mac.clone() else { return };
+        if w.need.is_none() && !w.asleep {
+            if let Some(sent) = &w.sent {
+                self.respond(sent, midna_proto::notify::ResponseKind::Clicked, None);
+            }
+            self.dismiss(&w.id, cx);
+        }
+        self.open_on(peer, w.session.clone(), w.need.clone(), cx);
     }
 
     /// Another Mac's card's "Open on <Mac>": that Mac's window comes forward on the item's
@@ -4231,25 +4258,16 @@ impl Badge {
         let opens = sent.as_ref().is_some_and(|s| s.open.is_some());
         // Another Mac's post's link, when it opens here too (it goes first, as this Mac's does).
         let web = sent.as_ref().and_then(|s| s.open.as_deref()).is_some_and(web_url);
-        if let Some(peer) = w.mac.clone().filter(|_| w.need.is_some() || (w.session.is_some() && !web)) {
+        if let Some(peer) = w.mac.as_deref().filter(|_| opens_on_mac(w)) {
             // Another Mac's: that Mac's window, on its terminal with its card showing. Asleep,
             // its window shows it reconnecting, then the terminal once it's back.
-            let label = if w.asleep { "Open when back".to_string() } else { format!("Open on {}", self.mac_name(&peer)) };
-            // A post is seen: that Mac hears it was clicked, and it leaves the list.
-            let post = held.clone().filter(|_| !w.asleep).map(|id| (id, sent.clone()));
+            let label = if w.asleep { "Open when back".to_string() } else { format!("Open on {}", self.mac_name(peer)) };
+            let row = w.clone();
             buttons = buttons.child(
                 button(t, "card-open", &label, false)
                     .gap(px(6.))
                     .child(Icon::Arrow.el(12., t.fg))
-                    .on_click(cx.listener(move |b, _, _, cx| {
-                        if let Some((id, sent)) = &post {
-                            if let Some(sent) = sent {
-                                b.respond(sent, midna_proto::notify::ResponseKind::Clicked, None);
-                            }
-                            b.dismiss(id, cx);
-                        }
-                        b.open_on(peer.clone(), session.clone(), need.clone(), cx);
-                    })),
+                    .on_click(cx.listener(move |b, _, _, cx| b.open_row_on(&row, cx))),
             );
         } else if w.mac.is_some() && !web {
             // Another Mac's post with no terminal there and no web link: nowhere to go from here
@@ -4670,6 +4688,48 @@ mod tests {
         follow_posts(&p, Reach::Connected, vec![post(43, "again")], cx);
         p.badge.update(cx, |b, _, cx| b.forget(&mac_tab::row_id(&p.peer, "n43"), cx)).unwrap();
         assert_eq!(response(&p, "again", Duration::from_secs(5)), json!({ "kind": "dismissed" }));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_j_takes_another_macs_capsule_in_its_window(cx: &mut TestAppContext) {
+        use crate::mac_feed::{Post, Reach};
+        let p = pill('j', cx);
+        let peer = Some(p.peer.clone());
+        let sid = p.mini.call("session.list", json!({})).unwrap()[0]["id"].as_str().unwrap().to_string();
+        let post = |seq: u64, session: Option<String>| {
+            let posted = json!({ "category": "attention", "title": "", "via": "app", "id": format!("p{seq}"), "body": "Build finished", "stay_secs": 0 });
+            Post { seq, session, at: midna_proto::time::now_rfc3339(), posted: serde_json::from_value(posted).unwrap() }
+        };
+        // Its capsule springs out: the row ⌘J opens there from that Mac's window, and whether
+        // ⌘J in this Mac's window takes it (never).
+        let front = |cx: &mut TestAppContext| {
+            p.badge
+                .update(cx, |b, _, _| {
+                    b.spring_mac_line(Instant::now() + Duration::from_secs(60));
+                    (b.front_line(&peer).and_then(|l| b.line_row(l)).map(|w| w.id.clone()), b.front_line(&None).is_some())
+                })
+                .unwrap()
+        };
+        follow_as(&p, Reach::Connected, cx);
+        // A post from a terminal there.
+        follow_posts(&p, Reach::Connected, vec![post(51, Some(sid.clone()))], cx);
+        assert_eq!(front(cx), (Some(mac_tab::row_id(&p.peer, "n51")), false));
+        // One from no terminal: nowhere there to go.
+        follow_posts(&p, Reach::Connected, vec![post(51, Some(sid.clone())), post(52, None)], cx);
+        assert_eq!(front(cx), (None, false));
+        // An item there.
+        let mut item = serde_json::to_value(&parse_list::<NeedsYou>(&p.mini.call("needs_you.list", json!({})).unwrap())[0]).unwrap();
+        item["title"] = json!("Run the migration?");
+        let need = p.mini.call("needs_you.raise", item).unwrap()["id"].as_str().unwrap().to_string();
+        follow_posts(&p, Reach::Connected, vec![post(51, Some(sid.clone())), post(52, None)], cx);
+        let item = mac_tab::row_id(&p.peer, &need);
+        assert_eq!(front(cx), (Some(item.clone()), false));
+        // Its id is that Mac's, not this one's: a recount here leaves its capsule be.
+        p.badge.update(cx, |b, _, cx| b.recount(cx)).unwrap();
+        assert_eq!(front(cx), (Some(item.clone()), false));
+        // Once it's handled there, ⌘J has nothing to go to.
+        p.badge.update(cx, |b, _, _| b.cleared.push(item.clone())).unwrap();
+        assert_eq!(front(cx), (None, false));
     }
 
     #[gpui_kit::test]
