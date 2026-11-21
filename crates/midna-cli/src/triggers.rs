@@ -161,7 +161,9 @@ fn print_trigger(t: &Value) {
             println!("  when     {}", sc.describe(c));
             println!("  runs     {} (local time)", if runs.is_empty() { "never again".into() } else { format!("{}, …", runs.join(", ")) });
         } else {
-            println!("  cooldown {}s per terminal", t["cooldown_secs"].as_u64().unwrap_or(60));
+            let event = s(t, "event");
+            let secs = t["cooldown_secs"].as_u64().unwrap_or_else(|| midna_proto::types::default_cooldown_secs(&event));
+            println!("  cooldown {secs}s {}", midna_proto::types::cooldown_scope(&event));
         }
     } else {
         let secret = if t["secret_set"].as_bool() == Some(true) { format!("set {} ({})", s(t, "secret_set_at"), s(t, "secret_store")) } else { "not set".into() };

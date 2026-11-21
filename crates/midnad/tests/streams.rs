@@ -98,9 +98,10 @@ fn a_flood_is_deduped_rate_limited_cooled_down_and_listed() {
     let d = TestDaemon::start();
     let mut h = d.human();
     let notify = json!({ "kind": "notify", "title": "{{stream.id}}" });
-    // Default cooldown: once a minute per stream. Zero: every event.
-    let once = call(&mut h, "trigger.add", json!({ "name": "once", "source": "local", "event": "stream.flood.*", "action": notify, "enabled": true }));
-    let every = call(&mut h, "trigger.add", json!({ "name": "every", "source": "local", "event": "stream.flood.*", "action": notify, "enabled": true, "cooldown_secs": 0 }));
+    // A stream trigger has no cooldown by default: every event. A minute's: once per stream.
+    let once = call(&mut h, "trigger.add", json!({ "name": "once", "source": "local", "event": "stream.flood.*", "action": notify, "enabled": true, "cooldown_secs": 60 }));
+    let every = call(&mut h, "trigger.add", json!({ "name": "every", "source": "local", "event": "stream.flood.*", "action": notify, "enabled": true }));
+    assert_eq!(every.get("cooldown_secs"), None, "{every}");
 
     // 30 at once: the burst of 20 gets in, the rest are over the rate limit.
     let mut first = None;
@@ -144,7 +145,7 @@ fn a_flood_is_deduped_rate_limited_cooled_down_and_listed() {
     assert_eq!(call(&mut h, "streams.events", json!({ "stream": "nobody" })), json!({ "stream": "nobody", "events": [], "counts": { "accepted": 0, "duplicate": 0, "rate_limited": 0, "too_large": 0, "busy": 0, "refused": 0 } }));
     assert!(bad(&mut h, "streams.events", json!({ "stream": "No Such" })).contains("a-z 0-9 -"));
 
-    // The trigger with no cooldown fires for each accepted event; the default one once.
+    // The default trigger fires for each accepted event; the one with a minute's cooldown once.
     let deliveries = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"], "limit": 100 })).as_array().map_or(0, Vec::len);
     wait_for(10, "a delivery per accepted event", || (deliveries(&mut h, &every) == 20).then_some(()));
     assert_eq!(deliveries(&mut h, &once), 1, "cooled down for the stream");
@@ -216,8 +217,8 @@ fn trigger_replay_reruns_a_recorded_stream_event() {
     let d = TestDaemon::start();
     let mut h = d.human();
     let deliveries = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"], "limit": 100 })).as_array().cloned().unwrap_or_default();
-    // The default cooldown: a replay within the minute still fires.
-    let t = call(&mut h, "trigger.add", json!({ "name": "Note", "source": "local", "event": "stream.ci.*", "action": { "kind": "notify", "title": "{{stream.id}} {{data.n}}" }, "enabled": true }));
+    // A minute's cooldown: a replay within the minute still fires.
+    let t = call(&mut h, "trigger.add", json!({ "name": "Note", "source": "local", "event": "stream.ci.*", "action": { "kind": "notify", "title": "{{stream.id}} {{data.n}}" }, "enabled": true, "cooldown_secs": 60 }));
     let p = call(&mut h, "streams.publish", json!({ "stream": "ci", "kind": "done", "id": "b1", "data": { "n": 3 } }));
     let seq = p["seq"].as_u64().unwrap();
     wait_for(5, "the first firing", || Some(deliveries(&mut h, &t)).filter(|d| d.len() == 1));

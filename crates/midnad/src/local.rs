@@ -6,8 +6,8 @@
 //! One worker thread takes events (the event log's listener) and hooks (`agent.hook`) in order,
 //! clears custom statuses whose condition passed, and fires matching triggers. Events a trigger
 //! caused never fire triggers (no chains, no loops), and a trigger waits `cooldown_secs`
-//! (default 60) before firing again for the same terminal, or for the same stream when a
-//! published event has no terminal. `send_to_session` adds its steps to
+//! before firing again for the same terminal (default 60), or for the same stream when a
+//! published event has no terminal (default 0: each event fires). `send_to_session` adds its steps to
 //! the terminal's message queue (`queue.rs`), which types each once the agent is ready.
 //!
 //! It also notices prompts a UserPromptSubmit hook refused: Claude erases the prompt, writes a
@@ -24,7 +24,6 @@ use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_COOLDOWN_SECS: u64 = 60;
 /// The built-in trigger that labels a terminal whose prompt a hook refused.
 pub const BUILTIN_PROMPT_BLOCKED: &str = "prompt_blocked_status";
 const IDLE_TICK: Duration = Duration::from_secs(15);
@@ -512,7 +511,7 @@ fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<
         // Per terminal; a stream event has none, so per stream.
         let on = s.as_ref().map(|s| s.id.clone()).or_else(|| stream.map(|x| format!("stream:{}", x.name)));
         if let Some(on) = on {
-            let cooldown = Duration::from_secs(t.cooldown_secs.unwrap_or(DEFAULT_COOLDOWN_SECS));
+            let cooldown = Duration::from_secs(t.cooldown());
             let key = (t.id.clone(), on);
             let mut b = d.local.book();
             if b.fired.get(&key).is_some_and(|at| at.elapsed() < cooldown) {
