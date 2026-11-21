@@ -30,6 +30,7 @@ mod pr_status;
 mod prompt_nav;
 mod queue_pill;
 mod secret_paste;
+mod up_burst;
 pub mod send_image;
 
 pub use link_preview::share as share_preview_env;
@@ -168,6 +169,10 @@ pub struct TerminalView {
     kbd_sel: Option<KbdSel>,
     /// `kbd_sel` in Claude's long input, where its ends can scroll out of view.
     long_sel: Option<LongSel>,
+    /// Plain ↑ pressed fast in Claude's input, kept from running past its first row.
+    up_burst: Option<up_burst::UpBurst>,
+    /// A timer is checking on `up_burst` for ↑ the screen never shows.
+    up_watch: bool,
     /// Until when a redraw of an agent's input may renumber its list (`list_key`).
     list_watch: Option<Instant>,
     /// Bumped by each redraw while `list_watch` runs; a renumber waits for it to settle.
@@ -500,6 +505,8 @@ impl TerminalView {
             preview: Default::default(),
             kbd_sel: None,
             long_sel: None,
+            up_burst: None,
+            up_watch: false,
             list_watch: None,
             list_gen: 0,
             agent: None,
@@ -782,6 +789,7 @@ impl TerminalView {
         }
         if rows_changed || moved {
             self.follow_long_sel();
+            self.follow_up_burst();
         }
         if let Some((pending, _)) = &self.erasing {
             // Check once the app has gone quiet, not between its redraws.
@@ -870,6 +878,15 @@ impl TerminalView {
             return;
         }
         self.list_watch = None;
+        let plain_up = ks.key == "up" && !m.shift && !m.platform && !m.alt && !m.control;
+        if !plain_up {
+            // Another key ends a burst of ↑: any held back are dropped, not sent after it.
+            self.up_burst = None;
+        } else if self.find.is_none() && self.marked.is_none() && self.up_key(cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.find.is_none() && self.marked.is_none() && self.list_key(ks) {
             cx.stop_propagation();
             cx.notify();
@@ -1167,7 +1184,7 @@ impl TerminalView {
                 self.kbd_sel = None;
                 let target = if key == "left" { lo.0 } else { hi.0 };
                 let row = self.grid.get(c.1 as usize).cloned().unwrap_or_default();
-                let n = term_edit::chars_between(&row, c.0, target);
+                let n = term_edit::chars_between(&row, c.0, target) - term_edit::chip_savings(&self.grid, c, (target, c.1), self.indent());
                 for _ in 0..n {
                     self.arrow(if target < c.0 { "left" } else { "right" });
                 }
@@ -1332,6 +1349,59 @@ impl TerminalView {
         }
     }
 
+    /// A plain ↑ in Claude's input: sent, held back or dropped by [`up_burst::UpBurst`]. False
+    /// sends it the usual way.
+    fn up_key(&mut self, cx: &mut Context<Self>) -> bool {
+        let c = self.live_cursor().filter(|_| self.agent_kind() == Some("claude") && self.line_editing() && self.erasing.is_none());
+        let Some(c) = c else {
+            self.up_burst = None;
+            return false;
+        };
+        match up_burst::UpBurst::key(&mut self.up_burst, &self.grid, c, Instant::now()) {
+            up_burst::Up::Pass => return false,
+            up_burst::Up::Hold => {}
+            up_burst::Up::Send => self.arrow("up"),
+        }
+        self.kbd_sel = None;
+        self.typed();
+        self.watch_up_burst(cx);
+        true
+    }
+
+    /// A new frame: send the held ↑ the screen now shows room for.
+    fn follow_up_burst(&mut self) {
+        let c = self.live_cursor();
+        let Some(burst) = self.up_burst.as_mut() else { return };
+        for _ in 0..burst.frame(&self.grid, c, Instant::now()) {
+            self.arrow("up");
+        }
+    }
+
+    /// While ↑ are held or on their way, check now and then that the screen still shows them
+    /// landing; when it stops, drop the held ones.
+    fn watch_up_burst(&mut self, cx: &mut Context<Self>) {
+        if self.up_watch {
+            return;
+        }
+        self.up_watch = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(up_burst::WAIT / 3).await;
+                let busy = this.update(cx, |t, _| {
+                    if t.up_burst.as_ref().is_some_and(|b| b.stale(Instant::now())) {
+                        t.up_burst = None;
+                    }
+                    t.up_watch = t.up_burst.as_ref().is_some_and(up_burst::UpBurst::busy);
+                    t.up_watch
+                });
+                if !busy.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     /// The cursor, for deciding on a key that goes by what's on screen: as it will be once the
     /// arrows on their way have shown, so that fast keys can't run past the rows in view.
     fn aimed(&self, c: term_edit::Pos) -> term_edit::Pos {
@@ -1384,6 +1454,7 @@ impl TerminalView {
         }
         let Some((s, e)) = term_edit::replace_range(kbd, &self.ext.selection, c) else { return false };
         let mouse = !kbd.is_some_and(|k| k.anchor != c);
+        let (s, e) = if mouse { term_edit::snap_to_chips(&self.grid, s, e, self.indent()) } else { (s, e) };
         if mouse && !(s.1 == c.1 && e.1 == c.1) {
             return self.start_mouse_erase(s, e, c, cx);
         }
@@ -1391,6 +1462,10 @@ impl TerminalView {
             return self.start_erase_job(s, e, c, cx);
         }
         let Some((moves, n)) = self.grid.get(c.1 as usize).and_then(|row| term_edit::erase_plan(row, c.0, s.0, e.0)) else { return false };
+        // A chip is one press to cross or erase, however many cells it takes.
+        let chips = |a: u16, b: u16| term_edit::chip_savings(&self.grid, (a, c.1), (b, c.1), self.indent());
+        let moves = moves - moves.signum() * chips(c.0, e.0) as i64;
+        let n = n - chips(s.0, e.0);
         for _ in 0..moves.unsigned_abs() {
             self.arrow(if moves < 0 { "left" } else { "right" });
         }

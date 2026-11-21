@@ -472,11 +472,12 @@ pub fn row_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
     let (y, row) = (cursor.1, grid.get(cursor.1 as usize)?);
     let wrap = Wrap::of(grid.get(top as usize)?);
     let joined = |a: u16| row_break(&box_row(grid, top, a), &box_row(grid, top, a + 1), wrap) != "\n";
-    let n = match key {
-        "left" if y > top && joined(y - 1) => chars_between(row, AGENT_INDENT, cursor.0.max(AGENT_INDENT)),
-        "right" if y < bottom && joined(y) => chars_between(row, cursor.0.min(text_end(row)), text_end(row)),
+    let (a, b) = match key {
+        "left" if y > top && joined(y - 1) => (AGENT_INDENT, cursor.0.max(AGENT_INDENT)),
+        "right" if y < bottom && joined(y) => (cursor.0.min(text_end(row)), text_end(row)),
         _ => return None,
     };
+    let n = chars_between(row, a, b) - chip_savings(grid, (a, y), (b, y), AGENT_INDENT);
     Some(vec![Send::Arrow(if key == "left" { "left" } else { "right" }); n])
 }
 
@@ -670,10 +671,111 @@ pub fn spans(grid: &[RowData], s: Pos, e: Pos, indent: u16) -> Vec<(u16, u16, u1
     out
 }
 
-/// Characters a selection certainly holds: what [`spans`] covers, trimmed to each row's text.
-/// The true count adds the line breaks and any indent that is really text, never less.
+/// Key presses a selection certainly holds: the characters [`spans`] covers, trimmed to each
+/// row's text, with each of an agent's chips one press ([`chip_savings`]). The true count adds the
+/// line breaks and any indent that is really text, never less.
 pub fn lower_bound(grid: &[RowData], s: Pos, e: Pos, indent: u16) -> usize {
-    spans(grid, s, e, indent).iter().map(|&(y, x0, x1)| grid.get(y as usize).map_or(0, |r| chars_between(r, x0, (x1 + 1).min(text_end(r))))).sum()
+    let chars: usize = spans(grid, s, e, indent).iter().map(|&(y, x0, x1)| grid.get(y as usize).map_or(0, |r| chars_between(r, x0, (x1 + 1).min(text_end(r))))).sum();
+    chars.saturating_sub(chip_savings(grid, s, e, indent))
+}
+
+/// How long the chip Claude Code shows for an attachment is, when `t` starts with one:
+/// `[Pasted text #2 +5 lines]`, `[Pasted text #3]` (a long line) or `[Image #1]`.
+fn chip_len(t: &[char]) -> Option<usize> {
+    let head: String = t.iter().take(48).collect();
+    let (rest, pasted) = match head.strip_prefix("[Pasted text #") {
+        Some(rest) => (rest, true),
+        None => (head.strip_prefix("[Image #")?, false),
+    };
+    let number = |s: &str| Some(s.chars().take_while(char::is_ascii_digit).count()).filter(|n| *n > 0);
+    let after = &rest[number(rest)?..];
+    let tail = match after.strip_prefix(" +") {
+        Some(lines) if pasted => {
+            let unit = &lines[number(lines)?..];
+            2 + (lines.len() - unit.len()) + [" lines]", " line]"].iter().find(|u| unit.starts_with(**u))?.len()
+        }
+        _ if after.starts_with(']') => 1,
+        _ => return None,
+    };
+    Some(head.len() - after.len() + tail)
+}
+
+/// The cells of each chip ([`chip_len`]) on rows `top..=bottom` of an agent's input, past
+/// `indent`. A chip wraps at its spaces like words do, onto as many rows as it needs.
+fn chips(grid: &[RowData], top: u16, bottom: u16, indent: u16) -> Vec<Vec<Pos>> {
+    let mut cells: Vec<(char, Option<Pos>)> = vec![];
+    for y in top..=bottom.min(grid.len().saturating_sub(1) as u16) {
+        let row = &grid[y as usize];
+        if !cells.is_empty() {
+            cells.push((' ', None));
+        }
+        for x in indent..text_end(row).max(indent) {
+            if let Some(c) = row.cells.get(x as usize).filter(|c| c.flags & F_SPACER == 0) {
+                cells.push((if c.ch == '\0' { ' ' } else { c.ch }, Some((x, y))));
+            }
+        }
+    }
+    let text: Vec<char> = cells.iter().map(|c| c.0).collect();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < text.len() {
+        match (text[i] == '[').then(|| chip_len(&text[i..])).flatten() {
+            Some(n) => {
+                out.push(cells[i..i + n].iter().filter_map(|c| c.1).collect());
+                i += n;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// How many fewer presses than characters it takes to cross `a..b` (in reading order) in an
+/// agent's input (`indent` > 0): Claude Code moves over or erases a chip ([`chip_len`]) with a
+/// single ←, →, ⌫ or ⌦, so each chip in the range is one press, however many of its cells are.
+pub fn chip_savings(grid: &[RowData], a: Pos, b: Pos, indent: u16) -> usize {
+    if indent == 0 {
+        return 0;
+    }
+    let (a, b) = ordered(a, b);
+    let inside = |p: &&Pos| (a.1, a.0) <= (p.1, p.0) && (p.1, p.0) < (b.1, b.0);
+    let chips = chips(grid, a.1.saturating_sub(CHIP_ROWS), b.1 + CHIP_ROWS, indent);
+    chips.iter().map(|chip| chip.iter().filter(inside).count().saturating_sub(1)).sum()
+}
+
+/// Rows a chip can reach past a range's own: one wrapped over three rows ends two below.
+const CHIP_ROWS: u16 = 2;
+
+/// A selection `s..e` in an agent's input, taking in all of any chip it cuts into: the cursor
+/// never stops inside one, so it couldn't get to that edge.
+pub fn snap_to_chips(grid: &[RowData], s: Pos, e: Pos, indent: u16) -> (Pos, Pos) {
+    if indent == 0 {
+        return (s, e);
+    }
+    let at = |p: Pos| (p.1, p.0);
+    let (mut s, mut e) = (s, e);
+    for chip in chips(grid, s.1.saturating_sub(CHIP_ROWS), e.1 + CHIP_ROWS, indent) {
+        let (Some(&first), Some(&last)) = (chip.first(), chip.last()) else { continue };
+        let within = |p: Pos| at(first) < at(p) && at(p) <= at(last);
+        if within(s) {
+            s = first;
+        }
+        if within(e) {
+            e = (last.0 + 1, last.1);
+        }
+    }
+    (s, e)
+}
+
+/// Text with each chip ([`chip_len`]) in it counted as the one press that erases it.
+fn presses_in(text: &str) -> usize {
+    let t: Vec<char> = text.chars().collect();
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        i += (t[i] == '[').then(|| chip_len(&t[i..])).flatten().unwrap_or(1);
+        n += 1;
+    }
+    n
 }
 
 /// How to erase columns `lo..hi` of `row` with the cursor at column `cursor`: arrows to put
@@ -1186,9 +1288,11 @@ pub struct LongSel {
 impl LongSel {
     /// Starts at the cursor, in a box that may be a window on longer text (None in any other).
     pub fn start(grid: &[RowData], cursor: Pos) -> Option<LongSel> {
-        if !box_is_full(grid, cursor) {
-            return None;
-        }
+        Self::track(grid, cursor).filter(|_| box_is_full(grid, cursor))
+    }
+
+    /// Follows the cursor in any agent's box, a window or not: to count the ↑ and ↓ on their way.
+    pub fn track(grid: &[RowData], cursor: Pos) -> Option<LongSel> {
         let (top, rows) = box_window(grid, cursor)?;
         let wrap = Wrap::of(grid.get(top as usize)?);
         let at = (cursor.0, cursor.1 - top);
@@ -1371,7 +1475,7 @@ impl LongSel {
             after: text_of(last, e.0, text_end(last).max(e.0)),
             budget: counted + uncounted,
         };
-        (job, self.text().chars().count() - counted)
+        (job, presses_in(&self.text()).saturating_sub(counted))
     }
 }
 
@@ -2403,6 +2507,47 @@ mod tests {
         // A selection running into trailing blanks stops at the text.
         assert_eq!(erase_plan(&r, 19, 14, 22), Some((0, 5)));
         assert_eq!(erase_plan(&r, 19, 19, 22), None);
+    }
+
+    #[test]
+    fn knows_claudes_chips() {
+        let len = |t: &str| chip_len(&t.chars().collect::<Vec<_>>());
+        assert_eq!(len("[Pasted text #12 +40 lines] and on"), Some(27));
+        assert_eq!(len("[Pasted text #1 +1 line]"), Some(24));
+        assert_eq!(len("[Pasted text #3]"), Some(16), "a long line pasted");
+        assert_eq!(len("[Image #1]世"), Some(10));
+        for not in ["[Image #]", "[Image #1 +2 lines]", "[Pasted text #2 +5 lines", "[Pasted text #2 extra]", "[Pasted text]"] {
+            assert_eq!(len(not), None, "{not}");
+        }
+        assert_eq!(presses_in("ab [Image #1] c"), 6);
+        assert_eq!(presses_in("[Image #1][Pasted text #2]["), 3);
+    }
+
+    #[test]
+    fn a_chip_is_one_press_even_wrapped() {
+        // Claude wraps a chip at its spaces like words: this one runs from (7, 0) to (18, 1).
+        let g = grid(&["❯ note [Pasted", "  text #9 +5 lines] tail"]);
+        let all = ((2, 0), (24, 1));
+        assert_eq!(chip_savings(&g, all.0, all.1, AGENT_INDENT), 24 - 1);
+        // "note " + the chip + " tail".
+        assert_eq!(lower_bound(&g, all.0, all.1, AGENT_INDENT), 5 + 1 + 5);
+        assert_eq!(lower_bound(&g, (7, 0), (19, 1), AGENT_INDENT), 1, "just the chip");
+        assert_eq!(chip_savings(&g, all.0, all.1, 0), 0, "a shell has no chips");
+        // From the end of the input to after "note": back over " tail", the chip and a space.
+        let (job, n) = MoveJob::plan(&g, (2, 0), (6, 0), (24, 1), AGENT_INDENT).unwrap();
+        assert_eq!((job.key, n), ("left", 1 + 1 + 5));
+        let Some(Erase::Checked(_, n)) = EraseJob::plan(&g, (6, 0), (24, 1), (24, 1), AGENT_INDENT) else { panic!() };
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn a_mouse_selection_takes_in_the_chips_it_cuts() {
+        let g = grid(&["❯ note [Pasted", "  text #9 +5 lines] tail"]);
+        assert_eq!(snap_to_chips(&g, (9, 0), (4, 1), AGENT_INDENT), ((7, 0), (19, 1)));
+        assert_eq!(snap_to_chips(&g, (3, 0), (12, 1), AGENT_INDENT), ((3, 0), (19, 1)));
+        assert_eq!(snap_to_chips(&g, (7, 0), (19, 1), AGENT_INDENT), ((7, 0), (19, 1)), "already whole");
+        assert_eq!(snap_to_chips(&g, (2, 0), (5, 0), AGENT_INDENT), ((2, 0), (5, 0)), "no chip in it");
+        assert_eq!(snap_to_chips(&g, (9, 0), (4, 1), 0), ((9, 0), (4, 1)), "a shell has no chips");
     }
 
     #[test]
