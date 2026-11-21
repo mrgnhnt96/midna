@@ -14,6 +14,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/env.sh"
 cd "$ROOT"
+echo "test.sh: target=$CARGO_TARGET_DIR" >&2
 LOCK="${MIDNA_TEST_LOCK:-/tmp/midna-tests.lock}"
 
 scope=(--workspace) cargo_args=()
