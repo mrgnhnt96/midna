@@ -639,7 +639,7 @@ pub static SETTINGS: &[SettingSpec] = &[
         "The color for agents blocked on you in Insights charts: a theme color (accent, work, need, ok, err, fg, dim) or #RRGGBB."),
     s!("updates.channel", en(&["stable", "beta"]), S("stable"), "general", false, "Which update channel midna follows."),
     s!("windows.close_with_terminals", en(&["ask", "close", "move"]), S("ask"), "general", false,
-        "Closing a main window that still has terminals while another is open: ask, close its terminals, or move them to the window you used last."),
+        "Closing a main window that still has terminals while another window of the same Mac is open: ask, close its terminals, or move them to that Mac's window you used last."),
     s!("projects.empty_opens", en(&["terminal", "agent"]), S("agent"), "general", false,
         "What clicking a pinned project with no terminals opens (its heading, its New row, its ⌘1–9, or opening it from ⌘K, where ⌥↩ opens the other kind): terminal, a shell; or agent, the agent last started in that project (Claude if none)."),
     s!("projects.new_terminal_in", en(&["project", "main"]), S("project"), "general", false,
