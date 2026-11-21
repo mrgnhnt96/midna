@@ -40,6 +40,12 @@ pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams, id: &str) -> Result<(Sh
         ));
     }
     let prompt = p.prompt.clone().filter(|t| !t.trim().is_empty()).ok_or_else(|| RpcError::bad_params("an agent start needs a `prompt`"))?;
+    if let Some(path) = local_path_only(&prompt, &crate::rpc::session::home_dir()) {
+        return Err(RpcError::bad_params(format!(
+            "the prompt is only a path on this Mac ({path}), which the other Mac can't read; \
+             send the file as `notes` (midna share send agent-start --notes {path}) and say in the prompt what to do with it"
+        )));
+    }
     let named = tab::named_project(p)?;
     if named.is_some() && p.session.is_some() {
         return Err(RpcError::bad_params("an agent start opens in a terminal's project (`session`) or in a named one (`project`), not both"));
@@ -76,6 +82,23 @@ pub fn build(d: &Daemon, ctx: &Ctx, p: &ShareSendParams, id: &str) -> Result<(Sh
         return Err(RpcError::bad_params(e));
     }
     Ok((payload, source))
+}
+
+/// `prompt` when all it says is the path of a file or folder on this Mac (`/…` or `~/…`, as
+/// an agent might hand over its notes): the other Mac's agent couldn't read it.
+fn local_path_only(prompt: &str, home: &str) -> Option<String> {
+    let t = prompt.trim();
+    if t.contains('\n') {
+        return None;
+    }
+    let full = match t.strip_prefix("~/") {
+        Some(rest) => format!("{home}/{rest}"),
+        None if t.starts_with('/') => t.to_string(),
+        None => return None,
+    };
+    // A slash command (`/review`) names no file: a path has at least two parts.
+    let p = std::path::Path::new(&full);
+    (p.components().count() > 2 && p.exists()).then(|| t.to_string())
 }
 
 /// For an agent start's guard and approval: a one-line summary (the prompt's first line), then
@@ -283,6 +306,23 @@ pub fn answer(d: &Daemon, p: ShareAnswerParams) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prompt_that_is_only_a_local_path_is_caught() {
+        let dir = std::env::temp_dir().join(format!("midna-path-prompt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "x").unwrap();
+        let notes = dir.join("notes.md").to_string_lossy().to_string();
+        let home = dir.to_string_lossy().to_string();
+        assert_eq!(local_path_only(&format!("  {notes}\n"), "/nowhere").as_deref(), Some(notes.as_str()));
+        assert_eq!(local_path_only("~/notes.md", &home).as_deref(), Some("~/notes.md"));
+        // Prose, a path that isn't here, a slash command or a path among other lines go as they are.
+        assert_eq!(local_path_only(&format!("read {notes}"), "/nowhere"), None);
+        assert_eq!(local_path_only("/private/tmp/nope-T2863/notes.md", "/nowhere"), None);
+        assert_eq!(local_path_only("/tmp", "/nowhere"), None);
+        assert_eq!(local_path_only(&format!("{notes}\nand fix it"), "/nowhere"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_answer_fits_in_a_message() {

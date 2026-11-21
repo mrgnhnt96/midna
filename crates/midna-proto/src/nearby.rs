@@ -1494,6 +1494,26 @@ pub struct ShareItem {
     /// Mac's person set to auto-accept (`peers.set_auto_accept`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
+    /// In replies only, never stored: accepting it opened the caller's own terminal (`result`
+    /// is `opened as <the caller's terminal> …`). An agent a share started reads its start in
+    /// the inbox as itself, not as another session doing the same work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub this_terminal: bool,
+}
+
+impl ShareItem {
+    /// The terminal accepting it opened (a tab, an agent session or an agent start), from its
+    /// `result` (`opened as <terminal> …`).
+    pub fn opened_terminal(&self) -> Option<&str> {
+        self.result.as_deref()?.strip_prefix("opened as ")?.split(' ').next().filter(|t| !t.is_empty())
+    }
+
+    /// This item for a reply to `caller` (the calling terminal): [`Self::this_terminal`] set
+    /// when accepting it opened that terminal.
+    pub fn for_caller(mut self, caller: Option<&str>) -> Self {
+        self.this_terminal = caller.is_some_and(|c| self.opened_terminal() == Some(c));
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1795,6 +1815,27 @@ mod tests {
             assert!(send(bad.clone()).is_err(), "{bad}");
         }
         assert!(valid_share_id("sh_0a1b2c3d") && !valid_share_id("sh_") && !valid_share_id("sh_ab/cd") && !valid_share_id("pr_abcd"));
+    }
+
+    #[test]
+    fn marks_the_terminal_a_share_opened_for_that_terminal_only() {
+        let it = |result: Option<&str>| -> ShareItem {
+            serde_json::from_value(serde_json::json!({
+                "id": "sh_abcd", "direction": "incoming", "peer": "f", "peer_name": "Work", "from": "f", "size": 1,
+                "payload": { "kind": "message", "text": "x" }, "state": "accepted", "sent_at": "", "result": result,
+            }))
+            .unwrap()
+        };
+        let opened = it(Some("opened as da0579a3 in /Users/me/Development/lens"));
+        assert_eq!(opened.opened_terminal(), Some("da0579a3"));
+        assert!(opened.clone().for_caller(Some("da0579a3")).this_terminal);
+        assert!(!opened.clone().for_caller(Some("1a98e049")).this_terminal);
+        assert!(!opened.clone().for_caller(None).this_terminal);
+        assert!(it(Some("opened as da0579a3 resuming the Claude conversation in ~")).for_caller(Some("da0579a3")).this_terminal);
+        assert!(!it(Some("pasted into da0579a3")).for_caller(Some("da0579a3")).this_terminal);
+        assert!(!it(None).for_caller(Some("da0579a3")).this_terminal);
+        // Never stored: an unmarked item writes no field.
+        assert!(serde_json::to_value(&opened).unwrap().get("this_terminal").is_none());
     }
 
     #[test]
