@@ -17,7 +17,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "ide.app" => "Used when no per-folder rule matches.",
         "ide.rules" => "Pick an IDE from a terminal's header to add a rule.",
         "summary.keep_days" => "Days a project's Summary keeps the terminals that closed in it.",
-        "windows.close_with_terminals" => "When you close one main window while another window of the same Mac is open.",
+        "windows.close_with_terminals" => "Closing a main window with terminals while another is open.",
         "nearby.visibility" => "Everyone lasts 10 minutes, then it's paired devices only again.",
         "nearby.name" => "Empty uses this Mac's computer name.",
         "nearby.downloads" => "Where files you accept are saved; empty is ~/Downloads/Midna.",

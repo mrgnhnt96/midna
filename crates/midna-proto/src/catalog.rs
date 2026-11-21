@@ -599,7 +599,7 @@ fn build() -> Vec<MethodSpec> {
              or `schedule` (filter.cron, window, starts_at, ends_at, max_runs, wake; data {cron, scheduled_for, local_time}; \
              without a session/project/agent filter it fires once about no terminal, with one it acts on every running terminal \
              that matches). filter (globs): repo, branch, action, label; local session, project, agent, match {dotted.path: glob} \
-             (case-insensitive, every entry must match). action kind: start_agent | run_command | attention | notify, and for \
+             (case-insensitive, all must match). action kind: start_agent | run_command | attention | notify, and for \
              local triggers, acting on the terminal that fired, send_to_session (on agent.prompt_blocked the refused prompt Claude \
              put back in its input box is cleared first) | set_status | clear_status. action.to (a terminal name or session id) \
              aims those, notify and attention at that terminal; a stream trigger needs it and refuses session and agent \
@@ -610,8 +610,7 @@ fn build() -> Vec<MethodSpec> {
              $MIDNA_PAYLOAD (headless: also on stdin) with MIDNA_EVENT, MIDNA_ACTION, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY \
              (the delivery id). A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use \
              the human's normal config. start_agent's permission_mode and allowed_tools are human only: an agent setting or \
-             changing them asks the human, and the trigger is added or changed only if they approve. Set github_hook_id to enable \
-             missed-delivery recovery. cooldown_secs spaces firings per terminal (default 60) or per stream (stream.* triggers, default 0); an event inside it is dropped; what a trigger causes never fires \
+             changing them needs the human's approval first. github_hook_id enables missed-delivery recovery. cooldown_secs spaces firings per terminal (default 60) or per stream (default 0), dropping events inside it; what a trigger causes never fires \
              triggers. Example (compact, then resend): {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact \
              first*\"}}, action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
         m::<TriggerUpdateParams, Trigger>("trigger.update").mutating().d(
