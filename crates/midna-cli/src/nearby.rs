@@ -1032,10 +1032,6 @@ pub fn inbox(a: &Args, out: OutFn) -> Res {
             if it["direction"] != "incoming" || it["payload"]["kind"] != "message" {
                 return Err(Fail::Usage(format!("{id} isn't a message to this Mac")));
             }
-            // Replying reads the message.
-            if it["state"] == "offered" {
-                call("share.accept", json!({ "id": id }))?;
-            }
             let v = call("share.send", json!({ "peer": it["peer"], "kind": "message", "text": text, "reply_to": id }))?;
             out(&v, &print_sent);
             Ok(())

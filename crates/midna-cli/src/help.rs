@@ -868,7 +868,7 @@ pub static VERBS: &[Verb] = &[
                   \x20        if the sender asked for its answer, its first turn's last message goes back to them.\n\
                   decline  (human only) tell the sender no. Each offer also raises a needs-you approval: approving\n\
                   \x20        accepts it (a link opens, a snippet stays in the inbox, a tab opens, an agent session resumes) and denying declines it.\n\
-                  reply    answer a message with a message.\n\
+                  reply    answer a message with a message. It leaves the message unread: only the human marks it read.\n\
                   The inbox keeps the last 500 shares across restarts. Events share.offered, share.sent,\n\
                   share.accepted, share.declined and share.progress (a file's transfer) follow it.",
         methods: &["inbox.list", "share.accept", "share.decline"],

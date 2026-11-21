@@ -12,3 +12,4 @@ export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
 # Each checkout keeps its own target/. Never point a worktree's CARGO_TARGET_DIR or build dir
 # at another checkout's: cargo names a path crate's artifacts by its path inside the
 # workspace, so checkouts overwrite each other's midna crates and can link a stale one.
+export CARGO_TARGET_DIR="$_MIDNA_ROOT/target"

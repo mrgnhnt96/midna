@@ -15,6 +15,8 @@ const VALUE_FLAGS: &[&str] = &[
     "open", "wait", "on",
     // links actions register
     "owner", "file",
+    // links patterns set
+    "rule",
     // stream publish / add, triggers test --stream, stream events --replay
     "data", "stream", "replay", "secret",
 ];
@@ -194,6 +196,13 @@ mod tests {
         assert!(Args::parse(["--lines".to_string()]).is_err());
         let a = Args::parse(["links", "actions", "register", "--owner", "tb", "--file", "m.json"].map(String::from)).unwrap();
         assert_eq!((a.get("owner"), a.get("file"), a.pos.len()), (Some("tb"), Some("m.json"), 3));
+    }
+
+    #[test]
+    fn rule_takes_a_value() {
+        let a = Args::parse(["links", "patterns", "set", "tb", "--rule", "T(\\d+) = tb://t/$1", "--rule=B(\\d+) = tb://b/$1"].map(String::from)).unwrap();
+        assert_eq!(a.all("rule"), ["T(\\d+) = tb://t/$1", "B(\\d+) = tb://b/$1"]);
+        assert_eq!(a.pos, ["links", "patterns", "set", "tb"]);
     }
 
     #[test]
