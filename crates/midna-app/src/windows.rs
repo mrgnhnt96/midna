@@ -607,6 +607,23 @@ fn with_active_where(cx: &mut App, mac: impl Fn(&MacId) -> bool, f: impl FnOnce(
     });
 }
 
+/// Focus the main window used last that's on screen: not hidden, not minimized. Nothing when
+/// none is. For midna coming forward with no window of its own up (the badge became key):
+/// a window the human minimized stays in the Dock.
+pub fn focus_shown(cx: &mut App) {
+    let target = {
+        let reg = shared(cx);
+        let r = reg.borrow();
+        r.ordered()
+            .into_iter()
+            .map(|(m, _)| m)
+            .filter(|m| !r.is_hidden(m.id))
+            .find(|m| m.ns.as_ref().is_some_and(|ns| ns.isVisible() && !ns.isMiniaturized()))
+    };
+    let Some(t) = target else { return };
+    let _ = t.handle.update(cx, |_, window, _| window.activate_window());
+}
+
 /// Whether `session` is on screen in the window you're using (notifications skip it).
 /// Called from main window `me` (its own state passed in, since it's being updated).
 pub fn on_screen(session: &str, window: &Window, me: EntityId, my_selected: Option<&str>, cx: &App) -> bool {
