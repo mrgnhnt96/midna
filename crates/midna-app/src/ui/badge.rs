@@ -3002,6 +3002,12 @@ fn options(t: &Theme, w: &Waiting, q: &NeedsYouQuestion, last: bool, picked: &[u
     col
 }
 
+/// An approval's two buttons: Trust / Don't trust for an agent's folder-trust dialog, else
+/// Approve / Deny.
+fn approve_labels(title: &str) -> (&'static str, &'static str) {
+    if super::needs_you::is_trust(title) { ("Trust", "Don't trust") } else { ("Approve", "Deny") }
+}
+
 fn button(t: &Theme, id: impl Into<ElementId>, label: &str, primary: bool) -> Stateful<Div> {
     div()
         .id(id)
@@ -3508,6 +3514,7 @@ impl Badge {
         );
         if let (Some(id), true) = (need, hover) {
             let (a, d) = (id.clone(), id);
+            let (yes, no) = approve_labels(&l.text);
             row = row.child(
                 div()
                     .flex_none()
@@ -3515,11 +3522,11 @@ impl Badge {
                     .items_center()
                     .gap(px(6.))
                     .mr(px(6.))
-                    .child(button(t, "line-approve", "Approve", true).on_click(cx.listener(move |b, _, _, cx| {
+                    .child(button(t, "line-approve", yes, true).on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
                         b.approve(a.clone(), false, cx);
                     })))
-                    .child(button(t, "line-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| {
+                    .child(button(t, "line-deny", no, false).on_click(cx.listener(move |b, _, _, cx| {
                         cx.stop_propagation();
                         b.approve(d.clone(), true, cx);
                     }))),
@@ -4156,7 +4163,10 @@ impl Badge {
             // Its Mac is asleep: what would go over its link is off till it wakes.
             buttons = match (w.approval, w.mac.as_deref().filter(|_| w.local_only)) {
                 (true, Some(peer)) => buttons.child(decide_at(t, &self.mac_name(peer)).flex_1()).child(button_off(t, "card-deny", "Deny", false)).child(button_off(t, "card-dismiss", "Dismiss", false)),
-                (true, None) => buttons.child(button_off(t, "card-approve", "Approve", true).flex_1()).child(button_off(t, "card-deny", "Deny", false)),
+                (true, None) => {
+                    let (yes, no) = approve_labels(&w.title);
+                    buttons.child(button_off(t, "card-approve", yes, true).flex_1()).child(button_off(t, "card-deny", no, false))
+                }
                 // A post's own buttons, off (as many as its card would show).
                 (false, _) => match w.sent.as_ref().filter(|s| !s.actions.is_empty()) {
                     Some(sent) => buttons.children(super::button_slots::slots(&sent.actions).iter().enumerate().map(|(n, slot)| {
@@ -4177,9 +4187,12 @@ impl Badge {
                     .child(decide_at(t, &self.mac_name(peer)).flex_1())
                     .child(button(t, "card-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| b.approve(d.clone(), true, cx))))
                     .child(button(t, "card-dismiss", "Dismiss", false).on_click(cx.listener(move |b, _, _, cx| _ = b.resolve(x.clone(), Resolution::Dismiss, cx)))),
-                None => buttons
-                    .child(button(t, "card-approve", "Approve", true).flex_1().on_click(cx.listener(move |b, _, _, cx| b.approve(a.clone(), false, cx))))
-                    .child(button(t, "card-deny", "Deny", false).on_click(cx.listener(move |b, _, _, cx| b.approve(d.clone(), true, cx)))),
+                None => {
+                    let (yes, no) = approve_labels(&w.title);
+                    buttons
+                        .child(button(t, "card-approve", yes, true).flex_1().on_click(cx.listener(move |b, _, _, cx| b.approve(a.clone(), false, cx))))
+                        .child(button(t, "card-deny", no, false).on_click(cx.listener(move |b, _, _, cx| b.approve(d.clone(), true, cx))))
+                }
             };
         } else if let Some(sent) = w.sent.clone().filter(|s| !s.actions.is_empty()) {
             // A `notify.send` notification's own buttons, like ones folded into a split button.
@@ -4406,6 +4419,13 @@ mod tests {
     use crate::backend::Mac;
     use crate::backend::fake::FakeBackend;
     use crate::mac_feed::Feed;
+
+    #[test]
+    fn a_folder_trust_asks_trust_or_dont() {
+        assert_eq!(approve_labels("Trust this folder? /Users/me/src/app/.claude/worktrees/slot-2"), ("Trust", "Don't trust"));
+        assert_eq!(approve_labels("Approve npm publish?"), ("Approve", "Deny"));
+        assert_eq!(approve_labels("Run: rm -rf trust this folder?"), ("Approve", "Deny"));
+    }
     use gpui_kit::TestAppContext;
     use ::core::prelude::v1::test;
 

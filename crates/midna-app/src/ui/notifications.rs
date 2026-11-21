@@ -462,9 +462,11 @@ fn detail(m: &MainWindow, t: &Theme, i: &NotifyHistoryItem, cx: &mut Context<Mai
     }
     if let Some(n) = need.clone().filter(|n| n.approval.is_some()) {
         let (a, d) = (n.id.clone(), n.id.clone());
+        let trust = n.kind == NeedsYouKind::PermissionPrompt && super::needs_you::is_trust(&n.title);
+        let (yes, no) = if trust { ("Trust", "Don't trust") } else { ("Approve once", "Deny") };
         actions = actions
-            .child(super::screen_kit::btn(t, "nt-approve", "Approve once").on_click(cx.listener(move |m, _, _, cx| m.resolve(a.clone(), Resolution::Approve { scope: ApprovalScope::Once }, cx))))
-            .child(super::screen_kit::btn(t, "nt-deny", "Deny").on_click(cx.listener(move |m, _, _, cx| m.resolve(d.clone(), Resolution::Deny, cx))));
+            .child(super::screen_kit::btn(t, "nt-approve", yes).on_click(cx.listener(move |m, _, _, cx| m.resolve(a.clone(), Resolution::Approve { scope: ApprovalScope::Once }, cx))))
+            .child(super::screen_kit::btn(t, "nt-deny", no).on_click(cx.listener(move |m, _, _, cx| m.resolve(d.clone(), Resolution::Deny, cx))));
     }
     if let Some(sid) = session {
         let mute = format!("Mute “{label}” for {name}");
