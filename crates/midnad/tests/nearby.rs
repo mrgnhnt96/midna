@@ -270,7 +270,13 @@ fn alpha_bravo_with(svc: &str, agent_bin: Option<String>) -> (TestDaemon, TestDa
 /// contact through its needs-you approval).
 fn pair_both(a: &TestDaemon, b: &TestDaemon, fa: &str, fb: &str) {
     let (mut ha, mut hb) = (a.human(), b.human());
-    let mine = call(&mut ha, "peers.pair", json!({ "fingerprint": fb }));
+    // On a loaded machine B can drop the connection before the handshake ends; nothing was
+    // asked yet, so A just dials again.
+    let mine = wait_for(20, "A reaches B to pair", || match ha.call_value("peers.pair", json!({ "fingerprint": fb })) {
+        Ok(v) => Some(v),
+        Err(e) if e.to_string().contains("couldn't reach") => None,
+        Err(e) => panic!("peers.pair failed: {e}"),
+    });
     let theirs = wait_for(10, "B has the pairing", || pairings(&mut hb).into_iter().find(|p| p["fingerprint"] == fa));
     assert_eq!(mine["code"], theirs["code"]);
     call(&mut ha, "peers.confirm", json!({ "pairing": mine["id"], "as": "my_device" }));
@@ -1053,11 +1059,14 @@ fn files_and_folders_land_whole_in_downloads() {
     assert_eq!(mode, 0o644);
     let q = std::process::Command::new("/usr/bin/xattr").arg("-p").arg("com.apple.quarantine").arg(&landed).output().unwrap();
     assert!(String::from_utf8_lossy(&q.stdout).contains("Midna"), "{q:?}");
-    assert_eq!(share(&mut hb, &id).unwrap()["result"].as_str(), Some(format!("saved to {}", landed.display()).as_str()));
+    // The transfer reads done before the share's result says where it landed.
+    let saved = format!("saved to {}", landed.display());
+    wait_for(10, "B's share says where it landed", || share(&mut hb, &id).filter(|s| s["result"] == saved.as_str()));
     assert!(!share_events(&mut hb, kinds::SHARE_PROGRESS, &id).is_empty());
     let mine = wait_for(10, "A hears it was saved", || Some(transfer(&mut ha, &id)).filter(|t| t["state"] == "done"));
     assert_eq!(mine["done"].as_u64(), Some(big.len() as u64));
-    assert!(share_events(&mut ha, kinds::SHARE_PROGRESS, &id).iter().any(|e| e["data"]["transfer"]["state"] == "done"));
+    // The transfer reads done before its share.progress is announced.
+    wait_for(10, "A announces it done", || share_events(&mut ha, kinds::SHARE_PROGRESS, &id).into_iter().find(|e| e["data"]["transfer"]["state"] == "done"));
     assert!(!b.home.join("nearby/incoming").join(&id).exists(), "staging is cleaned up");
 
     // The same name again doesn't replace the first.
@@ -1099,7 +1108,7 @@ fn files_and_folders_land_whole_in_downloads() {
     assert_eq!(t["state"], "failed", "{t}");
     assert!(t["error"].as_str().unwrap().contains("checksum"), "{t}");
     assert!(!dl.join("doc.txt").exists());
-    assert!(share(&mut hb, &cid).unwrap()["result"].as_str().unwrap().starts_with("failed"));
+    wait_for(10, "B's share says it failed", || share(&mut hb, &cid).filter(|s| s["result"].as_str().is_some_and(|r| r.starts_with("failed"))));
     wait_for(10, "A hears it failed", || Some(transfer(&mut ha, &cid)).filter(|t| t["state"] == "failed"));
     std::fs::write(&doc, b"version one").unwrap();
     call(&mut hb, "share.accept", json!({ "id": cid }));
@@ -1735,8 +1744,8 @@ fn an_agent_start_runs_only_once_accepted_and_its_answer_comes_back() {
     assert_eq!((ans["payload"]["reply_to"].as_str(), ans["direction"].as_str()), (Some(id.as_str()), Some("incoming")), "{r}");
     assert_eq!((ans["state"].as_str(), ans["auto"].as_bool()), (Some("accepted"), Some(true)), "{r}");
     assert!(ans["needs_you_id"].is_null(), "an answer asks nothing: {r}");
-    let heard = events(&mut ha, kinds::SHARE_ANSWERED);
-    assert!(heard.iter().any(|e| e["data"]["payload"]["reply_to"] == id), "{heard:?}");
+    // share.answer can wake before A's event log has the answer.
+    wait_for(10, "A logs the answer", || events(&mut ha, kinds::SHARE_ANSWERED).into_iter().find(|e| e["data"]["payload"]["reply_to"] == id));
 
     // Later turns send nothing more.
     let again = json!({ "agent": "claude", "event": "Stop", "payload": { "last_assistant_message": "a second answer" } });
