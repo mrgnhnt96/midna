@@ -55,12 +55,11 @@ Run under `midna stream add slack …`, each message in the channel becomes the 
 
    ```sh
    midna triggers add --name "roon_mobile master failed" --event stream.slack.message \
-     --match 'text=*failed to build on pipeline roon_mobile*master*' --to "build angel" \
-     --send 'CI failed on master: {{data.text}}' --enable
+     --match 'text=*failed to build on pipeline roon_mobile*' --match 'text=*master*' \
+     --to "build angel" --send 'CI failed on master: {{data.text}}' --enable
    ```
 
-   `--match` takes one glob per field, so both words go in one glob, in the order the message
-   has them.
+   The same field given twice needs both globs, in any order.
 
 ## Environment
 

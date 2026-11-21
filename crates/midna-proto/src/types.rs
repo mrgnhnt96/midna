@@ -1003,10 +1003,49 @@ pub struct TriggerFilter {
     /// Needs `keep_awake.enabled`, `keep_awake.wake` and its admin grant.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wake: bool,
-    /// Local: dotted path into the hook payload or event data -> case-insensitive glob, e.g.
-    /// `{"message": "*Compact first*"}`. Every entry must match.
+    /// Local: dotted path into the hook payload or event data -> case-insensitive glob, or a
+    /// list of globs that must all match (in any order), e.g. `{"message": "*Compact first*"}`
+    /// or `{"text": ["*failed*", "*master*"]}`. Every entry must match.
     #[serde(default, rename = "match", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub fields: std::collections::BTreeMap<String, String>,
+    pub fields: std::collections::BTreeMap<String, Globs>,
+}
+
+/// One `filter.match` entry: a glob, or several that must all match the same value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Globs {
+    One(String),
+    All(Vec<String>),
+}
+
+impl Globs {
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        let s: &[String] = match self {
+            Globs::One(g) => std::slice::from_ref(g),
+            Globs::All(v) => v,
+        };
+        s.iter().map(String::as_str)
+    }
+}
+
+impl From<&str> for Globs {
+    fn from(g: &str) -> Self {
+        Globs::One(g.to_string())
+    }
+}
+
+impl From<String> for Globs {
+    fn from(g: String) -> Self {
+        Globs::One(g)
+    }
+}
+
+impl std::fmt::Display for Globs {
+    /// The globs, quoted and joined with ` and `.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown: Vec<String> = self.iter().map(|g| format!("\"{g}\"")).collect();
+        f.write_str(&shown.join(" and "))
+    }
 }
 
 /// Local times of day, `HH:MM` (24-hour): `from` counts, `until` doesn't, so `13:00`–`17:00`
@@ -1423,6 +1462,8 @@ pub enum Verdict {
     Replayed,
     Recovered,
     NoTrigger,
+    /// A local trigger matched but its cooldown held this firing back (stream events only).
+    Cooldown,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1474,6 +1515,10 @@ pub struct Delivery {
     /// `finished_at`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command_runs: Vec<CommandRun>,
+    /// Local: the seq of the logged event it answered (a stream event's, say), so the event
+    /// and what it fired line up exactly. None for a hook, a webhook or a test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 /// One headless `run_command` run, kept on its delivery.
@@ -1571,6 +1616,8 @@ pub mod kinds {
     /// A stream midnad runs changed state (data = `StreamHealth`: running, backoff, failing,
     /// paused, …). Never fires triggers: it isn't a `stream.<name>.<kind>` event.
     pub const STREAM_HEALTH: &str = "stream.health";
+    /// A stream midnad ran was removed (`{stream}`). Never fires triggers, like `stream.health`.
+    pub const STREAM_REMOVED: &str = "stream.removed";
     pub const SECRET_SET: &str = "secret.set";
     pub const SECRET_REMOVED: &str = "secret.removed";
     pub const SECRET_USED: &str = "secret.used";

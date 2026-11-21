@@ -203,6 +203,8 @@ pub fn remove(d: &Daemon, ctx: &Ctx, p: StreamsNameParams) -> R {
     d.save_now();
     crate::producers::forget(d, &p.name);
     withdraw_approvals(d, &p.name, "the stream was removed");
+    // Views listing streams refresh on `stream.*`; health alone never says it's gone.
+    d.emit(midna_proto::kinds::STREAM_REMOVED, ctx.actor(), s.project_id.clone(), None, json!({ "stream": p.name }));
     ok(OkResult { ok: true })
 }
 

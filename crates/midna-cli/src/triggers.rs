@@ -114,7 +114,14 @@ pub fn filter_text(f: &Value) -> String {
     }
     if let Some(m) = f["match"].as_object().filter(|m| !m.is_empty()) {
         // Sorted: map order depends on serde_json's preserve_order, which the workspace may turn on.
-        let mut pairs: Vec<String> = m.iter().map(|(k, v)| format!("{k}={}", q(v.as_str().unwrap_or("")))).collect();
+        // A list of globs (all must match) shows as one pair per glob, as `--match` takes them.
+        let globs = |v: &Value| -> Vec<String> {
+            match v {
+                Value::Array(a) => a.iter().map(|g| g.as_str().unwrap_or("").to_string()).collect(),
+                _ => vec![v.as_str().unwrap_or("").to_string()],
+            }
+        };
+        let mut pairs: Vec<String> = m.iter().flat_map(|(k, v)| globs(v).into_iter().map(move |g| format!("{k}={}", q(&g)))).collect();
         pairs.sort();
         out.push(format!("match {}", pairs.join(" ")));
     }
@@ -576,12 +583,29 @@ fn filter_from(a: &Args, base: Value) -> Result<(Value, bool), Fail> {
     if !a.all("match").is_empty() {
         touched = true;
         let mut m = f.get("match").and_then(Value::as_object).cloned().unwrap_or_default();
+        // A path given here replaces what it had; given again, its globs collect into a list
+        // that must all match, in any order.
+        let mut given = std::collections::HashSet::new();
         for raw in a.all("match") {
             let (k, g) = parse_match(raw).map_err(Fail::Usage)?;
             if g.is_empty() {
                 m.remove(&k);
-            } else {
-                m.insert(k, json!(g));
+                given.remove(&k);
+                continue;
+            }
+            match m.get_mut(&k) {
+                Some(old) if given.contains(&k) => {
+                    let mut list = match old.take() {
+                        Value::Array(v) => v,
+                        one => vec![one],
+                    };
+                    list.push(json!(g));
+                    *old = Value::Array(list);
+                }
+                _ => {
+                    m.insert(k.clone(), json!(g));
+                    given.insert(k);
+                }
             }
         }
         f["match"] = Value::Object(m);
@@ -1037,6 +1061,12 @@ mod tests {
         let (f2, _) = ok(filter_from(&a, f));
         assert_eq!(f2["match"], json!({ "message": "*Compact*", "prompt": "*deploy*" }));
         assert!(f2["session"].is_null());
+        // the same path twice: both globs, in any order; given again it's replaced
+        let (f6, _) = ok(filter_from(&args(&["t", "--match", "text=*failed*", "--match", "text=*master*"]), f2.clone()));
+        assert_eq!(f6["match"], json!({ "message": "*Compact*", "prompt": "*deploy*", "text": ["*failed*", "*master*"] }));
+        assert_eq!(filter_text(&json!({ "match": { "text": f6["match"]["text"].clone() } })), "match text=*failed* text=*master*");
+        let (f7, _) = ok(filter_from(&args(&["t", "--match", "text=*red*"]), f6));
+        assert_eq!(f7["match"]["text"], json!("*red*"));
         assert!(filter_from(&args(&["t", "--idle-for", "90s"]), json!({})).is_err());
         assert!(filter_from(&args(&["t", "--for-agent", "gpt"]), json!({})).is_err());
         let (f3, _) = ok(filter_from(&args(&["t", "--filter-json", r#"{"match":{"message":"*x y*"}}"#, "--idle-for", "55"]), json!({ "repo": "a/b" })));

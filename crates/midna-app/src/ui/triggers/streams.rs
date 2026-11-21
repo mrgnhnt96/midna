@@ -188,18 +188,25 @@ pub fn verdict_words(v: StreamVerdict) -> &'static str {
     }
 }
 
-/// The trigger a taken event fired: a local firing of the same event within 10s after it.
-/// Deliveries don't carry the event's seq, so this goes by event name and time.
-pub fn fired_by(name: &str, rec: &StreamPublishRecord, deliveries: &[DeliveryItem]) -> Option<String> {
+/// What a taken event did: the local delivery that answered it (a firing before one its
+/// cooldown held back). A delivery carries the event's seq; one from before it did is matched
+/// by event name and time, a local firing of the same event within 10s after it.
+pub fn fired_by<'a>(name: &str, rec: &StreamPublishRecord, deliveries: &'a [DeliveryItem]) -> Option<&'a DeliveryItem> {
     if rec.verdict != StreamVerdict::Accepted {
         return None;
     }
     let event = format!("stream.{name}.{}", rec.kind);
     let at = parse_rfc3339(&rec.at)?;
-    deliveries.iter().filter(|d| d.event == event && d.replay_of.is_none()).find_map(|d| {
-        let got = parse_rfc3339(&d.received_at)?;
-        (got >= at && got - at <= 10).then(|| d.trigger_id.clone()).flatten()
-    })
+    let answers = |d: &&DeliveryItem| {
+        d.trigger_id.is_some()
+            && d.replay_of.is_none()
+            && match (d.event_seq, rec.seq) {
+                (Some(s), seq) => seq == Some(s),
+                (None, _) => d.event == event && parse_rfc3339(&d.received_at).is_some_and(|got| got >= at && got - at <= 10),
+            }
+    };
+    let held = |d: &&DeliveryItem| d.verdict == "cooldown";
+    deliveries.iter().filter(answers).find(|d| !held(d)).or_else(|| deliveries.iter().filter(answers).find(held))
 }
 
 /// The stream's command line, quoted for a shell.
@@ -658,8 +665,11 @@ impl TriggersView {
                 } else {
                     let mut table = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.line).overflow_hidden();
                     for r in rows.iter().take(30) {
-                        let fired = fired_by(&s.name, &r.rec, &self.deliveries).map(|id| self.triggers.iter().find(|tr| tr.id == id).map(|tr| tr.name.clone()).unwrap_or(id));
+                        let answer = fired_by(&s.name, &r.rec, &self.deliveries);
+                        let held = answer.is_some_and(|d| d.verdict == "cooldown");
+                        let fired = answer.and_then(|d| d.trigger_id.clone()).map(|id| self.triggers.iter().find(|tr| tr.id == id).map(|tr| tr.name.clone()).unwrap_or(id));
                         let (verdict, vcolor) = match (&fired, r.rec.verdict) {
+                            (Some(n), _) if held => (format!("{n}: held back (cooldown)"), t.dim),
                             (Some(n), _) => (format!("→ {n}"), t.ok),
                             (None, StreamVerdict::Accepted) => ("No trigger fired".to_string(), t.dim),
                             (None, v) => (verdict_words(v).to_string(), t.dim),
@@ -914,10 +924,21 @@ mod tests {
     fn taken_event_finds_the_trigger_it_fired() {
         let rec: StreamPublishRecord = serde_json::from_value(json!({"at": "2026-11-20T10:42:00Z", "kind": "message", "verdict": "accepted", "seq": 9})).unwrap();
         let del = |event: &str, at: &str| -> DeliveryItem { serde_json::from_value(json!({"id": "d", "event": event, "received_at": at, "trigger_id": "t_1"})).unwrap() };
-        assert_eq!(fired_by("slack", &rec, &[del("stream.slack.message", "2026-11-20T10:42:01Z")]).as_deref(), Some("t_1"));
-        assert_eq!(fired_by("slack", &rec, &[del("stream.slack.message", "2026-11-20T10:43:00Z")]), None);
-        assert_eq!(fired_by("slack", &rec, &[del("stream.slack.reaction", "2026-11-20T10:42:01Z")]), None);
-        let dup = StreamPublishRecord { verdict: StreamVerdict::Duplicate, ..rec };
-        assert_eq!(fired_by("slack", &dup, &[del("stream.slack.message", "2026-11-20T10:42:01Z")]), None);
+        let tid = |dels: &[DeliveryItem]| fired_by("slack", &rec, dels).and_then(|d| d.trigger_id.clone());
+        // Deliveries from before they carried the event's seq: by name and time.
+        assert_eq!(tid(&[del("stream.slack.message", "2026-11-20T10:42:01Z")]).as_deref(), Some("t_1"));
+        assert_eq!(tid(&[del("stream.slack.message", "2026-11-20T10:43:00Z")]), None);
+        assert_eq!(tid(&[del("stream.slack.reaction", "2026-11-20T10:42:01Z")]), None);
+        let dup = StreamPublishRecord { verdict: StreamVerdict::Duplicate, ..rec.clone() };
+        assert_eq!(fired_by("slack", &dup, &[del("stream.slack.message", "2026-11-20T10:42:01Z")]).map(|d| d.id.clone()), None);
+        // With the seq: exact, whenever it was received; another event's firing isn't this one's.
+        let seq = |n: u64, verdict: &str, trig: &str| -> DeliveryItem {
+            serde_json::from_value(json!({"id": format!("d_{trig}"), "event": "stream.slack.message", "received_at": "2026-11-20T10:42:01Z", "trigger_id": trig, "verdict": verdict, "event_seq": n})).unwrap()
+        };
+        assert_eq!(tid(&[seq(8, "verified", "t_8")]), None);
+        assert_eq!(tid(&[seq(9, "verified", "t_2")]).as_deref(), Some("t_2"));
+        // A firing wins over a trigger whose cooldown held it back; alone, the hold-back shows.
+        assert_eq!(fired_by("slack", &rec, &[seq(9, "cooldown", "t_c"), seq(9, "verified", "t_f")]).map(|d| d.id.as_str()), Some("d_t_f"));
+        assert_eq!(fired_by("slack", &rec, &[seq(9, "cooldown", "t_c")]).map(|d| d.verdict.as_str()), Some("cooldown"));
     }
 }

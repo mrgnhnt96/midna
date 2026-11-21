@@ -51,6 +51,7 @@ fn a_published_event_is_logged_with_its_envelope_and_fires_local_triggers() {
     let fired = call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] }));
     assert_eq!(fired.as_array().unwrap().len(), 1, "{fired}");
     assert_eq!(fired[0]["event"], "stream.slack.message");
+    assert_eq!(fired[0]["event_seq"], p["seq"], "the delivery names the event it answered: {fired}");
 
     // The filter is on the payload: another branch, or another stream, doesn't fire it.
     call(&mut h, "streams.publish", json!({ "stream": "slack", "kind": "message", "data": { "text": text, "branch": "dev" } }));
@@ -145,14 +146,27 @@ fn a_flood_is_deduped_rate_limited_cooled_down_and_listed() {
     assert_eq!(call(&mut h, "streams.events", json!({ "stream": "nobody" })), json!({ "stream": "nobody", "events": [], "counts": { "accepted": 0, "duplicate": 0, "rate_limited": 0, "too_large": 0, "busy": 0, "refused": 0 } }));
     assert!(bad(&mut h, "streams.events", json!({ "stream": "No Such" })).contains("a-z 0-9 -"));
 
-    // The default trigger fires for each accepted event; the one with a minute's cooldown once.
-    let deliveries = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"], "limit": 100 })).as_array().map_or(0, Vec::len);
-    wait_for(10, "a delivery per accepted event", || (deliveries(&mut h, &every) == 20).then_some(()));
-    assert_eq!(deliveries(&mut h, &once), 1, "cooled down for the stream");
+    // The default trigger fires for each accepted event; the one with a minute's cooldown once,
+    // and each event it held back is a `cooldown` delivery saying so, naming its event.
+    let list = |h: &mut Client, t: &Value| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"], "limit": 100 })).as_array().cloned().unwrap_or_default();
+    let verdicts = |h: &mut Client, t: &Value, v: &str| list(h, t).iter().filter(|d| d["verdict"] == v).count();
+    wait_for(10, "a delivery per accepted event", || (verdicts(&mut h, &every, "verified") == 20 && verdicts(&mut h, &once, "cooldown") == 19).then_some(()));
+    assert_eq!(verdicts(&mut h, &every, "cooldown"), 0);
+    let once_dels = list(&mut h, &once);
+    let fired: Vec<&Value> = once_dels.iter().filter(|d| d["verdict"] == "verified").collect();
+    assert_eq!(fired.len(), 1, "cooled down for the stream: {once_dels:?}");
+    assert_eq!(fired[0]["event_seq"].as_u64(), first, "the first event fired it");
+    let held = once_dels.iter().find(|d| d["verdict"] == "cooldown").unwrap();
+    assert!(held["summary"].as_str().unwrap().starts_with("Held back by its cooldown · once fired for stream flood"), "{held}");
+    assert!(held["triggers_fired"].is_null() && held["event_seq"].as_u64() > first, "{held}");
+    let mut seqs: Vec<u64> = once_dels.iter().filter_map(|d| d["event_seq"].as_u64()).collect();
+    seqs.sort();
+    seqs.dedup();
+    assert_eq!(seqs.len(), 20, "one delivery per event: {once_dels:?}");
     // The cooldown is per stream: another stream's event fires the cooled-down trigger.
     call(&mut h, "trigger.update", json!({ "id": once["id"], "event": "stream.*" }));
     call(&mut h, "streams.publish", json!({ "stream": "other", "kind": "message" }));
-    wait_for(5, "the other stream fires it", || (deliveries(&mut h, &once) == 2).then_some(()));
+    wait_for(5, "the other stream fires it", || (verdicts(&mut h, &once, "verified") == 2).then_some(()));
 }
 
 #[test]

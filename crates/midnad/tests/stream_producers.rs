@@ -95,10 +95,16 @@ wait"#;
     assert_eq!((st["restarts"].as_u64(), st["last_event"]["kind"].as_str()), (Some(0), Some("build.done")), "{st}");
     assert!(alive(child));
 
-    // Removing it stops the producer and what it started; it's gone from the list and state.
+    // Removing it stops the producer and what it started; it's gone from the list and state,
+    // and `stream.removed` tells views that list streams (it fires no `stream.*` trigger).
+    let t = call(&mut h, "trigger.add", json!({ "name": "any", "source": "local", "event": "stream.*", "action": { "kind": "notify", "title": "x" }, "enabled": true }));
     assert_eq!(call(&mut h, "streams.remove", json!({ "name": "ci" })), json!({ "ok": true }));
+    let removed = events(&mut h, "stream.removed");
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    assert_eq!((&removed[0]["data"], removed[0]["actor"]["kind"].as_str()), (&json!({ "stream": "ci" }), Some("human")), "{}", removed[0]);
     wait_for(5, "producer and its child stopped", || (gone(pid) && gone(child)).then_some(()));
     assert_eq!(call(&mut h, "streams.list", json!({})), json!([]));
+    assert_eq!(call(&mut h, "trigger.deliveries", json!({ "trigger_id": t["id"] })), json!([]));
     assert_eq!(call_err(&mut h, "streams.remove", json!({ "name": "ci" })).code, 3);
     d.daemon().save_now();
     let state = std::fs::read_to_string(d.home.join("state.json")).unwrap();
