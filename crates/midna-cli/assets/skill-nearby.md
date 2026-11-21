@@ -4,13 +4,34 @@ Midnas on the same network pair with each other (`midna peers`). Everything you 
 Mac only after the human here approves it, and does nothing there until a person on that Mac
 accepts it. `midna explain nearby` covers pairing, the inbox and every kind of share.
 
+Find the device first: `midna peers` lists paired devices by name, with whether each is nearby
+now. "My personal computer" or "my work Mac" means the peer of that name; ask if none fits.
+
+When the human names a project on the other Mac ("in taskboard", "in the mudora project"), always
+pass `--project <name>`. Never rely on where this terminal is: that Mac doesn't look for this
+Mac's folders, and a terminal outside a repo there lands in its home folder.
+
+### Opening a tab in a project on another Mac
+
+When the human asks for a tab or terminal ("open a new tab in taskboard on my personal
+computer"), open a tab. Don't start an agent:
+
+```
+midna share send roon --tab --project taskboard
+```
+
+It opens a new, empty shell in roon's project named taskboard. Add `--session <terminal>` to
+bring that terminal's scrollback along, and `--title` to name it. That Mac refuses it at once when
+it has no project of that name; ask the human for the name it goes by there. It needs the human's
+ok on both Macs like any share, and works only with their own devices.
+
 ### Asking another Mac's agent for help
 
-When the human says "open a tab on roon and ask it about X" (or work needs something only that
-Mac has: its hardware, a device plugged into it, its own checkout or login):
+When the human asks for an agent there to do something ("open an agent on roon and ask it about
+X"), or work needs something only that Mac has (its hardware, a device plugged into it, its own
+checkout or login):
 
-1. Find the device: `midna peers` lists paired devices, with whether each is nearby now. Use its
-   name or id. It must be paired and nearby; you can't pair for the human.
+1. Find the device (above). It must be paired and nearby; you can't pair for the human.
 2. Ask, and wait for the answer:
 
    ```
@@ -37,12 +58,6 @@ Mac has: its hardware, a device plugged into it, its own checkout or login):
    then waits (default 30m, `--timeout 2h`) until that agent's first turn ends and prints its
    last message, cut to 4 KiB. The answer also lands in `midna inbox` as a message in reply to
    the agent start.
-
-### Opening a tab in a project on another Mac
-
-`midna share send roon --tab --project mudora` opens a new, empty shell in roon's project named
-mudora (add `--session <terminal>` to bring that terminal's scrollback along). It needs the
-human's ok on both Macs like any share, and works only with their own devices.
 
 ### Asking an agent tab that is already open on another Mac
 
