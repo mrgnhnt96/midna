@@ -2729,7 +2729,7 @@ impl MainWindow {
             .on_action(cx.listener(|m, _: &crate::ide::ChooseIde, w, cx| crate::ide::toggle(m, w, cx)))
             .on_action(cx.listener(|m, _: &OpenTriggers, w, cx| m.set_screen(Screen::Triggers, w, cx)))
             .on_action(cx.listener(|m, _: &OpenInsights, w, cx| m.set_screen(Screen::Insights, w, cx)))
-            .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(crate::backend::local(&m.backend), cx)))
+            .on_action(cx.listener(|m, _: &OpenSettings, _w, cx| crate::ui::settings::open(m.backend.clone(), cx)))
             .on_action(cx.listener(|m, _: &Dismiss, w, cx| {
                 if m.menu != Menu::None {
                     if matches!(m.menu, Menu::Links | Menu::Subagents | Menu::Ide | Menu::Macs) {

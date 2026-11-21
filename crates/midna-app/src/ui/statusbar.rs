@@ -399,7 +399,7 @@ fn awake_item(m: &MainWindow, t: &Theme, _cx: &mut Context<MainWindow>) -> Optio
         .tooltip(tip(awake_tip(k["line"].as_str(), mac.as_deref())));
     let item = match mac {
         Some(_) => item,
-        None => item.cursor_pointer().hover(move |s| s.text_color(fg)).on_click(move |_, _, cx| crate::settings_window::open(crate::backend::local(&backend), cx)),
+        None => item.cursor_pointer().hover(move |s| s.text_color(fg)).on_click(move |_, _, cx| crate::settings_window::open(backend.clone(), cx)),
     };
     Some(item.into_any_element())
 }
