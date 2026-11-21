@@ -8,6 +8,8 @@
 //! dialog gone (answered here, in the terminal, or the agent exited) closes it again.
 //! Approve/deny pick "Yes" / "No" in the dialog (`needs_you::resolve` → [`answer`]).
 //!
+//! Approving one item trusts the project's other open trust items too (see [`answer`]).
+//!
 //! A cwd covered by `agents.trust_folders` ([`covered`]) gets "Yes" picked right away instead,
 //! with an audit event and no item. Every other "Yes" adds its cwd to that setting: approving
 //! the item, and "Yes" picked in the terminal itself: a trust item that closes on its own (the dialog
@@ -95,7 +97,8 @@ fn raise(d: &Daemon, sid: &str, cwd: &str, screen: Vec<String>) {
     let mut item = d.new_needs_you(NeedsYouKind::PermissionPrompt, format!("{TITLE} {cwd}"), actor, Some(sid.to_string()));
     item.detail = format!(
         "{agent} asks whether to trust the files in {cwd} before it starts (it may read, edit and run them). \
-         Approve picks \"Yes\"; deny picks \"No\", and the agent exits."
+         Trust picks \"Yes\" (here and in this project's other terminals asking the same); \
+         Don't trust picks \"No\", and the agent exits."
     );
     item.screen_excerpt = Some(crate::rpc::session::tail_nonempty(screen, 12));
     d.raise_needs_you(item);
@@ -113,10 +116,34 @@ fn auto_trust(d: &Daemon, sid: &str, cwd: &str) {
 
 /// Answer the dialog for an approve/deny of its item, only if it is still on screen. "Yes"
 /// also adds the item's cwd to `agents.trust_folders`: the agent remembers the folder as
-/// trusted anyway, so midna does too.
+/// trusted anyway, so midna does too. Trusting one also trusts the project's other open trust
+/// items (its worktrees' agents starting together all ask), each closed as approved with it.
 pub fn answer(d: &Daemon, item: &NeedsYou, approve: bool) {
     let Some(sid) = &item.session_id else { return };
-    if pick(d, sid, approve) && approve {
+    if !approve {
+        pick(d, sid, false);
+        return;
+    }
+    trust_one(d, sid);
+    let others: Vec<(Id, Id)> = {
+        let core = d.core();
+        core.state
+            .needs_you
+            .iter()
+            .filter(|n| n.id != item.id && is_trust_item(n) && item.project_id.is_some() && n.project_id == item.project_id)
+            .filter_map(|n| Some((n.id.clone(), n.session_id.clone()?)))
+            .collect()
+    };
+    let human = Actor { kind: ActorKind::Human, session: None, name: None, trigger: None, via: None, peer: None };
+    for (id, other) in others {
+        trust_one(d, &other);
+        d.close_needs_you(&id, json!({ "kind": "approve", "scope": { "kind": "once" }, "with": item.id }), human.clone());
+    }
+}
+
+/// Pick "Yes" in one terminal's dialog and save its cwd.
+fn trust_one(d: &Daemon, sid: &str) {
+    if pick(d, sid, true) {
         let cwd = d.core().state.session(sid).map(|s| s.cwd.clone());
         if let Some(cwd) = cwd {
             remember(d, &cwd);

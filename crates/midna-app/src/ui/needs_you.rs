@@ -1084,7 +1084,7 @@ fn actions(m: &MainWindow, t: &Theme, n: &NeedsYou, approve_key: &str, deny_key:
         let session_name = sess.map(|s| s.name.clone()).unwrap_or_else(|| "it".into());
         let scope_hint = if start { "this trigger" } else { "this command" };
         // A folder-trust dialog (midnad's trust.rs) has no scopes: trusting saves the folder.
-        let trust = n.kind == NeedsYouKind::PermissionPrompt && n.title.starts_with("Trust this folder?");
+        let trust = n.kind == NeedsYouKind::PermissionPrompt && is_trust(&n.title);
         // Nor does a setting change: saving sets it, once.
         let save = n.setting.is_some();
         let options: Vec<(&str, String, ApprovalScope)> = vec![
@@ -1324,4 +1324,11 @@ mod tests {
         let plain = NeedsYou { local_only: false, ..share };
         assert_eq!(super::decide_at(Some("Bravo"), &plain), None);
     }
+}
+
+/// An agent's "trust this folder?" startup dialog (midnad's trust.rs titles its item
+/// `Trust this folder? <cwd>`, and its notification says the same). Its buttons say Trust and
+/// Don't trust, not Approve and Deny.
+pub fn is_trust(title: &str) -> bool {
+    title.trim_start().starts_with("Trust this folder?")
 }

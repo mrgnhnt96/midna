@@ -311,7 +311,8 @@ const TOPICS: &[(&str, &str)] = &[
         they raised once they no longer need the human with `midna approve <id> --done` (a new prompt to the agent \
         clears its blocked items by itself). The human resolves the rest: approve{scope}, deny, dismiss, done, restart. \
         An agent's \"trust this folder?\" startup dialog is a \
-        permission_prompt too (approve = Yes, deny = No; any Yes, here or in the terminal, adds the folder to agents.trust_folders); \
+        permission_prompt too (approve = Yes, deny = No; approving one answers Yes on the same project's other open trust items; \
+        any Yes, here or in the terminal, adds the folder to agents.trust_folders); \
         a folder agents.trust_folders covers is answered Yes without one. `midna needs get <id>` says where one item stands."),
     ("settings", "Settings live in the daemon; `midna settings list` shows every key with its value, default and \
         description. Agents may change any key not marked human only; setting a human-only key asks the human. The GUI \
