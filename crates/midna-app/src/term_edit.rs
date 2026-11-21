@@ -94,6 +94,46 @@ pub fn vertical(key: &str, agent: bool, grid: &[RowData], cursor: Pos) -> Option
     }
 }
 
+/// ⇧↑ at the very end of Codex's text or ⇧↓ at its very start, where ↑ or ↓ on a recalled
+/// prompt swaps in another history entry: step off that spot with ← or → first, then make up
+/// the column (onto an empty row, ← along the row above to its start). None anywhere else.
+pub fn codex_vertical_at_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
+    let (top, bottom) = input_rows(grid, cursor)?;
+    let prompt = grid.get(top as usize).filter(|r| is_codex_prompt(r))?;
+    let wrap = Wrap::of(prompt);
+    let len = |y: u16| box_row(grid, top, y).chars().count();
+    let ends_line = |y: u16| {
+        if y == bottom { !grid.get(y as usize).is_some_and(hides_rows_below) } else { row_break(&box_row(grid, top, y), &box_row(grid, top, y + 1), wrap) == "\n" }
+    };
+    // The cursor can sit at column `x` of row `y`: a column past a wrapped row's end is the next row's.
+    let reaches = |y: u16, x: usize| x < len(y) || (x == len(y) && ends_line(y));
+    let row = grid.get(cursor.1 as usize)?;
+    let x = chars_between(row, AGENT_INDENT, cursor.0.max(AGENT_INDENT));
+    match key {
+        "up" if cursor.1 == bottom && cursor.1 > top && ends_line(bottom) && x >= len(bottom) => {
+            if x == 0 {
+                return Some(vec![Send::Arrow("left"); 1 + len(bottom - 1)]);
+            }
+            let mut v = vec![Send::Arrow("left"), Send::Arrow("up")];
+            if reaches(bottom - 1, x) {
+                v.push(Send::Arrow("right"));
+            }
+            Some(v)
+        }
+        "down" if cursor.1 == top && cursor.1 < bottom && !hides_rows_above(prompt) && x == 0 => {
+            if len(top) == 0 {
+                return Some(vec![Send::Arrow("right")]);
+            }
+            let mut v = vec![Send::Arrow("right"), Send::Arrow("down")];
+            if reaches(top + 1, 1) {
+                v.push(Send::Arrow("left"));
+            }
+            Some(v)
+        }
+        _ => None,
+    }
+}
+
 /// ⌘↑ / ⌘↓ in an agent's input: to the start or end of all its text. ↑ ↓ move a screen row at
 /// a time in Claude Code and Codex (wrapped lines and blank lines included), so the rows up to
 /// the prompt row (or down to the last input row) are exact; ↑ on the first row would recall
@@ -439,13 +479,16 @@ pub fn row_edge(key: &str, grid: &[RowData], cursor: Pos) -> Option<Vec<Send>> {
 }
 
 /// What joins two rows of an agent's input text: nothing, the space it wrapped at, or a line
-/// break (see [`input_text`]). A full row in Claude was cut mid-word (a path, a URL), and in
-/// Codex only one that's a single word was: words that fill a row exactly lose the space after
-/// them.
+/// break (see [`input_text`]). Words that fill a row exactly lose the space after them, so a
+/// full row was only cut mid-word (a path, a URL) when that word couldn't fit on a row: in Codex
+/// when the row is a single word, in Claude when the word, with the part of it on the next row,
+/// is longer than a row (Claude moves any shorter word to the next row whole).
 fn row_break(prev: &str, next: &str, wrap: Wrap) -> &'static str {
     let split_word = wrap.codex && prev.ends_with(['-', '/']);
-    let cut = !wrap.codex || !prev.contains(' ');
-    let (prev, piece) = (prev.chars().count(), wrap.first_piece(next));
+    let piece = wrap.first_piece(next);
+    let tail = prev.chars().rev().take_while(|c| *c != ' ').count();
+    let cut = if wrap.codex { !prev.contains(' ') } else { piece == 0 || tail + piece > wrap.width };
+    let prev = prev.chars().count();
     if split_word && piece > 0 && prev + piece > wrap.width {
         ""
     } else if prev >= wrap.width {
@@ -856,6 +899,17 @@ pub enum WithSel {
     Copy,
     Cut,
     Erase,
+}
+
+impl WithSel {
+    /// This, with `next` pressed on the same selection before this could run: ⌘C then ⌘X or ⌘⌫
+    /// copies and erases. Anything after an erase finds the selection gone.
+    pub fn and(self, next: WithSel) -> WithSel {
+        match (self, next) {
+            (WithSel::Copy, WithSel::Cut | WithSel::Erase) => WithSel::Cut,
+            (now, _) => now,
+        }
+    }
 }
 
 /// What to do once the cursor has walked to the end of an agent's input.
@@ -1547,6 +1601,16 @@ mod tests {
             self.want = self.col;
         }
 
+        fn right(&mut self) {
+            if self.col < self.text[self.y].chars().count() {
+                self.col += 1;
+            } else if self.y + 1 < self.text.len() {
+                self.y += 1;
+                self.col = 0;
+            }
+            self.want = self.col;
+        }
+
         fn up(&mut self) {
             let very_end = self.y == self.text.len() - 1 && self.col == self.text[self.y].chars().count();
             assert!(!self.recalled || !(very_end || (self.y, self.col) == (0, 0)), "↑ recalls history at row {} column {}", self.y, self.col);
@@ -1577,6 +1641,8 @@ mod tests {
                 Send::Arrow("down") => self.down(),
                 Send::Arrow("home") => self.col = 0,
                 Send::Arrow("end") => self.col = self.text[self.y].chars().count(),
+                Send::Arrow("left") => self.left(),
+                Send::Arrow("right") => self.right(),
                 other => panic!("{other:?}"),
             }
             if !matches!(mv, Send::Arrow("up" | "down")) {
@@ -1703,6 +1769,65 @@ mod tests {
         assert_eq!(input_rows(&grid(&["› one", "  two"]), (4, 1)), Some((0, 1)), "nothing under it");
     }
 
+    /// ⇧↑ from the very end of a recalled prompt, or ⇧↓ from its very start, in Codex: where the
+    /// cursor ends up (the model asserts no ↑ or ↓ recalls history on the way).
+    fn shift_from_edge(text: &[&str], height: usize, key: &str) -> (usize, usize) {
+        let text: Vec<String> = text.iter().map(|s| s.to_string()).collect();
+        let mut input = CodexInput::at_end(&text, height);
+        if key == "down" {
+            (input.first, input.y, input.col, input.want) = (0, 0, 0, 0);
+        }
+        let (g, c) = input.screen();
+        for mv in codex_vertical_at_edge(key, &g, c).expect("at the edge") {
+            input.take(mv);
+        }
+        (input.y, input.col)
+    }
+
+    #[test]
+    fn shift_up_at_the_end_of_a_recalled_codex_prompt_keeps_its_text() {
+        assert_eq!(shift_from_edge(&["first line", "a longer second line", "third"], 3, "up"), (1, 5), "a longer row above");
+        assert_eq!(shift_from_edge(&["first line", "short", "the third line"], 3, "up"), (1, 5), "a shorter row above");
+        assert_eq!(shift_from_edge(&["first line", "abcde", "vwxyz"], 3, "up"), (1, 5), "as long");
+        assert_eq!(shift_from_edge(&["first line", "second", ""], 3, "up"), (1, 0), "from an empty last row");
+        let text = numbered(30);
+        let text: Vec<&str> = text.iter().map(String::as_str).collect();
+        assert_eq!(shift_from_edge(&text, 12, "up"), (28, 7), "in a window");
+    }
+
+    #[test]
+    fn shift_down_at_the_start_of_a_recalled_codex_prompt_keeps_its_text() {
+        assert_eq!(shift_from_edge(&["first line", "second", "third"], 3, "down"), (1, 0));
+        assert_eq!(shift_from_edge(&["", "second", "third"], 3, "down"), (1, 0), "from an empty first row");
+        assert_eq!(shift_from_edge(&["first line", "", "third"], 3, "down"), (1, 0), "onto an empty row");
+    }
+
+    #[test]
+    fn codex_edges_only_at_the_very_end_or_start() {
+        let text = vec!["first line".to_string(), "second".to_string(), "third".to_string()];
+        let mut input = CodexInput::at_end(&text, 3);
+        let (g, c) = input.screen();
+        assert_eq!(codex_vertical_at_edge("down", &g, c), None, "↓ at the end");
+        input.col = 2;
+        let (g, c) = input.screen();
+        assert_eq!(codex_vertical_at_edge("up", &g, c), None, "mid-row");
+        let window = CodexInput::at_end(&numbered(30), 12);
+        let (mut g, c) = window.screen();
+        g[c.1 as usize].cells.last_mut().unwrap().ch = '↓';
+        assert_eq!(codex_vertical_at_edge("up", &g, c), None, "rows below the window");
+        let (g, c) = claude_window(&numbered(30), 20, 10, 9);
+        assert_eq!(codex_vertical_at_edge("up", &g, c), None, "Claude");
+    }
+
+    #[test]
+    fn a_key_pressed_while_a_selection_waits_joins_it() {
+        assert_eq!(WithSel::Copy.and(WithSel::Cut), WithSel::Cut);
+        assert_eq!(WithSel::Copy.and(WithSel::Erase), WithSel::Cut, "⌘C then ⌘⌫");
+        assert_eq!(WithSel::Copy.and(WithSel::Copy), WithSel::Copy);
+        assert_eq!(WithSel::Cut.and(WithSel::Copy), WithSel::Cut);
+        assert_eq!(WithSel::Erase.and(WithSel::Copy), WithSel::Erase, "nothing left to copy");
+    }
+
     #[test]
     fn codexs_marks_say_when_its_box_is_a_window() {
         let text = numbered(30);
@@ -1730,10 +1855,14 @@ mod tests {
     }
 
     #[test]
-    fn a_full_row_in_claude_is_still_cut_mid_word() {
+    fn claudes_full_rows_join_the_way_it_broke_them() {
         let claude = Wrap { width: 20, codex: false };
-        assert_eq!(row_break("aaaa bbbb cccc ddddd", "eeee", claude), "");
-        assert_eq!(row_break("well00-well01-well2-", "well03", claude), "");
+        assert_eq!(row_break("aaaa bbbb cccc ddddd", "eeee", claude), " ", "words that fill the row exactly");
+        assert_eq!(row_break("alpha beta gamma eta", "epsilon zeta", claude), " ", "a word that ends at the edge");
+        assert_eq!(row_break("well00-well01-well2-", "well03", claude), "", "one word cut at the edge");
+        assert_eq!(row_break("see https://example.", "com/a/b/c/d/e/f/g/h", claude), "", "a long word started mid-row");
+        assert_eq!(row_break("see https://example.", "com/a/b/c/d/e/f/g/hi", claude), "", "and continued past the next row");
+        assert_eq!(row_break("aaaa bbbb cccc ddddd", "", claude), "", "nothing on the next row to tell by");
     }
 
     #[test]
