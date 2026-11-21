@@ -974,7 +974,10 @@ fn open_url(url: &str) -> Result<(), RpcError> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map(drop)
+        .map(|mut c| {
+            // `open` exits once it hands the link over: wait, so it doesn't stay a zombie.
+            let _ = std::thread::Builder::new().name("open-url".into()).spawn(move || c.wait());
+        })
         .map_err(|e| RpcError::internal(format!("opening the link: {e}")))
 }
 
