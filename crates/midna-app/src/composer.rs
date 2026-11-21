@@ -132,13 +132,14 @@ impl Composer {
                 }
             })
             .detach();
-            let (ktx, krx) = async_channel::unbounded::<KassEvent>();
+            // Each event carries when it arrived, so the log shows how long it waited for main.
+            let (ktx, krx) = async_channel::unbounded::<(KassEvent, Instant)>();
             kass::start(move |ev| {
-                let _ = ktx.try_send(ev);
+                let _ = ktx.try_send((ev, Instant::now()));
             });
             app.spawn(async move |cx| {
-                while let Ok(ev) = krx.recv().await {
-                    cx.update(|cx| crate::windows::with_active(cx, |m, window, cx| on_kass(m, ev, window, cx)));
+                while let Ok((ev, at)) = krx.recv().await {
+                    cx.update(|cx| crate::windows::with_active(cx, |m, window, cx| on_kass(m, ev, at, window, cx)));
                 }
             })
             .detach();
@@ -291,8 +292,48 @@ fn open_manual(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
     open(m, Source::Manual, window, cx);
 }
 
-/// How long Kass waits for `dictationReady` after `willBegin` before it pastes on its own.
+/// How long Kass waits for `dictationReady` after `willBegin`; then it reads the focused element
+/// anyway, and pastes there or types.
 const KASS_WAIT: Duration = Duration::from_millis(150);
+
+/// The key window when Kass's `dictationWillBegin` comes in, seen from the main window it was
+/// routed to (`windows::with_active`, which goes by AppKit's *main* window).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyWindow {
+    /// This main window.
+    This,
+    /// A midna window you don't type into (the badge, a subagent's log, a system window), or
+    /// none while midna is in front: the dictation is for the main window you're on.
+    Passive,
+    /// A window with text of its own: another main window, Settings, a popped-out terminal, an
+    /// AppKit panel or sheet. Kass inserts there as it would anywhere.
+    Typing,
+    /// midna isn't the app in front.
+    Away,
+}
+
+impl KeyWindow {
+    fn label(self) -> &'static str {
+        match self {
+            KeyWindow::This => "this window",
+            KeyWindow::Passive => "badge or another window without text",
+            KeyWindow::Typing => "another midna window or panel with text",
+            KeyWindow::Away => "another app",
+        }
+    }
+}
+
+/// Whether a `willBegin` seen with `key` is for this window: `Some(make_key)`, where `make_key`
+/// says to make this window key first (the badge or a log window was key). `any_window`
+/// (`MIDNA_KASS_ANY_WINDOW`) takes it whatever is key.
+fn route(key: KeyWindow, any_window: bool) -> Option<bool> {
+    match key {
+        KeyWindow::This => Some(false),
+        KeyWindow::Passive => Some(true),
+        _ if any_window => Some(false),
+        KeyWindow::Typing | KeyWindow::Away => None,
+    }
+}
 
 /// Why a Kass `willBegin` doesn't open the composer: the first gate that fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,11 +343,12 @@ enum KassSkip {
     NotTerminalScreen(Screen),
     Overlay(Overlay),
     NoTerminal,
+    SecretSheet,
     OtherTerminal,
 }
 
 impl KassSkip {
-    /// A short app.log reason; `key` says what is key instead (see `key_label`).
+    /// A short app.log reason; `key` says what is key instead (`KeyWindow::label`).
     fn reason(self, key: &str) -> String {
         match self {
             KassSkip::NotKey => format!("window not key (key: {key})"),
@@ -314,14 +356,15 @@ impl KassSkip {
             KassSkip::NotTerminalScreen(s) => format!("screen {s:?}"),
             KassSkip::Overlay(o) => format!("overlay {o:?}"),
             KassSkip::NoTerminal => "no terminal selected".into(),
+            KassSkip::SecretSheet => "secret sheet open".into(),
             KassSkip::OtherTerminal => "composer open on another terminal".into(),
         }
     }
 }
 
-/// The willBegin gate: the window is key and the composer can show over its own terminal
-/// (`can_show` and `on_target`), else why not.
-fn kass_skip(active: bool, connected: bool, screen: Screen, overlay: Overlay, selected: bool, on_target: bool) -> Option<KassSkip> {
+/// The willBegin gate: the dictation is for this window (`route`) and the composer can show
+/// over its own terminal (`can_show`, no secret sheet over it, `on_target`), else why not.
+fn kass_skip(active: bool, connected: bool, screen: Screen, overlay: Overlay, selected: bool, sheet: bool, on_target: bool) -> Option<KassSkip> {
     if !active {
         Some(KassSkip::NotKey)
     } else if !connected {
@@ -332,6 +375,8 @@ fn kass_skip(active: bool, connected: bool, screen: Screen, overlay: Overlay, se
         Some(KassSkip::Overlay(overlay))
     } else if !selected {
         Some(KassSkip::NoTerminal)
+    } else if sheet {
+        Some(KassSkip::SecretSheet)
     } else if !on_target {
         Some(KassSkip::OtherTerminal)
     } else {
@@ -339,47 +384,80 @@ fn kass_skip(active: bool, connected: bool, screen: Screen, overlay: Overlay, se
     }
 }
 
-/// What is key when the main window isn't: `front` is midna's active window, if any (true =
-/// the badge).
-fn key_label(app_active: bool, front: Option<bool>) -> &'static str {
-    match (app_active, front) {
-        (false, _) => "another app",
-        (true, Some(true)) => "badge",
-        (true, Some(false)) => "another midna window",
-        (true, None) => "no midna window",
+fn key_window(window: &Window, cx: &mut App) -> KeyWindow {
+    if window.is_window_active() {
+        return KeyWindow::This;
+    }
+    let me = window.window_handle();
+    let key = cx.windows().into_iter().filter(|h| *h != me).find(|h| h.update(cx, |_, w, _| w.is_window_active()).unwrap_or(false));
+    match key {
+        Some(h) if h.downcast::<MainWindow>().is_some() || h.downcast::<crate::settings_window::SettingsWindow>().is_some() || h.downcast::<crate::ui::popout::PopOut>().is_some() => KeyWindow::Typing,
+        Some(_) => KeyWindow::Passive,
+        None => {
+            let Some(mtm) = MainThreadMarker::new() else { return KeyWindow::Away };
+            let app = NSApplication::sharedApplication(mtm);
+            match (app.isActive(), app.keyWindow()) {
+                (false, _) => KeyWindow::Away,
+                (true, None) => KeyWindow::Passive,
+                (true, Some(_)) => KeyWindow::Typing,
+            }
+        }
     }
 }
 
-fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
-    // Settings shows "handshake detected"; it reads kass::handshake_detected() on render.
-    cx.refresh_windows();
+fn on_kass(m: &mut MainWindow, ev: KassEvent, at: Instant, window: &mut Window, cx: &mut Context<MainWindow>) {
     // Every handshake goes in app.log (never the dictated text): a take that misses the
     // composer is otherwise silent.
     let log = crate::lifecycle::log;
     match ev {
         KassEvent::WillBegin { mode } => {
-            let t0 = Instant::now();
+            // Kass waits only `KASS_WAIT` for the reply: decide, show the field and answer
+            // first; everything else after.
+            let queued = at.elapsed();
+            let key = key_window(window, cx);
+            let route = route(key, crate::dev::var("MIDNA_KASS_ANY_WINDOW").is_ok());
+            let sheet = sheet_over(m, cx);
+            let skip = kass_skip(route.is_some(), m.conn == ConnState::Connected, m.screen, m.overlay, m.selected.is_some(), sheet, on_target(m));
+            let ready = match (skip, route) {
+                (None, Some(make_key)) => {
+                    if make_key {
+                        // The badge or a log window is key: the dictation is for this window.
+                        // AppKit directly, so it's key before the reply (GPUI's activate is async).
+                        install(m, window);
+                        native(m, |n| n.tv.window().map(|w| w.makeKeyAndOrderFront(None)));
+                    }
+                    let ok = open(m, Source::Kass, window, cx);
+                    if ok {
+                        kass::post_ready();
+                    }
+                    ok
+                }
+                _ => {
+                    // No reply: Kass reads the focused element and inserts there. Never the
+                    // hidden field.
+                    if !visible(m, cx) {
+                        release_native_focus(m);
+                    }
+                    false
+                }
+            };
+            let took = at.elapsed();
             crate::ui::ax_prompt::on_kass_begin(m, cx);
-            let active = window.is_window_active() || crate::dev::var("MIDNA_KASS_ANY_WINDOW").is_ok();
-            let skip = kass_skip(active, m.conn == ConnState::Connected, m.screen, m.overlay, m.selected.is_some(), on_target(m));
-            if let Some(skip) = skip {
-                // Kass only asks the frontmost app; if the main window isn't the key window
-                // or there's no terminal pane, stay out of the way: no reply, Kass carries on.
-                let front = cx.active_window().map(|h| crate::ui::badge::is_badge(h, cx));
-                let key = key_label(crate::sounds::app_active(), front);
-                log(&format!("kass willBegin ({mode}) ignored: {}", skip.reason(key)));
-                return;
-            }
-            let ok = open(m, Source::Kass, window, cx);
-            if ok {
-                kass::post_ready();
-                let late = if t0.elapsed() > KASS_WAIT { ", past Kass's wait" } else { "" };
-                log(&format!("kass willBegin ({mode}): composer first responder, ready posted in {:?}{late}", t0.elapsed()));
-            } else {
-                log(&format!("kass willBegin ({mode}): composer not first responder, no ready ({:?})", t0.elapsed()));
+            // Settings shows "handshake detected"; it reads kass::handshake_detected() on render.
+            cx.refresh_windows();
+            let ms = format!("{}ms after the notice, {}ms of it queued", took.as_millis(), queued.as_millis());
+            match (skip, route) {
+                (Some(skip), _) => log(&format!("kass willBegin ({mode}) ignored: {} ({ms})", skip.reason(key.label()))),
+                (None, Some(make_key)) if ready => {
+                    let late = if took > KASS_WAIT { ", past Kass's wait" } else { "" };
+                    let made = if make_key { " after making the window key" } else { "" };
+                    log(&format!("kass willBegin ({mode}): composer first responder{made}, ready posted {ms}{late}"));
+                }
+                _ => log(&format!("kass willBegin ({mode}): composer not first responder, no ready ({ms})")),
             }
         }
         KassEvent::DidEnd { outcome } => {
+            cx.refresh_windows();
             let outcome_s = outcome.as_deref().unwrap_or("-");
             if !m.composer.open {
                 log(&format!("kass didEnd ({outcome_s}): composer closed"));
@@ -514,8 +592,11 @@ pub fn text(m: &MainWindow) -> String {
 /// Keep the composer with its terminal and the native view's visibility in step with the
 /// layout (called every render).
 pub fn sync(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    // The (hidden) field is there before the first dictation, so answering Kass's first
+    // `dictationWillBegin` doesn't wait for AppKit to build it.
+    install(m, window);
     follow_selection(m, window, cx);
-    let visible = m.composer.open && on_target(m) && can_show(m) && !sheet_over(m, cx);
+    let visible = visible(m, cx);
     native(m, |n| {
         // Every render, not just on hide: whatever stranded AppKit's first responder (an AX
         // client poking the hidden field, a hide racing a focus), keys must reach GPUI.
@@ -692,6 +773,11 @@ fn target_terminal(m: &MainWindow, cx: &App) -> Option<Entity<crate::terminal::T
     m.terminal.clone().filter(|t| t.read(cx).session_id == id)
 }
 
+/// The composer shows over the selected terminal now.
+fn visible(m: &MainWindow, cx: &App) -> bool {
+    m.composer.open && on_target(m) && can_show(m) && !sheet_over(m, cx)
+}
+
 /// The target terminal's secret sheet is open: the native field hides so it can't cover it.
 fn sheet_over(m: &MainWindow, cx: &App) -> bool {
     target_terminal(m, cx).is_some_and(|t| t.read(cx).secret_sheet_open())
@@ -748,6 +834,70 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             !self.isHiddenOrHasHiddenAncestor() && unsafe { msg_send![super(self), acceptsFirstResponder] }
+        }
+
+        // Hidden, the field is out of the Accessibility tree and refuses writes. Kass keeps the
+        // element it saw at chord-down and writes into it when the take ends: a field hidden in
+        // between took the text out of sight, and the next open cleared it. Refused, Kass
+        // falls back to typing it into what's focused, or keeps it in its Captures.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            !ax_hidden(self) && unsafe { msg_send![super(self), isAccessibilityElement] }
+        }
+
+        #[unsafe(method(accessibilityIsIgnored))]
+        fn accessibility_is_ignored(&self) -> bool {
+            ax_hidden(self) || unsafe { msg_send![super(self), accessibilityIsIgnored] }
+        }
+
+        #[unsafe(method(isAccessibilityFocused))]
+        fn is_accessibility_focused(&self) -> bool {
+            !ax_hidden(self) && unsafe { msg_send![super(self), isAccessibilityFocused] }
+        }
+
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed(&self, s: Sel) -> bool {
+            !(ax_hidden(self) && ax_setter(s)) && unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: s] }
+        }
+
+        #[unsafe(method(accessibilityIsAttributeSettable:))]
+        fn accessibility_is_attribute_settable(&self, attr: &NSString) -> bool {
+            !ax_hidden(self) && unsafe { msg_send![super(self), accessibilityIsAttributeSettable: attr] }
+        }
+
+        #[unsafe(method(accessibilitySetValue:forAttribute:))]
+        fn accessibility_set_value(&self, value: Option<&AnyObject>, attr: &NSString) {
+            if !ax_hidden(self) {
+                let _: () = unsafe { msg_send![super(self), accessibilitySetValue: value, forAttribute: attr] };
+            }
+        }
+
+        #[unsafe(method(setAccessibilityValue:))]
+        fn set_accessibility_value(&self, value: Option<&AnyObject>) {
+            if !ax_hidden(self) {
+                let _: () = unsafe { msg_send![super(self), setAccessibilityValue: value] };
+            }
+        }
+
+        #[unsafe(method(setAccessibilitySelectedText:))]
+        fn set_accessibility_selected_text(&self, text: Option<&NSString>) {
+            if !ax_hidden(self) {
+                let _: () = unsafe { msg_send![super(self), setAccessibilitySelectedText: text] };
+            }
+        }
+
+        #[unsafe(method(setAccessibilitySelectedTextRange:))]
+        fn set_accessibility_selected_text_range(&self, range: NSRange) {
+            if !ax_hidden(self) {
+                let _: () = unsafe { msg_send![super(self), setAccessibilitySelectedTextRange: range] };
+            }
+        }
+
+        #[unsafe(method(setAccessibilityFocused:))]
+        fn set_accessibility_focused(&self, focused: bool) {
+            if !ax_hidden(self) {
+                let _: () = unsafe { msg_send![super(self), setAccessibilityFocused: focused] };
+            }
         }
 
         #[unsafe(method(becomeFirstResponder))]
@@ -811,6 +961,18 @@ thread_local! {
     static REMOVED: Cell<bool> = const { Cell::new(false) };
     /// [`renumber`] is changing the text: its own edits don't trigger it again.
     static RENUMBERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The field is off screen (hidden, or in no window): Accessibility can't see or change it.
+fn ax_hidden(tv: &ComposerTextView) -> bool {
+    tv.isHiddenOrHasHiddenAncestor() || tv.window().is_none()
+}
+
+/// An Accessibility selector that changes the field (`setAccessibility…:`, or the legacy
+/// `accessibilitySetValue:forAttribute:`).
+fn ax_setter(s: Sel) -> bool {
+    let name = s.name().to_bytes();
+    name.starts_with(b"setAccessibility") || name.starts_with(b"accessibilitySetValue")
 }
 
 /// UTF-16 offset `u` (an `NSRange`'s) in `s` as a byte offset.
@@ -1132,40 +1294,54 @@ fn undo(m: &MainWindow, redo: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{KassSkip, encode, follow, kass_skip, key_label, with_notes};
+    use super::{KassSkip, KeyWindow, ax_setter, encode, follow, kass_skip, route, with_notes};
     use crate::app::{Overlay, Screen};
     use ::core::prelude::v1::test;
+    use objc2::sel;
+
+    #[test]
+    fn kass_dictation_goes_to_the_main_window_youre_on() {
+        assert_eq!(route(KeyWindow::This, false), Some(false));
+        // The badge (or a subagent's log) is key: this window takes the dictation, and the keys.
+        assert_eq!(route(KeyWindow::Passive, false), Some(true));
+        // Settings, a popout or another app is key: Kass inserts there.
+        assert_eq!(route(KeyWindow::Typing, false), None);
+        assert_eq!(route(KeyWindow::Away, false), None);
+        assert_eq!(route(KeyWindow::Away, true), Some(false));
+    }
+
+    #[test]
+    fn only_accessibility_setters_are_refused() {
+        assert!(ax_setter(sel!(setAccessibilitySelectedText:)));
+        assert!(ax_setter(sel!(setAccessibilityValue:)));
+        assert!(ax_setter(sel!(accessibilitySetValue:forAttribute:)));
+        assert!(!ax_setter(sel!(accessibilityValue)));
+        assert!(!ax_setter(sel!(accessibilitySelectedTextRange)));
+    }
 
     #[test]
     fn kass_will_begin_names_the_first_gate_that_fails() {
         let t = Screen::Terminal;
         let none = Overlay::None;
-        assert_eq!(kass_skip(true, true, t, none, true, true), None);
-        assert_eq!(kass_skip(false, true, t, none, true, true), Some(KassSkip::NotKey));
+        assert_eq!(kass_skip(true, true, t, none, true, false, true), None);
+        assert_eq!(kass_skip(false, true, t, none, true, false, true), Some(KassSkip::NotKey));
         // Not key wins over everything else (Kass asked the app, not this window).
-        assert_eq!(kass_skip(false, false, Screen::Rules, Overlay::CommandBar, false, false), Some(KassSkip::NotKey));
-        assert_eq!(kass_skip(true, false, t, none, true, true), Some(KassSkip::NotConnected));
-        assert_eq!(kass_skip(true, true, Screen::Insights, none, true, true), Some(KassSkip::NotTerminalScreen(Screen::Insights)));
-        assert_eq!(kass_skip(true, true, t, Overlay::NeedsYou, true, true), Some(KassSkip::Overlay(Overlay::NeedsYou)));
-        assert_eq!(kass_skip(true, true, t, none, false, true), Some(KassSkip::NoTerminal));
-        assert_eq!(kass_skip(true, true, t, none, true, false), Some(KassSkip::OtherTerminal));
+        assert_eq!(kass_skip(false, false, Screen::Rules, Overlay::CommandBar, false, true, false), Some(KassSkip::NotKey));
+        assert_eq!(kass_skip(true, false, t, none, true, false, true), Some(KassSkip::NotConnected));
+        assert_eq!(kass_skip(true, true, Screen::Insights, none, true, false, true), Some(KassSkip::NotTerminalScreen(Screen::Insights)));
+        assert_eq!(kass_skip(true, true, t, Overlay::NeedsYou, true, false, true), Some(KassSkip::Overlay(Overlay::NeedsYou)));
+        assert_eq!(kass_skip(true, true, t, none, false, false, true), Some(KassSkip::NoTerminal));
+        assert_eq!(kass_skip(true, true, t, none, true, true, true), Some(KassSkip::SecretSheet));
+        assert_eq!(kass_skip(true, true, t, none, true, false, false), Some(KassSkip::OtherTerminal));
     }
 
     #[test]
     fn kass_skip_reasons_are_short() {
-        assert_eq!(KassSkip::NotKey.reason(key_label(true, Some(true))), "window not key (key: badge)");
+        assert_eq!(KassSkip::NotKey.reason(KeyWindow::Away.label()), "window not key (key: another app)");
         assert_eq!(KassSkip::Overlay(Overlay::CommandBar).reason("-"), "overlay CommandBar");
         assert_eq!(KassSkip::NotTerminalScreen(Screen::Rules).reason("-"), "screen Rules");
+        assert_eq!(KassSkip::SecretSheet.reason("-"), "secret sheet open");
         assert_eq!(KassSkip::OtherTerminal.reason("-"), "composer open on another terminal");
-    }
-
-    #[test]
-    fn key_label_says_what_is_key_instead() {
-        assert_eq!(key_label(false, None), "another app");
-        assert_eq!(key_label(false, Some(true)), "another app");
-        assert_eq!(key_label(true, Some(true)), "badge");
-        assert_eq!(key_label(true, Some(false)), "another midna window");
-        assert_eq!(key_label(true, None), "no midna window");
     }
 
     #[test]
