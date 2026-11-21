@@ -1,6 +1,6 @@
 //! PTY spawn / resize / write. Spawning uses `std::process::Command` (PATH lookup, env, cwd)
 //! with a `pre_exec` that makes the slave the controlling terminal of a new session.
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -70,7 +70,30 @@ fn set_cloexec(fd: RawFd) {
     }
 }
 
+/// Waits between tries when the daemon is out of file handles: handles that are closing (a
+/// terminal ending, a CLI call finishing) free up in that time.
+const EXHAUSTED_RETRIES: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(300), Duration::from_millis(1000)];
+
+/// Start `argv` on a new PTY. Out of file handles (EMFILE/ENFILE), it tries again a few times,
+/// then says so in the error rather than a bare "Too many open files".
 pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16) -> std::io::Result<Spawned> {
+    let mut waits = EXHAUSTED_RETRIES.iter();
+    loop {
+        match spawn_once(argv, cwd, env, cols, rows) {
+            Err(e) if crate::fd_limit::exhausted(&e) => match waits.next() {
+                Some(w) => std::thread::sleep(*w),
+                None => {
+                    let e = crate::fd_limit::explain(e);
+                    eprintln!("midnad: could not start {}: {e}", argv.first().map_or("", String::as_str));
+                    return Err(e);
+                }
+            },
+            r => return r,
+        }
+    }
+}
+
+fn spawn_once(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16) -> std::io::Result<Spawned> {
     let Some((prog, args)) = argv.split_first() else {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command"));
     };
@@ -82,6 +105,9 @@ pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, ro
     }
     set_cloexec(m);
     set_cloexec(s);
+    // Owned until the child is running, so every early return (a failed dup when out of handles)
+    // closes both ends.
+    let master = unsafe { OwnedFd::from_raw_fd(m) };
     // Command dup2s these onto 0/1/2 (dup2 clears CLOEXEC on the copies).
     let slave = unsafe { OwnedFd::from_raw_fd(s) };
     let mut cmd = Command::new(prog);
@@ -107,13 +133,8 @@ pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, ro
             Ok(())
         });
     }
-    match cmd.spawn() {
-        Ok(child) => Ok(Spawned { master: m, child }),
-        Err(e) => {
-            unsafe { libc::close(m) };
-            Err(e)
-        }
-    }
+    let child = cmd.spawn()?;
+    Ok(Spawned { master: master.into_raw_fd(), child })
 }
 
 pub fn resize(fd: RawFd, cols: u16, rows: u16) {
