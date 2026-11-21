@@ -1055,6 +1055,7 @@ fn icon_of(category: &str) -> Icon {
         "pr_checks" => Icon::Pr,
         "exited" => Icon::Screen,
         "agent" => Icon::Orbit,
+        "nearby" => Icon::Mac,
         "from_trigger" | "triggers" => Icon::Triggers,
         "restarted" => Icon::Restart,
         "cleanup" => Icon::Trash,

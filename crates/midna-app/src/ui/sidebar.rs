@@ -1464,9 +1464,14 @@ fn project_menu(
                     }),
                 ))
                 .when_some(ask, |d, sid| {
+                    let tab = sid.clone();
                     d.child(menu_item(t, "ask-nearby", "Ask an agent on a nearby Mac…", "", cx.listener(move |m, _, w, cx| {
                         m.menu = Menu::None;
                         crate::ui::share::open_agent_start(m, Some(sid.clone()), w, cx);
+                    })))
+                    .child(menu_item(t, "send-tab-nearby", "Send tab to a nearby Mac…", "", cx.listener(move |m, _, w, cx| {
+                        m.menu = Menu::None;
+                        crate::ui::share::open_tab(m, Some(tab.clone()), w, cx);
                     })))
                 })
                 .when_some(summary, |d, (any, keys)| {

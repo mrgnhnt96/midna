@@ -1,7 +1,8 @@
 //! Nearby sharing in the app.
 //!
-//! The Share picker is a sheet that sends a terminal selection, the clipboard or a message you
-//! type to one of your paired Macs (`share.send`). A share another Mac sends arrives as a
+//! The Share picker is a sheet that sends a terminal selection, the clipboard, a message you
+//! type, a whole terminal tab ([`open_tab`]) or a file or folder ([`open_file`], or one dropped
+//! on the picker or the Nearby tab) to one of your paired Macs (`share.send`). A share another Mac sends arrives as a
 //! needs-you approval whose action is `midna inbox accept sh_…`: [`offer_of`] reads it for its
 //! card in Needs you and [`panel`] draws the card's middle. `inbox.list` is cached on
 //! `MainWindow.share` for the cards' full text and for the Notifications screen's Nearby tab
@@ -50,6 +51,10 @@ pub struct Picker {
     reply_to: Option<String>,
     /// A reply from a message's card: that card, marked read once the reply is sent.
     resolves: Option<String>,
+    /// Opened for one kind only (a tab, a file): no other kind to switch to.
+    only: Option<ShareKind>,
+    /// A file share: the absolute path of the file or folder on this Mac (midnad reads it).
+    path: Option<String>,
     /// The device to choose first (a fingerprint, full or short).
     prefer: Option<String>,
     /// Your paired Macs, the ones on the network first; None while `peers.list` runs.
@@ -80,8 +85,12 @@ pub fn kinds(text: &str) -> Vec<ShareKind> {
 }
 
 /// The kinds the picker offers: what `text` can be sent as, then an agent start when there's a
-/// terminal to start it from. A reply is only ever a message.
-pub fn picker_kinds(text: &str, replying: bool, can_start: bool) -> Vec<ShareKind> {
+/// terminal to start it from. A reply is only ever a message; a picker opened for a tab or a
+/// file (`only`) sends only that.
+pub fn picker_kinds(text: &str, replying: bool, can_start: bool, only: Option<ShareKind>) -> Vec<ShareKind> {
+    if let Some(k) = only {
+        return vec![k];
+    }
     if replying {
         return vec![ShareKind::Message];
     }
@@ -113,6 +122,44 @@ pub fn start_params(peer: &str, session: &str, agent: AgentKind, prompt: &str, w
     p.agent = Some(agent);
     p.want_reply = want_reply;
     Ok(p)
+}
+
+/// `share.send` for terminal `session` as a tab: midnad reads its place and scrollback.
+pub fn tab_params(peer: &str, session: &str) -> ShareSendParams {
+    let mut p = send_params(peer, SharePayload::Message { text: String::new(), reply_to: None });
+    p.kind = ShareKind::Tab;
+    p.text = None;
+    p.session = Some(session.to_string());
+    p
+}
+
+/// `share.send` for the file or folder at `path` (absolute, on the Mac that sends it).
+pub fn file_params(peer: &str, path: &str) -> ShareSendParams {
+    let mut p = send_params(peer, SharePayload::Message { text: String::new(), reply_to: None });
+    p.kind = ShareKind::File;
+    p.text = None;
+    p.path = Some(path.to_string());
+    p
+}
+
+/// The one file or folder among dropped `paths` to send, or what to say instead.
+pub fn dropped_file(paths: &[std::path::PathBuf]) -> Result<String, String> {
+    match paths {
+        [] => Err("Drop a file or folder to send it.".into()),
+        [one] if one.is_absolute() => one.to_str().map(str::to_string).ok_or_else(|| "That file's name can't be sent (it needs a plain UTF-8 name).".into()),
+        [_] => Err("Drop a file or folder from Finder to send it.".into()),
+        _ => Err(format!("Send one file or folder at a time (you dropped {}); put them in a folder to send them together.", paths.len())),
+    }
+}
+
+/// A file share's line in the picker: "notes.md · 4.2 KB", "site/ · folder".
+pub fn file_head(path: &std::path::Path, meta: Option<&std::fs::Metadata>) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    match meta {
+        Some(m) if m.is_dir() => format!("{name}/ · folder"),
+        Some(m) => format!("{name} · {}", nb::size_label(m.len())),
+        None => format!("{name} · can't be read"),
+    }
 }
 
 pub fn agent_label(a: AgentKind) -> &'static str {
@@ -656,7 +703,10 @@ pub fn on_event(m: &mut MainWindow, e: &Event, cx: &mut Context<MainWindow>) {
     fetch(m, cx);
     if e.kind == midna_proto::kinds::SHARE_ANSWERED {
         if let Ok(it) = serde_json::from_value::<ShareItem>(e.data.clone()) {
-            if let Some(msg) = agent_answered(&it) {
+            // midnad posts it as a `nearby` notification (a card here, a banner elsewhere); a toast
+            // only when those are off, so it's said once.
+            let on = |k: &str| m.settings.get(k).and_then(Value::as_bool).unwrap_or(true);
+            if let Some(msg) = agent_answered(&it).filter(|_| !(on("notify.enabled") && on("notify.nearby"))) {
                 m.toast(msg, cx);
             }
             // The Nearby tab opens on it.
@@ -779,6 +829,63 @@ pub fn open_agent_start(m: &mut MainWindow, session: Option<String>, window: &mu
     cx.notify();
 }
 
+/// Open the picker to send terminal `session` (default the selected one) as a tab: the other
+/// Mac opens a new shell in its checkout of the same project, with this tab's scrollback above it.
+pub fn open_tab(m: &mut MainWindow, session: Option<String>, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(session) = session.or_else(|| live(m, m.selected.as_deref())) else {
+        return m.toast("Select a terminal to send first", cx);
+    };
+    start(m, ShareKind::Tab, String::new(), None, None, None, window, cx);
+    if let Some(p) = m.share.picker.as_mut() {
+        p.only = Some(ShareKind::Tab);
+        p.session = Some(session);
+    }
+    cx.notify();
+}
+
+/// Open the picker to send the file or folder at `path` (absolute, on this Mac). Another Mac's
+/// window sends from that Mac, where this path means nothing, so it says so instead.
+pub fn open_file(m: &mut MainWindow, path: String, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if let Some(mac) = that_mac(m) {
+        return m.toast(format!("This window sends from {mac}, so a file on this Mac can't go from here. Send it from this Mac's own window."), cx);
+    }
+    // Keep the Mac already chosen when the file replaces what an open picker held.
+    let prefer = m.share.picker.as_ref().and_then(|p| p.peers.as_ref()?.get(p.sel).map(|x| x.fingerprint.clone()));
+    start(m, ShareKind::File, String::new(), None, prefer, None, window, cx);
+    if let Some(p) = m.share.picker.as_mut() {
+        p.only = Some(ShareKind::File);
+        p.path = Some(path);
+    }
+    cx.notify();
+}
+
+/// Choose a file or folder in an open panel, then open the picker with it.
+pub fn choose_file(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if let Some(mac) = that_mac(m) {
+        return m.toast(format!("This window sends from {mac}, so a file on this Mac can't go from here. Send it from this Mac's own window."), cx);
+    }
+    let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Send".into()) });
+    cx.spawn_in(window, async move |this, cx| {
+        let Ok(Ok(Some(paths))) = paths.await else { return };
+        let _ = this.update_in(cx, |m, w, cx| match dropped_file(&paths) {
+            Ok(path) => open_file(m, path, w, cx),
+            Err(e) => m.toast(e, cx),
+        });
+    })
+    .detach();
+}
+
+/// Files dropped on the picker or the Nearby tab: open the picker with the one file or folder.
+fn drop_files(m: &mut MainWindow, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if m.share.picker.as_ref().is_some_and(|p| p.reply_to.is_some()) {
+        return m.toast("A reply is a message. Send the file on its own once this reply is sent.", cx);
+    }
+    match dropped_file(paths.paths()) {
+        Ok(path) => open_file(m, path, window, cx),
+        Err(e) => m.toast(e, cx),
+    }
+}
+
 /// `id` when it's a terminal still running.
 fn live(m: &MainWindow, id: Option<&str>) -> Option<String> {
     m.sessions.iter().find(|s| Some(s.id.as_str()) == id && s.status.state != StatusState::Exited).map(|s| s.id.clone())
@@ -808,6 +915,8 @@ fn start(m: &mut MainWindow, kind: ShareKind, text: String, reply_to: Option<Str
         want_reply: true,
         reply_to,
         resolves,
+        only: None,
+        path: None,
         prefer,
         peers: None,
         unpaired: 0,
@@ -913,6 +1022,16 @@ fn send(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                 return cx.notify();
             }
         }
+    } else if matches!(p.kind, ShareKind::Tab | ShareKind::File) {
+        let params = match (p.kind, &p.session, &p.path) {
+            (ShareKind::Tab, Some(s), _) => tab_params(&peer.fingerprint, s),
+            (ShareKind::File, _, Some(f)) => file_params(&peer.fingerprint, f),
+            _ => {
+                p.error = Some(format!("No {} to send.", noun(p.kind)));
+                return cx.notify();
+            }
+        };
+        (params, format!("Sent your {} to {}. It waits there until they accept it.", noun(p.kind), peer.name))
     } else {
         let body = payload(p.kind, &p.text, &p.message.text(cx), p.reply_to.clone());
         if let Err(e) = body.check() {
@@ -951,10 +1070,10 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     let replying = p.reply_to.is_some();
     let starting = p.kind == ShareKind::AgentStart;
     let mac = that_mac(m);
-    let words = PickerWords::new(mac.as_deref(), replying, starting);
+    let words = PickerWords::new(mac.as_deref(), replying, p.kind);
     let title = words.title;
 
-    let kinds = picker_kinds(&p.text, replying, p.session.is_some());
+    let kinds = picker_kinds(&p.text, replying, p.session.is_some(), p.only);
     let switch = (kinds.len() > 1).then(|| {
         div().flex().gap(px(6.)).children(kinds.into_iter().map(|k| {
             let on = p.kind == k;
@@ -979,6 +1098,8 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
     let preview: AnyElement = match p.kind {
         ShareKind::Message => p.message.render(t, "share-message", window).into_any_element(),
         ShareKind::AgentStart => start_form(m, p, t, window, cx).into_any_element(),
+        ShareKind::Tab => tab_box(m, p, t).into_any_element(),
+        ShareKind::File => file_box(p, t).into_any_element(),
         k => payload_box(t, &payload(k, &p.text, "", None)).into_any_element(),
     };
 
@@ -1128,6 +1249,11 @@ pub fn render(m: &MainWindow, t: &Theme, window: &Window, cx: &mut Context<MainW
             .justify_center()
             .bg(hsla(0., 0., 0., 0.45))
             .on_mouse_down(MouseButton::Left, cx.listener(|m, _, w, cx| close(m, w, cx)))
+            // A file dropped on the picker is what it sends (not in another Mac's window, nor a reply).
+            .when(mac.is_none() && !replying, |d| {
+                let tint = t.accent.opacity(0.14);
+                d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(tint)).on_drop(cx.listener(|m, paths: &ExternalPaths, w, cx| drop_files(m, paths, w, cx)))
+            })
             .on_key_down(cx.listener(|m, ev: &KeyDownEvent, w, cx| {
                 let ks = &ev.keystroke;
                 if ks.modifiers.platform || ks.modifiers.control {
@@ -1217,6 +1343,53 @@ fn start_form(m: &MainWindow, p: &Picker, t: &Theme, window: &Window, cx: &mut C
         .child(div().text_size(px(12.)).text_color(t.dim).child(place))
 }
 
+/// A tab's middle: which terminal goes and what the other Mac makes of it.
+fn tab_box(m: &MainWindow, p: &Picker, t: &Theme) -> Div {
+    let s = p.session.as_deref().and_then(|id| m.sessions.iter().find(|s| s.id == id));
+    let head = match s {
+        Some(s) => {
+            let project = s.project_id.as_deref().and_then(|id| m.projects.iter().find(|x| x.id == id)).map(|x| x.name.clone());
+            format!("{} · {}", s.name, project.map(|n| format!("project {n}")).unwrap_or_else(|| crate::commands::tilde(&s.cwd)))
+        }
+        None => "That terminal has closed.".into(),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .px(px(14.))
+        .py(px(10.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(t.line)
+        .bg(t.bg)
+        .child(div().font_weight(FontWeight::BOLD).truncate().child(head))
+        .child(div().text_size(px(12.)).text_color(t.dim).child(
+            "Opens there as a new shell in their checkout of the project (else their home folder), with this tab's scrollback above it. Nothing that runs here runs there.",
+        ))
+}
+
+/// A file's middle: its name and size (a folder's files are counted when it's sent).
+fn file_box(p: &Picker, t: &Theme) -> Div {
+    let head = p.path.as_deref().map(|f| {
+        let path = std::path::Path::new(f);
+        file_head(path, std::fs::metadata(path).ok().as_ref())
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .px(px(14.))
+        .py(px(10.))
+        .rounded(px(9.))
+        .border_1()
+        .border_color(t.line)
+        .bg(t.bg)
+        .child(div().font_weight(FontWeight::BOLD).truncate().child(head.unwrap_or_else(|| "Drop a file or folder here.".into())))
+        .children(p.path.clone().map(|f| div().text_size(px(12.)).text_color(t.dim).truncate().child(crate::commands::tilde(&f))))
+        .child(div().text_size(px(12.)).text_color(t.dim).child("Saved into their downloads folder once they accept it; nothing there opens or runs it. Drop another file here to send that instead."))
+}
+
 // ------------------------------------------------------------------ Notifications › Nearby
 
 fn state_badge(t: &Theme, it: &ShareItem) -> (&'static str, Hsla) {
@@ -1303,6 +1476,11 @@ pub fn step_inbox(m: &mut MainWindow, by: isize, cx: &mut Context<MainWindow>) {
 pub fn inbox_rows(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let cur = current(m).map(|i| i.id.clone());
     let mut col = div().id("nt-share-list").flex_none().w(px(480.)).h_full().overflow_y_scroll().border_r_1().border_color(t.line).pb(px(12.));
+    // A file dropped on the list opens the picker to send it (this Mac's own window only).
+    if that_mac(m).is_none() {
+        let tint = t.accent_soft;
+        col = col.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(tint)).on_drop(cx.listener(|m, paths: &ExternalPaths, w, cx| drop_files(m, paths, w, cx)));
+    }
     let mut last_day = String::new();
     for it in &m.share.items {
         let day = day_label(&it.sent_at);
@@ -1367,13 +1545,16 @@ struct PickerWords {
 }
 
 impl PickerWords {
-    fn new(mac: Option<&str>, replying: bool, starting: bool) -> Self {
-        let title = match (mac, replying, starting) {
+    fn new(mac: Option<&str>, replying: bool, kind: ShareKind) -> Self {
+        let title = match (mac, replying, kind) {
             (None, true, _) => "Reply".into(),
-            (None, _, true) => "Ask an agent on a nearby Mac".into(),
+            (None, _, ShareKind::AgentStart) => "Ask an agent on a nearby Mac".into(),
+            (None, _, ShareKind::Tab) => "Send this tab to a nearby Mac".into(),
+            (None, _, ShareKind::File) => "Send a file to a nearby Mac".into(),
             (None, _, _) => "Share with a nearby Mac".into(),
             (Some(mac), true, _) => format!("Reply from {mac}"),
-            (Some(mac), _, true) => format!("Ask an agent from {mac}"),
+            (Some(mac), _, ShareKind::AgentStart) => format!("Ask an agent from {mac}"),
+            (Some(mac), _, ShareKind::Tab) => format!("Send this tab from {mac}"),
             (Some(mac), _, _) => format!("Share from {mac}"),
         };
         let unpaired_all = match mac {
@@ -1538,23 +1719,67 @@ pub fn inbox_detail(m: &MainWindow, t: &Theme, it: &ShareItem, cx: &mut Context<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one.
-    use super::{Offer, PickerWords, agent_answered, answered, auto_accepted, file_of_body, first_choice, is_url, kinds, offer_of, order, payload, picker_kinds, send_params, start_params, unpaired_line};
+    use super::{Offer, PickerWords, agent_answered, answered, auto_accepted, dropped_file, file_head, file_of_body, file_params, first_choice, is_url, kinds, offer_of, order, payload, picker_kinds, send_params, start_params, tab_params, unpaired_line};
     use midna_proto::AgentKind;
     use crate::model::{ApprovalRequest, NeedsYou, NeedsYouKind, PolicyAction};
     use midna_proto::nearby::{PairedPeer, ShareDirection, ShareItem, ShareKind, SharePayload, ShareState, Tier};
 
     #[test]
     fn another_macs_picker_names_the_mac_it_sends_from() {
-        assert_eq!(PickerWords::new(None, false, false).title, "Share with a nearby Mac");
-        assert_eq!(PickerWords::new(None, true, false).title, "Reply");
-        assert_eq!(PickerWords::new(None, false, true).title, "Ask an agent on a nearby Mac");
-        assert_eq!(PickerWords::new(Some("Bravo"), false, false).title, "Share from Bravo");
-        assert_eq!(PickerWords::new(Some("Bravo"), true, false).title, "Reply from Bravo");
-        assert_eq!(PickerWords::new(Some("Bravo"), false, true).title, "Ask an agent from Bravo");
-        assert!(PickerWords::new(None, false, false).unpaired_all.starts_with("You haven't paired this Mac"));
-        assert!(PickerWords::new(Some("Bravo"), false, false).unpaired_all.contains("Pair one at Bravo"));
+        assert_eq!(PickerWords::new(None, false, ShareKind::Message).title, "Share with a nearby Mac");
+        assert_eq!(PickerWords::new(None, true, ShareKind::Message).title, "Reply");
+        assert_eq!(PickerWords::new(None, false, ShareKind::AgentStart).title, "Ask an agent on a nearby Mac");
+        assert_eq!(PickerWords::new(Some("Bravo"), false, ShareKind::Message).title, "Share from Bravo");
+        assert_eq!(PickerWords::new(Some("Bravo"), true, ShareKind::Message).title, "Reply from Bravo");
+        assert_eq!(PickerWords::new(Some("Bravo"), false, ShareKind::AgentStart).title, "Ask an agent from Bravo");
+        assert!(PickerWords::new(None, false, ShareKind::Message).unpaired_all.starts_with("You haven't paired this Mac"));
+        assert!(PickerWords::new(Some("Bravo"), false, ShareKind::Message).unpaired_all.contains("Pair one at Bravo"));
         assert_eq!(unpaired_line(None, 1), "1 other Midna nearby isn't paired with this Mac.");
         assert_eq!(unpaired_line(Some("Bravo"), 2), "2 other Midnas nearby aren't paired with Bravo.");
+    }
+
+    #[test]
+    fn a_tab_or_file_picker_says_what_it_sends() {
+        assert_eq!(PickerWords::new(None, false, ShareKind::Tab).title, "Send this tab to a nearby Mac");
+        assert_eq!(PickerWords::new(None, false, ShareKind::File).title, "Send a file to a nearby Mac");
+        assert_eq!(PickerWords::new(Some("Bravo"), false, ShareKind::Tab).title, "Send this tab from Bravo");
+        assert_eq!(picker_kinds("ls", false, true, Some(ShareKind::Tab)), vec![ShareKind::Tab], "a tab picker sends only the tab");
+        assert_eq!(picker_kinds("", false, false, Some(ShareKind::File)), vec![ShareKind::File]);
+    }
+
+    #[test]
+    fn a_tab_is_sent_by_its_terminal_and_a_file_by_its_path() {
+        let p = tab_params("fp", "s1");
+        assert_eq!((p.kind, p.session.as_deref(), p.text.as_deref(), p.path.as_deref()), (ShareKind::Tab, Some("s1"), None, None));
+        assert_eq!(p.peer, "fp");
+        let p = file_params("fp", "/Users/me/notes.md");
+        assert_eq!((p.kind, p.path.as_deref(), p.text.as_deref(), p.session.as_deref()), (ShareKind::File, Some("/Users/me/notes.md"), None, None));
+        // What midnad reads: a file share needs only its path, a tab only its terminal.
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["kind"], "file");
+        assert_eq!(v["path"], "/Users/me/notes.md");
+    }
+
+    #[test]
+    fn one_dropped_file_or_folder_is_sent() {
+        use std::path::PathBuf;
+        assert_eq!(dropped_file(&[PathBuf::from("/tmp/a.txt")]), Ok("/tmp/a.txt".to_string()));
+        assert!(dropped_file(&[]).is_err());
+        assert!(dropped_file(&[PathBuf::from("a.txt")]).unwrap_err().contains("from Finder"));
+        let two = dropped_file(&[PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]).unwrap_err();
+        assert!(two.contains("one file or folder at a time") && two.contains("dropped 2"), "{two}");
+    }
+
+    #[test]
+    fn a_file_line_names_it_and_its_size() {
+        let dir = std::env::temp_dir().join(format!("midna-share-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("notes.md");
+        std::fs::write(&f, b"hello").unwrap();
+        assert_eq!(file_head(&f, std::fs::metadata(&f).ok().as_ref()), "notes.md · 5 B");
+        assert_eq!(file_head(&dir, std::fs::metadata(&dir).ok().as_ref()), format!("{}/ · folder", dir.file_name().unwrap().to_string_lossy()));
+        assert_eq!(file_head(&dir.join("gone"), None), "gone · can't be read");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn need(title: &str, detail: &str, value: &str) -> NeedsYou {
@@ -1675,9 +1900,9 @@ mod tests {
 
     #[test]
     fn the_picker_starts_an_agent_from_a_terminal() {
-        assert_eq!(picker_kinds("ls", false, true), vec![ShareKind::Snippet, ShareKind::Message, ShareKind::AgentStart]);
-        assert_eq!(picker_kinds("", false, false), vec![ShareKind::Message], "no terminal: no agent start");
-        assert_eq!(picker_kinds("x", true, true), vec![ShareKind::Message], "a reply is a message");
+        assert_eq!(picker_kinds("ls", false, true, None), vec![ShareKind::Snippet, ShareKind::Message, ShareKind::AgentStart]);
+        assert_eq!(picker_kinds("", false, false, None), vec![ShareKind::Message], "no terminal: no agent start");
+        assert_eq!(picker_kinds("x", true, true, None), vec![ShareKind::Message], "a reply is a message");
         let p = start_params("fp", "s_1", AgentKind::Codex, "  why?\n\tsee log ", true).unwrap();
         assert_eq!((p.kind, p.session.as_deref(), p.prompt.as_deref(), p.agent, p.want_reply), (ShareKind::AgentStart, Some("s_1"), Some("why?\n\tsee log"), Some(AgentKind::Codex), true));
         assert_eq!((&p.text, &p.url, &p.reply_to), (&None, &None, &None));
