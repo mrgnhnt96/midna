@@ -785,7 +785,11 @@ impl TerminalView {
         }
         if let Some((pending, _)) = &self.erasing {
             // Check once the app has gone quiet, not between its redraws.
-            let quiet = if let Some(Pending::Read(job)) = pending { job.quiet_ms().min(120) } else { 120 };
+            let quiet = match pending {
+                Some(Pending::Read(job)) => job.quiet_ms().min(120),
+                Some(Pending::ToEdge(walk)) => walk.quiet_ms(),
+                _ => 120,
+            };
             self.check_erase_later(quiet, cx);
         }
         if (rows_changed || moved) && self.list_watch.is_some() {
@@ -1091,7 +1095,7 @@ impl TerminalView {
         // line, so there ⇧⌘↑ ⇧⌘↓ select to its start or end and plain ⌘↑ ⌘↓ still scroll.
         if cmd && !alt && matches!(key, "up" | "down") && self.line_editing() {
             let Some(c) = self.live_cursor() else { return false };
-            if self.agent_kind() == Some("claude") && term_edit::box_is_full(&self.grid, c) {
+            if matches!(self.agent_kind(), Some("claude" | "codex")) && term_edit::box_is_full(&self.grid, c) {
                 return self.walk_to_edge(key, m.shift, c, cx);
             }
             let line_edge = term_edit::Send::Bytes(if key == "up" { b"\x01" } else { b"\x05" });
@@ -1223,13 +1227,13 @@ impl TerminalView {
         self.cursor.filter(|_| self.ext.at_bottom())
     }
 
-    /// ⌘↑ ⌘↓ in Claude's long input: walk to the text's edge, not the window's ([`term_edit::EdgeWalk`]).
+    /// ⌘↑ ⌘↓ in Claude's or Codex's long input: walk to the text's edge, not the window's ([`term_edit::EdgeWalk`]).
     /// Like ⌘A's walk, it waits for an erase or walk already underway rather than join it.
     fn walk_to_edge(&mut self, key: &str, shift: bool, c: term_edit::Pos, cx: &mut Context<Self>) -> bool {
         if self.erasing.is_some() {
             return true;
         }
-        let Some(walk) = term_edit::EdgeWalk::start(key, &self.grid, c) else { return false };
+        let Some(walk) = term_edit::EdgeWalk::start(key, shift, &self.grid, c) else { return false };
         if !shift {
             self.kbd_sel = None;
         } else if !self.selecting() {
@@ -1253,6 +1257,10 @@ impl TerminalView {
             }
             term_edit::Walk::Edge(bytes) => {
                 self.send_move(term_edit::Send::Bytes(bytes));
+                self.check_erase_later(250, cx);
+            }
+            term_edit::Walk::Jump(bytes) => {
+                self.send(bytes);
                 self.check_erase_later(250, cx);
             }
             term_edit::Walk::Done => match then {
@@ -1511,13 +1519,14 @@ impl TerminalView {
     }
 
     fn press_read_keys(&mut self, keys: &term_edit::Read) {
-        let (key, n) = match keys {
-            term_edit::Read::Up(n) => ("up", *n),
-            term_edit::Read::Left => ("left", 1),
-            _ => return,
-        };
-        for _ in 0..n {
-            self.arrow(key);
+        match keys {
+            term_edit::Read::Up(n) => (0..*n).for_each(|_| self.arrow("up")),
+            // Bytes as they are: Codex's ctrl-a goes up a line, where Home wouldn't.
+            term_edit::Read::Keys(keys) => keys.iter().for_each(|k| match *k {
+                term_edit::Send::Bytes(b) => self.send(b),
+                term_edit::Send::Arrow(a) => self.arrow(a),
+            }),
+            _ => {}
         }
     }
 
@@ -1678,7 +1687,7 @@ impl TerminalView {
                 let (read, cut, rows, quiet) = (job.step(&self.grid, self.cursor), job.cut, job.rows(), job.quiet_ms());
                 match read {
                     term_edit::Read::Wait => self.check_erase_later(120, cx),
-                    keys @ (term_edit::Read::Up(_) | term_edit::Read::Left) => {
+                    keys @ (term_edit::Read::Up(_) | term_edit::Read::Keys(_)) => {
                         self.press_read_keys(&keys);
                         self.check_erase_later(quiet, cx);
                     }
