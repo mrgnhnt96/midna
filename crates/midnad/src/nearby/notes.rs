@@ -96,7 +96,7 @@ pub fn accepting(d: &Daemon, it: &ShareItem, chosen: Option<&str>) -> Result<Str
     }
     let place = match chosen {
         Some(c) => Place::chosen(c)?,
-        None => tab::place(d, &it.payload),
+        None => tab::place(d, &it.peer, &it.payload),
     };
     place.usable()?;
     Ok(format!("receiving the notes; the agent starts {} once they are saved", place.here()))
@@ -115,7 +115,7 @@ pub fn arrived(d: &Arc<Daemon>, item: &ShareItem, chosen: Option<&str>, staged: 
     }
     let place = match chosen {
         Some(c) => Place::chosen(c).map_err(|e| e.message)?,
-        None => tab::place(d, &item.payload),
+        None => tab::place(d, &item.peer, &item.payload),
     };
     place.usable().map_err(|e| e.message)?;
     let saved = saved_path(&d.cfg.home, &item.id);

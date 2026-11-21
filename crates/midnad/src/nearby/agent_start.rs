@@ -110,7 +110,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) ->
     }
     let place = match chosen {
         Some(c) => Place::chosen(c)?,
-        None => tab::place(d, &it.payload),
+        None => tab::place(d, &it.peer, &it.payload),
     };
     place.usable()?;
     start(d, ctx, it, &place, prompt)

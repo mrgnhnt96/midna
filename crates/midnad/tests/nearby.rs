@@ -1896,6 +1896,20 @@ fn a_tab_or_an_agent_start_opens_in_a_project_named_wherever_the_sender_is() {
     assert_eq!((s["cwd"].as_str(), s["project_id"].as_str(), s["kind"].as_str()), (dir.to_str(), Some(pid.as_str()), Some("agent")), "{got}");
     assert!(agent_args(&mut hb, &opened(&r)).iter().any(|a| a == prompt));
 
+    // An agent start sent from a terminal in a folder outside any repo that B doesn't have
+    // (A's ~/.config/mudora, say) opens in B's project named after that folder, not B's home.
+    let loose = a.home.join("cfg/mudora");
+    std::fs::create_dir_all(&loose).unwrap();
+    let t3 = call(&mut ha, "session.open", json!({ "kind": "shell", "cwd": loose, "command": ["/bin/sh"] }))["id"].as_str().unwrap().to_string();
+    let id = send(&mut ha, &fb, json!({ "kind": "agent_start", "session": t3, "prompt": prompt }))["id"].as_str().unwrap().to_string();
+    let got = share(&mut hb, &id).unwrap();
+    assert!(got["payload"]["project"].is_null() && got["payload"]["project_name"].is_null(), "{got}");
+    // Both daemons share this disk: take A's folder away so it isn't "here" on B.
+    std::fs::remove_dir_all(&loose).unwrap();
+    let r = call(&mut hb, "share.accept", json!({ "id": id }));
+    let s = call(&mut hb, "session.get", json!({ "id": opened(&r) }));
+    assert_eq!((s["cwd"].as_str(), s["project_id"].as_str()), (dir.to_str(), Some(pid.as_str())), "{r}");
+
     // A project removed after the offer: accepting refuses, unless the human picks a folder.
     let gone = b.home.join("code/gone");
     std::fs::create_dir_all(&gone).unwrap();

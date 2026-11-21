@@ -256,7 +256,7 @@ pub fn accepting(d: &Daemon, it: &ShareItem, chosen: Option<&str>) -> Result<Str
     }
     let place = match chosen {
         Some(c) => Place::chosen(c)?,
-        None => tab::place(d, &it.payload),
+        None => tab::place(d, &it.peer, &it.payload),
     };
     if let Some(sid) = running(d, conversation) {
         return Err(RpcError::conflict(format!("terminal {sid} here is running that conversation already; close it first")));
@@ -280,7 +280,7 @@ pub fn arrived(d: &Arc<Daemon>, item: &ShareItem, chosen: Option<&str>, staged: 
     let SharePayload::Agent { title, agent, conversation, transcript, .. } = &item.payload else { return Err("not an agent session".into()) };
     let place = match chosen {
         Some(c) => Place::chosen(c).map_err(|e| e.message)?,
-        None => tab::place(d, &item.payload),
+        None => tab::place(d, &item.peer, &item.payload),
     };
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = place.dir().map(str::to_string).unwrap_or_else(|| home.clone());

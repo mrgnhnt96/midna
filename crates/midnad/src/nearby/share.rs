@@ -541,7 +541,7 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
             format!(
                 "{}\n\n{} Approving opens a new shell there; nothing runs in it. To open it in another folder: midna inbox accept {} --cwd <dir>",
                 tab::describe(&it.payload, 2000),
-                tab::place(d, &it.payload).words(&it.payload),
+                tab::place(d, &it.peer, &it.payload).words(&it.payload),
                 it.id
             ),
             json!({ "id": it.id }),
@@ -552,7 +552,7 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
                 "{}\n\n{} Approving opens a new tab with their scrollback shown above a fresh shell; nothing they ran \
                  runs here, and no process or environment comes with it. To open it in another folder: midna inbox accept {} --cwd <dir>",
                 tab::describe(&it.payload, 2000),
-                tab::place(d, &it.payload).words(&it.payload),
+                tab::place(d, &it.peer, &it.payload).words(&it.payload),
                 it.id
             ),
             json!({ "id": it.id }),
@@ -574,7 +574,7 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
                 "{}\n\n{} Approving fetches the transcript, puts it where {} keeps its conversations, and opens a tab \
                  resuming it, idle until you prompt it; nothing runs before. To open it in another folder: midna inbox accept {} --cwd <dir>",
                 session::describe(&it.payload),
-                tab::place(d, &it.payload).words(&it.payload),
+                tab::place(d, &it.peer, &it.payload).words(&it.payload),
                 session::agent_name(*agent),
                 it.id
             ),
@@ -595,7 +595,7 @@ fn ask(d: &Daemon, it: &ShareItem, tier: Tier, note: Option<&str>) -> String {
                     "{}{notes}\n\n{} Approving {fetch}opens a new {agent} terminal there and gives it this prompt{pointed}{back}; \
                      nothing runs before. To open it in another folder: midna inbox accept {} --cwd <dir>",
                     cut(prompt, 2000),
-                    tab::place(d, &it.payload).words(&it.payload),
+                    tab::place(d, &it.peer, &it.payload).words(&it.payload),
                     it.id
                 ),
                 json!({ "id": it.id }),
@@ -771,7 +771,7 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
             if p.session.is_some() {
                 return Err(RpcError::bad_params("a tab opens as a new terminal; `cwd` picks its folder"));
             }
-            tab::open(d, ctx, &it.peer_name, &it.payload, p.cwd.as_deref())?
+            tab::open(d, ctx, &it, p.cwd.as_deref())?
         }
         SharePayload::Object { object } => {
             if p.cwd.is_some() {

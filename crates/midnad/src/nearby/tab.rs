@@ -8,8 +8,10 @@
 //! scrollback shown above it ([`open`]). The scrollback is only ever text on the new terminal's
 //! screen: it reaches the engine before the shell starts printing, stripped of every control
 //! character, so nothing in it can ask the terminal a question whose answer would be typed into
-//! the shell. A repo this Mac has no checkout of still opens, in the home folder, with the
-//! scrollback alone.
+//! the shell. From another of my devices, a repo (or a folder outside one) this Mac has no copy
+//! of opens in the project named after it, else in the same folder under this Mac's home
+//! ([`guessed`]). Anything else this Mac has no checkout of still opens, in the home folder, with
+//! the scrollback alone.
 //!
 //! A tab (or an agent start) may instead name the receiver's project (`project`): then it opens
 //! in that project's folder wherever the sending terminal was, and a tab sent that way without a
@@ -18,7 +20,7 @@
 //! nothing about the receiver's projects but whether that one name is there.
 use crate::daemon::Daemon;
 use crate::rpc::Ctx;
-use midna_proto::nearby::{self as nb, SharePayload, ShareSendParams, TabProject};
+use midna_proto::nearby::{self as nb, ShareItem, SharePayload, ShareSendParams, TabProject};
 use midna_proto::{RpcError, SessionKind, SessionOpenParams};
 use std::path::Path;
 use std::sync::Arc;
@@ -253,28 +255,71 @@ fn checkout_of(d: &Daemon, remote: &str) -> Option<(String, String, String)> {
     None
 }
 
-/// Where `payload` (a tab or an agent session) opens on this Mac, unless its person picks a
-/// folder.
-pub fn place(d: &Daemon, payload: &SharePayload) -> Place {
+/// Where `payload` (a tab or an agent session) from device `peer` opens on this Mac, unless its
+/// person picks a folder.
+pub fn place(d: &Daemon, peer: &str, payload: &SharePayload) -> Place {
     if let Some(name) = payload.project_name() {
         return named(d, name);
     }
     let Some((project, cwd)) = origin(payload) else { return Place::Unknown };
-    match project {
-        Some(p) => match checkout_of(d, &p.remote) {
-            Some((id, name, top)) => {
-                let inside = Path::new(&top).join(&p.path);
-                match (p.path.is_empty(), inside.is_dir()) {
-                    (true, _) => Place::Project { id, name, dir: top, missing: None },
-                    (false, true) => Place::Project { id, name, dir: inside.to_string_lossy().into_owned(), missing: None },
-                    (false, false) => Place::Project { id, name, dir: top, missing: Some(p.path.clone()) },
-                }
+    let found = match project {
+        Some(p) => checkout_of(d, &p.remote).map(|(id, name, top)| {
+            let inside = Path::new(&top).join(&p.path);
+            match (p.path.is_empty(), inside.is_dir()) {
+                (true, _) => Place::Project { id, name, dir: top, missing: None },
+                (false, true) => Place::Project { id, name, dir: inside.to_string_lossy().into_owned(), missing: None },
+                (false, false) => Place::Project { id, name, dir: top, missing: Some(p.path.clone()) },
             }
-            None => Place::Unknown,
-        },
-        None if Path::new(cwd).is_dir() => Place::Same { dir: cwd.to_string() },
-        None => Place::Unknown,
+        }),
+        None if Path::new(cwd).is_dir() => Some(Place::Same { dir: cwd.to_string() }),
+        None => None,
+    };
+    found.or_else(|| guessed(d, peer, project, cwd)).unwrap_or(Place::Unknown)
+}
+
+/// Where a tab or an agent start from another of my devices opens when its repo isn't checked
+/// out here and its folder isn't here either: this Mac's project named after the repo (or, outside
+/// a repo, after the folder), else the same folder under this Mac's home. A work Mac's agent in
+/// `~/.config/taskboard` lands in the `taskboard` project. Other people's devices get none of
+/// this: naming this Mac's projects is only for mine ([`admit`]).
+fn guessed(d: &Daemon, peer: &str, project: Option<&TabProject>, cwd: &str) -> Option<Place> {
+    if !super::agent_ask::mine(d, peer) {
+        return None;
     }
+    let by_name = guessed_name(project, cwd).and_then(|name| match named(d, &name) {
+        Place::Gone { .. } => None,
+        found => Some(found),
+    });
+    by_name.or_else(|| {
+        let home = std::env::var("HOME").ok()?;
+        rerooted(cwd, &home).filter(|dir| Path::new(dir).is_dir()).map(|dir| Place::Same { dir })
+    })
+}
+
+/// The project name a share's origin suggests: its repo's name (the remote's last part), else
+/// its folder's, unless that folder is a home folder or the root.
+fn guessed_name(project: Option<&TabProject>, cwd: &str) -> Option<String> {
+    let name = match project {
+        Some(p) => p.remote.trim_end_matches('/').rsplit('/').next()?.trim_end_matches(".git"),
+        None if in_home(cwd).is_some_and(str::is_empty) => return None,
+        None => cwd.trim_end_matches('/').rsplit('/').next()?,
+    };
+    (!name.is_empty() && nb::valid_project_name(name)).then(|| name.to_string())
+}
+
+/// Where `cwd` is inside a home folder (`/Users/<someone>/…`): the rest of its path, "" for the
+/// home itself. None outside every home.
+fn in_home(cwd: &str) -> Option<&str> {
+    let rest = cwd.strip_prefix("/Users/")?;
+    let (user, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    (!user.is_empty()).then(|| rest.trim_matches('/'))
+}
+
+/// `cwd` from another Mac's home moved under this one's, `home`. None outside a home, and for
+/// the home itself (that's where it would open anyway).
+fn rerooted(cwd: &str, home: &str) -> Option<String> {
+    let rest = in_home(cwd).filter(|r| !r.is_empty())?;
+    Some(format!("{}/{rest}", home.trim_end_matches('/')))
 }
 
 /// This Mac's project called `name` (exactly, else ignoring case), at its folder.
@@ -348,11 +393,12 @@ pub fn describe(payload: &SharePayload, shown: usize) -> String {
 
 /// Accept an incoming tab: open a new shell where it maps to (or `chosen`), under the sender's
 /// scrollback. Returns what it did, for the share's `result`.
-pub fn open(d: &Arc<Daemon>, ctx: &Ctx, from: &str, payload: &SharePayload, chosen: Option<&str>) -> Result<String, RpcError> {
+pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) -> Result<String, RpcError> {
+    let (from, payload) = (&it.peer_name, &it.payload);
     let SharePayload::Tab { title, .. } = payload else { return Err(RpcError::bad_params("not a tab")) };
     let place = match chosen {
         Some(c) => Place::chosen(c)?,
-        None => place(d, payload),
+        None => place(d, &it.peer, payload),
     };
     place.usable()?;
     let here = place.here();
@@ -420,5 +466,24 @@ mod tests {
         assert!(text.ends_with("\nline 39"), "{text}");
         assert!(describe(&tab("x".repeat(100).as_str()), 10).ends_with("scrollback.\n\n…xxxxxxxxxx"));
         assert_eq!(describe(&tab(""), 2000), "Tab: github.com/acme/widget/src (in /w/widget/src, zsh), 0 lines of scrollback.");
+    }
+
+    #[test]
+    fn a_share_from_a_folder_that_is_not_here_guesses_its_project_by_name() {
+        let repo = TabProject { remote: "github.com/acme/widget.git".into(), path: "src".into() };
+        assert_eq!(guessed_name(Some(&repo), "/w/widget/src").as_deref(), Some("widget"));
+        assert_eq!(guessed_name(None, "/Users/morgan.hunt/.config/taskboard").as_deref(), Some("taskboard"));
+        assert_eq!(guessed_name(None, "/Users/morgan.hunt/.config/taskboard/").as_deref(), Some("taskboard"));
+        assert_eq!(guessed_name(None, "/Users/morgan.hunt"), None);
+        assert_eq!(guessed_name(None, "/"), None);
+    }
+
+    #[test]
+    fn a_folder_in_another_macs_home_moves_under_this_home() {
+        assert_eq!(rerooted("/Users/morgan.hunt/.config/taskboard", "/Users/me").as_deref(), Some("/Users/me/.config/taskboard"));
+        assert_eq!(rerooted("/Users/morgan.hunt/Development/x/", "/Users/me/").as_deref(), Some("/Users/me/Development/x"));
+        assert_eq!(rerooted("/Users/morgan.hunt", "/Users/me"), None);
+        assert_eq!(rerooted("/opt/work", "/Users/me"), None);
+        assert_eq!(rerooted("/Users//x", "/Users/me"), None);
     }
 }
