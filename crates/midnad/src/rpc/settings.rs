@@ -52,8 +52,15 @@ pub fn get(d: &Daemon, p: SettingKeyParams) -> R {
 /// is human only (an agent may still pick built-ins).
 /// `ui.status.items` and `ui.header.buttons` the same way: an agent may hide, show and reorder items, and keep script
 /// paths already there, but adding a new path asks the human.
+/// `terminal.link_patterns` too: a rule's preview command runs as the human on hover, so an agent may add, change
+/// and remove rules, but one whose preview command isn't there already asks the human.
 pub(crate) fn custom_script(s: &SettingSpec, value: &Value, current: &Value) -> bool {
     match s.key {
+        "terminal.link_patterns" => {
+            let rules = |v: &Value| -> Vec<String> { v.as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect() };
+            let had = super::links::preview_commands(&rules(current));
+            super::links::preview_commands(&rules(value)).iter().any(|c| !had.contains(c))
+        }
         "ui.header.script" | "ui.row.script" | "ui.status.script" => value.as_str().is_some_and(|v| !midna_proto::settings::is_builtin_script(v)),
         "ui.status.items" | "ui.header.buttons" => {
             let had = |p: &str| current.as_array().is_some_and(|a| a.iter().any(|i| i.as_str() == Some(p)));

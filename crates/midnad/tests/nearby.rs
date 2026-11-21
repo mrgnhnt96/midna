@@ -2287,7 +2287,7 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
         "secret.set", "secret.replace", "secret.remove", "secret.write", "secret.exec_env", "trigger.set_secret",
         "daemon.stop", "daemon.restart", "daemon.upgrade", "daemon.reset", "updates.install", "hooks.install", "hooks.uninstall",
         "keep_awake.wake_setup",
-        "rule.remove", "rule.restore", "webhooks.configure", "links.actions.approve",
+        "rule.remove", "rule.restore", "webhooks.configure", "links.actions.approve", "links.patterns.approve",
         "updates.report", "themes.report",
     ];
     for m in LOCAL_ONLY {
@@ -2303,6 +2303,7 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
         at_bravo(&mut there, "settings.reset", json!({ "key": s["key"] }));
     }
     at_bravo(&mut there, "settings.set", json!({ "key": "ui.status.script", "value": "/bin/echo" }));
+    at_bravo(&mut there, "settings.set", json!({ "key": "terminal.link_patterns", "value": [r#"(ZQ\d+) = https://x.dev/$1 preview:"card $1""#] }));
     // Turning on a webhook trigger; turning it off is fine.
     let gh = call(&mut hb, "trigger.add", json!({ "name": "Review new PRs", "source": "github", "event": "pull_request.opened",
         "action": { "kind": "notify", "title": "PR" } }));

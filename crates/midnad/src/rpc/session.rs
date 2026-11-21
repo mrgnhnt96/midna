@@ -6,6 +6,7 @@ use crate::state::hex_id;
 use crate::term::{self, EngineMsg, Launch};
 use midna_proto::*;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -820,7 +821,8 @@ pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
         let project = session.and_then(|s| core.state.projects.iter().find(|p| p.id == s.project_id));
         let names: Vec<&str> = project.map(|p| vec![p.name.as_str(), p.id.as_str(), p.path.as_str()]).unwrap_or_default();
         let agent = session.is_some_and(|s| s.kind == SessionKind::Agent);
-        let patterns: Vec<_> = link_patterns(&core.state.setting("terminal.link_patterns"), &core.state.app_link_patterns).iter().filter(|r| r.applies(agent, &names)).cloned().collect();
+        let approved = super::links::approved_previews(&core.state);
+        let patterns: Vec<_> = link_patterns(&core.state.setting("terminal.link_patterns"), &core.state.app_link_patterns, &approved).iter().filter(|r| r.applies(agent, &names)).cloned().collect();
         // Terminals a word can name: by id, and agents by their conversation id.
         let mut tabs = Vec::new();
         for s in &core.state.sessions {
@@ -848,19 +850,25 @@ pub fn link_at(d: &Daemon, p: SessionLinkAtParams) -> R {
     })
 }
 
-/// `terminal.link_patterns` then the apps' registered patterns, compiled once per change.
-fn link_patterns(v: &serde_json::Value, apps: &std::collections::BTreeMap<String, Vec<String>>) -> Arc<Vec<midna_proto::link_patterns::LinkPattern>> {
+/// `terminal.link_patterns` then the apps' registered patterns, compiled once per change. An
+/// app's preview commands stay only while `approved` (owner → fingerprint) holds them as they are.
+fn link_patterns(v: &serde_json::Value, apps: &BTreeMap<String, Vec<String>>, approved: &BTreeMap<String, String>) -> Arc<Vec<midna_proto::link_patterns::LinkPattern>> {
+    use midna_proto::link_patterns::{LinkPattern, parse_all};
     use std::sync::{LazyLock, Mutex};
-    type Cache = Option<(serde_json::Value, std::collections::BTreeMap<String, Vec<String>>, Arc<Vec<midna_proto::link_patterns::LinkPattern>>)>;
+    type Cache = Option<(serde_json::Value, BTreeMap<String, Vec<String>>, BTreeMap<String, String>, Arc<Vec<LinkPattern>>)>;
     static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
     let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, _, pats)) = c.as_ref().filter(|(k, a, _)| k == v && a == apps) {
+    if let Some((_, _, _, pats)) = c.as_ref().filter(|(k, a, ok, _)| k == v && a == apps && ok == approved) {
         return pats.clone();
     }
-    let mut rules: Vec<String> = v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
-    rules.extend(apps.values().flatten().cloned());
-    let pats = Arc::new(midna_proto::link_patterns::parse_all(&rules));
-    *c = Some((v.clone(), apps.clone(), pats.clone()));
+    let rules: Vec<String> = v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let mut pats = parse_all(&rules);
+    for (owner, rules) in apps {
+        let previews = super::links::preview_fingerprint(owner, rules).is_none_or(|fp| approved.get(owner) == Some(&fp));
+        pats.extend(parse_all(rules).into_iter().map(|p| if previews { p } else { LinkPattern { preview: vec![], ..p } }));
+    }
+    let pats = Arc::new(pats);
+    *c = Some((v.clone(), apps.clone(), approved.clone(), pats.clone()));
     pats
 }
 

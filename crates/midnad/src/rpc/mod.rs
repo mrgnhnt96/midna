@@ -356,6 +356,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "links.actions.list" => links::actions_list(d),
         "links.actions.register" => links::actions_register(d, ctx, parse(p)?),
         "links.actions.approve" => links::actions_approve(d, ctx, parse(p)?),
+        "links.patterns.approve" => links::patterns_approve(d, ctx, parse(p)?),
         "summary.list" => crate::summary::list(d, parse(p)?),
         "summary.remove" => crate::summary::remove(d, ctx, parse(p)?),
         "summary.annotate" => crate::summary::annotate(d, ctx, parse(p)?),
@@ -541,6 +542,9 @@ fn human_only_refusal(d: &Daemon, ctx: &Ctx, method: &str, params: &Value) -> Rp
     if method == "links.actions.approve" {
         return RpcError::human_only("links.actions.approve is the human's answer to the approval links.actions.register raised");
     }
+    if method == "links.patterns.approve" {
+        return RpcError::human_only("links.patterns.approve is the human's answer to the approval links.patterns.register raised");
+    }
     if method == "session.send_image" {
         // Only the person driving from another Mac sends one; nobody here can, approved or not.
         return session::send_image_refusal();
@@ -657,6 +661,14 @@ pub fn deferred_guard(d: &Daemon, method: &str, params: &Value) -> (Option<Strin
             let menus = d.core().state.app_link_actions.get(owner).map(|a| a.menus.clone()).unwrap_or_default();
             match links::fingerprint(owner, &menus) {
                 Some(fp) => (Some(fp), Some(midna_proto::link_actions::commands(&menus).join("\n"))),
+                None => (Some("missing".into()), None),
+            }
+        }
+        "links.patterns.approve" => {
+            let owner = params.get("owner").and_then(Value::as_str).unwrap_or("");
+            let patterns = d.core().state.app_link_patterns.get(owner).cloned().unwrap_or_default();
+            match links::preview_fingerprint(owner, &patterns) {
+                Some(fp) => (Some(fp), Some(links::preview_commands(&patterns).join("\n"))),
                 None => (Some("missing".into()), None),
             }
         }

@@ -276,15 +276,22 @@ fn build() -> Vec<MethodSpec> {
              its hover card update within a couple of seconds. Call it right after the change (`gh pr merge` …). With \
              GitHub webhook triggers set up, pull request and run events do this on their own."),
         m::<NoParams, LinkPatternsList>("links.patterns.list").d(
-            "The link patterns apps registered (links.patterns.register), by owner. They apply alongside the user's own \
-             terminal.link_patterns, in the same form."),
+            "The link patterns apps registered (links.patterns.register), by owner, with whether the human approved their \
+             preview commands (`approved`) and the needs-you that asks them (`approval`). They apply alongside the user's \
+             own terminal.link_patterns, in the same form."),
         m::<LinkPatternsRegisterParams, AppLinkPatterns>("links.patterns.register").mutating().d(
             "Register an app's own link patterns: text in terminal output that becomes a link, as rules in \
              terminal.link_patterns form (`<regex> = <url template> [agents] [project:<name>]… [preview:\"<command> $1\"]`; the \
              preview command prints JSON `{\"title\", \"lines\": […]}` that fills the hover card). They replace whatever \
              that owner registered before, survive a daemon restart, apply alongside the user's terminal.link_patterns, and \
-             show read-only in Settings ▸ Terminal ▸ Links and paths as provided by the owner. An app registers them each \
-             time it starts; `patterns: []` removes them. A bad rule refuses the whole call."),
+             show read-only in Settings ▸ Terminal ▸ Links and paths as provided by the owner. Preview commands run only \
+             once the human approves them (a needs-you raised here, again whenever they change); until then the rules \
+             still make links and the card shows the plain URL. An app registers them each time it starts; `patterns: []` \
+             removes them and forgets the approval. A bad rule refuses the whole call."),
+        m::<LinkPatternsApproveParams, AppLinkPatterns>("links.patterns.approve").mutating().human().d(
+            "Approve the preview commands an app's link patterns run (links.patterns.register), as they are now: \
+             `fingerprint` is the one its approval needs-you carries, so a change since then refuses. The human answers \
+             this from that needs-you."),
         m::<NoParams, LinkActionsList>("links.actions.list").d(
             "The link menus apps registered (links.actions.register), by owner, with whether the human approved their \
              commands (`approved`) and the needs-you that asks them (`approval`)."),
