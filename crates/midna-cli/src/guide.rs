@@ -295,7 +295,7 @@ const TOPICS: &[(&str, &str)] = &[
         Needs You), clear_status, notify {title, body?, sound, category?} (a macOS notification, category from_trigger or a kind the human added); also attention, run_command, start_agent. Templates: {{last_prompt}} (the terminal's \
         latest full prompt), {{event}}, {{session.id|name|project_id|agent|status}}, {{data.<path>}} or bare {{<path>}} \
         like {{message}}; run_command shell-quotes values and gets the hook payload or event data in the file $MIDNA_PAYLOAD \
-        (headless: also on stdin) with MIDNA_EVENT, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY set. cooldown_secs (default 60) per terminal. Events caused by a trigger never fire triggers. Agents may \
+        (headless: also on stdin) with MIDNA_EVENT, MIDNA_DELIVERY_GUID and MIDNA_DELIVERY set. cooldown_secs per terminal (default 60), or per stream for stream.* (default 0: every event fires). Events caused by a trigger never fire triggers. Agents may \
         add, enable and pause local triggers directly (no approval) when the human asked for one (`--enable` on add). Built in: \
         prompt_blocked_status shows “Prompt blocked” when a hook refuses a prompt; edit, pause or remove it like any other."),
     ("secrets", "When the human pastes a secret into an agent terminal, the midna app stores it (Keychain) and the \
@@ -708,8 +708,11 @@ fn explain_trigger(call: Caller, id: &str, surface: Surface) -> Result<String, R
     }
     if stream.is_some() {
         out.push_str("stream events belong to no terminal; templates: {{stream.name|kind|id}} and {{data.<path>}} (the payload)\n");
-    } else if local {
-        out.push_str(&format!("cooldown: {}s per terminal\n", t["cooldown_secs"].as_u64().unwrap_or(60)));
+    }
+    if local {
+        let event = t["event"].as_str().unwrap_or("");
+        let secs = t["cooldown_secs"].as_u64().unwrap_or_else(|| midna_proto::types::default_cooldown_secs(event));
+        out.push_str(&format!("cooldown: {secs}s {}\n", midna_proto::types::cooldown_scope(event)));
     }
     if let Some(b) = t["builtin"].as_str() {
         out.push_str(&format!("built in ({b}): ships with midna; edit, pause or remove it like any other\n"));

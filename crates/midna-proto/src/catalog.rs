@@ -501,8 +501,8 @@ fn build() -> Vec<MethodSpec> {
              Limits per stream: an id it took in the last 24 hours is a duplicate (result verdict `duplicate`, the first event's seq, \
              not logged again); past 60 events a minute (bursts of 20) a publish is dropped with error code 7 (busy) and \
              data {verdict: rate_limited, retry_after_ms}; with 1000 events waiting for the trigger worker it is dropped \
-             with code 7 and verdict busy; a payload over 64 KB is verdict too_large. A trigger fires at most once per \
-             cooldown_secs (default 60) for a stream. streams.events lists each publish's verdict. CLI: \
+             with code 7 and verdict busy; a payload over 64 KB is verdict too_large. A stream trigger fires on every \
+             event unless it sets cooldown_secs (then at most once per it, per stream). streams.events lists each publish's verdict. CLI: \
              `midna stream publish <name> <kind> [--id ID] [--data JSON|@file]` (stdin when --data is left out)."),
         m::<StreamsEventsParams, StreamsEventsResult>("streams.events").d(
             "A stream's recent publishes, newest first (the last 200), each with its verdict: accepted (logged as event \
@@ -611,7 +611,7 @@ fn build() -> Vec<MethodSpec> {
              (the delivery id). A webhook trigger's agents run supervised (setting triggers.agent_mode); a local trigger's use \
              the human's normal config. start_agent's permission_mode and allowed_tools are human only: an agent setting or \
              changing them asks the human, and the trigger is added or changed only if they approve. Set github_hook_id to enable \
-             missed-delivery recovery. cooldown_secs (default 60) spaces firings per terminal (per stream); what a trigger causes never fires \
+             missed-delivery recovery. cooldown_secs spaces firings per terminal (default 60) or per stream (stream.* triggers, default 0); an event inside it is dropped; what a trigger causes never fires \
              triggers. Example (compact, then resend): {source:local, event:agent.prompt_blocked, filter:{match:{message:\"*Compact \
              first*\"}}, action:{kind:send_to_session, steps:[{text:\"/compact\"},{text:\"{{last_prompt}}\"}]}, enabled:true}."),
         m::<TriggerUpdateParams, Trigger>("trigger.update").mutating().d(

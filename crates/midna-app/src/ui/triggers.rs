@@ -83,7 +83,8 @@ pub struct TriggerItem {
     pub secret_store: Option<String>,
     pub github_hook_id: Option<u64>,
     pub session_name_template: Option<String>,
-    /// Local: seconds before it may fire again for the same terminal (daemon default 60).
+    /// Local: seconds before it may fire again for the same terminal or stream
+    /// (`midna_proto::types::default_cooldown_secs` when unset).
     pub cooldown_secs: Option<u64>,
     /// Set on triggers midna ships (e.g. `prompt_blocked_status`).
     pub builtin: Option<String>,
@@ -376,6 +377,18 @@ impl TriggerItem {
             a.push("--enable".into());
         }
         a.join(" ")
+    }
+
+    /// The cooldown midnad uses: its own, else the default for its event.
+    fn cooldown(&self) -> u64 {
+        self.cooldown_secs.unwrap_or_else(|| midna_proto::types::default_cooldown_secs(&self.event))
+    }
+
+    /// The Cooldown row: `1 min per terminal (default)`, `Every event per stream`.
+    fn cooldown_label(&self) -> String {
+        let c = self.cooldown();
+        let what = if c == 0 { "None, every event fires".to_string() } else { format!("{} {}", cooldown_text(c), midna_proto::types::cooldown_scope(&self.event)) };
+        format!("{what}{}", if self.cooldown_secs.is_none() { " (default)" } else { "" })
     }
 
     fn last_text(&self) -> String {
@@ -769,6 +782,55 @@ impl TriggersView {
                 _ => {}
             }
         }
+    }
+
+    fn set_cooldown(&mut self, id: String, secs: u64, cx: &mut Context<Self>) {
+        if let Some(t) = self.triggers.iter_mut().find(|t| t.id == id) {
+            t.cooldown_secs = Some(secs); // optimistic; the trigger.updated event confirms
+        }
+        self.call("trigger.update", json!({"id": id, "cooldown_secs": secs}), cx, |v, _, cx| v.refetch(cx));
+        cx.notify();
+    }
+
+    /// The Cooldown row: what it is now, and a chip per preset (the current one lit). A
+    /// cooldown set elsewhere that isn't a preset gets a lit chip of its own.
+    fn cooldown_row(&self, t: &Theme, s: &TriggerItem, cx: &mut Context<Self>) -> Div {
+        let now = s.cooldown();
+        let mut picks: Vec<u64> = COOLDOWN_PRESETS.to_vec();
+        if !picks.contains(&now) {
+            picks.push(now);
+            picks.sort_unstable();
+        }
+        let chips = picks.into_iter().map(|secs| {
+            let on = secs == now;
+            let id = s.id.clone();
+            let label = if secs == 0 { "None".to_string() } else { cooldown_text(secs) };
+            div()
+                .id(SharedString::from(format!("trig-cooldown-{secs}")))
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(22.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .border_1()
+                .text_size(px(11.5))
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .map(|d| if on { d.border_color(t.accent).bg(t.accent_soft).text_color(t.accent) } else { d.border_color(t.line).text_color(t.dim).hover(|h| h.bg(t.raised)) })
+                .child(label)
+                .on_click(cx.listener(move |v, _, _, cx| {
+                    if !on {
+                        v.set_cooldown(id.clone(), secs, cx);
+                    }
+                }))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().text_color(t.dim).child(s.cooldown_label()))
+            .child(div().flex().flex_wrap().gap(px(6.)).children(chips))
     }
 
     fn set_enabled(&mut self, id: String, on: bool, cx: &mut Context<Self>) {
@@ -1688,16 +1750,13 @@ impl TriggersView {
             .child(row(dt("Only if", false), only_if))
             .child(row(dt("Then", false), then));
         let dl = if s.is_local() {
-            // No secret: local triggers fire on what midnad sees here. Show the cooldown and
-            // the CLI that makes this trigger instead of a form.
-            let cooldown = s.cooldown_secs.unwrap_or(60);
+            // No secret: local triggers fire on what midnad sees here. Show the cooldown (pick
+            // one of the presets) and the CLI that makes this trigger instead of a form. A
+            // schedule fires on the clock, so it has no cooldown to set.
             let cli = s.cli();
             let copy = cli.clone();
+            let dl = if s.filter.cron.is_some() { dl } else { dl.child(row(dt("Cooldown", false), dd(false).child(self.cooldown_row(t, s, cx)))) };
             dl.child(row(
-                dt("Cooldown", false),
-                dd(false).child(div().text_color(t.dim).child(format!("{} per terminal{}", cooldown_text(cooldown), if s.cooldown_secs.is_none() { " (default)" } else { "" }))),
-            ))
-            .child(row(
                 dt("CLI", true),
                 dd(true)
                     .flex()
@@ -1850,6 +1909,9 @@ impl TriggersView {
 }
 
 /// "60s", "5 min", "1 h".
+/// The cooldowns the trigger detail offers, in seconds.
+const COOLDOWN_PRESETS: [u64; 6] = [0, 30, 60, 300, 900, 3600];
+
 fn cooldown_text(secs: u64) -> String {
     match secs {
         s if s >= 3600 && s % 3600 == 0 => format!("{} h", s / 3600),
@@ -1917,6 +1979,16 @@ mod tests {
             cooldown_secs: None,
             builtin: None,
         }
+    }
+
+    #[test]
+    fn the_cooldown_label_names_its_default_and_what_it_counts_per() {
+        let item = |event: &str, cooldown_secs: Option<u64>| TriggerItem { source: "local".into(), event: event.into(), cooldown_secs, ..Default::default() };
+        assert_eq!(item("agent.prompt_blocked", None).cooldown_label(), "1 min per terminal (default)");
+        assert_eq!(item("agent.prompt_blocked", Some(0)).cooldown_label(), "None, every event fires");
+        assert_eq!(item("stream.slack.message", None).cooldown_label(), "None, every event fires (default)");
+        assert_eq!(item("stream.slack.message", Some(300)).cooldown_label(), "5 min per stream");
+        assert!(item("stream.slack.*", Some(90)).cli().ends_with("--cooldown 90s"));
     }
 
     #[test]

@@ -34,8 +34,9 @@ events below and for any local-only flag; passing it is always fine.
   prompt, in full), `{{event}}`, `{{session.id}}`, `{{session.name}}`, `{{session.project_id}}`,
   `{{session.agent}}`, `{{session.status}}`, and `{{data.<path>}}` or bare `{{<path>}}` (hook
   payload / event data, e.g. `{{message}}`). In `--run` each value is shell-quoted.
-- `--cooldown 5m` (default 60s) is per terminal. Events a trigger causes never fire triggers, so
-  a `--send` can't loop.
+- `--cooldown 5m` (default 60s) is per terminal: an event inside it is dropped, not queued.
+  `--cooldown 0` fires on every event. Stream triggers count it per stream and default to 0.
+  Events a trigger causes never fire triggers, so a `--send` can't loop.
 - Who did it: an event's `actor` is `{kind: trigger, name, trigger: <id>}` when a trigger acted on
   its own. While a headless `--run` command is still going, the midna calls it makes (`midna open
   --agent …`, `midna attention …`) get `{kind: trigger, name, trigger: <id>, via: "run"}`, with agent
@@ -131,8 +132,8 @@ or nudge work.
   fires (within `--in-project` when set; of several, the most recently active). When none is
   running, nothing happens and the delivery says why. `--notify` and `--attention` take `--to`
   too. `--session` and `--for-agent` are refused. Templates add `{{data.<path>}}` and
-  `{{stream.name}}`, `{{stream.kind}}`, `{{stream.id}}`. The cooldown (default 60s) counts per
-  stream.
+  `{{stream.name}}`, `{{stream.kind}}`, `{{stream.id}}`. There is no cooldown by default, so
+  every message fires; `--cooldown 1m` fires at most once a minute per stream and drops the rest.
 - `--match` holds one glob per path. To need two words in one field, put both in one glob in
   the order they appear: `--match 'text=*failed*master*'`. Its paths start inside the data
   (`text`, not `data.text`).

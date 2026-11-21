@@ -139,7 +139,7 @@ fn local_triggers_cli() {
     assert!(text.contains("idle=55m") && text.contains("status: Stopped (#ff8800, done, clears on turn)"), "{text}");
     assert!(text.contains("(builtin)"), "the built-in Prompt blocked trigger is listed: {text}");
     let o = d.midna(&["triggers", "show", &id], None);
-    assert!(out(&o).contains("cooldown 60s") && out(&o).contains(r#"match message="*Compact first*""#), "{}", out(&o));
+    assert!(out(&o).contains("cooldown 60s per terminal") && out(&o).contains(r#"match message="*Compact first*""#), "{}", out(&o));
     // Bad flags are usage errors (exit 2), before reaching the daemon.
     assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--event", "pull_request.opened", "--source", "github", "--send", "hi"], None).status.code(), Some(2));
     assert_eq!(d.midna(&["triggers", "add", "--name", "x", "--event", "hook.Stop", "--set-status", "X", "--color", "mauve", "--base", "idle"], None).status.code(), Some(2));

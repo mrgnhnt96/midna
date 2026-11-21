@@ -1324,6 +1324,29 @@ impl Secret {
     }
 }
 
+/// A local trigger's cooldown when it sets none: 0 for a stream trigger (`stream.…`; every
+/// published event has its own id and is deduped, so each one fires), else 60 seconds.
+pub fn default_cooldown_secs(event: &str) -> u64 {
+    if is_stream_event(event) { 0 } else { 60 }
+}
+
+/// What a local trigger's cooldown counts per: a stream event has no terminal.
+pub fn cooldown_scope(event: &str) -> &'static str {
+    if is_stream_event(event) { "per stream" } else { "per terminal" }
+}
+
+/// `stream.<name>.<kind>`, or a pattern over them such as `stream.*`.
+pub fn is_stream_event(event: &str) -> bool {
+    event.trim().get(..7).is_some_and(|p| p.eq_ignore_ascii_case("stream."))
+}
+
+impl Trigger {
+    /// The cooldown it waits between firings: its own, else [`default_cooldown_secs`].
+    pub fn cooldown(&self) -> u64 {
+        self.cooldown_secs.unwrap_or_else(|| default_cooldown_secs(&self.event))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Trigger {
@@ -1361,7 +1384,8 @@ pub struct Trigger {
     /// Name for terminals this trigger opens (same `{{…}}` placeholders). Defaults to the trigger name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_name_template: Option<String>,
-    /// Local: seconds before the same trigger may fire again for the same terminal (default 60).
+    /// Local: seconds before the same trigger may fire again for the same terminal, or the same
+    /// stream (default 60; 0 for a stream trigger, see [`default_cooldown_secs`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_secs: Option<u64>,
     /// Set on triggers midna ships (e.g. `prompt_blocked_status`); they can be edited, paused or removed.
@@ -1843,6 +1867,16 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stream_trigger_has_no_cooldown_by_default_and_counts_per_stream() {
+        for e in ["stream.slack.message", "stream.*", " Stream.ci.done"] {
+            assert_eq!((default_cooldown_secs(e), cooldown_scope(e)), (0, "per stream"), "{e}");
+        }
+        for e in ["agent.prompt_blocked", "hook.Stop", "idle", "*", "streams.x", "stream"] {
+            assert_eq!((default_cooldown_secs(e), cooldown_scope(e)), (60, "per terminal"), "{e}");
+        }
+    }
 
     #[test]
     fn pick_to_takes_a_name_then_an_id_within_the_project() {
