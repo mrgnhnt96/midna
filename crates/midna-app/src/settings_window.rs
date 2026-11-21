@@ -59,16 +59,42 @@ pub(crate) fn place_of(key: &str) -> String {
     }
 }
 
-struct SettingsWindowHandle(Option<WindowHandle<SettingsWindow>>);
-impl Global for SettingsWindowHandle {}
+/// The open Settings windows, one per Mac: keyed by the Mac's fingerprint, None for this Mac.
+#[derive(Default)]
+struct SettingsWindows(std::collections::HashMap<Option<String>, WindowHandle<SettingsWindow>>);
+impl Global for SettingsWindows {}
 
-/// Open (or bring forward) the Settings window. Not while setup is showing.
+/// `backend`'s Settings window, if it's open.
+fn handle_for(backend: &Arc<dyn Backend>, cx: &App) -> Option<WindowHandle<SettingsWindow>> {
+    cx.try_global::<SettingsWindows>()?.0.get(&crate::backend::mac_id(&**backend)).copied()
+}
+
+/// The Settings window's title: "Settings", or "Settings — <Mac>" for another Mac's.
+fn window_title(backend: &dyn Backend) -> String {
+    match backend.mac() {
+        Some(m) => format!("Settings — {}", m.name),
+        None => "Settings".into(),
+    }
+}
+
+/// The sidebar's connection line: "Live", or "Live on <Mac>" in another Mac's Settings.
+fn conn_state(live: bool, backend: &dyn Backend) -> String {
+    match (live, backend.mac()) {
+        (true, Some(m)) => format!("Live on {}", m.name),
+        (false, Some(m)) => format!("{} not connected", m.name),
+        (true, None) => "Live".into(),
+        (false, None) => "Not connected".into(),
+    }
+}
+
+/// Open (or bring forward) `backend`'s Settings window. Each Mac has its own, so another Mac's
+/// window opens that Mac's settings, named in its title and sidebar. Not while setup is showing.
 pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     if !crate::ui::onboarding::settings_allowed() {
         return;
     }
     let off_screen = off_screen();
-    if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0)
+    if let Some(h) = handle_for(&backend, cx)
         && h.update(cx, |_, w, _| if !off_screen { w.activate_window() }).is_ok()
     {
         return;
@@ -77,16 +103,17 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     let h: f32 = std::env::var("MIDNA_SETTINGS_H").ok().and_then(|v| v.parse().ok()).unwrap_or(680.);
     let opts = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx))),
-        titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
+        titlebar: Some(TitlebarOptions { title: Some(window_title(&*backend).into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
         window_min_size: Some(size(px(760.), px(440.))),
         app_id: Some("com.mrgnhnt.midna".into()),
         focus: !off_screen && std::env::var("MIDNA_NO_ACTIVATE").is_err(),
         show: !off_screen,
         ..Default::default()
     };
+    let key = crate::backend::mac_id(&*backend);
     let h = cx.open_window(opts, |window, cx| cx.new(|cx| SettingsWindow::new(backend, window, cx)));
     if let Ok(h) = h {
-        cx.set_global(SettingsWindowHandle(Some(h)));
+        cx.default_global::<SettingsWindows>().0.insert(key, h);
         #[cfg(feature = "snapshot")]
         snapshot(h, cx);
     }
@@ -100,8 +127,8 @@ fn off_screen() -> bool {
 
 /// Open Settings at Nearby (the Mac switcher's "Pair another Mac…").
 pub fn open_nearby(backend: Arc<dyn Backend>, cx: &mut App) {
-    open(backend, cx);
-    if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0) {
+    open(backend.clone(), cx);
+    if let Some(h) = handle_for(&backend, cx) {
         let _ = h.update(cx, |s, _, cx| s.open_section(Sec::Nearby, cx));
     }
 }
@@ -457,8 +484,9 @@ impl SettingsWindow {
             BackendEvent::Event(e) if e.kind == "settings.changed" => {
                 self.note_change(&e);
                 self.load(cx);
-                // another Mac's windows show what this Mac picked for them, at once
-                if matches!(e.data.get("key").and_then(Value::as_str), Some("nearby.mac_themes" | "theme.colors")) {
+                // another Mac's windows show what this Mac picked for them, at once (this Mac's
+                // picks: another Mac's Settings changing its own say nothing about them)
+                if self.backend.mac().is_none() && matches!(e.data.get("key").and_then(Value::as_str), Some("nearby.mac_themes" | "theme.colors")) {
                     crate::theme::refresh_picks(self.backend.clone(), cx);
                 }
             }
@@ -2611,6 +2639,7 @@ impl SettingsWindow {
             }
         }
         let live = self.error.is_none() && !self.entries.is_empty();
+        let state = conn_state(live, &*self.backend);
         let json_on = self.view == View::Json && !searching;
         div()
             .w(px(SIDEBAR_W))
@@ -2636,7 +2665,7 @@ impl SettingsWindow {
                     .text_size(px(12.))
                     .text_color(t.dim)
                     .child(div().size(px(7.)).rounded_full().bg(if live { t.ok } else { t.need }))
-                    .child(div().flex_1().child(if live { "Live" } else { "Not connected" }))
+                    .child(div().flex_1().min_w_0().truncate().child(state))
                     .child(
                         div()
                             .id("open-json")
@@ -3524,7 +3553,7 @@ fn relay_url_problem(text: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's glob re-export would shadow `#[test]`.
-    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, excerpt, presets, relay_url_problem, search};
+    use super::{Control, Group, Hsla, LAYOUT, RowSpec, Sec, Shown, Who, brief, conn_state, excerpt, presets, relay_url_problem, search, window_title};
     use midna_proto::notify::{CATEGORIES, EFFECTS};
     use midna_proto::settings::{SETTINGS, setting};
 
@@ -3657,5 +3686,20 @@ mod tests {
                 assert!(known.contains(i) || super::nearby::ROWS.contains(i), "{i} isn't handled by special_rows");
             }
         }
+    }
+
+    #[test]
+    fn another_macs_settings_name_that_mac() {
+        use crate::backend::{Backend, Mac, fake::FakeBackend, mac_id};
+        use std::sync::Arc;
+        let here: Arc<dyn Backend> = Arc::new(FakeBackend::local());
+        let mini = here.clone().open_mac(Mac { peer: "e".repeat(64), name: "Morgan's Mac mini".into() });
+        assert_eq!(window_title(&*here), "Settings");
+        assert_eq!(window_title(&*mini), "Settings — Morgan's Mac mini");
+        assert_eq!(conn_state(true, &*here), "Live");
+        assert_eq!(conn_state(true, &*mini), "Live on Morgan's Mac mini");
+        assert_eq!(conn_state(false, &*mini), "Morgan's Mac mini not connected");
+        // each Mac's Settings is its own window
+        assert_ne!(mac_id(&*here), mac_id(&*mini));
     }
 }
