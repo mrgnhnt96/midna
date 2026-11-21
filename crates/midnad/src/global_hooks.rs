@@ -17,6 +17,7 @@ use crate::hooks::{CLAUDE_EVENTS, CLAUDE_TOOL_EVENTS, sh_quote};
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Marks midna's Claude hook commands (and the argv of the Codex wrapper).
 const GLOBAL_FLAG: &str = "--global";
@@ -135,14 +136,20 @@ fn claude_state(settings: &Value, cli: &str) -> (&'static str, Option<String>) {
     ("stale", Some(detail))
 }
 
-fn read_claude(path: &Path) -> Result<(Option<String>, Value), String> {
+fn read_claude(path: &Path) -> Result<(Option<String>, Value), ReadError> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok((Some(s), json!({}))),
-        Ok(s) => serde_json::from_str::<Value>(&s)
-            .map_err(|e| format!("{} isn't plain JSON ({e}); midna won't rewrite it.", path.display()))
-            .and_then(|v| if v.is_object() { Ok((Some(s), v)) } else { Err(format!("{} isn't a JSON object.", path.display())) }),
+        Ok(s) => match serde_json::from_str::<Value>(&s) {
+            Ok(v) if v.is_object() => Ok((Some(s), v)),
+            Ok(_) => Err(ReadError::lasting(format!("{} isn't a JSON object.", path.display()))),
+            // JSON that stops short is most likely a file caught mid-write.
+            Err(e) => Err(ReadError {
+                transient: e.is_eof(),
+                message: format!("{} isn't plain JSON ({e}); midna won't rewrite it.", path.display()),
+            }),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((None, json!({}))),
-        Err(e) => Err(format!("can't read {}: {e}", path.display())),
+        Err(e) => Err(ReadError::io(path, &e)),
     }
 }
 
@@ -206,12 +213,45 @@ fn codex_state(doc: &toml_edit::DocumentMut, cli: &str) -> (&'static str, Option
     }
 }
 
-fn read_codex(path: &Path) -> Result<(Option<String>, toml_edit::DocumentMut), String> {
+fn read_codex(path: &Path) -> Result<(Option<String>, toml_edit::DocumentMut), ReadError> {
     match std::fs::read_to_string(path) {
-        Ok(s) => s.parse::<toml_edit::DocumentMut>().map(|d| (Some(s), d)).map_err(|e| format!("{} doesn't parse as TOML ({e}); midna won't rewrite it.", path.display())),
+        Ok(s) => s.parse::<toml_edit::DocumentMut>().map(|d| (Some(s), d)).map_err(|e| ReadError::lasting(format!("{} doesn't parse as TOML ({e}); midna won't rewrite it.", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((None, toml_edit::DocumentMut::new())),
-        Err(e) => Err(format!("can't read {}: {e}", path.display())),
+        Err(e) => Err(ReadError::io(path, &e)),
     }
+}
+
+/// A config file that couldn't be read. `transient` errors (out of file descriptors, an
+/// interrupted or cut-short read) are likely gone a moment later, so status doesn't report them
+/// until they last (see [`Steady`]).
+#[derive(Debug)]
+struct ReadError {
+    message: String,
+    transient: bool,
+}
+
+impl ReadError {
+    fn lasting(message: String) -> Self {
+        ReadError { message, transient: false }
+    }
+
+    fn io(path: &Path, e: &std::io::Error) -> Self {
+        ReadError { message: format!("can't read {}: {e}", path.display()), transient: io_transient(e) }
+    }
+}
+
+impl From<ReadError> for String {
+    fn from(e: ReadError) -> String {
+        e.message
+    }
+}
+
+/// Read errors that come from the machine being busy rather than from the file: EMFILE/ENFILE
+/// (out of file descriptors), EAGAIN, EINTR and a read that ended early.
+fn io_transient(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(e.kind(), Interrupted | WouldBlock | UnexpectedEof | TimedOut)
+        || matches!(e.raw_os_error(), Some(libc::EMFILE | libc::ENFILE | libc::EAGAIN | libc::EINTR))
 }
 
 // ------------------------------------------------------------------ status / plan
@@ -230,19 +270,61 @@ fn path_of(d: &Daemon, a: AgentKind) -> PathBuf {
     }
 }
 
+/// How long a transient read error has to last before status reports it: three polls.
+const TRANSIENT_GRACE: Duration = Duration::from_secs(15);
+
+/// The last status read cleanly for one config file, so a read error the OS clears on its own
+/// (an overloaded Mac out of file descriptors) doesn't flash "Reinstall hooks".
+#[derive(Default)]
+struct Steady {
+    last: Option<HookInstall>,
+    /// When the current run of transient errors began.
+    failing_since: Option<Instant>,
+}
+
+impl Steady {
+    /// What to report for a reading taken at `at`. A transient error keeps the last clean
+    /// reading until errors have lasted [`TRANSIENT_GRACE`]; anything else is reported as is.
+    fn settle(&mut self, reading: HookInstall, transient: bool, at: Instant) -> HookInstall {
+        if !transient {
+            self.failing_since = None;
+            self.last = Some(reading.clone());
+            return reading;
+        }
+        let since = *self.failing_since.get_or_insert(at);
+        match &self.last {
+            Some(last) if at.duration_since(since) < TRANSIENT_GRACE => last.clone(),
+            _ => reading,
+        }
+    }
+}
+
 pub fn status_of(d: &Daemon, a: AgentKind) -> HookInstall {
+    static SEEN: std::sync::Mutex<Vec<(PathBuf, Steady)>> = std::sync::Mutex::new(vec![]);
     let path = path_of(d, a);
     let cli = global_cli(d);
-    let (state, detail) = if !dir_of(d, a).is_dir() {
-        ("unavailable", None)
+    let (state, detail, transient) = if !dir_of(d, a).is_dir() {
+        ("unavailable", None, false)
     } else {
         let r = match a {
             AgentKind::Claude => read_claude(&path).map(|(_, v)| claude_state(&v, &cli)),
             AgentKind::Codex => read_codex(&path).map(|(_, doc)| codex_state(&doc, &cli)),
         };
-        r.unwrap_or_else(|e| ("error", Some(e)))
+        match r {
+            Ok((state, detail)) => (state, detail, false),
+            Err(e) => ("error", Some(e.message), e.transient),
+        }
     };
-    HookInstall { agent: a, state: state.into(), path: path.to_string_lossy().into_owned(), detail, per_session: state != "current" }
+    let reading = HookInstall { agent: a, state: state.into(), path: path.to_string_lossy().into_owned(), detail, per_session: state != "current" };
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let i = match seen.iter().position(|(p, _)| *p == path) {
+        Some(i) => i,
+        None => {
+            seen.push((path, Steady::default()));
+            seen.len() - 1
+        }
+    };
+    seen[i].1.settle(reading, transient, Instant::now())
 }
 
 pub fn status(d: &Daemon) -> HooksStatus {
@@ -515,6 +597,71 @@ mod tests {
         let argv = codex_argv("/nonexistent/midna", &[]);
         let o = std::process::Command::new(&argv[0]).args(&argv[1..]).arg("{}").env("MIDNA_SESSION", "s1").output().unwrap();
         assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty(), "{o:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn install(state: &str, detail: Option<&str>) -> HookInstall {
+        HookInstall { agent: AgentKind::Claude, state: state.into(), path: "/h/.claude/settings.json".into(), detail: detail.map(str::to_string), per_session: state != "current" }
+    }
+
+    #[test]
+    fn transient_read_errors_keep_the_last_state_until_they_last() {
+        let emfile = install("error", Some("can't read /h/.claude/settings.json: Too many open files (os error 24)"));
+        let t0 = Instant::now();
+        let mut s = Steady::default();
+        assert_eq!(s.settle(install("current", None), false, t0), install("current", None));
+        // a busy Mac runs out of file descriptors for a poll or two: still current
+        assert_eq!(s.settle(emfile.clone(), true, t0 + Duration::from_secs(5)).state, "current");
+        assert_eq!(s.settle(emfile.clone(), true, t0 + Duration::from_secs(10)).state, "current");
+        // the next clean read ends the run
+        assert_eq!(s.settle(install("current", None), false, t0 + Duration::from_secs(15)).state, "current");
+        assert_eq!(s.settle(emfile.clone(), true, t0 + Duration::from_secs(20)).state, "current", "a new run starts its own grace");
+        // errors that last the grace are reported
+        assert_eq!(s.settle(emfile.clone(), true, t0 + Duration::from_secs(30)).state, "current");
+        assert_eq!(s.settle(emfile.clone(), true, t0 + Duration::from_secs(35)), emfile);
+    }
+
+    #[test]
+    fn lasting_errors_and_first_reads_are_reported_as_is() {
+        let t0 = Instant::now();
+        let mut s = Steady::default();
+        // nothing known yet: a transient error is all there is to report
+        let emfile = install("error", Some("can't read: Too many open files"));
+        assert_eq!(s.settle(emfile.clone(), true, t0), emfile);
+        assert_eq!(s.settle(install("stale", Some("x")), false, t0).state, "stale");
+        // a parse error shows at once
+        let bad = install("error", Some("isn't plain JSON"));
+        assert_eq!(s.settle(bad.clone(), false, t0 + Duration::from_secs(1)), bad);
+        // and is what a later transient error keeps
+        assert_eq!(s.settle(emfile, true, t0 + Duration::from_secs(2)), bad);
+    }
+
+    #[test]
+    fn io_errors_from_a_busy_mac_are_transient() {
+        for code in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::EINTR] {
+            assert!(io_transient(&std::io::Error::from_raw_os_error(code)), "os error {code}");
+        }
+        assert!(io_transient(&std::io::Error::from(std::io::ErrorKind::UnexpectedEof)));
+        assert!(!io_transient(&std::io::Error::from_raw_os_error(libc::EACCES)));
+        assert!(!io_transient(&std::io::Error::from_raw_os_error(libc::EISDIR)));
+    }
+
+    #[test]
+    fn claude_json_cut_short_is_transient_but_bad_json_is_not() {
+        let dir = std::env::temp_dir().join(format!("midna-hooks-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"model": "opus", "hooks": {"#).unwrap();
+        let e = read_claude(&path).unwrap_err();
+        assert!(e.transient && e.message.contains("isn't plain JSON"), "{e:?}");
+        std::fs::write(&path, r#"{"model": opus}"#).unwrap();
+        assert!(!read_claude(&path).unwrap_err().transient);
+        std::fs::write(&path, "[1]").unwrap();
+        assert!(!read_claude(&path).unwrap_err().transient);
+        // a directory where the file should be: a lasting IO error
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(!read_claude(&path).unwrap_err().transient);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
