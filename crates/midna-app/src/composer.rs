@@ -291,39 +291,102 @@ fn open_manual(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
     open(m, Source::Manual, window, cx);
 }
 
+/// How long Kass waits for `dictationReady` after `willBegin` before it pastes on its own.
+const KASS_WAIT: Duration = Duration::from_millis(150);
+
+/// Why a Kass `willBegin` doesn't open the composer: the first gate that fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KassSkip {
+    NotKey,
+    NotConnected,
+    NotTerminalScreen(Screen),
+    Overlay(Overlay),
+    NoTerminal,
+    OtherTerminal,
+}
+
+impl KassSkip {
+    /// A short app.log reason; `key` says what is key instead (see `key_label`).
+    fn reason(self, key: &str) -> String {
+        match self {
+            KassSkip::NotKey => format!("window not key (key: {key})"),
+            KassSkip::NotConnected => "not connected".into(),
+            KassSkip::NotTerminalScreen(s) => format!("screen {s:?}"),
+            KassSkip::Overlay(o) => format!("overlay {o:?}"),
+            KassSkip::NoTerminal => "no terminal selected".into(),
+            KassSkip::OtherTerminal => "composer open on another terminal".into(),
+        }
+    }
+}
+
+/// The willBegin gate: the window is key and the composer can show over its own terminal
+/// (`can_show` and `on_target`), else why not.
+fn kass_skip(active: bool, connected: bool, screen: Screen, overlay: Overlay, selected: bool, on_target: bool) -> Option<KassSkip> {
+    if !active {
+        Some(KassSkip::NotKey)
+    } else if !connected {
+        Some(KassSkip::NotConnected)
+    } else if screen != Screen::Terminal {
+        Some(KassSkip::NotTerminalScreen(screen))
+    } else if overlay != Overlay::None {
+        Some(KassSkip::Overlay(overlay))
+    } else if !selected {
+        Some(KassSkip::NoTerminal)
+    } else if !on_target {
+        Some(KassSkip::OtherTerminal)
+    } else {
+        None
+    }
+}
+
+/// What is key when the main window isn't: `front` is midna's active window, if any (true =
+/// the badge).
+fn key_label(app_active: bool, front: Option<bool>) -> &'static str {
+    match (app_active, front) {
+        (false, _) => "another app",
+        (true, Some(true)) => "badge",
+        (true, Some(false)) => "another midna window",
+        (true, None) => "no midna window",
+    }
+}
+
 fn on_kass(m: &mut MainWindow, ev: KassEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
     // Settings shows "handshake detected"; it reads kass::handshake_detected() on render.
     cx.refresh_windows();
-    let debug = crate::dev::var("MIDNA_DEBUG").is_ok();
+    // Every handshake goes in app.log (never the dictated text): a take that misses the
+    // composer is otherwise silent.
+    let log = crate::lifecycle::log;
     match ev {
         KassEvent::WillBegin { mode } => {
             let t0 = Instant::now();
             crate::ui::ax_prompt::on_kass_begin(m, cx);
             let active = window.is_window_active() || crate::dev::var("MIDNA_KASS_ANY_WINDOW").is_ok();
-            if !active || !can_show(m) || !on_target(m) {
+            let skip = kass_skip(active, m.conn == ConnState::Connected, m.screen, m.overlay, m.selected.is_some(), on_target(m));
+            if let Some(skip) = skip {
                 // Kass only asks the frontmost app; if the main window isn't the key window
                 // or there's no terminal pane, stay out of the way: no reply, Kass carries on.
-                if debug {
-                    eprintln!("midna-app: kass willBegin ({mode}) ignored: active={} can_show={} on_target={}", window.is_window_active(), can_show(m), on_target(m));
-                }
+                let front = cx.active_window().map(|h| crate::ui::badge::is_badge(h, cx));
+                let key = key_label(crate::sounds::app_active(), front);
+                log(&format!("kass willBegin ({mode}) ignored: {}", skip.reason(key)));
                 return;
             }
             let ok = open(m, Source::Kass, window, cx);
             if ok {
                 kass::post_ready();
-            }
-            if debug {
-                eprintln!("midna-app: kass willBegin ({mode}): composer first responder={ok}, ready posted in {:?}", t0.elapsed());
+                let late = if t0.elapsed() > KASS_WAIT { ", past Kass's wait" } else { "" };
+                log(&format!("kass willBegin ({mode}): composer first responder, ready posted in {:?}{late}", t0.elapsed()));
+            } else {
+                log(&format!("kass willBegin ({mode}): composer not first responder, no ready ({:?})", t0.elapsed()));
             }
         }
         KassEvent::DidEnd { outcome } => {
+            let outcome_s = outcome.as_deref().unwrap_or("-");
             if !m.composer.open {
+                log(&format!("kass didEnd ({outcome_s}): composer closed"));
                 return;
             }
             let text = text(m);
-            if debug {
-                eprintln!("midna-app: kass didEnd ({outcome:?}): {} chars", text.chars().count());
-            }
+            log(&format!("kass didEnd ({outcome_s}): {} chars, composer open", text.chars().count()));
             if text.trim().is_empty() {
                 close(m, window, cx);
                 return;
@@ -1069,8 +1132,41 @@ fn undo(m: &MainWindow, redo: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, follow, with_notes};
+    use super::{KassSkip, encode, follow, kass_skip, key_label, with_notes};
+    use crate::app::{Overlay, Screen};
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn kass_will_begin_names_the_first_gate_that_fails() {
+        let t = Screen::Terminal;
+        let none = Overlay::None;
+        assert_eq!(kass_skip(true, true, t, none, true, true), None);
+        assert_eq!(kass_skip(false, true, t, none, true, true), Some(KassSkip::NotKey));
+        // Not key wins over everything else (Kass asked the app, not this window).
+        assert_eq!(kass_skip(false, false, Screen::Rules, Overlay::CommandBar, false, false), Some(KassSkip::NotKey));
+        assert_eq!(kass_skip(true, false, t, none, true, true), Some(KassSkip::NotConnected));
+        assert_eq!(kass_skip(true, true, Screen::Insights, none, true, true), Some(KassSkip::NotTerminalScreen(Screen::Insights)));
+        assert_eq!(kass_skip(true, true, t, Overlay::NeedsYou, true, true), Some(KassSkip::Overlay(Overlay::NeedsYou)));
+        assert_eq!(kass_skip(true, true, t, none, false, true), Some(KassSkip::NoTerminal));
+        assert_eq!(kass_skip(true, true, t, none, true, false), Some(KassSkip::OtherTerminal));
+    }
+
+    #[test]
+    fn kass_skip_reasons_are_short() {
+        assert_eq!(KassSkip::NotKey.reason(key_label(true, Some(true))), "window not key (key: badge)");
+        assert_eq!(KassSkip::Overlay(Overlay::CommandBar).reason("-"), "overlay CommandBar");
+        assert_eq!(KassSkip::NotTerminalScreen(Screen::Rules).reason("-"), "screen Rules");
+        assert_eq!(KassSkip::OtherTerminal.reason("-"), "composer open on another terminal");
+    }
+
+    #[test]
+    fn key_label_says_what_is_key_instead() {
+        assert_eq!(key_label(false, None), "another app");
+        assert_eq!(key_label(false, Some(true)), "another app");
+        assert_eq!(key_label(true, Some(true)), "badge");
+        assert_eq!(key_label(true, Some(false)), "another midna window");
+        assert_eq!(key_label(true, None), "no midna window");
+    }
 
     #[test]
     fn notes_follow_the_text_on_their_own_line() {
