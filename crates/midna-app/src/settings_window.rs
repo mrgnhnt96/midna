@@ -67,8 +67,9 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
     if !crate::ui::onboarding::settings_allowed() {
         return;
     }
+    let off_screen = off_screen();
     if let Some(h) = cx.try_global::<SettingsWindowHandle>().and_then(|g| g.0)
-        && h.update(cx, |_, w, _| w.activate_window()).is_ok()
+        && h.update(cx, |_, w, _| if !off_screen { w.activate_window() }).is_ok()
     {
         return;
     }
@@ -79,7 +80,8 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
         titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
         window_min_size: Some(size(px(760.), px(440.))),
         app_id: Some("com.mrgnhnt.midna".into()),
-        focus: std::env::var("MIDNA_NO_ACTIVATE").is_err(),
+        focus: !off_screen && std::env::var("MIDNA_NO_ACTIVATE").is_err(),
+        show: !off_screen,
         ..Default::default()
     };
     let h = cx.open_window(opts, |window, cx| cx.new(|cx| SettingsWindow::new(backend, window, cx)));
@@ -88,6 +90,12 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) {
         #[cfg(feature = "snapshot")]
         snapshot(h, cx);
     }
+}
+
+/// Whether Settings opens without ever showing: under Slate, which hides only the main window,
+/// and for `MIDNA_SETTINGS_SNAPSHOT`, which renders it offscreen.
+fn off_screen() -> bool {
+    crate::hidden::enabled() || (cfg!(feature = "snapshot") && std::env::var_os("MIDNA_SETTINGS_SNAPSHOT").is_some())
 }
 
 /// Open Settings at Nearby (the Mac switcher's "Pair another Mac…").
