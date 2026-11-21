@@ -197,7 +197,7 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 }
 
 /// The agent's background tasks still running (what the sidebar's background ring shows).
-fn running(info: &AgentInfo) -> impl Iterator<Item = &BackgroundTask> {
+pub(crate) fn running(info: &AgentInfo) -> impl Iterator<Item = &BackgroundTask> {
     info.background.iter().filter(|b| b.status.is_empty() || b.status == "running")
 }
 
@@ -242,8 +242,9 @@ fn draft_for(d: &Daemon, e: &Event) -> Option<Draft> {
                 return None;
             }
             // Background shells or agents still running: the terminal's row still shows it
-            // working, and the agent comes back when they end.
-            if d.core().state.session(&sid).and_then(|s| s.agent_info.as_ref()).is_some_and(|i| running(i).next().is_some()) {
+            // working, and the agent comes back when they end. Counted when the turn ended, not
+            // now: a later turn may already have changed them.
+            if e.data.get("background").and_then(Value::as_u64).unwrap_or(0) > 0 {
                 return None;
             }
             let reply = first_line(s(&e.data, "message"));

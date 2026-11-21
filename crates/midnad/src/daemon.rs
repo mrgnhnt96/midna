@@ -162,6 +162,16 @@ pub struct Core {
     pub agents: HashMap<Id, AgentRt>,
 }
 
+impl Core {
+    /// Register a session's runtime, then let its reaper report the exit (it waits for this, so
+    /// an exit that comes first isn't dropped as one from an unknown runtime).
+    pub fn insert_rt(&mut self, sid: Id, mut rt: RtHandle) {
+        let gate = rt.take_reaper_gate();
+        self.rt.insert(sid, rt);
+        drop(gate);
+    }
+}
+
 pub struct Daemon {
     pub cfg: Config,
     pub started: Instant,

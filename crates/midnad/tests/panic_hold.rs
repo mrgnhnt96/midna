@@ -10,9 +10,19 @@ fn panic_items(h: &mut midna_proto::Client) -> Vec<Value> {
     list.as_array().unwrap().iter().filter(|n| n["title"] == "The Mac restarted after a kernel panic").cloned().collect()
 }
 
+/// An agent that stays up whatever Claude's flags are (`/bin/cat` would exit on them, and the
+/// terminal would turn into a shell, which the hold doesn't cover).
+fn fake_agent() -> String {
+    let bin = std::env::temp_dir().join(format!("midna-panic-agent-{}.sh", std::process::id()));
+    std::fs::write(&bin, "#!/bin/sh\nexec cat\n").unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    bin.to_string_lossy().into_owned()
+}
+
 #[test]
 fn after_a_panic_agents_wait_for_the_human() {
-    let mut d = TestDaemon::start_with(|c| c.agent_bin = Some("/bin/cat".into()));
+    let bin = fake_agent();
+    let mut d = TestDaemon::start_with(move |c| c.agent_bin = Some(bin));
     let mut h = d.human();
     let open_agent = |c: &mut midna_proto::Client| c.call_value("session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp", "name": "trailer" }));
     let sid = open_agent(&mut h).unwrap()["id"].as_str().unwrap().to_string();

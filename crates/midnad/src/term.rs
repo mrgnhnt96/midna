@@ -45,6 +45,8 @@ pub enum EngineMsg {
 
 #[derive(Clone)]
 pub struct RtHandle {
+    /// Holds the reaper back until the handle is registered (`Core::insert_rt`).
+    reaper_gate: ReaperGate,
     pub tx: SyncSender<EngineMsg>,
     pub fd: Arc<PtyFd>,
     pub pid: i32,
@@ -57,7 +59,24 @@ pub struct RtHandle {
     pub kitty: Arc<AtomicU8>,
 }
 
+/// The reaper waits for this to drop before it reports the exit, so a child that exits at once
+/// isn't reported before its runtime is in `core.rt` (`on_exit` ignores an exit it can't match
+/// to a runtime, and the session would never be marked exited). A clone never holds it.
+pub struct ReaperGate(Option<std::sync::mpsc::Sender<()>>);
+
+impl Clone for ReaperGate {
+    fn clone(&self) -> Self {
+        ReaperGate(None)
+    }
+}
+
 impl RtHandle {
+    /// The gate that holds the reaper back: drop it once the handle is registered. Dropping the
+    /// handle drops it too.
+    pub fn take_reaper_gate(&mut self) -> ReaperGate {
+        ReaperGate(self.reaper_gate.0.take())
+    }
+
     pub fn write(&self, bytes: &[u8]) -> bool {
         pty::write_all(self.fd.0, bytes)
     }
@@ -247,12 +266,14 @@ fn run(d: &Arc<Daemon>, sid: &str, master: RawFd, pid: i32, reap: bool, eng: Mak
     let (tx, rx) = sync_channel::<EngineMsg>(64);
     let activity = Arc::new(AtomicI64::new(midna_proto::time::now_unix()));
     let kitty = Arc::new(AtomicU8::new(0));
-    let h = RtHandle { tx: tx.clone(), fd: fd.clone(), pid, generation, activity: activity.clone(), kitty: kitty.clone() };
+    let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+    let reaper_gate = ReaperGate(Some(gate_tx));
+    let h = RtHandle { reaper_gate, tx: tx.clone(), fd: fd.clone(), pid, generation, activity: activity.clone(), kitty: kitty.clone() };
     let weak = Arc::downgrade(d);
     engine_thread(sid.to_string(), generation, eng, title, fd.clone(), rx, weak.clone(), kitty);
     let drained = reader_thread(fd, tx, activity);
     if reap {
-        reaper_thread(sid.to_string(), generation, pid, weak, drained);
+        reaper_thread(sid.to_string(), generation, pid, weak, drained, gate_rx);
     }
     h
 }
@@ -323,12 +344,14 @@ fn reader_thread(fd: Arc<PtyFd>, tx: SyncSender<EngineMsg>, activity: Arc<Atomic
     done_rx
 }
 
-fn reaper_thread(sid: String, generation: u64, pid: i32, d: Weak<Daemon>, drained: Receiver<()>) {
+fn reaper_thread(sid: String, generation: u64, pid: i32, d: Weak<Daemon>, drained: Receiver<()>, gate: Receiver<()>) {
     let _ = std::thread::Builder::new().name("reaper".into()).spawn(move || {
         let (code, signal) = wait_exit(pid);
         // Let the last output reach the engine first (the exit handler reads the screen). A
         // background process still holding the PTY open keeps the reader going: don't wait long.
         let _ = drained.recv_timeout(std::time::Duration::from_millis(500));
+        // The caller may not have registered the runtime yet (a command that exits at once).
+        let _ = gate.recv();
         if let Some(d) = d.upgrade() {
             crate::rpc::session::on_exit(&d, &sid, generation, code, signal);
         }

@@ -298,7 +298,7 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
     };
     {
         let mut core = d.core();
-        core.rt.insert(sid.clone(), rt);
+        core.insert_rt(sid.clone(), rt);
         core.state.sessions.push(session.clone());
         if let Some(pr) = core.state.projects.iter_mut().find(|x| x.id == project.id) {
             pr.last_opened_at = Some(session.created_at.clone());
@@ -1052,7 +1052,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
     {
         let mut core = d.core();
         let pid = new_rt.pid;
-        core.rt.insert(s.id.clone(), new_rt);
+        core.insert_rt(s.id.clone(), new_rt);
         if let Some(sess) = core.state.session_mut(&s.id) {
             sess.pid = Some(pid);
         }
@@ -1253,7 +1253,7 @@ fn swap_to_shell(d: &Arc<Daemon>, sid: &str, generation: u64, reason: &str) -> R
         sess.title.clear();
     }
     core.agents.remove(sid);
-    core.rt.insert(sid.to_string(), rt);
+    core.insert_rt(sid.to_string(), rt);
     drop(core);
     d.mark_dirty();
     let agent = s.agent.map_or("agent", |a| a.as_str());

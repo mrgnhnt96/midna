@@ -428,7 +428,7 @@ pub fn adopt_all(d: &Arc<Daemon>, r: &Resume) {
         set_cloexec(s.fd, true);
         let rt = term::adopt(d, &s.id, s.fd, s.pid, s.alive, &s.term);
         let mut core = d.core();
-        core.rt.insert(s.id.clone(), rt);
+        core.insert_rt(s.id.clone(), rt);
         if let Some(k) = known.filter(|k| k.agent.is_some()) {
             let a = core.agents.entry(s.id.clone()).or_default();
             a.in_turn = s.in_turn;
