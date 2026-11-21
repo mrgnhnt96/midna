@@ -1736,6 +1736,7 @@ mod tests {
             needs_you_id: None,
             transfer: None,
             auto: false,
+            this_terminal: false,
         };
         let msg = SharePayload::Message { text: "hi".into(), reply_to: None };
         let snip = SharePayload::Snippet { text: "ls".into(), title: None };

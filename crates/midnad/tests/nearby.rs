@@ -1587,6 +1587,12 @@ fn an_agent_start_runs_only_once_accepted_and_its_answer_comes_back() {
         p["peer"] = json!(fb);
         assert_eq!(call_err(&mut ha, "share.send", p).code, midna_proto::error::BAD_PARAMS, "{bad}");
     }
+    // A prompt that is only a file on A can't be read on B: it goes as notes instead.
+    let notes = a.home.join("notes.md");
+    std::fs::write(&notes, "the notes").unwrap();
+    let e = call_err(&mut ha, "share.send", json!({ "peer": fb, "kind": "agent_start", "session": t, "prompt": notes }));
+    assert_eq!(e.code, midna_proto::error::BAD_PARAMS, "{}", e.message);
+    assert!(e.message.contains("--notes"), "{}", e.message);
 
     // An agent's start leaves only with A's human's OK, who sees the prompt.
     let mut c = a.agent(Some(&t));
@@ -1621,6 +1627,10 @@ fn an_agent_start_runs_only_once_accepted_and_its_answer_comes_back() {
     let sid = opened(&done);
     let s = call(&mut hb, "session.get", json!({ "id": sid }));
     assert_eq!((s["kind"].as_str(), s["agent"].as_str()), (Some("agent"), Some("claude")), "{s}");
+    // That agent reads its own start in the inbox as itself; no other caller does.
+    let own = share(&mut b.agent(Some(&sid)), &id).unwrap();
+    assert_eq!(own["this_terminal"], true, "{own}");
+    assert!(done["this_terminal"].is_null(), "{done}");
     assert_eq!((s["cwd"].as_str(), s["project_id"].as_str()), (ours.join("src").to_str(), Some(pid.as_str())), "{s}");
     let args = agent_args(&mut hb, &sid);
     assert!(args.iter().any(|a| a == prompt), "{args:?}");

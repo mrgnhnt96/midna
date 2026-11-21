@@ -267,6 +267,7 @@ pub(super) fn offer(d: &Daemon, fp: &str, id: String, payload: SharePayload, sou
                 needs_you_id: None,
                 transfer: None,
                 auto: false,
+                this_terminal: false,
             };
             {
                 let mut i = d.nearby.inner();
@@ -296,6 +297,7 @@ pub(super) fn offer(d: &Daemon, fp: &str, id: String, payload: SharePayload, sou
         needs_you_id: None,
         transfer: None,
         auto: false,
+        this_terminal: false,
     };
     // Kept before it is offered: a device that auto-accepts answers (and fetches a file) at once.
     {
@@ -391,6 +393,7 @@ pub fn incoming(d: &Arc<Daemon>, from: &str, id: String, payload: Value) -> Wire
         needs_you_id: None,
         transfer: None,
         auto: false,
+        this_terminal: false,
     };
     {
         let mut i = d.nearby.inner();
@@ -875,9 +878,9 @@ fn accept_as(d: &Arc<Daemon>, ctx: &Ctx, p: ShareAcceptParams, auto: bool) -> R 
     }
     if file || agent || with_notes {
         transfer::begin(d, &item.id);
-        return ok(incoming_item(d, &item.id).unwrap_or(item));
+        return ok(incoming_item(d, &item.id).unwrap_or(item).for_caller(ctx.session.as_deref()));
     }
-    ok(item)
+    ok(item.for_caller(ctx.session.as_deref()))
 }
 
 /// `share.decline` (human only).
@@ -976,7 +979,8 @@ fn open_url(url: &str) -> Result<(), RpcError> {
 }
 
 /// `inbox.list`.
-pub fn list(d: &Daemon, p: InboxListParams) -> R {
+/// `inbox.list`: each item marks [`ShareItem::this_terminal`] for the caller's terminal.
+pub fn list(d: &Daemon, ctx: &Ctx, p: InboxListParams) -> R {
     let mut i = d.nearby.inner();
     let inbox = i.inbox(&d.cfg.home);
     let waiting = inbox.items.iter().filter(|e| e.item.direction == ShareDirection::Incoming && e.item.state == ShareState::Offered).count();
@@ -988,7 +992,7 @@ pub fn list(d: &Daemon, p: InboxListParams) -> R {
         .map(|e| &e.item)
         .filter(|it| p.direction.is_none_or(|x| it.direction == x) && p.state.is_none_or(|x| it.state == x) && peer.as_ref().is_none_or(|f| &it.peer == f))
         .take(p.limit.unwrap_or(LIST_DEFAULT))
-        .cloned()
+        .map(|it| it.clone().for_caller(ctx.session.as_deref()))
         .collect();
     ok(InboxListResult { items, waiting })
 }
@@ -1147,6 +1151,7 @@ mod tests {
                 needs_you_id: None,
                 transfer: None,
                 auto: false,
+                this_terminal: false,
             },
             None,
         )
