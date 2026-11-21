@@ -1028,7 +1028,8 @@ fn files_and_folders_land_whole_in_downloads() {
     assert_eq!((got["payload"]["kind"].as_str(), got["payload"]["name"].as_str(), got["size"].as_u64()), (Some("file"), Some("photo.raw"), Some(big.len() as u64)), "{got}");
     assert_eq!(got["payload"]["files"][0]["sha256"].as_str().unwrap().len(), 64);
     let ny = call(&mut hb, "needs_you.get", json!({ "id": got["needs_you_id"] }));
-    assert!(ny["item"]["title"].as_str().unwrap().contains(&nb::size_label(big.len() as u64)), "{ny}");
+    let title = ny["item"]["title"].as_str().unwrap();
+    assert!(title.starts_with("Alpha sent a file: photo.raw (") && title.contains(&nb::size_label(big.len() as u64)), "{ny}");
     assert!(ny["item"]["detail"].as_str().unwrap().contains(dl.to_str().unwrap()), "{ny}");
     stays(1, "nothing lands before accepting", || !dl.exists() && got["transfer"].is_null());
     let e = call_err(&mut b.agent(None), "share.accept", json!({ "id": id }));
