@@ -8,10 +8,10 @@
 //! scrollback shown above it ([`open`]). The scrollback is only ever text on the new terminal's
 //! screen: it reaches the engine before the shell starts printing, stripped of every control
 //! character, so nothing in it can ask the terminal a question whose answer would be typed into
-//! the shell. From another of my devices, a repo (or a folder outside one) this Mac has no copy
-//! of opens in the project named after it, else in the same folder under this Mac's home
-//! ([`guessed`]). Anything else this Mac has no checkout of still opens, in the home folder, with
-//! the scrollback alone.
+//! the shell. The sender's paths are another Mac's and are never looked for here. From another of
+//! my devices, a repo this Mac has no checkout of (or a folder outside any repo) opens in the
+//! project named after it ([`guessed`]). Anything else still opens, in the home folder, with the
+//! scrollback alone.
 //!
 //! A tab (or an agent start) may instead name the receiver's project (`project`): then it opens
 //! in that project's folder wherever the sending terminal was, and a tab sent that way without a
@@ -157,8 +157,6 @@ pub enum Place {
     /// In this project's checkout of the tab's repo, at `dir` (the tab's folder in it, or the
     /// checkout's top when that folder isn't there: `missing`).
     Project { id: String, name: String, dir: String, missing: Option<String> },
-    /// At the sending Mac's own directory, which exists here too (a tab outside any repo).
-    Same { dir: String },
     /// Where this Mac's person said (`share.accept` `cwd`).
     Chosen { dir: String },
     /// Its repo isn't checked out here: the home folder, with the scrollback alone.
@@ -174,19 +172,18 @@ impl Place {
         match self {
             Place::Project { name, dir, missing: None, .. } => format!("It opens in {dir} (project {name})."),
             Place::Project { name, dir, missing: Some(m), .. } => format!("It opens in {dir} (project {name}); {m} isn't in your checkout."),
-            Place::Same { dir } => format!("It opens in {dir}."),
             Place::Chosen { dir } => format!("It opens in {dir}."),
             Place::Gone { name } => format!("There's no project named “{name}” on this Mac any more; pick a folder to open it in."),
             Place::Unknown => match project {
                 Some(p) => format!("{} isn't checked out in any of your projects, so it opens in your home folder.", p.remote),
-                None => format!("{cwd} isn't on this Mac, so it opens in your home folder."),
+                None => format!("{cwd} is on the other Mac and in no project here, so it opens in your home folder."),
             },
         }
     }
 
     pub(super) fn dir(&self) -> Option<&str> {
         match self {
-            Place::Project { dir, .. } | Place::Same { dir } | Place::Chosen { dir } => Some(dir),
+            Place::Project { dir, .. } | Place::Chosen { dir } => Some(dir),
             Place::Unknown | Place::Gone { .. } => None,
         }
     }
@@ -212,7 +209,7 @@ impl Place {
     pub(super) fn project_id(&self, d: &Daemon) -> String {
         match self {
             Place::Project { id, .. } => id.clone(),
-            Place::Same { dir } | Place::Chosen { dir } => {
+            Place::Chosen { dir } => {
                 crate::rpc::project::containing(d, dir).map(|p| p.id).unwrap_or_else(|| midna_proto::ROOT_PROJECT_ID.to_string())
             }
             Place::Unknown | Place::Gone { .. } => midna_proto::ROOT_PROJECT_ID.to_string(),
@@ -271,29 +268,24 @@ pub fn place(d: &Daemon, peer: &str, payload: &SharePayload) -> Place {
                 (false, false) => Place::Project { id, name, dir: top, missing: Some(p.path.clone()) },
             }
         }),
-        None if Path::new(cwd).is_dir() => Some(Place::Same { dir: cwd.to_string() }),
         None => None,
     };
     found.or_else(|| guessed(d, peer, project, cwd)).unwrap_or(Place::Unknown)
 }
 
 /// Where a tab or an agent start from another of my devices opens when its repo isn't checked
-/// out here and its folder isn't here either: this Mac's project named after the repo (or, outside
-/// a repo, after the folder), else the same folder under this Mac's home. A work Mac's agent in
-/// `~/.config/taskboard` lands in the `taskboard` project. Other people's devices get none of
-/// this: naming this Mac's projects is only for mine ([`admit`]).
+/// out here (or it was outside any repo): this Mac's project named after the repo, else after the
+/// folder. A work Mac's agent in `~/.config/taskboard` lands in the `taskboard` project. Its path
+/// is never looked for here: it is the other Mac's. Other people's devices get none of this:
+/// naming this Mac's projects is only for mine ([`admit`]).
 fn guessed(d: &Daemon, peer: &str, project: Option<&TabProject>, cwd: &str) -> Option<Place> {
     if !super::agent_ask::mine(d, peer) {
         return None;
     }
-    let by_name = guessed_name(project, cwd).and_then(|name| match named(d, &name) {
+    match named(d, &guessed_name(project, cwd)?) {
         Place::Gone { .. } => None,
         found => Some(found),
-    });
-    by_name.or_else(|| {
-        let home = std::env::var("HOME").ok()?;
-        rerooted(cwd, &home).filter(|dir| Path::new(dir).is_dir()).map(|dir| Place::Same { dir })
-    })
+    }
 }
 
 /// The project name a share's origin suggests: its repo's name (the remote's last part), else
@@ -313,13 +305,6 @@ fn in_home(cwd: &str) -> Option<&str> {
     let rest = cwd.strip_prefix("/Users/")?;
     let (user, rest) = rest.split_once('/').unwrap_or((rest, ""));
     (!user.is_empty()).then(|| rest.trim_matches('/'))
-}
-
-/// `cwd` from another Mac's home moved under this one's, `home`. None outside a home, and for
-/// the home itself (that's where it would open anyway).
-fn rerooted(cwd: &str, home: &str) -> Option<String> {
-    let rest = in_home(cwd).filter(|r| !r.is_empty())?;
-    Some(format!("{}/{rest}", home.trim_end_matches('/')))
 }
 
 /// This Mac's project called `name` (exactly, else ignoring case), at its folder.
@@ -476,14 +461,5 @@ mod tests {
         assert_eq!(guessed_name(None, "/Users/morgan.hunt/.config/taskboard/").as_deref(), Some("taskboard"));
         assert_eq!(guessed_name(None, "/Users/morgan.hunt"), None);
         assert_eq!(guessed_name(None, "/"), None);
-    }
-
-    #[test]
-    fn a_folder_in_another_macs_home_moves_under_this_home() {
-        assert_eq!(rerooted("/Users/morgan.hunt/.config/taskboard", "/Users/me").as_deref(), Some("/Users/me/.config/taskboard"));
-        assert_eq!(rerooted("/Users/morgan.hunt/Development/x/", "/Users/me/").as_deref(), Some("/Users/me/Development/x"));
-        assert_eq!(rerooted("/Users/morgan.hunt", "/Users/me"), None);
-        assert_eq!(rerooted("/opt/work", "/Users/me"), None);
-        assert_eq!(rerooted("/Users//x", "/Users/me"), None);
     }
 }
