@@ -224,12 +224,18 @@ pub fn trust_keys(t: &TrustDialog, approve: bool) -> Vec<crate::term::Key> {
     keys
 }
 
-/// Claude's question dialog (AskUserQuestion), from its footer at the bottom of the screen.
+/// Claude's question dialog (AskUserQuestion), from its footer at the bottom of the screen, or
+/// its "Review your answers" screen (no footer; `1. Submit answers` / `2. Cancel` at the bottom).
 /// Kept apart from `screen_shows_prompt`: Enter there picks the highlighted answer, not "Yes".
 pub fn screen_shows_question(lines: &[String]) -> bool {
     let tail: Vec<&str> = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
     let tail = &tail[tail.len().saturating_sub(4)..];
-    tail.iter().any(|l| l.starts_with("Enter to select") && l.contains("Esc to cancel"))
+    let footer = tail.iter().any(|l| l.starts_with("Enter to select") && l.contains("Esc to cancel"));
+    let review = || {
+        tail.iter().any(|l| l.trim_start_matches(['❯', ' ']) == "2. Cancel")
+            && matches!(crate::question::parse(lines), crate::question::Screen::Review(_))
+    };
+    footer || review()
 }
 
 /// The screen shows something only the human should answer: a permission prompt, a question
@@ -273,6 +279,15 @@ mod tests {
         assert!(!screen_shows_prompt(&screen("claude-2.1.292-question.screen.txt")), "Enter there picks an answer");
         assert!(screen_shows_question(&screen("claude-2.1.292-question.screen.txt")));
         assert!(screen_waits_on_human(&screen("claude-2.1.292-question.screen.txt")));
+        // The review screen after the last question has no footer; Enter there submits.
+        let review = screen("claude-2.1.301-question-review.screen.txt");
+        assert!(screen_shows_question(&review));
+        assert!(!screen_shows_prompt(&review), "Enter there submits the answers");
+        assert!(screen_waits_on_human(&review));
+        // The same review scrolled up the transcript, under a fresh input box: not live.
+        let mut gone = review.clone();
+        gone.extend(["⏺ User answered Claude's questions:", "", "─────", "❯ ", "─────", "  ? for shortcuts"].map(str::to_string));
+        assert!(!screen_shows_question(&gone));
         for f in ["claude-2.1.288-permission.screen.txt", "claude-2.1.288-interrupted.screen.txt", "claude-2.1.288-trust-folder.screen.txt", "codex-0.160.0-idle.screen.txt"] {
             assert!(!screen_shows_question(&screen(f)), "{f}");
         }

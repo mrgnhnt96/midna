@@ -201,6 +201,18 @@ fn raise_prompt(d: &Daemon, sid: &str, actor: &Actor, reason: &str, question: Op
     d.core().agents.entry(sid.to_string()).or_default().prompt_raised_at = Some(std::time::Instant::now());
 }
 
+/// Codex's approval overlay, found on screen while it works. No hook reports it: Codex runs
+/// with `notify` only, which fires at the end of a turn, so the overlay ("Would you like to run
+/// the following command?") shows only on screen and in its title ("Action Required"). Raises
+/// the same needs-you item Claude's hooks do.
+pub fn raise_codex_prompt(d: &Daemon, sid: &str, screen: &[String]) {
+    let edits = screen.iter().any(|l| l.contains("Would you like to make the following edits"));
+    let reason = if edits { "Codex wants to make edits" } else { "Codex wants to run a command" }.to_string();
+    let actor = Actor { kind: ActorKind::Agent, session: Some(sid.to_string()), name: Some(AgentKind::Codex.as_str().into()), trigger: None, via: None, peer: None };
+    raise_prompt(d, sid, &actor, &reason, None);
+    d.set_status(sid, StatusState::NeedsYou, Some(reason), None, actor);
+}
+
 fn retitle_prompt(d: &Daemon, sid: &str, title: &str, question: Option<NeedsYouQuestion>) {
     let item = {
         let mut core = d.core();

@@ -1,6 +1,6 @@
 //! session.* handlers, plus the engine/reaper callbacks (`on_title`, `on_exit`).
 use super::{Ctx, R, ok};
-use crate::agent_state::{TitleHint, agent_title_hint, screen_waits_on_human, title_text};
+use crate::agent_state::{TitleHint, agent_title_hint, screen_shows_prompt, screen_waits_on_human, title_text};
 use crate::daemon::Daemon;
 use crate::state::hex_id;
 use crate::term::{self, EngineMsg, Launch};
@@ -546,7 +546,7 @@ fn refuse_prompt_answer(d: &Daemon, ctx: &Ctx, sid: &str, rt: &term::RtHandle) -
     if pending.is_some() || on_screen {
         let what = pending.map(|n| format!(" (needs-you {n})")).unwrap_or_default();
         return Err(RpcError::human_only(format!(
-            "session {sid} is showing a permission prompt{what}; only the human may answer it. Use needs_you.raise if you are blocked on it."
+            "session {sid} is showing a permission prompt or question{what}; only the human may answer it. Use needs_you.raise if you are blocked on it."
         )));
     }
     Ok(())
@@ -1356,6 +1356,11 @@ fn settle_loop(d: &Arc<Daemon>, sid: &str, generation: u64) {
         }
         let Some((screen, _, _)) = rt.read(true) else { return };
         if screen_waits_on_human(&screen) {
+            // Codex's approval title ("Action Required") is a stopped one; its prompt comes
+            // with no hook, so this is the only place it can be raised.
+            if state == StatusState::Working && agent == AgentKind::Codex && screen_shows_prompt(&screen) {
+                crate::rpc::agent::raise_codex_prompt(d, sid, &screen);
+            }
             continue;
         }
         if state == StatusState::Working {
