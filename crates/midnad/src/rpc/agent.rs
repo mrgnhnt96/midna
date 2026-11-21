@@ -235,6 +235,12 @@ fn end_turn(d: &Daemon, sid: &str, project: &str, actor: &Actor, reason: &str, m
         if let Some(m) = message.map(|m| m.chars().take(300).collect::<String>()).filter(|m| !m.trim().is_empty()) {
             data["message"] = json!(m);
         }
+        // As the turn left them: by the time the notifier reads the event, a later turn may
+        // have started or ended its background tasks.
+        let background = d.core().state.session(sid).and_then(|s| s.agent_info.as_ref()).map_or(0, |i| crate::notify::running(i).count());
+        if background > 0 {
+            data["background"] = json!(background);
+        }
         d.emit(kinds::AGENT_TURN_ENDED, actor.clone(), Some(project.into()), Some(sid.into()), data);
     }
     ended

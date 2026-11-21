@@ -21,6 +21,9 @@ fn name(h: &mut Client, sid: &str) -> String {
 fn set_title(h: &mut Client, sid: &str, title: &str) {
     call(h, "session.input", json!({ "id": sid, "text": format!("\\033]0;{title}\\007"), "enter": true }));
     wait_for(5, "title", || (call(h, "session.get", json!({ "id": sid }))["title"] == title).then_some(()));
+    // The title is in the state before the engine thread names the terminal after it; a read
+    // goes through that thread, so it's answered once the naming is done.
+    read(h, sid);
 }
 
 fn prompt(d: &TestDaemon, sid: &str, text: &str) {

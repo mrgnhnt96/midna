@@ -6,10 +6,35 @@ use midna_proto::{Client, ClientError};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 static N: AtomicU32 = AtomicU32::new(0);
+
+/// This test process's own copy of the built midnad, run once before any test waits on it:
+/// macOS scans a new executable the first time it runs, which takes a second on a calm Mac
+/// and can outlast a test's wait for the socket on a loaded one. Tests hard-link it, so their
+/// v1/v2 are that same scanned file, at paths of their own that `cargo build` can't swap.
+fn built() -> &'static Path {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        // Left by earlier runs whose process is gone.
+        for e in std::fs::read_dir("/tmp").into_iter().flatten().flatten() {
+            let pid = e.file_name().to_str().and_then(|n| n.strip_prefix("midna-u-bin-")).and_then(|p| p.parse::<i32>().ok());
+            if pid.is_some_and(|p| unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+        let dir = PathBuf::from(format!("/tmp/midna-u-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("midnad");
+        std::fs::copy(env!("CARGO_BIN_EXE_midnad"), &bin).unwrap();
+        assert!(Command::new(&bin).arg("--version").stdout(Stdio::null()).status().unwrap().success());
+        bin
+    })
+}
 
 struct Bin {
     home: PathBuf,
@@ -17,9 +42,9 @@ struct Bin {
 }
 
 impl Bin {
-    /// Copies of the built midnad as v1/v2 (so `cargo build` can't swap them mid-test and the
-    /// watchdog has a stable fallback path), started from v1, on a calm Mac (MIDNA_DEBUG_LOAD=0:
-    /// `cargo test` itself loads the real one).
+    /// The built midnad as v1/v2 (links to `built()`, so `cargo build` can't swap them mid-test
+    /// and the watchdog has a stable fallback path), started from v1, on a calm Mac
+    /// (MIDNA_DEBUG_LOAD=0: `cargo test` itself loads the real one).
     fn start() -> Bin {
         Bin::start_with_load(0.)
     }
@@ -30,7 +55,7 @@ impl Bin {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         for v in ["v1", "v2"] {
-            std::fs::copy(env!("CARGO_BIN_EXE_midnad"), home.join(v)).unwrap();
+            std::fs::hard_link(built(), home.join(v)).unwrap();
         }
         let log = std::fs::File::create(home.join("daemon.log")).unwrap();
         let child = Command::new(home.join("v1"))
@@ -129,6 +154,21 @@ fn wait_for<T>(secs: u64, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
             panic!("timed out waiting for {what}");
         }
         std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+/// Wait for `done` at the end of a session's output for as long as output keeps arriving:
+/// fails only when nothing has come for 30s.
+fn wait_flowing(c: &mut Client, id: &str, done: &str) {
+    loop {
+        let tail = read(c, id, 5);
+        if tail.contains(done) {
+            return;
+        }
+        let last = session(c, id)["last_activity_at"].as_str().and_then(midna_proto::time::parse_rfc3339).unwrap_or(0);
+        let idle = midna_proto::time::now_unix() - last;
+        assert!(idle < 30, "no output for {idle}s and no {done}: {tail:?}");
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -242,7 +282,8 @@ fn upgrade_during_flood_loses_nothing() {
     call(&mut c, "daemon.upgrade", json!({ "binary_path": d.path("v1") }));
     d.wait_upgraded(2);
     let mut c = d.human();
-    wait_for(120, "flood to finish", || read(&mut c, &flood, 5).contains("FLOOD-DONE").then_some(()));
+    // 50 MB takes minutes on a loaded Mac: wait as long as it keeps coming, so only a stall fails.
+    wait_flowing(&mut c, &flood, "FLOOD-DONE");
     wait_for(60, "numbers to finish", || read(&mut c, &nums, 5).contains("NUMS-DONE").then_some(()));
     let text = read(&mut c, &nums, 9000);
     let v: Vec<u64> = text.lines().filter_map(|l| l.strip_prefix("N ")?.trim().parse().ok()).collect();
