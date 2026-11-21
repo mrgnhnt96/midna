@@ -101,6 +101,7 @@ fn new_delivery(source: TriggerSource, event: &str, guid: &str) -> Delivery {
         replay_of: None,
         body_sha256: None,
         command_runs: vec![],
+        event_seq: None,
     }
 }
 

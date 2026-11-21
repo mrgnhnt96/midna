@@ -277,7 +277,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
         t(
             "t_lcompact",
             "Compact and resend",
-            p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() },
+            p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".into())].into(), ..Default::default() },
             p::TriggerAction::SendToSession {
                 steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
                 to: None,
@@ -290,7 +290,7 @@ fn fake_triggers() -> Vec<midna_proto::Trigger> {
             ..t(
                 "t_lci",
                 "CI failure → build angel",
-                p::TriggerFilter { fields: [("data.text".to_string(), "*failed to build*".to_string())].into(), ..Default::default() },
+                p::TriggerFilter { fields: [("data.text".to_string(), "*failed to build*".into())].into(), ..Default::default() },
                 p::TriggerAction::SendToSession { steps: vec![p::SendStep { text: "{{data.text}}".into(), enter: true }], to: Some("build angel".into()) },
                 None,
                 4,
@@ -1048,7 +1048,7 @@ impl Backend for FakeBackend {
             // A local firing of the Slack trigger a second after its newest event.
             "trigger.deliveries" if fake_streams_state().is_some() => json!([
                 {"id": "d_s1", "source": "local", "event": "stream.slack.message", "delivery_guid": "local-1", "received_at": rfc3339_from_unix(midna_proto::time::now_unix() - 119),
-                 "verdict": "fired", "trigger_id": "t_lci", "summary": "build angel"},
+                 "verdict": "verified", "trigger_id": "t_lci", "summary": "build angel", "event_seq": 900},
             ]),
             "insights.summary" => {
                 json!({"range": "today", "totals": {"turns": 38, "messages": 52, "spend_usd": 4.12, "triggers_fired": 2}})

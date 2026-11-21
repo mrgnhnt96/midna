@@ -53,9 +53,9 @@ pub struct FilterItem {
     /// Local `schedule`: wake the Mac for each run, even outside the keep-awake hours.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wake: bool,
-    /// Local: dotted path into the hook payload / event data -> glob.
+    /// Local: dotted path into the hook payload / event data -> a glob, or globs that must all match.
     #[serde(rename = "match")]
-    pub fields: std::collections::BTreeMap<String, String>,
+    pub fields: std::collections::BTreeMap<String, midna_proto::Globs>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -277,7 +277,7 @@ impl TriggerItem {
         if let Some(c) = &f.cron {
             parts.push(format!("cron \"{c}\"{}", self.next_run().map(|r| format!(" · next {r}")).unwrap_or_default()));
         }
-        parts.extend(f.fields.iter().map(|(k, v)| format!("{k} ~ \"{v}\"")));
+        parts.extend(f.fields.iter().map(|(k, v)| format!("{k} ~ {v}")));
         (!parts.is_empty()).then(|| parts.join(" && "))
     }
 
@@ -337,7 +337,7 @@ impl TriggerItem {
             a.push("--wake".into());
         }
         for (k, v) in &f.fields {
-            a.push(format!("--match {}", sh_quote(&format!("{k}={v}"))));
+            a.extend(v.iter().map(|g| format!("--match {}", sh_quote(&format!("{k}={g}")))));
         }
         match self.action_kind().as_str() {
             "send_to_session" => a.extend(self.steps().iter().map(|s| format!("--send {}", sh_quote(s)))),
@@ -432,6 +432,8 @@ pub struct DeliveryItem {
     pub replay_of: Option<String>,
     /// Headless `run_command` runs: {command, finished_at, exit_code, signal, timed_out, output, error}.
     pub command_runs: Vec<Value>,
+    /// Local: the seq of the logged event it answered (a stream event's).
+    pub event_seq: Option<u64>,
 }
 
 impl DeliveryItem {
@@ -477,6 +479,7 @@ impl DeliveryItem {
             "replayed" => ("Replayed", t.accent),
             "recovered" => ("Recovered", t.ok),
             "no_trigger" => ("No trigger", t.dim),
+            "cooldown" => ("Held back (cooldown)", t.dim),
             _ => ("Received", t.dim),
         }
     }
@@ -1998,7 +2001,7 @@ mod tests {
         let mut tr = proto_trigger(true, p::TriggerState::Active, false);
         tr.source = p::TriggerSource::Local;
         tr.event = "agent.prompt_blocked".into();
-        tr.filter = p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".to_string())].into(), ..Default::default() };
+        tr.filter = p::TriggerFilter { fields: [("message".to_string(), "*Compact first*".into())].into(), ..Default::default() };
         tr.action = p::TriggerAction::SendToSession {
             steps: vec![p::SendStep { text: "/compact".into(), enter: true }, p::SendStep { text: "{{last_prompt}}".into(), enter: true }],
             to: None,

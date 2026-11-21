@@ -201,20 +201,20 @@ fn on_event(d: &Arc<Daemon>, e: &Event) {
         }
     }
     // What a trigger did (and trigger bookkeeping) never fires triggers, nor does a stream
-    // event published by something a trigger started, nor a stream's health (`stream.*` is
-    // for its events).
+    // event published by something a trigger started, nor a stream's health or removal
+    // (`stream.*` is for its events).
     if e.actor.kind == ActorKind::Trigger
         || e.kind.starts_with("trigger.")
-        || e.kind == kinds::STREAM_HEALTH
+        || matches!(e.kind.as_str(), kinds::STREAM_HEALTH | kinds::STREAM_REMOVED)
         || e.stream.as_ref().is_some_and(|s| s.caused_by.is_some())
     {
         return;
     }
-    fire_matching(d, &e.kind, e.session_id.as_deref(), None, &e.data, e.stream.as_deref());
+    fire_matching(d, &e.kind, e.session_id.as_deref(), None, &e.data, e.stream.as_deref(), Some(e.seq));
 }
 
 fn on_hook(d: &Arc<Daemon>, sid: &str, agent: AgentKind, event: &str, payload: &Value) {
-    fire_matching(d, event, Some(sid), Some(agent), payload, None);
+    fire_matching(d, event, Some(sid), Some(agent), payload, None, None);
 }
 
 /// Tests: move a terminal's idle clock back `secs`, then check idle triggers now.
@@ -406,13 +406,15 @@ pub fn evaluate(t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value
     check("agent", &f.agent.map(|a| a.as_str().to_string()), s.and_then(|s| s.agent).map(|a| a.as_str()));
     for (path, want) in &f.fields {
         let got = lookup(data, path);
-        let pass = got.as_deref().is_some_and(|g| glob_ci(want, g));
+        // Each glob on its own, so words in one field match in any order.
+        let missed: Vec<&str> = want.iter().filter(|w| !got.as_deref().is_some_and(|g| glob_ci(w, g))).collect();
+        let pass = got.is_some() && missed.is_empty();
         ok &= pass;
         let shown = got.as_deref().map(|g| clip(g, 60));
         parts.push(match shown {
             Some(g) if pass => format!("{path} \"{g}\" ✓"),
-            Some(g) => format!("{path} \"{g}\" ≠ \"{want}\""),
-            None => format!("{path} missing (wants \"{want}\")"),
+            Some(g) => format!("{path} \"{g}\" ≠ {}", missed.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(" and ")),
+            None => format!("{path} missing (wants {want})"),
         });
     }
     Eval { event_ok, filters_ok: ok, line: format!("{}: {}", t.name, parts.join(" · ")) }
@@ -493,8 +495,8 @@ pub fn last_prompt(d: &Daemon, sid: &str) -> Option<String> {
 }
 
 /// `agent`: who sent the hook (an agent run by hand in a shell terminal has no session agent).
-/// `stream`: a published stream event's envelope.
-fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<AgentKind>, data: &Value, stream: Option<&StreamRef>) {
+/// `stream`: a published stream event's envelope. `seq`: the logged event's (none for a hook).
+fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<AgentKind>, data: &Value, stream: Option<&StreamRef>, seq: Option<u64>) {
     let candidates: Vec<Trigger> = d.core().state.triggers.iter().filter(|t| is_live(t) && glob_ci(t.event.trim(), event)).cloned().collect();
     if candidates.is_empty() {
         return;
@@ -513,14 +515,63 @@ fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<
         if let Some(on) = on {
             let cooldown = Duration::from_secs(t.cooldown());
             let key = (t.id.clone(), on);
-            let mut b = d.local.book();
-            if b.fired.get(&key).is_some_and(|at| at.elapsed() < cooldown) {
+            let since = {
+                let mut b = d.local.book();
+                match b.fired.get(&key).map(Instant::elapsed).filter(|e| *e < cooldown) {
+                    Some(since) => Some(since),
+                    None => {
+                        b.fired.insert(key, Instant::now());
+                        None
+                    }
+                }
+            };
+            if let Some(since) = since {
+                // A stream event is a message someone sent: say why it did nothing. A terminal's
+                // hooks are many and the cooldown is how they're thinned out, so those stay quiet.
+                if let Some(x) = stream {
+                    held_back(d, t, event, x, seq, ev.line, since);
+                }
                 continue;
             }
-            b.fired.insert(key, Instant::now());
         }
-        fire(d, t, event, s.as_ref(), data, stream, ev.line);
+        fire_as(d, t, event, s.as_ref(), data, stream, ev.line, None, seq);
     }
+}
+
+/// Record that stream event `event` matched `t` but `t`'s cooldown held it back, `since` after
+/// it last fired for that stream.
+fn held_back(d: &Daemon, t: &Trigger, event: &str, stream: &StreamRef, seq: Option<u64>, line: String, since: Duration) {
+    let cooldown = t.cooldown();
+    let left = cooldown.saturating_sub(since.as_secs()).max(1);
+    let del = Delivery {
+        id: format!("d_{}", hex_id(6)),
+        source: TriggerSource::Local,
+        event: event.to_string(),
+        delivery_guid: format!("local-{}", hex_id(8)),
+        received_at: time::now_rfc3339(),
+        verdict: Verdict::Cooldown,
+        trigger_id: Some(t.id.clone()),
+        session_started: None,
+        summary: format!(
+            "Held back by its cooldown · {} fired for stream {} {}s ago and waits {cooldown}s between firings ({left}s left)",
+            t.name,
+            stream.name,
+            since.as_secs()
+        ),
+        action: None,
+        repo: None,
+        subject: None,
+        http_status: None,
+        eval: vec![line],
+        triggers_fired: vec![],
+        sessions_started: vec![],
+        recovered: false,
+        replay_of: None,
+        body_sha256: None,
+        command_runs: vec![],
+        event_seq: seq,
+    };
+    crate::webhooks::process::record(d, &del, None);
 }
 
 // ------------------------------------------------------------------ firing
@@ -593,6 +644,7 @@ pub fn replay_stream(d: &Arc<Daemon>, e: &Event) -> Delivery {
         replay_of: Some(of.clone()),
         body_sha256: None,
         command_runs: vec![],
+        event_seq: Some(e.seq),
     };
     let stream = e.stream.as_deref();
     if let Some(c) = stream.and_then(|x| x.caused_by.as_ref()) {
@@ -607,7 +659,7 @@ pub fn replay_stream(d: &Arc<Daemon>, e: &Event) -> Delivery {
             sum.eval.push(ev.line);
             continue;
         }
-        let (id, outcome) = fire_as(d, t, &e.kind, None, &e.data, stream, ev.line, Some(&of));
+        let (id, outcome) = fire_as(d, t, &e.kind, None, &e.data, stream, ev.line, Some(&of), Some(e.seq));
         sum.eval.push(format!("{}: {outcome} (delivery {id})", t.name));
         sum.triggers_fired.push(t.id.clone());
         let started = d.core().state.deliveries.iter().rev().find(|x| x.id == id).and_then(|x| x.session_started.clone());
@@ -655,13 +707,15 @@ fn acting_on(d: &Daemon, t: &Trigger, s: Option<&SessionFacts>) -> Result<(Optio
 }
 
 fn fire(d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, line: String) -> (Id, String) {
-    fire_as(d, t, event, s, data, stream, line, None)
+    fire_as(d, t, event, s, data, stream, line, None, None)
 }
 
-/// [`fire`], as a replay of `replay_of` (`event:<seq>`) when it is one.
+/// [`fire`], as a replay of `replay_of` (`event:<seq>`) when it is one, answering logged event
+/// `seq` when there is one.
 #[allow(clippy::too_many_arguments)]
 fn fire_as(
     d: &Arc<Daemon>, t: &Trigger, event: &str, s: Option<&SessionFacts>, data: &Value, stream: Option<&StreamRef>, line: String, replay_of: Option<&str>,
+    seq: Option<u64>,
 ) -> (Id, String) {
     let id = format!("d_{}", hex_id(6));
     let guid = format!("local-{}", hex_id(8));
@@ -715,6 +769,7 @@ fn fire_as(
         replay_of: replay_of.map(str::to_string),
         body_sha256: None,
         command_runs: runs,
+        event_seq: seq,
     };
     let project = t.action.project_id().cloned().or_else(|| s.map(|s| s.project_id.clone()));
     d.emit(
@@ -1098,6 +1153,7 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
         replay_of: None,
         body_sha256: None,
         command_runs: vec![],
+        event_seq: None,
     }
 }
 
@@ -1148,6 +1204,26 @@ mod tests {
         assert!(!e.fires());
         assert!(e.line.contains("≠"), "{}", e.line);
         assert!(!evaluate(&t, "agent.prompt_blocked", None, &data).fires(), "agent filter needs a terminal");
+    }
+
+    #[test]
+    fn a_list_of_globs_on_one_path_must_all_match_in_any_order() {
+        let mut f = TriggerFilter::default();
+        f.fields.insert("text".into(), Globs::All(vec!["*failed to build*".into(), "*master*".into()]));
+        let t = trig("stream.slack.message", f);
+        let fires = |text: &str| evaluate(&t, "stream.slack.message", None, &json!({ "text": text }));
+        assert!(fires("roon_mobile failed to build on master").fires());
+        assert!(fires("master: roon_mobile FAILED TO BUILD").fires(), "either order");
+        let e = fires("roon_mobile failed to build on dev");
+        assert!(!e.fires());
+        assert!(e.line.ends_with("≠ \"*master*\""), "names only the glob that missed: {}", e.line);
+        let e = evaluate(&t, "stream.slack.message", None, &json!({}));
+        assert!(e.line.ends_with("text missing (wants \"*failed to build*\" and \"*master*\")"), "{}", e.line);
+        // A list round-trips as JSON's array; one glob stays a string.
+        let v = serde_json::to_value(&t.filter).unwrap();
+        assert_eq!(v, json!({ "match": { "text": ["*failed to build*", "*master*"] } }));
+        let one: TriggerFilter = serde_json::from_value(json!({ "match": { "m": "*x*" } })).unwrap();
+        assert_eq!(one.fields["m"], Globs::One("*x*".into()));
     }
 
     #[test]

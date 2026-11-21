@@ -15,7 +15,7 @@ events below and for any local-only flag; passing it is always fine.
   `--idle-for 55m` (implies `--event idle`: no turn started or ended for that long),
   `--cron '0 9 * * mon-fri'` (implies `--event schedule`; see below), and
   `--match path=glob` (repeatable; dotted path into the hook payload / event data, glob is
-  case-insensitive, every entry must match).
+  case-insensitive, every entry must match; the same path twice needs both globs, in any order).
 - **Actions** (pick one):
   - `--send TEXT` (repeat for more steps; `--send-no-enter TEXT` types without Enter). Steps run
     in order, each waiting until the agent is ready again. Steps never type over text in
@@ -133,9 +133,10 @@ or nudge work.
   running, nothing happens and the delivery says why. `--notify` and `--attention` take `--to`
   too. `--session` and `--for-agent` are refused. Templates add `{{data.<path>}}` and
   `{{stream.name}}`, `{{stream.kind}}`, `{{stream.id}}`. There is no cooldown by default, so
-  every message fires; `--cooldown 1m` fires at most once a minute per stream and drops the rest.
-- `--match` holds one glob per path. To need two words in one field, put both in one glob in
-  the order they appear: `--match 'text=*failed*master*'`. Its paths start inside the data
+  every message fires; `--cooldown 1m` fires at most once a minute per stream, and each event it
+  holds back is a `cooldown` delivery in `midna triggers deliveries` that says so.
+- `--match` takes the same path more than once to need several words in one field, in any
+  order: `--match 'text=*failed*' --match 'text=*master*'`. Its paths start inside the data
   (`text`, not `data.text`).
 - **Test it**: `midna triggers test <id> --stream slack --kind message --data '{"text":"…"}'`
   says whether the trigger would fire and what it would do. Nothing is published or run. To run
@@ -176,7 +177,7 @@ are covered: `data.text` holds all of them as plain text. Its README has the det
    the terminal named "build angel":
    ```
    midna triggers add --name "roon_mobile master failed" --event stream.slack.message \
-     --match 'text=*failed to build on pipeline roon_mobile*master*' --to "build angel" \
+     --match 'text=*failed to build on pipeline roon_mobile*' --match 'text=*master*' --to "build angel" \
      --send 'CI failed on master: {{data.text}}' --enable
    ```
    A bot that posts "building" and edits it to "failed" sends the edit as `message_changed`:

@@ -546,7 +546,8 @@ pub static VERBS: &[Verb] = &[
                   or any local-only flag) fire on this Mac and act on the terminal that fired. Agents may add, enable\n\
                   (--enable) and disable them when the human asked for one. --send steps run in order, each waiting\n\
                   until the agent is ready. --match path=glob (repeatable) matches the hook payload / event data,\n\
-                  case-insensitive; an empty glob removes the key on update; an empty value clears a filter flag.\n\
+                  case-insensitive; the same path twice needs both globs, in any order. An empty glob removes the key\n\
+                  on update; an empty value clears a filter flag.\n\
                   Durations: 90s, 55m, 1h30m; a bare number is minutes for --idle-for, seconds for --cooldown.\n\
                   --cron (implies --event schedule): minute hour day-of-month month day-of-week in local time, or\n\
                   @hourly/@daily/@weekly/@monthly/@yearly, or @every 55m for an interval cron can't say (*/55 is\n\
