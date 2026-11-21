@@ -6,7 +6,7 @@ use libghostty_vt::screen::{CellContentTag, CellSemanticContent, CellWide, RowSe
 use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Terminal};
 use midna_proto::frame::*;
-use std::os::fd::RawFd;
+use std::sync::mpsc::Sender;
 
 #[path = "engine_input.rs"]
 mod input;
@@ -50,8 +50,6 @@ pub struct Engine {
     last_read_ns: u64,
     force_full: bool,
     pub bytes: u64,
-    /// Where DA/DSR replies go (re-registered when the terminal is rebuilt from a snapshot).
-    pty_fd: Option<RawFd>,
     /// Trailing bytes of an escape sequence (or UTF-8 char) the parser has only half seen.
     /// libghostty's VT export can't carry parser state, so an upgrade replays these.
     tail: Vec<u8>,
@@ -75,12 +73,11 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// `pty_fd`: where DA/DSR responses are written (None = discard).
-    pub fn new(cols: u16, rows: u16, pty_fd: Option<RawFd>) -> Engine {
+    /// `replies`: the session's input queue, where DA/DSR answers go (None = discard).
+    pub fn new(cols: u16, rows: u16, replies: Option<Sender<Vec<u8>>>) -> Engine {
         let mut term = new_terminal(cols, rows);
-        connect_pty(&mut term, pty_fd);
+        connect_pty(&mut term, replies);
         let mut e = Engine {
-            pty_fd,
             tail: Vec::new(),
             term,
             rs: RenderState::new().expect("render state"),
@@ -431,10 +428,12 @@ fn new_terminal(cols: u16, rows: u16) -> Terminal<'static, 'static> {
     term
 }
 
-fn connect_pty(term: &mut Terminal<'static, 'static>, pty_fd: Option<RawFd>) {
-    if let Some(fd) = pty_fd {
-        let _ = term.on_pty_write(move |_t, data: &[u8]| unsafe {
-            libc::write(fd, data.as_ptr() as *const _, data.len());
+/// Answers to the app's queries (DA, DSR, DECRQM...) join the keys on the session's input
+/// thread: a write to a full PTY input blocks, and the engine thread must never wait on one.
+fn connect_pty(term: &mut Terminal<'static, 'static>, replies: Option<Sender<Vec<u8>>>) {
+    if let Some(tx) = replies {
+        let _ = term.on_pty_write(move |_t, data: &[u8]| {
+            let _ = tx.send(data.to_vec());
         });
     }
 }
@@ -594,12 +593,11 @@ impl Engine {
     }
 
     /// An engine rebuilt from a snapshot (the new daemon image after an upgrade).
-    pub fn restored(s: &TermSnap, pty_fd: Option<RawFd>) -> Engine {
+    pub fn restored(s: &TermSnap, replies: Option<Sender<Vec<u8>>>) -> Engine {
         let mut e = Engine::new(s.cols.max(2), s.rows.max(2), None);
         replay(&mut e.term, s);
         // Only now route DA/DSR replies to the PTY, so replaying never answers anything.
-        connect_pty(&mut e.term, pty_fd);
-        e.pty_fd = pty_fd;
+        connect_pty(&mut e.term, replies);
         e.tail = s.pending.clone();
         e.force_full = true;
         e
@@ -689,6 +687,30 @@ mod snapshot_tests {
         e.feed(b"\x1b[6D", 0);
         assert_eq!(e.frame().expect("cursor moved").cursor, Some((7, 0)));
         assert!(e.frame().is_none());
+    }
+
+    #[test]
+    fn query_replies_go_to_the_input_queue() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut e = Engine::new(20, 3, Some(tx));
+        e.feed(b"ab\x1b[6n", 0);
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[1;3R");
+        e.feed(b"\x1b[c", 0);
+        assert!(rx.try_recv().unwrap().starts_with(b"\x1b[?"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn restoring_answers_nothing_the_snapshot_asked() {
+        let mut e = Engine::new(20, 3, None);
+        e.feed(b"hi", 0);
+        let mut snap = e.snapshot();
+        snap.pending = b"\x1b[6n".to_vec();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = Engine::restored(&snap, Some(tx));
+        assert!(rx.try_recv().is_err());
+        r.feed(b"\x1b[6n", 0);
+        assert!(rx.try_recv().unwrap().ends_with(b"R"));
     }
 
     #[test]
