@@ -131,6 +131,8 @@ fn main() {
         Ok(h) => {
             let c = &h.daemon.cfg;
             eprintln!("midnad {} listening on {} (home {}, pid {})", midna_proto::VERSION, c.socket.display(), c.home.display(), std::process::id());
+            // Children nothing waits for, such as ones still running when an upgrade exec'd.
+            midnad::reaper::start();
             install_signals(h.daemon.clone());
             h.wait();
         }

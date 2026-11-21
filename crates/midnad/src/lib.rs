@@ -38,6 +38,7 @@ pub mod producers;
 pub mod prompts;
 pub mod pty;
 pub mod question;
+pub mod reaper;
 pub mod restart;
 pub mod resume;
 pub mod rpc;
