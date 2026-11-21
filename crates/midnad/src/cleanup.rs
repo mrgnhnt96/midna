@@ -530,7 +530,7 @@ fn model(d: &Daemon, project_id: &str, folder: &str, argv: &[String], prompt: &s
             Ok(())
         });
     }
-    let mut child = cmd.spawn().map_err(|e| format!("could not start claude: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("could not start claude: {}", crate::fd_limit::explain(e)))?;
     if let Some(mut w) = child.stdin.take() {
         let _ = w.write_all(prompt.as_bytes());
     }

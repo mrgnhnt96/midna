@@ -121,6 +121,12 @@ fn main() {
         detach(&cfg, &passthrough);
         return;
     }
+    // launchd's soft limit is 256: ~50 agents with their connections run out of it.
+    match midnad::fd_limit::raise() {
+        Ok((before, after)) if after > before => eprintln!("midnad: open-file limit {before} -> {after}"),
+        Ok(_) => {}
+        Err(e) => eprintln!("midnad: could not raise the open-file limit: {e}"),
+    }
     match midnad::start_with(cfg.clone(), resume) {
         Ok(h) => {
             let c = &h.daemon.cfg;

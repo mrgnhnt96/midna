@@ -14,6 +14,7 @@ pub mod daemon;
 pub mod ended;
 pub mod engine;
 pub mod eventlog;
+pub mod fd_limit;
 pub mod git;
 pub mod global_hooks;
 pub mod guard;
