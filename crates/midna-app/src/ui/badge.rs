@@ -3822,7 +3822,8 @@ impl Badge {
             .px(px(6.))
             .flex()
             .map(|d| if right { d.justify_end() } else { d.justify_start() })
-            .child(self.strip(t, sw, (si, sg), top, clear));
+            // With no other Mac linked, whose list it is goes without saying: Clear alone.
+            .map(|d| if self.macs.is_empty() && self.list_mac.is_none() { d.child(clear) } else { d.child(self.strip(t, sw, (si, sg), top, clear)) });
         Some(
             div()
                 .relative()
