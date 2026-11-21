@@ -804,12 +804,15 @@ fn link_icon(k: LinkKind) -> Icon {
 
 /// A link from a closed terminal: URLs open in their app; a file opens in the IDE rules pick,
 /// as a click in a terminal would (its terminal is gone, so any open one stands in for it).
+/// In another Mac's window the file is on that Mac, so it opens in an editor there even with
+/// no terminal to stand in (a new one, in no project), never on this Mac.
 fn open_link(m: &mut MainWindow, target: &str, file: bool, cx: &mut Context<MainWindow>) {
     if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
         eprintln!("midna-app debug-term: link {target}"); // dev runs never launch apps
     } else if file {
         match m.sessions.first().map(|s| s.id.clone()) {
             Some(sid) => crate::terminal::open_file(m.backend.clone(), sid, target.to_string(), None),
+            None if m.remote() => crate::terminal::open_file(m.backend.clone(), String::new(), target.to_string(), None),
             None => cx.open_url(&format!("file://{target}")),
         }
     } else {

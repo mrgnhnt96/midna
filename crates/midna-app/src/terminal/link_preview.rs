@@ -79,7 +79,7 @@ pub enum PathClick {
     Copy,
 }
 
-/// What the main window shares with every pane, pop-outs included: the editors found, the IDE
+/// What a Mac's main window shares with its panes, pop-outs included: the editors found, the IDE
 /// settings, project folders and the preview settings.
 #[derive(Clone, Default)]
 pub struct PreviewEnv {
@@ -93,12 +93,19 @@ pub struct PreviewEnv {
     pub pr_status: bool,
 }
 
-impl Global for PreviewEnv {}
+/// Each Mac's [`PreviewEnv`], by its peer id (`None`: this Mac's). A window onto another Mac
+/// shares that Mac's settings and projects with that Mac's terminals only, so this Mac's
+/// terminals never preview, ⌘-click or show PR state by another Mac's settings (nor theirs by
+/// this one's).
+#[derive(Default)]
+struct PreviewEnvs(HashMap<Option<String>, PreviewEnv>);
+
+impl Global for PreviewEnvs {}
 
 /// Called by the main window whenever settings, projects or the editor list change.
 pub fn share(m: &MainWindow, cx: &mut App) {
     let s = |k: &str| m.settings.get(k).and_then(Value::as_str).map(str::to_string);
-    cx.set_global(PreviewEnv {
+    put(crate::backend::mac_id(&*m.backend), PreviewEnv {
         ides: m.ide.list.clone(),
         ide_app: s("ide.app"),
         ide_rules: m.settings.get("ide.rules").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
@@ -114,19 +121,28 @@ pub fn share(m: &MainWindow, cx: &mut App) {
             _ => PathClick::Reveal,
         },
         pr_status: m.settings.get("terminal.pr_status").and_then(Value::as_bool).unwrap_or(true),
-    });
+    }, cx);
 }
 
-pub(super) fn mode(cx: &App) -> Mode {
-    cx.try_global::<PreviewEnv>().map(|e| e.mode).unwrap_or_default()
+fn put(mac: Option<String>, env: PreviewEnv, cx: &mut App) {
+    cx.default_global::<PreviewEnvs>().0.insert(mac, env);
 }
 
-pub(super) fn pr_status_on(cx: &App) -> bool {
-    cx.try_global::<PreviewEnv>().is_none_or(|e| e.pr_status)
+/// The env of the Mac `b` is on: a terminal's backend, so it's its window's.
+fn env_of<'a>(b: &dyn Backend, cx: &'a App) -> Option<&'a PreviewEnv> {
+    cx.try_global::<PreviewEnvs>()?.0.get(&crate::backend::mac_id(b))
 }
 
-pub(super) fn env(cx: &App) -> PreviewEnv {
-    cx.try_global::<PreviewEnv>().cloned().unwrap_or_default()
+pub(super) fn mode(b: &dyn Backend, cx: &App) -> Mode {
+    env_of(b, cx).map(|e| e.mode).unwrap_or_default()
+}
+
+pub(super) fn pr_status_on(b: &dyn Backend, cx: &App) -> bool {
+    env_of(b, cx).is_none_or(|e| e.pr_status)
+}
+
+pub(super) fn env(b: &dyn Backend, cx: &App) -> PreviewEnv {
+    env_of(b, cx).cloned().unwrap_or_default()
 }
 
 /// A `session.link_at` result worth previewing.
@@ -301,7 +317,7 @@ impl TerminalView {
     }
 
     fn preview_set(&mut self, link: Option<Link>, cx: &mut Context<Self>) {
-        let link = link.filter(|_| mode(cx) != Mode::Off);
+        let link = link.filter(|_| mode(&*self.backend, cx) != Mode::Off);
         if link == self.preview.hot {
             return;
         }
@@ -344,7 +360,7 @@ impl TerminalView {
     }
 
     fn preview_show(&mut self, link: Link, cx: &mut Context<Self>) {
-        let env = env(cx);
+        let env = env(&*self.backend, cx);
         let there = self.there();
         let path = Path::new(&link.target);
         // Another Mac's path says what it is once it's read there; this Mac's projects aren't its.
@@ -499,7 +515,7 @@ impl TerminalView {
 
     /// A row in the IDE menu: remember it for the project (⌥: everywhere), then open there.
     fn preview_pick(&mut self, ide: Ide, everywhere: bool, cx: &mut Context<Self>) {
-        let env = env(cx);
+        let env = env(&*self.backend, cx);
         let Some(c) = self.preview.card.as_mut() else { return };
         let path = Path::new(&c.link.target);
         let dir = if c.is_dir { Some(path) } else { path.parent() };
@@ -554,7 +570,7 @@ impl TerminalView {
         if self.preview_elsewhere() {
             return self.preview_copy(cx);
         }
-        match env(cx).path_click {
+        match env(&*self.backend, cx).path_click {
             PathClick::Reveal => self.preview_reveal(cx),
             PathClick::Copy => self.preview_copy(cx),
             PathClick::Ide => self.preview_open_ide(cx),
@@ -621,7 +637,7 @@ impl TerminalView {
         let c = self.preview.card.as_ref()?;
         let b = self.bounds.get()?;
         let pane_h = f32::from(b.size.height);
-        let env = env(cx);
+        let env = env(&*self.backend, cx);
 
         // Above the input box when it's on screen (and above the queue pill), else the corner.
         let lines: Vec<String> = if self.ext.at_bottom() { self.grid.iter().map(|r| r.text()).collect() } else { vec![] };
@@ -2202,5 +2218,30 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1, "ran once");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A window onto another Mac shares that Mac's preview settings and projects with that Mac's
+    /// terminals only: this Mac's keep this Mac's.
+    #[gpui_kit::test]
+    fn another_macs_window_keeps_its_preview_env_to_itself(cx: &mut gpui_kit::TestAppContext) {
+        use super::{Mode, PreviewEnv, env, mode, pr_status_on, put, share};
+        use crate::backend::{Backend, Mac};
+        use std::sync::Arc;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::from_def(&midna_proto::themes::builtin("twilight").unwrap(), "ui".into(), "mono".into())));
+        let here: Arc<dyn Backend> = Arc::new(crate::backend::fake::FakeBackend::new());
+        // This Mac's (no window of its own here: its theme would be cached to the cwd).
+        cx.update(|cx| put(None, PreviewEnv { mode: Mode::Cmd, pr_status: true, projects: vec!["/Users/me/here".into()], ..Default::default() }, cx));
+        let mini = crate::backend::for_mac(&here, Mac { peer: "6".repeat(64), name: "Morgan's Mac mini".into() });
+        let w = cx.update(|cx| crate::windows::open(mini.clone(), None, cx)).unwrap();
+        w.update(cx, |m, _, cx| {
+            m.settings.insert("terminal.link_preview".into(), json!("off"));
+            m.settings.insert("terminal.pr_status".into(), json!(false));
+            share(m, cx);
+        })
+        .unwrap();
+        cx.update(|cx| {
+            assert_eq!((mode(&*mini, cx), pr_status_on(&*mini, cx)), (Mode::Off, false), "that Mac's terminals use its settings");
+            assert_eq!((mode(&*here, cx), pr_status_on(&*here, cx), env(&*here, cx).projects), (Mode::Cmd, true, vec!["/Users/me/here".to_string()]), "still this Mac's");
+        });
     }
 }

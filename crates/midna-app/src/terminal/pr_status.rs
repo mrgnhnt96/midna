@@ -230,7 +230,7 @@ impl TerminalView {
     /// links on screen and ask for states not known yet or gone stale, on the Mac the terminal is
     /// on (another Mac's window asks that Mac's `gh`, as its hover card does).
     pub(super) fn scan_prs(&mut self, cx: &mut Context<Self>) {
-        self.prs = if link_preview::pr_status_on(cx) { find(&self.grid) } else { vec![] };
+        self.prs = if link_preview::pr_status_on(&*self.backend, cx) { find(&self.grid) } else { vec![] };
         let there = self.there();
         let mac = there.as_deref().and_then(crate::backend::mac_id);
         // before `due` stamps them, so only a `stale` mark lands earlier
@@ -259,7 +259,7 @@ impl TerminalView {
 
     /// What to paint: the links whose state is known, with its color.
     pub(super) fn pr_marks(&self, t: &Theme, cx: &App) -> Vec<Mark> {
-        if !link_preview::pr_status_on(cx) {
+        if !link_preview::pr_status_on(&*self.backend, cx) {
             return vec![];
         }
         let mac = crate::backend::mac_id(&*self.backend);

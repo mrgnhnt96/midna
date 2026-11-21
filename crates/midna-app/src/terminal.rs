@@ -2256,7 +2256,7 @@ impl TerminalView {
             return;
         };
         let cmd = ev.modifiers.platform;
-        if (cmd || link_preview::mode(cx) == link_preview::Mode::Hover) && inside && over_grid && self.pressed == 0 && self.link_menu.menu.is_none() {
+        if (cmd || link_preview::mode(&*self.backend, cx) == link_preview::Mode::Hover) && inside && over_grid && self.pressed == 0 && self.link_menu.menu.is_none() {
             if self.hover_cmd != cmd {
                 self.hover_cmd = cmd;
                 cx.notify();
@@ -2942,7 +2942,7 @@ impl Render for TerminalView {
                     return;
                 }
                 t.hover_cmd = false;
-                if link_preview::mode(cx) == link_preview::Mode::Hover {
+                if link_preview::mode(&*t.backend, cx) == link_preview::Mode::Hover {
                     cx.notify();
                 } else {
                     t.clear_hover(cx);
