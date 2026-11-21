@@ -1568,7 +1568,7 @@ mod tests {
     }
 
     fn peer(name: &str, c: char, nearby: bool) -> PairedPeer {
-        PairedPeer { fingerprint: c.to_string().repeat(64), name: name.into(), tier: Tier::Contact, paired_at: String::new(), nearby, auto_accept: vec![], drive: false }
+        PairedPeer { fingerprint: c.to_string().repeat(64), name: name.into(), tier: Tier::Contact, paired_at: String::new(), nearby, auto_accept: vec![], drive: false, agent_send: vec![], always_rules: 0 }
     }
 
     #[test]

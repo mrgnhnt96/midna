@@ -885,6 +885,86 @@ fn an_agents_share_leaves_only_with_the_humans_ok() {
     assert!(!received(&mut hb).contains(&"third".to_string()));
 }
 
+#[test]
+fn agents_send_my_device_without_asking_only_where_the_human_turned_it_on() {
+    let svc = service();
+    let (a, b, fa, fb) = paired_pair(&svc);
+    let (mut ha, mut hb, mut agent) = (a.human(), b.human(), a.agent(None));
+    wait_for(10, "A sees B", || peer(&mut ha, &fb));
+    let set = |c: &mut Client, fp: &str, kinds: Value, on: bool| call(c, "peers.set_agent_send", json!({ "fingerprint": fp, "kinds": kinds, "on": on }));
+    let agent_send = |c: &mut Client, fp: &str| {
+        let list = call(c, "peers.list", json!({}));
+        list["paired"].as_array().unwrap().iter().find(|p| p["fingerprint"] == fp).map(|p| p["agent_send"].clone()).unwrap()
+    };
+    assert_eq!(agent_send(&mut ha, &fb), Value::Null, "all off by default");
+
+    // Only the human turns it on (an agent is refused outright, never deferred), only for one of
+    // their own devices.
+    let e = call_err(&mut agent, "peers.set_agent_send", json!({ "fingerprint": fb, "kinds": ["message"], "on": true }));
+    assert_eq!(e.code, HUMAN_ONLY, "{}", e.message);
+    assert!(e.data.is_none(), "nothing to approve: {:?}", e.data);
+    assert_eq!(call_err(&mut ha, "peers.set_agent_send", json!({ "fingerprint": "nope", "kinds": ["message"], "on": true })).code, NOT_FOUND);
+    let e = call_err(&mut hb, "peers.set_agent_send", json!({ "fingerprint": fa, "kinds": ["message"], "on": true }));
+    assert!(e.code == REFUSED && e.message.contains("contact"), "{}", e.message);
+    assert_eq!(call_err(&mut ha, "peers.set_agent_send", json!({ "fingerprint": fb, "kinds": [], "on": true })).code, BAD_PARAMS);
+
+    // On for messages: an agent's message leaves without asking, and B has it; a snippet still asks.
+    let changed = set(&mut ha, &fb, json!(["message"]), true);
+    assert_eq!(changed["agent_send"], json!(["message"]), "{changed}");
+    send(&mut agent, &fb, json!({ "kind": "message", "text": "no prompt" }));
+    assert!(share_asks(&mut ha).is_empty());
+    wait_for(10, "B has it", || received(&mut hb).contains(&"no prompt".to_string()).then_some(()));
+    let p = json!({ "peer": fb, "kind": "snippet", "text": "asks" });
+    let mut c = a.agent(None);
+    let t = std::thread::spawn(move || c.call_value("share.send", p));
+    let item = wait_for(10, "a snippet still asks", || share_asks(&mut ha).into_iter().next());
+    answer(&mut ha, &item, json!({ "kind": "deny" }));
+    refused(t.join().unwrap());
+
+    // A rule that denies or asks still applies; the switch only stands in for the human's answer.
+    let r = call(&mut agent, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "cli", "pattern": "share send message*" } }));
+    let e = call_err(&mut agent, "share.send", json!({ "peer": fb, "kind": "message", "text": "denied" }));
+    assert!(e.code == REFUSED && e.message.contains("denied by rule"), "{}", e.message);
+    call(&mut ha, "rule.remove", json!({ "id": r["id"] }));
+
+    // All, then off again: it asks.
+    let all = set(&mut ha, &fb, json!(["message", "snippet", "link", "file", "tab", "object", "agent", "agent_start", "agent_ask", "file_request"]), true);
+    assert_eq!(all["agent_send"].as_array().unwrap().len(), 10, "{all}");
+    send(&mut agent, &fb, json!({ "kind": "snippet", "text": "all on" }));
+    set(&mut ha, &fb, json!(["snippet"]), false);
+    assert!(!agent_send(&mut ha, &fb).as_array().unwrap().contains(&json!("snippet")));
+    call(&mut ha, "settings.set", json!({ "key": "policy.request_timeout_secs", "value": 1 }));
+    let e = call_err(&mut agent, "share.send", json!({ "peer": fb, "kind": "snippet", "text": "late" }));
+    assert!(e.code == REFUSED && e.message.contains("no answer"), "{}", e.message);
+
+    // Kept as a contact: all off, and still off when it's one of my devices again.
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "contact" }));
+    assert_eq!(agent_send(&mut ha, &fb), Value::Null);
+    call(&mut ha, "peers.set_tier", json!({ "fingerprint": fb, "as": "my_device" }));
+    assert_eq!(agent_send(&mut ha, &fb), Value::Null);
+    let e = call_err(&mut agent, "share.send", json!({ "peer": fb, "kind": "message", "text": "asks again" }));
+    assert!(e.code == REFUSED && e.message.contains("no answer"), "{}", e.message);
+}
+
+#[test]
+fn peers_list_counts_the_always_rules_for_each_device() {
+    let svc = service();
+    let (a, _b, _fa, fb) = paired_pair(&svc);
+    let mut ha = a.human();
+    let always = |c: &mut Client| {
+        let list = call(c, "peers.list", json!({}));
+        list["paired"].as_array().unwrap().iter().find(|p| p["fingerprint"] == fb).map(|p| p["always_rules"].as_u64().unwrap_or(0)).unwrap()
+    };
+    assert_eq!(always(&mut ha), 0);
+    // Only the human's allows for sends to this device count.
+    call(&mut ha, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": format!("share send link {fb}") } }));
+    call(&mut ha, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": format!("share send tab {fb}") } }));
+    call(&mut ha, "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": format!("share send tab {}", "cd".repeat(32)) } }));
+    call(&mut ha, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "cli", "pattern": format!("share send file {fb}") } }));
+    call(&mut a.agent(None), "rule.add", json!({ "effect": "allow", "matcher": { "kind": "cli", "pattern": format!("share send message {fb}") } }));
+    assert_eq!(always(&mut ha), 2);
+}
+
 // ---- files ----
 
 /// A fresh folder for a test's files.
@@ -2193,7 +2273,7 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     // Every local-only method (DECISIONS.md, "Local-only"): refused before it looks at its params.
     const LOCAL_ONLY: &[&str] = &[
         "peers.pair", "peers.confirm", "peers.forget", "peers.set_tier", "peers.set_drive", "peers.set_auto_accept",
-        "share.accept", "share.decline",
+        "peers.set_agent_send", "share.accept", "share.decline",
         "secret.set", "secret.replace", "secret.remove", "secret.write", "secret.exec_env", "trigger.set_secret",
         "daemon.stop", "daemon.restart", "daemon.upgrade", "daemon.reset", "updates.install", "hooks.install", "hooks.uninstall",
         "keep_awake.wake_setup",

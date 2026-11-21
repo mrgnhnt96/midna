@@ -456,6 +456,12 @@ impl SettingsWindow {
             }
             BackendEvent::Event(e) if e.kind.starts_with("webhooks.") || e.kind == "notify.media" || e.kind == "notify.kinds_changed" || e.kind == midna_proto::kinds::LINK_PATTERNS_CHANGED || e.kind == midna_proto::kinds::LINK_ACTIONS_CHANGED => self.load(cx),
             BackendEvent::Event(e) if e.kind.starts_with("peers.") => self.peers_event(&e, cx),
+            // Nearby counts the "Always" rules that let agents send to each device
+            BackendEvent::Event(e)
+                if matches!(e.kind.as_str(), midna_proto::kinds::RULE_ADDED | midna_proto::kinds::RULE_REMOVED | midna_proto::kinds::RULE_EXPIRED | midna_proto::kinds::RULE_RESTORED) =>
+            {
+                self.load_peers(cx)
+            }
             BackendEvent::Event(e) if e.kind == "hooks.changed" => {
                 self.hooks = e.data.clone();
                 cx.notify();
@@ -2334,6 +2340,7 @@ impl Render for SettingsWindow {
             .children(self.shortcut_menu_el(&t, cx))
             .children(self.pairing_sheet(&t, cx))
             .children(self.drive_sheet(&t, cx))
+            .children(self.send_sheet(&t, cx))
             .when(self.picker.is_some(), |d| {
                 // click-away layer under an open sound/image picker
                 d.child(

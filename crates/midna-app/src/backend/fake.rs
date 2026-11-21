@@ -50,8 +50,8 @@ fn ago(mins: i64) -> String {
 }
 
 /// Settings › Nearby: this Mac visible to everyone for a few more minutes, two Midnas nearby
-/// (one using a paired device's name with another key), three paired devices (one of my Macs
-/// allowed to drive this one), and a pairing
+/// (one using a paired device's name with another key), four paired devices (one of my Macs
+/// allowed to drive this one, one that agents send some kinds to without asking), and a pairing
 /// waiting on this side's confirm.
 fn fake_peers() -> Value {
     let now = midna_proto::time::now_unix();
@@ -68,7 +68,11 @@ fn fake_peers() -> Value {
             { "fingerprint": fp('d'), "name": "Studio", "protocol": midna_proto::nearby::PROTOCOL, "seen_since": ago(40), "tier": "my_device" },
         ],
         "paired": [
-            { "fingerprint": fp('d'), "name": "Studio", "tier": "my_device", "paired_at": ago(60 * 24 * 9), "nearby": true, "drive": false },
+            {
+                "fingerprint": fp('d'), "name": "Studio", "tier": "my_device", "paired_at": ago(60 * 24 * 9), "nearby": true, "drive": false,
+                "auto_accept": ["message", "snippet", "link", "file", "tab", "object", "agent_start", "agent_ask"],
+                "agent_send": ["file", "agent_start", "agent_ask"], "always_rules": 3,
+            },
             { "fingerprint": fp('f'), "name": "Morgan's Mac mini", "tier": "my_device", "paired_at": ago(60 * 24 * 4), "nearby": false, "drive": true },
             { "fingerprint": fp('e'), "name": "Sam's iMac", "tier": "contact", "paired_at": ago(60 * 24 * 30), "nearby": false },
             { "fingerprint": fp('9'), "name": "Office iMac", "tier": "my_device", "paired_at": ago(60 * 24 * 20), "nearby": false },

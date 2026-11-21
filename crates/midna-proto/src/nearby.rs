@@ -205,6 +205,19 @@ pub struct PairedPeer {
     /// a contact or forgetting it turns it off.
     #[serde(default)]
     pub drive: bool,
+    /// What agents on this Mac may send it without asking (`peers.set_agent_send`), all off by
+    /// default. Only one of my devices can have any; keeping it as a contact or forgetting it
+    /// turns them all off. A rule that denies or asks still applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_send: Vec<ShareKind>,
+    /// Allow rules the human gave for agents' sends to it (approving "always"), each for one
+    /// kind in one project or everywhere.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub always_rules: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -329,6 +342,18 @@ pub struct PeersSetAutoAcceptParams {
     /// The kind of share to accept from it without asking.
     pub kind: ShareKind,
     /// true: accept that kind from it without asking. false (default): ask, as for any device.
+    #[serde(default)]
+    pub on: bool,
+}
+
+/// `peers.set_agent_send` (human only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeersSetAgentSendParams {
+    /// The paired device's fingerprint. It must be kept as my_device to turn any on.
+    pub fingerprint: String,
+    /// The kinds of share to change ([`ShareKind::SENDABLE`]).
+    pub kinds: Vec<ShareKind>,
+    /// true: agents here send it those kinds without asking. false (default): they ask first.
     #[serde(default)]
     pub on: bool,
 }
@@ -1414,6 +1439,20 @@ impl ShareKind {
         ShareKind::FileRequest,
     ];
 
+    /// Every kind an agent here can send another device, in the order Settings lists them.
+    pub const SENDABLE: [ShareKind; 10] = [
+        ShareKind::Message,
+        ShareKind::Snippet,
+        ShareKind::Link,
+        ShareKind::File,
+        ShareKind::Tab,
+        ShareKind::Object,
+        ShareKind::Agent,
+        ShareKind::AgentStart,
+        ShareKind::AgentAsk,
+        ShareKind::FileRequest,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             ShareKind::Message => "message",
@@ -1435,6 +1474,13 @@ impl ShareKind {
         let s = s.trim().to_lowercase().replace('-', "_");
         let s = s.strip_suffix('s').unwrap_or(&s);
         ShareKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// [`ShareKind::parse`] over every kind an agent can send, agent sessions too.
+    pub fn parse_sendable(s: &str) -> Option<ShareKind> {
+        let s = s.trim().to_lowercase().replace('-', "_");
+        let s = s.strip_suffix('s').unwrap_or(&s);
+        ShareKind::SENDABLE.into_iter().find(|k| k.as_str() == s)
     }
 }
 

@@ -449,6 +449,7 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "peers.set_tier" => crate::nearby::pairing::set_tier(d, parse(p)?),
         "peers.set_auto_accept" => crate::nearby::pairing::set_auto_accept(d, parse(p)?),
         "peers.set_drive" => crate::nearby::pairing::set_drive(d, parse(p)?),
+        "peers.set_agent_send" => crate::nearby::pairing::set_agent_send(d, parse(p)?),
         "peers.forget" => crate::nearby::pairing::forget(d, parse(p)?),
         "drive.open" => crate::nearby::relay::open_rpc(d, ctx, parse(p)?),
         "drive.close" => crate::nearby::relay::close_rpc(d, ctx, parse(p)?),

@@ -377,7 +377,7 @@ const TOPICS: &[(&str, &str)] = &[
         raise a needs-you approval. peers.confirm {pairing, accept, as: contact|my_device} is human only: agents never \
         confirm, and never tell the human the codes match; the human compares the two screens. Once both sides confirm, \
         each keeps the other (peers.paired; peers.list paired) and paired devices find each other even while visibility is \
-        paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed); a contact auto-accepts nothing and can't drive this Mac. \
+        paired. peers.set_tier {fingerprint, as} (human only) changes its tier (peers.changed); a contact auto-accepts nothing, agents ask before sending it anything, and it can't drive this Mac. \
         peers.set_drive {peer, on} lets one of my own devices drive this Mac (paired list drive; event peers.drive {peer, name, on}), off by default; \
         it is human only and an agent's call is refused outright, never turned into an approval, so never ask for it (peers.confirm allow_drive sets it while pairing). \
         Turning it off, keeping the device as a contact or forgetting it cuts its drive links at once. peers.forget {fingerprint} (human only) unpairs (peers.forgotten). Connections are Noise bound to the device \
@@ -387,7 +387,9 @@ const TOPICS: &[(&str, &str)] = &[
         (`midna share send <name|id> <text>`, stdin = snippet, --link <url>, a file or folder's path, --tab or --agent [--session <terminal>], \
         or `midna share pull --from <name|id> --file <remote-path>` to request a file from that Mac) offers a \
         paired device something; if the peer isn't visible right now, the share is queued (state queued) and delivered when they appear. From an agent it first asks the human on this Mac (a needs-you approval showing what would \
-        leave; a rule the human gave can allow `share send <kind> <device id>`, an agent's own allow rule never does) and \
+        leave; a rule the human gave can allow `share send <kind> <device id>`, an agent's own allow rule never does, and \
+        where no rule decides, peers.set_agent_send {fingerprint, kinds, on} (human only, refused outright; `midna peers agent-send \
+        <name|id> <kinds|all> on|off`, Settings › Nearby) lets agents send one of the human's own devices those kinds without asking) and \
         waits; denied or unanswered, nothing is sent. It lands in that Mac's inbox (inbox.list, `midna inbox`) as an offer (share.offered) with a \
         needs-you approval. Nothing a share carries types into, runs in or opens anything until a person there accepts: \
         share.accept {id, session?, action?: open|pin, cwd?} and share.decline {id} are human only, so agents never accept or \

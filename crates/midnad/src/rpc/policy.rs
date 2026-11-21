@@ -268,10 +268,14 @@ pub fn gate_with(d: &Daemon, ctx: &Ctx, kind: ActionKind, value: &str, target: O
 /// <device id>`): a deny refuses, an allow the human gave lets it through, and anything else
 /// asks the human with `title` and `detail` (what would leave) and waits. An agent's own allow
 /// rule never counts ([`crate::policy::evaluate_off_machine`]). Approving "always" remembers
-/// exactly `value`.
-pub fn gate_off_machine(d: &Daemon, ctx: &Ctx, value: &str, title: String, detail: String) -> Result<(), RpcError> {
+/// exactly `value`. `allowed`: the human let agents send this without asking (Settings ›
+/// Nearby), which lets it through where no rule decides; a deny or ask rule still applies.
+pub fn gate_off_machine(d: &Daemon, ctx: &Ctx, value: &str, title: String, detail: String, allowed: bool) -> Result<(), RpcError> {
     let a = complete(d, ctx, PolicyAction { kind: ActionKind::Cli, value: value.to_string(), session: None, project: None });
-    let res = crate::policy::evaluate_off_machine(&d.core().state.rules, &a, time::now_unix());
+    let mut res = crate::policy::evaluate_off_machine(&d.core().state.rules, &a, time::now_unix());
+    if allowed && res.source == DecisionSource::Default {
+        res.decision = Effect::Allow;
+    }
     fire(d, &a, &ctx.actor(), &res);
     match res.decision {
         Effect::Allow => Ok(()),

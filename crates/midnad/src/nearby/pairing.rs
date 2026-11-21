@@ -365,6 +365,7 @@ fn complete(d: &Daemon, ch: &Channel, info: &Pairing, agreed: &Agreed) {
         paired_at: time::now_rfc3339(),
         presence: hex(&agreed.presence),
         auto_accept: vec![],
+        agent_send: vec![],
         drive: info.allow_drive && info.tier == Some(Tier::MyDevice),
     };
     let saved = {
@@ -510,6 +511,31 @@ pub fn set_auto_accept(d: &Daemon, p: nb::PeersSetAutoAcceptParams) -> R {
     if tier != Tier::MyDevice {
         return Err(RpcError::refused(format!(
             "{} is kept as a contact, and only your own devices can auto-accept; keep it as your device first",
+            peer.name
+        )));
+    }
+    d.emit(kinds::PEERS_CHANGED, Actor::system(), None, None, serde_json::to_value(&peer).unwrap_or_default());
+    ok(peer)
+}
+
+/// `peers.set_agent_send` (human only): agents here send one of my devices some kinds of share
+/// without asking, or ask first again. A contact never may.
+pub fn set_agent_send(d: &Daemon, p: nb::PeersSetAgentSendParams) -> R {
+    if p.kinds.is_empty() {
+        return Err(RpcError::bad_params("kinds is empty: name the kinds of share to change"));
+    }
+    let peer = {
+        let mut i = d.nearby.inner();
+        let s = i
+            .store(&d.cfg.home)
+            .set_agent_send(&p.fingerprint, &p.kinds, p.on)
+            .map_err(|e| RpcError::internal(format!("saving the paired devices: {e}")))?;
+        s.map(|s| (s.tier, s.paired(i.peers.contains_key(&s.fingerprint))))
+    };
+    let Some((tier, peer)) = peer else { return Err(RpcError::not_found("no paired device with that id")) };
+    if tier != Tier::MyDevice && p.on {
+        return Err(RpcError::refused(format!(
+            "{} is kept as a contact, and agents can send without asking only to your own devices; keep it as your device first",
             peer.name
         )));
     }
