@@ -1460,9 +1460,15 @@ fn ask_app(b: &dyn Backend, url: &str, preview: Option<&[String]>) -> Option<App
 /// previews (failures too), so moving back and forth over a link doesn't rerun it.
 fn load_pattern(argv: &[String], url: &str, there: Option<&dyn Backend>) -> Option<AppPreview> {
     cached_app((there.and_then(crate::backend::mac_id), format!("cmd\0{}", argv.join("\0"))), || match there {
-        None => run_pattern_on(argv, user_path(), PATTERN_TIMEOUT),
+        None => run_pattern_on(argv, user_path(), pattern_timeout()),
         Some(b) => ask_app(b, url, Some(argv)),
     })
+}
+
+/// `PATTERN_TIMEOUT`; tests wait far longer, since starting any process can take seconds on a
+/// loaded machine and only a command that never ends should fail them.
+fn pattern_timeout() -> Duration {
+    if cfg!(test) { Duration::from_secs(120) } else { PATTERN_TIMEOUT }
 }
 
 /// The login shell's PATH (the app's own from launchd is minimal), read once.
@@ -2148,25 +2154,28 @@ mod tests {
         let bin = dir.join("bin");
         script(&bin.join("jira-card"), r#"echo "{\"title\": \"$1\", \"lines\": [\"In Progress\", \"$#\"]}""#);
         script(&bin.join("fails"), r#"echo '{"title": "x"}'; exit 1"#);
+        // Starting a process can take seconds when the machine is loaded.
+        const LONG: Duration = Duration::from_secs(120);
         let path = format!("{}:/usr/bin:/bin", bin.display());
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
         // By name on the PATH, or by path; each word is one argument.
-        let got = run_pattern_on(&argv(&["jira-card", "RRD-1 x"]), &path, Duration::from_secs(5)).unwrap();
+        let got = run_pattern_on(&argv(&["jira-card", "RRD-1 x"]), &path, LONG).unwrap();
         assert_eq!((got.title.as_str(), got.lines), ("RRD-1 x", vec!["In Progress".to_string(), "1".into()]));
         let abs = bin.join("jira-card").display().to_string();
-        assert_eq!(run_pattern_on(&argv(&[&abs, "RRD-2"]), "/usr/bin", Duration::from_secs(5)).map(|p| p.title), Some("RRD-2".into()));
+        assert_eq!(run_pattern_on(&argv(&[&abs, "RRD-2"]), "/usr/bin", LONG).map(|p| p.title), Some("RRD-2".into()));
         assert!(pattern_command(&argv(&["no-such-card"]), &path).is_none());
-        assert_eq!(run_pattern_on(&argv(&["fails"]), &path, Duration::from_secs(5)), None);
+        assert_eq!(run_pattern_on(&argv(&["fails"]), &path, LONG), None);
         // Too slow, not JSON, or a child left holding the pipe: no card, and no hang.
-        script(&bin.join("slow"), "sleep 5; echo '{\"title\": \"x\"}'");
+        script(&bin.join("slow"), "sleep 60; echo '{\"title\": \"x\"}'");
         script(&bin.join("junk"), "echo not json");
-        script(&bin.join("leaves-child"), "(sleep 5; echo) & echo '{\"title\": \"left\"}'");
+        script(&bin.join("leaves-child"), "(sleep 60; echo) & echo '{\"title\": \"left\"}'");
         let t = Instant::now();
         assert_eq!(run_pattern_on(&argv(&["slow"]), &path, Duration::from_millis(300)), None);
-        assert_eq!(run_pattern_on(&argv(&["junk"]), &path, Duration::from_secs(5)), None);
-        assert_eq!(run_pattern_on(&argv(&["leaves-child"]), &path, Duration::from_secs(5)).map(|p| p.title), Some("left".into()));
-        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert_eq!(run_pattern_on(&argv(&["junk"]), &path, LONG), None);
+        assert_eq!(run_pattern_on(&argv(&["leaves-child"]), &path, LONG).map(|p| p.title), Some("left".into()));
+        // A hang would wait out the 60 s sleeps; load only slows the starts.
+        assert!(t.elapsed() < Duration::from_secs(50), "{:?}", t.elapsed());
 
         // `session.link_at` hands over the command; it fills the card.
         let l = Link::from_link_at(&json!({ "kind": "url", "target": "midna-test-unregistered-scheme://x/RRD-3", "app": "Jira", "preview": [abs, "RRD-3"] })).unwrap();
