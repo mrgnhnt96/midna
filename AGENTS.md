@@ -12,7 +12,7 @@ Production is:
 - `~/.local/bin/midna` and the Finder Quick Action `~/Library/Services/Open in Midna.workflow`
 - its Finder extension `com.mrgnhnt.midna.finder-sync` (never `pluginkit -e` it; Midna Dev's is `com.mrgnhnt.midna.dev.finder-sync`)
 
-Agents must never build into it, install over it, launch, quit, restart or signal it, upgrade or stop its daemon, `launchctl` its label, or write its files. Reading its logs and settings is fine. Never run `scripts/reinstall.sh`; it's for the human only. Never `pkill`/`killall` anything named midna; stop test daemons by PID (see `README.md`). Production only changes through real releases, or when the human does it themselves.
+Agents must never build into it, install over it, launch, quit, restart or signal it, upgrade or stop its daemon, `launchctl` its label, or write its files. Reading its logs and settings is fine. Never run `scripts/reinstall.sh`; it's for the human only. Never `pkill`/`killall` anything named midna; stop a test daemon by its PID with `kill -INT <pid>`. A plain `kill` sends SIGTERM, which makes midnad restart itself in place rather than exit, unless it was started with `MIDNA_SIGTERM=stop`. Production only changes through real releases, or when the human does it themselves.
 
 Using the `midna` CLI from a production terminal the way any agent would (`midna attention`, `midna open`, `midna read` and so on) is fine. Controlling its daemon (`midna daemon stop|restart|upgrade`) is not.
 

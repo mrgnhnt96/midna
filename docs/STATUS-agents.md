@@ -1,5 +1,7 @@
 # Agent status, hooks and approvals against the real CLIs
 
+> **Started as the phase report of 2026-10-04 and still updated as features land.** Its how-to and test notes are kept current, but an older limit or TODO may predate a later fix; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. When it disagrees with `docs/DECISIONS.md` ("Real agents"), that wins.
+
 **Verified against** Claude Code 2.1.288 (Haiku via `ANTHROPIC_MODEL=haiku`) and Codex CLI 0.160.0.
 
 **Test setup.**

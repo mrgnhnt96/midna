@@ -130,7 +130,7 @@ What keeps them out of logs:
 - `midna secret exec` puts values only in the child's environment and scrubs the child's stdout and stderr. It masks the raw value and its base64, base64url, percent-encoded and JSON-escaped forms, across chunk boundaries.
 - `secrets_cli::*` greps `state.json` and `events.jsonl` for the values, including agent-sent and parked ones, and checks that the needs-you item doesn't carry the parked value.
 
-**What this does and doesn't protect.** It keeps a secret out of the agent's context, and so out of the model provider's logs, when the agent uses it normally. It does not stop a determined agent. A command run with `secret exec` holds the value, so it can write it to a file that the agent then reads. A same-user process can also call the socket from a copy of the CLI binary. That is the same-user limitation at the top of this file. `secret write` puts the value in a file by design; SKILL.md tells agents not to read it back.
+**What this does and doesn't protect.** It keeps a secret out of the agent's context, and so out of the model provider's logs, when the agent uses it normally. It does not stop a determined agent. A command run with `secret exec` holds the value, so it can write it to a file that the agent then reads. A same-user process can also call the socket from a copy of the CLI binary. That is the same-user limitation at the top of this file. `secret write` puts the value in a file by design; the skill's `secrets` topic (`crates/midna-cli/assets/skill-secrets.md`) tells agents not to read it back.
 
 Webhook and pasted secrets are the only secret material that passes through midnad.
 

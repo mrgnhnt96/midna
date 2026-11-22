@@ -1,5 +1,7 @@
 # Upgrade / restart / stop status (midnad)
 
+> **A phase report from 2026-10-04, kept for history.** It records what was built and checked then, in the words of the agent that built it. Its limits and TODOs were true then, and many have been fixed since; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. For how things work now, read `docs/DECISIONS.md` ("Daemon upgrade, restart and stop") and `docs/RELEASING.md`.
+
 Goal: shells never die because midnad restarts or upgrades. Decisions and tradeoffs are in `docs/DECISIONS.md` ("Daemon upgrade, restart and stop").
 
 ## How to use
@@ -46,7 +48,7 @@ Tests:
 - **Unclean death** (SIGKILL, crash, OOM) still loses every PTY. Sessions are marked `exited` ("daemon restarted") on the next start.
 - **A new image that resumes and then crashes** is an unclean death too: the watchdog exits once `resumed` is written.
 - **The "launchd restarts `bin/current` and resumes the handoff" variant isn't possible** without a process holding the master fds. The watchdog is that process, but only during the handoff.
-- **SMAppService phase TODO:** launchd's bootout SIGTERM would now restart rather than stop. Stop with `daemon.stop` first, or set `MIDNA_SIGTERM=stop` in the plist.
+- ~~**SMAppService phase TODO:** launchd's bootout SIGTERM would now restart rather than stop. Stop with `daemon.stop` first, or set `MIDNA_SIGTERM=stop` in the plist.~~ done: the LaunchAgent plist sets `MIDNA_SIGTERM=stop` (`packaging/build-app.sh`).
 - **Not restored:** DECSC saved cursor, origin-mode-relative cursor, half-escapes over 64 KiB.
 - **Short leak window during a handoff:** child processes spawned meanwhile by non-PTY code (git, gh, scripts) can inherit the PTY master fds while CLOEXEC is cleared.
 - **App:** reconnect already works (events reconnect, then the selected terminal re-attaches). Polish TODOs are in DECISIONS.md: a "restarting" state instead of "not running", re-attach on stream end, and pop-out windows.
