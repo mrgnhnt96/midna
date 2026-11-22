@@ -41,6 +41,16 @@ const LISTED_TEXT: usize = 120;
 /// A listed terminal stays under this, as JSON.
 const LISTED_BYTES: usize = 1024;
 
+/// What an agent's Summary listing (`summary.list`) keeps of each closed terminal. Its prompts,
+/// links, app panels and `agent_args` stay out; `summary.resume` reopens one from its id.
+const LISTED_CLOSED: &[&str] = &[
+    "id", "project_id", "name", "kind", "agent", "cwd", "conversation_id", "worktree", "branch", "opened_at", "closed_at", "how", "by",
+    "state", "exit_code", "reason", "turns", "cost_usd",
+];
+
+/// The longest value a settings listing shows; `settings_get` has one in full.
+const SETTING_TEXT: usize = 80;
+
 const INSTRUCTIONS: &str = "midna is the AI-managed terminal you are running in (if MIDNA_SESSION is set). These tools \
 drive it: list/read/open terminals (session_*), get the human's attention (needs_you_raise), test and add policy rules \
 (policy_check, rule_add), draft webhook triggers or add local hook/event/idle triggers (trigger_add), change settings (settings_set), and move the GUI \
@@ -533,23 +543,80 @@ fn summarized(s: &Value, max: usize) -> Value {
     entry.into()
 }
 
-/// One terminal as a listing shows it: strings are cut shorter until the entry fits.
-fn listed_session(s: &Value) -> Value {
+/// `entry(max)` with strings cut shorter until it fits `LISTED_BYTES`.
+fn fitted(entry: impl Fn(usize) -> Value) -> Value {
     let mut max = LISTED_TEXT;
     loop {
-        let entry = summarized(s, max);
-        if max <= 8 || entry.to_string().len() < LISTED_BYTES {
-            return entry;
+        let e = entry(max);
+        if max <= 8 || e.to_string().len() < LISTED_BYTES {
+            return e;
         }
         max /= 2;
     }
 }
 
-/// What an agent gets of a method's result: the RPC result, but for terminal listings.
+/// One terminal as a listing shows it: strings are cut shorter until the entry fits.
+fn listed_session(s: &Value) -> Value {
+    fitted(|max| summarized(s, max))
+}
+
+/// One closed terminal as `summary.list` shows an agent: the keep-list, its first prompt and
+/// what each app's panel calls it.
+fn listed_closed(c: &Value) -> Value {
+    fitted(|max| {
+        let mut entry = picked(c, LISTED_CLOSED, max);
+        if let Some(text) = c.pointer("/prompts/0/text") {
+            entry.insert("first_prompt".to_string(), clipped(text, max));
+        }
+        if let Some(apps) = c.get("apps").and_then(Value::as_object).filter(|a| !a.is_empty()) {
+            let titles: Map<String, Value> = apps.iter().filter_map(|(k, p)| Some((k.clone(), clipped(p.get("title")?, max)))).collect();
+            entry.insert("apps".to_string(), titles.into());
+        }
+        entry.into()
+    })
+}
+
+/// One setting as `settings.list` shows an agent: its key, type and value, like `midna settings
+/// list`'s table. `default` only when the value differs from it, `human_only` only when set. The
+/// descriptions (most of the full listing's bytes) are in `settings_get`.
+fn listed_setting(s: &Value) -> Value {
+    let mut entry = picked(s, &["key", "value"], SETTING_TEXT);
+    if let Some(kind) = s.pointer("/type/kind") {
+        entry.insert("type".to_string(), kind.clone());
+    }
+    if let Some(default) = s.get("default").filter(|d| s.get("value") != Some(*d)) {
+        entry.insert("default".to_string(), clipped(default, SETTING_TEXT));
+    }
+    if s.get("human_only").and_then(Value::as_bool) == Some(true) {
+        entry.insert("human_only".to_string(), true.into());
+    }
+    entry.into()
+}
+
+/// An event as an agent's event listing shows it: a `session.opened` carries its terminal as
+/// a listing does, without the launch command and agent arguments.
+fn listed_event(mut e: Value) -> Value {
+    if e.get("kind").and_then(Value::as_str) == Some("session.opened") && e["data"].is_object() {
+        e["data"] = listed_session(&e["data"]);
+    }
+    e
+}
+
+/// What an agent gets of a method's result: the RPC result, but listings keep only what an
+/// agent picks from (keep-lists, so a bulky field added later stays out). The app and
+/// `--json` read the full RPC results.
 fn for_agent(method: &str, v: Value) -> Value {
-    match (method, &v) {
+    match (method, v) {
         ("session.list", Value::Array(list)) => list.iter().map(listed_session).collect(),
-        _ => v,
+        ("settings.list", Value::Array(list)) => list.iter().map(listed_setting).collect(),
+        ("events.list" | "insights.activity", Value::Array(list)) => list.into_iter().map(listed_event).collect(),
+        ("summary.list", Value::Object(mut o)) => {
+            if let Some(Value::Array(closed)) = o.get_mut("closed") {
+                *closed = closed.iter().map(listed_closed).collect();
+            }
+            o.into()
+        }
+        (_, v) => v,
     }
 }
 
@@ -854,6 +921,79 @@ mod tests {
         assert!(full[0].to_string().len() < LISTED_BYTES, "every kept field at its longest: {}", full[0]);
         let other = json!([{ "id": "s1", "command": ["claude"] }]);
         assert_eq!(for_agent("session.get", other.clone()), other);
+    }
+
+    /// Every setting in the catalog, as midnad's `settings.list` sends it (values at their defaults).
+    fn every_setting() -> Value {
+        let entry = |s: &midna_proto::settings::SettingSpec| {
+            let default = s.default.to_json();
+            json!({
+                "key": s.key, "type": s.setting_type(), "value": default, "default": default, "description": s.description,
+                "human_only": s.human_only, "section": s.section, "cli": format!("midna settings set {} {default}", s.key),
+            })
+        };
+        midna_proto::settings::SETTINGS.iter().map(entry).collect()
+    }
+
+    #[test]
+    fn a_settings_listing_is_short() {
+        let full = every_setting();
+        let list = for_agent("settings.list", full.clone());
+        let (before, after) = (full.to_string().len(), list.to_string().len());
+        assert!(after < 24 * 1024, "the agent's settings listing is {after} bytes (was {before})");
+        assert_eq!(list.as_array().unwrap().len(), full.as_array().unwrap().len());
+        let theme = list.as_array().unwrap().iter().find(|s| s["key"] == "theme").unwrap();
+        assert_eq!(theme["value"], "system");
+        assert_eq!(theme["type"], "enum");
+        for gone in ["cli", "section", "default", "human_only", "description"] {
+            assert!(theme.get(gone).is_none(), "{gone} leaked: {theme}");
+        }
+        let changed = for_agent(
+            "settings.list",
+            json!([{ "key": "density", "type": { "kind": "enum", "options": ["comfortable", "compact"] }, "value": "compact",
+                     "default": "comfortable", "description": "Spacing.", "human_only": true, "section": "appearance", "cli": "x" }]),
+        );
+        assert_eq!(
+            changed[0],
+            json!({ "key": "density", "type": "enum", "value": "compact", "default": "comfortable", "human_only": true })
+        );
+    }
+
+    #[test]
+    fn event_listings_leave_out_launch_commands() {
+        let long = "x".repeat(8000);
+        let opened = json!({ "seq": 1, "at": "2026-11-06T10:00:00Z", "kind": "session.opened", "actor": { "kind": "agent" }, "session_id": "s1",
+                             "data": { "id": "s1", "title": "t", "command": ["claude", long], "agent_args": [long] } });
+        let status = json!({ "seq": 2, "at": "2026-11-06T10:00:00Z", "kind": "session.status", "actor": { "kind": "system" },
+                             "data": { "state": "working", "command": "kept" } });
+        for method in ["events.list", "insights.activity"] {
+            let list = for_agent(method, json!([opened, status]));
+            assert_eq!(list[0]["seq"], 1);
+            assert_eq!(list[0]["data"], json!({ "id": "s1", "title": "t" }), "{method}");
+            assert_eq!(list[1], status, "{method}");
+        }
+    }
+
+    #[test]
+    fn a_summary_listing_keeps_what_picks_a_closed_terminal() {
+        let long = "x".repeat(8000);
+        let closed = json!({
+            "id": "s1", "project_id": "p1", "name": "fix", "kind": "agent", "agent": "claude", "cwd": "/work", "conversation_id": "c1",
+            "agent_args": [long], "branch": "main", "opened_at": "2026-11-06T10:00:00Z", "closed_at": "2026-11-06T11:00:00Z",
+            "how": "close", "by": { "kind": "human" }, "state": "done", "turns": 9, "cost_usd": 1.5,
+            "prompts": [{ "n": 1, "text": "fix the bug", "at": "2026-11-06T10:00:00Z", "on_screen": true }, { "n": 2, "text": long, "at": "x", "on_screen": true }],
+            "links": [{ "url": long }], "apps": { "taskboard": { "title": "T1 Fix", "buttons": [{ "label": "Open", "open": long }] } },
+        });
+        let list = for_agent("summary.list", json!({ "closed": [closed], "keep_days": 7 }));
+        assert_eq!(list["keep_days"], 7);
+        let entry = &list["closed"][0];
+        assert!(entry.to_string().len() < LISTED_BYTES, "{entry}");
+        assert_eq!((&entry["id"], &entry["conversation_id"], &entry["turns"]), (&json!("s1"), &json!("c1"), &json!(9)));
+        assert_eq!(entry["first_prompt"], "fix the bug");
+        assert_eq!(entry["apps"], json!({ "taskboard": "T1 Fix" }));
+        for gone in ["agent_args", "prompts", "links"] {
+            assert!(entry.get(gone).is_none(), "{gone} leaked: {entry}");
+        }
     }
 
     #[test]
