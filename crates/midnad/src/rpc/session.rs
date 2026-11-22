@@ -1102,6 +1102,9 @@ pub(crate) fn after_restart(d: &Daemon, s: &Session, info: &AgentInfo, resume: b
                 i.restart = None;
                 i.update_available = None;
                 i.update_declined = None;
+                // The old process's version: the new one reports its own on its first status
+                // line. Kept, an update check before then would restart it again.
+                i.version = None;
             }
         }
         if s.agent.is_some() {

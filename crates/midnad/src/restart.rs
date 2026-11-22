@@ -236,6 +236,11 @@ pub fn check_updates(d: &Daemon) {
         let target = installed.clone().unwrap_or_else(|| "update".into());
         let mut fresh = false;
         edit(d, &sid, |i| {
+            // Restarted, or a newer version reported, while `claude --version` ran: this check
+            // is about a process that's gone, and would queue a second restart for one update.
+            if i.version != version {
+                return false;
+            }
             fresh = i.update_available.as_deref() != Some(target.as_str());
             i.update_available = Some(target.clone());
             fresh
