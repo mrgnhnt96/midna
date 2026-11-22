@@ -234,10 +234,13 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
             env.push(("MIDNA_DELIVERY".into(), del));
         }
     }
+    let mut admission = crate::admit::Admission::Start;
     let (command, agent) = match p.kind {
         SessionKind::Agent => {
             let a = p.agent.ok_or_else(|| RpcError::bad_params("kind=agent needs agent: claude|codex"))?;
             crate::panic::gate(d, ctx)?;
+            // Far above the core count: started by anyone but the human, it waits its turn.
+            admission = crate::admit::admission(d, ctx);
             let supervised = ctx.supervised && d.core().state.setting_str("triggers.agent_mode") != "inherit";
             // A supervised agent's permission prompts are forced on; its own arguments could undo
             // that. Tools the human allowed on the trigger (`--allowedTools`) are all it may take.
@@ -257,7 +260,18 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
     });
     let now = time::now_rfc3339();
     let (cols, rows) = (p.cols.unwrap_or(100).max(2), p.rows.unwrap_or(30).max(2));
-    let launch = Launch { sid: sid.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: cwd.clone(), env, cols, rows };
+    let mut argv = argv.unwrap_or_else(|| exec_argv(&command));
+    let mut preface = preface;
+    match &admission {
+        crate::admit::Admission::Hold(l) => argv = crate::admit::wrap(d, &sid, l, argv),
+        crate::admit::Admission::Warn(text) => {
+            let mut warned = text.clone().into_bytes();
+            warned.extend(preface.take().unwrap_or_default());
+            preface = Some(warned);
+        }
+        crate::admit::Admission::Start => {}
+    }
+    let launch = Launch { sid: sid.clone(), argv, cwd: cwd.clone(), env, cols, rows };
     let started = match preface {
         Some(text) => term::start_with_preface(d, launch, text),
         None => term::start(d, launch),
@@ -313,6 +327,10 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
     crate::git::refresh_session_async(d, &sid);
     // Outside git, nothing refreshes: name it from its folder now (`terminal.auto_name` = context).
     crate::auto_name::on_context(d, &sid);
+    if let crate::admit::Admission::Hold(l) = &admission {
+        crate::admit::hold(d, &sid, l);
+        return Ok(d.core().state.session(&sid).cloned().unwrap_or(session));
+    }
     Ok(session)
 }
 

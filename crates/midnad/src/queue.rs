@@ -193,6 +193,9 @@ fn ready_is_busy(why: &str) -> bool {
 /// will as things are (the terminal closed or its process ended). An input box holding exactly
 /// `restored` (a refused prompt Claude put back) counts as empty.
 pub fn readiness(d: &Daemon, sid: &str, check_input_box: bool, restored: Option<&str>) -> Result<Option<String>, String> {
+    if crate::admit::is_waiting(d, sid) {
+        return Ok(Some("the Mac to calm down".into()));
+    }
     let (rt, agent, title, state, labelled, in_turn, alive) = {
         let core = d.core();
         let s = core.state.session(sid).ok_or("the terminal closed")?;

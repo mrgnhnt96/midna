@@ -244,6 +244,7 @@ fn background(d: &Arc<Daemon>) {
     crate::keep_awake::start(d);
     crate::nearby::start(d);
     crate::guard::start(d);
+    crate::admit::start(d);
     crate::panic::start(d);
     crate::worktrees::start(d);
     crate::trust::start(d);
