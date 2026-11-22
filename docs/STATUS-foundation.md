@@ -1,5 +1,7 @@
 # Foundation status (midna-proto, midnad, midna-cli)
 
+> **A phase report from 2026-10-04, kept for history.** It records what was built and checked then, in the words of the agent that built it. Its limits and TODOs were true then, and many have been fixed since; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. For how things work now, read `docs/ARCHITECTURE.md` and `docs/DECISIONS.md` ("Foundation").
+
 ## How to run
 
 ```sh
@@ -125,8 +127,8 @@ These methods are in the catalog but return error `5` ("not implemented yet"):
   - The prompt patterns behind the title glyphs and the screen check are best-effort and need tuning against real sessions.
 - **Same-user processes can't really be authenticated.** The human role is a naming convention: an executable named `midna-app` or set by `MIDNA_APP_PATH`. That's why human-only requests from the CLI turn into needs-you items and never run directly.
 - **Agent policy gates can block for a long time.** An `ask` on a gated agent verb, or from `policy.request`, holds that connection's thread for up to `policy.request_timeout_secs` (300s).
-- **Terminals don't survive a daemon restart.** The re-exec upgrade is a later phase; leftover sessions are marked `exited`.
-- **The event log stays fully in memory**, with no compaction. `session.status` fires on every hook reason change (for example `tool Bash` → `after Bash`), so the log grows about one event per tool call.
+- ~~**Terminals don't survive a daemon restart.** The re-exec upgrade is a later phase; leftover sessions are marked `exited`.~~ done: an upgrade or SIGTERM re-execs midnad and terminals keep running; only a crash, SIGKILL or OOM still loses them (`docs/STATUS-upgrade.md`).
+- **The event log stays fully in memory**, with no compaction. **Later:** monthly files and a 62-day in-memory window ("Added in the closing pass" below). `session.status` fires on every hook reason change (for example `tool Bash` → `after Bash`), so the log grows about one event per tool call.
 - **Input sent over `stream.attach` isn't logged.** It doesn't produce `session.input_by_agent` the way `session.input` does.
 - **Multiple GUIs fight over size.** If several GUI clients attach to the same session with different sizes, the last resize wins.
 - **Git and `gh` only refresh live sessions.** The `gh` lookup runs on the git refresh thread; a slow network can delay git updates for other sessions by up to 10s per lookup.

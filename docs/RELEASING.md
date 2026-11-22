@@ -54,6 +54,8 @@ published, nobody has that version, so cut the same number again:
 prints those commands. Once a release *is* published, its number is used up: installed copies
 may already have it, and updates never go backwards.
 
+### Changelog, website and test builds
+
 Before tagging, rename `## Unreleased` in `CHANGELOG.md` to `## 0.2.0 — <date>`. The website
 (`site/`, deployed by `.github/workflows/site.yml`) shows the changelog, and its `/download/` page
 starts the DMG from the latest non-prerelease.
@@ -120,9 +122,13 @@ Midna.app/Contents/
   for every Developer ID build, so they survive updates. An ad-hoc build's requirement is its
   hash, so each ad-hoc build is a new app to TCC.
 
-## Notarization (`packaging/notarize.sh`, opt-in)
+## Notarization (`packaging/notarize.sh`)
 
-Never run automatically: it uploads the app to Apple. One-time setup:
+It uploads the app to Apple, so only the release workflow runs it on its own: the **package**
+job notarizes the app and the DMG of every tag, with an App Store Connect API key
+(`MIDNA_NOTARY_KEY`, `MIDNA_NOTARY_KEY_ID`, `MIDNA_NOTARY_ISSUER`). Nothing local runs it
+(`build-app.sh`, `make-update.sh` and the e2e test don't). To notarize a local build by hand,
+set up a profile once:
 `xcrun notarytool store-credentials midna-notary --apple-id … --team-id U2G2XV3688`. Then
 `packaging/notarize.sh dist/<v>/Midna.app` zips, submits with `--wait`, staples, and runs
 `spctl`, retrying the submit and the staple (`MIDNA_NOTARY_ATTEMPTS`, default 4). Given a signed

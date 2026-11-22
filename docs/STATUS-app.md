@@ -1,5 +1,7 @@
 # midna-app status (main window phase)
 
+> **Started as the phase report of 2026-10-04 and still updated as features land.** Its how-to and test notes are kept current, but an older limit or TODO may predate a later fix; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. When it disagrees with `docs/DECISIONS.md` ("GUI" and the dated sections after it), that wins.
+
 ## How to run
 
 ```sh

@@ -1,5 +1,7 @@
 # Triggers and webhooks status
 
+> **Started as the phase report of 2026-10-04 and still updated as features land.** Its how-to and test notes are kept current, but an older limit or TODO may predate a later fix; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. When it disagrees with `docs/DECISIONS.md` ("Triggers and webhooks"), that wins.
+
 GitHub/Bitbucket webhooks become agent terminals, monitor commands or needs-you notes. The decisions behind this are in `docs/DECISIONS.md` under "Triggers and webhooks".
 
 ## How to try it

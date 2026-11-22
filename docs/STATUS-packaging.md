@@ -1,5 +1,7 @@
 # Packaging / install / auto-update status
 
+> **A phase report from 2026-10-05, kept for history.** It records what was built and checked then, in the words of the agent that built it. Its limits and TODOs were true then, and many have been fixed since; a line that's out of date is struck through or ends in a **Later:** note where we've caught it. For how things work now, read `docs/RELEASING.md`.
+
 The full how-to is in `docs/RELEASING.md`; decisions are in `docs/DECISIONS.md` ("Packaging, install and auto-update").
 
 ## How to use
@@ -60,10 +62,10 @@ Midna.app/Contents/MacOS/midna-app --uninstall | --login-item-status
 - No universal binary (the build is arm64 only; the feed's `arch` handles it).
 - The macOS 12 legacy LaunchAgent path is untested.
 - The `RequiresApproval` flow is untested: registration went straight to Enabled.
-- Notarization was never run (opt-in by design).
-- `midna update …` for agents isn't built; it needs an RPC that reaches the GUI.
+- ~~Notarization was never run (opt-in by design).~~ done: the release workflow notarizes the app and the DMG of every tag (docs/RELEASING.md).
+- ~~`midna update …` for agents isn't built; it needs an RPC that reaches the GUI.~~ done: `updates.*` and `midna updates`.
 - ~~The real feed host doesn't exist.~~ done: the feeds live on the `channels` GitHub release (docs/RELEASING.md).
-- The icon is a placeholder.
+- ~~The icon is a placeholder.~~ done: `packaging/assets/Midna.icns`.
 - `daemon.upgraded.from.binary` shows the unresolved `bin/current` path (cosmetic, upgrade.rs).
-- The release key isn't made: `dist/0.1.0` embeds the dev key, so make a release key before shipping (RELEASING.md).
+- ~~The release key isn't made: `dist/0.1.0` embeds the dev key, so make a release key before shipping (RELEASING.md).~~ done: releases embed the release key (`MIDNA_UPDATE_PUBKEY`, docs/RELEASING.md).
 - `packaging/e2e/work/{0.1.0,0.1.1}` keeps the test bundles (gitignored) for `--no-build` reruns.
