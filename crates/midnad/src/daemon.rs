@@ -233,6 +233,8 @@ pub struct Daemon {
     pub wake: crate::wake::Runtime,
     /// Load, CPU per terminal and paused terminals (`guard.rs`). Lock after `core`, never before it.
     pub guard: crate::guard::Runtime,
+    /// Agent terminals waiting for the Mac to calm down (`admit.rs`).
+    pub admit: crate::admit::Runtime,
     /// Worktrees seen in use (`worktrees.rs`). Never held together with `core`.
     pub worktrees: crate::worktrees::Runtime,
     /// What terminals touched, and cleanup runs (`cleanup.rs`). Never held together with `core`.
@@ -302,6 +304,7 @@ impl Daemon {
             nearby: Default::default(),
             wake: Default::default(),
             guard: Default::default(),
+            admit: Default::default(),
             worktrees: Default::default(),
             cleanup: Default::default(),
             runs: Default::default(),

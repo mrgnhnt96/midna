@@ -85,6 +85,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "guard.build_slots" => "Across every terminal, the rest wait in line; 0 = no limit",
         "guard.model_slots" => "mflux, MLX, ollama and model downloads; the rest wait in line; 0 = no limit",
         "system.busy_memory" => "macOS's memory pressure (yellow or red) that holds new heavy work back.",
+        "guard.hold_agents_at" => "Agents others open wait their turn; yours start anyway; 0 = never",
         "guard.panic_hold" => "Triggers and other agents can't start agents until you dismiss the notice.",
         "guard.memory_alert" => "Agents still wait while memory is short; this only drops the notice.",
         "guard.overload_alert" => "Show whether terminals or other apps are using the CPU.",

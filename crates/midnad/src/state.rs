@@ -113,6 +113,10 @@ pub struct State {
     /// (`guard.panic_hold`, `panic.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panic_hold: Option<Id>,
+    /// Agent terminals waiting for the Mac to calm down before their agent starts, first in
+    /// line first (`guard.hold_agents_at`, `admit.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admit_line: Vec<Id>,
 }
 
 impl State {

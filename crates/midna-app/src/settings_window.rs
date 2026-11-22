@@ -240,7 +240,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Agents,
         "Runaway work",
-        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.model_slots", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours"],
+        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.model_slots", "guard.hold_agents_at", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours"],
     ),
     (
         Sec::Agents,
@@ -1164,6 +1164,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "guard.max_subagents" => "Most subagents an agent runs at once",
         "guard.build_slots" => "Most builds and tests at once",
         "guard.model_slots" => "Most local model runs at once",
+        "guard.hold_agents_at" => "Hold new agents at load per core (%)",
         "system.busy_memory" => "Short of memory at pressure",
         "guard.panic_hold" => "After a kernel panic, hold agents until I've looked",
         "guard.memory_alert" => "Tell me when the Mac is short of memory",

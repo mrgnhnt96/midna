@@ -30,6 +30,10 @@
 //! - After a kernel panic: when the Mac booted from one, agents don't start on their own
 //!   (triggers, other agents, the task board) until the human has seen what each terminal ran
 //!   (`guard.panic_hold`).
+//! - Admission: while the load per core is at or above `guard.hold_agents_at` percent and the
+//!   CPU is busy, an agent terminal anyone but the human opens opens at once but waits, with the
+//!   status "Waiting for the Mac", and its agent starts once the load calms, one at a time
+//!   (midnad `admit.rs`). The human's own start anyway, with a warning.
 //! - Runaway loops: background `while`/`until` shell loops an agent started (polling for a
 //!   build, a file, a process) that outlive `guard.loop_max_hours` are stopped.
 //! - Worktrees: linked git worktrees of repos midna's terminals use are removed after
