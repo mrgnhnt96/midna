@@ -4,7 +4,8 @@
 //! cells are blank, or as a smaller badge over the link's top-right corner when they aren't. The state comes from the link preview's `gh pr view`, which shares its cache;
 //! merged and closed pull requests are asked again less often, as they rarely change.
 //! GitHub Actions run links get the same, from `gh run view`: asked often while the run is
-//! queued or running, rarely once it's done. `terminal.pr_status` turns both off.
+//! queued or running, rarely once it's done. Issue links too, from `gh issue view`: open or
+//! closed. `terminal.pr_status` turns them all off.
 use super::link_preview;
 use super::{LINE_H, PAD_X, PAD_Y, TerminalView};
 use crate::frame::{F_SPACER, RowData};
@@ -35,6 +36,9 @@ pub(super) enum State {
     Cancelled,
     Skipped,
     Approval,
+    // an issue's
+    IssueOpen,
+    IssueClosed,
 }
 
 impl State {
@@ -51,6 +55,8 @@ impl State {
             "CANCELLED" => State::Cancelled,
             "SKIPPED" => State::Skipped,
             "APPROVAL" => State::Approval,
+            "ISSUE_OPEN" => State::IssueOpen,
+            "ISSUE_CLOSED" => State::IssueClosed,
             _ => return None,
         })
     }
@@ -58,9 +64,9 @@ impl State {
     /// The colors of the preview card's state pill.
     pub(super) fn color(self, t: &Theme) -> Hsla {
         match self {
-            State::Open | State::Passed => t.ok,
+            State::Open | State::Passed | State::IssueOpen => t.ok,
             State::Draft | State::Queued | State::Cancelled | State::Skipped => t.dim,
-            State::Merged => t.accent,
+            State::Merged | State::IssueClosed => t.accent,
             State::Closed | State::Failed => t.err,
             State::Running => t.work,
             State::Approval => t.need,
@@ -70,9 +76,9 @@ impl State {
     /// How long it's trusted before it's asked again.
     fn ttl(self) -> Duration {
         match self {
-            State::Merged | State::Closed | State::Passed | State::Failed | State::Cancelled | State::Skipped => DONE_TTL,
+            State::Merged | State::Closed | State::Passed | State::Failed | State::Cancelled | State::Skipped | State::IssueClosed => DONE_TTL,
             State::Queued | State::Running | State::Approval => RUN_TTL,
-            State::Open | State::Draft => LIVE_TTL,
+            State::Open | State::Draft | State::IssueOpen => LIVE_TTL,
         }
     }
 
@@ -98,15 +104,17 @@ impl State {
             State::Failed => Icon::RunFailed,
             State::Cancelled | State::Skipped => Icon::RunStopped,
             State::Approval => Icon::RunWaiting,
+            State::IssueOpen => Icon::Issue,
+            State::IssueClosed => Icon::IssueClosed,
         }
     }
 }
 
-/// A pull request or workflow run link on screen.
+/// A pull request, issue or workflow run link on screen.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Found {
-    /// `https://github.com/<owner>/<repo>/pull/<n>` or `…/actions/runs/<id>`, whatever page of
-    /// it the link was.
+    /// `https://github.com/<owner>/<repo>/pull/<n>`, `…/issues/<n>` or `…/actions/runs/<id>`,
+    /// whatever page of it the link was.
     pub url: String,
     /// The cells it covers, as (row, first col, last col): more than one when it wraps.
     pub spans: Vec<(u16, u16, u16)>,
@@ -130,7 +138,7 @@ fn blank(row: &RowData, x: usize) -> bool {
     row.cells.get(x).is_some_and(|c| (c.ch == ' ' || c.ch == '\0') && c.flags & F_SPACER == 0)
 }
 
-/// The pull request and workflow run links on screen; a soft-wrapped line is read as one.
+/// The pull request, issue and workflow run links on screen; a soft-wrapped line is read as one.
 pub(super) fn find(grid: &[RowData]) -> Vec<Found> {
     let mut out = vec![];
     let mut y = 0;
@@ -226,8 +234,8 @@ fn due(mac: &Option<String>, urls: impl Iterator<Item = String>) -> Vec<String> 
 }
 
 impl TerminalView {
-    /// After a frame, and every few seconds while any are on screen: find the pull request and run
-    /// links on screen and ask for states not known yet or gone stale, on the Mac the terminal is
+    /// After a frame, and every few seconds while any are on screen: find the pull request, issue
+    /// and run links on screen and ask for states not known yet or gone stale, on the Mac the terminal is
     /// on (another Mac's window asks that Mac's `gh`, as its hover card does).
     pub(super) fn scan_prs(&mut self, cx: &mut Context<Self>) {
         self.prs = if link_preview::pr_status_on(&*self.backend, cx) { find(&self.grid) } else { vec![] };
@@ -243,7 +251,13 @@ impl TerminalView {
                     .background_executor()
                     .spawn(async move {
                         let there = there.as_deref();
-                        if link_preview::github_pr(&url).is_some() { link_preview::pr_state(&url, there) } else { link_preview::run_link_state(&url, there).map(str::to_string) }
+                        if link_preview::github_pr(&url).is_some() {
+                            link_preview::pr_state(&url, there)
+                        } else if link_preview::github_issue(&url).is_some() {
+                            link_preview::issue_state(&url, there).map(str::to_string)
+                        } else {
+                            link_preview::run_link_state(&url, there).map(str::to_string)
+                        }
                     })
                     .await;
                 if let Ok(mut m) = STATES.lock() {
@@ -365,8 +379,20 @@ mod tests {
         assert_eq!(f[0].url, "https://github.com/a/b/pull/12");
         assert_eq!(f[0].spans, vec![(0, 2, 22), (1, 0, 8)]);
         assert_eq!(f[0].icon, IconAt::After(1, 10));
-        let g = [row("https://github.com/a/b/issues/3 https://github.com/a/b", 80, false)];
-        assert!(find(&g).is_empty());
+        let g = [row("https://github.com/a/b/issues/3#issuecomment-9 https://github.com/a/b", 80, false)];
+        let f = find(&g);
+        assert_eq!(f.len(), 1, "the issue, not the repo");
+        assert_eq!(f[0].url, "https://github.com/a/b/issues/3");
+        assert_eq!(f[0].spans, vec![(0, 0, 45)]);
+    }
+
+    #[test]
+    fn issue_states_read_apart_from_pull_requests() {
+        assert_eq!(State::parse("ISSUE_OPEN"), Some(State::IssueOpen));
+        assert_eq!(State::parse("ISSUE_CLOSED"), Some(State::IssueClosed));
+        // a closed issue is done, not stopped: not struck through like a closed pull request
+        assert!(!State::IssueClosed.struck() && State::Closed.struck());
+        assert_eq!(State::IssueClosed.ttl(), super::DONE_TTL);
     }
 
     #[test]

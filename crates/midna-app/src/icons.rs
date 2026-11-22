@@ -72,6 +72,8 @@ pub enum Icon {
     Server,
     Tag,
     Issue,
+    /// A closed issue (the terminal's issue links, `terminal/pr_status.rs`).
+    IssueClosed,
     /// Icons an app's link menu names (`links.actions.register`): a task, a bug.
     Checklist,
     Bug,
@@ -173,6 +175,7 @@ impl Icon {
             Icon::Server => "icons/server.svg",
             Icon::Tag => "icons/tag.svg",
             Icon::Issue => "icons/issue.svg",
+            Icon::IssueClosed => "icons/issue-closed.svg",
             Icon::Checklist => "icons/checklist.svg",
             Icon::Bug => "icons/bug.svg",
             Icon::PushPin => "icons/pushpin.svg",
@@ -457,6 +460,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/issue.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.4v1.2"/></svg>"##
+        }
+        "icons/issue-closed.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8A6.5 6.5 0 1 1 11 2.2"/><path d="M5.6 8.1 7.4 9.9l6.6-6.6"/></svg>"##
         }
         "icons/pushpin.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.3" stroke-linejoin="round"><path d="M10.5 1.5 14.5 5.5 12 6.5 9.5 9l.5 3.5-1 1L6 10.5 2.5 14l-.5-.5L5.5 10 2.5 7l1-1L7 6.5 9.5 4z"/></svg>"##
