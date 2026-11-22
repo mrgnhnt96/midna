@@ -67,6 +67,8 @@ pub static CATEGORIES: &[NotifyCategory] = &[
     c!("failed", "Failures", true, "Uh-oh", "A terminal's command failed (non-zero exit, killed) or an agent's turn ended in an error.", &["title", "detail", "kind", "reason"]),
     c!("turn_done", "Agent finished", true, "Strum",
         "An agent finished a turn that took at least notify.turn_done_min_secs, with the start of its reply.", &["elapsed", "secs", "reply", "message"]),
+    c!(push "nearby", "Nearby Mac answered", true, "Strum",
+        "An agent you started or asked on a nearby Mac (Share › Ask an agent) sent its answer back.", &["mac", "reply", "message"]),
     c!("agent", "Sent by an agent", true, "Hm", "An agent sent you a notification on purpose (`midna notify send`).", &["title", "body"]),
     c!("from_trigger", "Sent by a trigger", true, "Hm", "A trigger you set up sent a notification (its `notify` action).", &["title", "body"]),
     c!("requests", "Other requests", false, "none",

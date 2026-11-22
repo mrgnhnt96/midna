@@ -130,6 +130,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "notify.attention" => "An agent raises a note or says it's blocked.",
         "notify.failed" => "A command fails or an agent's turn ends in an error.",
         "notify.turn_done" => "An agent finishes a long turn.",
+        "notify.nearby" => "An agent on a nearby Mac answers you.",
         "notify.agent" => "Notifications agents send on purpose.",
         "notify.from_trigger" => "Notifications your triggers send.",
         "notify.requests" => "A trigger to enable, a secret to set, a rule to remove.",

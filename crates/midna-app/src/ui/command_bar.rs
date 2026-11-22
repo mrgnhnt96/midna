@@ -596,6 +596,8 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                 None => m.toast("There's no text on the clipboard to share", cx),
             },
             "agent" => crate::ui::share::open_agent_start(m, None, window, cx),
+            "tab" => crate::ui::share::open_tab(m, None, window, cx),
+            "file" => crate::ui::share::choose_file(m, window, cx),
             _ => crate::ui::share::open_message(m, None, None, None, window, cx),
         },
         Run::Resolve { need, resolution } => {

@@ -43,7 +43,7 @@ pub struct Inbox {
 pub fn tab_of(category: &str) -> Tab {
     match category {
         "approval" | "attention" | "requests" => Tab::Needs,
-        "turn_done" | "background" => Tab::Finished,
+        "turn_done" | "background" | "nearby" => Tab::Finished,
         "failed" => Tab::Failed,
         "agent" | "from_trigger" => Tab::Sent,
         _ => Tab::Other,
