@@ -1204,7 +1204,7 @@ pub fn stop_processes(d: &Daemon, actor: Actor, p: StopProcessesParams) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     /// A terminal running claude (20), whose Bash tool (30) runs a script (40) that starts
     /// another claude (50). Each claude runs its hooks through `sh` (21, 51) → `midna hook`
@@ -1298,8 +1298,10 @@ mod tests {
 
     #[test]
     fn background_mode_skips_the_agent_and_comes_back_out() {
-        let mut sh = Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]).stdout(Stdio::null()).spawn().unwrap();
-        let root = sh.id() as i32;
+        // Started outside this test's process tree: the midna these tests run in puts a busy
+        // Mac's agent terminals into background mode, and this test's own processes with them.
+        let out = Command::new("/bin/sh").args(["-c", "/bin/sh -c 'sleep 30 & wait' >/dev/null 2>&1 & echo $!"]).output().unwrap();
+        let root: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
         let child = loop {
             let t = procs::table();
             if let Some(p) = procs::descendants(&t, root).into_iter().find(|&p| p != root) {
@@ -1307,6 +1309,9 @@ mod tests {
             }
             std::thread::yield_now();
         };
+        // Either may have started in background mode, inherited from this test.
+        procs::set_background(root, false);
+        procs::set_background(child, false);
         let table = procs::table();
         let chain = agent_chain(&table, root, (root, table[&root].start)).unwrap();
         assert_eq!(chain, vec![root]);
@@ -1317,7 +1322,7 @@ mod tests {
         // An agent outside the terminal's tree, or a reused pid, isn't one of its processes.
         assert!(agent_chain(&table, root, (std::process::id() as i32, 0)).is_none());
         assert!(agent_chain(&table, root, (root, table[&root].start + 1)).is_none());
-        terminate(&[child]);
-        let _ = sh.wait();
+        // launchd reaps the shell once its sleep is gone.
+        terminate(&[child, root]);
     }
 }

@@ -157,6 +157,24 @@ fn wait_for<T>(secs: u64, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     }
 }
 
+/// Wait for the counter in `id` to pass `n`, for as long as it keeps counting: fails only when
+/// it hasn't moved for 20s. A loaded Mac (or one that backgrounded this test's processes) can
+/// take seconds per tick; a counter that was hung up or killed stops for good.
+fn counts_past(c: &mut Client, id: &str, lines: u32, n: u64, what: &str) {
+    let (mut last, mut moved) = (None, Instant::now());
+    loop {
+        let now = counts(&read(c, id, lines)).last().copied();
+        if now.is_some_and(|v| v > n) {
+            return;
+        }
+        if now != last {
+            (last, moved) = (now, Instant::now());
+        }
+        assert!(moved.elapsed() < Duration::from_secs(20), "{what}: the counter stopped at {last:?}, waiting for {n}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Wait for `done` at the end of a session's output for as long as output keeps arriving:
 /// fails only when nothing has come for 30s.
 fn wait_flowing(c: &mut Client, id: &str, done: &str) {
@@ -314,7 +332,7 @@ fn selftest_failure_aborts_the_upgrade() {
     assert_eq!(call(&mut c, "daemon.info", json!({}))["pid"].as_i64().unwrap(), pid0);
     assert!(!d.home.join("handoff").exists());
     let n0 = *counts(&read(&mut c, &loop_id, 2000)).last().unwrap_or(&0);
-    wait_for(10, "counting after abort", || (counts(&read(&mut c, &loop_id, 2000)).last().copied().unwrap_or(0) > n0 + 5).then_some(()));
+    counts_past(&mut c, &loop_id, 2000, n0 + 5, "counting after abort");
     let failed = call(&mut c, "events.list", json!({ "since_seq": 0, "filter": { "kinds": ["daemon.upgrade_failed"] } }));
     assert_eq!(failed.as_array().unwrap().len(), 1);
     // A binary that isn't there is a bad-params error, also without side effects.
@@ -358,7 +376,7 @@ fn watchdog_falls_back_when_the_new_binary_dies() {
     assert_ne!(pid1, pid0, "the watchdog process became the daemon");
     assert!(alive(loop_pid));
     let n0 = *counts(&read(&mut c, &loop_id, 3000)).last().unwrap();
-    wait_for(10, "counting after fallback", || (*counts(&read(&mut c, &loop_id, 3000)).last().unwrap() > n0 + 5).then_some(()));
+    counts_past(&mut c, &loop_id, 3000, n0 + 5, "counting after fallback");
     assert!(!Path::new(&hup).exists());
     // The shells aren't our children any more: exits are still noticed (kqueue), without a code.
     call(&mut c, "session.input", json!({ "id": sh_id, "text": "exit 3", "enter": true }));
@@ -385,7 +403,7 @@ fn sigterm_restarts_in_place_and_sigint_stops_and_hangs_up() {
     let mut c = d.human();
     assert_eq!(d.info()["pid"].as_i64().unwrap(), pid0);
     let n0 = *counts(&read(&mut c, &loop_id, 2000)).last().unwrap();
-    wait_for(10, "counting after restart", || (*counts(&read(&mut c, &loop_id, 2000)).last().unwrap() > n0 + 5).then_some(()));
+    counts_past(&mut c, &loop_id, 2000, n0 + 5, "counting after restart");
     assert!(!Path::new(&hup).exists());
 
     // A monitor whose job-controlled child ignores SIGHUP (the reported orphan) and a

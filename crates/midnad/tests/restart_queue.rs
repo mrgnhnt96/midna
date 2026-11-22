@@ -67,6 +67,33 @@ fn info(h: &mut Client, sid: &str) -> Value {
     call(h, "session.get", json!({ "id": sid }))["agent_info"].clone()
 }
 
+/// The `n`th `session.restarted` event, once the daemon has sent it. The fake agent writes its
+/// argv the moment it starts, before the daemon has finished the restart's bookkeeping.
+fn restarted(h: &mut Client, n: usize) -> Value {
+    wait_for(10, &format!("restart {n} done"), || {
+        let ev = call(h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
+        ev.as_array().unwrap().get(n - 1).cloned()
+    })
+}
+
+/// Wait for the fake agent's `n`th launch for as long as the restart makes progress: queued,
+/// what it waits for, the new process (pid), the bookkeeping after it. A loaded Mac, or one that
+/// put this test's processes in background mode, can take many seconds over each step; a
+/// restart that never runs stops changing, and fails after 30s with what it waited for.
+fn launched(h: &mut Client, fake: &FakeClaude, sid: &str, n: usize, what: &str) {
+    let mut seen = Value::Null;
+    let mut moved = std::time::Instant::now();
+    while fake.launches().len() < n {
+        let s = call(h, "session.get", json!({ "id": sid }));
+        let now = json!([s["status"], s["agent_info"], s["pid"], fake.launches().len()]);
+        if now != seen {
+            (seen, moved) = (now, std::time::Instant::now());
+        }
+        assert!(moved.elapsed() < std::time::Duration::from_secs(30), "{what}: no progress for 30s: status {}, pid {}, agent_info {}", s["status"], s["pid"], s["agent_info"]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn stop(a: &mut Client, background: Value) {
     hook(a, "Stop", json!({ "session_id": "conv-1", "hook_event_name": "Stop", "stop_hook_active": false, "background_tasks": background, "session_crons": [] }));
 }
@@ -79,7 +106,7 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     let mut h = d.human();
     call(&mut h, "settings.set", json!({ "key": "agents.restart_idle_secs", "value": 0 }));
     let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp", "prompt": "do the thing" }))["id"].as_str().unwrap().to_string();
-    wait_for(5, "fake claude started", || (fake.launches().len() == 1).then_some(()));
+    launched(&mut h, &fake, &sid, 1, "fake claude started");
     assert!(fake.launches()[0].ends_with("do the thing"), "{:?}", fake.launches());
     let mut a = d.agent(Some(&sid));
     hook(&mut a, "SessionStart", json!({ "session_id": "conv-1", "source": "startup", "permission_mode": "acceptEdits", "model": "claude-opus-5-5" }));
@@ -104,15 +131,17 @@ fn queued_restart_waits_for_background_work_then_resumes() {
 
     // The shell finished: Claude's next Stop no longer lists it.
     stop(&mut a, json!([]));
-    wait_for(10, "restart", || (fake.launches().len() == 2).then_some(()));
+    launched(&mut h, &fake, &sid, 2, "restart");
     let argv = &fake.launches()[1];
     assert!(argv.ends_with("--model claude-opus-5-5 --permission-mode acceptEdits --resume conv-1"), "{argv}");
     assert!(!argv.contains("do the thing"), "the initial prompt is not sent again: {argv}");
-    let s = call(&mut h, "session.get", json!({ "id": sid }));
-    assert_eq!(s["status"]["reason"], "restarted (resumed)");
+    // The status is the last thing a restart sets.
+    let s = wait_for(10, "restarted status", || {
+        let s = call(&mut h, "session.get", json!({ "id": sid }));
+        (s["status"]["reason"] == "restarted (resumed)").then_some(s)
+    });
     assert!(s["agent_info"]["restart"].is_null());
-    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
-    let ev = &ev.as_array().unwrap()[0];
+    let ev = &restarted(&mut h, 1);
     assert_eq!((ev["data"]["resume"].as_bool(), ev["data"]["reason"].as_str()), (Some(true), Some("pick up settings")));
 
     // The queued restart is gone from the last session.agent event too (event-driven clients).
@@ -126,9 +155,10 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     assert_eq!(costs.as_array().unwrap().len(), 1, "{costs}");
 
     // Processes under the terminal: the script and its sleep.
-    let procs = call(&mut h, "session.processes", json!({ "id": sid }));
-    let procs = procs.as_array().unwrap();
-    assert!(procs.iter().any(|p| p["depth"] == 1 && p["command"].as_str().unwrap().contains("sleep 300")), "{procs:?}");
+    wait_for(10, "the script's sleep", || {
+        let procs = call(&mut h, "session.processes", json!({ "id": sid }));
+        procs.as_array().unwrap().iter().any(|p| p["depth"] == 1 && p["command"].as_str().unwrap().contains("sleep 300")).then_some(())
+    });
 
     // An update is installed: when_idle queues the restart without asking.
     call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "when_idle" }));
@@ -137,10 +167,13 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     hook(&mut a, "statusline", json!({ "session_id": "conv-1", "version": "2.1.289", "model": { "id": "claude-opus-5-5" } }));
     fake.install("2.1.290");
     midnad::restart::check_updates(&d.daemon());
-    wait_for(10, "update restart", || (fake.launches().len() == 3).then_some(()));
+    launched(&mut h, &fake, &sid, 3, "update restart");
     assert!(fake.launches()[2].ends_with("--resume conv-1"));
-    let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
-    assert_eq!(ev.as_array().unwrap().last().unwrap()["data"]["reason"], "Claude 2.1.289 → 2.1.290");
+    assert_eq!(restarted(&mut h, 2)["data"]["reason"], "Claude 2.1.289 → 2.1.290");
+    // Until the new Claude's status line says what it runs, a check (the daemon's own, once a
+    // minute) finds nothing: 2.1.289 was the old process, and one update restarts it once.
+    midnad::restart::check_updates(&d.daemon());
+    assert!(info(&mut h, &sid)["restart"].is_null(), "{}", info(&mut h, &sid));
 
     // ask: recorded for the terminal's prompt, no needs-you item; "When idle" queues it.
     call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "ask" }));
@@ -154,9 +187,10 @@ fn queued_restart_waits_for_background_work_then_resumes() {
     assert_eq!(fake.launches().len(), 3, "ask never restarts on its own");
     // "Don't ask again" + When idle sets when_idle: the prompt already showing is queued too.
     call(&mut h, "settings.set", json!({ "key": "agents.restart_on_update", "value": "when_idle" }));
-    wait_for(10, "restart when idle", || (fake.launches().len() == 4).then_some(()));
+    launched(&mut h, &fake, &sid, 4, "restart when idle");
+    assert_eq!(restarted(&mut h, 3)["data"]["reason"], "Claude 2.1.291 installed");
     let ev = call(&mut h, "events.list", json!({ "filter": { "kinds": ["session.restarted"] } }));
-    assert_eq!(ev.as_array().unwrap().last().unwrap()["data"]["reason"], "Claude 2.1.291 installed");
+    assert_eq!(ev.as_array().unwrap().len(), 3, "one restart per update: {ev}");
 }
 
 #[test]
@@ -169,7 +203,7 @@ fn on_screen_update_notice_is_offered_without_a_status_line() {
     fake.show_notice();
     fake.install("2.1.290");
     let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
-    wait_for(5, "fake claude started", || (fake.launches().len() == 1).then_some(()));
+    launched(&mut h, &fake, &sid, 1, "fake claude started");
     let mut a = d.agent(Some(&sid));
     // The user's own status line: midna never hears a version.
     hook(&mut a, "SessionStart", json!({ "session_id": "conv-1", "source": "startup" }));
@@ -201,7 +235,7 @@ fn on_screen_update_notice_is_offered_without_a_status_line() {
 
     // Restart (now): same conversation, and the update state is gone.
     call(&mut h, "session.restart", json!({ "id": sid }));
-    wait_for(10, "restart", || (fake.launches().len() == 2).then_some(()));
+    launched(&mut h, &fake, &sid, 2, "restart");
     let i = info(&mut h, &sid);
     assert!(i["update_available"].is_null() && i["update_declined"].is_null(), "{i}");
     assert!(fake.launches()[1].ends_with("--resume conv-1"), "{:?}", fake.launches());
@@ -216,7 +250,7 @@ fn cancel_and_exit_drop_a_queued_restart() {
     // The agent's exit below should end the terminal, not drop it to a shell.
     call(&mut h, "settings.set", json!({ "key": "agents.shell_on_exit", "value": false }));
     let sid = call(&mut h, "session.open", json!({ "kind": "agent", "agent": "claude", "cwd": "/tmp" }))["id"].as_str().unwrap().to_string();
-    wait_for(5, "fake claude started", || (fake.launches().len() == 1).then_some(()));
+    launched(&mut h, &fake, &sid, 1, "fake claude started");
     let mut a = d.agent(Some(&sid));
     hook(&mut a, "SessionStart", json!({ "session_id": "conv-1", "source": "startup" }));
     // The default quiet period (60s) holds it.
