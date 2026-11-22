@@ -1209,7 +1209,9 @@ fn link_pattern_previews_run_only_as_link_at_gave_them() {
     std::fs::write(&card, "#!/bin/sh\necho \"{\\\"title\\\": \\\"$1 on this Mac\\\"}\"\n").unwrap();
     std::fs::set_permissions(&card, std::fs::Permissions::from_mode(0o755)).unwrap();
     let rule = format!(r#"\b(ZQ\d+)\b = https://tracker.dev/$1 preview:"{} $1""#, card.display());
-    call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [rule] }));
+    let r = call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [rule] }));
+    assert_eq!(r["approved"], false, "{r}");
+    let ask = r["approval"].as_str().unwrap().to_string();
     let argv = json!([card, "ZQ5"]);
     // Nothing link_at gave yet: not run.
     let e = call_err(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": argv }));
@@ -1218,7 +1220,14 @@ fn link_pattern_previews_run_only_as_link_at_gave_them() {
     let id = open_sh(&mut c);
     call(&mut c, "session.input", json!({ "id": id, "text": "clear; echo 'see ZQ5 now'", "enter": true }));
     let at = |c: &mut Client| (0..24).map(|row| call(c, "session.link_at", json!({ "id": id, "col": 5, "row": row }))).find(|l| l["kind"] != "none");
+    // Until the human approves the app's preview command, its links come without one.
     let link = wait_for(5, "pattern link", || at(&mut c));
+    assert_eq!((&link["target"], link.get("preview")), (&json!("https://tracker.dev/ZQ5"), None), "{link}");
+    let e = call_err(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": argv }));
+    assert_eq!(e.code, REFUSED, "{e:?}");
+    call(&mut c, "needs_you.resolve", json!({ "id": ask, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"][0]["approved"], true);
+    let link = at(&mut c).unwrap();
     assert_eq!((&link["target"], &link["preview"]), (&json!("https://tracker.dev/ZQ5"), &argv), "{link}");
     // As link_at gave it, it runs here and its card comes back.
     let p = call(&mut c, "links.preview", json!({ "target": "https://tracker.dev/ZQ5", "preview": argv }));
@@ -1231,6 +1240,69 @@ fn link_pattern_previews_run_only_as_link_at_gave_them() {
     // A scheme no app opens isn't a link to preview.
     let e = call_err(&mut c, "links.preview", json!({ "target": "midna-test-unregistered-scheme://x" }));
     assert!(e.message.contains("not an absolute path, a GitHub link or an app link"), "{e:?}");
+}
+
+#[test]
+fn app_link_pattern_previews_wait_for_the_humans_approval() {
+    let mut d = TestDaemon::start();
+    let mut agent = d.agent(None);
+    let mut c = d.human();
+    let plain = r"\b(ZQ\d+)\b = https://tracker.dev/$1";
+    let with = |cmd: &str| json!([plain, format!(r#"\b(QQ\d+)\b = https://tracker.dev/$1 preview:"{cmd} $1""#)]);
+    let approvals = |c: &mut Client| call(c, "needs_you.list", json!({})).as_array().unwrap().iter().filter(|n| n["title"].as_str().is_some_and(|t| t.contains("preview its links"))).cloned().collect::<Vec<_>>();
+    // Rules without a preview command need nothing approved.
+    let r = call(&mut agent, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [plain] }));
+    assert_eq!((r["approved"].as_bool(), r.get("approval")), (Some(true), None), "{r}");
+    assert!(approvals(&mut c).is_empty());
+    // A preview command asks the human once; the same commands again don't ask twice.
+    let r = call(&mut agent, "links.patterns.register", json!({ "owner": "Tracker", "patterns": with("tr-card") }));
+    assert_eq!(r["approved"], false, "{r}");
+    let first = r["approval"].as_str().unwrap().to_string();
+    call(&mut agent, "links.patterns.register", json!({ "owner": "Tracker", "patterns": with("tr-card") }));
+    let asks = approvals(&mut c);
+    assert_eq!(asks.len(), 1);
+    assert!(asks[0]["detail"].as_str().unwrap().contains("tr-card $1"), "{}", asks[0]);
+    // A changed command takes the old ask back and raises a new one.
+    let r = call(&mut agent, "links.patterns.register", json!({ "owner": "Tracker", "patterns": with("tr-show") }));
+    let ask = r["approval"].as_str().unwrap().to_string();
+    assert_ne!(ask, first);
+    assert_eq!(approvals(&mut c).len(), 1);
+    // Only the human can approve, and only from the needs-you.
+    assert_eq!(call_err(&mut agent, "needs_you.resolve", json!({ "id": ask, "resolution": { "kind": "approve", "scope": { "kind": "once" } } })).code, HUMAN_ONLY);
+    assert_eq!(call_err(&mut agent, "links.patterns.approve", json!({ "owner": "Tracker", "fingerprint": "x" })).code, HUMAN_ONLY);
+    call(&mut c, "needs_you.resolve", json!({ "id": ask, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    let list = call(&mut c, "links.patterns.list", json!({}));
+    assert_eq!((list["apps"][0]["owner"].as_str(), list["apps"][0]["approved"].as_bool()), (Some("Tracker"), Some(true)), "{list}");
+    // Approval survives a restart and a register of the same commands.
+    drop((c, agent));
+    d.restart();
+    let mut c = d.human();
+    assert_eq!(call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": with("tr-show") }))["approved"], true);
+    // Removing the patterns forgets it.
+    call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": [] }));
+    assert_eq!(call(&mut c, "links.patterns.list", json!({}))["apps"], json!([]));
+    assert_eq!(call(&mut c, "links.patterns.register", json!({ "owner": "Tracker", "patterns": with("tr-show") }))["approved"], false);
+    assert_eq!(approvals(&mut c).len(), 1);
+}
+
+#[test]
+fn agents_ask_before_adding_a_link_pattern_preview_command() {
+    let d = TestDaemon::start();
+    let mut agent = d.agent(None);
+    let mut c = d.human();
+    let plain = r"\b(ZQ\d+)\b = https://tracker.dev/$1";
+    let card = r#"\b(QQ\d+)\b = https://tracker.dev/$1 preview:"tr-card $1""#;
+    let set = |v: Value| json!({ "key": "terminal.link_patterns", "value": v });
+    // Rules without a preview command are the agent's to set.
+    call(&mut agent, "settings.set", set(json!([plain])));
+    // A new preview command asks the human instead.
+    let e = call_err(&mut agent, "settings.set", set(json!([plain, card])));
+    assert_eq!(e.code, HUMAN_ONLY, "{e:?}");
+    assert_eq!(call(&mut c, "settings.get", json!({ "key": "terminal.link_patterns" }))["value"], json!([plain]));
+    // One the human put there, the agent may keep while it changes the others, or drop.
+    call(&mut c, "settings.set", set(json!([plain, card])));
+    call(&mut agent, "settings.set", set(json!([card, r"\b(ZZ\d+)\b = https://tracker.dev/$1"])));
+    call(&mut agent, "settings.set", set(json!([])));
 }
 
 #[test]

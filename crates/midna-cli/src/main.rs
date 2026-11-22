@@ -1446,7 +1446,12 @@ fn links(a: &Args, out: OutFn) -> Res {
                         println!("no app has registered link patterns");
                     }
                     for app in apps {
-                        println!("{}", s_(&app, "owner"));
+                        let state = match (app["approved"] != false, app["approval"].as_str()) {
+                            (true, _) => String::new(),
+                            (false, Some(id)) => format!("  (preview commands wait for your approval: {id})"),
+                            (false, None) => "  (preview commands not approved; cards show the plain URL)".into(),
+                        };
+                        println!("{}{state}", s_(&app, "owner"));
                         for r in app["patterns"].as_array().into_iter().flatten() {
                             println!("    {}", r.as_str().unwrap_or(""));
                         }
@@ -1463,7 +1468,13 @@ fn links(a: &Args, out: OutFn) -> Res {
                 let v = call("links.patterns.register", json!({ "owner": owner, "patterns": rules }))?;
                 out(&v, &|v| match v["patterns"].as_array().map_or(0, Vec::len) {
                     0 => println!("cleared {}'s link patterns", s_(v, "owner")),
-                    n => println!("{} now has {n} link pattern{}", s_(v, "owner"), if n == 1 { "" } else { "s" }),
+                    n => {
+                        let wait = match v["approval"].as_str() {
+                            Some(id) if v["approved"] == false => format!("; its preview commands wait for your approval ({id})"),
+                            _ => String::new(),
+                        };
+                        println!("{} now has {n} link pattern{}{wait}", s_(v, "owner"), if n == 1 { "" } else { "s" })
+                    }
                 });
             }
             other => return Err(Fail::Usage(format!("unknown `links patterns {other}`; see midna links --help"))),

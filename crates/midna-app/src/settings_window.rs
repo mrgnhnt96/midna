@@ -1883,21 +1883,22 @@ impl SettingsWindow {
             "@app_link_patterns" => self
                 .app_patterns
                 .iter()
-                .flat_map(|a| a.patterns.iter().map(move |r| (a.owner.as_str(), r)))
-                .map(|(owner, rule)| {
+                .flat_map(|a| a.patterns.iter().map(move |r| (a.owner.as_str(), a.approved, r)))
+                .map(|(owner, approved, rule)| {
                     let (m, v) = rule.split_once('=').map(|(m, v)| (m.trim(), v.trim())).unwrap_or((rule.as_str(), ""));
                     // the hover card's command gets a line of its own, after the URL it fills
                     let (v, preview) = match v.split_once(" preview:") {
                         Some((v, _)) => (v.trim_end(), midna_proto::link_patterns::LinkPattern::parse(rule).ok().map(|p| p.preview.join(" "))),
                         None => (v, None),
                     };
-                    let note = match preview {
-                        Some(cmd) if !cmd.is_empty() => format!("Provided by {owner} · card from `{cmd}`"),
-                        _ => format!("Provided by {owner}"),
+                    let (note, color) = match preview {
+                        Some(cmd) if !cmd.is_empty() && approved => (format!("Provided by {owner} · card from `{cmd}`"), t.dim),
+                        Some(cmd) if !cmd.is_empty() => (format!("Provided by {owner} · card from `{cmd}` waits for your approval"), t.need),
+                        _ => (format!("Provided by {owner}"), t.dim),
                     };
                     RowSpec {
                         label: m.into(),
-                        note: Some((note, t.dim)),
+                        note: Some((note, color)),
                         control: Control::Text { dot: None, text: v.into(), color: t.fg, action: None },
                         cli: "midna links patterns".into(),
                         who: Who::ReadOnly,

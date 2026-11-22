@@ -265,6 +265,26 @@ pub struct LinkPatternsRegisterParams {
 pub struct AppLinkPatterns {
     pub owner: String,
     pub patterns: Vec<String>,
+    /// The human approved its rules' preview commands (true when they have none). Until then
+    /// the rules still make links, but hovering one shows the plain URL and runs nothing.
+    #[serde(default = "approved_default")]
+    pub approved: bool,
+    /// The needs-you asking the human to approve them, while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Id>,
+}
+
+/// A daemon from before preview approvals ran every app's preview commands.
+fn approved_default() -> bool {
+    true
+}
+
+/// `links.patterns.approve` (human only): approve an owner's preview commands as they are now.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LinkPatternsApproveParams {
+    pub owner: String,
+    /// The fingerprint of the commands being approved; refused once they changed.
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]

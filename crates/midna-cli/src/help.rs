@@ -1106,7 +1106,7 @@ mod tests {
         let call_only = [
             "session.resize", "session.scroll", "session.selection", "session.select_all", "session.link_at", "session.find",
             "stream.attach", "script.run", "script.click", "updates.report", "session.clear", "themes.report", "notify.respond",
-            "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by", "links.preview", "links.actions.approve",
+            "clock.sleeps", "session.answer_question", "session.close_hold", "links.served_by", "links.preview", "links.actions.approve", "links.patterns.approve",
             // The app's own: only it may open or close a drive link.
             "drive.open", "drive.close", "drive.list",
             // Only the person driving from another Mac, through that Mac's app.
