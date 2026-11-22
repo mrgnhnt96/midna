@@ -32,9 +32,10 @@ impl Closing {
 }
 
 /// You're looking at `sid`: it's this window's terminal, on the terminal screen, and midna is in
-/// front.
+/// front. Never in a hidden window (this Mac's last, closed beside another Mac's): its card
+/// would count down where nobody sees it.
 fn looking(m: &MainWindow, sid: &str, window: &Window) -> bool {
-    window.is_window_active() && m.screen == Screen::Terminal && m.selected.as_deref() == Some(sid) && m.shows(sid)
+    !m.hidden() && window.is_window_active() && m.screen == Screen::Terminal && m.selected.as_deref() == Some(sid) && m.shows(sid)
 }
 
 /// The app's answer (`session.close_hold`), off the UI thread.

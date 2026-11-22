@@ -174,6 +174,33 @@ pub fn request_permission() {
     UNUserNotificationCenter::currentNotificationCenter().requestAuthorizationWithOptions_completionHandler(options, &done);
 }
 
+/// A banner from midna itself, about no terminal and with no sound: what a window would have said
+/// in a card, when there's no window on screen to say it.
+pub fn post_note(title: &str, body: &str) {
+    let p = Posted {
+        category: "attention".into(),
+        title: title.into(),
+        body: body.into(),
+        sound: false,
+        sound_file: None,
+        volume: None,
+        notification_sound: None,
+        image: None,
+        push: true,
+        push_focused: false,
+        test: false,
+        via: "app".into(),
+        needs_you_id: None,
+        stay_secs: None,
+        color: None,
+        label: None,
+        id: None,
+        open: None,
+        actions: vec![],
+    };
+    post(&p, None);
+}
+
 /// Show one notification about `session` (None: about midna in general).
 pub fn post(p: &Posted, session: Option<&str>) {
     // A hidden run (Slate) shows nothing outside its window.

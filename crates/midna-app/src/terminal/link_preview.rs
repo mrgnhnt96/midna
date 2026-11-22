@@ -1317,16 +1317,40 @@ pub(super) fn run_link_state(url: &str, there: Option<&dyn Backend>) -> Option<&
     Some(state)
 }
 
-/// `https://github.com/<owner>/<repo>/pull/<n>` or `…/actions/runs/<id>` for any page of a pull
-/// request or workflow run.
+/// An issue's state for its link in the grid (`pr_status.rs`): ISSUE_OPEN or ISSUE_CLOSED. Like
+/// `pr_state`, `gh` only on the terminal's Mac, sharing the card's cache.
+pub(super) fn issue_state(url: &str, there: Option<&dyn Backend>) -> Option<&'static str> {
+    let key = url_key(url, there);
+    let cached = URL_CACHE.lock().ok().and_then(|c| c.get(&key).cloned());
+    let issue = match cached {
+        Some((at, Body::Issue(i))) if at.elapsed() < SHARE_TTL => i,
+        _ => {
+            github_issue(url)?;
+            let Body::Issue(i) = load_github(url, there)? else { return None };
+            if let Ok(mut c) = URL_CACHE.lock() {
+                c.insert(key, (Instant::now(), Body::Issue(i.clone())));
+            }
+            i
+        }
+    };
+    match issue.state.as_str() {
+        "OPEN" => Some("ISSUE_OPEN"),
+        "CLOSED" => Some("ISSUE_CLOSED"),
+        _ => None,
+    }
+}
+
+/// `https://github.com/<owner>/<repo>/pull/<n>`, `…/issues/<n>` or `…/actions/runs/<id>` for any
+/// page of a pull request, issue or workflow run.
 pub(super) fn github_canonical(url: &str) -> Option<String> {
     github_pr(url)
         .map(|(owner, repo, n)| format!("https://github.com/{owner}/{repo}/pull/{n}"))
+        .or_else(|| github_issue(url).map(|(owner, repo, n)| format!("https://github.com/{owner}/{repo}/issues/{n}")))
         .or_else(|| github_run(url).map(|(owner, repo, id)| format!("https://github.com/{owner}/{repo}/actions/runs/{id}")))
 }
 
 /// Drop the cached card for a link (`links.stale`), and for every other page of the same pull
-/// request or run, read on any Mac.
+/// request, issue or run, read on any Mac.
 pub(super) fn forget(url: &str) {
     let key = github_canonical(url).unwrap_or_else(|| url.to_string());
     if let Ok(mut c) = URL_CACHE.lock() {

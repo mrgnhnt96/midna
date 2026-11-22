@@ -1016,7 +1016,12 @@ impl MainWindow {
                 if method == "updates.command" && self.is_local_home() {
                     let action = params.get("action").and_then(|a| a.as_str()).unwrap_or("").to_string();
                     if let Some(msg) = crate::lifecycle::on_daemon_command(&action, cx) {
-                        self.toast(msg, cx);
+                        // Hidden (this Mac's last window closed beside another Mac's): a banner.
+                        if self.hidden() {
+                            crate::notify::post_note("Updates", &msg);
+                        } else {
+                            self.toast(msg, cx);
+                        }
                     }
                 }
                 if method == "session.closing" && self.is_home() {
@@ -1035,6 +1040,12 @@ impl MainWindow {
     /// takes its update commands.
     fn is_local_home(&self) -> bool {
         !self.remote() && self.is_home()
+    }
+
+    /// This Mac's last window, closed beside another Mac's: hidden, not gone, so nothing drawn in
+    /// it is seen (see `windows`).
+    pub fn hidden(&self) -> bool {
+        self.windows.borrow().is_hidden(self.id)
     }
 
     /// The Mac this window shows (see `windows`).
@@ -1127,7 +1138,7 @@ impl MainWindow {
             crate::notify::Show::Nothing => return,
         }
         // Hidden (this Mac's last window closed beside another Mac's): a banner, not its card.
-        if !p.test && crate::sounds::app_active() && !self.windows.borrow().is_hidden(self.id) {
+        if !p.test && crate::sounds::app_active() && !self.hidden() {
             if let (true, Some(file), true) = (p.sound, p.sound_file.as_deref(), crate::sounds::allowed_now()) {
                 crate::sounds::play_file(file, p.volume.unwrap_or(100));
             }
