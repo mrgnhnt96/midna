@@ -1,0 +1,8 @@
+{
+  "section": "the pending-paste placeholder",
+  "concepts": [
+    { "id": "a", "label": "Chip in the line", "position": "A small 'Pasting…' chip sits at the paste's spot with its own ✕; what you type after it looks like normal input; the composer hint says esc cancels", "screen": "a/screen.html" },
+    { "id": "b", "label": "Shimmer + floating tag", "position": "A shimmering bar holds the spot with a tag floating above it ('Copying from your other device · esc'); keys typed after it are dim and dotted until they're sent", "screen": "b/screen.html" },
+    { "id": "c", "label": "Text marker + header status", "position": "A plain-text [pasting…] marker in the line, like typed text; the status and Cancel live in the pane's header, out of the line", "screen": "c/screen.html" }
+  ]
+}

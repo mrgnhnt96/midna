@@ -26,6 +26,7 @@ mod actions;
 mod annotate;
 mod app;
 mod backend;
+mod clipboard;
 mod commands;
 mod composer;
 mod dev;

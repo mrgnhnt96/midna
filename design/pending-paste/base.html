@@ -1,0 +1,117 @@
+<template id="uh-screen">
+<style>
+:host { color-scheme: light dark; }
+[data-screen] {
+  /* Midna Twilight (dark) / Midna Daylight (light), from midna-proto themes.rs */
+  --bg: light-dark(#E6E9EF, #0F1117);
+  --panel: light-dark(#F5F6F8, #151821);
+  --raised: light-dark(#FFFFFF, #1D2130);
+  --line: light-dark(#D3D8E0, #282D3B);
+  --fg: light-dark(#151922, #E4E7EE);
+  --dim: light-dark(#535D6E, #9AA2B3);
+  --accent: light-dark(#6237A0, #B79AE8);
+  --accent-fg: light-dark(#FFFFFF, #15111C);
+  --need: light-dark(#9A5300, #F2A93B);
+  --ok: light-dark(#1B7346, #4CC38A);
+  --work: light-dark(#2758B8, #6EA2FF);
+  --term: light-dark(#FCFCFD, #0B0D12);
+  height: 100%; overflow: hidden;
+  font: 400 0.8125rem/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  color: var(--fg); background: var(--bg);
+}
+button { font: inherit; color: inherit; background: none; border: 0; margin: 0; padding: 0; cursor: pointer; text-align: start; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+svg { flex: none; display: block; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.app { height: 100%; display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 26px; }
+@container screen (width < 900px) { .app { grid-template-columns: 200px minmax(0, 1fr); } }
+.sb { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); padding-top: 34px; }
+.hd { display: flex; align-items: center; height: 30px; padding: 0 14px; margin-top: 6px; }
+.gcap { font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.row { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr) 18px; column-gap: 8px; align-items: center; width: 100%; min-height: 32px; padding: 5px 12px 5px 14px; font-weight: 600; }
+.row:hover { background: color-mix(in srgb, var(--raised) 55%, transparent); }
+.row.on { background: var(--raised); }
+.row.on::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.row .ag { color: var(--dim); font: 600 0.75rem ui-monospace, monospace; }
+.row .sub { grid-column: 2 / 4; font-weight: 500; font-size: 0.75rem; color: var(--dim); }
+.dot { width: 9px; height: 9px; border-radius: 50%; justify-self: center; }
+.dot.work { background: var(--work); } .dot.idle { border: 1.5px solid var(--dim); } .dot.ok { background: var(--ok); }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term); }
+.top { flex: none; height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.top b { font-size: 0.9375rem; }
+.top .ag { color: var(--dim); font: 600 0.75rem ui-monospace, monospace; }
+.top .tstat { margin-left: auto; }
+.term { flex: 1; min-height: 0; overflow: hidden; padding: 14px 18px; font: 400 0.8125rem/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+.term .d { color: var(--dim); }
+.cur { display: inline-block; width: 0.6em; height: 1.2em; vertical-align: text-bottom; background: var(--fg); }
+.icur { display: inline-block; width: 1.5px; height: 1.15em; vertical-align: text-bottom; background: var(--fg); margin-left: 1px; }
+@media (prefers-reduced-motion: no-preference) { .cur, .icur { animation: blink 1s steps(1) infinite; } }
+@keyframes blink { 50% { opacity: 0; } }
+.compwrap { flex: none; padding: 10px 16px 14px; }
+.comp { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 10px 14px; border: 1.5px solid var(--accent); border-radius: 10px; background: var(--panel); }
+.comp .pr { color: var(--accent); font: 700 0.8125rem/1.55 ui-monospace, monospace; }
+.comp .txt { font: 400 0.8125rem/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.comp .hint { color: var(--dim); font-size: 0.75rem; white-space: nowrap; line-height: 1.55rem; }
+.status { grid-column: 1 / 3; display: flex; align-items: center; gap: 16px; padding: 0 12px; border-top: 1px solid var(--line); background: var(--bg); color: var(--dim); font-size: 0.75rem; }
+.status .r { margin-left: auto; }
+.landed { background: color-mix(in srgb, var(--ok) 14%, transparent); border-radius: 3px; }
+@media (prefers-reduced-motion: no-preference) { .landed { animation: fadeok 1.6s ease-out forwards; } }
+@keyframes fadeok { to { background: transparent; } }
+.spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; display: inline-block; vertical-align: -1px; }
+@media (prefers-reduced-motion: no-preference) { .spin { animation: rot .9s linear infinite; } }
+@keyframes rot { to { transform: rotate(360deg); } }
+/*OPT_CSS*/
+</style>
+
+<section data-screen="terminal" data-title="1 · ⌘V at a shell prompt">
+  <div class="app">
+    <nav class="sb" aria-label="Sidebar">
+      <div class="hd"><span class="gcap">midna</span></div>
+      <button class="row on" aria-current="true"><span class="dot idle"></span><span>shell</span><span class="ag">&gt;_</span></button>
+      <button class="row"><span class="dot work"></span><span>claude</span><span class="ag">✳</span><span class="sub">working · 2m</span></button>
+      <div class="hd"><span class="gcap">api</span></div>
+      <button class="row"><span class="dot ok"></span><span>server</span><span class="ag">&gt;_</span><span class="sub">running · 1h</span></button>
+    </nav>
+    <div class="main">
+      <div class="top"><b>shell</b><span class="ag">&gt;_</span><span class="tstat" data-slot="tstat"></span></div>
+      <div class="term"><span class="d">Morgans-MacBook-Pro%</span> git status --short
+<span class="d"> M crates/web/src/auth.rs</span>
+<span class="d">Morgans-MacBook-Pro%</span> git commit -am "<span data-show-state="copying slow gaveup" data-slot="tph"></span><span data-show-state="copying slow gaveup" data-slot="theld"></span><span data-show-state="landed"><span class="landed">fix login redirect on Safari</span>" &amp;&amp; git push<span class="cur"></span></span><span data-show-state="cancelled">" &amp;&amp; git push<span class="cur"></span></span>
+<span data-slot="tfoot"></span></div>
+    </div>
+    <div class="status"><span>● midnad · 3 terminals</span><span>Policy auto</span><span class="r">⌘K commands · ⌘J next</span></div>
+  </div>
+</section>
+
+<section data-screen="composer" data-title="2 · ⌘V in the composer over an agent">
+  <div class="app">
+    <nav class="sb" aria-label="Sidebar">
+      <div class="hd"><span class="gcap">midna</span></div>
+      <button class="row"><span class="dot idle"></span><span>shell</span><span class="ag">&gt;_</span></button>
+      <button class="row on" aria-current="true"><span class="dot ok"></span><span>claude</span><span class="ag">✳</span><span class="sub">waiting for you</span></button>
+      <div class="hd"><span class="gcap">api</span></div>
+      <button class="row"><span class="dot ok"></span><span>server</span><span class="ag">&gt;_</span><span class="sub">running · 1h</span></button>
+    </nav>
+    <div class="main">
+      <div class="top"><b>claude</b><span class="ag">✳</span><span class="tstat" data-slot="cstat"></span></div>
+      <div class="term"><span class="d">⏺ The login flow is fixed on Chrome and Firefox. Safari still
+  fails after the redirect; can you send me the console error?</span>
+</div>
+      <div class="compwrap" data-slot="cwrap"><div class="comp"><span class="pr">❱</span><span class="txt">here's what Safari shows on my phone: <span data-show-state="copying slow gaveup" data-slot="cph"></span><span data-show-state="copying slow gaveup" data-slot="cheld"></span><span data-show-state="landed"><span class="landed">TypeError: undefined is not an object (evaluating 'session.user.id')</span> can you fix it?<span class="icur"></span></span><span data-show-state="cancelled"> can you fix it?<span class="icur"></span></span></span><span class="hint" data-slot="chint">↩ send to claude · esc cancel</span></div></div>
+    </div>
+    <div class="status"><span>● midnad · 3 terminals</span><span>Policy auto</span><span class="r">⌘K commands · ⌘J next</span></div>
+  </div>
+</section>
+</template>
+<script>
+window.ultrahandSetup = function (canvas) {
+  var root = canvas.root || document;
+  var O = /*OPT_JS*/;
+  function fill(name, html) { root.querySelectorAll('[data-slot="' + name + '"]').forEach(function (el) { if (html != null) el.innerHTML = html; }); }
+  fill('tph', O.ph('term')); fill('theld', O.held('" && git push', 'term'));
+  fill('cph', O.ph('comp')); fill('cheld', O.held(' can you fix it?', 'comp'));
+  if (O.tstat) { fill('tstat', O.tstat('term')); fill('cstat', O.tstat('comp')); }
+  if (O.tfoot) fill('tfoot', O.tfoot());
+  if (O.chint) fill('chint', O.chint());
+};
+</script>

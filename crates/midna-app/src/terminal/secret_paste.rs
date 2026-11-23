@@ -116,7 +116,11 @@ impl TerminalView {
 
     /// ⌥⌘V: the clipboard as a secret, whatever it looks like.
     pub(super) fn paste_as_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return };
+        self.with_clipboard(|t, item, window, cx| t.clipboard_as_secret(item, window, cx), window, cx);
+    }
+
+    fn clipboard_as_secret(&mut self, item: Option<ClipboardItem>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = item.and_then(|c| c.text()) else { return };
         let mut found = secrets::scan(&text);
         if found.is_empty() {
             let start = text.len() - text.trim_start().len();
@@ -182,7 +186,10 @@ impl TerminalView {
     }
 
     fn close_secret_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.secret_sheet.take().is_some_and(|s| s.out == Out::Composer) {
+        let composer = self.secret_sheet.take().is_some_and(|s| s.out == Out::Composer);
+        // Keys typed while ⌘V read the clipboard go now, with or without the paste.
+        self.release_after_paste();
+        if composer {
             // Cancelled a composer paste: back to the composer, its text as it was.
             crate::composer::emit(crate::composer::ComposerEvent::Refocus);
             cx.notify();
@@ -213,6 +220,7 @@ impl TerminalView {
             Out::Paste => {
                 self.erase_selection(cx);
                 self.deliver(ClientMsg::Paste(text));
+                self.release_after_paste();
             }
         }
         self.focus.focus(window, cx);

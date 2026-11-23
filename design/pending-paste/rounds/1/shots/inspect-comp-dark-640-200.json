@@ -1,0 +1,498 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "counts": {
+  "text": 22,
+  "controls": 4,
+  "tabStops": 4,
+  "issues": 12,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "cut",
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "by": "div.term \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "px": 222
+  },
+  {
+   "kind": "covered",
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "by": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "kind": "cut",
+   "el": "span \"● midnad · 3 terminals\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 18
+  },
+  {
+   "kind": "cut",
+   "el": "span \"Policy auto\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 18
+  },
+  {
+   "kind": "covered",
+   "el": "span \"Policy auto\"",
+   "by": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "kind": "cut",
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 18
+  },
+  {
+   "kind": "covered",
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "by": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "with": "span.pr \"❱\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "with": "span.txt \"here's what Safari shows on my phone: Pasting… ✕ can you fix\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "with": "span \"esc cancels the paste\""
+  },
+  {
+   "kind": "overlap",
+   "el": "span \"can you fix it?\"",
+   "with": "span \"Policy auto\""
+  },
+  {
+   "kind": "target",
+   "el": "button.x \"Cancel paste\"",
+   "size": [
+    24,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  }
+ ],
+ "focusOrder": [
+  "1 button.row \"shell >_\" @480,392",
+  "2 button.row.on \"claude ✳ waiting for you\" @480,437",
+  "3 button.row \"server >_ running · 1h\" @480,582",
+  "4 button.x \"Cancel paste\" @863,676"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/midna/.claude/worktrees/slot-4/design/pending-paste/rounds/1/shots/inspect-comp-dark-640-200.json",
+ "elements": [
+  {
+   "el": "span.gcap \"midna\"",
+   "text": "midna",
+   "font": "22/700",
+   "box": [
+    494,
+    363,
+    78,
+    26
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"shell\"",
+   "text": "shell",
+   "font": "26/600",
+   "box": [
+    516,
+    399,
+    55,
+    30
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "24/600",
+   "box": [
+    649,
+    400,
+    29,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"claude\"",
+   "text": "claude",
+   "font": "26/600",
+   "box": [
+    516,
+    444,
+    79,
+    30
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#1d2130",
+   "ratio": 12.93,
+   "need": 3
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "24/600",
+   "box": [
+    649,
+    445,
+    14,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#1d2130",
+   "ratio": 6.24,
+   "need": 3
+  },
+  {
+   "el": "span.sub \"waiting for you\"",
+   "text": "waiting for you",
+   "font": "24/500",
+   "box": [
+    516,
+    479,
+    111,
+    60
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#1d2130",
+   "ratio": 6.24,
+   "need": 3
+  },
+  {
+   "el": "span.gcap \"api\"",
+   "text": "api",
+   "font": "22/700",
+   "box": [
+    494,
+    554,
+    39,
+    26
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"server\"",
+   "text": "server",
+   "font": "26/600",
+   "box": [
+    516,
+    589,
+    74,
+    30
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "24/600",
+   "box": [
+    649,
+    591,
+    29,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span.sub \"running · 1h\"",
+   "text": "running · 1h",
+   "font": "24/500",
+   "box": [
+    516,
+    625,
+    122,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "b \"claude\"",
+   "text": "claude",
+   "font": "30/700",
+   "box": [
+    696,
+    325,
+    94,
+    35
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "24/600",
+   "box": [
+    800,
+    329,
+    14,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "text": "⏺ The login flow is fixed on Chrome and Firefox. S",
+   "font": "26/400",
+   "box": [
+    698,
+    385,
+    408,
+    231
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0b0d12",
+   "ratio": 7.58,
+   "need": 3,
+   "cut": {
+    "by": "div.term \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+    "px": 222
+   },
+   "covered": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "el": "span.pr \"❱\"",
+   "text": "❱",
+   "font": "26/700",
+   "box": [
+    711,
+    420,
+    16,
+    30
+   ],
+   "fg": "#b79ae8",
+   "bg": "#151821",
+   "ratio": 7.43,
+   "need": 3
+  },
+  {
+   "el": "span.txt \"here's what Safari shows on my phone: Pasting… ✕ can you fix\"",
+   "text": "here's what Safari shows on my phone: Pasting… ✕ c",
+   "font": "26/400",
+   "box": [
+    733,
+    420,
+    141,
+    231
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#151821",
+   "ratio": 14.32,
+   "need": 3
+  },
+  {
+   "el": "span.chip[role=status] \"Pasting… ✕\"",
+   "text": "Pasting… ✕",
+   "font": "24/600",
+   "box": [
+    759,
+    671,
+    98,
+    28
+   ],
+   "fg": "#b79ae8",
+   "bg": "#33324a",
+   "ratio": 5.19,
+   "need": 3
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "text": "✕",
+   "font": "24/600",
+   "box": [
+    866,
+    674,
+    18,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#33324a",
+   "ratio": 4.83,
+   "need": 3
+  },
+  {
+   "el": "span \"can you fix it?\"",
+   "text": "can you fix it?",
+   "font": "26/400",
+   "box": [
+    733,
+    706,
+    141,
+    70
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#151821",
+   "ratio": 14.32,
+   "need": 3
+  },
+  {
+   "el": "span \"esc cancels the paste\"",
+   "text": "esc cancels the paste",
+   "font": "24/400",
+   "box": [
+    867,
+    425,
+    222,
+    28
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#151821",
+   "ratio": 6.92,
+   "need": 3
+  },
+  {
+   "el": "span \"● midnad · 3 terminals\"",
+   "text": "● midnad · 3 terminals",
+   "font": "24/400",
+   "box": [
+    492,
+    759,
+    136,
+    60
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 18
+   }
+  },
+  {
+   "el": "span \"Policy auto\"",
+   "text": "Policy auto",
+   "font": "24/400",
+   "box": [
+    735,
+    759,
+    61,
+    60
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 18
+   },
+   "covered": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "text": "⌘K commands · ⌘J next",
+   "font": "24/400",
+   "box": [
+    860,
+    759,
+    208,
+    60
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 18
+   },
+   "covered": "div.comp \"❱ here's what Safari shows on my phone: Pasting… ✕ can you f\""
+  },
+  {
+   "el": "button.row \"shell >_\"",
+   "control": true,
+   "size": [
+    199,
+    45
+   ],
+   "box": [
+    480,
+    392,
+    199,
+    45
+   ]
+  },
+  {
+   "el": "button.row.on \"claude ✳ waiting for you\"",
+   "control": true,
+   "size": [
+    199,
+    110
+   ],
+   "box": [
+    480,
+    437,
+    199,
+    110
+   ]
+  },
+  {
+   "el": "button.row \"server >_ running · 1h\"",
+   "control": true,
+   "size": [
+    199,
+    77
+   ],
+   "box": [
+    480,
+    582,
+    199,
+    77
+   ]
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "control": true,
+   "size": [
+    24,
+    18
+   ],
+   "box": [
+    863,
+    676,
+    24,
+    18
+   ]
+  }
+ ]
+}
