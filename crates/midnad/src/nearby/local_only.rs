@@ -1,8 +1,8 @@
 //! What the person driving this Mac from another of my Macs can't do over the drive link
 //! (DECISIONS.md, "Nearby: driving another of my Macs", Local-only). Over a link they are the
-//! human here (`Actor::peer`), except for these: trust between Macs, secrets, the daemon and
-//! what's installed, removing protections or widening what agents and the outside may do, this
-//! Mac's own app, and approving anything that would run one of them. Each is refused with
+//! human here (`Actor::peer`), except for these: trust between Macs, secrets (storing one is fine),
+//! the daemon and what's installed, removing protections or widening what agents and the outside
+//! may do, this Mac's own app, and approving anything that would run one of them. Each is refused with
 //! "Do this at <this Mac>", never turned into a needs-you (its answer would come back to the
 //! same window).
 use crate::daemon::Daemon;
@@ -27,8 +27,9 @@ const OVER_A_LINK: &[&str] = &[
 ];
 
 /// Local-only methods that agents may call (or ask for) here, so the catalog doesn't mark them
-/// human only.
-const ALSO_LOCAL: &[&str] = &["peers.pair", "secret.set", "secret.write", "secret.exec_env", "daemon.restart"];
+/// human only. `secret.set` isn't one: the person driving may store a secret here, as the human
+/// here would type it into the Add a secret sheet; using, writing out and removing one stay here.
+const ALSO_LOCAL: &[&str] = &["peers.pair", "secret.write", "secret.exec_env", "daemon.restart"];
 
 /// Would `method(params)` be local-only? Every human-only method is, unless [`OVER_A_LINK`]
 /// lets it through, so a new one is local-only until its section in DECISIONS.md says otherwise.

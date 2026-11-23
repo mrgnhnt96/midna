@@ -2284,7 +2284,7 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     const LOCAL_ONLY: &[&str] = &[
         "peers.pair", "peers.confirm", "peers.forget", "peers.set_tier", "peers.set_drive", "peers.set_auto_accept",
         "peers.set_agent_send", "share.accept", "share.decline",
-        "secret.set", "secret.replace", "secret.remove", "secret.write", "secret.exec_env", "trigger.set_secret",
+        "secret.replace", "secret.remove", "secret.write", "secret.exec_env", "trigger.set_secret",
         "daemon.stop", "daemon.restart", "daemon.upgrade", "daemon.reset", "updates.install", "hooks.install", "hooks.uninstall",
         "keep_awake.wake_setup",
         "rule.remove", "rule.restore", "webhooks.configure", "links.actions.approve", "links.patterns.approve",
@@ -2339,17 +2339,20 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     assert_eq!(call(&mut there, "daemon.info", json!({}))["home"], b.home.to_str().unwrap(), "B still runs and still lets A drive it");
 
     // What the human there does: change an ordinary setting, open, type into, rename and close a
-    // terminal, read secret names, add a rule. B's log says A did it.
+    // terminal, store a secret and read secret names, add a rule. B's log says A did it.
     call(&mut there, "settings.set", json!({ "key": "theme", "value": "nord" }));
     let tab = open_sh(&mut there);
     call(&mut there, "session.input", json!({ "id": tab, "text": "echo typed-$((6*7))", "enter": true }));
     wait_for(10, "typed over the link", || read(&mut hb, &tab).contains("typed-42").then_some(()));
     call(&mut there, "session.rename", json!({ "id": tab, "name": "from Alpha" }));
-    call(&mut there, "secret.list", json!({}));
+    let stored = call(&mut there, "secret.set", json!({ "name": "BW_MASTER", "value": "stored-from-alpha" }));
+    assert!(stored.get("added_by").is_none(), "the person driving stores it as the human there: {stored}");
+    let names = call(&mut there, "secret.list", json!({}));
+    assert!(names.as_array().unwrap().iter().any(|s| s["name"] == "BW_MASTER"), "{names}");
     let rule = call(&mut there, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "command", "pattern": "deploy*" } }));
     assert!(from_peer(&rule["added_by"], &fa), "{rule}");
     let audit = events(&mut hb, kinds::AUDIT);
-    for m in ["settings.set", "session.open", "session.input", "session.rename", "rule.add"] {
+    for m in ["settings.set", "session.open", "session.input", "session.rename", "secret.set", "rule.add"] {
         let e = audit.iter().rfind(|e| e["data"]["method"] == m && e["data"]["outcome"] == "ok").unwrap_or_else(|| panic!("{m} audited"));
         assert!(from_peer(&e["actor"], &fa), "{m}: {e}");
     }
