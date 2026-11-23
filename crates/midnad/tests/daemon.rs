@@ -36,6 +36,21 @@ fn shell_session_input_read_close() {
 }
 
 #[test]
+fn a_terminal_is_touched_once_input_reaches_it() {
+    let d = TestDaemon::start();
+    let mut c = d.human();
+    let touched = |c: &mut Client, id: &Value| call(c, "session.get", json!({ "id": id }))["touched"] == true;
+    // A blank new terminal: nothing has happened in it yet.
+    let blank = call(&mut c, "session.open", json!({ "kind": "shell", "cwd": "/tmp" }))["id"].clone();
+    assert!(!touched(&mut c, &blank));
+    call(&mut c, "session.input", json!({ "id": blank, "text": "e" }));
+    assert!(touched(&mut c, &blank));
+    // One opened with a command of its own isn't blank.
+    let cmd = call(&mut c, "session.open", json!({ "kind": "shell", "cwd": "/tmp", "command": ["/bin/sh"] }))["id"].clone();
+    assert!(touched(&mut c, &cmd));
+}
+
+#[test]
 fn exit_codes_set_status() {
     let d = TestDaemon::start();
     let mut c = d.human();

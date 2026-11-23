@@ -151,6 +151,9 @@ pub struct Session {
     pub queue_paused: bool,
     /// Paused with `session.pause`: its processes are stopped until it's resumed.
     pub paused: Option<midna_proto::Paused>,
+    /// Something has happened in it (a key, paste or input, or it opened with a command or
+    /// prompt): its sidebar ✕ asks before closing it.
+    pub touched: bool,
 }
 
 /// Lenient copy of `midna_proto::CustomStatus` (only what the GUI shows).
@@ -541,6 +544,7 @@ mod tests {
             close_on_exit: false,
             auto_name: None,
             allowed_tools: vec![],
+            touched: false,
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);

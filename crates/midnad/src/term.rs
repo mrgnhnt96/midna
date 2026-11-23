@@ -57,6 +57,9 @@ pub struct RtHandle {
     /// The app's current kitty keyboard protocol flags (0 = legacy keys), mirrored by the
     /// engine thread so daemon-side key injection can encode keys the way a real terminal would.
     pub kitty: Arc<AtomicU8>,
+    /// A key, paste or input reached it (`Session.touched`, folded in by `rpc::session::live`
+    /// and when state is saved).
+    pub touched: Arc<AtomicBool>,
 }
 
 /// The reaper waits for this to drop before it reports the exit, so a child that exits at once
@@ -78,6 +81,9 @@ impl RtHandle {
     }
 
     pub fn write(&self, bytes: &[u8]) -> bool {
+        if !bytes.is_empty() {
+            self.touched.store(true, Ordering::Relaxed);
+        }
         pty::write_all(self.fd.0, bytes)
     }
 
@@ -92,6 +98,10 @@ impl RtHandle {
 
     /// Hand a client message (key, scroll, mouse, focus, paste) to the engine thread.
     pub fn client(&self, m: midna_proto::frame::ClientMsg) -> bool {
+        use midna_proto::frame::{ClientMsg, KeyAction};
+        if matches!(&m, ClientMsg::Key(k) if k.action != KeyAction::Release) || matches!(&m, ClientMsg::Paste(_) | ClientMsg::Input(_)) {
+            self.touched.store(true, Ordering::Relaxed);
+        }
         self.tx.send(EngineMsg::Client(m)).is_ok()
     }
 
@@ -269,7 +279,7 @@ fn run(d: &Arc<Daemon>, sid: &str, master: RawFd, pid: i32, reap: bool, eng: Mak
     let kitty = Arc::new(AtomicU8::new(0));
     let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
     let reaper_gate = ReaperGate(Some(gate_tx));
-    let h = RtHandle { reaper_gate, tx: tx.clone(), fd: fd.clone(), pid, generation, activity: activity.clone(), kitty: kitty.clone() };
+    let h = RtHandle { reaper_gate, tx: tx.clone(), fd: fd.clone(), pid, generation, activity: activity.clone(), kitty: kitty.clone(), touched: Arc::default() };
     let weak = Arc::downgrade(d);
     engine_thread(sid.to_string(), generation, eng, title, fd.clone(), rx, weak.clone(), kitty);
     let drained = reader_thread(fd, tx, activity);

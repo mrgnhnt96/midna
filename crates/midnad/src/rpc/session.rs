@@ -22,6 +22,7 @@ pub(crate) fn live(d: &Daemon, s: &Session) -> Session {
         if time::parse_rfc3339(&s.last_activity_at).is_none_or(|old| t > old) {
             s.last_activity_at = time::format_unix(t);
         }
+        s.touched |= rt.touched.load(Ordering::Relaxed);
     }
     s
 }
@@ -261,6 +262,8 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
     let now = time::now_rfc3339();
     let (cols, rows) = (p.cols.unwrap_or(100).max(2), p.rows.unwrap_or(30).max(2));
     let mut argv = argv.unwrap_or_else(|| exec_argv(&command));
+    // Opened with something of its own to run or say: not a blank new terminal.
+    let touched = p.prompt.is_some() || p.resume.is_some() || !p.agent_args.is_empty() || p.command.as_ref().is_some_and(|c| !c.is_empty()) || preface.is_some();
     let mut preface = preface;
     match &admission {
         crate::admit::Admission::Hold(l) => argv = crate::admit::wrap(d, &sid, l, argv),
@@ -310,6 +313,7 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
         } else {
             vec![]
         },
+        touched,
     };
     {
         let mut core = d.core();
@@ -1057,7 +1061,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
     let argv = if s.kind == SessionKind::Shell { crate::adopt::shell_env(d, &command, &mut env) } else { None };
     mark_injected(d, &command, &mut env);
     // Take the old runtime out first, so its exit is ignored (no runtime for this session).
-    let old = d.core().rt.remove(sid);
+    let old = d.core().take_rt(sid);
     if let Some(old) = old {
         // The agent's background processes, as they are now: Claude stops them when it exits
         // on SIGHUP, but if it has to be killed they would live on, orphaned.
@@ -1240,7 +1244,7 @@ fn swap_to_shell(d: &Arc<Daemon>, sid: &str, generation: u64, reason: &str) -> R
         if core.rt.get(sid).map(|r| r.generation) != Some(generation) {
             return Ok(()); // closed or restarted meanwhile
         }
-        core.rt.remove(sid)
+        core.take_rt(sid)
     };
     let Some(old) = old else { return Ok(()) };
     let (tx, rx) = std::sync::mpsc::channel();

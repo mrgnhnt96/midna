@@ -4,6 +4,7 @@
 //! you. Close ignores clicks for its first `ARM` (a double-click on the ✕ can't close), and the
 //! line folds back after `REVERT`, `LEAVE` after the pointer leaves the row, on a second click
 //! of the ✕ or on a click on the row. Closed, the row folds away with its line still open.
+//! A brand-new terminal nothing has happened in (`untouched`) closes on the ✕ without the line.
 use crate::app::MainWindow;
 use crate::model::*;
 use crate::theme::Theme;
@@ -151,6 +152,12 @@ fn ask(m: &MainWindow, s: &Session) -> (String, bool) {
     }
 }
 
+/// A brand-new terminal nothing has happened in: nothing typed, pasted or sent to it, not
+/// opened with a command or prompt, and not working or waiting on you. Its ✕ closes it at once.
+fn untouched(state: StatusState, s: &Session) -> bool {
+    !s.touched && !matches!(state, StatusState::Working | StatusState::NeedsYou) && s.queue.is_empty()
+}
+
 /// The ✕ that sits on the agent icon: shown while the row is hovered (`group`) or armed.
 pub fn x_button(m: &MainWindow, s: &Session, group: &'static str, t: &Theme, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (id, armed) = (s.id.clone(), m.row_close.looks_armed(&s.id));
@@ -169,8 +176,13 @@ pub fn x_button(m: &MainWindow, s: &Session, group: &'static str, t: &Theme, cx:
         .hover(|s| s.bg(t.line))
         .tooltip(super::header::tip(if armed { "Keep it" } else { "Close terminal" }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |m, _, _, cx| {
+        .on_click(cx.listener(move |m, _, w, cx| {
             cx.stop_propagation();
+            if !m.row_close.is_armed(&id) && m.sessions.iter().find(|s| s.id == id).is_some_and(|s| untouched(m.effective_state(s), s)) {
+                disarm(m, cx);
+                m.close_row(&id, w, cx);
+                return;
+            }
             toggle(m, &id, cx);
         }))
         .child(crate::icons::Icon::Cross.el(12., if armed { t.fg } else { t.dim }))
@@ -228,8 +240,21 @@ pub fn line(m: &MainWindow, s: &Session, t: &Theme, cx: &mut Context<MainWindow>
 
 #[cfg(test)]
 mod tests {
-    use super::{ARM, Armed, RowClose};
+    use super::{ARM, Armed, RowClose, untouched};
+    use crate::model::*;
     use std::time::{Duration, Instant};
+
+    fn session(touched: bool) -> Session {
+        Session { touched, ..Default::default() }
+    }
+
+    #[test]
+    fn only_an_idle_terminal_nothing_reached_closes_without_asking() {
+        assert!(untouched(StatusState::Idle, &session(false)));
+        assert!(!untouched(StatusState::Idle, &session(true)));
+        assert!(!untouched(StatusState::Working, &session(false)));
+        assert!(!untouched(StatusState::NeedsYou, &session(false)));
+    }
 
     fn armed(id: &str, ago: Duration) -> RowClose {
         RowClose { armed: Some(Armed { id: id.into(), at: Instant::now() - ago }), ..Default::default() }
