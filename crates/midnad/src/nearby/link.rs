@@ -116,6 +116,10 @@ fn paired(w: &Weak<Daemon>, mut ch: Channel, first: Wire) {
                 transfer::serve(&d, &mut ch, &from, &id, file, offset)
             }
             Wire::FileDone { id, ok, error } => transfer::finished(&d, &ch.fingerprint, &id, ok, error),
+            Wire::DriveAllowed => {
+                super::relay::allowed(&d, &ch.fingerprint);
+                Wire::Pong
+            }
             Wire::DriveOpen { compress } => {
                 drop(d);
                 // The connection becomes the link from here on.

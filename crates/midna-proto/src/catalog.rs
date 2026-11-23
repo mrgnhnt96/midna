@@ -787,7 +787,8 @@ fn build() -> Vec<MethodSpec> {
              connects to exactly as it does to midnad.sock (newline JSON-RPC, binary stream.attach); each connection is \
              carried to that Mac over the encrypted Nearby connection and served there as an ordinary client. Event \
              drive.state reports the stages (connecting: finding, proving), connected, drops (reconnecting, then offline \
-             after a minute, still retried every 30 s) and closed, each with why. Opening a device that already has a \
+             after a minute: retried every 30 s while that Mac is seen on the network, otherwise paused until it is seen again \
+             or this Mac's network changes; a refused link is offline at once, paused until that Mac allows driving) and closed, each with why. Opening a device that already has a \
              link from this app returns that link and retries it now. Only the verified Midna app may open a link and \
              connect to its socket; anyone else is refused outright, never deferred to the human. The link closes with \
              drive.close or when the app that opened it quits."),

@@ -1,8 +1,9 @@
 //! Another Mac's window with its link down after it showed its terminals (design 3 Reconnecting
 //! and Offline, option A): a strip under the header, the last screen dimmed with typing off, and
 //! the sidebar's rows greyed "as of" when the link dropped. midnad's drive link tries again on
-//! its own (every few seconds, then every 30 s once it's been offline a minute), so the window
-//! comes back by itself; Try now wakes it early. See `MainWindow::remote_down`.
+//! its own (every few seconds; once it's been offline a minute, every 30 s while the Mac can be
+//! seen, and otherwise when it's seen again or this Mac's network changes), so the window comes
+//! back by itself; Try now tries it at once. See `MainWindow::remote_down`.
 use crate::app::{Down, MainWindow};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -41,7 +42,7 @@ pub fn message(down: Down, name: &str, at: &str, secs: i64) -> (String, String) 
         Down::Reconnecting => {
             (format!("Lost {name}. Reconnecting…"), "Its terminals keep running there. Typing is off until it's back, and isn't saved up.".into())
         }
-        Down::Offline => (format!("{name} is offline."), format!("Last seen {at} ({}). Trying every 30 s.", ago(secs))),
+        Down::Offline => (format!("{name} is offline."), format!("Last seen {at} ({}). It connects again when it's back.", ago(secs))),
     }
 }
 
@@ -153,7 +154,7 @@ mod tests {
         assert_eq!(ago(3 * 86400), "3 days ago");
         let (bold, rest) = message(Down::Offline, "Bravo", "14:02", 14 * 60);
         assert_eq!(bold, "Bravo is offline.");
-        assert_eq!(rest, "Last seen 14:02 (14 min ago). Trying every 30 s.");
+        assert_eq!(rest, "Last seen 14:02 (14 min ago). It connects again when it's back.");
         assert_eq!(message(Down::Reconnecting, "Bravo", "14:02", 5).0, "Lost Bravo. Reconnecting…");
         assert_eq!(stale_label(Down::Reconnecting, "14:02"), "As of 14:02");
         assert_eq!(stale_label(Down::Offline, "14:02"), "Last seen 14:02");

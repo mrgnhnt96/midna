@@ -100,6 +100,9 @@ pub enum Wire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compress: Option<String>,
     },
+    /// One of my devices: I let you drive me now, so try a link you parked on my refusal now.
+    /// Answered [`Wire::Pong`]; an older build refuses it, and its links wait for their person.
+    DriveAllowed,
     /// Not done; `reason` says why ([`NOT_PAIRED`], or words).
     Refused { reason: String },
     /// A message this build doesn't know (a newer peer's).

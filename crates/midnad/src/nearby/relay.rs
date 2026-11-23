@@ -6,8 +6,13 @@
 //! every accept. One Noise connection to that Mac carries every connection the app makes to the
 //! socket, each as its own stream, so the app's Backend works on it as on `midnad.sock`. The link
 //! reports its stages and drops (event `drive.state`), and is tried again by itself after a drop:
-//! soon at first, every 30 s once it has failed for a minute. While it is down a new connection
-//! to the socket gets an error line and closes; nothing is queued for later.
+//! soon at first, every 30 s once it has failed for a minute. Then a link to a Mac Bonjour can't
+//! see is parked (`offline`, its reason saying it's paused): nothing is dialed until that Mac is
+//! seen again ([`seen_again`]) or this Mac's network changes ([`network_changed`]). A link that
+//! Mac refuses ([`NOT_ALLOWED`]) is parked at once, until that Mac lets this one drive it (it
+//! says so, `drive_allowed`: [`allowed`]). Opening it again (`drive.open`, Try now) tries any
+//! parked link now. While it is down a new connection to the socket gets an error line and
+//! closes; nothing is queued for later.
 //!
 //! **That Mac** ([`serve`], when a paired connection sends `drive_open`): registers the link with
 //! [`drive::open`] (refused unless that device may drive this Mac), then serves each stream as an
@@ -83,8 +88,11 @@ const ZDATA_MAX: usize = 256 << 10;
 const PACK_FROM: usize = 512;
 /// How long the read loop waits before it looks at the time (pings, checks).
 const TICK: Duration = Duration::from_secs(1);
-/// After this long failing to connect, a link is `offline` and tried every [`OFFLINE_RETRY`].
+/// After this long failing to connect, a link is `offline`: tried every [`OFFLINE_RETRY`] while
+/// that Mac can be seen, parked while it can't.
 const OFFLINE_AFTER: Duration = Duration::from_secs(60);
+/// How often an offline link that Mac can be seen is tried, and a parked one looked at (nothing
+/// dialed: has the app quit, is that Mac seen now).
 const OFFLINE_RETRY: Duration = Duration::from_secs(30);
 /// The longest wait between tries before a link is offline.
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
@@ -464,6 +472,8 @@ pub fn serve(w: &Weak<Daemon>, mut ch: Channel, compress: &[String]) {
 #[derive(Default)]
 pub struct Outgoing {
     links: Mutex<HashMap<String, Arc<Out>>>,
+    /// Devices this Mac just let drive it, to be told so ([`tell_owed`]).
+    owed: Mutex<Vec<String>>,
 }
 
 /// The app process that opened a link: only it may use the link, and the link closes when it
@@ -493,6 +503,8 @@ struct Out {
     next_sid: AtomicU32,
     /// When the first of the current run of failed tries began.
     failing_since: Mutex<Option<Instant>>,
+    /// Why it's parked, while it is: nothing is dialed until it's woken.
+    parked: Mutex<Option<Fail>>,
 }
 
 impl Out {
@@ -509,8 +521,8 @@ impl Out {
         self.wake.1.notify_all();
     }
 
-    /// Wait up to `t`, or until poked.
-    fn sleep(&self, t: Duration) {
+    /// Wait up to `t`, or until poked; whether it was poked.
+    fn sleep(&self, t: Duration) -> bool {
         let mut g = lock(&self.wake.0);
         let deadline = Instant::now() + t;
         while !*g && !self.is_closed() {
@@ -520,7 +532,7 @@ impl Out {
             }
             g = self.wake.1.wait_timeout(g, left).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
         }
-        *g = false;
+        std::mem::replace(&mut *g, false)
     }
 
     /// Change the link's status; say so (event `drive.state`) when its state, stage or reason
@@ -612,6 +624,7 @@ pub fn open(d: &Arc<Daemon>, peer: &str, pid: i32) -> Result<DriveLink, RpcError
         wake: (Mutex::new(false), Condvar::new()),
         next_sid: AtomicU32::new(1),
         failing_since: Mutex::new(None),
+        parked: Mutex::new(None),
     });
     outgoing(d).insert(id, out.clone());
     d.emit(kinds::DRIVE_STATE, Actor::system(), None, None, serde_json::to_value(&status).unwrap_or_default());
@@ -699,8 +712,12 @@ fn accept(w: &Weak<Daemon>, o: &Arc<Out>, listener: UnixListener) {
         }
         let mux = lock(&o.mux).clone();
         let Some(mux) = mux.filter(|m| !m.is_done()) else {
-            let name = lock(&o.status).name.clone();
-            refuse(&mut conn, &format!("not connected to {name} now; the link is being tried again"));
+            let (name, reason) = { let s = lock(&o.status); (s.name.clone(), s.reason.clone().unwrap_or_default()) };
+            let why = match lock(&o.parked).is_some() {
+                true => format!("not connected to {name} now ({reason})"),
+                false => format!("not connected to {name} now; the link is being tried again"),
+            };
+            refuse(&mut conn, &why);
             continue;
         };
         let sid = o.next_sid.fetch_add(1, Ordering::SeqCst);
@@ -733,7 +750,6 @@ fn keep_up(w: &Weak<Daemon>, o: &Arc<Out>) {
             return close_out(&d, o, "the app that opened it quit");
         }
         let peer = lock(&o.status).peer.clone();
-        let offline = lock(&o.failing_since).is_some_and(|t| t.elapsed() >= OFFLINE_AFTER);
         let staged = |stage: DriveStage| {
             o.set(&d, |s| {
                 if s.state == DriveState::Connecting {
@@ -742,7 +758,7 @@ fn keep_up(w: &Weak<Daemon>, o: &Arc<Out>) {
             })
         };
         let up = connect(&d, &peer, &staged).and_then(|(ch, lz4)| {
-            let (rd, wr) = ch.split(WRITE_TIMEOUT)?;
+            let (rd, wr) = ch.split(WRITE_TIMEOUT).map_err(Failed::from)?;
             Ok((rd, Mux::new(wr, lz4)?))
         });
         match up {
@@ -782,40 +798,200 @@ fn keep_up(w: &Weak<Daemon>, o: &Arc<Out>) {
                 // Try again at once: a blip shouldn't cost a second.
                 continue;
             }
-            Err(why) => {
-                let since = *lock(&o.failing_since).get_or_insert_with(Instant::now);
-                let gone = since.elapsed() >= OFFLINE_AFTER;
+            Err(Failed { kind, why }) => {
+                let failing = lock(&o.failing_since).get_or_insert_with(Instant::now).elapsed();
+                let next = after(kind, failing, backoff);
+                let name = lock(&o.status).name.clone();
+                if next == After::Park {
+                    *lock(&o.parked) = Some(kind);
+                }
                 o.set(&d, |s| {
-                    if gone {
+                    if failing >= OFFLINE_AFTER || next == After::Park {
                         s.state = DriveState::Offline;
                     }
-                    s.reason = Some(why);
+                    s.reason = Some(if next == After::Park { paused(kind, &why, &name) } else { why });
                 });
                 drop(d);
-                let wait = if gone || offline { OFFLINE_RETRY } else { backoff };
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-                o.sleep(wait);
+                match next {
+                    After::Retry(wait) => {
+                        backoff = (backoff * 2).min(MAX_BACKOFF);
+                        o.sleep(wait);
+                    }
+                    After::Park => {
+                        park(w, o, kind, &peer);
+                        // Woken: that Mac is back, or something changed. Tried as a fresh run.
+                        *lock(&o.parked) = None;
+                        *lock(&o.failing_since) = None;
+                        backoff = Duration::from_secs(1);
+                    }
+                }
             }
         }
     }
 }
 
+/// Why a try failed, as far as what the link does next goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fail {
+    /// Bonjour doesn't see that Mac: there's nothing to dial.
+    Unseen,
+    /// That Mac doesn't let this one drive it.
+    NotAllowed,
+    /// Anything else: seen but not answering, refused for another reason, a broken handshake.
+    Other,
+}
+
+/// A failed try: its kind, and why in words.
+struct Failed {
+    kind: Fail,
+    why: String,
+}
+
+impl From<String> for Failed {
+    fn from(why: String) -> Self {
+        Failed { kind: Fail::Other, why }
+    }
+}
+
+/// What a link does after a try that failed.
+#[derive(Debug, PartialEq, Eq)]
+enum After {
+    /// Try again after this long.
+    Retry(Duration),
+    /// Dial nothing until it's woken ([`park`]).
+    Park,
+}
+
+/// After a try that failed with `kind`, the link having failed for `failing`, its backoff now
+/// `backoff`: a refusal parks at once; a Mac that can't be seen, once the link is offline;
+/// anything else is tried again, every [`OFFLINE_RETRY`] once offline.
+fn after(kind: Fail, failing: Duration, backoff: Duration) -> After {
+    match kind {
+        Fail::NotAllowed => After::Park,
+        _ if failing < OFFLINE_AFTER => After::Retry(backoff),
+        Fail::Unseen => After::Park,
+        Fail::Other => After::Retry(OFFLINE_RETRY),
+    }
+}
+
+/// A parked link's reason: why its last try failed, and what wakes it. A refusal keeps "this Mac
+/// drive it", which the app reads as that Mac's refusal.
+fn paused(kind: Fail, why: &str, name: &str) -> String {
+    let until = match kind {
+        Fail::NotAllowed => format!("{name} lets this Mac drive it"),
+        _ => format!("{name} is seen on the network again or this Mac's network changes"),
+    };
+    format!("{}; paused until {until}", why.trim_end_matches('.'))
+}
+
+/// A parked link waits, dialing nothing, until it's poked ([`seen_again`], [`network_changed`],
+/// [`allowed`], `drive.open` again) or closed. Every [`OFFLINE_RETRY`] it looks, without the
+/// network, whether the app quit (the caller's loop closes it) or Bonjour sees that Mac now.
+fn park(w: &Weak<Daemon>, o: &Out, kind: Fail, peer: &str) {
+    while !o.sleep(OFFLINE_RETRY) {
+        let Some(d) = w.upgrade() else { return };
+        if o.is_closed() || d.shutting_down.load(Ordering::Relaxed) || !o.opener.alive() {
+            return;
+        }
+        if kind == Fail::Unseen && seen(&d, peer) {
+            return;
+        }
+    }
+}
+
+/// Whether Bonjour sees `peer` now.
+fn seen(d: &Daemon, peer: &str) -> bool {
+    d.nearby.inner().peers.contains_key(peer)
+}
+
+/// What woke links up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wake {
+    /// Bonjour sees that Mac again.
+    Seen,
+    /// This Mac's network changed.
+    Network,
+    /// That Mac lets this one drive it now.
+    Allowed,
+}
+
+/// Whether `wake` tries a link parked for `parked` (None: not parked, waiting out a backoff,
+/// which a try now only shortens). Only that Mac's own word, or the person here, tries a refused
+/// one again.
+fn wakes(parked: Option<Fail>, wake: Wake) -> bool {
+    wake == Wake::Allowed || parked != Some(Fail::NotAllowed)
+}
+
+/// Poke this Mac's links (to `peer` only, if given) that `wake` tries.
+fn wake_links(d: &Daemon, peer: Option<&str>, wake: Wake) {
+    for o in outgoing(d).values() {
+        let to = peer.is_none_or(|p| lock(&o.status).peer == p);
+        if to && wakes(*lock(&o.parked), wake) {
+            o.poke();
+        }
+    }
+}
+
+/// Bonjour sees `peers` now (they just appeared): try their links now.
+pub fn seen_again(d: &Daemon, peers: &[&str]) {
+    for p in peers {
+        wake_links(d, Some(p), Wake::Seen);
+    }
+}
+
+/// This Mac's network changed (`netwatch`): try the links waiting for a Mac to be seen now.
+pub fn network_changed(d: &Daemon) {
+    wake_links(d, None, Wake::Network);
+}
+
+/// `peer` lets this Mac drive it now (its `drive_allowed`): try its links now.
+pub fn allowed(d: &Daemon, peer: &str) {
+    wake_links(d, Some(peer), Wake::Allowed);
+}
+
+/// This Mac now lets `peer` drive it ([`drive::changed`]): tell it, so a link it parked on the
+/// refusal comes up now. Sent from the nearby thread ([`tell_owed`]), never waited on here.
+pub fn tell_allowed(d: &Daemon, peer: &str) {
+    let mut owed = lock(&d.nearby.relay.owed);
+    if !owed.iter().any(|p| p == peer) {
+        owed.push(peer.to_string());
+    }
+}
+
+/// Send the `drive_allowed` notices owed, each on a thread of its own: best effort (a Mac that
+/// can't be reached now, or an older build that doesn't know it, gets nothing; its person can
+/// try the link again).
+pub fn tell_owed(d: &Arc<Daemon>) {
+    let owed = std::mem::take(&mut *lock(&d.nearby.relay.owed));
+    for peer in owed {
+        let d = d.clone();
+        let _ = std::thread::Builder::new().name("drive-allowed".into()).spawn(move || {
+            let Ok(mut ch) = link::connect_peer(&d, &peer) else { return };
+            drop(d);
+            if ch.send(&Wire::DriveAllowed).is_ok() {
+                let _ = ch.expect(transport::HANDSHAKE_TIMEOUT);
+            }
+            ch.finish();
+        });
+    }
+}
+
 /// Connect to `peer` and ask to drive it, reporting each stage; the channel, and whether that Mac
 /// agreed to [`LZ4`] (an older one doesn't answer it: plain DATA).
-fn connect(d: &Daemon, peer: &str, stage: &dyn Fn(DriveStage)) -> Result<(Channel, bool), String> {
+fn connect(d: &Daemon, peer: &str, stage: &dyn Fn(DriveStage)) -> Result<(Channel, bool), Failed> {
     let reach = Reach { finding: &|| stage(DriveStage::Finding), proving: &|| stage(DriveStage::Proving), patient: false };
-    let mut ch = link::reach_staged(d, peer, &reach).map_err(|e| e.message)?;
+    let mut ch = link::reach_staged(d, peer, &reach).map_err(|e| Failed { kind: if seen(d, peer) { Fail::Other } else { Fail::Unseen }, why: e.message })?;
     ch.send(&Wire::DriveOpen { compress: vec![LZ4.into()] })?;
     match ch.expect(transport::HANDSHAKE_TIMEOUT)? {
         Wire::DriveOk { compress } => Ok((ch, compress.as_deref() == Some(LZ4))),
         Wire::Refused { reason } if reason == NOT_ALLOWED => {
             let name = lock_name(d, peer);
-            Err(format!("{name} doesn't let this Mac drive it: turn it on at {name} in Settings › Nearby"))
+            Err(Failed { kind: Fail::NotAllowed, why: format!("{name} doesn't let this Mac drive it: turn it on at {name} in Settings › Nearby") })
         }
-        Wire::Refused { reason } if reason == transport::NOT_PAIRED => Err(format!("{} doesn't know this Mac any more (pair again)", lock_name(d, peer))),
-        Wire::Refused { reason } => Err(format!("{} refused: {reason}", lock_name(d, peer))),
-        Wire::Unknown => Err(format!("{}'s Midna is too old to be driven", lock_name(d, peer))),
-        _ => Err("an unexpected answer".into()),
+        Wire::Refused { reason } if reason == transport::NOT_PAIRED => Err(format!("{} doesn't know this Mac any more (pair again)", lock_name(d, peer)).into()),
+        Wire::Refused { reason } => Err(format!("{} refused: {reason}", lock_name(d, peer)).into()),
+        Wire::Unknown => Err(format!("{}'s Midna is too old to be driven", lock_name(d, peer)).into()),
+        _ => Err(String::from("an unexpected answer").into()),
     }
 }
 
@@ -1067,5 +1243,99 @@ mod tests {
         assert_eq!(serde_json::from_str::<Wire>(r#"{"t":"drive_open"}"#).unwrap(), Wire::DriveOpen { compress: vec![] });
         assert_eq!(serde_json::from_str::<Wire>(r#"{"t":"drive_ok"}"#).unwrap(), Wire::DriveOk { compress: None });
         assert_eq!(json(&Wire::DriveOpen { compress: vec![] }), r#"{"t":"drive_open"}"#);
+        // The notice that a Mac lets this one drive it: an older build reads it as one it
+        // doesn't know (and refuses it), not as a broken message.
+        assert_eq!(json(&Wire::DriveAllowed), r#"{"t":"drive_allowed"}"#);
+        assert_eq!(serde_json::from_str::<Before>(&json(&Wire::DriveAllowed)).unwrap(), Before::Unknown);
+    }
+
+    #[test]
+    fn a_link_is_parked_once_its_mac_cant_be_seen_and_at_once_when_refused() {
+        let (secs, b) = (Duration::from_secs, Duration::from_secs(4));
+        // Failing for less than a minute: tried again soon, seen or not (a blip, or Bonjour
+        // still looking right after the link opened).
+        for kind in [Fail::Unseen, Fail::Other] {
+            assert_eq!(after(kind, secs(0), b), After::Retry(b), "{kind:?}");
+            assert_eq!(after(kind, secs(59), b), After::Retry(b), "{kind:?}");
+        }
+        // Offline: a Mac Bonjour can't see is parked, dialing nothing; one it can see but that
+        // doesn't answer is still tried every 30 s.
+        assert_eq!(after(Fail::Unseen, OFFLINE_AFTER, b), After::Park);
+        assert_eq!(after(Fail::Unseen, secs(3600), b), After::Park);
+        assert_eq!(after(Fail::Other, OFFLINE_AFTER, b), After::Retry(OFFLINE_RETRY));
+        // Refused: never tried again by itself, from the first refusal on.
+        assert_eq!(after(Fail::NotAllowed, secs(0), b), After::Park);
+        assert_eq!(after(Fail::NotAllowed, secs(3600), b), After::Park);
+    }
+
+    #[test]
+    fn a_parked_links_reason_says_it_is_paused_and_until_what() {
+        let unseen = paused(Fail::Unseen, "that device can't be seen on the network now", "Riley's MacBook Air");
+        assert_eq!(unseen, "that device can't be seen on the network now; paused until Riley's MacBook Air is seen on the network again or this Mac's network changes");
+        let off = paused(Fail::Unseen, "Midna can't see other Macs: Local Network access is off. Turn it on, then try again.", "Bravo");
+        assert!(off.starts_with("Midna can't see other Macs") && off.contains("try again; paused until Bravo"), "{off}");
+        let refused = paused(Fail::NotAllowed, "Bravo doesn't let this Mac drive it: turn it on at Bravo in Settings › Nearby", "Bravo");
+        assert_eq!(refused, "Bravo doesn't let this Mac drive it: turn it on at Bravo in Settings › Nearby; paused until Bravo lets this Mac drive it");
+        assert!(refused.contains("this Mac drive it"), "the app still reads it as that Mac's refusal");
+    }
+
+    /// A link of this test process's own, never opened.
+    fn out() -> Arc<Out> {
+        let status = DriveLink {
+            link: "dl_test".into(),
+            peer: "fp".into(),
+            name: "Bravo".into(),
+            socket: String::new(),
+            state: DriveState::Offline,
+            stage: None,
+            reason: None,
+            last_seen: None,
+            drops: 0,
+        };
+        Arc::new(Out {
+            status: Mutex::new(status),
+            opener: Opener { pid: std::process::id() as i32, exe: String::new() },
+            socket: PathBuf::new(),
+            mux: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            wake: (Mutex::new(false), Condvar::new()),
+            next_sid: AtomicU32::new(1),
+            failing_since: Mutex::new(None),
+            parked: Mutex::new(Some(Fail::Unseen)),
+        })
+    }
+
+    #[test]
+    fn a_parked_link_waits_until_its_poked() {
+        let o = out();
+        assert!(!o.sleep(Duration::from_millis(20)), "nothing poked it: it waited it out");
+        o.poke();
+        assert!(o.sleep(Duration::from_secs(30)), "a poke that came before it slept still counts");
+        assert!(!o.sleep(Duration::from_millis(20)), "once");
+        // Parked: back as soon as it's poked, long before its next look.
+        let (poker, started) = (o.clone(), Instant::now());
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            poker.poke();
+        });
+        park(&Weak::new(), &o, Fail::Unseen, "fp");
+        t.join().unwrap();
+        assert!(started.elapsed() < OFFLINE_RETRY / 2, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn only_that_macs_word_or_the_person_here_wakes_a_refused_link() {
+        // A link waiting for its Mac to be seen: woken by Bonjour seeing it, a network change,
+        // or that Mac allowing it. So is one between tries (it's just tried sooner).
+        for parked in [Some(Fail::Unseen), None] {
+            for wake in [Wake::Seen, Wake::Network, Wake::Allowed] {
+                assert!(wakes(parked, wake), "{parked:?} {wake:?}");
+            }
+        }
+        // A refused one: only that Mac's "drive_allowed" (and `drive.open`, which pokes it
+        // directly). Seeing it again or moving networks doesn't change its answer.
+        assert!(wakes(Some(Fail::NotAllowed), Wake::Allowed));
+        assert!(!wakes(Some(Fail::NotAllowed), Wake::Seen));
+        assert!(!wakes(Some(Fail::NotAllowed), Wake::Network));
     }
 }
