@@ -725,7 +725,7 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
         .on_action(cx.listener(|m, _: &ComposerRedo, _, _| undo(m, true)))
 }
 
-/// ⌘V of a bare image (a screenshot), as ⌘V in the terminal does: over an agent, open the image
+/// ⌘V of an image (a screenshot, or a copied image file), as ⌘V in the terminal does: over an agent, open the image
 /// sheet with it (its images go with the composer's text when it's sent, `submit`); with
 /// `terminal.image_paste` inline, or any other target, type its file path. False = paste as text.
 fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
