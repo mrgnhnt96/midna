@@ -247,8 +247,9 @@ fn idle_tick(d: &Arc<Daemon>) {
             let last = d.local.book().activity.get(&s.id).copied();
             let sending = crate::queue::pending(d, &s.id);
             let Some(last) = last else { continue };
-            // Awake time: a night asleep isn't hours of idle for every terminal at once.
-            let idle = d.clock.awake_secs_since(last);
+            // Awake time: a night asleep isn't hours of idle for every terminal at once. Unless
+            // the trigger asks for the wall clock, for what expires while the Mac sleeps.
+            let idle = if t.filter.wall_clock { time::now_unix() - last } else { d.clock.awake_secs_since(last) };
             if *busy || sending || idle < i64::from(mins) * 60 {
                 continue;
             }

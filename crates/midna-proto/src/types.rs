@@ -986,6 +986,11 @@ pub struct TriggerFilter {
     /// Local `idle` triggers: minutes without a turn starting or ending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_minutes: Option<u32>,
+    /// Local `idle` triggers: count wall-clock time, sleep included, instead of awake time. For
+    /// what expires on the wall clock (an agent's 1-hour prompt cache); after a sleep longer than
+    /// `idle_minutes` it fires on wake.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wall_clock: bool,
     /// Local `schedule` triggers: when to fire, a five-field cron expression in local time
     /// (`0 9 * * mon-fri`, `*/30 * * * *`, `@daily`), or an interval (`@every 55m`). See `cron.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
