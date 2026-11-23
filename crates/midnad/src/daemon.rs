@@ -170,6 +170,18 @@ impl Core {
         self.rt.insert(sid, rt);
         drop(gate);
     }
+
+    /// Take `sid`'s runtime out to replace it (a restart): the new one starts untouched, so
+    /// what reached the old one stays on the session (`Session.touched`).
+    pub fn take_rt(&mut self, sid: &str) -> Option<RtHandle> {
+        let rt = self.rt.remove(sid)?;
+        if rt.touched.load(Ordering::Relaxed)
+            && let Some(s) = self.state.sessions.iter_mut().find(|s| s.id == sid)
+        {
+            s.touched = true;
+        }
+        Some(rt)
+    }
 }
 
 pub struct Daemon {
@@ -330,7 +342,14 @@ impl Daemon {
     }
 
     pub fn save_now(&self) {
-        let snapshot = self.core().state.clone();
+        let snapshot = {
+            let mut core = self.core();
+            let core = &mut *core;
+            for s in core.state.sessions.iter_mut().filter(|s| !s.touched) {
+                s.touched = core.rt.get(&s.id).is_some_and(|rt| rt.touched.load(Ordering::Relaxed));
+            }
+            core.state.clone()
+        };
         if let Err(e) = snapshot.save(&paths::state_path(&self.cfg.home)) {
             eprintln!("midnad: saving state failed: {e}");
         }

@@ -307,6 +307,11 @@ pub struct Session {
     /// or a trigger's headless run opened it, whatever its arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Something has happened in it: a key, paste or input reached it, or it opened with a
+    /// command, prompt or conversation of its own. An untouched terminal closes from its
+    /// sidebar row without asking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub touched: bool,
 }
 
 /// A name midna gave a terminal by itself (see `Session.auto_name`).
