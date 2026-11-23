@@ -1123,12 +1123,22 @@ pub fn clipboard_sources(cx: &App) -> Vec<Source> {
     out
 }
 
-/// Whether the clipboard holds an image and no text (so ⌘V in a terminal means "add image").
+/// Whether the clipboard holds an image (so ⌘V in a terminal means "add image").
 pub fn clipboard_is_image(cx: &App) -> bool {
-    let Some(item) = cx.read_from_clipboard() else {
-        return false;
-    };
-    item.text().is_none() && item.entries().iter().any(|e| matches!(e, ClipboardEntry::Image(_)))
+    cx.read_from_clipboard().is_some_and(|item| item_is_image(&item))
+}
+
+/// Image data and no text, or copied files that are all images. A copied image file is the image:
+/// Messages and Finder put the file on the clipboard (Finder adds its name as text), and macOS
+/// hands GPUI the file rather than its pixels.
+fn item_is_image(item: &ClipboardItem) -> bool {
+    let entries = item.entries();
+    let mut files = entries.iter().filter_map(|e| if let ClipboardEntry::ExternalPaths(p) = e { Some(&p.0) } else { None }).flatten().peekable();
+    if files.peek().is_some() {
+        return files.all(|p| looks_like_image(p));
+    }
+    let text = entries.iter().any(|e| matches!(e, ClipboardEntry::String(_)));
+    !text && entries.iter().any(|e| matches!(e, ClipboardEntry::Image(_)))
 }
 
 /// Pasted text that is only paths to image files on disk (one per line, as a shell or Finder
@@ -1347,7 +1357,7 @@ pub fn debug(m: &mut MainWindow, screen: &str, window: &mut Window, cx: &mut Con
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMsg, Draft, Mark, Note, OVERSCROLL, Outgoing, Removed, STAGE_PAD, Shot, Source, anchored, fit_scale, is_image_file, lead, load, notes_text, pan_limit, pasted_image_paths};
+    use super::{ClientMsg, Draft, Mark, Note, OVERSCROLL, Outgoing, Removed, STAGE_PAD, Shot, Source, anchored, fit_scale, is_image_file, item_is_image, lead, load, notes_text, pan_limit, pasted_image_paths};
     use ::core::prelude::v1::test;
     use gpui_kit::{Image, ImageFormat};
     use std::path::PathBuf;
@@ -1411,6 +1421,24 @@ mod tests {
 
     fn note(mark: Mark, text: &str) -> Note {
         Note { mark, text: text.into() }
+    }
+
+    #[test]
+    fn a_copied_image_file_is_an_image_on_the_clipboard() {
+        use gpui_kit::{ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths};
+        let files = |names: &[&str]| ClipboardEntry::ExternalPaths(ExternalPaths(names.iter().map(PathBuf::from).collect()));
+        let text = |t: &str| ClipboardEntry::String(ClipboardString::new(t.into()));
+        let pixels = || ClipboardEntry::Image(Image::from_bytes(ImageFormat::Png, vec![1]));
+        let is = |entries: Vec<ClipboardEntry>| item_is_image(&ClipboardItem { entries });
+        // Messages: the attachment's file (its path has spaces), no text.
+        assert!(is(vec![files(&["/Users/me/Library/Messages/Attachments/Screenshot 2026-11-20 at 2.43.20 PM.png"])]));
+        // Finder: the files, plus their names as text.
+        assert!(is(vec![files(&["/tmp/a.png", "/tmp/b.JPG"]), text("a.png\rb.JPG")]));
+        assert!(is(vec![pixels()]), "a screenshot");
+        assert!(!is(vec![files(&["/tmp/a.png", "/tmp/notes.md"])]), "not all images: paste as text");
+        assert!(!is(vec![files(&["/tmp/notes.md"]), text("notes.md")]));
+        assert!(!is(vec![pixels(), text("caption")]), "image with text stays text");
+        assert!(!is(vec![text("/tmp/a.png")]), "a typed path is left to pasted_image_paths");
     }
 
     #[test]

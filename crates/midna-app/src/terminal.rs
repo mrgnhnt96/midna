@@ -2002,8 +2002,8 @@ impl TerminalView {
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() && crate::annotate::clipboard_is_image(cx) {
-            // A bare image (a screenshot): open the image sheet with it, or paste it inline. The
-            // sheet is for agents; any other app gets the file.
+            // An image (a screenshot, or image files copied in Messages or Finder): open the image
+            // sheet with it, or paste it inline. The sheet is for agents; any other app gets the file.
             if IMAGE_PASTE_INLINE.load(Ordering::Relaxed) || !self.is_agent() {
                 self.paste_images_inline(crate::annotate::clipboard_sources(cx), cx);
             } else {
