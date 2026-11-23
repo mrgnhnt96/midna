@@ -19,8 +19,10 @@
 //! human's next prompt.
 //!
 //! `hold` also hands out build slots: at most `guard.build_slots` heavy commands run at once
-//! across every terminal. Another one waits in line inside its PreToolUse hook (the hook has a
-//! 600s timeout) and goes once a slot frees, in the order they asked. A slot frees once the
+//! across every terminal. Another one waits in line inside its PreToolUse hook and goes once a
+//! slot frees, in the order they asked. A hook can't show anything until it returns, so the wait
+//! comes back every SLOT_WAIT with the command's place in line and who holds the slots, and the
+//! agent runs it again to keep its place (or does other work first). A slot frees once the
 //! command's PostToolUse came (`after_tool`) and none of the build's processes run anymore, so a
 //! build sent to the background holds it until it ends; a build that sits idle (a server from
 //! `cargo run`) gives it up.
@@ -631,8 +633,10 @@ pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<Str
 // ------------------------------------------------------------------ build slots
 
 /// The longest a heavy command waits in line inside its PreToolUse hook (Claude gives the hook
-/// 600s). Then the agent is told to run it again, and it keeps its place for PARKED.
-const SLOT_WAIT: Duration = Duration::from_secs(540);
+/// 600s). Then the agent is told where it stands and to run it again, and it keeps its place for
+/// PARKED. The hook shows nothing while it waits: this is how often the agent and the human
+/// (reading its transcript) hear how the line moves, rather than a tool line counting minutes.
+const SLOT_WAIT: Duration = Duration::from_secs(60);
 const PARKED: Duration = Duration::from_secs(120);
 const SLOT_POLL: Duration = Duration::from_millis(500);
 /// A build with nothing running yet holds its slot this long without its PostToolUse (the
@@ -707,14 +711,63 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, model: bool
                 w.parked = Some(Instant::now());
             }
             let ahead = g.line.iter().take_while(|w| w.ticket != ticket).filter(|w| w.parked.is_none() && w.model == model).count();
-            let running = g.builds.iter().filter(|b| b.model == model).count();
-            let what = if model { "local model runs already run across the Mac's terminals (guard.model_slots" } else { "builds and tests already run across the Mac's terminals (guard.build_slots" };
-            return Some(format!(
-                "{running} {what} = {slots}) and {ahead} more are ahead of this one. Run the same command again now: it keeps its place in line and starts when a slot frees. Don't sleep or poll first."
-            ));
+            let since = g.line.iter().find(|w| w.ticket == ticket).map_or(started, |w| w.at).elapsed();
+            let holders: Vec<(String, String, Duration)> = g.builds.iter().filter(|b| b.model == model).map(|b| (b.session.clone(), b.command.clone(), b.at.elapsed())).collect();
+            drop(g);
+            let holders: Vec<(String, String, Duration)> = {
+                let core = d.core();
+                let name = |sid: &str| core.state.session(sid).map(|s| s.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| sid.to_string());
+                holders.into_iter().map(|(sid, command, held)| (name(&sid), command, held)).collect()
+            };
+            log(&format!("{} slot: {sid} still waits after {}s ({ahead} ahead)", if model { "model" } else { "build" }, since.as_secs()));
+            return Some(line_report(model, slots, ahead, since, &holders));
         }
         std::thread::sleep(SLOT_POLL);
     }
+}
+
+/// What a command still waiting for a slot tells its agent: its place in line, how long it has
+/// waited, who holds the slots (terminal name, command, for how long), and what to do next.
+fn line_report(model: bool, slots: usize, ahead: usize, waited: Duration, holders: &[(String, String, Duration)]) -> String {
+    let (what, setting) = if model { ("a model slot", "guard.model_slots") } else { ("a build slot", "guard.build_slots") };
+    let held = holders
+        .iter()
+        .map(|(name, command, for_)| {
+            let command: String = command.chars().take(80).collect();
+            format!("`{name}` runs `{command}` ({})", secs_label(*for_))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let held = if held.is_empty() { "the slots are freeing up".to_string() } else { format!("holding them: {held}") };
+    format!(
+        "waiting for {what}: {} in line after {} ({setting} = {slots}; {held}). Nothing has run yet. Run the same command again now to keep waiting: it keeps its place and holds up to a minute at a time, then tells you where it stands again. Or do other work first and run it within {} to keep your place; after that it goes to the back of the line. Don't sleep or poll first.",
+        ordinal(ahead + 1),
+        secs_label(waited),
+        secs_label(PARKED),
+    )
+}
+
+/// `45s`, `4m 10s`, `1h 5m`.
+fn secs_label(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 if s.is_multiple_of(60) => format!("{}m", s / 60),
+        60..3600 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// `1st`, `2nd`, `11th`, `23rd`.
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 /// Whether the waiter holding `ticket` gets a slot: the ones ahead of it in line (not parked)
@@ -1270,6 +1323,18 @@ mod tests {
         assert!(!has_turn(&line, 4, 0, 2));
         assert!(!has_turn(&line, 1, 2, 2));
         assert!(!has_turn(&line, 9, 0, 2), "not in line");
+    }
+
+    #[test]
+    fn a_waiting_build_hears_its_place_and_who_holds_the_slots() {
+        let holders = vec![("slot-5".to_string(), "scripts/test.sh -p midnad".to_string(), Duration::from_secs(250)), ("app".to_string(), "flutter test".to_string(), Duration::from_secs(45))];
+        let r = line_report(false, 2, 2, Duration::from_secs(60), &holders);
+        assert!(r.starts_with("waiting for a build slot: 3rd in line after 1m (guard.build_slots = 2; holding them: `slot-5` runs `scripts/test.sh -p midnad` (4m 10s), `app` runs `flutter test` (45s))"), "{r}");
+        assert!(r.contains("Run the same command again now"), "{r}");
+        assert!(r.contains("within 2m to keep your place"), "{r}");
+        let r = line_report(true, 1, 0, Duration::from_secs(3720), &[]);
+        assert!(r.starts_with("waiting for a model slot: 1st in line after 1h 2m (guard.model_slots = 1; the slots are freeing up)"), "{r}");
+        assert_eq!([1, 2, 3, 4, 11, 12, 13, 21, 22, 103].map(ordinal), ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "103rd"]);
     }
 
     #[test]
