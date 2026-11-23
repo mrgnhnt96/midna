@@ -2147,7 +2147,8 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     assert!(call(&mut ha, "needs_you.list", json!({})).as_array().unwrap().is_empty(), "nothing asks A's human");
     assert_eq!(call_err(&mut ha, "drive.open", json!({ "peer": "nope" })).code, NOT_FOUND);
 
-    // B doesn't let A drive it yet: the link waits, saying why, with its own socket ready.
+    // B doesn't let A drive it yet: the link is parked (offline, tried no more), saying why and
+    // that it's paused, with its own socket ready.
     let link = call(&mut ha, "drive.open", json!({ "peer": fb }));
     let id = link["link"].as_str().unwrap().to_string();
     let socket = link["socket"].as_str().unwrap().to_string();
@@ -2155,11 +2156,15 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     assert!(socket.starts_with(&a.home.join("drive").display().to_string()), "{socket}");
     let mode = |p: &str| std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(p).unwrap().permissions()) & 0o777;
     assert_eq!((mode(&socket), mode(a.home.join("drive").to_str().unwrap())), (0o600, 0o700));
-    drive_state(&mut ha, &id, "connecting", Some("doesn't let this Mac drive it"), 10);
-    assert_eq!(refused_line(&socket)["error"]["code"], REFUSED, "nothing is queued while it's down");
+    let parked = drive_state(&mut ha, &id, "offline", Some("doesn't let this Mac drive it"), 10);
+    assert!(parked["reason"].as_str().unwrap().ends_with("; paused until Bravo lets this Mac drive it"), "{parked}");
+    let line = refused_line(&socket);
+    assert_eq!(line["error"]["code"], REFUSED, "nothing is queued while it's down");
+    assert!(line["error"]["message"].as_str().unwrap().contains("paused until Bravo lets this Mac drive it"), "{line}");
     assert_eq!(call(&mut ha, "drive.open", json!({ "peer": fb }))["link"], id.as_str(), "one link per device and app");
 
-    // B's human allows it: the link connects on its next try, through each stage.
+    // B's human allows it: B tells A (`drive_allowed`), and the parked link connects at once,
+    // through each stage.
     call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
     let up = drive_state(&mut ha, &id, "connected", None, 15);
     assert!(up["last_seen"].is_string() && up["stage"].is_null(), "{up}");
@@ -2213,8 +2218,12 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     let down = drive_state(&mut ha, &id, "reconnecting", Some("Bravo stopped letting this Mac drive it"), 10);
     assert_eq!(down["drops"], 1, "{down}");
     assert!(there.call_value("daemon.info", json!({})).is_err(), "its connections closed");
-    drive_state(&mut ha, &id, "reconnecting", Some("doesn't let this Mac drive it"), 10);
+    drive_state(&mut ha, &id, "offline", Some("doesn't let this Mac drive it; paused until"), 10);
     assert_eq!(refused_line(&socket)["error"]["code"], REFUSED);
+    // Allowed again: woken again, without A's app asking.
+    call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
+    let back = drive_state(&mut ha, &id, "connected", None, 15);
+    assert_eq!(back["drops"], 1, "{back}");
 
     // Closed: its socket goes, and it's gone from the list.
     assert_eq!(call(&mut ha, "drive.close", json!({ "link": id }))["closed"], true);

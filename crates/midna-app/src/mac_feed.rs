@@ -9,19 +9,22 @@
 //! never reach macOS's notifications on this one.
 //!
 //! A Mac's [`Reach`] follows midnad's drive link, which retries by itself (at once, then after
-//! 1, 2, 4 and 8 s; after a minute of failures it calls the link offline and tries every 30 s),
-//! as a remote window's reconnect does (T2091). It's connected while the link is up or only
+//! 1, 2, 4 and 8 s; after a minute of failures it calls the link offline, and parks it while
+//! Bonjour can't see that Mac, until it's seen again or this Mac's network changes), as a
+//! remote window's reconnect does (T2091). It's connected while the link is up or only
 //! reconnecting, and asleep once midnad calls it offline (lid closed or off the network; a
 //! locked Mac still answers, so it's connected). Asleep keeps the items, which still wait on
 //! that Mac; it's fetched afresh when it's back. When this Mac wakes, asleep Macs are tried at
 //! once instead of at their link's next try.
 //!
-//! A Mac that refuses the link (it doesn't let this Mac drive it, or just stopped) has no
-//! items and no link: its feed is dropped and the link closed, unless a window onto that Mac is
-//! open (the window shows why; the link closes when its last window does). It's asked again
-//! every [`REFUSED_RETRY`]. While this Mac can't open links (Nearby is off here), each Mac is
-//! the same, asked again every [`LOCAL_RETRY`]. A Mac no longer paired as mine is dropped too.
-//! A Mac that's followed keeps its link when its windows close: its items still come over it.
+//! A Mac that refuses the link (it doesn't let this Mac drive it, or just stopped) has no items:
+//! they're dropped, and it stays followed on its link, which midnad parks until that Mac says it
+//! may be driven again (then it connects and its items come back). Nothing here asks it again.
+//! While this Mac can't open links (Nearby is off here), each Mac has no items and no link: its
+//! follower stops and the link is closed, unless a window onto that Mac is open (the window
+//! shows why; the link closes when its last window does), and it's asked again every
+//! [`LOCAL_RETRY`]. A Mac no longer paired as mine is dropped too. A Mac that's followed keeps
+//! its link when its windows close: its items still come over it.
 use crate::backend::{Backend, BackendEvent, ConnState, Mac};
 use crate::model::{Event, NeedsYou, Project, Session, parse_list};
 use gpui_kit::{App, BorrowAppContext, Global};
@@ -33,17 +36,16 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How long a Mac that refused this one waits before it's asked again (seconds).
-const REFUSED_RETRY: i64 = 5 * 60;
-/// And when it's this Mac that won't open links (Nearby off here): as midnad tries an offline
-/// link.
+/// How long a Mac waits to be asked again when this Mac wouldn't open links (Nearby off here),
+/// in seconds.
 const LOCAL_RETRY: i64 = 30;
 /// A notify post older than this when it arrives was replayed after a reconnect, not news
 /// (as `MainWindow::on_notification`).
 const FRESH: i64 = 30;
 /// The newest posts each Mac keeps.
 const MAX_POSTS: usize = 50;
-/// How often refused Macs are checked for their next ask, and this Mac for waking up.
+/// How often Macs this one couldn't open links to are checked for their next ask, and this Mac
+/// for waking up.
 const TICK: Duration = Duration::from_secs(15);
 /// A tick this much later than due: this Mac slept in between.
 const SLEPT: i64 = 45;
@@ -106,7 +108,7 @@ enum Next {
     Nothing,
     /// Ask that Mac for its items (and where they are) again.
     Fetch,
-    /// It refused: stop following it.
+    /// This Mac won't open links (Nearby off here): stop following it.
     Stop,
 }
 
@@ -150,15 +152,16 @@ impl Feed {
             ConnState::NotRunning { error, .. } => Some(error.as_str()),
             ConnState::Connected | ConnState::Connecting => None,
         };
-        // That Mac's refusal, or this Mac's own (`drive.open` while Nearby is off here, which
-        // would otherwise be asked again every second).
+        // That Mac's refusal (its link waits, parked, for it to allow this one), or this Mac's
+        // own (`drive.open` while Nearby is off here, which would otherwise be asked again
+        // every second).
         let here = matches!(st, ConnState::NotRunning { error, .. } if error.contains("Nearby is off"));
         if let Some(why) = reason.filter(|r| crate::macs::refused(r) || here) {
             self.reach = Reach::NotAllowed { why: why.to_string() };
             self.needs.clear();
             self.posts.clear();
             self.places.clear();
-            return Next::Stop;
+            return if here { Next::Stop } else { Next::Nothing };
         }
         match st {
             ConnState::Connected => {
@@ -302,7 +305,7 @@ struct Followed {
     feed: Arc<Mutex<Feed>>,
     /// Its follower's events: closing it stops the follower.
     events: async_channel::Receiver<BackendEvent>,
-    /// When it refused and its link was let go (unix seconds).
+    /// When this Mac couldn't open its link (Nearby off here) and let it go (unix seconds).
     refused_at: Option<i64>,
 }
 
@@ -320,7 +323,8 @@ pub struct MacFeeds {
 impl Global for MacFeeds {}
 
 impl MacFeeds {
-    /// Whether `peer` is followed and hasn't refused: its link stays up for its items.
+    /// Whether `peer` is followed and its link wasn't let go: it stays for its items (or, while
+    /// that Mac refuses, for when it allows this one again).
     fn follows(&self, peer: &str) -> bool {
         self.followed.get(peer).is_some_and(|f| f.refused_at.is_none())
     }
@@ -405,15 +409,17 @@ fn follow_mac(mac: Mac, cx: &mut App) {
     cx.global_mut::<MacFeeds>().followed.insert(mac.peer, Followed { feed, events, refused_at: None });
 }
 
-/// A follower changed its feed: let go of the links of Macs that just refused, and tell the
-/// observers.
+/// A follower changed its feed: let go of the links this Mac just couldn't open (Nearby off
+/// here), and tell the observers. A Mac that refused keeps its link: midnad wakes it when that
+/// Mac allows this one.
 fn on_changes(cx: &mut App) {
     let now = midna_proto::time::now_unix();
+    let here = |f: &Followed| matches!(&f.feed.lock().unwrap().reach, Reach::NotAllowed { why } if !crate::macs::refused(why));
     let refused: Vec<String> = cx
         .global::<MacFeeds>()
         .followed
         .iter()
-        .filter(|(_, f)| f.refused_at.is_none() && matches!(f.feed.lock().unwrap().reach, Reach::NotAllowed { .. }))
+        .filter(|(_, f)| f.refused_at.is_none() && here(f))
         .map(|(p, _)| p.clone())
         .collect();
     for peer in refused {
@@ -425,21 +431,12 @@ fn on_changes(cx: &mut App) {
     changed(cx);
 }
 
-/// Every [`TICK`]: ask refused Macs again once they're due ([`REFUSED_RETRY`], or
-/// [`LOCAL_RETRY`] when it was this Mac that couldn't), and after this Mac `woke`, try
-/// asleep ones now.
+/// Every [`TICK`]: ask Macs this one couldn't open links to again once they're due
+/// ([`LOCAL_RETRY`]), and after this Mac `woke`, try asleep ones now.
 fn tick(woke: bool, now: i64, cx: &mut App) {
     let g = cx.global::<MacFeeds>();
-    let due: Vec<Mac> = g
-        .mine
-        .iter()
-        .filter(|m| {
-            let Some(f) = g.followed.get(&m.peer) else { return false };
-            let theirs = matches!(&f.feed.lock().unwrap().reach, Reach::NotAllowed { why } if crate::macs::refused(why));
-            f.refused_at.is_some_and(|at| now - at >= if theirs { REFUSED_RETRY } else { LOCAL_RETRY })
-        })
-        .cloned()
-        .collect();
+    let due: Vec<Mac> =
+        g.mine.iter().filter(|m| g.followed.get(&m.peer).and_then(|f| f.refused_at).is_some_and(|at| now - at >= LOCAL_RETRY)).cloned().collect();
     let asleep: Vec<String> =
         if woke { g.followed.iter().filter(|(_, f)| matches!(f.feed.lock().unwrap().reach, Reach::Asleep { .. })).map(|(p, _)| p.clone()).collect() } else { vec![] };
     let local = g.local.clone();
@@ -627,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn turning_driving_off_there_drops_its_items_and_stops() {
+    fn turning_driving_off_there_drops_its_items_and_waits_for_it_to_come_back_on() {
         let (b, mac) = mac('j');
         let (feed, rx) = followed(&b, &mac);
         until(&feed, "connected", |f| f.reach == Reach::Connected && !f.needs.is_empty());
@@ -636,11 +633,12 @@ mod tests {
         let f = feed.lock().unwrap().clone();
         assert!(f.needs.is_empty() && f.posts.is_empty() && f.places.is_empty());
         assert_eq!(f.reach, Reach::NotAllowed { why: "Morgan's Mac mini stopped letting this Mac drive it".into() });
-        let start = Instant::now();
-        while !rx.is_closed() {
-            assert!(start.elapsed() < Duration::from_secs(5), "the follower stops");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // Still followed on its (parked) link, never asked again from here: when that Mac lets
+        // this one drive it, midnad's link comes up and the items are back.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!rx.is_closed(), "the follower stays");
+        b.call("fake.link", json!({ "state": "connected" })).unwrap();
+        until(&feed, "allowed again", |f| f.reach == Reach::Connected && !f.needs.is_empty());
     }
 
     #[test]
@@ -659,10 +657,13 @@ mod tests {
         assert_eq!(f.reach, Reach::Connected);
         f.on_conn(&link(DriveState::Offline, Some("timed out")), 360);
         assert_eq!(f.reach, Reach::Asleep { since: Some(300) });
-        // The first refusal's wording too.
-        let why = "Bravo doesn't let this Mac drive it: turn it on at Bravo in Settings › Nearby";
-        assert_eq!(f.on_conn(&ConnState::NotRunning { socket: "/x".into(), error: why.into() }, 400), Next::Stop);
+        // The first refusal's wording too (the link parked, as its socket says): followed on,
+        // waiting for that Mac.
+        let why = "not connected to Bravo now (Bravo doesn't let this Mac drive it: turn it on at Bravo in Settings › Nearby; paused until Bravo lets this Mac drive it)";
+        assert_eq!(f.on_conn(&ConnState::NotRunning { socket: "/x".into(), error: why.into() }, 400), Next::Nothing);
         assert_eq!(f.reach, Reach::NotAllowed { why: why.into() });
+        assert_eq!(f.on_conn(&ConnState::Connected, 500), Next::Fetch, "allowed again");
+        assert_eq!(f.reach, Reach::Connected);
         // Nor while this Mac won't open links: no asking again every second.
         let mut f = Feed::new(Mac { peer: "a".repeat(64), name: "Bravo".into() });
         let off = "Nearby is off on this Mac (visibility off): turn it on to drive another Mac";

@@ -306,7 +306,8 @@ pub struct MainWindow {
 pub enum Down {
     /// Trying again every few seconds: the amber strip.
     Reconnecting,
-    /// A minute of failed tries: the red strip, tries every 30 s (midnad's drive link).
+    /// A minute of failed tries: the red strip. midnad's drive link tries every 30 s while that Mac
+    /// can be seen, and otherwise waits for it to be seen again or this Mac's network to change.
     Offline,
 }
 

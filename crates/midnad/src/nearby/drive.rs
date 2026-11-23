@@ -140,7 +140,9 @@ pub fn changed(d: &Daemon, peer: &str, name: &str, before: bool, after: bool, wh
     if before == after {
         return;
     }
-    if !after {
+    if after {
+        super::relay::tell_allowed(d, peer);
+    } else {
         cut(d, peer, why);
     }
     let ev = PeerDrive { peer: peer.to_string(), name: name.to_string(), on: after };

@@ -31,6 +31,7 @@ pub mod guard;
 pub mod identity;
 pub mod link;
 pub mod local_only;
+pub mod netwatch;
 pub mod notes;
 pub mod objects;
 pub mod pairing;
@@ -332,12 +333,17 @@ pub fn start(d: &Arc<Daemon>) {
     let _ = std::thread::Builder::new().name("nearby".into()).spawn(move || {
         // Dropped when the thread ends, which withdraws the advertisement.
         let mut worker = service.map(|s| Worker::new(s, iface, port));
+        let mut net = netwatch::Watch::default();
         loop {
             let Some(d) = w.upgrade() else { return };
             if d.shutting_down.load(Ordering::Relaxed) {
                 return;
             }
             expire(&d);
+            relay::tell_owed(&d);
+            if net.poll() {
+                relay::network_changed(&d);
+            }
             match worker.as_mut() {
                 Some(wk) => wk.step(&d),
                 None => {
@@ -691,11 +697,13 @@ impl Worker {
             d.emit(kinds::PEERS_LEFT, Actor::system(), None, None, serde_json::to_value(&p).unwrap_or_default());
         }
         let any_appeared = !appeared.is_empty();
+        let fps: Vec<String> = appeared.iter().map(|p| p.fingerprint.clone()).collect();
         for p in appeared {
             d.emit(kinds::PEERS_APPEARED, Actor::system(), None, None, serde_json::to_value(&p).unwrap_or_default());
         }
         if any_appeared {
             share::nudge(d);
+            relay::seen_again(d, &fps.iter().map(String::as_str).collect::<Vec<_>>());
         }
     }
 

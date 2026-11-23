@@ -415,7 +415,10 @@ pub enum DriveState {
     Connected,
     /// It dropped and is being tried again (`reason` says why it dropped or the last try failed).
     Reconnecting,
-    /// A minute of failed tries: still tried, every 30 s.
+    /// A minute of failed tries: tried every 30 s while that Mac can be seen on the network;
+    /// otherwise paused until it's seen again or this Mac's network changes. A link that Mac
+    /// refused is offline at once, paused until that Mac lets this one drive it. `reason` says
+    /// which ("…; paused until …"). Opening it again (Try now) tries it at once.
     Offline,
     /// Closed for good (`drive.close`, the app that opened it quit, or this daemon stopping).
     Closed,
