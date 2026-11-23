@@ -515,7 +515,7 @@ pub static VERBS: &[Verb] = &[
                 | --run CMD [--background | --headless [--timeout 30m]] | --attention MSG)\n            \
                 [--project P] [--hook-id N] [--session-name TEMPLATE]\n       \
                 triggers add --name N --event hook.<Hook>|<midna event kind>|stream.<name>.<kind>|idle|schedule [--source local]\n            \
-                [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m] [--cron '0 9 * * mon-fri']\n            \
+                [--session ID] [--in-project P] [--for-agent claude|codex] [--idle-for 55m [--wall-clock]] [--cron '0 9 * * mon-fri']\n            \
                 [--between 13:00-17:00] [--starts '2026-10-06 13:00'] [--ends 2026-10-31] [--max-runs N] [--wake]\n            \
                 [--match path=glob]...\n            \
                 (--send TEXT [--send TEXT | --send-no-enter TEXT]... | --set-status LABEL --color C --base B\n             \
@@ -549,6 +549,8 @@ pub static VERBS: &[Verb] = &[
                   case-insensitive; the same path twice needs both globs, in any order. An empty glob removes the key\n\
                   on update; an empty value clears a filter flag.\n\
                   Durations: 90s, 55m, 1h30m; a bare number is minutes for --idle-for, seconds for --cooldown.\n\
+                  --idle-for counts awake time; --wall-clock counts sleep too, for what expires on the clock (an\n\
+                  agent's prompt cache), and fires on wake after a longer sleep (--no-wall-clock on update).\n\
                   --cron (implies --event schedule): minute hour day-of-month month day-of-week in local time, or\n\
                   @hourly/@daily/@weekly/@monthly/@yearly, or @every 55m for an interval cron can't say (*/55 is\n\
                   :00 and :55; @every counts from --starts, or runs one interval after it's added). Without\n\

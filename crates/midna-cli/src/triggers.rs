@@ -95,6 +95,9 @@ pub fn filter_text(f: &Value) -> String {
     if let Some(m) = f["idle_minutes"].as_u64() {
         out.push(format!("idle={m}m"));
     }
+    if f["wall_clock"] == true {
+        out.push("wall-clock".into());
+    }
     if let Some(c) = f["cron"].as_str() {
         out.push(format!("cron={}", q(c)));
     }
@@ -274,7 +277,7 @@ const LOCAL_EVENT_PREFIXES: &[&str] = &["hook.", "agent.", "session.", "needs_yo
 
 /// Flags that only make sense on a local trigger; any of them makes `add` default to `--source local`.
 const LOCAL_FLAGS: &[&str] = &[
-    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
+    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "wall-clock", "match", "send", "send-no-enter",
     "set-status", "clear-status", "cooldown", "enable", "to",
 ];
 
@@ -580,6 +583,16 @@ fn filter_from(a: &Args, base: Value) -> Result<(Value, bool), Fail> {
             false => _ = f.as_object_mut().map(|o| o.remove("wake")),
         }
     }
+    if a.has("wall-clock") || a.has("no-wall-clock") {
+        if a.has("wall-clock") && a.has("no-wall-clock") {
+            return Err(Fail::Usage("--wall-clock and --no-wall-clock: pick one".into()));
+        }
+        touched = true;
+        match a.has("wall-clock") {
+            true => f["wall_clock"] = json!(true),
+            false => _ = f.as_object_mut().map(|o| o.remove("wall_clock")),
+        }
+    }
     if !a.all("match").is_empty() {
         touched = true;
         let mut m = f.get("match").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -673,7 +686,7 @@ fn cooldown(a: &Args) -> Result<Option<u64>, Fail> {
 
 const ADD_FLAGS: &[&str] = &[
     "name", "source", "event", "repo", "branch", "action", "label", "agent", "prompt", "run", "attention", "project", "hook-id", "session-name",
-    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "match", "send", "send-no-enter",
+    "session", "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "wake", "wall-clock", "match", "send", "send-no-enter",
     "set-status", "color", "base", "clear-on", "icon", "clear-status", "cooldown", "enable", "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "silent",
     "background", "headless", "timeout", "permission-mode", "allow-tool", "to",
 ];
@@ -774,7 +787,7 @@ pub fn triggers(a: &Args, out: OutFn) -> Res {
             });
         }
         "update" | "edit" => {
-            a.check(&ADD_FLAGS.iter().copied().filter(|f| *f != "enable").chain(["no-wake"]).collect::<Vec<_>>())?;
+            a.check(&ADD_FLAGS.iter().copied().filter(|f| *f != "enable").chain(["no-wake", "no-wall-clock"]).collect::<Vec<_>>())?;
             let id = a.need(2, "trigger id")?;
             let cur = find(id)?;
             let project = a.get("project").map(str::to_string).or_else(|| cur["action"]["project_id"].as_str().map(str::to_string));
@@ -1094,6 +1107,11 @@ mod tests {
         let (fk, _) = ok(filter_from(&args(&["t", "--no-wake"]), fk));
         assert!(fk["wake"].is_null() && !filter_text(&fk).contains("wake"));
         assert!(matches!(filter_from(&args(&["t", "--wake", "--no-wake"]), json!({})), Err(Fail::Usage(_))));
+        let (fc, _) = ok(filter_from(&args(&["t", "--idle-for", "55m", "--wall-clock"]), json!({})));
+        assert_eq!(fc["wall_clock"], true);
+        assert!(filter_text(&fc).contains("idle=55m wall-clock"), "{}", filter_text(&fc));
+        let (fc, _) = ok(filter_from(&args(&["t", "--no-wall-clock"]), fc));
+        assert!(fc["wall_clock"].is_null() && !filter_text(&fc).contains("wall-clock"));
         let (f6, _) = ok(filter_from(&args(&["t", "--cron", ""]), f5));
         assert!(f6["cron"].is_null());
         let (f4, touched) = ok(filter_from(&args(&["t"]), json!({ "repo": "a/b" })));

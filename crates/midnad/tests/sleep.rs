@@ -59,6 +59,37 @@ fn an_idle_trigger_doesnt_fire_on_wake() {
     assert_eq!(fired(&mut h), 1, "56 awake minutes are");
 }
 
+#[test]
+fn a_wall_clock_idle_trigger_counts_the_sleep() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let t = call(
+        &mut h,
+        "trigger.add",
+        json!({
+            "name": "Compact before the cache expires", "source": "local", "event": "idle",
+            "filter": { "idle_minutes": 55, "wall_clock": true, "session": sid },
+            "action": { "kind": "send_to_session", "steps": [{ "text": "echo compact-{{idle_minutes}}" }] }, "enabled": true
+        }),
+    );
+    assert_eq!(t["filter"]["wall_clock"], true, "{t}");
+    let fired = |h: &mut Client| call(h, "trigger.deliveries", json!({ "trigger_id": t["id"] })).as_array().unwrap().len();
+    // 40 awake minutes, then a 20-minute sleep: 60 minutes on the wall clock.
+    d.daemon().clock.simulate_sleep(20 * 60);
+    midnad::local::backdate_activity(&d.daemon(), &sid, 60 * 60);
+    assert_eq!(fired(&mut h), 1, "60 wall-clock minutes are past 55, though only 40 were awake");
+    let e = call_err(
+        &mut h,
+        "trigger.add",
+        json!({
+            "name": "x", "source": "local", "event": "schedule", "filter": { "cron": "0 9 * * *", "wall_clock": true },
+            "action": { "kind": "attention", "message": "x" }
+        }),
+    );
+    assert!(e.message.contains("wall_clock"), "{}", e.message);
+}
+
 fn queued(h: &mut Client, sid: &str) -> Vec<Value> {
     call(h, "queue.list", json!({ "session": sid }))["items"].as_array().cloned().unwrap_or_default()
 }

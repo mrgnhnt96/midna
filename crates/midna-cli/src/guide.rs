@@ -284,7 +284,7 @@ const TOPICS: &[(&str, &str)] = &[
         draft; the human pastes the secret and enables. `midna triggers test <id> --payload f.json` dry-runs one.\n\
         A local trigger (source local) fires on this Mac. event: `hook.<HookEvent>` (hook.Stop, hook.UserPromptSubmit, \
         hook.Notification, …), a midna event kind (agent.prompt_blocked {hook, message, prompt}, agent.turn_ended, \
-        session.status, …), `idle` (no turn started/ended for filter idle_minutes) or `schedule` (filter cron: five \
+        session.status, …), `idle` (no turn started/ended for filter idle_minutes of awake time, or of wall-clock time with filter wall_clock: true) or `schedule` (filter cron: five \
         fields in local time, `0 9 * * mon-fri`, `*/30 * * * *`, or @hourly/@daily/@weekly/@monthly/@yearly, or `@every 55m` for an interval cron can't say \
         (`*/55` is :00 and :55; it counts from starts_at, filled in as one interval after it's added); data \
         {cron, scheduled_for, local_time}; with no session/project/agent filter it fires once about no terminal, with \
@@ -293,7 +293,7 @@ const TOPICS: &[(&str, &str)] = &[
         (1 = once; a new value restarts the count) narrow it; filter wake: true wakes a sleeping Mac for each run, even \
         outside the keep-awake hours, and keeps it awake while the work goes on (needs keep_awake.enabled and \
         keep_awake.wake)); globs ok. \
-        Filters: session, project, agent (claude|codex), idle_minutes, cron, match {dotted.path: glob} (case-insensitive, all must match the \
+        Filters: session, project, agent (claude|codex), idle_minutes, wall_clock, cron, match {dotted.path: glob} (case-insensitive, all must match the \
         hook payload / event data). Actions on the terminal that fired: send_to_session {steps:[{text, enter}]} (in \
         order, each waits until the agent is ready; on agent.prompt_blocked midna first clears the refused prompt Claude put \
         back in its input box), set_status {label, color, icon?, base: idle|working|needs_you|done|failed, \

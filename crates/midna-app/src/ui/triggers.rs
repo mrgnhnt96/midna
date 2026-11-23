@@ -42,6 +42,9 @@ pub struct FilterItem {
     pub agent: Option<String>,
     /// Local `idle`: minutes without a turn.
     pub idle_minutes: Option<u32>,
+    /// Local `idle`: count wall-clock time, sleep included, instead of awake time.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub wall_clock: bool,
     /// Local `schedule`: a cron expression in local time.
     pub cron: Option<String>,
     /// Local `schedule`: only between these local times of day (`HH:MM`).
@@ -272,7 +275,7 @@ impl TriggerItem {
         let mut parts: Vec<String> =
             [("branch", &f.branch), ("action", &f.action), ("label", &f.label)].iter().filter_map(|(k, v)| v.as_ref().map(|v| format!("{k} == \"{v}\""))).collect();
         if let Some(m) = f.idle_minutes {
-            parts.push(format!("idle {m} min"));
+            parts.push(format!("idle {m} min{}", if f.wall_clock { " (wall clock)" } else { "" }));
         }
         if let Some(c) = &f.cron {
             parts.push(format!("cron \"{c}\"{}", self.next_run().map(|r| format!(" · next {r}")).unwrap_or_default()));
@@ -318,6 +321,9 @@ impl TriggerItem {
         }
         if let Some(m) = f.idle_minutes {
             a.push(format!("--idle-for {m}m"));
+        }
+        if f.wall_clock {
+            a.push("--wall-clock".into());
         }
         if let Some(c) = &f.cron {
             a.push(format!("--cron {}", sh_quote(c)));
