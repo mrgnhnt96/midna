@@ -416,7 +416,7 @@ struct Line {
     seq: u64,
     stale_logged: bool,
     /// Another Mac's item (its name): a bar of that Mac's colour on its edge, and it says which
-    /// Mac. Clicking it opens that Mac's list, as its tab does, and it flies into its row there.
+    /// Mac. Clicking it grows it into its row's card, acting on it over there.
     mac: Option<String>,
     /// That Mac's peer.
     peer: Option<String>,
@@ -2279,6 +2279,17 @@ impl Badge {
         }
     }
 
+    /// A click on the capsule beside the badge (from `peer`, None this Mac): it grows into its
+    /// card `card_id` where it is. Another Mac's does too while its row is in that Mac's list
+    /// (the card acts on it there); without one, it opens that Mac's list as its tab does.
+    fn click_line(&mut self, peer: Option<String>, card_id: &str, cx: &mut Context<Self>) {
+        let Some(peer) = peer.filter(|_| self.row(card_id).is_none()) else { return self.open_line_card(card_id) };
+        let part = Some(peer);
+        if !self.list && self.can_open(&part) {
+            self.open_from_badge(part, cx);
+        }
+    }
+
     /// Grow the capsule beside the badge into its card, where it is (the list's card, so its
     /// buttons and arrow are what go somewhere). It stays while the card's open.
     fn open_line_card(&mut self, id: &str) {
@@ -3438,8 +3449,8 @@ impl Badge {
         let hover = self.hover == Some("line");
         let key = format!("line:{}", l.serial);
         let k = self.grow(&key, Instant::now()).max(0.);
-        // Another Mac's: no × or arrow (its terminal is over there), and it opens its Mac's list as
-        // that Mac's tab does.
+        // Another Mac's: no × or arrow (its terminal is over there). A click opens its row's card
+        // (`click_line`).
         let remote = l.mac.is_some();
         let peer = l.peer.clone();
         let out = k > 0.01 && !remote;
@@ -3482,15 +3493,7 @@ impl Badge {
                 move |b, on: &bool, _, cx| b.hover_row(&key, *on, cx)
             }))
             .on_click(cx.listener(move |b, _, _, cx| {
-                if let Some(peer) = peer.clone() {
-                    // Another Mac's opens its list, flying into its row there.
-                    let part = Some(peer);
-                    if !b.list && b.can_open(&part) {
-                        b.open_from_badge(part, cx);
-                    }
-                } else {
-                    b.open_line_card(&card_id);
-                }
+                b.click_line(peer.clone(), &card_id, cx);
                 cx.notify();
             }));
         // A passing kind's tint clears from left to right over its time. Not while it slides
@@ -4732,6 +4735,31 @@ mod tests {
         // Once it's handled there, ⌘J has nothing to go to.
         p.badge.update(cx, |b, _, _| b.cleared.push(item.clone())).unwrap();
         assert_eq!(front(cx), (None, false));
+    }
+
+    #[gpui_kit::test]
+    fn clicking_another_macs_capsule_opens_its_card(cx: &mut TestAppContext) {
+        use crate::mac_feed::{Post, Reach};
+        let p = pill('k', cx);
+        let peer = Some(p.peer.clone());
+        let sid = p.mini.call("session.list", json!({})).unwrap()[0]["id"].as_str().unwrap().to_string();
+        let posted = json!({ "category": "attention", "title": "", "via": "app", "id": "p61", "body": "Build finished", "stay_secs": 0 });
+        let post = Post { seq: 61, session: Some(sid), at: midna_proto::time::now_rfc3339(), posted: serde_json::from_value(posted).unwrap() };
+        follow_as(&p, Reach::Connected, cx);
+        follow_posts(&p, Reach::Connected, vec![post], cx);
+        // Its capsule springs out and is clicked: it grows into its row's card where it is, and
+        // the list stays shut.
+        let (list, expanded) = p
+            .badge
+            .update(cx, |b, _, cx| {
+                b.spring_mac_line(Instant::now() + Duration::from_secs(60));
+                let card = b.line_waiting(b.lines.front().expect("its capsule"));
+                b.click_line(peer.clone(), &card.id, cx);
+                (b.list, b.expanded.as_ref().map(|(e, _)| e.clone()))
+            })
+            .unwrap();
+        assert!(!list);
+        assert_eq!(expanded, Some(mac_tab::row_id(&p.peer, "n61")));
     }
 
     #[gpui_kit::test]
