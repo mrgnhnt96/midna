@@ -591,10 +591,18 @@ pub fn execute(m: &mut MainWindow, cmd: &Command, window: &mut Window, cx: &mut 
                     m.toast("Select some text in a terminal first", cx);
                 }
             }
-            "clipboard" => match cx.read_from_clipboard().and_then(|c| c.text()).filter(|t| !t.trim().is_empty()) {
-                Some(text) => crate::ui::share::open(m, text, window, cx),
-                None => m.toast("There's no text on the clipboard to share", cx),
-            },
+            // Off the main thread: what another device copied can take seconds to arrive.
+            "clipboard" => {
+                let read = crate::clipboard::read(cx);
+                cx.spawn_in(window, async move |this, cx| {
+                    let text = read.await.and_then(|c| c.text()).filter(|t| !t.trim().is_empty());
+                    let _ = this.update_in(cx, |m, window, cx| match text {
+                        Some(text) => crate::ui::share::open(m, text, window, cx),
+                        None => m.toast("There's no text on the clipboard to share", cx),
+                    });
+                })
+                .detach();
+            }
             "agent" => crate::ui::share::open_agent_start(m, None, window, cx),
             "tab" => crate::ui::share::open_tab(m, None, window, cx),
             "file" => crate::ui::share::choose_file(m, window, cx),

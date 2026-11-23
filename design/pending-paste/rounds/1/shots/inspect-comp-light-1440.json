@@ -1,0 +1,421 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "scale": 0.83,
+ "counts": {
+  "text": 22,
+  "controls": 4,
+  "tabStops": 4,
+  "issues": 1,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "target",
+   "el": "button.x \"Cancel paste\"",
+   "size": [
+    24,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  }
+ ],
+ "focusOrder": [
+  "1 button.row \"shell >_\" @199,242",
+  "2 button.row.on \"claude ✳ waiting for you\" @199,269",
+  "3 button.row \"server >_ running · 1h\" @199,335",
+  "4 button.x \"Cancel paste\" @771,873"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/midna/.claude/worktrees/slot-4/design/pending-paste/rounds/1/shots/inspect-comp-light-1440.json",
+ "elements": [
+  {
+   "el": "span.gcap \"midna\"",
+   "text": "midna",
+   "font": "11/700",
+   "box": [
+    211,
+    223,
+    34,
+    11
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"shell\"",
+   "text": "shell",
+   "font": "13/600",
+   "box": [
+    229,
+    248,
+    25,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "12/600",
+   "box": [
+    380,
+    249,
+    12,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"claude\"",
+   "text": "claude",
+   "font": "13/600",
+   "box": [
+    229,
+    273,
+    35,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#ffffff",
+   "ratio": 17.59,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "12/600",
+   "box": [
+    380,
+    274,
+    6,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#ffffff",
+   "ratio": 6.65,
+   "need": 4.5
+  },
+  {
+   "el": "span.sub \"waiting for you\"",
+   "text": "waiting for you",
+   "font": "12/500",
+   "box": [
+    229,
+    287,
+    71,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#ffffff",
+   "ratio": 6.65,
+   "need": 4.5
+  },
+  {
+   "el": "span.gcap \"api\"",
+   "text": "api",
+   "font": "11/700",
+   "box": [
+    211,
+    316,
+    17,
+    11
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"server\"",
+   "text": "server",
+   "font": "13/600",
+   "box": [
+    229,
+    339,
+    34,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "12/600",
+   "box": [
+    380,
+    341,
+    12,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.sub \"running · 1h\"",
+   "text": "running · 1h",
+   "font": "12/500",
+   "box": [
+    229,
+    354,
+    56,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "b \"claude\"",
+   "text": "claude",
+   "font": "15/700",
+   "box": [
+    419,
+    194,
+    41,
+    15
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "12/600",
+   "box": [
+    468,
+    195,
+    6,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "text": "⏺ The login flow is fixed on Chrome and Firefox. S",
+   "font": "13/400",
+   "box": [
+    421,
+    233,
+    405,
+    29
+   ],
+   "fg": "#535d6e",
+   "bg": "#fcfcfd",
+   "ratio": 6.48,
+   "need": 4.5
+  },
+  {
+   "el": "span.pr \"❱\"",
+   "text": "❱",
+   "font": "13/700",
+   "box": [
+    432,
+    873,
+    7,
+    13
+   ],
+   "fg": "#6237a0",
+   "bg": "#f5f6f8",
+   "ratio": 7.55,
+   "need": 4.5
+  },
+  {
+   "el": "span.txt \"here's what Safari shows on my phone: Pasting… ✕ can you fix\"",
+   "text": "here's what Safari shows on my phone: Pasting… ✕ c",
+   "font": "13/400",
+   "box": [
+    450,
+    873,
+    248,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#f5f6f8",
+   "ratio": 16.26,
+   "need": 4.5
+  },
+  {
+   "el": "span.chip[role=status] \"Pasting… ✕\"",
+   "text": "Pasting… ✕",
+   "font": "12/600",
+   "box": [
+    720,
+    874,
+    46,
+    13
+   ],
+   "fg": "#6237a0",
+   "bg": "#e9e3f2",
+   "ratio": 6.5,
+   "need": 4.5
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "text": "✕",
+   "font": "12/600",
+   "box": [
+    777,
+    874,
+    8,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e9e3f2",
+   "ratio": 5.3,
+   "need": 4.5
+  },
+  {
+   "el": "span \"can you fix it?\"",
+   "text": "can you fix it?",
+   "font": "13/400",
+   "box": [
+    797,
+    873,
+    105,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#f5f6f8",
+   "ratio": 16.26,
+   "need": 4.5
+  },
+  {
+   "el": "span \"esc cancels the paste\"",
+   "text": "esc cancels the paste",
+   "font": "12/400",
+   "box": [
+    1273,
+    875,
+    102,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#f5f6f8",
+   "ratio": 6.15,
+   "need": 4.5
+  },
+  {
+   "el": "span \"● midnad · 3 terminals\"",
+   "text": "● midnad · 3 terminals",
+   "font": "12/400",
+   "box": [
+    209,
+    917,
+    108,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"Policy auto\"",
+   "text": "Policy auto",
+   "font": "12/400",
+   "box": [
+    330,
+    917,
+    52,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "text": "⌘K commands · ⌘J next",
+   "font": "12/400",
+   "box": [
+    1274,
+    917,
+    117,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "button.row \"shell >_\"",
+   "control": true,
+   "size": [
+    247,
+    32
+   ],
+   "box": [
+    199,
+    242,
+    206,
+    27
+   ]
+  },
+  {
+   "el": "button.row.on \"claude ✳ waiting for you\"",
+   "control": true,
+   "size": [
+    247,
+    44
+   ],
+   "box": [
+    199,
+    269,
+    206,
+    37
+   ]
+  },
+  {
+   "el": "button.row \"server >_ running · 1h\"",
+   "control": true,
+   "size": [
+    247,
+    44
+   ],
+   "box": [
+    199,
+    335,
+    206,
+    37
+   ]
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "control": true,
+   "size": [
+    24,
+    18
+   ],
+   "box": [
+    771,
+    873,
+    20,
+    15
+   ]
+  }
+ ]
+}

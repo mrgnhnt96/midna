@@ -28,6 +28,8 @@
 //! view) instead of the terminal, whose key handler would otherwise eat ↩ and Esc. The text
 //! view reports becoming/resigning first responder; GPUI blurring the composer (⌘K, a click
 //! elsewhere, another screen) hands first responder back to the GPUI view.
+mod paste;
+
 use crate::app::{MainWindow, Overlay, Screen};
 use crate::backend::ConnState;
 use crate::kass::{self, KassEvent};
@@ -39,7 +41,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSBorderType, NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSFont, NSResponder, NSScrollView, NSText, NSTextView, NSView};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::json;
 use std::cell::{Cell, RefCell};
@@ -113,6 +115,8 @@ pub struct Composer {
     /// This window's text view, added on first open. Each main window has its own: AppKit
     /// can only give keys to a view inside the key window.
     native: Option<Rc<Native>>,
+    /// ⌘V waiting on the clipboard (`composer/paste.rs`).
+    paste: paste::Pending,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -156,7 +160,7 @@ impl Composer {
             }));
         }
         let subs = vec![cx.on_blur(&focus, window, |m, _, _| release_native_focus(m))];
-        Composer { open: false, source: Source::Manual, target: None, lines: 1, focus, drafts: HashMap::new(), native: None, _tasks: tasks, _subs: subs }
+        Composer { open: false, source: Source::Manual, target: None, lines: 1, focus, drafts: HashMap::new(), native: None, paste: Default::default(), _tasks: tasks, _subs: subs }
     }
 }
 
@@ -191,6 +195,7 @@ fn follow_selection(m: &mut MainWindow, window: &mut Window, cx: &mut Context<Ma
     let drafts = &m.composer.drafts;
     let (park, restore) = follow(open_on, m.selected.as_deref(), |id| drafts.contains_key(id));
     if park {
+        paste::cancel(m, cx);
         let had_focus = m.composer.focus.contains_focused(window, cx);
         if let Some(id) = m.composer.target.take() {
             let text = text(m);
@@ -242,6 +247,7 @@ fn open(m: &mut MainWindow, source: Source, window: &mut Window, cx: &mut Contex
 }
 
 fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    paste::cancel(m, cx);
     m.composer.open = false;
     m.composer.target = None;
     // Hand focus back before hiding: hiding the first responder makes AppKit give it to the
@@ -482,6 +488,9 @@ fn on_kass(m: &mut MainWindow, ev: KassEvent, at: Instant, window: &mut Window, 
 
 fn on_event(m: &mut MainWindow, ev: ComposerEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
     match ev {
+        // A paste on its way: ↩ sends once it's in, and Esc cancels just the paste.
+        ComposerEvent::Submit(_) if paste::submit_later(m, cx) => {}
+        ComposerEvent::Cancel if paste::cancel(m, cx) => {}
         ComposerEvent::Submit(text) => submit(m, text, window, cx),
         ComposerEvent::Cancel => close(m, window, cx),
         ComposerEvent::Changed => {
@@ -651,11 +660,19 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         .text_size(px(11.))
         .text_color(t.dim)
         .whitespace_nowrap()
-        .child(key("↩"))
-        .child("send")
-        .child(div().w(px(4.)))
-        .child(key("esc"))
-        .child("cancel");
+        .map(|d| match m.composer.paste.waiting() {
+            // A paste on its way (`composer/paste.rs`).
+            Some(w) => d
+                .child(crate::icons::spinner("composer-paste-spin", 10., t.accent))
+                .child(if w >= crate::clipboard::SLOW { format!("pasting… {}s", w.as_secs()) } else { "pasting…".into() })
+                .child(div().w(px(4.)))
+                .child(key("↩"))
+                .child(if m.composer.paste.sends_after() { "sending once it's in" } else { "sends once it's in" })
+                .child(div().w(px(4.)))
+                .child(key("esc"))
+                .child("cancels the paste"),
+            None => d.child(key("↩")).child("send").child(div().w(px(4.))).child(key("esc")).child("cancel"),
+        });
     let boxed = crate::ui::border_w(div(), 1.5)
         .id("composer-box")
         .w_full()
@@ -708,16 +725,11 @@ pub fn render(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
 
 pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E {
     let fwd = |s: Sel| move |m: &mut MainWindow, _: &mut Window, _: &mut Context<MainWindow>| send_to_text_view(m, s);
-    let paste = fwd(sel!(paste:));
     let copy = fwd(sel!(copy:));
     let cut = fwd(sel!(cut:));
     let all = fwd(sel!(selectAll:));
     el.on_action(cx.listener(|m, _: &OpenComposer, w, cx| open_manual(m, w, cx)))
-        .on_action(cx.listener(move |m, _: &ComposerPaste, w, cx| {
-            if !paste_image(m, w, cx) && !paste_secret(m, w, cx) {
-                paste(m, w, cx)
-            }
-        }))
+        .on_action(cx.listener(|m, _: &ComposerPaste, w, cx| paste::start(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerCopy, w, cx| copy(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerCut, w, cx| cut(m, w, cx)))
         .on_action(cx.listener(move |m, _: &ComposerSelectAll, w, cx| all(m, w, cx)))
@@ -728,11 +740,11 @@ pub fn register<E: InteractiveElement>(el: E, cx: &mut Context<MainWindow>) -> E
 /// ⌘V of an image (a screenshot, or a copied image file), as ⌘V in the terminal does: over an agent, open the image
 /// sheet with it (its images go with the composer's text when it's sent, `submit`); with
 /// `terminal.image_paste` inline, or any other target, type its file path. False = paste as text.
-fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
-    if !crate::annotate::clipboard_is_image(cx) {
+fn paste_image(m: &mut MainWindow, item: &ClipboardItem, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
+    if !crate::annotate::item_is_image(item) {
         return false;
     }
-    let sources = crate::annotate::clipboard_sources(cx);
+    let sources = crate::annotate::item_sources(item);
     match m.composer.target.clone().filter(|id| crate::annotate::is_agent(m, id)) {
         Some(id) if !crate::terminal::image_paste_inline() => {
             release_native_focus(m);
@@ -756,10 +768,9 @@ fn paste_image(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWin
 /// ⌘V of text with a secret in it over an agent: the terminal's secret sheet asks now, as a
 /// paste into the terminal would, instead of when ↩ sends it. Its answer (references, or the
 /// text as it was) comes back into the field (`ComposerEvent::Insert`). False = paste as usual.
-fn paste_secret(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
-    let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return false };
+fn paste_secret(m: &mut MainWindow, text: &str, window: &mut Window, cx: &mut Context<MainWindow>) -> bool {
     let Some(t) = target_terminal(m, cx) else { return false };
-    if !t.update(cx, |t, cx| t.composer_paste_checks_secrets(&text, window, cx)) {
+    if !t.update(cx, |t, cx| t.composer_paste_checks_secrets(text, window, cx)) {
         return false;
     }
     release_native_focus(m);
@@ -927,6 +938,15 @@ define_class!(
                 REMOVED.set(with.map_or(0, |s| s.length()) < range.length);
             }
             ok
+        }
+
+        /// Never the paste placeholder's look (`paste::plain_typing`).
+        #[unsafe(method(setTypingAttributes:))]
+        fn set_typing_attributes(&self, attrs: &NSDictionary<NSAttributedStringKey, AnyObject>) {
+            match paste::plain_typing(attrs) {
+                Some(plain) => unsafe { msg_send![super(self), setTypingAttributes: &*plain] },
+                None => unsafe { msg_send![super(self), setTypingAttributes: attrs] },
+            }
         }
 
         #[unsafe(method(didChangeText))]

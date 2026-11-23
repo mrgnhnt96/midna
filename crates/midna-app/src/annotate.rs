@@ -1109,9 +1109,11 @@ pub enum Source {
 
 /// Images on the clipboard: image data, or image files copied in Finder.
 pub fn clipboard_sources(cx: &App) -> Vec<Source> {
-    let Some(item) = cx.read_from_clipboard() else {
-        return vec![];
-    };
+    cx.read_from_clipboard().map_or_else(Vec::new, |item| item_sources(&item))
+}
+
+/// The images in a clipboard item (`clipboard_sources`).
+pub fn item_sources(item: &ClipboardItem) -> Vec<Source> {
     let mut out = vec![];
     for e in item.entries() {
         match e {
@@ -1123,15 +1125,11 @@ pub fn clipboard_sources(cx: &App) -> Vec<Source> {
     out
 }
 
-/// Whether the clipboard holds an image (so ⌘V in a terminal means "add image").
-pub fn clipboard_is_image(cx: &App) -> bool {
-    cx.read_from_clipboard().is_some_and(|item| item_is_image(&item))
-}
-
+/// Whether a clipboard item is an image (so ⌘V in a terminal means "add image").
 /// Image data and no text, or copied files that are all images. A copied image file is the image:
 /// Messages and Finder put the file on the clipboard (Finder adds its name as text), and macOS
 /// hands GPUI the file rather than its pixels.
-fn item_is_image(item: &ClipboardItem) -> bool {
+pub fn item_is_image(item: &ClipboardItem) -> bool {
     let entries = item.entries();
     let mut files = entries.iter().filter_map(|e| if let ClipboardEntry::ExternalPaths(p) = e { Some(&p.0) } else { None }).flatten().peekable();
     if files.peek().is_some() {

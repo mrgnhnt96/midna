@@ -1,0 +1,426 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "scale": 0.83,
+ "counts": {
+  "text": 22,
+  "controls": 4,
+  "tabStops": 4,
+  "issues": 2,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "target",
+   "el": "button.x \"Cancel paste\"",
+   "size": [
+    24,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  },
+  {
+   "kind": "focus-up",
+   "from": "button.row \"server >_ running · 1h\"",
+   "to": "button.x \"Cancel paste\""
+  }
+ ],
+ "focusOrder": [
+  "1 button.row.on \"shell >_\" @199,242",
+  "2 button.row \"claude ✳ working · 2m\" @199,269",
+  "3 button.row \"server >_ running · 1h\" @199,335",
+  "4 button.x \"Cancel paste\" @735,267"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/midna/.claude/worktrees/slot-4/design/pending-paste/rounds/1/shots/inspect-term-light-1440.json",
+ "elements": [
+  {
+   "el": "span.gcap \"midna\"",
+   "text": "midna",
+   "font": "11/700",
+   "box": [
+    211,
+    223,
+    34,
+    11
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"shell\"",
+   "text": "shell",
+   "font": "13/600",
+   "box": [
+    229,
+    248,
+    25,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#ffffff",
+   "ratio": 17.59,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "12/600",
+   "box": [
+    380,
+    249,
+    12,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#ffffff",
+   "ratio": 6.65,
+   "need": 4.5
+  },
+  {
+   "el": "span \"claude\"",
+   "text": "claude",
+   "font": "13/600",
+   "box": [
+    229,
+    273,
+    35,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "12/600",
+   "box": [
+    380,
+    274,
+    6,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.sub \"working · 2m\"",
+   "text": "working · 2m",
+   "font": "12/500",
+   "box": [
+    229,
+    287,
+    62,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.gcap \"api\"",
+   "text": "api",
+   "font": "11/700",
+   "box": [
+    211,
+    316,
+    17,
+    11
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"server\"",
+   "text": "server",
+   "font": "13/600",
+   "box": [
+    229,
+    339,
+    34,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "12/600",
+   "box": [
+    380,
+    341,
+    12,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.sub \"running · 1h\"",
+   "text": "running · 1h",
+   "font": "12/500",
+   "box": [
+    229,
+    354,
+    56,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "b \"shell\"",
+   "text": "shell",
+   "font": "15/700",
+   "box": [
+    419,
+    194,
+    29,
+    15
+   ],
+   "fg": "#151922",
+   "bg": "#e6e9ef",
+   "ratio": 14.46,
+   "need": 4.5
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "12/600",
+   "box": [
+    457,
+    195,
+    12,
+    12
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "div.term \"Morgans-MacBook-Pro% git status --short M crates/web/src/aut\"",
+   "text": "Morgans-MacBook-Pro% git status --short M crates/w",
+   "font": "13/400",
+   "box": [
+    552,
+    233,
+    124,
+    46
+   ],
+   "fg": "#151922",
+   "bg": "#fcfcfd",
+   "ratio": 17.15,
+   "need": 4.5
+  },
+  {
+   "el": "span.d \"Morgans-MacBook-Pro%\"",
+   "text": "Morgans-MacBook-Pro%",
+   "font": "13/400",
+   "box": [
+    421,
+    233,
+    131,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#fcfcfd",
+   "ratio": 6.48,
+   "need": 4.5
+  },
+  {
+   "el": "span.d \"M crates/web/src/auth.rs\"",
+   "text": "M crates/web/src/auth.rs",
+   "font": "13/400",
+   "box": [
+    421,
+    250,
+    163,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#fcfcfd",
+   "ratio": 6.48,
+   "need": 4.5
+  },
+  {
+   "el": "span.d \"Morgans-MacBook-Pro%\"",
+   "text": "Morgans-MacBook-Pro%",
+   "font": "13/400",
+   "box": [
+    421,
+    267,
+    131,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#fcfcfd",
+   "ratio": 6.48,
+   "need": 4.5
+  },
+  {
+   "el": "span.chip[role=status] \"Pasting… ✕\"",
+   "text": "Pasting… ✕",
+   "font": "12/600",
+   "box": [
+    684,
+    268,
+    46,
+    13
+   ],
+   "fg": "#6237a0",
+   "bg": "#e9e3f2",
+   "ratio": 6.5,
+   "need": 4.5
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "text": "✕",
+   "font": "12/600",
+   "box": [
+    742,
+    268,
+    8,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e9e3f2",
+   "ratio": 5.3,
+   "need": 4.5
+  },
+  {
+   "el": "span \"\" && git push\"",
+   "text": "\" && git push",
+   "font": "13/400",
+   "box": [
+    761,
+    267,
+    85,
+    13
+   ],
+   "fg": "#151922",
+   "bg": "#fcfcfd",
+   "ratio": 17.15,
+   "need": 4.5
+  },
+  {
+   "el": "span \"● midnad · 3 terminals\"",
+   "text": "● midnad · 3 terminals",
+   "font": "12/400",
+   "box": [
+    209,
+    917,
+    108,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span \"Policy auto\"",
+   "text": "Policy auto",
+   "font": "12/400",
+   "box": [
+    330,
+    917,
+    52,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "text": "⌘K commands · ⌘J next",
+   "font": "12/400",
+   "box": [
+    1274,
+    917,
+    117,
+    13
+   ],
+   "fg": "#535d6e",
+   "bg": "#e6e9ef",
+   "ratio": 5.47,
+   "need": 4.5
+  },
+  {
+   "el": "button.row.on \"shell >_\"",
+   "control": true,
+   "size": [
+    247,
+    32
+   ],
+   "box": [
+    199,
+    242,
+    206,
+    27
+   ]
+  },
+  {
+   "el": "button.row \"claude ✳ working · 2m\"",
+   "control": true,
+   "size": [
+    247,
+    44
+   ],
+   "box": [
+    199,
+    269,
+    206,
+    37
+   ]
+  },
+  {
+   "el": "button.row \"server >_ running · 1h\"",
+   "control": true,
+   "size": [
+    247,
+    44
+   ],
+   "box": [
+    199,
+    335,
+    206,
+    37
+   ]
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "control": true,
+   "size": [
+    24,
+    18
+   ],
+   "box": [
+    735,
+    267,
+    20,
+    15
+   ]
+  }
+ ]
+}

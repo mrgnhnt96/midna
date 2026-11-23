@@ -1,0 +1,7 @@
+.ghost { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 0 1px; }
+.ghost .dots::after { content: "…"; }
+@media (prefers-reduced-motion: no-preference) { .ghost .dots::after { animation: dots 1.2s steps(4) infinite; content: ""; } }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "…"; } }
+.pst { display: inline-flex; align-items: center; gap: 8px; height: 26px; padding: 0 4px 0 10px; border-radius: 13px; background: var(--raised); border: 1px solid var(--line); font-size: 0.75rem; }
+.pst .x { min-width: 24px; height: 22px; padding: 0 8px; border-radius: 11px; color: var(--dim); }
+.pst .x:hover { background: var(--line); color: var(--fg); }

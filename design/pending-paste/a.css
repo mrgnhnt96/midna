@@ -1,0 +1,6 @@
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 1.35em; padding: 0 4px 0 7px; margin: 0 2px; vertical-align: -0.2em; border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--accent) 14%, var(--raised)); color: var(--accent); font: 600 0.75rem/1 -apple-system, system-ui, sans-serif; white-space: nowrap; }
+.chip .x { width: 24px; height: 18px; display: grid; place-items: center; border-radius: 4px; color: var(--dim); font-size: 0.75rem; }
+.chip .x:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
+.chip .secs { color: var(--dim); font-weight: 500; font-variant-numeric: tabular-nums; }
+.chip .esc { color: var(--dim); font: 600 0.6875rem ui-monospace, monospace; margin-left: 2px; }
+.chip.fail { color: var(--need); border-color: color-mix(in srgb, var(--need) 60%, transparent); background: color-mix(in srgb, var(--need) 12%, var(--raised)); padding-right: 7px; }

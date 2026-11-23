@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 mod link_menu;
 mod link_preview;
+mod pending_paste;
 mod pr_status;
 mod prompt_nav;
 mod queue_pill;
@@ -165,6 +166,11 @@ pub struct TerminalView {
     /// The menu a plain click on a link opens (`link_menu.rs`).
     link_menu: link_menu::LinkMenus,
     marked: Option<String>,
+    /// ⌘V waiting on the clipboard (`pending_paste.rs`), and the count that tells them apart.
+    pending_paste: Option<pending_paste::PendingPaste>,
+    paste_gen: u64,
+    /// Keys typed during the last paste, held until it's in (`release_after_paste`).
+    after_paste: Vec<ClientMsg>,
     /// ⇧-arrow selection in the input line (`term_edit`).
     kbd_sel: Option<KbdSel>,
     /// `kbd_sel` in Claude's long input, where its ends can scroll out of view.
@@ -525,6 +531,9 @@ impl TerminalView {
             menu: None,
             link_menu: Default::default(),
             marked: None,
+            pending_paste: None,
+            paste_gen: 0,
+            after_paste: Vec::new(),
             font_family,
             nav: Default::default(),
             _queue_sub: cx.try_global::<crate::ui::queue::QueueStore>().is_some().then(|| cx.observe_global::<crate::ui::queue::QueueStore>(|_, cx| cx.notify())),
@@ -728,6 +737,7 @@ impl TerminalView {
         if self.frozen {
             return;
         }
+        let Some(m) = self.hold(m) else { return self.typed() };
         match self.erasing.as_mut() {
             Some((_, queued)) => queued.push(m),
             None => self.send_msg(m),
@@ -860,6 +870,10 @@ impl TerminalView {
             return; // typed for us; the input handler gets the event's real text
         }
         if self.find.is_some() && self.find_key(ks, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        if !ks.modifiers.platform && self.marked.is_none() && self.pending_paste_key(ks, ev.is_held, cx) {
             cx.stop_propagation();
             return;
         }
@@ -1620,7 +1634,7 @@ impl TerminalView {
     }
 
     /// Show a message over the terminal for a moment.
-    fn say(&mut self, msg: String, cx: &mut Context<Self>) {
+    pub(super) fn say(&mut self, msg: String, cx: &mut Context<Self>) {
         if crate::dev::var_os("MIDNA_DEBUG_TERM").is_some() {
             eprintln!("midna-app debug-term: said {msg:?}");
         }
@@ -2001,44 +2015,57 @@ impl TerminalView {
     }
 
     fn on_paste(&mut self, _: &TermPaste, window: &mut Window, cx: &mut Context<Self>) {
-        if self.find.is_none() && crate::annotate::clipboard_is_image(cx) {
+        self.with_clipboard(Self::paste_item, window, cx);
+    }
+
+    /// ⌘V's clipboard, once read (`with_clipboard`).
+    fn paste_item(&mut self, item: Option<ClipboardItem>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = item else { return };
+        if self.find.is_none() && crate::annotate::item_is_image(&item) {
             // An image (a screenshot, or image files copied in Messages or Finder): open the image
             // sheet with it, or paste it inline. The sheet is for agents; any other app gets the file.
             if IMAGE_PASTE_INLINE.load(Ordering::Relaxed) || !self.is_agent() {
-                self.paste_images_inline(crate::annotate::clipboard_sources(cx), cx);
+                self.paste_images_inline(crate::annotate::item_sources(&item), cx);
             } else {
                 window.dispatch_action(Box::new(crate::annotate::PasteImage), cx);
             }
             return;
         }
+        let Some(text) = item.text() else { return };
         // A pasted path to an image file (copied from Finder or a shell) opens the sheet, like
         // dropping that file. Elsewhere it's just text, so the path pastes as is.
         if self.find.is_none() && self.is_agent() && !IMAGE_PASTE_INLINE.load(Ordering::Relaxed) {
-            let paths = cx.read_from_clipboard().and_then(|c| c.text()).map(|t| crate::annotate::pasted_image_paths(&t)).unwrap_or_default();
+            let paths = crate::annotate::pasted_image_paths(&text);
             if !paths.is_empty() {
                 window.dispatch_action(Box::new(crate::annotate::DropImages { session: self.session_id.clone(), paths }), cx);
                 return;
             }
         }
-        self.paste_clipboard_text(window, cx);
+        self.paste_text(&text, window, cx);
     }
 
-    fn paste_clipboard_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
+    /// The clipboard's text, once read.
+    fn paste_item_text(&mut self, item: Option<ClipboardItem>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = item.and_then(|c| c.text()) {
             self.paste_text(&t, window, cx);
-            cx.notify();
         }
     }
 
     /// ⌘⇧V (`keys.paste_image_inline`): the clipboard's images (image data, or image files
     /// copied in Finder) as their paths, even when there's text too; text when there's no image.
     fn on_paste_image_inline(&mut self, _: &TermPasteImageInline, window: &mut Window, cx: &mut Context<Self>) {
-        let sources = if self.find.is_none() { crate::annotate::clipboard_sources(cx) } else { vec![] };
-        if sources.is_empty() {
-            self.paste_clipboard_text(window, cx);
-        } else {
-            self.paste_images_inline(sources, cx);
-        }
+        self.with_clipboard(
+            |t, item, window, cx| {
+                let sources = item.as_ref().filter(|_| t.find.is_none()).map(crate::annotate::item_sources).unwrap_or_default();
+                if sources.is_empty() {
+                    t.paste_item_text(item, window, cx);
+                } else {
+                    t.paste_images_inline(sources, cx);
+                }
+            },
+            window,
+            cx,
+        );
     }
 
     /// Normalize the images (off the UI thread, as the sheet does) and paste each path, spaced
@@ -2049,6 +2076,8 @@ impl TerminalView {
         if self.remote_mac().is_some() {
             return self.send_images(sources, cx);
         }
+        // Keys typed while the clipboard was read go after the last path.
+        let after = std::mem::take(&mut self.after_paste);
         cx.spawn(async move |this, cx| {
             let saved = cx.background_executor().spawn(async move { sources.into_iter().map(crate::annotate::save).collect::<Vec<_>>() }).await;
             let mut first = true;
@@ -2071,6 +2100,14 @@ impl TerminalView {
                     }
                     Err(e) => eprintln!("midna-app: couldn't paste image: {e}"),
                 }
+            }
+            if !after.is_empty() {
+                let _ = this.update(cx, |t, cx| {
+                    for m in after {
+                        t.deliver(m);
+                    }
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -2568,11 +2605,7 @@ impl TerminalView {
         self.menu = None;
         match what {
             "copy" => self.copy_selection(window, cx),
-            "paste" => {
-                if let Some(t) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                    self.paste_text(&t, window, cx);
-                }
-            }
+            "paste" => self.with_clipboard(Self::paste_item_text, window, cx),
             "paste_secret" => return self.paste_as_secret(window, cx),
             // the picker takes focus
             "share" => {
@@ -2964,6 +2997,7 @@ impl Render for TerminalView {
         let menu = self.render_menu(&theme, cx);
         let link_menu = self.render_link_menu(&theme, cx);
         let secret_sheet = self.render_secret_sheet(&theme, window, cx);
+        let pending_paste = self.render_pending_paste(&theme, cx);
         self.update_nav(window, cx);
         let nav = self.render_nav(&theme, window, cx);
         // Claude's pinned prompt row slides out above the top, so the conversation scrolls behind
@@ -3146,6 +3180,7 @@ impl Render for TerminalView {
             .children(menu)
             .children(link_menu)
             .children(secret_sheet)
+            .children(pending_paste)
     }
 }
 

@@ -1,0 +1,32 @@
+{
+  "title": "Pending paste",
+  "initialPreset": "macbook",
+  "limits": {
+    "minWidth": 640,
+    "minHeight": 480,
+    "maxWidth": 2560,
+    "maxHeight": 1440
+  },
+  "states": [
+    {
+      "id": "copying",
+      "label": "Copying (you kept typing)"
+    },
+    {
+      "id": "slow",
+      "label": "Still copying after 2s"
+    },
+    {
+      "id": "landed",
+      "label": "Paste landed"
+    },
+    {
+      "id": "cancelled",
+      "label": "Cancelled (esc, \u232b or \u2715)"
+    },
+    {
+      "id": "gaveup",
+      "label": "Gave up after 20s"
+    }
+  ]
+}

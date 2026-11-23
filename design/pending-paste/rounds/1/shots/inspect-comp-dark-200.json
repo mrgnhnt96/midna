@@ -1,0 +1,451 @@
+{
+ "viewport": [
+  1600,
+  1000
+ ],
+ "scale": 0.83,
+ "counts": {
+  "text": 22,
+  "controls": 4,
+  "tabStops": 4,
+  "issues": 4,
+  "unresolved": 0
+ },
+ "issues": [
+  {
+   "kind": "cut",
+   "el": "span \"● midnad · 3 terminals\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 1
+  },
+  {
+   "kind": "cut",
+   "el": "span \"Policy auto\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 1
+  },
+  {
+   "kind": "cut",
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+   "px": 1
+  },
+  {
+   "kind": "target",
+   "el": "button.x \"Cancel paste\"",
+   "size": [
+    24,
+    18
+   ],
+   "min": 24,
+   "wcag": "pass by spacing"
+  }
+ ],
+ "focusOrder": [
+  "1 button.row \"shell >_\" @199,242",
+  "2 button.row.on \"claude ✳ waiting for you\" @199,279",
+  "3 button.row \"server >_ running · 1h\" @199,374",
+  "4 button.x \"Cancel paste\" @1055,837"
+ ],
+ "file": "/Users/mrgnhnt96/Development/rust/midna/.claude/worktrees/slot-4/design/pending-paste/rounds/1/shots/inspect-comp-dark-200.json",
+ "elements": [
+  {
+   "el": "span.gcap \"midna\"",
+   "text": "midna",
+   "font": "22/700",
+   "box": [
+    211,
+    218,
+    65,
+    22
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"shell\"",
+   "text": "shell",
+   "font": "26/600",
+   "box": [
+    229,
+    248,
+    46,
+    25
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "24/600",
+   "box": [
+    380,
+    249,
+    24,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"claude\"",
+   "text": "claude",
+   "font": "26/600",
+   "box": [
+    229,
+    285,
+    66,
+    25
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#1d2130",
+   "ratio": 12.93,
+   "need": 3
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "24/600",
+   "box": [
+    380,
+    287,
+    12,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#1d2130",
+   "ratio": 6.24,
+   "need": 3
+  },
+  {
+   "el": "span.sub \"waiting for you\"",
+   "text": "waiting for you",
+   "font": "24/500",
+   "box": [
+    229,
+    315,
+    129,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#1d2130",
+   "ratio": 6.24,
+   "need": 3
+  },
+  {
+   "el": "span.gcap \"api\"",
+   "text": "api",
+   "font": "22/700",
+   "box": [
+    211,
+    350,
+    32,
+    22
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span \"server\"",
+   "text": "server",
+   "font": "26/600",
+   "box": [
+    229,
+    380,
+    62,
+    25
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \">_\"",
+   "text": ">_",
+   "font": "24/600",
+   "box": [
+    380,
+    381,
+    24,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span.sub \"running · 1h\"",
+   "text": "running · 1h",
+   "font": "24/500",
+   "box": [
+    229,
+    409,
+    102,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "b \"claude\"",
+   "text": "claude",
+   "font": "30/700",
+   "box": [
+    419,
+    186,
+    79,
+    29
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#0f1117",
+   "ratio": 15.24,
+   "need": 3
+  },
+  {
+   "el": "span.ag \"✳\"",
+   "text": "✳",
+   "font": "24/600",
+   "box": [
+    506,
+    190,
+    12,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3
+  },
+  {
+   "el": "span.d \"⏺ The login flow is fixed on Chrome and Firefox. Safari stil\"",
+   "text": "⏺ The login flow is fixed on Chrome and Firefox. S",
+   "font": "26/400",
+   "box": [
+    421,
+    236,
+    810,
+    59
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0b0d12",
+   "ratio": 7.58,
+   "need": 3
+  },
+  {
+   "el": "span.pr \"❱\"",
+   "text": "❱",
+   "font": "26/700",
+   "box": [
+    432,
+    825,
+    13,
+    25
+   ],
+   "fg": "#b79ae8",
+   "bg": "#151821",
+   "ratio": 7.43,
+   "need": 3
+  },
+  {
+   "el": "span.txt \"here's what Safari shows on my phone: Pasting… ✕ can you fix\"",
+   "text": "here's what Safari shows on my phone: Pasting… ✕ c",
+   "font": "26/400",
+   "box": [
+    450,
+    825,
+    497,
+    25
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#151821",
+   "ratio": 14.32,
+   "need": 3
+  },
+  {
+   "el": "span.chip[role=status] \"Pasting… ✕\"",
+   "text": "Pasting… ✕",
+   "font": "24/600",
+   "box": [
+    968,
+    833,
+    82,
+    23
+   ],
+   "fg": "#b79ae8",
+   "bg": "#33324a",
+   "ratio": 5.19,
+   "need": 3
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "text": "✕",
+   "font": "24/600",
+   "box": [
+    1058,
+    836,
+    15,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#33324a",
+   "ratio": 4.83,
+   "need": 3
+  },
+  {
+   "el": "span \"can you fix it?\"",
+   "text": "can you fix it?",
+   "font": "26/400",
+   "box": [
+    450,
+    825,
+    696,
+    63
+   ],
+   "fg": "#e4e7ee",
+   "bg": "#151821",
+   "ratio": 14.32,
+   "need": 3
+  },
+  {
+   "el": "span \"esc cancels the paste\"",
+   "text": "esc cancels the paste",
+   "font": "24/400",
+   "box": [
+    1189,
+    829,
+    186,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#151821",
+   "ratio": 6.92,
+   "need": 3
+  },
+  {
+   "el": "span \"● midnad · 3 terminals\"",
+   "text": "● midnad · 3 terminals",
+   "font": "24/400",
+   "box": [
+    209,
+    912,
+    197,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 1
+   }
+  },
+  {
+   "el": "span \"Policy auto\"",
+   "text": "Policy auto",
+   "font": "24/400",
+   "box": [
+    419,
+    912,
+    94,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 1
+   }
+  },
+  {
+   "el": "span.r \"⌘K commands · ⌘J next\"",
+   "text": "⌘K commands · ⌘J next",
+   "font": "24/400",
+   "box": [
+    1176,
+    912,
+    215,
+    23
+   ],
+   "fg": "#9aa2b3",
+   "bg": "#0f1117",
+   "ratio": 7.36,
+   "need": 3,
+   "cut": {
+    "by": "section \"midna shell >_ claude ✳ waiting for you api server >_ runnin\"",
+    "px": 1
+   }
+  },
+  {
+   "el": "button.row \"shell >_\"",
+   "control": true,
+   "size": [
+    247,
+    45
+   ],
+   "box": [
+    199,
+    242,
+    206,
+    38
+   ]
+  },
+  {
+   "el": "button.row.on \"claude ✳ waiting for you\"",
+   "control": true,
+   "size": [
+    247,
+    77
+   ],
+   "box": [
+    199,
+    279,
+    206,
+    65
+   ]
+  },
+  {
+   "el": "button.row \"server >_ running · 1h\"",
+   "control": true,
+   "size": [
+    247,
+    77
+   ],
+   "box": [
+    199,
+    374,
+    206,
+    65
+   ]
+  },
+  {
+   "el": "button.x \"Cancel paste\"",
+   "control": true,
+   "size": [
+    24,
+    18
+   ],
+   "box": [
+    1055,
+    837,
+    20,
+    15
+   ]
+  }
+ ]
+}
