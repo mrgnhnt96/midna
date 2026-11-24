@@ -120,6 +120,36 @@ pub struct SystemLoad {
     /// Terminals by memory footprint (what Activity Monitor calls Memory), biggest first.
     #[serde(default)]
     pub memory_top: Vec<MemoryTerminal>,
+    /// Memory apps can still get before macOS compresses or swaps: physical memory less app
+    /// memory, wired memory and what the compressor holds (Activity Monitor's Memory Used), bytes.
+    #[serde(default)]
+    pub memory_available_bytes: u64,
+    /// midnad's own CPU and memory use.
+    #[serde(default)]
+    pub daemon: DaemonUsage,
+}
+
+/// midnad's own use of the Mac, to spot a daemon that runs hot or grows over days.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DaemonUsage {
+    /// Percent of one core over the last sample, like Activity Monitor's % CPU (100 = a whole core).
+    pub cpu_percent: u32,
+    /// Its memory footprint, bytes.
+    pub memory_bytes: u64,
+    /// Seconds since it started.
+    pub uptime_secs: u64,
+}
+
+/// What a status bar warns about besides a busy CPU: memory pressure at `system.busy_memory`
+/// (`Memory warning · 1.2 GB free`), else the load average at `system.busy_load`
+/// (`Load 280 on 12 cores`). None while neither is reached.
+pub fn pressure_warning(l: &SystemLoad) -> Option<String> {
+    if l.memory_held {
+        let free = if l.memory_total_bytes > 0 { format!(" · {} free", bytes_label(l.memory_available_bytes)) } else { String::new() };
+        let load = if l.busy { format!(" · load {:.0}", l.load1) } else { String::new() };
+        return Some(format!("Memory {}{free}{load}", l.memory_pressure.as_str()));
+    }
+    l.busy.then(|| format!("Load {:.0} on {} cores", l.load1, l.cpus))
 }
 
 /// How short of memory macOS is: its pressure level (Activity Monitor's green, yellow, red).
@@ -753,6 +783,21 @@ mod tests {
         assert!(!midna_is_the_cause(0, 0));
         assert_eq!(share_of_mac(940, 12).round(), 78.);
         assert_eq!((share_label(0.3), share_label(5.4), share_label(0.)), ("<1%".into(), "5%".into(), "0%".into()));
+    }
+
+    #[test]
+    fn pressure_warnings() {
+        let calm = SystemLoad { load1: 3., cpus: 12, memory_total_bytes: 64 << 30, memory_available_bytes: 40 << 30, ..Default::default() };
+        assert_eq!(pressure_warning(&calm), None);
+        let loaded = SystemLoad { load1: 280.4, busy: true, ..calm.clone() };
+        assert_eq!(pressure_warning(&loaded).as_deref(), Some("Load 280 on 12 cores"));
+        let short = SystemLoad { memory_pressure: MemoryPressure::Warning, memory_held: true, memory_available_bytes: 60 << 20, ..calm.clone() };
+        assert_eq!(pressure_warning(&short).as_deref(), Some("Memory warning · 60 MB free"));
+        let both = SystemLoad { memory_pressure: MemoryPressure::Critical, memory_held: true, memory_available_bytes: 3 << 29, ..loaded.clone() };
+        assert_eq!(pressure_warning(&both).as_deref(), Some("Memory critical · 1.5 GB free · load 280"));
+        // Pressure under system.busy_memory (or it set to off) warns about nothing.
+        let unheld = SystemLoad { memory_pressure: MemoryPressure::Warning, ..calm };
+        assert_eq!(pressure_warning(&unheld), None);
     }
 
     #[test]

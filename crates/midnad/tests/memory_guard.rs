@@ -1,6 +1,7 @@
 //! The load guard on memory (#106): macOS's memory pressure at `system.busy_memory` holds new
 //! heavy work back and raises a needs-you, and local model runs wait for a model slot. Every
-//! daemon in this binary sees warning pressure (MIDNA_DEBUG_MEMORY) and a calm CPU.
+//! daemon in this binary sees warning pressure with 60 MB available (MIDNA_DEBUG_MEMORY) and a
+//! calm CPU.
 mod common;
 use common::*;
 use midna_proto::Client;
@@ -8,7 +9,7 @@ use serde_json::{Value, json};
 
 fn short_of_memory() -> TestDaemon {
     unsafe {
-        std::env::set_var("MIDNA_DEBUG_MEMORY", "warning");
+        std::env::set_var("MIDNA_DEBUG_MEMORY", "warning:60");
         std::env::set_var("MIDNA_DEBUG_CPU", "10:5");
     }
     TestDaemon::start()
@@ -28,6 +29,13 @@ fn memory_pressure_holds_heavy_work_back_and_says_so() {
     let l = call(&mut h, "system.load", json!({}));
     assert_eq!((l["memory_pressure"].as_str(), l["memory_held"].as_bool(), l["held"].as_bool()), (Some("warning"), Some(true), Some(false)), "{l}");
     assert!(l["memory_total_bytes"].as_u64().unwrap() > 0, "{l}");
+    assert_eq!(l["memory_available_bytes"].as_u64(), Some(60 << 20), "{l}");
+    // midnad's own use, from the guard's first sample.
+    let l = wait_for(15, "midnad's own memory", || {
+        let l = call(&mut h, "system.load", json!({}));
+        (l["daemon"]["memory_bytes"].as_u64().unwrap_or(0) > 0).then_some(l)
+    });
+    assert!(l["daemon"]["cpu_percent"].is_u64() && l["daemon"]["uptime_secs"].is_u64(), "{l}");
     let r = request(&mut a, "Bash(cargo build)");
     assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("deny"), Some("guard")), "{r}");
     assert!(r["reason"].as_str().unwrap().contains("short of memory"), "{r}");
@@ -40,7 +48,7 @@ fn memory_pressure_holds_heavy_work_back_and_says_so() {
         let list = call(&mut h, "needs_you.list", json!({}));
         list.as_array().unwrap().iter().find(|n| n["title"].as_str().is_some_and(|t| t.contains("short of memory"))).cloned()
     });
-    assert!(item["detail"].as_str().unwrap().contains("pressure is warning"), "{item}");
+    assert!(item["detail"].as_str().unwrap().contains("pressure is warning (60 MB available"), "{item}");
     let events = call(&mut h, "events.list", json!({ "filter": { "kinds": ["system.memory_pressure"] } }));
     assert_eq!(events.as_array().unwrap().len(), 1, "{events}");
     // Only at critical: warning goes ahead.

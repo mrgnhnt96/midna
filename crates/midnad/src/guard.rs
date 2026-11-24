@@ -44,11 +44,12 @@
 //!
 //! Dev: `MIDNA_DEBUG_LOAD=<load1>` reports that load average instead of the real one,
 //! `MIDNA_DEBUG_CPU=<cpu>[:<midna>]` that CPU in use (and midna's terminals' share of it), and
-//! `MIDNA_DEBUG_MEMORY=<normal|warning|critical>` that memory pressure.
+//! `MIDNA_DEBUG_MEMORY=<normal|warning|critical>[:<MB>]` that memory pressure (and that much
+//! memory available).
 use crate::daemon::Daemon;
 use crate::policy::glob_match;
 use crate::procs;
-use midna_proto::system::{self as sys, BuildSlot, HeavyTerminal, MemoryPressure, MemoryTerminal, OtherProcess, Paused, SystemLoad};
+use midna_proto::system::{self as sys, BuildSlot, DaemonUsage, HeavyTerminal, MemoryPressure, MemoryTerminal, OtherProcess, Paused, SystemLoad};
 use midna_proto::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -109,6 +110,9 @@ struct Inner {
     /// and ticks in a row it has been under it since.
     memory_spell: Option<Option<Id>>,
     memory_calm: u8,
+    /// midnad's own CPU over the last sample (percent of one core) and memory footprint.
+    daemon_cpu: f64,
+    daemon_memory: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -117,6 +121,7 @@ struct Memory {
     total: u64,
     compressed: u64,
     swap: u64,
+    available: u64,
 }
 
 /// A heavy command holding a build slot.
@@ -232,22 +237,44 @@ fn memory_now() -> Memory {
     let mut count = libc::HOST_VM_INFO64_COUNT;
     let kr = unsafe { libc::host_statistics64(host, libc::HOST_VM_INFO64, &mut vm as *mut _ as libc::host_info64_t, &mut count) };
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(0) as u64;
+    let total = sysctl::<u64>("hw.memsize").unwrap_or(0);
+    let ok = kr == libc::KERN_SUCCESS;
     Memory {
         pressure: MemoryPressure::from_level(sysctl::<i32>("kern.memorystatus_vm_pressure_level").unwrap_or(1)),
-        total: sysctl::<u64>("hw.memsize").unwrap_or(0),
-        compressed: if kr == libc::KERN_SUCCESS { vm.compressor_page_count as u64 * page } else { 0 },
+        total,
+        compressed: if ok { vm.compressor_page_count as u64 * page } else { 0 },
         swap: sysctl::<libc::xsw_usage>("vm.swapusage").map_or(0, |s| s.xsu_used),
+        available: if ok { available(total, &vm, page) } else { 0 },
     }
+}
+
+/// Memory apps can still get: physical memory less Activity Monitor's Memory Used (app memory,
+/// wired, compressed). File cache and purgeable memory count as available; macOS drops them first.
+fn available(total: u64, vm: &libc::vm_statistics64, page: u64) -> u64 {
+    let app = (vm.internal_page_count as u64).saturating_sub(vm.purgeable_count as u64);
+    let used = (app + vm.wire_count as u64 + vm.compressor_page_count as u64) * page;
+    total.saturating_sub(used)
+}
+
+/// `MIDNA_DEBUG_MEMORY=<normal|warning|critical>[:<MB available>]`.
+fn debug_memory() -> Option<(MemoryPressure, Option<u64>)> {
+    let v = std::env::var("MIDNA_DEBUG_MEMORY").ok()?;
+    let (level, mb) = match v.split_once(':') {
+        Some((l, m)) => (l, m.trim().parse::<u64>().ok()),
+        None => (v.as_str(), None),
+    };
+    let pressure = match level.trim() {
+        "normal" => MemoryPressure::Normal,
+        "warning" => MemoryPressure::Warning,
+        "critical" => MemoryPressure::Critical,
+        _ => return None,
+    };
+    Some((pressure, mb.map(|mb| mb << 20)))
 }
 
 /// The memory pressure now: the last sample's, or `MIDNA_DEBUG_MEMORY`.
 fn pressure_now(d: &Daemon) -> MemoryPressure {
-    match std::env::var("MIDNA_DEBUG_MEMORY").ok().as_deref().map(str::trim) {
-        Some("normal") => MemoryPressure::Normal,
-        Some("warning") => MemoryPressure::Warning,
-        Some("critical") => MemoryPressure::Critical,
-        _ => d.guard.inner().memory.pressure,
-    }
+    debug_memory().map_or_else(|| d.guard.inner().memory.pressure, |(p, _)| p)
 }
 
 fn busy_memory_at(d: &Daemon) -> String {
@@ -345,7 +372,12 @@ pub fn load(d: &Daemon) -> SystemLoad {
         (g.memory, g.memory_top.clone())
     };
     let pressure = pressure_now(d);
+    let memory_available = debug_memory().and_then(|(_, a)| a).unwrap_or(memory.available);
     let busy_memory_at = busy_memory_at(d);
+    let daemon = {
+        let g = d.guard.inner();
+        DaemonUsage { cpu_percent: g.daemon_cpu.round().max(0.) as u32, memory_bytes: g.daemon_memory, uptime_secs: d.started.elapsed().as_secs() }
+    };
     SystemLoad {
         load1: round2(load1),
         load5: round2(load5),
@@ -374,6 +406,8 @@ pub fn load(d: &Daemon) -> SystemLoad {
         memory_held: pressure.reaches(&busy_memory_at),
         busy_memory_at,
         memory_top,
+        memory_available_bytes: memory_available,
+        daemon,
     }
 }
 
@@ -1005,9 +1039,15 @@ fn sample(d: &Daemon, table: &HashMap<i32, procs::Row>) {
     memory_top.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
     memory_top.truncate(TOP);
     let memory = memory_now();
+    let me = std::process::id() as i32;
+    let daemon_cpu = secs.zip(table.get(&me)).map(|(secs, r)| used(&me, r) as f64 / 1e9 / secs * 100.);
     let mut g = d.guard.inner();
     g.memory = memory;
     g.memory_top = memory_top;
+    g.daemon_memory = table.get(&me).map_or(0, |r| r.memory);
+    if let Some(c) = daemon_cpu {
+        g.daemon_cpu = c;
+    }
     g.last = table.iter().map(|(&pid, r)| (pid, (r.cpu_ns, r.start))).collect();
     g.last_at = Some(now);
     g.ticks = ticks;
@@ -1093,8 +1133,9 @@ fn memory_alert(d: &Daemon) {
 /// What the memory needs-you says: how short the Mac is, and who uses the most.
 fn memory_detail(l: &SystemLoad) -> String {
     let mut s = format!(
-        "macOS's memory pressure is {} ({} compressed, {} of swap in use, {} in all). New builds, tests, model runs and subagents wait until it drops (system.busy_memory). Past critical the Mac can hang and kernel-panic.",
+        "macOS's memory pressure is {} ({} available, {} compressed, {} of swap in use, {} in all). New builds, tests, model runs and subagents wait until it drops (system.busy_memory). Past critical the Mac can hang and kernel-panic.",
         l.memory_pressure.as_str(),
+        sys::bytes_label(l.memory_available_bytes),
         sys::bytes_label(l.compressed_bytes),
         sys::bytes_label(l.swap_used_bytes),
         sys::bytes_label(l.memory_total_bytes)
@@ -1295,6 +1336,15 @@ pub fn stop_processes(d: &Daemon, actor: Actor, p: StopProcessesParams) -> Resul
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn available_memory_leaves_out_app_wired_and_compressed() {
+        let mut vm: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+        (vm.internal_page_count, vm.purgeable_count, vm.wire_count, vm.compressor_page_count) = (500, 100, 200, 300);
+        vm.external_page_count = 1000;
+        assert_eq!(available(10_000, &vm, 4), 10_000 - (400 + 200 + 300) * 4);
+        assert_eq!(available(1_000, &vm, 4), 0);
+    }
 
     /// A terminal running claude (20), whose Bash tool (30) runs a script (40) that starts
     /// another claude (50). Each claude runs its hooks through `sh` (21, 51) → `midna hook`

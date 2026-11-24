@@ -721,9 +721,10 @@ pub static VERBS: &[Verb] = &[
                   \x20       (busiest processes: rustc ×14), busy/overloaded, and the load average. Busy =\n\
                   \x20       system.busy_cpu (90% by default); busy for guard.overload_secs fires system.overloaded and\n\
                   \x20       the app says whether terminals or other apps are the cause. Agents are only held back when\n\
-                  \x20       midna's terminals use at least half of the CPU in use. Memory: macOS's pressure,\n\
-                  \x20       compressed and swap, and the terminals using the most. Pressure at system.busy_memory\n\
-                  \x20       (warning by default) holds heavy work back whoever uses it.\n\
+                  \x20       midna's terminals use at least half of the CPU in use. Memory: macOS's pressure, what's\n\
+                  \x20       still available, compressed and swap, and the terminals using the most. Pressure at\n\
+                  \x20       system.busy_memory (warning by default) holds heavy work back whoever uses it. Then\n\
+                  \x20       midnad's own CPU (of one core), memory and uptime. --json for scripts (the task board).\n\
                   wait    block until agents aren't held back (the busy gate's own check: CPU or memory), then\n\
                   \x20       print the load.\n\
                   \x20       Exit 4 if still held at --timeout seconds (default: no limit). When a build, test or\n\
