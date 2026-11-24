@@ -73,6 +73,9 @@ pub(crate) fn validate(d: &Daemon, t: &Trigger) -> Result<(), RpcError> {
     if t.filter.wall_clock && !(local && event.trim().eq_ignore_ascii_case("idle")) {
         return Err(RpcError::bad_params("filter.wall_clock only applies to local triggers with event idle"));
     }
+    if t.filter.not_self && !(local && action.to().is_some()) {
+        return Err(RpcError::bad_params("filter.not_self only applies to local triggers whose action names a terminal with to"));
+    }
     let schedule = local && event.trim().eq_ignore_ascii_case("schedule");
     let f = &t.filter;
     if !schedule && (f.window.is_some() || f.starts_at.is_some() || f.ends_at.is_some() || f.max_runs.is_some() || f.wake) {

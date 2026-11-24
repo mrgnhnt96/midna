@@ -983,6 +983,10 @@ pub struct TriggerFilter {
     /// Local: only this agent (`claude` or `codex`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentKind>,
+    /// Local, with an action that names a terminal (`to`): leave out events from that terminal
+    /// itself, so a trigger that sends into a terminal doesn't answer what that terminal raised.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_self: bool,
     /// Local `idle` triggers: minutes without a turn starting or ending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_minutes: Option<u32>,

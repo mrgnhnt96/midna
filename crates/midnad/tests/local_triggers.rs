@@ -770,3 +770,40 @@ fn stream_and_schedule_triggers_act_on_a_named_terminal() {
     let item = items.as_array().unwrap().iter().find(|i| i["title"] == "Look at build").unwrap_or_else(|| panic!("{items}"));
     assert_eq!(item["session_id"], sid, "{item}");
 }
+
+#[test]
+fn not_self_leaves_out_events_from_the_terminal_it_sends_to() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let watcher = open_sh(&mut h);
+    call(&mut h, "session.rename", json!({ "id": watcher, "name": "watcher" }));
+    let other = open_sh(&mut h);
+    call(&mut h, "session.rename", json!({ "id": other, "name": "other" }));
+    let add = |h: &mut Client, not_self: bool| {
+        call(
+            h,
+            "trigger.add",
+            json!({
+                "name": "Watch", "source": "local", "event": "needs_you.raised", "filter": { "not_self": not_self },
+                "action": { "kind": "send_to_session", "steps": [{ "text": "echo look" }], "to": "watcher" },
+            }),
+        )
+    };
+    let summary = |h: &mut Client, t: &Value, sid: &str| call(h, "trigger.test", json!({ "trigger_id": t["id"], "session": sid }))["summary"].as_str().unwrap().to_string();
+
+    let t = add(&mut h, true);
+    assert_eq!(t["filter"]["not_self"], true, "{t}");
+    assert!(summary(&mut h, &t, &watcher).starts_with("Doesn't match"), "its own terminal's event is left out");
+    assert!(summary(&mut h, &t, &other).starts_with("Matches"), "another terminal's isn't");
+    // Off, it fires on both, as before.
+    let t = add(&mut h, false);
+    assert!(summary(&mut h, &t, &watcher).starts_with("Matches"));
+
+    // Without a terminal to send to, there is nothing to leave out.
+    let e = call_err(
+        &mut h,
+        "trigger.add",
+        json!({ "name": "x", "source": "local", "event": "needs_you.raised", "filter": { "not_self": true }, "action": { "kind": "attention", "message": "x" } }),
+    );
+    assert!(e.message.contains("not_self"), "{}", e.message);
+}

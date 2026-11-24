@@ -511,6 +511,9 @@ fn fire_matching(d: &Arc<Daemon>, event: &str, sid: Option<&str>, agent: Option<
         if !ev.fires() {
             continue;
         }
+        if is_own_terminal(d, t, s.as_ref()) {
+            continue;
+        }
         // Per terminal; a stream event has none, so per stream.
         let on = s.as_ref().map(|s| s.id.clone()).or_else(|| stream.map(|x| format!("stream:{}", x.name)));
         if let Some(on) = on {
@@ -697,6 +700,12 @@ pub fn resolve_to(d: &Daemon, to: &str, project: Option<&str>) -> Result<(Sessio
     let s = &running[pick.index];
     let note = (pick.matches > 1).then(|| format!("{} terminals named {}; picked the most recently active ({})", pick.matches, s.name, s.id));
     Ok((SessionFacts::of(s), note))
+}
+
+/// `not_self` on `t`, and the event is from the very terminal its `to` names now.
+fn is_own_terminal(d: &Daemon, t: &Trigger, s: Option<&SessionFacts>) -> bool {
+    let (Some(s), Some(to)) = (s, t.action.to()) else { return false };
+    t.filter.not_self && resolve_to(d, to, t.filter.project.as_deref()).is_ok_and(|(x, _)| x.id == s.id)
 }
 
 /// The terminal `t` acts on: its `to`, resolved now, or else the event's own (`s`).
@@ -1091,7 +1100,11 @@ pub fn dry_run(d: &Daemon, t: &Trigger, event: &str, sid: Option<&str>, data: &V
         }
     }
     let data = sched.as_ref().unwrap_or(data);
-    let ev = evaluate(t, event, s.as_ref(), data);
+    let mut ev = evaluate(t, event, s.as_ref(), data);
+    if is_own_terminal(d, t, s.as_ref()) {
+        ev.filters_ok = false;
+        ev.line.push_str(" · not_self: the event is from the terminal it sends to");
+    }
     // The terminal it would act on: its `to`, looked up now, or the event's.
     let acting = acting_on(d, t, s.as_ref());
     let target = acting.as_ref().ok().and_then(|(x, _)| x.clone());
@@ -1205,6 +1218,14 @@ mod tests {
         assert!(!e.fires());
         assert!(e.line.contains("≠"), "{}", e.line);
         assert!(!evaluate(&t, "agent.prompt_blocked", None, &data).fires(), "agent filter needs a terminal");
+    }
+
+    #[test]
+    fn not_self_round_trips_and_defaults_off() {
+        let f: TriggerFilter = serde_json::from_value(json!({ "not_self": true })).unwrap();
+        assert!(f.not_self);
+        assert_eq!(serde_json::to_value(&f).unwrap(), json!({ "not_self": true }));
+        assert_eq!(serde_json::to_value(TriggerFilter::default()).unwrap(), json!({}));
     }
 
     #[test]
