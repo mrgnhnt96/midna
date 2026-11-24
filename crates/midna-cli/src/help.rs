@@ -32,8 +32,8 @@ pub static VERBS: &[Verb] = &[
         summary: "print the bundled agent guide (SKILL.md) or one of its topics",
         details: "Prints the guide's core: when to use which verb, attention etiquette, what is human only, and\n\
                   never routing around a denial. It lists its topics, and `midna skill <topic>` prints one:\n\
-                  triggers, keep-awake, load, secrets, queue, terminals, links, nearby. In a midna terminal the core is\n\
-                  at $MIDNA_SKILL and each topic's file sits beside it.\n\
+                  triggers, keep-awake, load, secrets, queue, terminals, links, nearby, monitor. In a midna terminal\n\
+                  the core is at $MIDNA_SKILL and each topic's file sits beside it.\n\
                   `--path` prints that path instead.",
         methods: &[],
     },
