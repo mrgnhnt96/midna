@@ -11,7 +11,7 @@ fn set_soft(n: u64) {
 }
 
 fn start() -> std::io::Result<pty::Spawned> {
-    pty::spawn(&["/usr/bin/true".to_string()], "/", &[], 80, 24)
+    pty::spawn(&["/usr/bin/true".to_string()], "/", &[], 80, 24, 0)
 }
 
 #[test]

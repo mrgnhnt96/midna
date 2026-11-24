@@ -571,13 +571,19 @@ fn open_folder(a: &Args, path: &str) -> Res {
 }
 
 fn open(a: &Args, out: OutFn) -> Res {
-    a.check(&["agent", "prompt", "resume", "monitor", "name", "project", "cwd", "background", "close-on-exit"])?;
+    a.check(&["agent", "prompt", "resume", "monitor", "name", "project", "cwd", "background", "close-on-exit", "nice"])?;
     let cwd = match a.get("cwd") {
         Some(c) => Some(c.to_string()),
         None if a.get("project").is_none() => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
         None => None,
     };
     let mut p = json!({ "project_id": a.get("project"), "name": a.get("name"), "cwd": cwd, "background": a.has("background"), "close_on_exit": a.has("close-on-exit") });
+    if let Some(n) = a.num::<i32>("nice")? {
+        if !(0..=20).contains(&n) {
+            return Err(Fail::Usage(format!("--nice {n}: expected 0 (normal priority) to 20 (lowest)")));
+        }
+        p["nice"] = json!(n);
+    }
     if let Some(agent) = a.get("agent") {
         p["kind"] = json!("agent");
         p["agent"] = json!(agent);

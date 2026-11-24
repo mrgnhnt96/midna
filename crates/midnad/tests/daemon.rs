@@ -1114,6 +1114,35 @@ fn background_terminals_open_and_move() {
     assert_eq!(call(&mut a, "session.set_background", json!({ "id": id, "background": true }))["background"], true);
 }
 
+/// The nice value a terminal's process really runs at.
+fn nice_of(s: &Value) -> i32 {
+    let pid = s["pid"].as_i64().expect("pid") as libc::id_t;
+    unsafe { libc::getpriority(libc::PRIO_PROCESS, pid) }
+}
+
+#[test]
+fn terminals_start_at_their_nice() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    // The human's own shell: normal priority.
+    let mine = call(&mut h, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"] }));
+    assert_eq!((mine["nice"].as_i64(), nice_of(&mine)), (Some(0), 0));
+    // One an agent opens starts at guard.agent_nice, and asking for less doesn't get under it.
+    let mut a = d.agent(Some(mine["id"].as_str().unwrap()));
+    let theirs = call(&mut a, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"], "nice": 0 }));
+    assert_eq!((theirs["nice"].as_i64(), nice_of(&theirs)), (Some(10), 10));
+    // A terminal's own nice, kept when it restarts.
+    let own = call(&mut h, "session.open", json!({ "kind": "shell", "command": ["/bin/sh"], "nice": 15 }));
+    assert_eq!(nice_of(&own), 15);
+    let id = own["id"].as_str().unwrap();
+    call(&mut h, "session.restart", json!({ "id": id }));
+    let again = wait_for(5, "restarted process", || {
+        let s = call(&mut h, "session.get", json!({ "id": id }));
+        (s["pid"] != own["pid"]).then_some(s)
+    });
+    assert_eq!((again["nice"].as_i64(), nice_of(&again)), (Some(15), 15));
+}
+
 #[test]
 fn close_on_exit_closes_a_clean_exit_and_keeps_a_failure() {
     let d = TestDaemon::start();

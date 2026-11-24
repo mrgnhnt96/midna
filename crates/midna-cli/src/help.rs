@@ -124,7 +124,7 @@ pub static VERBS: &[Verb] = &[
     Verb {
         name: "open",
         aliases: &["new"],
-        usage: "open [--agent claude|codex [--prompt TEXT] [--resume ID]] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [--close-on-exit] [-- argv... | -- agent args...]",
+        usage: "open [--agent claude|codex [--prompt TEXT] [--resume ID]] [--monitor CMD] [--name N]\n            [--project P] [--cwd DIR] [--background] [--close-on-exit] [--nice N]\n            [-- argv... | -- agent args...]",
         summary: "open a terminal: a shell (default), a monitor, or an agent",
         details: "Shell: the login shell, or `-- argv...`. Monitor: `--monitor CMD` runs a command the human\n\
                   should watch; a failure raises a needs-you item. Agent: `--agent claude|codex` starts a\n\
@@ -138,6 +138,10 @@ pub static VERBS: &[Verb] = &[
                   project (a dev server, a watcher); it is still listed, readable and can raise needs-you.\n\
                   --close-on-exit closes the terminal when its agent or command exits normally (exit 0,\n\
                   ctrl-c, hang-up); a failed exit stays open with its needs-you item.\n\
+                  --nice N starts its process (and everything it runs) at nice N, 0 (normal priority)\n\
+                  to 20 (lowest), kept for restarts. Without it, agent terminals and whatever an agent\n\
+                  opens start at guard.agent_nice (default 10) so they give way to your own apps; only\n\
+                  the human may go under it.\n\
                   Prints the new terminal's id.",
         methods: &["session.open"],
     },
@@ -732,6 +736,8 @@ pub static VERBS: &[Verb] = &[
                   stop    end what the terminal started (or only the pids given, with their children): SIGTERM,\n\
                   \x20       SIGKILL after 3s. Its shell or agent keeps running. Human only\n\
                   midnad also stops agents' background poll loops (`until … sleep`) older than guard.loop_max_hours.\n\
+                  Agent terminals, and whatever agents open, start at nice guard.agent_nice (10 by default):\n\
+                  their builds give way to your own apps when the CPU is contended (`midna open --nice N`).\n\
                   While busy, what the heaviest agent terminals start runs in macOS's background mode\n\
                   (guard.background_agents; \"slowed\" in the list), and agents are denied new subagents and\n\
                   builds/tests/installs (guard.busy_gate; `system wait` waits it out). An agent runs at most guard.max_subagents subagents at once.\n\

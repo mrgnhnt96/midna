@@ -160,6 +160,7 @@ pub(super) fn start(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, place: &Place, p
         close_on_exit: false,
         on_default_branch: false,
         switch_to_default_branch: false,
+        nice: None,
     };
     let back = if *want_reply { " · its first answer goes back to them" } else { "" };
     let preface = format!(

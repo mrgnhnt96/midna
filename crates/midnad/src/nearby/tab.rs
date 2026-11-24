@@ -403,6 +403,7 @@ pub fn open(d: &Arc<Daemon>, ctx: &Ctx, it: &ShareItem, chosen: Option<&str>) ->
         close_on_exit: false,
         on_default_branch: false,
         switch_to_default_branch: false,
+        nice: None,
     };
     let s = crate::rpc::session::open_session_with(d, ctx, params, Some(preface(from, payload, &here)))?;
     Ok(format!("opened as {} {here}", s.id))

@@ -320,6 +320,7 @@ pub fn arrived(d: &Arc<Daemon>, item: &ShareItem, chosen: Option<&str>, staged: 
         close_on_exit: false,
         on_default_branch: false,
         switch_to_default_branch: false,
+        nice: None,
     };
     let preface = format!(
         "\x1b[1m── {} · {} conversation sent from {} · resumed {here}; nothing runs until you prompt it ──\x1b[0m\r\n",

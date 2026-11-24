@@ -240,7 +240,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Agents,
         "Runaway work",
-        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.heavy_commands", "guard.model_slots", "guard.hold_agents_at", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours", "daemon.restart_window", "daemon.restart_min_uptime_hours"],
+        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.agent_nice", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.heavy_commands", "guard.model_slots", "guard.hold_agents_at", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours", "daemon.restart_window", "daemon.restart_min_uptime_hours"],
     ),
     (
         Sec::Agents,
@@ -1159,6 +1159,7 @@ pub(crate) fn label_for(key: &str) -> String {
         "keep_awake.wake" => "Wake the Mac for scheduled work",
         "system.busy_load" => "Wait to update at load per core (%)",
         "system.busy_cpu" => "Busy at CPU use (%)",
+        "guard.agent_nice" => "Agents' priority (nice)",
         "guard.background_agents" => "Slow agents' work down while the Mac is busy",
         "guard.busy_gate" => "Make agents wait to start heavy work while busy",
         "guard.max_subagents" => "Most subagents an agent runs at once",
