@@ -333,13 +333,14 @@ fn finish(d: &Daemon, sid: &str, m: &QueuedMessage, res: Result<(), String>) {
     d.queue.book().sending.remove(sid);
     match res {
         Ok(()) => {
+            let enter = m.enter || crate::rpc::session::split_trailing_enter(&m.text).1;
             {
                 let mut book = d.queue.book();
                 let w = book.watch.entry(sid.to_string()).or_default();
-                *w = Watch { sent_at: Some(Instant::now()), unsubmitted: !m.enter && !crate::rpc::session::split_trailing_enter(&m.text).1, ..Default::default() };
+                *w = Watch { sent_at: Some(Instant::now()), unsubmitted: !enter, ..Default::default() };
             }
             edit(d, sid, |q| q.retain(|x| x.id != m.id));
-            changed(d, sid, m.by.clone(), "sent", json!({ "id": m.id, "text": clip(&m.text, 200), "trigger_id": m.trigger_id }));
+            changed(d, sid, m.by.clone(), "sent", json!({ "id": m.id, "text": clip(&m.text, 200), "enter": enter, "trigger_id": m.trigger_id }));
             // A paired Mac's agent ask: the turn this starts answers it.
             crate::nearby::agent_ask::sent(d, sid, &m.id);
         }

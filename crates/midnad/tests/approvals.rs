@@ -369,8 +369,8 @@ fn no_typed_in_the_terminal_saves_nothing() {
     assert_eq!(saved, json!([]));
 }
 
-/// An agent that said it was blocked and then got a new prompt (the human's answer, or a
-/// message from elsewhere) moved on: its own `blocked` item closes. Notes, and items other
+/// An agent that said it was blocked and then got a new prompt from the human (their answer)
+/// moved on: its own `blocked` item closes. Notes, and items other
 /// terminals raised about it, stay.
 #[test]
 fn a_new_prompt_closes_the_agents_own_blocked_item() {
@@ -397,6 +397,39 @@ fn a_new_prompt_closes_the_agents_own_blocked_item() {
     assert!(ids.contains(&note) && ids.contains(&elsewhere), "{ids:?}");
     let got = call(&mut h, "needs_you.get", json!({ "id": blocked }));
     assert_eq!(got["resolution"], json!({ "kind": "done", "auto": true, "reason": "prompt" }), "{got}");
+}
+
+/// A monitor's own trigger typing into its terminal answers none of its questions: its
+/// `blocked` item stays open until the human's prompt.
+#[test]
+fn a_trigger_typing_into_the_terminal_leaves_its_blocked_item_open() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    let hook = |c: &mut Client, ev: &str, prompt: &str| call(c, "agent.hook", json!({ "agent": "claude", "event": ev, "payload": { "session_id": "c1", "prompt": prompt } }));
+    let t = call(
+        &mut a,
+        "trigger.add",
+        json!({ "name": "Heartbeat", "source": "local", "event": "hook.Stop", "action": { "kind": "send_to_session", "steps": [{ "text": "echo heartbeat-tick" }] }, "enabled": true }),
+    );
+    assert_eq!(t["state"], "active", "{t}");
+    hook(&mut a, "UserPromptSubmit", "watch the other tabs");
+    let blocked = call(&mut a, "needs_you.raise", json!({ "kind": "blocked", "message": "which option?" }))["id"].as_str().unwrap().to_string();
+    let is_open = |h: &mut Client| call(h, "needs_you.list", json!({})).as_array().unwrap().iter().any(|n| n["id"] == blocked.as_str());
+
+    hook(&mut a, "Stop", "");
+    // Its Enter is in once the queue says it sent it; the agent's prompt hook comes after.
+    let sent = |h: &mut Client| call(h, "events.list", json!({ "filter": { "kinds": ["session.queue"] }, "limit": 50 })).as_array().unwrap().iter().any(|e| e["data"]["action"] == "sent");
+    wait_for(20, "the trigger's send typed", || sent(&mut h).then_some(()));
+    hook(&mut a, "UserPromptSubmit", "echo heartbeat-tick");
+    assert!(is_open(&mut h), "the trigger's prompt kept it open");
+
+    hook(&mut a, "Stop", "");
+    hook(&mut a, "UserPromptSubmit", "option two");
+    assert!(!is_open(&mut h), "the human's prompt closed it");
+    let got = call(&mut h, "needs_you.get", json!({ "id": blocked }));
+    assert_eq!(got["resolution"]["reason"], "prompt", "{got}");
 }
 
 #[test]

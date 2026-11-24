@@ -63,7 +63,7 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
                 d.emit(kinds::AGENT_PROMPT_SUBMITTED, actor.clone(), Some(project.clone()), Some(sid.clone()), json!({ "agent": p.agent, "prompt": prompt, "conversation": conversation }));
                 crate::auto_name::on_prompt(d, &sid, prompt);
             }
-            d.clear_agent_blocked(&sid);
+            d.clear_agent_blocked(&sid, prompt);
             start_turn(d, &sid, &project, &actor);
             crate::resume::on_turn_started(d, &sid);
         }
