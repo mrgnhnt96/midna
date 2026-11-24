@@ -150,6 +150,16 @@ fn build() -> Vec<MethodSpec> {
         m::<SessionSetBackgroundParams, Session>("session.set_background").mutating().d(
             "Move a terminal to the sidebar's folded Background group (background=true) or back to its project (false). \
              Its process, status and needs-you items are unchanged."),
+        m::<SessionMonitorGrantParams, Session>("session.monitor_grant").mutating().human().d(
+            "Give terminal `id` a monitor grant: its agent may answer other terminals' permission prompts (scope prompts), \
+             approval items (approvals) or both (all, the default), until `until` (RFC 3339) or until revoked. Granting \
+             again replaces the grant. Human only: an agent's call becomes a needs-you the human approves. Emits \
+             session.monitor_granted; the grant shows as the terminal's `monitor_grant`. CLI: `midna monitor grant <id> \
+             [--scope prompts|approvals|all] [--until 2am | --for 8h]`."),
+        m::<IdParams, Session>("session.monitor_revoke").mutating().human().d(
+            "End terminal `id`'s monitor grant now (no-op when it has none). Human only: an agent's call becomes a needs-you. \
+             Emits session.monitor_revoked; a grant that reaches its `until` ends by itself with session.monitor_expired. \
+             CLI: `midna monitor revoke <id>`."),
         m::<SessionCloseParams, OkResult>("session.close").mutating().d(
             "Close a terminal and kill its process. Closing a working terminal requires force=true, which is policy-checked (`close --force`): \
              it asks the human unless they turned on agents.may_force_close (or a rule allows it). Closing another idle terminal asks unless \

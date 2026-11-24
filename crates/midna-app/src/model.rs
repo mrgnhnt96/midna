@@ -545,6 +545,7 @@ mod tests {
             auto_name: None,
             allowed_tools: vec![],
             touched: false,
+            monitor_grant: None,
         };
         let v = serde_json::json!({"sessions": [s]});
         let got: Vec<Session> = parse_list(&v);

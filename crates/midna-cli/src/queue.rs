@@ -110,7 +110,7 @@ fn text_arg(t: String) -> Result<String, Fail> {
 }
 
 /// Local `HH:MM`, with the date when it is not today.
-fn local_time(at: &str) -> String {
+pub(crate) fn local_time(at: &str) -> String {
     let Some(t) = time::parse_rfc3339(at) else { return at.to_string() };
     let off = time::local_offset_secs();
     let local = time::format_unix(t + off);

@@ -314,6 +314,7 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
             vec![]
         },
         touched,
+        monitor_grant: None,
     };
     {
         let mut core = d.core();
@@ -544,6 +545,64 @@ pub fn set_background(d: &Daemon, ctx: &Ctx, p: SessionSetBackgroundParams) -> R
     d.mark_dirty();
     d.emit(kinds::SESSION_BACKGROUND, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "background": p.background }));
     ok(out)
+}
+
+/// `session.monitor_grant` (human only, see the catalog): give terminal `id` a monitor grant,
+/// replacing any it has. Nothing honors it yet beyond storing and showing it.
+pub fn monitor_grant(d: &Daemon, ctx: &Ctx, p: SessionMonitorGrantParams) -> R {
+    let now = time::now_unix();
+    let until = match p.until.as_deref() {
+        None => None,
+        Some(u) => match time::parse_rfc3339(u) {
+            Some(t) if t > now => Some(time::format_unix(t)),
+            Some(_) => return Err(RpcError::bad_params(format!("until {u} has already passed"))),
+            None => return Err(RpcError::bad_params(format!("until `{u}` is not an RFC 3339 time"))),
+        },
+    };
+    let mut core = d.core();
+    let s = core.state.session_mut(&p.id).ok_or_else(|| not_found(&p.id))?;
+    let grant = MonitorGrant { scope: p.scope, granted_at: time::format_unix(now), until };
+    let replaced = s.monitor_grant.replace(grant.clone()).is_some();
+    let out = s.clone();
+    drop(core);
+    d.mark_dirty();
+    d.emit(kinds::SESSION_MONITOR_GRANTED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "monitor_grant": grant, "replaced": replaced }));
+    ok(out)
+}
+
+/// `session.monitor_revoke` (human only): end terminal `id`'s monitor grant now.
+pub fn monitor_revoke(d: &Daemon, ctx: &Ctx, p: IdParams) -> R {
+    let mut core = d.core();
+    let s = core.state.session_mut(&p.id).ok_or_else(|| not_found(&p.id))?;
+    let Some(grant) = s.monitor_grant.take() else {
+        return ok(s.clone());
+    };
+    let out = s.clone();
+    drop(core);
+    d.mark_dirty();
+    d.emit(kinds::SESSION_MONITOR_REVOKED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "monitor_grant": grant }));
+    ok(out)
+}
+
+/// End every monitor grant whose `until` has passed (run from the needs-you sweep).
+pub fn expire_monitor_grants(d: &Daemon) {
+    let now = time::now_unix();
+    let ended: Vec<(Id, Id, MonitorGrant)> = {
+        let mut core = d.core();
+        core.state
+            .sessions
+            .iter_mut()
+            .filter(|s| s.monitor_grant.as_ref().is_some_and(|g| !g.live_at(now)))
+            .filter_map(|s| s.monitor_grant.take().map(|g| (s.id.clone(), s.project_id.clone(), g)))
+            .collect()
+    };
+    if ended.is_empty() {
+        return;
+    }
+    d.mark_dirty();
+    for (sid, project, grant) in ended {
+        d.emit(kinds::SESSION_MONITOR_EXPIRED, Actor::system(), Some(project), Some(sid), json!({ "monitor_grant": grant }));
+    }
 }
 
 /// Gap between typed text and the Enter that submits it (see `input`).

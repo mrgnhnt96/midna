@@ -310,6 +310,8 @@ fn dispatch(d: &Arc<Daemon>, ctx: &Ctx, method: &str, p: Value) -> R {
         "session.set_status" => session::set_status(d, ctx, parse(p)?),
         "session.clear_status" => session::clear_status(d, ctx, parse(p)?),
         "session.set_background" => session::set_background(d, ctx, parse(p)?),
+        "session.monitor_grant" => session::monitor_grant(d, ctx, parse(p)?),
+        "session.monitor_revoke" => session::monitor_revoke(d, ctx, parse(p)?),
         "session.input" => session::input(d, ctx, parse(p)?),
         "session.send_image" => session::send_image(d, ctx, parse(p)?),
         "session.read" => session::read(d, parse(p)?),
@@ -669,6 +671,21 @@ pub fn deferred_guard(d: &Daemon, method: &str, params: &Value) -> (Option<Strin
             let patterns = d.core().state.app_link_patterns.get(owner).cloned().unwrap_or_default();
             match links::preview_fingerprint(owner, &patterns) {
                 Some(fp) => (Some(fp), Some(links::preview_commands(&patterns).join("\n"))),
+                None => (Some("missing".into()), None),
+            }
+        }
+        // The terminal it names: approving after it closed (or its id went to another) does nothing.
+        "session.monitor_grant" | "session.monitor_revoke" => {
+            let id = params.get("id").and_then(Value::as_str).unwrap_or("");
+            let s = d.core().state.session(id).map(|s| (s.name.clone(), s.created_at.clone(), s.monitor_grant.clone()));
+            match s {
+                Some((name, created, grant)) => {
+                    let now = match grant {
+                        Some(g) => format!("it has one now: {}{}", g.scope.as_str(), g.until.map(|u| format!(" until {u}")).unwrap_or_default()),
+                        None => "it has none now".into(),
+                    };
+                    (Some(hex(format!("{id}|{created}").as_bytes())), Some(format!("Terminal “{name}” ({id}); {now}")))
+                }
                 None => (Some("missing".into()), None),
             }
         }

@@ -482,6 +482,21 @@ pub static VERBS: &[Verb] = &[
                   Approvals of human-only actions can only be answered by the human.",
         methods: &["needs_you.resolve"],
     },
+    Verb {
+        name: "monitor",
+        aliases: &[],
+        usage: "monitor grant <id> [--scope prompts|approvals|all] [--until 2am | --for 8h]\n       \
+                monitor revoke <id>\n       \
+                monitor [list]",
+        summary: "let one terminal's agent answer other terminals' prompts and approvals (human only)",
+        details: "A monitor grant lets terminal <id>'s agent answer other terminals' permission prompts (--scope\n\
+                  prompts), approval items (approvals) or both (all, the default). --until ends it by itself at a\n\
+                  time (2am, 17:30: the next time the clock reads it; or RFC 3339), --for after a while (8h, 90m);\n\
+                  without either it lasts until revoked. Granting again replaces it. Only the human grants or\n\
+                  revokes: an agent's call asks the human with a needs-you instead. `midna list` marks a granted\n\
+                  terminal (monitor) and `midna get` shows its grant.",
+        methods: &["session.monitor_grant", "session.monitor_revoke"],
+    },
     // ---------------------------------------------------------------- policy
     Verb {
         name: "check",

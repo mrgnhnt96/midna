@@ -143,7 +143,8 @@ fn stale(items: &[NeedsYou], hours: i64, awake_since: impl Fn(i64) -> i64) -> Ve
 }
 
 /// Every minute or so: take back items nobody answered in time (`needs_you.expire_hours`) and
-/// approvals nobody can act on (`needs_you.withdraw_orphans`).
+/// approvals nobody can act on (`needs_you.withdraw_orphans`), and end monitor grants past
+/// their `until`.
 pub fn sweep(d: &Daemon) {
     let (hours, ids) = {
         let core = d.core();
@@ -156,6 +157,7 @@ pub fn sweep(d: &Daemon) {
     for (id, why) in orphans(d) {
         d.withdraw_needs_you(&id, why);
     }
+    super::session::expire_monitor_grants(d);
 }
 
 /// Approvals nobody can act on any more: a policy request with no caller waiting on it (midnad
