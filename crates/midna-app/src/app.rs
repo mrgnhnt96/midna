@@ -282,6 +282,12 @@ pub struct MainWindow {
     /// session event kept the sidebar's new status waiting most of a second.
     pending_rows: std::collections::HashSet<String>,
     refresh_scheduled: bool,
+    /// The footer's insights, which agent and trigger events refresh at most every
+    /// `INSIGHTS_EVENT_GAP` (`request_insights_soon`): when the last fetch started or finished,
+    /// whether one is in flight, and whether a trailing one is waiting.
+    insights_at: Option<Instant>,
+    insights_busy: bool,
+    insights_trailing: bool,
     /// Refreshes started so far. Each one's `session.list` is only taken if it started at or
     /// after `sessions_floor`: refreshes overlap (header and row scripts can take a second),
     /// and one fetched before a terminal opened or closed must not undo it.
@@ -553,6 +559,9 @@ impl MainWindow {
             pending_refresh: 0,
             pending_rows: Default::default(),
             refresh_scheduled: false,
+            insights_at: None,
+            insights_busy: false,
+            insights_trailing: false,
             refresh_seq: 0,
             sessions_floor: 0,
             front_waiting: None,
@@ -877,7 +886,7 @@ impl MainWindow {
                     }
                 }
                 if k.starts_with("agent.") || k.starts_with("trigger.") {
-                    what |= refresh::INSIGHTS;
+                    self.request_insights_soon(cx);
                 }
                 // A turn's status lines carry the plan limits.
                 if k.starts_with("agent.") || k.starts_with("usage.") {
@@ -1259,9 +1268,50 @@ impl MainWindow {
         .detach();
     }
 
+    /// Refresh the footer's insights for an agent or trigger event. Agents send them in bursts,
+    /// and each `insights.summary` (and `insights.detail`) walks the daemon's whole event window
+    /// under the log's lock, so these run at most every `INSIGHTS_EVENT_GAP` and never while one
+    /// is in flight, with one trailing refresh so the footer ends on the burst's last event.
+    fn request_insights_soon(&mut self, cx: &mut Context<Self>) {
+        if self.insights_trailing {
+            return;
+        }
+        let wait = insights_wait(self.insights_at, self.insights_busy, Instant::now());
+        if wait.is_zero() {
+            self.request_refresh(refresh::INSIGHTS, cx);
+            return;
+        }
+        self.insights_trailing = true;
+        cx.spawn(async move |this, cx| {
+            let mut wait = wait;
+            loop {
+                cx.background_executor().timer(wait).await;
+                let Ok(next) = this.update(cx, |m, cx| {
+                    let next = insights_wait(m.insights_at, m.insights_busy, Instant::now());
+                    if next.is_zero() {
+                        m.insights_trailing = false;
+                        m.request_refresh(refresh::INSIGHTS, cx);
+                    }
+                    next
+                }) else {
+                    return;
+                };
+                if next.is_zero() {
+                    return;
+                }
+                wait = next;
+            }
+        })
+        .detach();
+    }
+
     fn run_refresh(&mut self, what: u32, some_rows: std::collections::HashSet<String>, cx: &mut Context<Self>) {
         if self.conn != ConnState::Connected {
             return;
+        }
+        if what & refresh::INSIGHTS != 0 {
+            self.insights_at = Some(Instant::now());
+            self.insights_busy = true;
         }
         self.refresh_seq += 1;
         let seq = self.refresh_seq;
@@ -1276,7 +1326,7 @@ impl MainWindow {
             let res = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut r = RefreshResult { seq, ..Default::default() };
+                    let mut r = RefreshResult { seq, insights: what & refresh::INSIGHTS != 0, ..Default::default() };
                     let call = |m: &str, p: Value| match backend.call(m, p) {
                         Ok(v) => Some(v),
                         Err(e) => {
@@ -1386,6 +1436,10 @@ impl MainWindow {
         let badge = r.needs.is_some() || r.settings.is_some() || r.sessions.is_some();
         // The sidebar as it was, so terminals and projects that turn up here unfold.
         let before = self.loaded.then(|| crate::ui::close_anim::sidebar_rows(self));
+        if r.insights {
+            self.insights_at = Some(Instant::now());
+            self.insights_busy = false;
+        }
         if let Some(s) = r.settings {
             let new: HashMap<String, Value> = s.into_iter().map(|e| (e.key, e.value)).collect();
             if new != self.settings {
@@ -2839,6 +2893,8 @@ impl MainWindow {
 struct RefreshResult {
     /// `MainWindow::refresh_seq` when it started.
     seq: u64,
+    /// It fetched the footer's insights (whether or not the call worked).
+    insights: bool,
     settings: Option<Vec<SettingEntry>>,
     projects: Option<Vec<Project>>,
     discovered: Option<Vec<ProjectCandidate>>,
@@ -2969,6 +3025,18 @@ fn rows_to_run(live: Vec<String>, all: bool, named: &std::collections::HashSet<S
     live.into_iter().filter(|id| all || named.contains(id)).collect()
 }
 
+/// How often agent and trigger events may refresh the footer's insights (`request_insights_soon`).
+const INSIGHTS_EVENT_GAP: Duration = Duration::from_secs(2);
+
+/// How long an event-driven insights refresh waits: until `INSIGHTS_EVENT_GAP` after the last
+/// fetch started or finished (`last`), and while one is in flight (`busy`) a full gap, to look again.
+fn insights_wait(last: Option<Instant>, busy: bool, now: Instant) -> Duration {
+    if busy {
+        return INSIGHTS_EVENT_GAP;
+    }
+    last.map_or(Duration::ZERO, |l| INSIGHTS_EVENT_GAP.saturating_sub(now.saturating_duration_since(l)))
+}
+
 /// A full run replaces every row's segments; a run for some terminals replaces only theirs,
 /// and drops terminals that are gone.
 fn merge_rows(rows: &mut HashMap<String, Vec<Segment>>, new: HashMap<String, Vec<Segment>>, all: bool, sessions: &[Session]) {
@@ -2982,7 +3050,7 @@ fn merge_rows(rows: &mut HashMap<String, Vec<Segment>>, new: HashMap<String, Vec
 
 #[cfg(test)]
 mod tests {
-    use super::{background_note, busy_count_phrase, busy_phrase, listed, merge_rows, neighbour, rows_to_run, RowGroup};
+    use super::{background_note, busy_count_phrase, busy_phrase, insights_wait, listed, merge_rows, neighbour, rows_to_run, RowGroup, INSIGHTS_EVENT_GAP};
     use crate::model::Segment;
     use crate::model::{Session, StatusState};
     use midna_proto::{AgentInfo, BackgroundTask};
@@ -2993,6 +3061,18 @@ mod tests {
         assert_eq!(listed(Some("s1".into()), &sessions).as_deref(), Some("s1"));
         assert_eq!(listed(Some("closed".into()), &sessions), None);
         assert_eq!(listed(None, &sessions), None);
+    }
+
+    #[test]
+    fn agent_events_refresh_insights_at_most_every_gap() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        assert_eq!(insights_wait(None, false, now), Duration::ZERO, "the first one goes now");
+        assert_eq!(insights_wait(Some(now - INSIGHTS_EVENT_GAP * 2), false, now), Duration::ZERO, "a quiet spell: now");
+        assert_eq!(insights_wait(Some(now - Duration::from_millis(500)), false, now), INSIGHTS_EVENT_GAP - Duration::from_millis(500), "the rest of the gap");
+        assert_eq!(insights_wait(Some(now), false, now), INSIGHTS_EVENT_GAP);
+        assert_eq!(insights_wait(Some(now - INSIGHTS_EVENT_GAP * 2), true, now), INSIGHTS_EVENT_GAP, "never while one is in flight");
+        assert_eq!(insights_wait(None, true, now), INSIGHTS_EVENT_GAP);
     }
 
     #[test]
