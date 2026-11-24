@@ -10,7 +10,9 @@ midna drives the monitoring agent by itself: on the grant it types a briefing in
 the grant's scope, or an agent tab sitting idle, done, exited or failed (finished: close it with
 `midna close <id>`; stopped short: nudge it with `midna queue add --session <id> "…"`). It checks
 every `monitor.check_secs` (default 30). Don't run your own watch loop or Monitor: handle the
-note, end your turn, and the next one comes. When the grant ends, a note says so.
+note, end your turn, and the next one comes. When the grant ends, a note says so. At a Claude
+usage limit, notes wait until it resets (a note would only fail your turn again), and tabs the
+limit stopped are left out: midna resumes them itself (`agents.resume_after_limit`).
 
 The human's own limits come first: the monitor rules, a markdown file in midna's home
 (`monitor-rules.md`) saying what a monitor may and may not do ("everything except Slack messages

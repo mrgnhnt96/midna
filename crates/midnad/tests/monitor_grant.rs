@@ -470,3 +470,51 @@ fn the_humans_rules_ride_in_the_briefing_and_every_note_and_human_only_asks_join
     let q = wait_for(5, "rebriefed", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 3 && q[2].contains(&ask)));
     assert!(q[1].contains("confirm another agent's human-only action") && q[2].contains(rules), "{q:?}");
 }
+
+#[test]
+fn at_a_usage_limit_the_monitor_gets_no_notes_until_it_lifts() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = agent_tab(&d, &mut h);
+    let worker = agent_tab(&d, &mut h);
+    let mut m = d.agent(Some(&monitor));
+    let mut w = d.agent(Some(&worker));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    wait_for(5, "briefing", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 1));
+    let limit = json!({ "error": "rate_limit", "error_details": "", "last_assistant_message": "You've hit your limit · resets 3pm" });
+    let backdate = |d: &TestDaemon, sid: &str| {
+        d.daemon().core().state.session_mut(sid).unwrap().status.since = time::format_unix(time::now_unix() - 60);
+    };
+
+    // A worker the limit stopped is no line: nothing to nudge until it resets.
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": { "prompt": "go" } }));
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "StopFailure", "payload": limit }));
+    backdate(&d, &worker);
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 1);
+
+    // A note waits; then the monitor's own turn dies on the limit: the note is taken back, and
+    // what comes up meanwhile waits too.
+    let p1 = raise_prompt(&d, &worker, "Bash: cargo build", false);
+    wait_for(5, "note", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2 && q[1].contains(&p1)));
+    call(&mut m, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": { "prompt": "go" } }));
+    call(&mut m, "agent.hook", json!({ "agent": "claude", "event": "StopFailure", "payload": limit }));
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 1);
+    let p2 = raise_prompt(&d, &worker, "Bash: cargo test", false);
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 1);
+
+    // A turn of its own ends well: the limit lifted, and one note says both.
+    call(&mut m, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": { "prompt": "continue" } }));
+    call(&mut m, "agent.hook", json!({ "agent": "claude", "event": "Stop", "payload": {} }));
+    let q = wait_for(5, "note back", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2));
+    assert!(q[1].contains(&p1) && q[1].contains(&p2), "{q:?}");
+
+    // The account at 100% holds it too, whoever reported it.
+    let now = time::now_unix();
+    let line = json!({ "rate_limits": { "five_hour": { "used_percentage": 100, "resets_at": now + 3600 }, "seven_day": { "used_percentage": 40, "resets_at": now + 86_400 } } });
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "statusline", "payload": line }));
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 1);
+}

@@ -16,6 +16,14 @@
 //!   working before the note is typed.
 //! - revoked or expired: a note that it ended, and the waiting note is dropped.
 //!
+//! A usage limit stops every agent at once, the monitor's own too: a note typed into it would
+//! only fail its turn at once, and the failed tabs each make a line, so the notes would pile
+//! in. While Claude's usage says the account is limited (`usage.rs`), or the monitor's own last
+//! turn died on a limit (until it resets, or `LIMIT_HOLD` when nothing says when), no note
+//! is written and a waiting one is taken back; its lines go in the first note after. A tab whose
+//! turn died on a limit is no line either until that limit resets, nor while it waits for
+//! `resume.rs` to bring it back.
+//!
 //! The human's own limits (`monitor-rules.md` in midna's home, a markdown file the human or any
 //! agent edits, `midna monitor rules add|remove`) go in the briefing and in every note, so they
 //! survive the agent compacting its context. With `monitor.approve_human_only` on, the
@@ -53,6 +61,9 @@ impl Limits {
 
 /// How long an agent tab sits idle before it is a line (not the pause between two turns).
 const IDLE_FOR: i64 = 30;
+/// How long a terminal whose turn died on a usage limit counts as limited when nothing says when
+/// that limit resets (or until a turn of it ends well).
+const LIMIT_HOLD: i64 = 15 * 60;
 
 /// What midnad remembers per monitoring terminal (in memory: a restart notes things once more).
 #[derive(Default)]
@@ -67,6 +78,34 @@ struct Watch {
 pub struct Runtime {
     watch: Mutex<HashMap<Id, Watch>>,
     last_check: Mutex<Option<Instant>>,
+    /// Terminals whose last turn died on a usage limit -> until when (unix) they count as limited.
+    limited: Mutex<HashMap<Id, i64>>,
+}
+
+/// An agent's turn ended (`Stop`, or `StopFailure` with `limit` set when it died on a usage limit,
+/// to its reset when known): remember a limited terminal, forget one that ends a turn well.
+pub fn on_turn_ended(d: &Daemon, sid: &str, failed: bool, limit: Option<Option<i64>>) {
+    let mut limited = d.monitor.limited.lock().unwrap_or_else(|e| e.into_inner());
+    match limit {
+        Some(reset) => {
+            let now = time::now_unix();
+            limited.insert(sid.to_string(), reset.filter(|&r| r > now).unwrap_or(now + LIMIT_HOLD));
+        }
+        None if !failed => {
+            limited.remove(sid);
+        }
+        None => {}
+    }
+}
+
+/// Whether terminal `sid`'s last turn died on a usage limit that hasn't reset yet.
+fn limited(d: &Daemon, sid: &str, now: i64) -> bool {
+    d.monitor.limited.lock().unwrap_or_else(|e| e.into_inner()).get(sid).is_some_and(|&until| now < until)
+}
+
+/// Whether notes to monitor `m` wait: the account is at its usage limit, or `m` itself is.
+fn held(d: &Daemon, m: &str, now: i64) -> bool {
+    crate::usage::get(d).claude.is_some_and(|u| u.limited) || limited(d, m, now)
 }
 
 pub fn start(d: &Arc<Daemon>) {
@@ -126,22 +165,34 @@ pub fn check(d: &Daemon) {
         core.state
             .sessions
             .iter()
-            .filter(|s| s.agent.is_some() && !s.status.state.is_terminal())
+            // A failed turn leaves its agent running (and still the monitor): only an exit ends it.
+            .filter(|s| s.agent.is_some() && s.status.state != StatusState::Exited)
             .filter_map(|s| s.monitor_grant.as_ref().filter(|g| g.live_at(now)).map(|g| (s.id.clone(), g.scope)))
             .collect()
     };
     {
         let live: HashSet<&Id> = monitors.iter().map(|(m, _)| m).collect();
         d.monitor.watch.lock().unwrap_or_else(|e| e.into_inner()).retain(|m, _| live.contains(m));
+        let alive: HashSet<Id> = d.core().state.sessions.iter().map(|s| s.id.clone()).collect();
+        d.monitor.limited.lock().unwrap_or_else(|e| e.into_inner()).retain(|s, until| alive.contains(s) && now < *until);
     }
     for (m, scope) in monitors {
-        let want = wanted(d, &m, scope, now);
-        sync_note(d, &m, want);
+        if held(d, &m, now) {
+            hold_note(d, &m);
+        } else {
+            let want = wanted(d, &m, scope, now);
+            sync_note(d, &m, want);
+        }
     }
 }
 
 /// What terminal `m` should hear about now, as (key, line).
 fn wanted(d: &Daemon, m: &str, scope: MonitorScope, now: i64) -> Vec<(String, String)> {
+    // Tabs a usage limit stopped: nothing to nudge until it resets, and resume.rs may bring them back.
+    let on_limit: HashSet<Id> = {
+        let core = d.core();
+        core.state.sessions.iter().filter(|s| limited(d, &s.id, now) || crate::resume::waiting_on_limit(d, &s.id)).map(|s| s.id.clone()).collect()
+    };
     let core = d.core();
     let name = |sid: &str| core.state.session(sid).map(|s| format!("{} ({sid})", s.name)).unwrap_or_else(|| sid.to_string());
     let mut out: Vec<(String, String)> = core
@@ -151,7 +202,7 @@ fn wanted(d: &Daemon, m: &str, scope: MonitorScope, now: i64) -> Vec<(String, St
         .filter(|n| n.session_id.as_deref() != Some(m) && covers(&core.state, scope, n))
         .map(|n| (n.id.clone(), item_line(n, &n.session_id.as_deref().map(name).unwrap_or_else(|| "no terminal".into()))))
         .collect();
-    for s in core.state.sessions.iter().filter(|s| s.id != m && s.agent.is_some() && s.queue.is_empty()) {
+    for s in core.state.sessions.iter().filter(|s| s.id != m && s.agent.is_some() && s.queue.is_empty() && !on_limit.contains(&s.id)) {
         let stopped = match s.status.state {
             StatusState::Idle => "went idle",
             StatusState::Done => "finished its turn",
@@ -256,6 +307,17 @@ fn sync_note(d: &Daemon, m: &str, want: Vec<(String, String)>) {
                 w.note = Some((q.id, keys));
             }
         }
+    }
+}
+
+/// At a usage limit a note only fails `m`'s turn: take the waiting one back, so its lines go in
+/// the first note after the limit (what already went out stays told).
+fn hold_note(d: &Daemon, m: &str) {
+    let mut watches = d.monitor.watch.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(w) = watches.get_mut(m) else { return };
+    let Some((id, keys)) = w.note.take() else { return };
+    if !waiting(d, m, &id) || crate::queue::remove(d, m, &id, Actor::system()).is_err() {
+        w.told.extend(keys);
     }
 }
 

@@ -74,10 +74,13 @@ pub fn hook(d: &Arc<Daemon>, ctx: &Ctx, p: AgentHookParams) -> R {
             let failed = (ev == "StopFailure").then(|| payload.get("error").and_then(Value::as_str).unwrap_or("unknown error"));
             crate::nearby::agent_start::turn_ended(d, &sid, payload.get("last_assistant_message").and_then(Value::as_str), failed);
             end_turn(d, &sid, &project, &actor, ev, payload.get("last_assistant_message").and_then(Value::as_str));
+            let mut limit = None;
             if ev == "StopFailure" {
                 let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("");
+                limit = crate::resume::limit_stop(d, s("error"), s("error_details"), s("last_assistant_message"));
                 crate::resume::on_failure(d, &sid, s("error"), s("error_details"), s("last_assistant_message"));
             }
+            crate::monitor::on_turn_ended(d, &sid, ev == "StopFailure", limit);
         }
         "agent-turn-complete" => {
             // Codex 0.160.0 also notifies for its internal title-generation turn (a separate
