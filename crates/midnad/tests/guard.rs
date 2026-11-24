@@ -109,6 +109,25 @@ fn builds_wait_in_line_for_a_slot() {
 }
 
 #[test]
+fn listed_scripts_take_a_build_slot() {
+    let d = busy_daemon();
+    let mut h = d.human();
+    call(&mut h, "settings.set", json!({ "key": "guard.busy_gate", "value": false }));
+    call(&mut h, "settings.set", json!({ "key": "guard.build_slots", "value": 1 }));
+    let sid = open_sh(&mut h);
+    let mut a = d.agent(Some(&sid));
+    // A script isn't a build until the human lists it, and only the human can.
+    assert_eq!(request(&mut a, "Bash(scripts/test.sh -p midnad)")["source"], "default");
+    assert!(call(&mut h, "system.load", json!({}))["builds"].as_array().unwrap().is_empty());
+    assert!(call_err(&mut a, "settings.set", json!({ "key": "guard.heavy_commands", "value": "scripts/test*.sh" })).code != 0);
+    call(&mut h, "settings.set", json!({ "key": "guard.heavy_commands", "value": "scripts/test*.sh, just test" }));
+    assert_eq!(request(&mut a, "Bash(source env.sh && bash scripts/test-rust.sh)")["source"], "default");
+    let l = call(&mut h, "system.load", json!({}));
+    let builds = l["builds"].as_array().unwrap();
+    assert_eq!((builds.len(), builds[0]["command"].as_str()), (1, Some("source env.sh && bash scripts/test-rust.sh")), "{l}");
+}
+
+#[test]
 fn an_agent_runs_at_most_max_subagents() {
     let d = busy_daemon();
     let mut h = d.human();

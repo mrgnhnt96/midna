@@ -13,6 +13,14 @@
   `--timeout S` gives up after S seconds (exit 4).
 - If the human tells you to go ahead anyway, run `midna system run-anyway`, then retry: the gate
   lets your terminal through until their next prompt. Only on the human's word, never on your own.
+- At most `guard.build_slots` builds, tests and installs run at once across every terminal; yours
+  waits in line in its hook and, after a minute, comes back with its place in line: run the same
+  command again to keep it. midna sees through wrappers (`fvm flutter build`, `xcrun xcodebuild`,
+  `env`, `nice`, `timeout`, `bash -c`) and knows `cargo xtask` and `sip run|test`. A script
+  (`scripts/test.sh`, `bash scripts/dev-app.sh`) only counts once the human lists it in
+  `guard.heavy_commands` (globs: `scripts/test*.sh`, or a tool and its words: `just test*`). If a
+  repo's scripts build or test and aren't listed, tell the human rather than splitting the work
+  to slip past the line.
 - An agent runs at most `guard.max_subagents` subagents at once; start the next when one
   finishes. What you start while held may run in macOS's background mode (slower); that's
   expected.

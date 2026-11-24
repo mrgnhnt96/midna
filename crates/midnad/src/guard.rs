@@ -18,8 +18,9 @@
 //! `midna system run-anyway` (`system.run_anyway`): the gate lets that terminal through until the
 //! human's next prompt.
 //!
-//! `hold` also hands out build slots: at most `guard.build_slots` heavy commands run at once
-//! across every terminal. Another one waits in line inside its PreToolUse hook and goes once a
+//! `hold` also hands out build slots: at most `guard.build_slots` heavy commands
+//! (`system::heavy_program`, plus the human's own `guard.heavy_commands`) run at once across
+//! every terminal. Another one waits in line inside its PreToolUse hook and goes once a
 //! slot frees, in the order they asked. A hook can't show anything until it returns, so the wait
 //! comes back every SLOT_WAIT with the command's place in line and who holds the slots, and the
 //! agent runs it again to keep its place (or does other work first). A slot frees once the
@@ -45,6 +46,7 @@
 //! `MIDNA_DEBUG_CPU=<cpu>[:<midna>]` that CPU in use (and midna's terminals' share of it), and
 //! `MIDNA_DEBUG_MEMORY=<normal|warning|critical>` that memory pressure.
 use crate::daemon::Daemon;
+use crate::policy::glob_match;
 use crate::procs;
 use midna_proto::system::{self as sys, BuildSlot, HeavyTerminal, MemoryPressure, MemoryTerminal, OtherProcess, Paused, SystemLoad};
 use midna_proto::*;
@@ -132,6 +134,9 @@ struct Build {
     idle: u8,
     /// A local model run holding a model slot (`guard.model_slots`).
     model: bool,
+    /// One of the human's own heavy commands (`guard.heavy_commands`), often a script: its
+    /// processes are what started with it, whatever they're named.
+    listed: bool,
 }
 
 /// A heavy command waiting in line for a build slot.
@@ -584,8 +589,9 @@ pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<Str
     };
     let subagent = matches!(tool, "Agent" | "Task");
     let model = if tool == "Bash" { sys::model_program(arg) } else { None };
+    let listed = if tool == "Bash" { listed_heavy(d, arg) } else { None };
     let reason = subagent.then(|| too_many_subagents(d, sid)).flatten().or_else(|| {
-        let heavy = subagent || model.is_some() || tool == "Bash" && sys::is_heavy_command(arg);
+        let heavy = subagent || model.is_some() || listed.is_some() || tool == "Bash" && sys::is_heavy_command(arg);
         if !heavy || !d.setting("guard.busy_gate").as_bool().unwrap_or(true) {
             return None;
         }
@@ -624,10 +630,33 @@ pub fn hold(d: &Daemon, a: &PolicyAction, gone: &dyn Fn() -> bool) -> Option<Str
     if reason.is_some() || tool != "Bash" || runs_anyway(d, sid) {
         return reason;
     }
-    match model {
-        Some(program) => build_slot(d, sid, arg, program, true, gone),
-        None => build_slot(d, sid, arg, sys::heavy_program(arg)?, false, gone),
+    match (model, sys::heavy_program(arg)) {
+        (Some(program), _) => build_slot(d, sid, arg, program, true, false, gone),
+        (None, Some(program)) => build_slot(d, sid, arg, program, false, false, gone),
+        (None, None) => build_slot(d, sid, arg, listed?, false, true, gone),
     }
+}
+
+/// The program, as written, of the first of the human's own heavy commands
+/// (`guard.heavy_commands`) a shell command runs.
+fn listed_heavy(d: &Daemon, command: &str) -> Option<String> {
+    let entries: Vec<String> = d.setting("guard.heavy_commands").as_array()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
+    if entries.is_empty() {
+        return None;
+    }
+    sys::listed_program(command, &|run| entries.iter().any(|e| listed_matches(e, run)))
+}
+
+/// Whether a `guard.heavy_commands` entry matches a simple command's words from its program on:
+/// its first glob matches the program as written or the end of its path after any `/`
+/// (`scripts/test*.sh` matches `./scripts/test.sh` and `/repo/scripts/test-rust.sh`), and its
+/// other globs match the words right after it, in order (`just test*`).
+fn listed_matches(entry: &str, run: &[String]) -> bool {
+    let mut globs = entry.split_whitespace();
+    let Some(first) = globs.next() else { return false };
+    let prog = run[0].as_str();
+    let mut ends = std::iter::once(prog).chain(prog.match_indices('/').map(|(i, _)| &prog[i + 1..]));
+    ends.any(|p| glob_match(first, p)) && globs.enumerate().all(|(k, g)| run.get(k + 1).is_some_and(|w| glob_match(g, w)))
 }
 
 // ------------------------------------------------------------------ build slots
@@ -646,6 +675,9 @@ const STARTING: Duration = Duration::from_secs(30);
 /// is serving (`cargo run`) or stuck, not building: it gives its slot up.
 const IDLE_CPU: f64 = 5.;
 const IDLE_TICKS: u8 = 3;
+/// A listed command's processes are those that started within this many seconds of its slot
+/// (its shell and the script it runs), with everything under them.
+const LISTED_START: i64 = 5;
 /// No build holds a slot longer.
 const SLOT_MAX: Duration = Duration::from_secs(2 * 3600);
 
@@ -659,7 +691,7 @@ fn model_slots(d: &Daemon) -> usize {
 
 /// Wait in line for a build slot (a model slot for a `model` run, in its own line): None once it
 /// holds one, else why it didn't get one.
-fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, model: bool, gone: &dyn Fn() -> bool) -> Option<String> {
+fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, model: bool, listed: bool, gone: &dyn Fn() -> bool) -> Option<String> {
     let slots = if model { model_slots(d) } else { build_slots(d) };
     if slots == 0 {
         return None;
@@ -689,7 +721,7 @@ fn build_slot(d: &Daemon, sid: &str, command: &str, program: String, model: bool
             let running = g.builds.iter().filter(|b| b.model == model).count();
             if has_turn(g.line.iter().filter(|w| w.model == model), ticket, running, slots) {
                 g.line.retain(|w| w.ticket != ticket);
-                g.builds.push(Build { session: sid.into(), command: command.into(), program, started: time::now_unix(), at: Instant::now(), returned: false, idle: 0, model });
+                g.builds.push(Build { session: sid.into(), command: command.into(), program, started: time::now_unix(), at: Instant::now(), returned: false, idle: 0, model, listed });
                 if waited {
                     log(&format!("build slot: {sid} goes after {}s in line", started.elapsed().as_secs()));
                 }
@@ -794,7 +826,8 @@ pub fn after_tool(d: &Daemon, sid: &str, ev: &str, payload: &Value) {
 /// node, gradle and maven run java.
 fn build_processes(program: &str) -> Vec<&str> {
     match program {
-        "flutter" | "dart" => vec!["dart", "dartvm", "dartaotruntime", "flutter_tester"],
+        // sip, the Dart script runner, is a dart program too.
+        "flutter" | "dart" | "sip" => vec!["dart", "dartvm", "dartaotruntime", "flutter_tester"],
         "npm" | "pnpm" | "yarn" => vec!["node"],
         "gradle" | "gradlew" | "mvn" => vec!["java"],
         "swift" => vec!["swift", "swift-build", "swift-test", "swift-package"],
@@ -808,11 +841,15 @@ fn build_processes(program: &str) -> Vec<&str> {
 fn build_pids(table: &HashMap<i32, procs::Row>, root: i32, b: &Build) -> Vec<i32> {
     let names = build_processes(&b.program);
     // A model tool is often a Python script (its process is the interpreter), or talks to ollama.
-    let ours = |n: &str| names.contains(&n) || b.model && (n.starts_with("python") || n.starts_with("Python") || n == "ollama");
+    // A listed command (a script, often) runs as its interpreter: what started with it is its.
+    let ours = |r: &procs::Row| {
+        let n = r.name.as_str();
+        names.contains(&n) || b.model && (n.starts_with("python") || n.starts_with("Python") || n == "ollama") || b.listed && r.start <= b.started + LISTED_START
+    };
     let mut pids = vec![];
     for pid in procs::descendants(table, root) {
         let r = &table[&pid];
-        if pid != root && r.start >= b.started - 1 && ours(&r.name) && !pids.contains(&pid) {
+        if pid != root && r.start >= b.started - 1 && ours(r) && !pids.contains(&pid) {
             pids.extend(procs::descendants(table, pid));
         }
     }
@@ -1312,6 +1349,23 @@ mod tests {
     }
 
     #[test]
+    fn listed_heavy_commands() {
+        let entries = ["scripts/test*.sh", "scripts/dev-app.sh", "just test*"];
+        let listed = |c: &str| sys::listed_program(c, &|run| entries.iter().any(|e| listed_matches(e, run)));
+        assert_eq!(listed("scripts/test.sh -p midnad --lib agent_work::").as_deref(), Some("scripts/test.sh"));
+        assert_eq!(listed("source env.sh && ./scripts/test-rust.sh").as_deref(), Some("./scripts/test-rust.sh"));
+        assert_eq!(listed("/Users/me/repo/.claude/worktrees/slot-6/scripts/test.sh").as_deref(), Some("/Users/me/repo/.claude/worktrees/slot-6/scripts/test.sh"));
+        assert_eq!(listed("bash scripts/dev-app.sh --test=app").as_deref(), Some("scripts/dev-app.sh"));
+        assert_eq!(listed("cd x && just test-all").as_deref(), Some("just"));
+        assert_eq!(listed("just build"), None);
+        assert_eq!(listed("just"), None);
+        assert_eq!(listed("scripts/smoke.sh"), None);
+        assert_eq!(listed("ls scripts/test.sh"), None);
+        assert_eq!(listed("xscripts/test.sh"), None, "the end of a path starts after a /");
+        assert!(!listed_matches("", &["x".to_string()]));
+    }
+
+    #[test]
     fn build_slots_go_in_line_order() {
         let line = vec![waiter(1, false), waiter(2, true), waiter(3, false), waiter(4, false)];
         // Two slots, one taken: only the first in line goes.
@@ -1340,7 +1394,7 @@ mod tests {
     #[test]
     fn a_build_frees_its_slot_once_it_returned_and_stopped() {
         let ago = |s: u64| Instant::now() - Duration::from_secs(s);
-        let b = |returned: bool, at: Instant, idle: u8| Build { session: "s".into(), command: "cargo build".into(), program: "cargo".into(), started: 0, at, returned, idle, model: false };
+        let b = |returned: bool, at: Instant, idle: u8| Build { session: "s".into(), command: "cargo build".into(), program: "cargo".into(), started: 0, at, returned, idle, model: false, listed: false };
         assert!(released(&b(true, ago(0), 0), false));
         // Sent to the background: holds it while cargo runs.
         assert!(!released(&b(true, ago(600), 0), true));
