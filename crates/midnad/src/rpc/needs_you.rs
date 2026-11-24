@@ -205,7 +205,8 @@ fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result
 
 /// A terminal the human gave a monitor grant may approve or deny other terminals' items in its
 /// scope: permission prompts (`prompts`), approval items (`approvals`), or both (`all`). Never a
-/// deferred human-only call (giving or revoking a grant among them), a rule removal, a folder-trust
+/// deferred human-only call unless the human turned on `monitor.approve_human_only` (and even then
+/// none about grants, see [`crate::monitor::deferred_refusal`]), a rule removal, a folder-trust
 /// prompt or a question, and an approval only once: one that lasts adds a rule. `Ok(None)` when
 /// the caller has no live grant or the item is its own (the ordinary rules decide).
 fn by_monitor_grant(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result<Option<Value>, RpcError> {
@@ -224,8 +225,8 @@ fn by_monitor_grant(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) ->
         NeedsYouKind::PermissionPrompt if item.question.is_some() => Some("an agent's question is for the human to answer".to_string()),
         NeedsYouKind::PermissionPrompt if !grant.scope.covers_prompts() => Some(format!("your monitor grant ({scope}) doesn't cover permission prompts")),
         NeedsYouKind::PermissionPrompt => None,
-        NeedsYouKind::Approval if deferred => Some("this approval confirms a human-only action; only the human can approve or deny it".to_string()),
         NeedsYouKind::Approval if !grant.scope.covers_approvals() => Some(format!("your monitor grant ({scope}) doesn't cover approval items")),
+        NeedsYouKind::Approval if deferred => crate::monitor::deferred_refusal(&d.core().state, &item.id),
         NeedsYouKind::Approval if matches!(res, Resolution::Approve { scope } if *scope != ApprovalScope::Once) => {
             Some("a monitor grant approves once; approving for longer adds a rule, which only the human can".to_string())
         }

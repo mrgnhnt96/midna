@@ -254,7 +254,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
         &["agents.may_move_windows", "agents.may_close_idle", "agents.may_force_close", "agents.may_install_updates", "approve.from_cli", "agents.trust_folders", "agents.trusted_clients"],
     ),
     (Sec::Limits, "Policy", &["policy.default", "policy.request_timeout_secs"]),
-    (Sec::Limits, "Monitor grants", &["monitor.check_secs"]),
+    (Sec::Limits, "Monitor grants", &["monitor.check_secs", "monitor.rules", "monitor.approve_human_only"]),
     (Sec::Notifications, "", &["notify.enabled", "@kinds", "notify.turn_done_min_secs", "notify.when_app_closed"]),
     (Sec::Notifications, "Floating badge", &["notify.badge", "notify.badge.idle", "notify.badge.corner", "notify.badge.snap", "notify.badge.inset_x", "notify.badge.inset_y", "notify.badge.sharing"]),
     (Sec::Notifications, "Cleaning up what needs you", &["needs_you.replace", "needs_you.clear_notes_on_open", "needs_you.clear_failed_on_run", "needs_you.withdraw_orphans", "needs_you.expire_hours", "notify.badge.clear_on_open"]),
@@ -644,6 +644,7 @@ impl SettingsWindow {
         want.push(("agents.resume_after_sleep_prompt".into(), self.value("agents.resume_after_sleep_prompt").as_str().unwrap_or("").to_string(), "continue"));
         want.push(("webhooks.relay_url".into(), self.value("webhooks.relay_url").as_str().unwrap_or("").to_string(), "https://relay.example.com"));
         want.push(("nearby.name".into(), self.value("nearby.name").as_str().unwrap_or("").to_string(), self.nearby_name_placeholder()));
+        want.push(("monitor.rules".into(), self.value("monitor.rules").as_str().unwrap_or("").to_string(), "Everything except Slack messages sent straight to a person"));
         want.push(("nearby.downloads".into(), self.value("nearby.downloads").as_str().unwrap_or("").to_string(), "~/Downloads/Midna"));
         self.edits.retain(|key, _| want.iter().any(|(k, ..)| k == key));
         self.edit_subs.retain(|key, _| want.iter().any(|(k, ..)| k == key));
@@ -1139,6 +1140,8 @@ pub(crate) fn label_for(key: &str) -> String {
         "agents.may_move_windows" => "Agents may move windows",
         "agents.may_close_idle" => "Agents may close idle terminals",
         "monitor.check_secs" => "Check other tabs every (seconds)",
+        "monitor.rules" => "Your rules for the monitor",
+        "monitor.approve_human_only" => "Monitor may approve human-only actions",
         "agents.may_force_close" => "Agents may force-close terminals",
         "agents.may_install_updates" => "Agents may install updates",
         "approve.from_cli" => "Agents may approve their own requests",
@@ -1378,7 +1381,7 @@ impl SettingsWindow {
                 Control::Seg { key: key.into(), options: opts, current: text.clone() }
             }
             SettingKind::Bool => {
-                let allow = key.starts_with("agents.may") || key == "approve.from_cli";
+                let allow = key.starts_with("agents.may") || key == "approve.from_cli" || key == "monitor.approve_human_only";
                 Control::Switch {
                     key: key.into(),
                     on: value.as_bool().unwrap_or(false),
@@ -1599,7 +1602,7 @@ impl SettingsWindow {
             }
             // only the self-hosted path uses it
             "webhooks.relay_url" if self.value("webhooks.path") != json!("self_relay") => return None,
-            "agents.resume_after_sleep_prompt" | "webhooks.relay_url" | "nearby.downloads" => r.control = Control::Edit { key: key.into(), actions: vec![] },
+            "agents.resume_after_sleep_prompt" | "webhooks.relay_url" | "nearby.downloads" | "monitor.rules" => r.control = Control::Edit { key: key.into(), actions: vec![] },
             "nearby.visibility" | "nearby.name" => self.nearby_key_row(t, key, &mut r),
             "webhooks.path" => {
                 let url = self.webhooks.get("public_url").and_then(Value::as_str).map(|u| format!("Public URL {u}"));
