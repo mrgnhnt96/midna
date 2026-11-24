@@ -230,6 +230,14 @@ impl Engine {
         all.split_off(all.len() - rows)
     }
 
+    /// An agent terminal's text for `session.read`: the visible screen or scrollback + screen,
+    /// with a suggested reply in its input box marked as not typed (`agent_work::mark_suggestion`).
+    pub fn agent_lines(&self, screen: bool) -> Vec<String> {
+        let mut lines = if screen { self.screen_lines() } else { self.plain_lines() };
+        crate::agent_work::mark_suggestion(&mut lines, &self.screen_undimmed(), self.size().1 as usize);
+        lines
+    }
+
     /// Build a frame of dirty rows (None when clean).
     pub fn frame(&mut self) -> Option<Frame> {
         self.sync_colors();
@@ -872,5 +880,33 @@ mod snapshot_tests {
             }
             assert_eq!(plain(&e), plain(&fresh), "region {region:?}");
         }
+    }
+
+    #[test]
+    fn a_suggested_reply_reads_as_not_typed() {
+        // Claude 2.1.331's input box as it drew it (100x30, captured from a pty): grey rules, the
+        // prompt row (placeholder faint), the mode line under it. Claude shows a suggested reply
+        // the same way, as the placeholder.
+        let rule = "─".repeat(100);
+        let draw = |prompt: &str| {
+            let mut e = Engine::new(100, 30, None);
+            e.feed(b"\x1b[24;1Hearlier output\r\n", 0);
+            let b = format!(
+                "\x1b[26;1H\x1b[38;2;136;136;136m{rule}\r\x1b[1B\x1b[39m{prompt}\r\x1b[1B\x1b[22m\x1b[38;2;136;136;136m{rule}\r\x1b[2C\x1b[1B\x1b[38;2;255;107;128m⏵⏵ bypass permissions on\x1b[39m\x1b[28;3H"
+            );
+            e.feed(b.as_bytes(), 0);
+            e
+        };
+        let row = |e: &Engine, screen: bool| e.agent_lines(screen).into_iter().find(|l| l.starts_with('❯')).unwrap();
+        let e = draw("❯\u{a0}\x1b[2mTry \"edit <filepath> to…\"");
+        assert_eq!(e.screen_lines()[26], "❯\u{a0}Try \"edit <filepath> to…\"", "a plain read can't tell");
+        assert_eq!(row(&e, true), "❯ [suggested, not typed: Try \"edit <filepath> to…\"]");
+        let e = draw("❯\u{a0}\x1b[2myes, send the Slack post");
+        assert_eq!(row(&e, true), "❯ [suggested, not typed: yes, send the Slack post]");
+        assert_eq!(row(&e, false), "❯ [suggested, not typed: yes, send the Slack post]", "scrollback read too");
+        assert_eq!(e.agent_lines(true).len(), 30, "the screen keeps its rows");
+        let typed = draw("❯ \x1b[38;2;255;255;255mReply with only the word hi.\x1b[39m");
+        assert_eq!(row(&typed, true), "❯ Reply with only the word hi.");
+        assert_eq!(row(&draw("❯\u{a0}"), true), "❯", "an empty box");
     }
 }

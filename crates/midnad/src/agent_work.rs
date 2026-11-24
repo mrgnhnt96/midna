@@ -445,19 +445,53 @@ pub fn undim(vt: &str) -> Vec<String> {
 /// stripped), or None when the screen doesn't show one. Codex: the `›` line, placeholder text
 /// counts as empty only when it is dim, which a text read can't tell, so Codex returns None.
 pub fn claude_input_text(screen: &[String]) -> Option<String> {
+    let body = &screen[claude_input_box(screen)?];
+    Some(box_text(body))
+}
+
+/// The rows of Claude's input box (between the last two horizontal rules), when the first of
+/// them starts with the prompt glyph.
+fn claude_input_box(screen: &[String]) -> Option<std::ops::Range<usize>> {
     let is_rule = |l: &String| {
         let t = l.trim();
         t.chars().count() >= 20 && t.chars().all(|c| c == '─')
     };
     let rules: Vec<usize> = screen.iter().enumerate().filter(|(_, l)| is_rule(l)).map(|(i, _)| i).collect();
     let (&b, &a) = (rules.last()?, rules.get(rules.len().checked_sub(2)?)?);
-    let body: Vec<&str> = screen[a + 1..b].iter().map(|l| l.trim()).collect();
-    let first = body.first()?;
-    if !first.starts_with('❯') && !first.starts_with('>') {
-        return None;
+    let first = screen.get(a + 1).filter(|_| a + 1 < b)?.trim();
+    (first.starts_with('❯') || first.starts_with('>')).then_some(a + 1..b)
+}
+
+/// An input box's text: its rows trimmed, the prompt glyph stripped.
+fn box_text(body: &[String]) -> String {
+    let rows = body.iter().enumerate().map(|(i, l)| if i == 0 { l.trim().trim_start_matches(['❯', '>']).trim() } else { l.trim() });
+    rows.collect::<Vec<_>>().join("\n").trim().to_string()
+}
+
+/// Mark Claude's suggested reply in a read of its screen, so it isn't taken for typed text.
+/// Claude draws the suggestion (and the `Try "…"` hint) as the empty input box's placeholder,
+/// faint (`❯\u{a0}ESC[2m…`, Claude 2.1.331): a plain read prints it as if it were typed. When
+/// the box holds only dim text, its first row becomes `❯ [suggested, not typed: …]` and the
+/// rest are blanked. `lines` ends with the screen (the plain read: scrollback or screen),
+/// `undimmed` is the same screen read through `undim`; the box is found in each by its rules,
+/// so the two needn't line up row for row. A box with typed text is left as it reads.
+pub fn mark_suggestion(lines: &mut [String], undimmed: &[String], rows: usize) {
+    let start = lines.len().saturating_sub(rows);
+    let (Some(plain), Some(typed)) = (claude_input_box(&lines[start..]), claude_input_box(undimmed)) else { return };
+    if plain.len() != typed.len() || !box_text(&undimmed[typed]).is_empty() {
+        return;
     }
-    let text = body.iter().enumerate().map(|(i, l)| if i == 0 { l.trim_start_matches(['❯', '>']).trim() } else { l }).collect::<Vec<_>>().join("\n");
-    Some(text.trim().to_string())
+    let body = start + plain.start..start + plain.end;
+    let dim = box_text(&lines[body.clone()]).replace('\n', " ");
+    // Image and paste chips are what was put in, whatever color they are drawn in.
+    if dim.is_empty() || dim.contains("[Image #") || dim.contains("[Pasted text #") {
+        return;
+    }
+    let glyph = if lines[body.start].trim_start().starts_with('>') { '>' } else { '❯' };
+    let marked = format!("{glyph} [suggested, not typed: {dim}]");
+    for (k, row) in lines[body].iter_mut().enumerate() {
+        *row = if k == 0 { marked.clone() } else { String::new() };
+    }
 }
 
 /// Does Claude show its "✔ Update installed · Restart to update" notice? Claude draws it
@@ -755,5 +789,32 @@ mod tests {
         // Quoted in the transcript, well above the input box: not the notice.
         assert!(!claude_update_notice(&screen(vec![notice.clone(), "a".into(), "b".into(), "c".into()])));
         assert!(!claude_update_notice(&[notice]), "no input box on screen");
+    }
+
+    #[test]
+    fn suggestion_marking() {
+        let rule = || "─".repeat(30);
+        let screen = |body: &[&str]| [vec!["out".to_string(), rule()], body.iter().map(|s| s.to_string()).collect(), vec![rule(), "footer".into()]].concat();
+        let marked = |plain: &[&str], undimmed: &[&str]| {
+            let mut lines = [vec!["scrollback".to_string()], screen(plain)].concat();
+            let rows = lines.len() - 1;
+            mark_suggestion(&mut lines, &screen(undimmed), rows);
+            lines
+        };
+        let read = marked(&["❯ run the", "tests"], &["❯", ""]);
+        assert_eq!(read[3..5], ["❯ [suggested, not typed: run the tests]".to_string(), String::new()], "a wrapped suggestion");
+        assert_eq!(read.len(), 7, "rows kept");
+        assert_eq!(marked(&["❯ half typed hint"], &["❯ half typed"])[3], "❯ half typed hint", "typed text: left as read");
+        assert_eq!(marked(&["❯ [Image #1]"], &["❯"])[3], "❯ [Image #1]", "a dim chip is still input");
+        assert_eq!(marked(&["> try this"], &[">"])[3], "> [suggested, not typed: try this]");
+        assert_eq!(marked(&["❯ a", "b"], &["❯"])[3], "❯ a", "boxes of different heights: not the same box");
+        // Undimmed rows shifted (the export drew blank rows differently): found by its rules.
+        let mut lines = screen(&["❯ ok"]);
+        mark_suggestion(&mut lines, &[vec![String::new(); 3], screen(&["❯"])].concat(), 5);
+        assert_eq!(lines[2], "❯ [suggested, not typed: ok]");
+        // No input box on the screen part of the read.
+        let mut lines = [screen(&["❯ old"]), vec![String::new(); 5]].concat();
+        mark_suggestion(&mut lines, &screen(&["❯"]), 5);
+        assert_eq!(lines[2], "❯ old");
     }
 }
