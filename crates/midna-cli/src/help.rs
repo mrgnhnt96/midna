@@ -495,7 +495,8 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "monitor grant <id> [--scope prompts|approvals|all] [--until 2am | --for 8h]\n       \
                 monitor revoke <id>\n       \
-                monitor [list]",
+                monitor [list]\n       \
+                monitor rules [list | add \"<rule>\" | remove <n|text> | path]",
         summary: "let one terminal's agent answer other terminals' prompts and approvals (human only)",
         details: "A monitor grant lets terminal <id>'s agent answer other terminals' permission prompts (--scope\n\
                   prompts), approval items (approvals) or both (all, the default). --until ends it by itself at a\n\
@@ -503,7 +504,10 @@ pub static VERBS: &[Verb] = &[
                   without either it lasts until revoked. Granting again replaces it. Only the human grants or\n\
                   revokes: an agent's call asks the human with a needs-you instead. `midna list` marks a granted\n\
                   terminal (monitor) and `midna get` shows its grant. What a granted agent may answer:\n\
-                  `midna skill monitor`.",
+                  `midna skill monitor`.\n\
+                  `monitor rules` is what monitors may and may not do, in your words: a markdown file in midna's\n\
+                  home (monitor-rules.md) that goes into every monitor's briefing and notes. Anyone may edit it:\n\
+                  `add` appends a list item, `remove` takes one out by number or text, `path` prints the file.",
         methods: &["session.monitor_grant", "session.monitor_revoke"],
     },
     // ---------------------------------------------------------------- policy

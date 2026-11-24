@@ -717,3 +717,22 @@ fn an_agent_s_stream_waits_for_approval_and_the_rest_manage_it() {
     assert_eq!(stdout(&o).trim(), "removed stream tail; its producer was stopped");
     assert_eq!(code(&midna(&s, &["stream", "remove", "tail"], None, None)), 1, "not found");
 }
+
+#[test]
+fn an_agent_keeps_the_monitor_rules_file() {
+    let d = D::start();
+    let s = d.sock();
+    let file = d.home.join("monitor-rules.md");
+    assert!(stdout(&midna(&s, &["monitor", "rules"], None, None)).contains("no monitor rules yet"));
+    for rule in ["Everything except Slack messages sent straight to a person", "Never merge a PR"] {
+        let o = midna(&s, &["monitor", "rules", "add", rule], None, None);
+        assert_eq!(code(&o), 0, "{o:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "- Everything except Slack messages sent straight to a person\n- Never merge a PR\n");
+    let o = midna(&s, &["monitor", "rules", "remove", "merge"], None, None);
+    assert_eq!((code(&o), stdout(&o).trim()), (0, "removed: Never merge a PR"), "{o:?}");
+    let v: Value = serde_json::from_str(&stdout(&midna(&s, &["monitor", "rules", "--json"], None, None))).unwrap();
+    assert_eq!(v["rules"], serde_json::json!(["Everything except Slack messages sent straight to a person"]));
+    assert_eq!(stdout(&midna(&s, &["monitor", "rules", "path"], None, None)).trim(), file.to_string_lossy());
+    assert_ne!(code(&midna(&s, &["monitor", "rules", "remove", "9"], None, None)), 0);
+}
