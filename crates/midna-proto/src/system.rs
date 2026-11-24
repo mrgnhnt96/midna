@@ -427,9 +427,20 @@ pub fn is_heavy_command(command: &str) -> bool {
 }
 
 /// The program of the first build, test or install in a shell command (`cargo` for
-/// `source env.sh && cargo test`): what holds a build slot (`guard.build_slots`).
+/// `source env.sh && cargo test`): what holds a build slot (`guard.build_slots`). Wrappers are
+/// looked through: `env`, `nice`, `timeout`, `fvm` (`fvm flutter build` is `flutter`) and
+/// `xcrun` (`xcrun xcodebuild` is `xcodebuild`).
 pub fn heavy_program(command: &str) -> Option<String> {
     shell_commands(command).iter().find_map(|words| program_words(words, Class::Build))
+}
+
+/// The program, as written, of the first simple command in a shell command whose words from its
+/// program on `listed` says yes to: what the human's own heavy commands (`guard.heavy_commands`)
+/// are matched against. Wrappers are looked through as for [`heavy_program`], and a script a
+/// shell runs is the program (`bash scripts/test.sh` gives `scripts/test.sh`). Quoted text,
+/// heredoc bodies and comments are never commands.
+pub fn listed_program(command: &str, listed: &dyn Fn(&[String]) -> bool) -> Option<String> {
+    shell_commands(command).iter().find_map(|words| run_words(words, false, &|run| listed(run).then(|| run[0].clone())))
 }
 
 /// The program of the first local model run in a shell command: what holds a model slot
@@ -470,8 +481,15 @@ fn is_model_tool(prog: &str) -> bool {
 
 /// The program one simple command, as words, runs when it's of `class`.
 fn program_words(words: &[String], class: Class) -> Option<String> {
+    run_words(words, class != Class::Build, &|run| classify(run, class))
+}
+
+/// Looks past assignments, shell keywords and wrappers in one simple command, as words, to the
+/// program it runs, and asks `f` about the words from that program on. A `bash -c` or `eval`
+/// script asks about each of its commands; a script file a shell runs (`bash x.sh`) is the
+/// program. `uv run`, `uvx` and `pipx run` are looked through only with `uv` (model tools).
+fn run_words<T>(words: &[String], uv: bool, f: &dyn Fn(&[String]) -> Option<T>) -> Option<T> {
     let mut i = 0;
-    // Look past assignments, shell keywords and wrappers to the program they run.
     loop {
         let w = words.get(i)?;
         let base = w.rsplit('/').next().unwrap_or(w);
@@ -499,21 +517,50 @@ fn program_words(words: &[String], class: Class) -> Option<String> {
             "caffeinate" => flags(i + 1, &["-t", "-w"]),
             "timeout" | "gtimeout" => flags(i + 1, &["-s", "-k", "--signal", "--kill-after"]) + 1,
             "bash" | "zsh" | "sh" | "dash" | "fish" => {
-                // `bash -c '<script>'`: the script is the command. `bash x.sh` runs a file, never heavy.
+                // `bash -c '<script>'`: the script is the command. `bash x.sh`: the file is the program.
                 let j = flags(i + 1, &[]);
                 let c = words[i + 1..j].iter().any(|f| !f.starts_with("--") && f.contains('c'));
-                return words.get(j).filter(|_| c).and_then(|s| shell_commands(s).iter().find_map(|w| program_words(w, class)));
+                return match c {
+                    true => shell_commands(words.get(j)?).iter().find_map(|w| run_words(w, uv, f)),
+                    false => f(words.get(j..).filter(|w| !w.is_empty())?),
+                };
             }
-            "eval" => return shell_commands(&words[i + 1..].join(" ")).iter().find_map(|w| program_words(w, class)),
+            "eval" => return shell_commands(&words[i + 1..].join(" ")).iter().find_map(|w| run_words(w, uv, f)),
             // `uv run mflux-generate …`, `uvx mlx_lm.generate`, `pipx run …`: the tool they run.
-            "uv" | "pipx" if words.get(i + 1).is_some_and(|w| w == "run") && class != Class::Build => flags(i + 2, &["--with", "--python", "-p", "--from"]),
-            "uvx" if class != Class::Build => flags(i + 1, &["--with", "--python", "-p", "--from"]),
+            "uv" | "pipx" if words.get(i + 1).is_some_and(|w| w == "run") && uv => flags(i + 2, &["--with", "--python", "-p", "--from"]),
+            "uvx" if uv => flags(i + 1, &["--with", "--python", "-p", "--from"]),
+            // `fvm flutter build`, `fvm dart test`, `fvm exec make`; `fvm spawn 3.19.0 test` runs flutter.
+            "fvm" => {
+                let j = flags(i + 1, &[]);
+                match words.get(j).map(String::as_str) {
+                    Some("flutter" | "dart") => j,
+                    Some("exec") => flags(j + 1, &[]),
+                    Some("spawn") if words.len() > j + 2 => {
+                        let run: Vec<String> = std::iter::once("flutter".to_string()).chain(words[j + 2..].iter().cloned()).collect();
+                        return f(&run);
+                    }
+                    _ => break,
+                }
+            }
+            // `xcrun xcodebuild …`, `xcrun --sdk iphoneos swift build`; `xcrun -f xcodebuild` only finds it.
+            "xcrun" => {
+                let j = flags(i + 1, &["--sdk", "-sdk", "--toolchain", "-toolchain"]);
+                if words[i + 1..j].iter().any(|f| matches!(f.as_str(), "-f" | "--find")) {
+                    break;
+                }
+                j
+            }
             _ => break,
         };
     }
-    let prog = words[i].rsplit('/').next().unwrap_or(&words[i]);
+    f(&words[i..])
+}
+
+/// The program `run` (a simple command's words from its program on) runs when it's of `class`.
+fn classify(run: &[String], class: Class) -> Option<String> {
+    let prog = run[0].rsplit('/').next().unwrap_or(&run[0]);
     // The subcommand: the next word that isn't a flag or a toolchain (`cargo +nightly test`).
-    let sub = words[i + 1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).map_or("", |s| s.as_str());
+    let sub = run[1..].iter().find(|n| !n.starts_with('-') && !n.starts_with('+')).map_or("", |s| s.as_str());
     match class {
         Class::Python => return is_python(prog).then(|| prog.to_string()),
         Class::Model => {
@@ -523,8 +570,8 @@ fn program_words(words: &[String], class: Class) -> Option<String> {
                 "hf" | "huggingface-cli" => sub == "download",
                 // `python -m mlx_lm.generate`, `python -c '…from_pretrained…'`.
                 p if is_python(p) => {
-                    let m = words[i + 1..].windows(2).find(|w| w[0] == "-m").map(|w| w[1].as_str());
-                    let c = words[i + 1..].windows(2).find(|w| w[0] == "-c").map(|w| w[1].as_str());
+                    let m = run[1..].windows(2).find(|w| w[0] == "-m").map(|w| w[1].as_str());
+                    let c = run[1..].windows(2).find(|w| w[0] == "-c").map(|w| w[1].as_str());
                     m.is_some_and(|m| is_model_tool(m) || ["mflux", "mlx", "diffusers", "whisper"].iter().any(|x| m == *x || m.starts_with(&format!("{x}."))))
                         || c.is_some_and(|c| MODEL_CODE.iter().any(|x| c.contains(x)))
                 }
@@ -536,7 +583,9 @@ fn program_words(words: &[String], class: Class) -> Option<String> {
     }
     let heavy = match prog {
         "make" | "gmake" | "ninja" | "xcodebuild" | "gradle" | "gradlew" | "mvn" | "bazel" => true,
-        "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest"),
+        "cargo" => matches!(sub, "build" | "b" | "test" | "t" | "check" | "c" | "clippy" | "run" | "r" | "bench" | "doc" | "install" | "nextest" | "xtask"),
+        // The Dart script runner: `sip run test`, `sip test`.
+        "sip" => matches!(sub, "run" | "test"),
         "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "install" | "i" | "ci" | "add" | "build" | "test" | "run"),
         "swift" | "go" | "flutter" | "dart" | "docker" => matches!(sub, "build" | "test" | "install" | "compile"),
         _ => false,
@@ -751,6 +800,49 @@ mod tests {
         assert_eq!(heavy_program("bash -lc 'cd app && flutter test'").as_deref(), Some("flutter"));
         assert_eq!(heavy_program("git status; npm ci && xcodebuild").as_deref(), Some("npm"));
         assert_eq!(heavy_program("cargo --version"), None);
+    }
+
+    #[test]
+    fn wrapped_heavy_commands() {
+        let h = |c: &str| heavy_program(c);
+        assert_eq!(h("cargo xtask check").as_deref(), Some("cargo"));
+        assert_eq!(h("source env.sh && cargo xtask build-app --release").as_deref(), Some("cargo"));
+        assert_eq!(h("fvm flutter build ios --no-codesign").as_deref(), Some("flutter"));
+        assert_eq!(h("cd app && fvm dart test").as_deref(), Some("dart"));
+        assert_eq!(h("fvm exec make -j8").as_deref(), Some("make"));
+        assert_eq!(h("fvm spawn 3.19.0 test --coverage").as_deref(), Some("flutter"));
+        assert_eq!(h("fvm --verbose flutter test").as_deref(), Some("flutter"));
+        assert_eq!(h("xcrun xcodebuild -scheme App build").as_deref(), Some("xcodebuild"));
+        assert_eq!(h("xcrun --sdk iphoneos swift build").as_deref(), Some("swift"));
+        assert_eq!(h("nice xcrun --toolchain swift -sdk macosx xcodebuild").as_deref(), Some("xcodebuild"));
+        assert_eq!(h("sip run test").as_deref(), Some("sip"));
+        assert_eq!(h("sip test --recursive").as_deref(), Some("sip"));
+        assert_eq!(h("fvm flutter --version"), None);
+        assert_eq!(h("fvm install 3.19.0"), None);
+        assert_eq!(h("fvm use stable"), None);
+        assert_eq!(h("fvm flutter pub get"), None);
+        assert_eq!(h("xcrun -f xcodebuild"), None);
+        assert_eq!(h("xcrun --find xcodebuild"), None);
+        assert_eq!(h("xcrun --show-sdk-path"), None);
+        assert_eq!(h("xcrun simctl list"), None);
+        assert_eq!(h("sip pub get"), None);
+        assert_eq!(h("sip --version"), None);
+        assert_eq!(h("tb note 'ran fvm flutter build and cargo xtask test'"), None);
+    }
+
+    #[test]
+    fn listed_programs() {
+        let listed = |c: &str| listed_program(c, &|run| run[0].ends_with("test.sh") || run[0] == "just" && run.get(1).is_some_and(|w| w == "test"));
+        assert_eq!(listed("scripts/test.sh -p midnad").as_deref(), Some("scripts/test.sh"));
+        assert_eq!(listed("source env.sh && ./scripts/test.sh").as_deref(), Some("./scripts/test.sh"));
+        assert_eq!(listed("bash scripts/test.sh -p midnad").as_deref(), Some("scripts/test.sh"));
+        assert_eq!(listed("bash -lc 'nice scripts/test.sh'").as_deref(), Some("scripts/test.sh"));
+        assert_eq!(listed("FOO=1 timeout 600 just test").as_deref(), Some("just"));
+        assert_eq!(listed("just build"), None);
+        assert_eq!(listed("cat scripts/test.sh"), None);
+        assert_eq!(listed("tb note 'ran scripts/test.sh'"), None);
+        assert_eq!(listed("bash"), None);
+        assert!(!is_heavy_command("bash scripts/test.sh"), "a script is only heavy when listed");
     }
 
     #[test]

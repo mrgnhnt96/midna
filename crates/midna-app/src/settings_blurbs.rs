@@ -83,6 +83,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "guard.busy_gate" => "When terminals keep the Mac busy, no new subagents, builds or installs.",
         "guard.max_subagents" => "More wait their turn; 0 = no limit.",
         "guard.build_slots" => "Across every terminal, the rest wait in line; 0 = no limit",
+        "guard.heavy_commands" => "Your own build and test scripts (scripts/test*.sh) wait for a slot too",
         "guard.model_slots" => "mflux, MLX, ollama and model downloads; the rest wait in line; 0 = no limit",
         "system.busy_memory" => "macOS's memory pressure (yellow or red) that holds new heavy work back.",
         "guard.hold_agents_at" => "Agents others open wait their turn; yours start anyway; 0 = never",
