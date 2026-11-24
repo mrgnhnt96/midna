@@ -406,7 +406,9 @@ pub static VERBS: &[Verb] = &[
         aliases: &[],
         usage: "read <id> [--lines N] [--screen]",
         summary: "read a terminal's text",
-        details: "The last N lines of scrollback + screen (default 50), or exactly the visible screen.",
+        details: "The last N lines of scrollback + screen (default 50), or exactly the visible screen. In an agent's\n\
+                  terminal, `❯ [suggested, not typed: …]` is Claude's greyed-out suggested reply in an empty input\n\
+                  box: nobody typed it.",
         methods: &["session.read"],
     },
     Verb {

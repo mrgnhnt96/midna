@@ -734,7 +734,17 @@ fn chips(rt: &term::RtHandle) -> std::collections::BTreeSet<u32> {
 
 pub fn read(d: &Daemon, p: SessionReadParams) -> R {
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    let (mut lines, cols, rows) = rt.read(p.screen).ok_or_else(|| RpcError::internal("engine did not answer"))?;
+    let is_agent = d.core().state.session(&p.id).is_some_and(|s| s.agent.is_some());
+    let screen = p.screen;
+    let read = if is_agent {
+        rt.with(move |e| {
+            let (c, r) = e.size();
+            (e.agent_lines(screen), c, r)
+        })
+    } else {
+        rt.read(screen)
+    };
+    let (mut lines, cols, rows) = read.ok_or_else(|| RpcError::internal("engine did not answer"))?;
     if !p.screen {
         while lines.last().is_some_and(|l| l.is_empty()) {
             lines.pop();
