@@ -68,10 +68,27 @@ impl Acc {
     }
 }
 
+/// The kinds `compute` and `walk` count or track sessions by. They skip the rest before parsing
+/// its time: most of the log is other kinds, and an event past the range ends the walk just as
+/// well at the next kind that counts.
+fn counted(kind: &str) -> bool {
+    matches!(
+        kind,
+        kinds::SESSION_OPENED
+            | kinds::SESSION_STATUS
+            | kinds::SESSION_CLOSED
+            | kinds::AGENT_TURN_STARTED
+            | kinds::AGENT_PROMPT_SUBMITTED
+            | kinds::AGENT_COST
+            | kinds::NEEDS_YOU_RESOLVED
+            | kinds::TRIGGER_FIRED
+    )
+}
+
 fn compute(events: &[Event], from: i64, to: i64, by: Option<InsightsBy>) -> Acc {
     let mut acc = Acc { from, to, by, totals: Default::default(), rows: BTreeMap::new() };
     let mut sessions: HashMap<Id, SessionInfo> = HashMap::new();
-    for e in events {
+    for e in events.iter().filter(|e| counted(&e.kind)) {
         let Some(t) = time::parse_rfc3339(&e.at) else { continue };
         if t >= to {
             break;
@@ -200,7 +217,7 @@ fn walk<'a>(events: &'a [Event], from: i64, to: i64, mut f: impl FnMut(Hit<'_>))
             f(Hit { metric, start: s, end: e, amount: (e - s) as f64, sid: Some(sid), project: info.project.as_deref(), agent: info.agent.as_deref() });
         }
     };
-    for e in events {
+    for e in events.iter().filter(|e| counted(&e.kind)) {
         let Some(t) = time::parse_rfc3339(&e.at) else { continue };
         if t >= to {
             break;
@@ -948,6 +965,17 @@ mod tests {
         assert_eq!((s.totals.working_secs, s.totals.waiting_secs), (160, 30));
         assert_eq!(s.totals.spend_usd, 0.25);
         assert_eq!(s.rows[0].key, "claude");
+
+        // Kinds it doesn't count change nothing, even ones whose time doesn't parse or is past now.
+        let mut noisy = Vec::new();
+        for e in &events {
+            noisy.push(e.clone());
+            noisy.push(ev(e.seq, t0 + 5, "agent.tool_started", "s1", json!({})));
+            noisy.push(Event { at: "not a time".into(), ..ev(e.seq, 0, "session.output", "s1", json!({})) });
+        }
+        noisy.push(ev(99, now + 3600, "agent.tool_finished", "s1", json!({})));
+        let n = summary(&noisy, InsightsRange::Today, Some(InsightsBy::Agent), now, &labels);
+        assert_eq!(serde_json::to_value(&n).unwrap(), serde_json::to_value(&s).unwrap());
     }
 
     fn evp(seq: u64, at: i64, kind: &str, project: &str, sid: &str, data: Value) -> Event {
