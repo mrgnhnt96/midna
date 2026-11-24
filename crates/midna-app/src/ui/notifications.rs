@@ -2,7 +2,7 @@
 //! (`notify.history`), newest first, with the one you pick on the right. The status bar's bell
 //! opens it (`statusbar::bell`) and shows how many are unread; opening it marks every one read
 //! (`notify.read`), and what was new stays marked New until you leave.
-use super::screen_kit::{ago, clock, clock_or_day, day_label};
+use super::screen_kit::{ago, clock_or_day, clock_short, day_label};
 use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Screen};
 use crate::icons::Icon;
@@ -348,7 +348,7 @@ fn rows(m: &MainWindow, t: &Theme, list: &[&NotifyHistoryItem], cur: Option<u64>
                     m.inbox.sel = Some(seq);
                     cx.notify();
                 }))
-                .child(div().flex_none().w(px(52.)).text_size(px(12.)).text_color(t.dim).child(clock(&i.at).chars().take(5).collect::<String>()))
+                .child(div().flex_none().w(px(64.)).text_size(px(12.)).text_color(t.dim).child(clock_short(&i.at)))
                 // Its kind's image in the dot's place.
                 .child(match i.notification.image.clone() {
                     Some(path) => super::badge::thumb(path.into(), 32., 7.).into_any_element(),

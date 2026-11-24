@@ -543,8 +543,7 @@ fn pill_width(t: &Theme, num: &str, title: &str, pos: &str, window: &Window) -> 
 }
 
 fn hhmm(at: &str) -> String {
-    let c = crate::ui::screen_kit::clock(at);
-    c.get(..5).unwrap_or(&c).to_string()
+    crate::ui::screen_kit::clock_short(at)
 }
 
 #[cfg(test)]

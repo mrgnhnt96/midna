@@ -260,7 +260,7 @@ pub fn weekday_date(secs: i64) -> String {
 /// "14:17" (local).
 pub fn hm(secs: i64) -> String {
     let tm = local_tm(secs);
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+    twelve_hour(tm.tm_hour, tm.tm_min)
 }
 
 /// Whether two times fall on the same local day.
@@ -269,16 +269,25 @@ pub fn same_day(a: i64, b: i64) -> bool {
     a.tm_year == b.tm_year && a.tm_yday == b.tm_yday
 }
 
-/// "14:17:02" (local).
+/// "2:17:02 PM" (local).
 pub fn clock(ts: &str) -> String {
     let Some(s) = parse_rfc3339(ts) else {
         return String::new();
     };
     let tm = local_tm(s);
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    let h = match tm.tm_hour % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h}:{:02}:{:02} {}", tm.tm_min, tm.tm_sec, if tm.tm_hour < 12 { "AM" } else { "PM" })
 }
 
-/// "14:17:02" when today, else "2 Sep" (local).
+/// "2:17 PM" (local).
+pub fn clock_short(ts: &str) -> String {
+    parse_rfc3339(ts).map(hm).unwrap_or_default()
+}
+
+/// "2:17:02 PM" when today, else "2 Sep" (local).
 pub fn clock_or_day(ts: &str) -> String {
     let Some(s) = parse_rfc3339(ts) else {
         return String::new();
@@ -287,17 +296,26 @@ pub fn clock_or_day(ts: &str) -> String {
     if a.tm_year == b.tm_year && a.tm_yday == b.tm_yday { clock(ts) } else { format!("{} {}", a.tm_mday, MONTHS[a.tm_mon.clamp(0, 11) as usize]) }
 }
 
-/// "today 11:20" or "2 Sep" (local), as on the Rules-B cards.
+/// "today 11:20 AM" or "2 Sep" (local), as on the Rules-B cards.
 pub fn day_label(ts: &str) -> String {
     let Some(s) = parse_rfc3339(ts) else {
         return String::new();
     };
     let (a, b) = (local_tm(s), local_tm(now_unix()));
     if a.tm_year == b.tm_year && a.tm_yday == b.tm_yday {
-        format!("today {:02}:{:02}", a.tm_hour, a.tm_min)
+        format!("today {}", twelve_hour(a.tm_hour, a.tm_min))
     } else {
         format!("{} {}", a.tm_mday, MONTHS[a.tm_mon.clamp(0, 11) as usize])
     }
+}
+
+/// "9:50 PM", "12:05 AM", "12:00 PM".
+fn twelve_hour(hour: i32, min: i32) -> String {
+    let h = match hour % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h}:{min:02} {}", if hour < 12 { "AM" } else { "PM" })
 }
 
 /// "just now", "12m ago", "3h ago", "6d ago"; `never` when absent.
@@ -327,7 +345,7 @@ pub fn left(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, left, now_unix};
+    use super::{ago, left, now_unix, twelve_hour};
 
     #[test]
     fn countdown_labels() {
@@ -336,6 +354,14 @@ mod tests {
         assert_eq!(left(4 * 60), "4 min left");
         assert_eq!(left(38 * 60 - 10), "38 min left");
         assert_eq!(left(3 * 3600), "3 h left");
+    }
+
+    #[test]
+    fn twelve_hour_labels() {
+        assert_eq!(twelve_hour(21, 50), "9:50 PM");
+        assert_eq!(twelve_hour(0, 5), "12:05 AM");
+        assert_eq!(twelve_hour(12, 0), "12:00 PM");
+        assert_eq!(twelve_hour(9, 7), "9:07 AM");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! Summaries section (`ui::shelf`), there while it has records, terminals open or not. Root
 //! (terminals in no project) has one too. Clearing that row (its ✕, its menu, or Clear on the
 //! Summary) lets it go until another terminal closes there.
-use super::screen_kit::{clock, day_label, hm, now_unix, same_day, weekday_date};
+use super::screen_kit::{clock_short, day_label, hm, now_unix, same_day, weekday_date};
 use crate::actions::{Kind, overlay, overlay_context};
 use crate::app::{MainWindow, Menu, Screen};
 use crate::icons::Icon;
@@ -354,10 +354,10 @@ fn closed_by(m: &MainWindow, c: &ClosedTerminal) -> String {
     }
 }
 
-/// "14:02" today, else "26 Oct".
+/// "2:02 PM" today, else "26 Oct".
 fn when(ts: &str) -> String {
     let day = day_label(ts);
-    if day.starts_with("today") { clock(ts).chars().take(5).collect() } else { day }
+    if day.starts_with("today") { clock_short(ts) } else { day }
 }
 
 /// "6m", "2h 5m", "less than a minute".
@@ -787,10 +787,10 @@ fn detail(m: &MainWindow, t: &Theme, c: &ClosedTerminal, cx: &mut Context<MainWi
         )
 }
 
-/// "today 14:02" or "26 Oct 14:02".
+/// "today 2:02 PM" or "26 Oct 2:02 PM".
 fn when_long(ts: &str) -> String {
     let day = day_label(ts);
-    if day.starts_with("today") { day } else { format!("{day} {}", clock(ts).chars().take(5).collect::<String>()) }
+    if day.starts_with("today") { day } else { format!("{day} {}", clock_short(ts)) }
 }
 
 fn link_icon(k: LinkKind) -> Icon {

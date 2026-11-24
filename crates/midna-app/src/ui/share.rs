@@ -10,7 +10,7 @@
 use crate::app::{MainWindow, Overlay, Screen, refresh};
 use crate::model::{ApprovalScope, Event, NeedsYou, Resolution, StatusState};
 use crate::theme::Theme;
-use crate::ui::screen_kit::{LineInput, btn, btn_primary, clock, day_label};
+use crate::ui::screen_kit::{LineInput, btn, btn_primary, clock_short, day_label};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use midna_proto::nearby::{self as nb, InboxListResult, PairedPeer, PeersListResult, ShareDirection, ShareItem, ShareKind, SharePayload, ShareSendParams, ShareState, Tier, Transfer, TransferState};
@@ -1442,7 +1442,7 @@ fn answer_box(m: &MainWindow, t: &Theme, it: &ShareItem) -> Option<Div> {
     let head = div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.dim);
     let col = div().flex().flex_col().gap(px(6.));
     Some(match answer_to(m, &it.id) {
-        Some(a) => col.child(head.child(format!("ANSWER · {}", clock(&a.sent_at).chars().take(5).collect::<String>()))).child(payload_box(t, &a.payload)),
+        Some(a) => col.child(head.child(format!("ANSWER · {}", clock_short(&a.sent_at)))).child(payload_box(t, &a.payload)),
         None if it.state == ShareState::Accepted => col.child(head.child("ANSWER")).child(div().text_color(t.dim).child("Waiting for the agent to finish its first turn…")),
         None => col.child(head.child("ANSWER")).child(div().text_color(t.dim).child(format!("Comes back here once {} accepts and the agent finishes its first turn.", it.peer_name))),
     })
@@ -1506,7 +1506,7 @@ pub fn inbox_rows(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> St
                     m.share.chooser = false;
                     cx.notify();
                 }))
-                .child(div().flex_none().w(px(52.)).text_size(px(12.)).text_color(t.dim).child(clock(&it.sent_at).chars().take(5).collect::<String>()))
+                .child(div().flex_none().w(px(64.)).text_size(px(12.)).text_color(t.dim).child(clock_short(&it.sent_at)))
                 .child(div().flex_none().mt(px(6.)).size(px(8.)).rounded_full().bg(color))
                 .child(
                     div()

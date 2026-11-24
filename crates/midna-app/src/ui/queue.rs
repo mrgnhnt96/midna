@@ -248,7 +248,7 @@ fn when_label(when: &SendWhen, names: &HashMap<String, String>) -> String {
 
 fn hhmm(at: &str) -> String {
     let c = super::screen_kit::clock_or_day(at);
-    if c.len() == 8 && c.as_bytes()[2] == b':' { c[..5].to_string() } else { c }
+    if c.contains(':') { super::screen_kit::clock_short(at) } else { c }
 }
 
 fn by_label(m: &QueuedMessage) -> &'static str {

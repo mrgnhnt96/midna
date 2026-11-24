@@ -1337,7 +1337,7 @@ impl RulesView {
                     .hover(|s| s.bg(t.panel))
                     .when(on, |d| d.bg(t.accent_soft).border_l_2().border_color(t.accent).pl(px(14.)))
                     .on_click(cx.listener(move |v, _, _, cx| v.pick_feed(rid.clone(), cx)))
-                    .child(kit::mono(t, kit::clock(&f.at), 12.).w(px(70.)).flex_none().text_color(t.dim))
+                    .child(kit::mono(t, kit::clock(&f.at), 12.).w(px(88.)).flex_none().text_color(t.dim))
                     .child(
                         div()
                             .flex()

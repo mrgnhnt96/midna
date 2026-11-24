@@ -458,8 +458,14 @@ fn usage_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
         let observed = midna_proto::time::parse_rfc3339(&u.observed_at).unwrap_or(now);
         let projection = match resets_at.and_then(|r| pace(pct, observed, r, len)) {
             Some(Pace::Out { in_secs }) => {
-                let at = midna_proto::time::format_unix(observed + in_secs);
-                format!("\nAt this pace you'll run out {} ({})", crate::ui::screen_kit::day_label(&at), crate::ui::screen_kit::left(observed + in_secs - now).replace(" left", " from now"))
+                let out = observed + in_secs;
+                let at = crate::ui::screen_kit::day_label(&midna_proto::time::format_unix(out));
+                if out <= now {
+                    // The last report is older than the run-out it predicts: say what it predicted.
+                    format!("\nAt the last reported pace it would have run out {at}")
+                } else {
+                    format!("\nAt this pace you'll run out {at} ({})", crate::ui::screen_kit::left(out - now).replace(" left", " from now"))
+                }
             }
             Some(Pace::Within { at_reset }) => format!("\nWithin range: about {}% by the reset at this pace", at_reset.round()),
             None => String::new(),
