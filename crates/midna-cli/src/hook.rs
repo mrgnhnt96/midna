@@ -132,5 +132,8 @@ mod tests {
         assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "deny");
         let d = claude_decision(&json!({"decision": "ask", "source": "timeout"})).unwrap();
         assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "ask");
+        // A monitor grant's allow is an answer: it gets past Claude's own check (auto mode too).
+        let d = claude_decision(&json!({"decision": "allow", "source": "monitor", "reason": "this terminal's monitor grant covers it"})).unwrap();
+        assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "allow");
     }
 }

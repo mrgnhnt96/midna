@@ -871,6 +871,10 @@ pub enum DecisionSource {
     /// human's `--allowedTools` (`Session.allowed_tools`): midna steps aside and the agent's
     /// own allow list decides.
     Launch,
+    /// The terminal holds a live monitor grant and the call is one of a monitor's own midna
+    /// verbs (approve, read, queue, close…): midna allows it, so the agent's own permission
+    /// check can't stop the monitor halfway. midnad still checks the grant's scope on each verb.
+    Monitor,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

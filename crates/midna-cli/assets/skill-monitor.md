@@ -27,6 +27,15 @@ With a grant you may:
   or `--deny`, or `midna key <id> enter|escape` once `midna read <id> --screen` shows the prompt.
 - approve once, or deny, another terminal's approval item (scope `approvals` or `all`).
 
+While the grant lasts, midna tells your agent's own permission check to let these through, so
+it never stops you halfway: a Bash command made only of `midna approve`, `key`, `needs`, `read`,
+`get`, `list`, `procs`, `queue add|list`, `close` and `attention` (optionally piped into `grep`,
+`head`, `tail`, `wc`, `sort` or `jq`), and the same verbs' MCP tools. Anything else in the command
+(another program, `$(…)`, a redirect) leaves it to the ordinary check, so keep these commands to
+themselves. midna still checks the grant's scope on each one. This needs a Claude whose hooks
+report to midna; when the human grants a tab where it can't (a Codex tab, or a Claude that never
+reported to midna's hooks), midna tells them at once.
+
 Still the human's, grant or not: approvals that confirm a human-only action (unless the human
 turned on `monitor.approve_human_only`, and even then never one about monitor grants or a
 `monitor.*` setting), rule removals, folder-trust prompts, agents' questions, and approving for

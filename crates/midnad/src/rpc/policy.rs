@@ -24,10 +24,20 @@ fn check_now(d: &Daemon, a: &PolicyAction) -> CheckResult {
     // A global or project ask is a safety net for agents in general; a terminal the human
     // launched with this tool in --allowedTools already has their OK. A session ask or any
     // deny still stands.
-    let launched = a.session.as_deref().and_then(|sid| core.state.session(sid)).is_some_and(|s| crate::policy::launch_allows(&s.allowed_tools, &a.value));
-    if a.kind == ActionKind::Tool && res.decision == Effect::Ask && launched && res.rule.as_ref().is_some_and(|r| !matches!(r.scope, RuleScope::Session(_))) {
+    let session = a.session.as_deref().and_then(|sid| core.state.session(sid));
+    let launched = session.is_some_and(|s| crate::policy::launch_allows(&s.allowed_tools, &a.value));
+    let global_ask = res.decision == Effect::Ask && res.rule.as_ref().is_some_and(|r| !matches!(r.scope, RuleScope::Session(_)));
+    if a.kind == ActionKind::Tool && launched && global_ask {
         res.decision = Effect::Allow;
         res.source = DecisionSource::Launch;
+        res.rule = None;
+    }
+    // A live monitor grant allows the monitor's own midna verbs, so the agent's permission
+    // check can't stop it halfway (see `monitor_allow`). A deny or a session ask still stands.
+    let monitoring = session.and_then(|s| s.monitor_grant.as_ref()).is_some_and(|g| g.live_at(time::now_unix()));
+    if a.kind == ActionKind::Tool && monitoring && (res.rule.is_none() || global_ask) && res.decision != Effect::Deny && crate::monitor_allow::covers(&a.value) {
+        res.decision = Effect::Allow;
+        res.source = DecisionSource::Monitor;
         res.rule = None;
     }
     res
@@ -45,7 +55,7 @@ fn fire(d: &Daemon, a: &PolicyAction, actor: &Actor, res: &CheckResult) {
     if res.rule.is_none() {
         let setting = d.core().state.setting_str("policy.default");
         // An unmatched tool call has no midna opinion: the agent's own permission flow decides.
-        let passthrough = a.kind == ActionKind::Tool;
+        let passthrough = a.kind == ActionKind::Tool && res.source != DecisionSource::Monitor;
         d.emit(
             kinds::POLICY_DECIDED,
             actor.clone(),
@@ -87,6 +97,7 @@ pub fn request(d: &Daemon, ctx: &Ctx, p: PolicyRequestParams) -> R {
         reason: match &r.rule {
             Some(x) => Some(format!("rule {} ({} `{}`)", x.id, x.effect.as_str(), x.matcher.pattern)),
             None if r.source == DecisionSource::Launch => Some("launched with it in --allowedTools".into()),
+            None if r.source == DecisionSource::Monitor => Some("this terminal's monitor grant covers it".into()),
             None => None,
         },
     };

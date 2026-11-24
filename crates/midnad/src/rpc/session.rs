@@ -595,7 +595,15 @@ pub fn monitor_grant(d: &Daemon, ctx: &Ctx, p: SessionMonitorGrantParams) -> R {
     let out = s.clone();
     drop(core);
     d.mark_dirty();
-    d.emit(kinds::SESSION_MONITOR_GRANTED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "monitor_grant": grant, "replaced": replaced }));
+    let gap = crate::monitor_allow::gap(&out);
+    d.emit(kinds::SESSION_MONITOR_GRANTED, ctx.actor(), Some(out.project_id.clone()), Some(out.id.clone()), json!({ "monitor_grant": grant, "replaced": replaced, "gap": gap }));
+    // Say so now, not when the monitor is blocked halfway through its work.
+    if let Some(why) = gap {
+        let name = if out.name.is_empty() { &out.id } else { &out.name };
+        let mut item = d.new_needs_you(NeedsYouKind::Blocked, format!("{name}'s monitor grant may stop halfway"), Actor::system(), Some(out.id.clone()));
+        item.detail = format!("{name} can't be sure to approve what its grant covers: {why}");
+        d.raise_needs_you(item);
+    }
     ok(out)
 }
 
