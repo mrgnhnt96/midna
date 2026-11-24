@@ -2395,6 +2395,20 @@ fn the_person_driving_is_the_human_there_except_for_what_is_local_only() {
     assert!(from_peer(&made["added_by"], &fa), "{made}");
     call(&mut there, "session.close", json!({ "id": tab }));
 
+    // An agent at B asks for a monitor grant; the person driving approves it from A, and can
+    // give and end one themselves.
+    let e = call_err(&mut b.agent(Some(&asker)), "session.monitor_grant", json!({ "id": asker, "scope": "approvals" }));
+    let asked = e.data.as_ref().and_then(|d| d["needs_you_id"].as_str()).unwrap_or_else(|| panic!("deferred: {e:?}")).to_string();
+    let item = open_items(&mut there).into_iter().find(|n| n["id"] == asked).unwrap();
+    assert!(item.get("local_only").is_none(), "a monitor grant can be approved from A: {item}");
+    call(&mut there, "needs_you.resolve", json!({ "id": asked, "resolution": { "kind": "approve", "scope": { "kind": "once" } } }));
+    assert_eq!(call(&mut hb, "session.get", json!({ "id": asker }))["monitor_grant"]["scope"], "approvals");
+    call(&mut there, "session.monitor_revoke", json!({ "id": asker }));
+    assert!(call(&mut hb, "session.get", json!({ "id": asker })).get("monitor_grant").is_none());
+    call(&mut there, "session.monitor_grant", json!({ "id": asker, "scope": "prompts" }));
+    assert_eq!(call(&mut hb, "session.get", json!({ "id": asker }))["monitor_grant"]["scope"], "prompts");
+    call(&mut there, "session.monitor_revoke", json!({ "id": asker }));
+
     // Approving what would run something local-only isn't done from A; denying and dismissing are.
     // An agent's human-only setting change:
     let e = call_err(&mut b.agent(None), "settings.set", json!({ "key": "policy.default", "value": "allow" }));
