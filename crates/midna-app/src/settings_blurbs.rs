@@ -107,6 +107,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         // Agent limits
         "agents.may_move_windows" => "Move, pop out, snap or close windows.",
         "agents.may_close_idle" => "Close terminals that are idle, done or exited.",
+        "monitor.check_secs" => "How often a monitoring tab hears about idle tabs; 0 for prompts only.",
         "agents.may_force_close" => "Close any terminal, even a working one.",
         "agents.may_install_updates" => "Install a downloaded update; its signature is still checked.",
         "approve.from_cli" => "Approve their own session's requests from the CLI.",

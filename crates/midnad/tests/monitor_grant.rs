@@ -311,3 +311,91 @@ fn without_a_live_grant_in_scope_everything_is_refused_as_before() {
     resolve(&mut m, &prompt, "deny").unwrap();
     resolve(&mut m, &approval, "deny").unwrap();
 }
+
+// ------------------------------------------------------------------ driving the monitor
+
+/// An agent terminal (a shell marked as Claude's), with its queue paused so what
+/// midna queues for it stays there to look at.
+fn agent_tab(d: &TestDaemon, h: &mut Client) -> String {
+    let sid = open_sh(h);
+    d.daemon().core().state.session_mut(&sid).unwrap().agent = Some(midna_proto::AgentKind::Claude);
+    call(h, "queue.pause", json!({ "session": sid }));
+    sid
+}
+
+fn queued(h: &mut Client, sid: &str) -> Vec<String> {
+    call(h, "queue.list", json!({ "session": sid }))["items"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_grant_briefs_its_agent_wakes_it_for_other_tabs_and_says_when_it_ends() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = agent_tab(&d, &mut h);
+    let worker = agent_tab(&d, &mut h);
+    let shell = open_sh(&mut h);
+    let early = raise_prompt(&d, &worker, "Bash: rm -rf build", false);
+
+    let until = time::format_unix(time::now_unix() + 3600);
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "until": until }));
+    // A briefing, then a note with what already waits.
+    let q = wait_for(5, "briefing and note", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2));
+    assert!(q[0].starts_with("[midna monitor] The human made this terminal the monitor") && q[0].contains("every 30s"), "{q:?}");
+    assert!(q[1].starts_with(midnad::monitor::NOTE_HEAD) && q[1].contains(&format!("`{early}` permission prompt")), "{q:?}");
+
+    // A new prompt joins the waiting note; a question never does.
+    let later = raise_prompt(&d, &worker, "Bash: cargo publish", false);
+    let asked = raise_prompt(&d, &worker, "Which one?", true);
+    let q = wait_for(5, "joined", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2 && q[1].contains(&later)));
+    assert!(q[1].contains(&early) && !q[1].contains(&asked), "{q:?}");
+    // Answered meanwhile: its line goes, and with nothing left, the note.
+    approve(&mut h, &early);
+    wait_for(5, "line gone", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2 && !q[1].contains(&early)));
+    approve(&mut h, &later);
+    wait_for(5, "note gone", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 1));
+
+    // A shell with a grant gets nothing typed into it.
+    call(&mut h, "session.monitor_grant", json!({ "id": shell }));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(queued(&mut h, &shell).is_empty());
+
+    // Revoked: a note that it ended.
+    call(&mut h, "session.monitor_revoke", json!({ "id": monitor }));
+    let q = wait_for(5, "ended", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2));
+    assert!(q[1].contains("Your monitor grant ended (the human revoked it)"), "{q:?}");
+}
+
+#[test]
+fn an_agent_left_idle_is_noted_once_per_idle_stretch() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = agent_tab(&d, &mut h);
+    let worker = agent_tab(&d, &mut h);
+    let mut w = d.agent(Some(&worker));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    wait_for(5, "briefing", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 1));
+    // Idle a minute ago.
+    let backdate = |d: &TestDaemon| {
+        let dm = d.daemon();
+        dm.core().state.session_mut(&worker).unwrap().status.since = time::format_unix(time::now_unix() - 60);
+    };
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": { "prompt": "go" } }));
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "Stop", "payload": {} }));
+    backdate(&d);
+    midnad::monitor::check(&d.daemon());
+    let q = queued(&mut h, &monitor);
+    assert!(q.len() == 2 && q[1].contains(&format!("({worker}) finished its turn at")) && q[1].contains(&format!("midna close {worker}")), "{q:?}");
+
+    // The note goes out: the same idle stretch isn't noted again.
+    let id = call(&mut h, "queue.list", json!({ "session": monitor }))["items"][1]["id"].as_str().unwrap().to_string();
+    call(&mut h, "queue.remove", json!({ "session": monitor, "id": id }));
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 1);
+    // It works and stops again: noted again.
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "UserPromptSubmit", "payload": { "prompt": "more" } }));
+    midnad::monitor::check(&d.daemon());
+    call(&mut w, "agent.hook", json!({ "agent": "claude", "event": "Stop", "payload": {} }));
+    backdate(&d);
+    midnad::monitor::check(&d.daemon());
+    assert_eq!(queued(&mut h, &monitor).len(), 2);
+}

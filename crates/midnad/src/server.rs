@@ -239,6 +239,7 @@ fn background(d: &Arc<Daemon>) {
     crate::local::start(d);
     crate::producers::start(d);
     crate::queue::start(d);
+    crate::monitor::start(d);
     crate::resume::start(d);
     crate::clock::start(d);
     crate::keep_awake::start(d);
