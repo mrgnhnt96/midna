@@ -2099,9 +2099,16 @@ fn drive_states(c: &mut Client) -> Vec<Value> {
 /// Wait until `link` has been `state` (with a reason containing `why`, if given); the latest
 /// such status. It may have moved on since (a dropped link tries again at once).
 fn drive_state(c: &mut Client, link: &str, state: &str, why: Option<&str>, secs: u64) -> Value {
-    wait_for(secs, &format!("link {state} {why:?}"), || {
+    drive_state_after(c, link, 0, state, why, secs)
+}
+
+/// [`drive_state`], counting only the statuses from after the link's `drops`th drop. The ones
+/// before it are still in the event history, and a state the link was in then would match.
+fn drive_state_after(c: &mut Client, link: &str, drops: u64, state: &str, why: Option<&str>, secs: u64) -> Value {
+    wait_for(secs, &format!("link {state} {why:?} after {drops} drops"), || {
         drive_states(c).into_iter().rev().find(|s| {
-            s["link"] == link && s["state"] == state && why.is_none_or(|w| s["reason"].as_str().is_some_and(|r| r.contains(w)))
+            s["link"] == link && s["drops"].as_u64() >= Some(drops) && s["state"] == state
+                && why.is_none_or(|w| s["reason"].as_str().is_some_and(|r| r.contains(w)))
         })
     })
 }
@@ -2218,11 +2225,13 @@ fn the_app_drives_the_other_mac_through_its_own_socket_while_that_mac_allows_it(
     let down = drive_state(&mut ha, &id, "reconnecting", Some("Bravo stopped letting this Mac drive it"), 10);
     assert_eq!(down["drops"], 1, "{down}");
     assert!(there.call_value("daemon.info", json!({})).is_err(), "its connections closed");
-    drive_state(&mut ha, &id, "offline", Some("doesn't let this Mac drive it; paused until"), 10);
+    // Its next try is refused, and it's parked again, as when it was first opened.
+    let parked = drive_state_after(&mut ha, &id, 1, "offline", Some("doesn't let this Mac drive it"), 10);
+    assert!(parked["reason"].as_str().unwrap().ends_with("; paused until Bravo lets this Mac drive it"), "{parked}");
     assert_eq!(refused_line(&socket)["error"]["code"], REFUSED);
     // Allowed again: woken again, without A's app asking.
     call(&mut hb, "peers.set_drive", json!({ "peer": fa, "on": true }));
-    let back = drive_state(&mut ha, &id, "connected", None, 15);
+    let back = drive_state_after(&mut ha, &id, 1, "connected", None, 15);
     assert_eq!(back["drops"], 1, "{back}");
 
     // Closed: its socket goes, and it's gone from the list.
