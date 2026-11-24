@@ -481,7 +481,9 @@ pub static VERBS: &[Verb] = &[
         details: "Agents may approve only their own session's requests, and only when the human turned on\n\
                   approve.from_cli. --done marks a blocked item handled; an agent clears an item it raised\n\
                   itself (note, blocked) with --done. --restart restarts a failed terminal.\n\
-                  Approvals of human-only actions can only be answered by the human.",
+                  Approvals of human-only actions can only be answered by the human. A terminal the human\n\
+                  gave a monitor grant may approve (once) or deny other terminals' prompts and approvals in\n\
+                  its scope (`midna skill monitor`).",
         methods: &["needs_you.resolve"],
     },
     Verb {
@@ -496,7 +498,8 @@ pub static VERBS: &[Verb] = &[
                   time (2am, 17:30: the next time the clock reads it; or RFC 3339), --for after a while (8h, 90m);\n\
                   without either it lasts until revoked. Granting again replaces it. Only the human grants or\n\
                   revokes: an agent's call asks the human with a needs-you instead. `midna list` marks a granted\n\
-                  terminal (monitor) and `midna get` shows its grant.",
+                  terminal (monitor) and `midna get` shows its grant. What a granted agent may answer:\n\
+                  `midna skill monitor`.",
         methods: &["session.monitor_grant", "session.monitor_revoke"],
     },
     // ---------------------------------------------------------------- policy

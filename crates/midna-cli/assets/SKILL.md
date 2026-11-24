@@ -6,10 +6,10 @@ description: Drive midna, the AI-managed terminal you are running in, with the `
 # midna
 
 You are inside a midna terminal when `MIDNA_SESSION` is set. A daemon (`midnad`) owns every
-terminal, rule, trigger and setting, and a human watches through the GUI. Almost everything is
-yours to manage. A few things are the human's alone, and those become *requests* the human sees.
+terminal, rule, trigger and setting; a human watches through the GUI. Almost everything is yours
+to manage. A few things are the human's alone; those become *requests* the human sees.
 
-Three ways in, all equivalent (same daemon, same checks, same audit log):
+Three ways in, all equivalent (same daemon, checks and audit log):
 
 - CLI: `midna <verb>`. `midna <verb> --help` has its flags and examples; this guide says when to
   use it. `midna help` lists the verbs, `midna capabilities` is a short overview.
@@ -24,14 +24,14 @@ Add `--json` to any verb for machine-readable output. Exit codes: 0 ok, 1 refuse
 ## Orient yourself
 
 ```
-midna info                 # your role (agent) and session
+midna info                 # your role (agent), session, monitor grant
 midna list                 # terminals: id, status, kind, name, project
 midna get <id>             # one terminal: status and reason, cwd, command, agent info
 midna projects             # projects (directories that group terminals)
-midna projects discover    # folders under the projects.roots setting that can be opened as projects
+midna projects discover    # folders under the projects.roots setting that can be projects
 midna needs                # what is waiting on the human right now
 midna explain <id>         # why a terminal/rule/trigger/needs-you item is the way it is
-midna explain <topic>      # status, rules, approvals, needs-you, settings, windows, human-only...
+midna explain <topic>      # status, rules, approvals, needs-you, settings, human-only...
 midna events --follow      # everything that happens, live
 ```
 
@@ -72,6 +72,7 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
 - `links`: pinning links for the human, link patterns, hover cards and link menus.
 - `nearby`: opening a tab in a project on another of the human's Macs, or asking an agent there
   for help and waiting for its answer.
+- `monitor`: the human gave your terminal a monitor grant.
 
 ## Terminals
 
@@ -81,10 +82,9 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
   way; `--close-on-exit` suits a terminal that does one job.
 - `midna send` types text and presses Enter (in an agent's terminal, a chat message), `midna key`
   presses a key, `midna read` reads the output. `rename`, `restart` and `close` manage a terminal.
-- Prefer opening your own terminal over typing into one someone else is using. Never answer
-  another agent's permission prompt unless `midna read --screen` shows that prompt.
-- Don't type into a new agent's "do you trust this folder?" dialog: it's a needs-you item for the
-  human.
+- Prefer opening your own terminal over typing into one someone else is using. Answer another
+  agent's permission prompt only under a monitor grant, once `midna read --screen` shows it.
+- Don't type into an agent's "trust this folder?" dialog: it's a needs-you item for the human.
 
 ## Attention etiquette
 
@@ -98,7 +98,7 @@ The rest of the guide comes on request. Read one with `midna skill <topic>`, the
 - `midna notify send "<title>" --detail "<line>"` posts a macOS notification. Use it when the human
   asked to be told ("ping me when CI is green") or a result needs them while they may be away.
   Approvals, failures and long finished turns already notify: don't duplicate them, and don't send
-  progress updates. Buttons, which notifications they get, sounds and text are in `midna notify --help`.
+  progress updates. Buttons, which ones notify, sounds and text: `midna notify --help`.
 
 ## Rules, settings, windows
 

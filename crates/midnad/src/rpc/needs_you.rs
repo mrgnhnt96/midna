@@ -191,11 +191,56 @@ fn orphans(d: &Daemon) -> Vec<(Id, &'static str)> {
     out
 }
 
-/// May this caller apply this resolution to this item?
-fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result<(), RpcError> {
+/// May this caller apply this resolution to this item? `Some` is the monitor grant it does so
+/// through (see [`by_monitor_grant`]), recorded with the answer.
+fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result<Option<Value>, RpcError> {
     if ctx.is_human() {
-        return Ok(());
+        return Ok(None);
     }
+    if let Some(record) = by_monitor_grant(d, ctx, item, res)? {
+        return Ok(Some(record));
+    }
+    authorize_agent(d, ctx, item, res).map(|()| None)
+}
+
+/// A terminal the human gave a monitor grant may approve or deny other terminals' items in its
+/// scope: permission prompts (`prompts`), approval items (`approvals`), or both (`all`). Never a
+/// deferred human-only call (giving or revoking a grant among them), a rule removal, a folder-trust
+/// prompt or a question, and an approval only once: one that lasts adds a rule. `Ok(None)` when
+/// the caller has no live grant or the item is its own (the ordinary rules decide).
+fn by_monitor_grant(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result<Option<Value>, RpcError> {
+    let Some((me, grant)) = super::session::caller_monitor_grant(d, ctx) else { return Ok(None) };
+    let others = item.session_id.as_ref().is_some_and(|s| *s != me) && item.asked_by.session.as_ref() != Some(&me);
+    if !others {
+        return Ok(None);
+    }
+    let scope = grant.scope.as_str();
+    if !matches!(res, Resolution::Approve { .. } | Resolution::Deny) {
+        return Err(RpcError::human_only(format!("your monitor grant ({scope}) only approves or denies other terminals' items; only the human can resolve this item this way")));
+    }
+    let deferred = d.core().state.deferred.contains_key(&item.id);
+    let refused = match item.kind {
+        NeedsYouKind::PermissionPrompt if crate::trust::is_trust_item(item) => Some("trusting a folder stays with the human".to_string()),
+        NeedsYouKind::PermissionPrompt if item.question.is_some() => Some("an agent's question is for the human to answer".to_string()),
+        NeedsYouKind::PermissionPrompt if !grant.scope.covers_prompts() => Some(format!("your monitor grant ({scope}) doesn't cover permission prompts")),
+        NeedsYouKind::PermissionPrompt => None,
+        NeedsYouKind::Approval if deferred => Some("this approval confirms a human-only action; only the human can approve or deny it".to_string()),
+        NeedsYouKind::Approval if !grant.scope.covers_approvals() => Some(format!("your monitor grant ({scope}) doesn't cover approval items")),
+        NeedsYouKind::Approval if matches!(res, Resolution::Approve { scope } if *scope != ApprovalScope::Once) => {
+            Some("a monitor grant approves once; approving for longer adds a rule, which only the human can".to_string())
+        }
+        NeedsYouKind::Approval => None,
+        k => Some(format!("a monitor grant doesn't cover {} items", serde_json::to_value(k).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default())),
+    };
+    match refused {
+        Some(why) => Err(RpcError::human_only(why)),
+        None => Ok(Some(super::session::grant_record(&me, &grant))),
+    }
+}
+
+/// The ordinary rules for an agent: its own session's approvals (with approve.from_cli on), and
+/// clearing what it raised.
+fn authorize_agent(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result<(), RpcError> {
     let own_session = ctx.session.is_some() && item.session_id == ctx.session;
     let raised_by_me = ctx.session.is_some() && item.asked_by.session == ctx.session;
     match res {
@@ -223,7 +268,7 @@ fn authorize(d: &Daemon, ctx: &Ctx, item: &NeedsYou, res: &Resolution) -> Result
 
 pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     let item = d.core().state.needs_you.iter().find(|n| n.id == p.id).cloned().ok_or_else(|| RpcError::not_found(format!("no needs-you item {}", p.id)))?;
-    authorize(d, ctx, &item, &p.resolution)?;
+    let by_grant = authorize(d, ctx, &item, &p.resolution)?;
     // Deny and dismiss grant nothing, so they work from another Mac; approving what is local-only doesn't.
     let driving = ctx.as_actor.as_ref().and_then(|a| a.drive_peer()).is_some();
     if driving && matches!(p.resolution, Resolution::Approve { .. }) && crate::nearby::local_only::approval(d, &item) {
@@ -284,6 +329,10 @@ pub fn resolve(d: &Arc<Daemon>, ctx: &Ctx, p: NeedsYouResolveParams) -> R {
     // the agent reads this back (needs_you.get): say what was saved when it isn't what it asked
     if let (Some(v), Some(o)) = (p.value.as_ref().filter(|_| matches!(p.resolution, Resolution::Approve { .. })), recorded.as_object_mut()) {
         o.insert("value".into(), v.clone());
+    }
+    // which terminal answered through its monitor grant: history and the inbox show it
+    if let (Some(g), Some(o)) = (by_grant, recorded.as_object_mut()) {
+        o.insert("monitor_grant".into(), g);
     }
     d.close_needs_you(&item.id, recorded, ctx.actor());
     if let Some(tx) = d.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&item.id) {

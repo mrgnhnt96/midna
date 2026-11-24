@@ -548,7 +548,7 @@ pub fn set_background(d: &Daemon, ctx: &Ctx, p: SessionSetBackgroundParams) -> R
 }
 
 /// `session.monitor_grant` (human only, see the catalog): give terminal `id` a monitor grant,
-/// replacing any it has. Nothing honors it yet beyond storing and showing it.
+/// replacing any it has. `needs_you.resolve` and `refuse_prompt_answer` honor it.
 pub fn monitor_grant(d: &Daemon, ctx: &Ctx, p: SessionMonitorGrantParams) -> R {
     let now = time::now_unix();
     let until = match p.until.as_deref() {
@@ -605,6 +605,23 @@ pub fn expire_monitor_grants(d: &Daemon) {
     }
 }
 
+/// The live monitor grant of the terminal making this call, with that terminal's id. Only the
+/// terminal's own processes carry it: a trigger or another Mac acting through the call
+/// (`as_actor`) doesn't, nor does the human, who needs none.
+pub(crate) fn caller_monitor_grant(d: &Daemon, ctx: &Ctx) -> Option<(Id, MonitorGrant)> {
+    if ctx.is_human() || ctx.as_actor.is_some() {
+        return None;
+    }
+    let sid = ctx.session.as_ref()?;
+    let grant = d.core().state.session(sid)?.monitor_grant.clone()?;
+    grant.live_at(time::now_unix()).then(|| (sid.clone(), grant))
+}
+
+/// How an answer made through a monitor grant is recorded: the terminal and the grant it used.
+pub(crate) fn grant_record(sid: &str, grant: &MonitorGrant) -> serde_json::Value {
+    json!({ "session": sid, "scope": grant.scope, "granted_at": grant.granted_at, "until": grant.until })
+}
+
 /// Gap between typed text and the Enter that submits it (see `input`).
 const ENTER_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// Gap after an image paste, and the beat between steps. Claude Code is waited on for each
@@ -613,25 +630,36 @@ const PASTE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Agents may not answer a permission prompt by typing into the terminal that shows it: that
 /// would approve a tool call without the human. They resolve the needs-you item instead,
-/// which only the human can do.
-fn refuse_prompt_answer(d: &Daemon, ctx: &Ctx, sid: &str, rt: &term::RtHandle) -> Result<(), RpcError> {
+/// which only the human can do. The exception: a terminal the human gave a monitor grant
+/// covering prompts may answer another terminal's permission prompt (never a question or a
+/// folder-trust prompt). Returns the grant record when the call goes through on one.
+fn refuse_prompt_answer(d: &Daemon, ctx: &Ctx, sid: &str, rt: &term::RtHandle) -> Result<Option<serde_json::Value>, RpcError> {
     if ctx.is_human() {
-        return Ok(());
+        return Ok(None);
     }
     let (is_agent, pending) = {
         let core = d.core();
         let is_agent = core.state.session(sid).is_some_and(|s| s.agent.is_some());
-        let pending = core.state.needs_you.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.kind == NeedsYouKind::PermissionPrompt).map(|n| n.id.clone());
+        let pending = core.state.needs_you.iter().find(|n| n.session_id.as_deref() == Some(sid) && n.kind == NeedsYouKind::PermissionPrompt).cloned();
         (is_agent, pending)
     };
-    let on_screen = is_agent && rt.read(true).is_some_and(|(l, _, _)| screen_waits_on_human(&l));
-    if pending.is_some() || on_screen {
-        let what = pending.map(|n| format!(" (needs-you {n})")).unwrap_or_default();
-        return Err(RpcError::human_only(format!(
-            "session {sid} is showing a permission prompt or question{what}; only the human may answer it. Use needs_you.raise if you are blocked on it."
-        )));
+    let screen = if is_agent { rt.read(true).map(|(l, _, _)| l) } else { None };
+    let on_screen = screen.as_deref().is_some_and(screen_waits_on_human);
+    if pending.is_none() && !on_screen {
+        return Ok(None);
     }
-    Ok(())
+    let grant = caller_monitor_grant(d, ctx).filter(|(me, g)| me != sid && g.scope.covers_prompts());
+    // A grant covers permission prompts only: a question is the agent asking the human, and a
+    // folder-trust prompt is the human's call.
+    let plain_prompt = pending.as_ref().is_none_or(|n| n.question.is_none() && !crate::trust::is_trust_item(n))
+        && screen.as_deref().is_none_or(|l| !crate::agent_state::screen_shows_question(l) && crate::agent_state::screen_shows_trust(l).is_none());
+    if let Some((me, g)) = grant.filter(|_| plain_prompt) {
+        return Ok(Some(grant_record(&me, &g)));
+    }
+    let what = pending.map(|n| format!(" (needs-you {})", n.id)).unwrap_or_default();
+    Err(RpcError::human_only(format!(
+        "session {sid} is showing a permission prompt or question{what}; only the human may answer it. Use needs_you.raise if you are blocked on it."
+    )))
 }
 
 /// `text` without its trailing newlines, and whether there were any. A trailing newline means
@@ -651,7 +679,7 @@ pub fn input(d: &Daemon, ctx: &Ctx, mut p: SessionInputParams) -> R {
         p.enter = true;
     }
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    refuse_prompt_answer(d, ctx, &p.id, &rt)?;
+    let by_grant = refuse_prompt_answer(d, ctx, &p.id, &rt)?;
     // Copy every image before typing anything, so a bad path leaves the terminal untouched.
     let dir = d.cfg.home.join("images");
     let images = p.images.iter().map(|src| crate::images::prepare(&dir, src)).collect::<Result<Vec<_>, _>>().map_err(RpcError::bad_params)?;
@@ -695,7 +723,11 @@ pub fn input(d: &Daemon, ctx: &Ctx, mut p: SessionInputParams) -> R {
         let project = d.core().state.session(&p.id).map(|s| s.project_id.clone());
         let preview: String = p.text.chars().take(120).collect();
         let images: Vec<String> = images.iter().map(|i| i.display().to_string()).collect();
-        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), json!({ "text": preview, "enter": p.enter, "bytes": bytes.len(), "images": images }));
+        let mut data = json!({ "text": preview, "enter": p.enter, "bytes": bytes.len(), "images": images });
+        if let Some(g) = by_grant {
+            data["monitor_grant"] = g;
+        }
+        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), data);
     }
     ok(OkResult { ok: true })
 }
@@ -839,7 +871,7 @@ pub fn answer_question(d: &Daemon, ctx: &Ctx, p: SessionAnswerQuestionParams) ->
 pub fn key(d: &Daemon, ctx: &Ctx, p: SessionKeyParams) -> R {
     use midna_proto::frame::{ClientMsg, KeyAction, KeyMsg};
     let rt = d.rt(&p.id).ok_or_else(|| not_found(&p.id))?;
-    refuse_prompt_answer(d, ctx, &p.id, &rt)?;
+    let by_grant = refuse_prompt_answer(d, ctx, &p.id, &rt)?;
     let (mods, key) = parse_keystroke(&p.key).ok_or_else(|| RpcError::bad_params(format!("unknown key {:?}", p.key)))?;
     let action = match p.action.as_deref() {
         None | Some("press") => KeyAction::Press,
@@ -852,7 +884,11 @@ pub fn key(d: &Daemon, ctx: &Ctx, p: SessionKeyParams) -> R {
     }
     if !ctx.is_human() {
         let project = d.core().state.session(&p.id).map(|s| s.project_id.clone());
-        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), json!({ "key": p.key }));
+        let mut data = json!({ "key": p.key });
+        if let Some(g) = by_grant {
+            data["monitor_grant"] = g;
+        }
+        d.emit(kinds::SESSION_INPUT_BY_AGENT, ctx.actor(), project, Some(p.id.clone()), data);
     }
     ok(OkResult { ok: true })
 }
