@@ -52,6 +52,7 @@ pub mod subagent_log;
 pub mod summary;
 pub mod term;
 pub mod trust;
+pub mod typed_by;
 pub mod upgrade;
 pub mod usage;
 pub mod wake;

@@ -254,6 +254,9 @@ pub struct Daemon {
     /// Triggers' headless runs still going (`headless.rs`), to attribute their calls. Never held
     /// together with `core`.
     pub runs: crate::headless::Runs,
+    /// Prompts a trigger or an agent typed or queued into a terminal (`typed_by.rs`), so the
+    /// agent's next prompt can tell the human's apart. A leaf lock: nothing is locked under it.
+    pub typed: crate::typed_by::Typed,
 }
 
 impl Daemon {
@@ -320,6 +323,7 @@ impl Daemon {
             worktrees: Default::default(),
             cleanup: Default::default(),
             runs: Default::default(),
+            typed: Default::default(),
             cfg,
         }))
     }
@@ -362,6 +366,7 @@ impl Daemon {
     }
 
     pub fn emit(&self, kind: &str, actor: Actor, project: Option<Id>, session: Option<Id>, data: Value) -> Event {
+        self.typed.observe(kind, &actor, session.as_deref(), &data);
         self.log.append(kind, actor, project, session, data)
     }
 
@@ -543,10 +548,16 @@ impl Daemon {
         }
     }
 
-    /// The agent in `sid` got a new prompt: the `blocked` items it raised itself (`midna
-    /// attention`) are stale, since it was answered or moved on. It raises a fresh one if it is
-    /// still stuck. A custom status's item keeps its own clear rule.
-    pub fn clear_agent_blocked(&self, sid: &str) {
+    /// The human gave the agent in `sid` a new `prompt` (or the agent woke itself, as a
+    /// finished background task does): the `blocked` items it raised itself (`midna attention`)
+    /// are stale, since it was answered or moved on. It raises a fresh one if it is still stuck.
+    /// A prompt a trigger or another agent typed or queued answers none of them, so they stay
+    /// (a monitor's own triggers would otherwise close every item it raises). A custom status's
+    /// item keeps its own clear rule.
+    pub fn clear_agent_blocked(&self, sid: &str, prompt: &str) {
+        if !self.typed.by_human(sid, prompt) {
+            return;
+        }
         let ids: Vec<Id> = {
             let core = self.core();
             let custom = core.state.session(sid).and_then(|s| s.custom_status.as_ref()).and_then(|c| c.needs_you_id.clone());
