@@ -577,7 +577,9 @@ fn build() -> Vec<MethodSpec> {
             "Get the human's attention. kind=blocked when you cannot continue without them, kind=note for an FYI. Keep message to one short line (details in `detail`); don't raise one per step."),
         m::<NeedsYouResolveParams, ResolveResult>("needs_you.resolve").mutating().d(
             "Resolve a needs-you item: approve{scope: once|minutes|session|always}, deny, dismiss (human), done, restart. \
-             Agents may only approve their own session's requests and only if setting approve.from_cli is on."),
+             Agents may only approve their own session's requests and only if setting approve.from_cli is on. A terminal \
+             the human gave a monitor grant (session.monitor_grant) may also approve (once) or deny other terminals' \
+             permission prompts and approval items in its scope; the answer records it as `monitor_grant`."),
         // policy
         m::<PolicyCheckParams, CheckResult>("policy.check").d(
             "Evaluate an action against rules without side effects. Returns the decision, the winning rule and a full trace. \

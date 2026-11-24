@@ -165,7 +165,8 @@ fn notes(m: &MethodSpec) -> Option<&'static str> {
             (topic `triggers`).",
         "needs_you.resolve" => "Clear an item you raised yourself (note, blocked, approval) once you no longer need the human: \
             resolution {\"kind\":\"done\"} (dismiss is the human's). Everything else is the human's to answer; approving is \
-            refused unless the human enabled approve.from_cli, and then only for your own session's approvals.",
+            refused unless the human enabled approve.from_cli, and then only for your own session's approvals; or, when the \
+            human gave your terminal a monitor grant, approve (once) or deny other terminals' items in its scope (guide topic `monitor`).",
         "policy.request" => "Blocks until the human answers (up to timeout_secs). Prefer policy_check to just test an action. \
             Add no_wait: true (works on any tool) to get the needs-you id back at once (error 6) and follow it with needs_you_get.",
         "session.close" => "Closing a working terminal or another one may ask the human and block meanwhile; add no_wait: true \
@@ -661,6 +662,7 @@ fn call_tool(client: &mut Option<Client>, params: &Value, mode: Mode) -> Result<
     match tool {
         "capabilities" => {
             let info = rpc(client, "daemon.info", json!({})).ok();
+            let info = guide::with_monitor_grant(info, |sid| rpc(client, "session.get", json!({ "id": sid })).ok());
             return Ok(text_result(guide::capabilities_with(info.as_ref()), false));
         }
         "guide" => {

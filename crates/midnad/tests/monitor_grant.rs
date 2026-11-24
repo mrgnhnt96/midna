@@ -124,3 +124,190 @@ fn a_grant_ends_by_itself_at_its_until() {
     midnad::rpc::needs_you::sweep(&d.daemon());
     assert_eq!(events(&mut h, "session.monitor_expired").len(), 1);
 }
+
+// ------------------------------------------------------------------ honoring the grant
+
+/// A permission prompt pending on terminal `sid`, raised the way agent.hook does (as its agent).
+fn raise_prompt(d: &TestDaemon, sid: &str, title: &str, question: bool) -> String {
+    let daemon = d.daemon();
+    let mut n = daemon.new_needs_you(midna_proto::NeedsYouKind::PermissionPrompt, title.into(), midna_proto::Actor::agent(Some(sid.into())), Some(sid.into()));
+    if question {
+        n.question = Some(midna_proto::NeedsYouQuestion { text: "Which one?".into(), ..Default::default() });
+    }
+    daemon.raise_needs_you(n).id
+}
+
+/// An approval item terminal `sid`'s agent is waiting on (a policy request a rule asks about).
+fn raise_approval(d: &TestDaemon, h: &mut Client, sid: &str, what: &str) -> String {
+    call(h, "rule.add", json!({ "effect": "ask", "matcher": { "kind": "command", "pattern": what } }));
+    let e = call_err(&mut d.agent(Some(sid)).no_wait(), "policy.request", json!({ "action": { "kind": "command", "value": what }, "timeout_secs": 60 }));
+    assert_eq!(e.code, midna_proto::error::PENDING, "{}", e.message);
+    e.data.unwrap()["needs_you_id"].as_str().unwrap().to_string()
+}
+
+fn resolve(c: &mut Client, nid: &str, kind: &str) -> Result<Value, midna_proto::RpcError> {
+    let res = if kind == "approve" { json!({ "kind": "approve", "scope": { "kind": "once" } }) } else { json!({ "kind": kind }) };
+    c.call_value("needs_you.resolve", json!({ "id": nid, "resolution": res })).map_err(|e| match e {
+        midna_proto::ClientError::Rpc(e) => e,
+        e => panic!("{e}"),
+    })
+}
+
+fn refused(r: Result<Value, midna_proto::RpcError>) -> String {
+    let e = r.expect_err("refused");
+    assert_eq!(e.code, HUMAN_ONLY, "{}", e.message);
+    e.message
+}
+
+fn is_open(h: &mut Client, nid: &str) -> bool {
+    call(h, "needs_you.get", json!({ "id": nid }))["state"] == "open"
+}
+
+/// The resolution `needs_you.resolved` recorded for item `nid`.
+fn resolution(h: &mut Client, nid: &str) -> Value {
+    let ev = events(h, "needs_you.resolved").into_iter().find(|e| e["data"]["id"] == nid).expect("resolved event");
+    ev["data"]["resolution"].clone()
+}
+
+#[test]
+fn a_granted_terminal_approves_and_denies_other_terminals_prompts_and_approvals() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    let mut m = d.agent(Some(&monitor));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+
+    // Another terminal's permission prompt: approved, then a new one denied.
+    let p1 = raise_prompt(&d, &other, "Bash(ls)", false);
+    resolve(&mut m, &p1, "approve").unwrap();
+    let r = resolution(&mut h, &p1);
+    assert_eq!((r["kind"].as_str(), r["monitor_grant"]["session"].as_str(), r["monitor_grant"]["scope"].as_str()), (Some("approve"), Some(monitor.as_str()), Some("all")), "{r}");
+    let g = call(&mut h, "needs_you.get", json!({ "id": p1 }));
+    assert_eq!((g["resolved_by"]["session"].as_str(), g["resolution"]["monitor_grant"]["session"].as_str()), (Some(monitor.as_str()), Some(monitor.as_str())), "{g}");
+    let p2 = raise_prompt(&d, &other, "Bash(rm x)", false);
+    resolve(&mut m, &p2, "deny").unwrap();
+    assert_eq!(resolution(&mut h, &p2)["kind"], "deny");
+    assert_eq!(resolution(&mut h, &p2)["monitor_grant"]["session"], monitor.as_str());
+
+    // Another terminal's approval item, with approve.from_cli off: approved once, or denied.
+    let a1 = raise_approval(&d, &mut h, &other, "deploy staging");
+    resolve(&mut m, &a1, "approve").unwrap();
+    assert_eq!(call(&mut h, "needs_you.get", json!({ "id": a1 }))["state"], "resolved");
+    assert_eq!(resolution(&mut h, &a1)["monitor_grant"]["session"], monitor.as_str());
+    let a2 = raise_approval(&d, &mut h, &other, "deploy prod");
+    resolve(&mut m, &a2, "deny").unwrap();
+    assert_eq!(resolution(&mut h, &a2)["kind"], "deny");
+    // Approving for longer would add a rule: the human's.
+    let a3 = raise_approval(&d, &mut h, &other, "deploy qa");
+    let e = m.call_value("needs_you.resolve", json!({ "id": a3, "resolution": { "kind": "approve", "scope": { "kind": "always" } } })).unwrap_err();
+    assert!(e.to_string().contains("approves once"), "{e}");
+    // Nor may it dismiss what it didn't raise.
+    assert!(refused(resolve(&mut m, &a3, "dismiss")).contains("only approves or denies"));
+    assert!(is_open(&mut h, &a3));
+
+    // `midna key` on another terminal's prompt goes through, logged with the grant.
+    raise_prompt(&d, &other, "Bash(ls -la)", false);
+    call(&mut m, "session.key", json!({ "id": other, "key": "escape" }));
+    let ev = events(&mut h, "session.input_by_agent").into_iter().rev().find(|e| e["data"]["key"] == "escape").expect("input event");
+    assert_eq!((ev["session_id"].as_str(), ev["data"]["monitor_grant"]["session"].as_str()), (Some(other.as_str()), Some(monitor.as_str())), "{ev}");
+    // Typing into a terminal with no prompt records no grant.
+    call(&mut m, "session.input", json!({ "id": monitor, "text": "true" }));
+    let ev = events(&mut h, "session.input_by_agent").into_iter().last().unwrap();
+    assert!(ev["data"].get("monitor_grant").is_none(), "{ev}");
+}
+
+#[test]
+fn a_grant_never_reaches_human_only_items_or_its_own_terminal() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    let mut m = d.agent(Some(&monitor));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+
+    // A deferred human-only call, including a grant for another terminal (or itself).
+    let mut o = d.agent(Some(&other));
+    let e = call_err(&mut o, "session.monitor_grant", json!({ "id": other }));
+    let grant_ask = e.data.unwrap()["needs_you_id"].as_str().unwrap().to_string();
+    assert!(refused(resolve(&mut m, &grant_ask, "approve")).contains("human-only"));
+    assert!(refused(resolve(&mut m, &grant_ask, "deny")).contains("human-only"));
+    let e = call_err(&mut o, "session.monitor_revoke", json!({ "id": monitor }));
+    let revoke_ask = e.data.unwrap()["needs_you_id"].as_str().unwrap().to_string();
+    refused(resolve(&mut m, &revoke_ask, "deny"));
+    // A rule removal.
+    let r = call(&mut h, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "command", "pattern": "rm -rf*" } }));
+    let removal = call(&mut o, "rule.request_removal", json!({ "id": r["id"], "reason": "in my way" }))["id"].as_str().unwrap().to_string();
+    refused(resolve(&mut m, &removal, "approve"));
+    refused(resolve(&mut m, &removal, "deny"));
+    // A folder-trust prompt and an agent's question.
+    let trust = raise_prompt(&d, &other, "Trust this folder? /tmp/x", false);
+    assert!(refused(resolve(&mut m, &trust, "approve")).contains("trusting a folder"));
+    let question = raise_prompt(&d, &other, "Which one?", true);
+    assert!(refused(resolve(&mut m, &question, "approve")).contains("question"));
+    // Nor keys into a terminal showing a question or a folder-trust prompt.
+    assert_eq!(call_err(&mut m, "session.key", json!({ "id": other, "key": "enter" })).code, HUMAN_ONLY);
+    for nid in [&grant_ask, &revoke_ask, &removal, &trust, &question] {
+        assert!(is_open(&mut h, nid), "{nid}");
+    }
+    assert!(call(&mut h, "session.get", json!({ "id": other })).get("monitor_grant").is_none());
+
+    // Its own terminal's items follow the ordinary rules (approve.from_cli is off).
+    let own = raise_approval(&d, &mut h, &monitor, "deploy own");
+    assert!(refused(resolve(&mut m, &own, "approve")).contains("approve.from_cli"));
+    raise_prompt(&d, &monitor, "Bash(ls)", false);
+    assert_eq!(call_err(&mut m, "session.key", json!({ "id": monitor, "key": "enter" })).code, HUMAN_ONLY);
+}
+
+#[test]
+fn without_a_live_grant_in_scope_everything_is_refused_as_before() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    let mut m = d.agent(Some(&monitor));
+    let prompt = raise_prompt(&d, &other, "Bash(ls)", false);
+    let approval = raise_approval(&d, &mut h, &other, "deploy staging");
+    let all_refused = |m: &mut Client, h: &mut Client| {
+        refused(resolve(m, &prompt, "approve"));
+        refused(resolve(m, &prompt, "deny"));
+        refused(resolve(m, &approval, "approve"));
+        refused(resolve(m, &approval, "deny"));
+        assert_eq!(call_err(m, "session.key", json!({ "id": other, "key": "enter" })).code, HUMAN_ONLY);
+        assert!(is_open(h, &prompt) && is_open(h, &approval));
+    };
+    // No grant.
+    all_refused(&mut m, &mut h);
+
+    // Out of scope: prompts doesn't reach approvals, approvals doesn't reach prompts.
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "scope": "prompts" }));
+    assert!(refused(resolve(&mut m, &approval, "approve")).contains("doesn't cover approval items"));
+    refused(resolve(&mut m, &approval, "deny"));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "scope": "approvals" }));
+    assert!(refused(resolve(&mut m, &prompt, "approve")).contains("doesn't cover permission prompts"));
+    assert_eq!(call_err(&mut m, "session.key", json!({ "id": other, "key": "enter" })).code, HUMAN_ONLY);
+    assert!(is_open(&mut h, &prompt) && is_open(&mut h, &approval));
+
+    // Revoked.
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    call(&mut h, "session.monitor_revoke", json!({ "id": monitor }));
+    all_refused(&mut m, &mut h);
+
+    // Past its until, even before the sweep ends it.
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "until": time::format_unix(time::now_unix() + 3600) }));
+    {
+        let dm = d.daemon();
+        let mut core = dm.core();
+        core.state.session_mut(&monitor).unwrap().monitor_grant.as_mut().unwrap().until = Some(time::format_unix(time::now_unix() - 1));
+    }
+    all_refused(&mut m, &mut h);
+    midnad::rpc::needs_you::sweep(&d.daemon());
+    all_refused(&mut m, &mut h);
+
+    // An agent outside any terminal has no grant to use.
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    refused(resolve(&mut d.agent(None), &prompt, "approve"));
+    // With the grant back, the same calls go through.
+    resolve(&mut m, &prompt, "deny").unwrap();
+    resolve(&mut m, &approval, "deny").unwrap();
+}

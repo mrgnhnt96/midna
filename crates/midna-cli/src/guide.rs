@@ -66,7 +66,8 @@ HUMAN ONLY (calling these makes a request the human sees; nothing happens until 
   settings   {}
   also       removing rules (use `midna rules request-removal <id> --reason …`), webhook secrets, enabling
              webhook triggers, approving approvals (unless the human enabled approve.from_cli, own session only),
-             answering needs-you items you didn't raise, macOS permission grants (ask with `midna attention`).
+             answering needs-you items you didn't raise (unless the human gave your terminal a monitor grant: see
+             `midna skill monitor`), macOS permission grants (ask with `midna attention`).
              An item you raised and no longer need: clear it yourself with `midna approve <id> --done`.
 
 RULES OF THE ROAD
@@ -109,12 +110,45 @@ fn clip(s: &str, n: usize) -> String {
     if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() }
 }
 
-/// `capabilities()` with the streams section when midnad answered `daemon.info`.
+/// `capabilities()` with the monitor grant and streams sections when midnad answered
+/// `daemon.info` (with the caller's grant added by [`with_monitor_grant`]).
 pub fn capabilities_with(info: Option<&Value>) -> String {
-    match streams_section(info) {
-        Some(st) => format!("{}\n\n{st}", capabilities()),
-        None => capabilities(),
+    let mut out = capabilities();
+    for section in [monitor_section(info), streams_section(info)].into_iter().flatten() {
+        out.push_str(&format!("\n\n{section}"));
     }
+    out
+}
+
+/// `daemon.info` with the caller's terminal's `monitor_grant` (from `session.get`) added, so the
+/// capabilities can tell a granted agent about it.
+pub fn with_monitor_grant(mut info: Option<Value>, session_get: impl FnOnce(&str) -> Option<Value>) -> Option<Value> {
+    let sid = info.as_ref().and_then(|i| i["session"].as_str()).map(str::to_string);
+    if let (Some(i), Some(sid)) = (info.as_mut(), sid) {
+        if let Some(g) = session_get(&sid).and_then(|s| s.get("monitor_grant").cloned()) {
+            i["monitor_grant"] = g;
+        }
+    }
+    info
+}
+
+/// The capabilities' monitor grant section, when the caller's terminal has one.
+pub fn monitor_section(info: Option<&Value>) -> Option<String> {
+    let i = info?;
+    let g = i.get("monitor_grant").filter(|g| g.is_object())?;
+    let what = match g["scope"].as_str() {
+        Some("prompts") => "other terminals' permission prompts",
+        Some("approvals") => "other terminals' approval items (once)",
+        _ => "other terminals' permission prompts and approval items (approvals once)",
+    };
+    let until = g["until"].as_str().map(|u| format!("until {u}")).unwrap_or_else(|| "until the human revokes it".into());
+    Some(format!(
+        "MONITOR GRANT  The human gave this terminal ({}) a monitor grant, {until}: you may approve or deny {what}
+               with `midna approve <n_id> [--deny]` or `midna key <id> enter|escape` on a prompt you've read. Human-only
+               approvals, rule removals, folder trust and agents' questions stay the human's. Each answer is logged as
+               yours. `midna skill monitor` has the rest.",
+        i["session"].as_str().unwrap_or("?")
+    ))
 }
 
 /// `midna capabilities --json` / the MCP `capabilities` tool's structured content.
@@ -270,7 +304,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("approvals", "An `ask` decision raises an approval needs-you item and blocks the caller until the human answers \
         (setting policy.request_timeout_secs, default 300). Approving with a scope adds a rule: minutes(n) and session \
         → session rule, always → project rule. Agents can't approve unless the human enabled approve.from_cli, and \
-        then only their own session's requests. Approvals that confirm a human-only action are the human's alone. \
+        then only their own session's requests, or other terminals' under a monitor grant (`midna skill monitor`). \
+        Approvals that confirm a human-only action are the human's alone. \
         `--no-wait` (MCP/RPC: caller.no_wait) returns at once with the needs-you id (exit 4 / error 6) and the call \
         finishes when the human answers; follow it with `midna needs get|wait <id>` (needs_you.get). An approval is \
         withdrawn if the terminal it is about closes, or its asker disconnects or closes, before anyone answers."),
@@ -449,7 +484,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
         project.remove, daemon.stop/upgrade, webhooks.configure, giving or revoking a monitor grant (`midna monitor grant|revoke`), \
         answering approvals (unless approve.from_cli), \
-        answering or dismissing items you didn't raise (your own you clear with --done), macOS permissions. \
+        answering or dismissing items you didn't raise (your own you clear with --done; a monitor grant lets you approve \
+        or deny others' in its scope), macOS permissions. \
         Calling one never does it: it becomes a needs-you request (or tells you \
         the request path) and the human decides. Never route around a refusal."),
     ("mcp", "`midna mcp` is a stdio MCP server; agents midna launches get it automatically (setting agents.mcp). Tool \
@@ -916,7 +952,9 @@ fn explain_needs_you(call: Caller, id: &str) -> Result<String, RpcError> {
     }
     let who = match kind.as_str() {
         "approval" if s(&n, "detail").starts_with("Human-only") => "only the human (it confirms a human-only action)",
-        "approval" | "permission_prompt" => "the human; an agent only for its own session when approve.from_cli is on",
+        "approval" | "permission_prompt" => {
+            "the human; an agent for its own session when approve.from_cli is on, or for another terminal's under a monitor grant"
+        }
         "blocked" | "note" if n["asked_by"]["kind"] == "agent" => "the human, or the agent that raised it (`midna approve <id> --done`)",
         "blocked" | "failed" => "the human (done / restart / dismiss)",
         _ => "the human",
@@ -1111,6 +1149,24 @@ mod tests {
         assert!(capabilities_with(Some(&info)).ends_with(&st));
         let none = streams_section(Some(&json!({ "streams": { "total": 0, "healthy": 0, "unhealthy": [] } }))).unwrap();
         assert!(none.contains("none"), "{none}");
+    }
+
+    #[test]
+    fn capabilities_tell_a_granted_agent_the_human_granted_it() {
+        let info = json!({ "session": "s_mon", "streams": { "total": 0, "healthy": 0, "unhealthy": [] } });
+        // No terminal, or a terminal with no grant: no section, and session.get isn't asked for nothing.
+        assert!(with_monitor_grant(Some(json!({})), |_| panic!("no session to ask about")).unwrap().get("monitor_grant").is_none());
+        let plain = with_monitor_grant(Some(info.clone()), |_| Some(json!({ "id": "s_mon" })));
+        assert!(monitor_section(plain.as_ref()).is_none());
+        assert!(!capabilities_with(plain.as_ref()).contains("MONITOR GRANT"));
+
+        let grant = json!({ "scope": "prompts", "granted_at": "2026-11-23T20:00:00Z", "until": "2026-11-24T02:00:00Z" });
+        let granted = with_monitor_grant(Some(info), |sid| Some(json!({ "id": sid, "monitor_grant": grant })));
+        let m = monitor_section(granted.as_ref()).unwrap();
+        assert!(m.starts_with("MONITOR GRANT  The human gave this terminal (s_mon) a monitor grant, until 2026-11-24T02:00:00Z"), "{m}");
+        assert!(m.contains("other terminals' permission prompts\n"), "{m}");
+        assert!(capabilities_with(granted.as_ref()).contains(&m));
+        assert!(skill_text(Some("monitor")).is_ok_and(|t| t.contains("Still the human's")));
     }
 
     #[test]

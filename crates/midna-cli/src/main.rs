@@ -200,7 +200,10 @@ fn run(a: &Args) -> Res {
     match verb {
         "capabilities" => {
             // Best effort: with midnad down it still prints, without the streams section.
-            let info = connect().ok().and_then(|mut c| c.call_value("daemon.info", json!({})).ok());
+            let info = connect().ok().and_then(|mut c| {
+                let info = c.call_value("daemon.info", json!({})).ok();
+                guide::with_monitor_grant(info, |sid| c.call_value("session.get", json!({ "id": sid })).ok())
+            });
             if json {
                 let mut v = guide::capabilities_json();
                 v["overview"] = json!(guide::capabilities_with(info.as_ref()));
@@ -360,6 +363,7 @@ fn run(a: &Args) -> Res {
         }
         "info" => {
             let v = call("daemon.info", json!({}))?;
+            let v = guide::with_monitor_grant(Some(v.clone()), |sid| call("session.get", json!({ "id": sid })).ok()).unwrap_or(v);
             out(&v, &print::kv);
             Ok(())
         }
