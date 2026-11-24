@@ -13,12 +13,15 @@ use serde_json::{Value, json};
 
 /// Human-only methods the person driving may still call: they approve, close and pause like the
 /// human here. `drive.open` and `drive.close` answer only this Mac's own app anyway, and
-/// `session.send_image` only the person driving.
+/// `session.send_image` only the person driving. A monitor grant lets a terminal approve once
+/// what the person driving could approve for always anyway, so they give and end it too.
 const OVER_A_LINK: &[&str] = &[
     "session.send_image",
     "session.close_hold",
     "session.pause",
     "session.stop_processes",
+    "session.monitor_grant",
+    "session.monitor_revoke",
     "notify.respond",
     "script.click",
     "project.remove",
