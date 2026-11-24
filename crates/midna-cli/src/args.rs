@@ -7,7 +7,7 @@ const VALUE_FLAGS: &[&str] = &[
     "kind", "detail", "socket", "timeout", "session", "value", "target",
     "source", "event", "repo", "branch", "action", "label", "run", "attention", "hook-id", "session-name", "trigger", "payload",
     "port", "relay-url", "bucket", "icon", "title", "sub", "keywords", "rpc", "params", "screen", "prefill", "focus", "danger",
-    "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn", "stay", "description", "set",
+    "featured", "id", "image", "why", "jump", "for", "as", "volume", "turn", "stay", "description", "set", "until",
     // local triggers
     "in-project", "for-agent", "idle-for", "cron", "between", "starts", "ends", "max-runs", "match", "send", "send-no-enter", "set-status", "color", "base", "clear-on", "cooldown",
     "action-json", "filter-json", "notify", "notify-body", "notify-kind", "notify-open", "notify-id", "permission-mode", "allow-tool", "to",

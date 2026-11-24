@@ -1015,6 +1015,19 @@ pub struct SessionSetBackgroundParams {
     pub background: bool,
 }
 
+/// `session.monitor_grant`: let terminal `id`'s agent answer other terminals' prompts and
+/// approvals within `scope`, until `until` (or until revoked).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionMonitorGrantParams {
+    pub id: Id,
+    /// What it may answer: prompts, approvals or all (the default).
+    #[serde(default)]
+    pub scope: MonitorScope,
+    /// RFC 3339 time the grant ends by itself; must be in the future. Omit to keep it until revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Timestamp>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionCloseParams {
     pub id: Id,

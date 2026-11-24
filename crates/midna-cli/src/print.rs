@@ -73,6 +73,19 @@ pub fn status_text(x: &Value) -> String {
     }
 }
 
+/// A terminal's monitor grant for one line: `all, until 02:00` or `prompts, until revoked`.
+pub fn monitor_grant_text(g: &Value) -> String {
+    let scope = match g["scope"].as_str() {
+        Some("prompts") => "prompts",
+        Some("approvals") => "approvals",
+        _ => "prompts and approvals",
+    };
+    match g["until"].as_str() {
+        Some(u) => format!("{scope}, until {}", crate::queue::local_time(u)),
+        None => format!("{scope}, until revoked"),
+    }
+}
+
 pub fn sessions(v: &Value) {
     let list = v.as_array().cloned().unwrap_or_default();
     if list.is_empty() {
@@ -87,6 +100,9 @@ pub fn sessions(v: &Value) {
         };
         if x["background"].as_bool() == Some(true) {
             kind.push_str(" (bg)");
+        }
+        if x["monitor_grant"].is_object() {
+            kind.push_str(" (monitor)");
         }
         rows.push(vec![s(&x, "id"), status_text(&x), kind, s(&x, "name"), s(&x, "project_id"), s(&x, "title")]);
     }
@@ -110,6 +126,9 @@ pub fn session(x: &Value) {
         ("title", s(x, "title")),
         ("branch", plain(&x["git"]["branch"])),
     ];
+    if x["monitor_grant"].is_object() {
+        rows.push(("monitor", monitor_grant_text(&x["monitor_grant"])));
+    }
     let info = &x["agent_info"];
     if info.is_object() {
         rows.push(("conversation", plain(&info["conversation_id"])));

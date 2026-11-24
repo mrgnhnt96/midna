@@ -312,6 +312,11 @@ pub struct Session {
     /// sidebar row without asking.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub touched: bool,
+    /// The human let this terminal's agent answer other terminals' prompts and approvals
+    /// (`session.monitor_grant`). Only the human gives or revokes one; it ends by itself at
+    /// `until`. Shown on the terminal's sidebar row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_grant: Option<MonitorGrant>,
 }
 
 /// A name midna gave a terminal by itself (see `Session.auto_name`).
@@ -351,6 +356,57 @@ pub struct AdoptedAgent {
     /// Where it runs, when the agent had moved out of the shell's directory (into a worktree).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cwd: Option<String>,
+}
+
+// ------------------------------------------------------------------ monitor grants
+
+/// What a monitor grant lets a terminal's agent answer for other terminals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorScope {
+    /// Permission prompts in other agent terminals.
+    Prompts,
+    /// Approval needs-you items (policy requests).
+    Approvals,
+    /// Both.
+    #[default]
+    All,
+}
+
+impl MonitorScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MonitorScope::Prompts => "prompts",
+            MonitorScope::Approvals => "approvals",
+            MonitorScope::All => "all",
+        }
+    }
+    pub fn covers_prompts(self) -> bool {
+        matches!(self, MonitorScope::Prompts | MonitorScope::All)
+    }
+    pub fn covers_approvals(self) -> bool {
+        matches!(self, MonitorScope::Approvals | MonitorScope::All)
+    }
+}
+
+/// A terminal's monitor grant (see `Session.monitor_grant`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MonitorGrant {
+    pub scope: MonitorScope,
+    pub granted_at: Timestamp,
+    /// When it ends by itself; None lasts until it is revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Timestamp>,
+}
+
+impl MonitorGrant {
+    /// Still in force at unix time `now` (an unreadable `until` counts as ended).
+    pub fn live_at(&self, now: i64) -> bool {
+        match self.until.as_deref() {
+            None => true,
+            Some(u) => crate::time::parse_rfc3339(u).is_some_and(|t| now < t),
+        }
+    }
 }
 
 // ------------------------------------------------------------------ queued messages
@@ -1592,6 +1648,12 @@ pub mod kinds {
     pub const SESSION_OPENED: &str = "session.opened";
     pub const SESSION_RENAMED: &str = "session.renamed";
     pub const SESSION_BACKGROUND: &str = "session.background";
+    /// The human gave a terminal a monitor grant, or changed it (`{monitor_grant, replaced}`).
+    pub const SESSION_MONITOR_GRANTED: &str = "session.monitor_granted";
+    /// The human revoked a terminal's monitor grant (`{monitor_grant}`, the one that ended).
+    pub const SESSION_MONITOR_REVOKED: &str = "session.monitor_revoked";
+    /// A terminal's monitor grant reached its `until` and ended (`{monitor_grant}`).
+    pub const SESSION_MONITOR_EXPIRED: &str = "session.monitor_expired";
     pub const SESSION_CLOSED: &str = "session.closed";
     /// A close nobody at the keyboard asked for (`by`, `how`) waits: the human is looking at the
     /// terminal, and the app is counting down (`session.close_hold`).

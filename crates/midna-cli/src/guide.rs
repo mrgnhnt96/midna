@@ -447,7 +447,8 @@ const TOPICS: &[(&str, &str)] = &[
         setting. pop_out, keep_on_top, snap and close need the human-only setting agents.may_move_windows. All of them \
         are policy-checked as `window` actions, so a rule can still deny one."),
     ("human-only", "Human only: removing rules, setting webhook secrets, removing stored secrets (or replacing the human's), enabling webhook triggers, human-only settings, \
-        project.remove, daemon.stop/upgrade, webhooks.configure, answering approvals (unless approve.from_cli), \
+        project.remove, daemon.stop/upgrade, webhooks.configure, giving or revoking a monitor grant (`midna monitor grant|revoke`), \
+        answering approvals (unless approve.from_cli), \
         answering or dismissing items you didn't raise (your own you clear with --done), macOS permissions. \
         Calling one never does it: it becomes a needs-you request (or tells you \
         the request path) and the human decides. Never route around a refusal."),

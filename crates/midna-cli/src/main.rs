@@ -5,6 +5,7 @@ mod guide;
 mod help;
 mod hook;
 mod mcp;
+mod monitor;
 mod nearby;
 mod print;
 mod queue;
@@ -479,6 +480,7 @@ fn run(a: &Args) -> Res {
             Ok(())
         }
         "approve" => approve(a, &out),
+        "monitor" => monitor::monitor(a, &out),
         "check" => {
             a.check(&[])?;
             let kind = a.need(1, "kind (command|tool|path|cli|window)")?;
