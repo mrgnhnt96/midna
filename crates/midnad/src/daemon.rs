@@ -233,6 +233,7 @@ pub struct Daemon {
     pub producers: crate::producers::Producers,
     /// The queued-message sender's book-keeping (`queue.rs`). Never held together with `core`.
     pub queue: crate::queue::Runtime,
+    pub monitor: crate::monitor::Runtime,
     /// Agents watched after a wake (`resume.rs`). Lock after `core`, never before it.
     pub resume: crate::resume::Runtime,
     /// When the Mac slept (`clock.rs`), so idle and expiry checks count awake time only.
@@ -313,6 +314,7 @@ impl Daemon {
             streams: Default::default(),
             producers: Default::default(),
             queue: Default::default(),
+            monitor: Default::default(),
             resume: Default::default(),
             clock: crate::clock::Clock::open(Some(&cfg.home)),
             keep_awake: Default::default(),

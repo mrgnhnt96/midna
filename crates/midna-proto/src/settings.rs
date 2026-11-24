@@ -665,6 +665,8 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Allow agents to move, pop out, snap, keep-on-top or close windows via window.command. Human only."),
     s!("agents.may_close_idle", SettingKind::Bool, B(true), "agents", true,
         "Allow agents to close terminals that are idle, done or exited (other than their own) without asking. Human only."),
+    SettingSpec { range: Some((0, 3600)), ..s!("monitor.check_secs", SettingKind::Int, I(30), "agents", false,
+        "How often midna checks the other tabs for a terminal with a monitor grant, and types a note into its agent when one needs it: a prompt or approval it may answer, or an agent tab sitting idle, done, exited or failed (to nudge or close). Needs-you items also go at once. 0 = only those, no idle tabs.") },
     s!("agents.may_force_close", SettingKind::Bool, B(false), "agents", true,
         "Allow agents to close any terminal without asking, including working ones and `close --force` (an unattended task board closing tabs when usage runs out or a PR is done). A rule on `close …` still applies. Off: those closes ask you. Human only."),
     s!("agents.may_install_updates", SettingKind::Bool, B(false), "agents", true,

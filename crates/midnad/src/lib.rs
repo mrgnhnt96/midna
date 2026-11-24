@@ -28,6 +28,7 @@ pub mod keep_awake;
 pub mod nearby;
 pub mod links;
 pub mod local;
+pub mod monitor;
 pub mod queue;
 pub mod notify;
 pub mod notify_media;

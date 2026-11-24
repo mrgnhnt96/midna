@@ -5,6 +5,13 @@ watches. Only the human gives one (`midna monitor grant <id> [--scope prompts|ap
 [--until 2am | --for 8h]`) or revokes it, and it ends by itself at its until. `midna info` and
 `midna capabilities` say when your terminal has one.
 
+midna drives the monitoring agent by itself: on the grant it types a briefing into the terminal
+(once the agent is ready), then a note whenever another tab needs it: a prompt or approval in
+the grant's scope, or an agent tab sitting idle, done, exited or failed (finished: close it with
+`midna close <id>`; stopped short: nudge it with `midna queue add --session <id> "…"`). It checks
+every `monitor.check_secs` (default 30). Don't run your own watch loop or Monitor: handle the
+note, end your turn, and the next one comes. When the grant ends, a note says so.
+
 With a grant you may:
 
 - answer another terminal's permission prompt (scope `prompts` or `all`): `midna approve <n_id>`
