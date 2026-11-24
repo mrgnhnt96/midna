@@ -232,20 +232,31 @@ fn limit_reset(d: &Daemon, text: &str) -> Option<i64> {
 /// in the turn's last message ("API Error: Can't reach the API server … (ENOTFOUND)"), so that
 /// message counts too when it is an API error (or, for a limit, plainly says so).
 pub fn on_failure(d: &Daemon, sid: &Id, error: &str, details: &str, message: &str) {
-    let api_error = message.trim_start().starts_with("API Error");
-    let limit_message = (api_error && limit_words(message)) || ["usage limit reached", "hit your limit"].iter().any(|w| message.to_lowercase().contains(w));
-    if (is_limit_error(error, details) || limit_message) && !is_network_error(error, details) {
+    if let Some(reset) = limit_stop(d, error, details, message) {
         if d.core().state.setting_bool(Cause::Limit.setting()) {
-            let reset = limit_reset(d, &format!("{details} {message}"));
             d.resume.watch().entry(sid.clone()).or_insert_with(Watch::limited).limit(reset, d.resume.limit_timing().0);
         }
         return;
     }
+    let api_error = message.trim_start().starts_with("API Error");
     let in_message = api_error && is_network_error("", message);
     if !(is_network_error(error, details) || in_message) || !d.core().state.setting_bool(Cause::Network.setting()) {
         return;
     }
     d.resume.watch().entry(sid.clone()).or_insert_with(|| Watch::new(Cause::Network, NETWORK_WATCH_FOR));
+}
+
+/// Whether a `StopFailure` (see [`on_failure`]) died on a usage limit: `Some` with when it resets
+/// (unix, None when nothing says), else None.
+pub fn limit_stop(d: &Daemon, error: &str, details: &str, message: &str) -> Option<Option<i64>> {
+    let api_error = message.trim_start().starts_with("API Error");
+    let limit_message = (api_error && limit_words(message)) || ["usage limit reached", "hit your limit"].iter().any(|w| message.to_lowercase().contains(w));
+    ((is_limit_error(error, details) || limit_message) && !is_network_error(error, details)).then(|| limit_reset(d, &format!("{details} {message}")))
+}
+
+/// Whether `sid` waits on a usage limit to be resumed (its `continue` not typed yet).
+pub fn waiting_on_limit(d: &Daemon, sid: &str) -> bool {
+    d.resume.watch().get(sid).is_some_and(|w| w.cause == Cause::Limit)
 }
 
 /// A new turn started (someone typed, maybe our own `continue`): a pending failure is answered.
