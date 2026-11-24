@@ -1866,7 +1866,7 @@ impl TriggersView {
             .py(px(9.))
             .border_b_1()
             .border_color(t.line)
-            .child(kit::mono(t, kit::clock_or_day(&d.received_at), 12.).w(px(78.)).flex_none().text_color(t.dim))
+            .child(kit::mono(t, kit::clock_or_day(&d.received_at), 12.).w(px(88.)).flex_none().text_color(t.dim))
             .child(
                 div().w(px(112.)).flex_none().flex().child(
                     div()

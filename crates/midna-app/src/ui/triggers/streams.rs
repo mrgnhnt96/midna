@@ -684,7 +684,7 @@ impl TriggersView {
                                 .border_b_1()
                                 .border_color(t.line)
                                 .text_size(px(12.5))
-                                .child(kit::mono(t, kit::clock_or_day(&r.rec.at), 12.).w(px(70.)).flex_none().text_color(t.dim))
+                                .child(kit::mono(t, kit::clock_or_day(&r.rec.at), 12.).w(px(88.)).flex_none().text_color(t.dim))
                                 .child(kit::mono(t, r.rec.kind.clone(), 12.).w(px(110.)).flex_none().truncate())
                                 .child(div().flex_1().min_w_0().truncate().child(r.text.clone()))
                                 .child(div().w(px(180.)).flex_none().flex().justify_end().text_color(vcolor).when(fired.is_some(), |d| d.font_weight(FontWeight::BOLD)).truncate().child(verdict)),
