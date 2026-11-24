@@ -899,9 +899,6 @@ impl MainWindow {
                 if k == midna_proto::kinds::KEEP_AWAKE_CHANGED {
                     self.keep_awake = e.data.clone();
                 }
-                if k == "window.command" {
-                    self.on_window_command(e.data.clone(), window, cx);
-                }
                 if k == midna_proto::kinds::SESSION_QUEUE {
                     crate::ui::queue::on_event(self, &e, cx);
                     // Only for a message you queued: trigger, resume and agent sends stay quiet.
@@ -1007,7 +1004,10 @@ impl MainWindow {
                     self.request_refresh(what, cx);
                 }
             }
-            BackendEvent::WindowCommand(v) if self.is_home() => {
+            // Only from this Mac's daemon (the `window.command` notification, never the event,
+            // which every window gets and a reconnect replays): another Mac's window raising
+            // midna here would pull focus while you work on that Mac.
+            BackendEvent::WindowCommand(v) if self.is_home() && !self.remote() => {
                 // A command about one terminal goes to the window it shows in.
                 let mac = self.mac_id();
                 let target = v.get("target").and_then(|t| t.as_str()).and_then(|t| self.windows.borrow().place(&mac, t)).filter(|w| *w != self.id);
