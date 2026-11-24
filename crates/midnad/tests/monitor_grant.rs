@@ -399,3 +399,74 @@ fn an_agent_left_idle_is_noted_once_per_idle_stretch() {
     midnad::monitor::check(&d.daemon());
     assert_eq!(queued(&mut h, &monitor).len(), 2);
 }
+
+/// An agent in terminal `sid` asks for human-only `method`: the approval it raised.
+fn ask_human_only(d: &TestDaemon, sid: &str, method: &str, params: Value) -> String {
+    let e = call_err(&mut d.agent(Some(sid)), method, params);
+    assert_eq!(e.code, HUMAN_ONLY, "{}", e.message);
+    e.data.unwrap()["needs_you_id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn with_approve_human_only_a_grant_approves_other_agents_human_only_asks_but_never_about_grants() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = open_sh(&mut h);
+    let other = open_sh(&mut h);
+    let mut m = d.agent(Some(&monitor));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+
+    // Off (the default): still the human's.
+    let cli = ask_human_only(&d, &other, "settings.set", json!({ "key": "approve.from_cli", "value": true }));
+    assert!(refused(resolve(&mut m, &cli, "approve")).contains("monitor.approve_human_only"));
+    // Agents can't turn it on for themselves either.
+    let on = ask_human_only(&d, &monitor, "settings.set", json!({ "key": "monitor.approve_human_only", "value": true }));
+    assert!(is_open(&mut h, &on));
+
+    call(&mut h, "settings.set", json!({ "key": "monitor.approve_human_only", "value": true }));
+    resolve(&mut m, &cli, "approve").unwrap();
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "approve.from_cli" }))["value"], true);
+    assert_eq!(resolution(&mut h, &cli)["monitor_grant"]["session"], monitor.as_str());
+    let force = ask_human_only(&d, &other, "settings.set", json!({ "key": "agents.may_force_close", "value": true }));
+    resolve(&mut m, &force, "deny").unwrap();
+    assert_eq!(call(&mut h, "settings.get", json!({ "key": "agents.may_force_close" }))["value"], false);
+
+    // Never one about grants or monitor.* settings, nor its own ask.
+    let grant = ask_human_only(&d, &other, "session.monitor_grant", json!({ "id": other }));
+    let rules = ask_human_only(&d, &other, "settings.set", json!({ "key": "monitor.rules", "value": "anything goes" }));
+    for nid in [&grant, &rules] {
+        assert!(refused(resolve(&mut m, nid, "approve")).contains("monitor grants or monitor.* settings"), "{nid}");
+    }
+    assert!(refused(resolve(&mut m, &on, "approve")).contains("human-only action"));
+    // A prompts-only grant answers no approvals, human-only or not.
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "scope": "prompts" }));
+    let again = ask_human_only(&d, &other, "settings.set", json!({ "key": "agents.may_force_close", "value": true }));
+    assert!(refused(resolve(&mut m, &again, "approve")).contains("doesn't cover approval items"));
+    for nid in [&grant, &rules, &on, &again] {
+        assert!(is_open(&mut h, nid), "{nid}");
+    }
+}
+
+#[test]
+fn the_humans_rules_ride_in_the_briefing_and_every_note_and_human_only_asks_join_when_allowed() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = agent_tab(&d, &mut h);
+    let worker = agent_tab(&d, &mut h);
+    call(&mut h, "settings.set", json!({ "key": "monitor.rules", "value": "Everything except Slack messages sent straight to a person." }));
+    let ask = ask_human_only(&d, &worker, "settings.set", json!({ "key": "agents.may_force_close", "value": true }));
+    let p = raise_prompt(&d, &worker, "Bash: cargo test", false);
+
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    let q = wait_for(5, "briefing and note", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 2));
+    let rules = "The human's rules for you, ahead of everything else here: Everything except Slack messages sent straight to a person.";
+    assert!(q[0].contains(rules) && q[0].contains("human-only actions, approving"), "{q:?}");
+    // Off: the human-only ask isn't the monitor's to see.
+    assert!(q[1].contains(rules) && q[1].contains(&p) && !q[1].contains(&ask), "{q:?}");
+
+    // On: a fresh grant's briefing says so, and the ask joins the note.
+    call(&mut h, "settings.set", json!({ "key": "monitor.approve_human_only", "value": true }));
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor }));
+    let q = wait_for(5, "rebriefed", || Some(queued(&mut h, &monitor)).filter(|q| q.len() == 3 && q[2].contains(&ask)));
+    assert!(q[1].contains("confirm another agent's human-only action") && q[2].contains(rules), "{q:?}");
+}
