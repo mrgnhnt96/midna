@@ -6,7 +6,7 @@
 //! months is split into monthly archives when the log opens. Nothing is ever deleted: the
 //! archives are the audit trail.
 //!
-//! **Memory.** Only the last [`RETAIN_DAYS`] days (at most [`MAX_EVENTS`] events) stay in
+//! **Memory.** Only the last [`RETAIN_DAYS`] days (about [`MAX_EVENTS`] events at most) stay in
 //! memory, for insights (month range + the previous month for deltas) and live replay. Reads
 //! that reach further back (`events.list` / `events.subscribe` with an old `since_seq`) are
 //! served from the files.
@@ -19,8 +19,14 @@ use std::sync::Mutex;
 
 /// Days kept in memory: insights' month range (30 days) plus the period before it.
 pub const RETAIN_DAYS: i64 = 62;
-/// Hard cap on in-memory events, whatever their age.
+/// Hard cap on in-memory events, whatever their age. The window may run over it by a
+/// sixteenth before it is cut back to it.
 pub const MAX_EVENTS: usize = 200_000;
+/// How far past the cap the window may grow, as a fraction of it, before a trim. Cutting the
+/// window's front shifts every event left in it, so it is done in batches: trimming back to the
+/// cap on every append once it is full shifts ~200k events (tens of MB) per event, with the
+/// log's lock held.
+const OVERFLOW_DIV: usize = 16;
 /// Trim the window every this many appends.
 const TRIM_EVERY: u64 = 1024;
 
@@ -72,6 +78,11 @@ fn append_lines(p: &Path, events: &[Event]) -> std::io::Result<()> {
         buf.push('\n');
     }
     f.write_all(buf.as_bytes())
+}
+
+/// The window holds more events than the cap allows: trim it back to `max_events`.
+fn over_cap(len: usize, max_events: usize) -> bool {
+    len > max_events + max_events / OVERFLOW_DIV
 }
 
 /// Monthly archives, oldest first.
@@ -175,7 +186,7 @@ impl EventLog {
         g.listeners.retain(|l| l.send(e.clone()).is_ok());
         g.events.push(e.clone());
         g.appended += 1;
-        if g.appended.is_multiple_of(TRIM_EVERY) || g.events.len() > g.max_events {
+        if g.appended.is_multiple_of(TRIM_EVERY) || over_cap(g.events.len(), g.max_events) {
             g.trim();
         }
         e
@@ -287,7 +298,7 @@ impl Inner {
     fn trim(&mut self) {
         let cutoff = time::now_unix() - self.retain_secs;
         let mut drop = self.events.partition_point(|e| time::parse_rfc3339(&e.at).is_some_and(|t| t < cutoff));
-        if self.events.len() - drop > self.max_events {
+        if over_cap(self.events.len() - drop, self.max_events) {
             drop = self.events.len() - self.max_events;
         }
         if drop > 0 {
@@ -481,6 +492,35 @@ mod tests {
         assert_eq!(log.list(0, 1000, &EventFilter::default()).len(), 25);
         let f = EventFilter { kinds: Some(vec!["x".into()]), ..Default::default() };
         assert_eq!(log.list(3, 5, &f).first().map(|e| e.seq), Some(21));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_full_window_is_trimmed_in_batches_not_per_append() {
+        let home = tmp("batch");
+        let path = home.join("events.jsonl");
+        let (max, slack) = (160, 160 / OVERFLOW_DIV);
+        let log = EventLog::open_with(&path, RETAIN_DAYS * 86_400, max).unwrap();
+        for _ in 0..max {
+            log.append("x", Actor::system(), None, None, json!({}));
+        }
+        assert_eq!(log.window_start(), Some(1));
+        // Past the cap the window grows instead of shifting its front on every append.
+        for n in 1..=slack {
+            log.append("x", Actor::system(), None, None, json!({}));
+            assert_eq!(log.window_start(), Some(1), "no trim after {n} past the cap");
+        }
+        assert_eq!(log.with_events(|e| e.len()), max + slack);
+        // One more and it's cut back to the cap at once.
+        log.append("x", Actor::system(), None, None, json!({}));
+        assert_eq!(log.with_events(|e| e.len()), max);
+        assert_eq!(log.window_start(), Some((slack + 2) as u64));
+        // It never holds more than the cap plus the slack, and the disk keeps everything.
+        for _ in 0..5 * max {
+            log.append("x", Actor::system(), None, None, json!({}));
+            assert!(log.with_events(|e| e.len()) <= max + slack);
+        }
+        assert_eq!(log.list(0, 10_000, &EventFilter::default()).len(), 6 * max + slack + 1);
         let _ = std::fs::remove_dir_all(&home);
     }
 
