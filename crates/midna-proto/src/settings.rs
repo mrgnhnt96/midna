@@ -115,6 +115,11 @@ impl SettingSpec {
                 Some(t) => crate::keep_awake::parse_time(&t).map(|m| json!(crate::keep_awake::hhmm(m))).map_err(|e| format!("{}: {e}", self.key)),
                 None => Err(format!("{} expects a time of day like 8am or 17:30", self.key)),
             },
+            SettingKind::String if self.key == "daemon.restart_window" => match as_text.as_deref().map(str::trim) {
+                Some("") => Ok(json!("off")),
+                Some(t) => crate::keep_awake::DayRule::parse(t).map(|r| json!(r.stored())).map_err(|e| format!("{}: {e}", self.key)),
+                None => Err(format!("{} expects hours like 3am-5am, or off", self.key)),
+            },
             SettingKind::ItemList { .. } if self.key == "keep_awake.days" => crate::keep_awake::parse_days(v).map(|d| json!(d)).map_err(|e| format!("{}: {e}", self.key)),
             SettingKind::RuleList if self.key == "keep_awake.hours" => crate::keep_awake::coerce_hours(v),
             SettingKind::String | SettingKind::Keybinding => match as_text {
@@ -722,6 +727,10 @@ pub static SETTINGS: &[SettingSpec] = &[
         "Nearby: the folder accepted files and folders are saved in (an absolute path or ~/…). Empty = ~/Downloads/Midna. Each lands under its own name there (with a number added if the name is taken), marked as downloaded so macOS checks it before it opens. Human only: what other devices send never lands where an agent points it."),
     SettingSpec { range: Some((50, 2000)), ..s!("system.busy_load", SettingKind::Int, I(200), "general", false,
         "When midna counts the Mac as busy: the 1-minute load average per core, in percent (100 = every core busy, 200 = twice as much work as cores). macOS's load average counts more than CPU work (processes waiting on the disk too), so a Mac running normally often reads 100% or more; overload and the busy gate go by system.busy_cpu instead. A busy load postpones a daemon upgrade or restart (under heavy load the handoff can time out and hang up every terminal); the app asks once whether to wait or update anyway, then updates by itself when the load drops. `midna system` shows the load.") },
+    s!("daemon.restart_window", SettingKind::String, S("03:00-05:00"), "general", false,
+        "Restart midnad (the background service that runs every terminal) once a night inside these hours, local time: 3am-5am, or off. It goes through the same handoff as an update, so shells, agents and screens keep running. Only once midnad has run daemon.restart_min_uptime_hours. It waits while anything needs you, an agent is working or has background work, or the Mac is busy (system.busy_load), and tries the next night if the hours run out first. A safeguard against midnad slowing down over weeks of uptime."),
+    SettingSpec { range: Some((1, 720)), ..s!("daemon.restart_min_uptime_hours", SettingKind::Int, I(12), "general", false,
+        "daemon.restart_window restarts midnad only once it has run at least this many hours: 12 restarts it about every night, 168 about once a week.") },
     SettingSpec { range: Some((30, 100)), ..s!("system.busy_cpu", SettingKind::Int, I(90), "general", false,
         "When midna counts the Mac's CPU as busy: the CPU in use across all cores, in percent (100 = every core busy). Sustained for guard.overload_secs, it shows the overload window. Only when midna's terminals use at least half of that CPU do the busy gate (guard.busy_gate) and background mode (guard.background_agents) hold agents back; when other apps keep the Mac busy, holding agents back would free nothing. `midna system` shows it.") },
     s!("system.busy_memory", en(&["warning", "critical", "off"]), S("warning"), "general", false,
@@ -974,6 +983,18 @@ mod tests {
             assert!(lo <= def && def <= hi, "{}: default {def} outside {lo}–{hi}", s.key);
         }
         assert!(setting("webhooks.port").unwrap().coerce(&serde_json::json!(80)).is_err());
+    }
+
+    #[test]
+    fn restart_window_takes_hours_or_off() {
+        let s = setting("daemon.restart_window").unwrap();
+        assert_eq!(s.default.to_json(), json!("03:00-05:00"));
+        assert_eq!(s.coerce(&json!("3am-5am")), Ok(json!("03:00-05:00")));
+        assert_eq!(s.coerce(&json!("11pm to 2am")), Ok(json!("23:00-02:00")));
+        assert_eq!(s.coerce(&json!("off")), Ok(json!("off")));
+        assert_eq!(s.coerce(&json!("")), Ok(json!("off")));
+        assert!(s.coerce(&json!("3am")).is_err());
+        assert!(s.coerce(&json!(3)).is_err());
     }
 
     #[test]

@@ -240,7 +240,7 @@ const LAYOUT: &[(Sec, &str, &[&str])] = &[
     (
         Sec::Agents,
         "Runaway work",
-        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.heavy_commands", "guard.model_slots", "guard.hold_agents_at", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours"],
+        &["system.busy_cpu", "system.busy_memory", "system.busy_load", "guard.background_agents", "guard.busy_gate", "guard.max_subagents", "guard.build_slots", "guard.heavy_commands", "guard.model_slots", "guard.hold_agents_at", "guard.panic_hold", "guard.memory_alert", "guard.overload_alert", "guard.overload_secs", "guard.loop_max_hours", "worktrees.auto_clean_hours", "daemon.restart_window", "daemon.restart_min_uptime_hours"],
     ),
     (
         Sec::Agents,
@@ -1173,6 +1173,8 @@ pub(crate) fn label_for(key: &str) -> String {
         "guard.overload_secs" => "After the Mac is busy for (seconds)",
         "guard.loop_max_hours" => "Stop agents' poll loops after (hours)",
         "worktrees.auto_clean_hours" => "Remove idle git worktrees after (hours)",
+        "daemon.restart_window" => "Restart the background service nightly between",
+        "daemon.restart_min_uptime_hours" => "Once it has run for (hours)",
         "cleanup.enabled" => "Clean up after a closed terminal",
         "cleanup.sessions" => "For which terminals",
         "cleanup.model" => "Model",

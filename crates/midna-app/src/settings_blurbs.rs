@@ -93,6 +93,8 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "guard.overload_secs" => "How long the Mac must stay busy first.",
         "guard.loop_max_hours" => "Stop polling loops agents left running; 0 = never.",
         "worktrees.auto_clean_hours" => "Idle, clean worktrees with nothing in them; 0 = never.",
+        "daemon.restart_window" => "Terminals keep running; waits while anything needs you or works.",
+        "daemon.restart_min_uptime_hours" => "12 restarts about nightly, 168 about weekly.",
         "cleanup.enabled" => "A cheap model removes what a closed terminal left behind.",
         "cleanup.sessions" => "Agent terminals only, or shells too.",
         "cleanup.model" => "The Claude model that cleans up, like haiku.",
