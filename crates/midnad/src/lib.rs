@@ -43,6 +43,7 @@ pub mod reaper;
 pub mod restart;
 pub mod resume;
 pub mod rpc;
+pub mod scheduled_restart;
 pub mod schemes;
 pub mod server;
 pub mod state;

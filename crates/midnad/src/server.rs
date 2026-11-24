@@ -248,4 +248,5 @@ fn background(d: &Arc<Daemon>) {
     crate::panic::start(d);
     crate::worktrees::start(d);
     crate::trust::start(d);
+    crate::scheduled_restart::start(d);
 }
