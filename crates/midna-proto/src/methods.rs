@@ -1006,6 +1006,11 @@ pub struct SessionOpenParams {
     /// ⌘T sets this when `projects.switch_to_main` is on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switch_to_default_branch: bool,
+    /// Start its process at this nice value, 0 (normal) to 20 (lowest); everything it starts
+    /// inherits it. Kept for restarts. Unset: agent terminals start at `guard.agent_nice`, others
+    /// at 0. Only the human may go under `guard.agent_nice`; anyone else's is raised to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nice: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

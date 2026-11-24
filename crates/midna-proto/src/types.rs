@@ -312,6 +312,11 @@ pub struct Session {
     /// sidebar row without asking.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub touched: bool,
+    /// The nice value this terminal's process starts at, given when it was opened
+    /// (`session.open {nice}`); kept for restarts. None = agent terminals follow
+    /// `guard.agent_nice`, other terminals start at normal priority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nice: Option<i32>,
     /// The human let this terminal's agent answer other terminals' prompts and approvals
     /// (`session.monitor_grant`). Only the human gives or revokes one; it ends by itself at
     /// `until`. Shown on the terminal's sidebar row.

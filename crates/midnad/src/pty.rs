@@ -74,12 +74,13 @@ fn set_cloexec(fd: RawFd) {
 /// terminal ending, a CLI call finishing) free up in that time.
 const EXHAUSTED_RETRIES: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(300), Duration::from_millis(1000)];
 
-/// Start `argv` on a new PTY. Out of file handles (EMFILE/ENFILE), it tries again a few times,
-/// then says so in the error rather than a bare "Too many open files".
-pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16) -> std::io::Result<Spawned> {
+/// Start `argv` on a new PTY, at nice value `nice` (0 = normal priority; everything it starts
+/// inherits it). Out of file handles (EMFILE/ENFILE), it tries again a few times, then says so
+/// in the error rather than a bare "Too many open files".
+pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16, nice: i32) -> std::io::Result<Spawned> {
     let mut waits = EXHAUSTED_RETRIES.iter();
     loop {
-        match spawn_once(argv, cwd, env, cols, rows) {
+        match spawn_once(argv, cwd, env, cols, rows, nice) {
             Err(e) if crate::fd_limit::exhausted(&e) => match waits.next() {
                 Some(w) => std::thread::sleep(*w),
                 None => {
@@ -93,7 +94,7 @@ pub fn spawn(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, ro
     }
 }
 
-fn spawn_once(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16) -> std::io::Result<Spawned> {
+fn spawn_once(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, rows: u16, nice: i32) -> std::io::Result<Spawned> {
     let Some((prog, args)) = argv.split_first() else {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command"));
     };
@@ -123,13 +124,17 @@ fn spawn_once(argv: &[String], cwd: &str, env: &[(String, String)], cols: u16, r
         cmd.env(k, v);
     }
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             // Only async-signal-safe calls here.
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             libc::ioctl(0, libc::TIOCSCTTY as _, 0);
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            // Best effort: a terminal that can't be niced still starts.
+            if nice > 0 {
+                libc::setpriority(libc::PRIO_PROCESS, 0, nice);
+            }
             Ok(())
         });
     }

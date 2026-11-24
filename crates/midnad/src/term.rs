@@ -178,6 +178,8 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     pub cols: u16,
     pub rows: u16,
+    /// Nice value the process starts at (`rpc::session::start_nice`).
+    pub nice: i32,
 }
 
 /// Spawn the PTY and its threads. Callbacks into the daemon use a Weak so sessions never keep
@@ -226,7 +228,7 @@ pub fn start(d: &Arc<Daemon>, l: Launch) -> std::io::Result<RtHandle> {
 /// scrollback left off (an agent that exited, replaced by a shell).
 pub fn start_on(d: &Arc<Daemon>, mut l: Launch, snap: Option<crate::engine::TermSnap>) -> std::io::Result<RtHandle> {
     (l.cols, l.rows) = clamp_size(l.cols, l.rows);
-    let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows)?;
+    let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows, l.nice)?;
     let pid = sp.child.id() as i32;
     // The reaper waits on the pid (not the Child), so adopted sessions after an upgrade work
     // the same way. Dropping a Child neither waits nor kills.
@@ -246,7 +248,7 @@ pub fn start_on(d: &Arc<Daemon>, mut l: Launch, snap: Option<crate::engine::Term
 /// answer typed into the new process.
 pub fn start_with_preface(d: &Arc<Daemon>, mut l: Launch, preface: Vec<u8>) -> std::io::Result<RtHandle> {
     (l.cols, l.rows) = clamp_size(l.cols, l.rows);
-    let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows)?;
+    let sp = pty::spawn(&l.argv, &l.cwd, &l.env, l.cols, l.rows, l.nice)?;
     let pid = sp.child.id() as i32;
     drop(sp.child);
     let (cols, rows) = (l.cols, l.rows);

@@ -79,6 +79,7 @@ pub(super) fn blurb(key: &str) -> Option<&'static str> {
         "keep_awake.wake" => "Wakes the Mac 2 minutes before scheduled work.",
         "system.busy_load" => "Load per core that counts as busy; a busy Mac delays daemon updates.",
         "system.busy_cpu" => "CPU use across all cores that counts as busy.",
+        "guard.agent_nice" => "Agents' builds and tests give way to your apps; 0 = normal, 20 = lowest.",
         "guard.background_agents" => "When terminals keep the Mac busy, their builds run at low priority.",
         "guard.busy_gate" => "When terminals keep the Mac busy, no new subagents, builds or installs.",
         "guard.max_subagents" => "More wait their turn; 0 = no limit.",

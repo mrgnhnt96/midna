@@ -181,6 +181,31 @@ pub(crate) fn session_env(d: &Daemon, sid: &str, project: &str) -> Vec<(String, 
     ]
 }
 
+/// Lowest priority a nice value goes to.
+const MAX_NICE: i32 = 20;
+
+fn agent_nice(d: &Daemon) -> i32 {
+    d.setting("guard.agent_nice").as_i64().map_or(10, |n| n as i32).clamp(0, MAX_NICE)
+}
+
+/// The nice value a new terminal starts at (kept as `Session.nice`): the `nice` the caller
+/// asked for, else `agent_nice` for an agent terminal or anything an agent or app opens, else 0
+/// (the human's own shells). Only the human may go under `agent_nice`.
+fn open_nice(asked: Option<i32>, human: bool, kind: SessionKind, agent_nice: i32) -> i32 {
+    match asked.map(|n| n.clamp(0, MAX_NICE)) {
+        Some(n) if human => n,
+        Some(n) => n.max(agent_nice),
+        None if human && kind != SessionKind::Agent => 0,
+        None => agent_nice,
+    }
+}
+
+/// The nice value a terminal restarts at: what it opened with, else (a terminal from before
+/// `Session.nice`) `guard.agent_nice` for an agent terminal and 0 for the rest.
+fn restart_nice(d: &Daemon, s: &Session) -> i32 {
+    s.nice.unwrap_or_else(|| if s.kind == SessionKind::Agent { agent_nice(d) } else { 0 })
+}
+
 pub fn open(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams) -> R {
     ok(open_session(d, ctx, p)?)
 }
@@ -274,7 +299,8 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
         }
         crate::admit::Admission::Start => {}
     }
-    let launch = Launch { sid: sid.clone(), argv, cwd: cwd.clone(), env, cols, rows };
+    let nice = open_nice(p.nice, ctx.is_human(), p.kind, agent_nice(d));
+    let launch = Launch { sid: sid.clone(), argv, cwd: cwd.clone(), env, cols, rows, nice };
     let started = match preface {
         Some(text) => term::start_with_preface(d, launch, text),
         None => term::start(d, launch),
@@ -315,6 +341,7 @@ pub fn open_session_with(d: &Arc<Daemon>, ctx: &Ctx, p: SessionOpenParams, prefa
         },
         touched,
         monitor_grant: None,
+        nice: Some(nice),
     };
     {
         let mut core = d.core();
@@ -415,6 +442,8 @@ pub fn replace(d: &Arc<Daemon>, ctx: &Ctx, p: SessionReplaceParams) -> R {
             close_on_exit: s.close_on_exit,
             on_default_branch: false,
             switch_to_default_branch: false,
+            // A shell whose typed-in agent comes back as an agent terminal follows the setting.
+            nice: s.nice.filter(|_| s.adopted.is_none()),
         },
     )?;
     {
@@ -1179,7 +1208,7 @@ pub fn restart_now(d: &Arc<Daemon>, sid: &str, resume: bool, reason: &str, actor
         let _ = old.tx.send(EngineMsg::Stop);
         stop_orphans(&procs);
     }
-    let launch = Launch { sid: s.id.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows };
+    let launch = Launch { sid: s.id.clone(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows, nice: restart_nice(d, &s) };
     let new_rt = term::start(d, launch).map_err(|e| {
         d.set_status(sid, StatusState::Failed, Some(format!("restart failed: {e}")), None, Actor::system());
         RpcError::bad_params(format!("could not restart: {e}"))
@@ -1370,7 +1399,8 @@ fn swap_to_shell(d: &Arc<Daemon>, sid: &str, generation: u64, reason: &str) -> R
     let command = vec![login_shell(), "-l".into()];
     let mut env = session_env(d, sid, &s.project_id);
     let argv = crate::adopt::shell_env(d, &command, &mut env);
-    let launch = Launch { sid: sid.to_string(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows };
+    // The human's shell now: normal priority.
+    let launch = Launch { sid: sid.to_string(), argv: argv.unwrap_or_else(|| exec_argv(&command)), cwd: s.cwd.clone(), env, cols, rows, nice: 0 };
     let rt = term::start_on(d, launch, snap).map_err(|e| e.to_string())?;
     // Whatever the agent left on (mouse reporting, kitty keys) would reach the shell.
     rt.with(|e| e.reset_app_modes());
@@ -1389,6 +1419,7 @@ fn swap_to_shell(d: &Arc<Daemon>, sid: &str, generation: u64, reason: &str) -> R
         sess.command = command;
         sess.pid = Some(rt.pid);
         sess.title.clear();
+        sess.nice = None;
     }
     core.agents.remove(sid);
     core.insert_rt(sid.to_string(), rt);
@@ -1558,7 +1589,34 @@ pub fn home_dir() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::split_trailing_enter;
+    use super::{open_nice, split_trailing_enter};
+    use midna_proto::SessionKind;
+
+    #[test]
+    fn agent_terminals_start_at_the_agent_nice() {
+        // Nobody asked: an agent terminal follows the setting, whoever opens it.
+        assert_eq!(open_nice(None, true, SessionKind::Agent, 10), 10);
+        assert_eq!(open_nice(None, false, SessionKind::Agent, 10), 10);
+        // The human's own shells run at normal priority; one an agent or app opens doesn't.
+        assert_eq!(open_nice(None, true, SessionKind::Shell, 10), 0);
+        assert_eq!(open_nice(None, false, SessionKind::Shell, 10), 10);
+        assert_eq!(open_nice(None, false, SessionKind::Monitor, 10), 10);
+        // Off.
+        assert_eq!(open_nice(None, false, SessionKind::Agent, 0), 0);
+    }
+
+    #[test]
+    fn only_the_human_opens_a_terminal_under_the_agent_nice() {
+        assert_eq!(open_nice(Some(0), true, SessionKind::Agent, 10), 0);
+        assert_eq!(open_nice(Some(0), false, SessionKind::Agent, 10), 10);
+        assert_eq!(open_nice(Some(5), false, SessionKind::Shell, 10), 10);
+        // Lower priority is anyone's to ask for.
+        assert_eq!(open_nice(Some(15), false, SessionKind::Agent, 10), 15);
+        assert_eq!(open_nice(Some(15), true, SessionKind::Shell, 10), 15);
+        // Out of range: clamped to 0–20.
+        assert_eq!(open_nice(Some(99), false, SessionKind::Agent, 10), 20);
+        assert_eq!(open_nice(Some(-5), true, SessionKind::Agent, 10), 0);
+    }
 
     #[test]
     fn a_trailing_newline_is_enter() {
