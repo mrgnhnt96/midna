@@ -443,6 +443,12 @@ pub fn usage(v: &Value) {
     }
 }
 
+/// `3d 4h`, `5h 12m`, `7m`.
+fn uptime_label(secs: u64) -> String {
+    let (d, h, m) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
+    if d > 0 { format!("{d}d {h}h") } else if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
+}
+
 /// `midna system`. Every percent is a share of the whole Mac (all cores).
 pub fn system_load(v: &Value) {
     let cpus = v["cpus"].as_u64().unwrap_or(1).max(1) as u32;
@@ -473,13 +479,18 @@ pub fn system_load(v: &Value) {
     if v["memory_total_bytes"].as_u64().unwrap_or(0) > 0 {
         let held = if v["memory_held"].as_bool() == Some(true) { "agents wait to start heavy work" } else { "agents carry on" };
         println!(
-            "memory pressure {} on {}: {} compressed, {} swap; {held} (at {}, setting system.busy_memory)",
+            "memory pressure {} on {}: {} available, {} compressed, {} swap; {held} (at {}, setting system.busy_memory)",
             s(v, "memory_pressure"),
             bytes("memory_total_bytes"),
+            bytes("memory_available_bytes"),
             bytes("compressed_bytes"),
             bytes("swap_used_bytes"),
             s(v, "busy_memory_at")
         );
+    }
+    if let Some(d) = v["daemon"].as_object().filter(|d| d.get("memory_bytes").and_then(Value::as_u64).unwrap_or(0) > 0) {
+        let n = |k: &str| d.get(k).and_then(Value::as_u64).unwrap_or(0);
+        println!("midnad {}% of a core, {}, up {}", n("cpu_percent"), midna_proto::system::bytes_label(n("memory_bytes")), uptime_label(n("uptime_secs")));
     }
     let names = |t: &Value| t["busiest"].as_array().map(|b| b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
     let mac = |t: &Value| midna_proto::system::share_label(midna_proto::system::share_of_mac(t["cpu_percent"].as_u64().unwrap_or(0) as u32, cpus));
@@ -658,6 +669,11 @@ pub fn cleanup_plan(p: &Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn uptimes() {
+        assert_eq!((uptime_label(420), uptime_label(5 * 3600 + 720), uptime_label(33 * 86_400 + 4 * 3600)), ("7m".into(), "5h 12m".into(), "33d 4h".into()));
+    }
 
     #[test]
     fn a_long_setting_does_not_pad_the_other_rows() {

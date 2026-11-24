@@ -1,11 +1,12 @@
 //! A busy Mac and paused terminals in the main window ("Overload dialog concepts" canvas):
 //! - the card over a paused terminal (concept 3): what it was running, Resume, and Stop
 //!   processes with a confirm;
-//! - the status bar item while the Mac is overloaded or anything is paused:
-//!   "● Mac CPU 88% · other apps · 2 paused" (design B on the "Overload: real CPU" canvas), its
-//!   hover who is using the Mac in one sentence, the CPU bar and both shares, a click opening
-//!   the overload window;
-//! - `system.load`, followed while either shows.
+//! - the status bar item while the Mac is overloaded, short of memory, its load average is high
+//!   or anything is paused: "● Mac CPU 88% · other apps · ● Memory warning · 60 MB free ·
+//!   2 paused" (design B on the "Overload: real CPU" canvas), its hover who is using the Mac in
+//!   one sentence, the CPU bar and both shares, a click opening the overload window;
+//! - `system.load`, followed every `POLL` (memory and the load average fire no event while
+//!   they rise).
 use crate::app::{MainWindow, refresh};
 use crate::icons::Icon;
 use crate::model::Session;
@@ -20,19 +21,9 @@ use std::time::Duration;
 
 pub const POLL: Duration = Duration::from_secs(10);
 
-/// Whether `system.load` is worth following: the Mac is overloaded or a terminal is paused.
-fn watching(m: &MainWindow) -> bool {
-    m.load.as_ref().is_some_and(|l| l.overloaded) || m.sessions.iter().any(|s| s.paused.is_some())
-}
-
-/// Every `POLL`: fresh numbers while the status item (or the overload window) shows them.
+/// Every `POLL`: fresh numbers for the status item (and the overload window). One cheap call: the
+/// daemon only reads what its guard last sampled.
 pub fn poll(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    if !watching(m) {
-        if m.load.take().is_some() {
-            cx.notify();
-        }
-        return;
-    }
     fetch(m, cx);
 }
 
@@ -255,13 +246,18 @@ fn card(m: &MainWindow, s: &Session, t: &Theme, cx: &mut Context<MainWindow>) ->
 
 // ------------------------------------------------------------------ status bar item
 
-/// "● Mac CPU 88% · other apps · 2 paused" while the Mac is overloaded or anything is paused.
+/// "● Mac CPU 88% · other apps · ● Memory warning · 60 MB free · 2 paused" while the Mac is
+/// overloaded, short of memory or its load average is high (`pressure_warning`), or anything is
+/// paused. The memory dot turns red at critical.
 pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let paused = paused_count(m);
     let over = m.load.as_ref().filter(|l| l.overloaded);
-    if over.is_none() && paused == 0 {
+    // A high load average alone says nothing more than "Mac CPU 97%" beside it.
+    let pressure = m.load.as_ref().filter(|l| l.memory_held || over.is_none()).and_then(|l| Some((midna_proto::system::pressure_warning(l)?, l.memory_held && l.memory_pressure == midna_proto::system::MemoryPressure::Critical)));
+    if over.is_none() && pressure.is_none() && paused == 0 {
         return None;
     }
+    let pressure_shown = pressure.is_some();
     let teal = super::paused_color(t);
     let fg = t.fg;
     let load = m.load.clone().unwrap_or_default();
@@ -281,7 +277,12 @@ pub fn status_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> O
                     .child(format!("Mac CPU {}%", l.cpu_percent))
                     .when(theirs, |d| d.child(div().text_color(t.dim).child("· other apps")))
             })
-            .when(over.is_some() && paused > 0, |d| d.child(div().text_color(t.dim).child("·")))
+            .when(over.is_some() && pressure_shown, |d| d.child(div().text_color(t.dim).child("·")))
+            .when_some(pressure, |d, (warning, critical)| {
+                let color = if critical { t.status_color("red") } else { t.status_color("orange") };
+                d.child(div().text_color(color).child("●")).child(warning)
+            })
+            .when((over.is_some() || pressure_shown) && paused > 0, |d| d.child(div().text_color(t.dim).child("·")))
             .when(paused > 0, |d| d.child(div().text_color(teal).child(format!("{paused} paused"))))
             .tooltip(move |_, cx| cx.new(|_| LoadTip { load: load.clone() }).into())
             .on_click(cx.listener(move |m, _, _, cx| {
@@ -321,8 +322,10 @@ impl Render for LoadTip {
         let stats = if ours { stats } else { let [a, b] = stats; [b, a] };
         let (dot, line) = match (l.cpu_busy, ours) {
             (true, true) => (t.need, "Agents wait to start heavy work."),
+            _ if l.memory_held => (t.need, "Agents wait to start heavy work."),
             _ => (t.ok, "Your agents carry on as normal."),
         };
+        let pressure = midna_proto::system::pressure_warning(l);
         let paused = l.top.iter().filter(|t| t.paused).count();
         div()
             .w(px(320.))
@@ -340,6 +343,7 @@ impl Render for LoadTip {
             .child(div().font_weight(FontWeight::BOLD).text_size(px(14.)).child(verdict))
             .child(sw::cpu_bar(&t, l, 10.))
             .child(div().flex().gap(px(10.)).children(stats))
+            .when_some(pressure, |d, w| d.child(div().text_color(t.fg).child(w)))
             .child(div().flex().items_center().gap(px(8.)).text_color(t.dim).child(div().size(px(8.)).flex_none().rounded_full().bg(dot)).child(line))
             .when(paused > 0, |d| d.child(div().text_color(super::paused_color(&t)).child(format!("{paused} paused"))))
             .child(div().text_size(px(12.)).text_color(t.dim.opacity(0.7)).child("Click for details"))
@@ -359,5 +363,18 @@ mod tests {
         assert_eq!(names(&b(&["rustc ×11", "zig ×11", "cargo"])), "rustc, zig and cargo");
         assert_eq!(stop_line(&b(&["node ×3"])), "Ends node. The terminal stays open.");
         assert_eq!(stop_line(&[]), "Ends what it started. The terminal stays open.");
+    }
+
+    #[test]
+    fn a_calm_cpu_still_says_when_memory_or_the_load_is_the_trouble() {
+        use crate::ui::system_window::verdict;
+        use midna_proto::{SystemLoad, system::MemoryPressure};
+        let calm = SystemLoad { cpu_percent: 30, load1: 4., cpus: 12, ..Default::default() };
+        assert_eq!(verdict(&calm).0, "Your Mac has calmed down");
+        let short = SystemLoad { memory_pressure: MemoryPressure::Warning, memory_held: true, memory_available_bytes: 60 << 20, busy: true, ..calm.clone() };
+        assert_eq!(verdict(&short), ("Your Mac is short of memory".into(), "macOS's memory pressure is warning, 60 MB free. Agents wait before starting more builds, tests or subagents.".into()));
+        let loaded = SystemLoad { load1: 280., load_percent: 2333, busy: true, ..calm };
+        assert_eq!(verdict(&loaded).0, "Your Mac's load is high");
+        assert!(verdict(&loaded).1.starts_with("load 280.0 on 12 cores (2333%)"), "{:?}", verdict(&loaded));
     }
 }

@@ -136,6 +136,13 @@ pub fn mac_share(cpu_percent: u32, cpus: u32) -> String {
 pub fn verdict(l: &SystemLoad) -> (String, String) {
     let midna = share_label(l.midna_percent as f64);
     if !l.cpu_busy && !l.overloaded {
+        if l.memory_held {
+            let free = midna_proto::system::bytes_label(l.memory_available_bytes);
+            return ("Your Mac is short of memory".into(), format!("macOS's memory pressure is {}, {free} free. Agents wait before starting more builds, tests or subagents.", l.memory_pressure.as_str()));
+        }
+        if l.busy {
+            return ("Your Mac's load is high".into(), format!("{}. Its CPU is at {}%, so work is waiting on the disk or the cores.", load_line(l), l.cpu_percent));
+        }
         return ("Your Mac has calmed down".into(), format!("{}% of its CPU is in use now.", l.cpu_percent));
     }
     if midna_is_the_cause(l.cpu_percent, l.midna_percent) {
