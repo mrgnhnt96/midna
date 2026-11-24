@@ -709,11 +709,19 @@ impl FakeBackend {
     }
 
     /// The app's fake daemon. Dev (screenshots): `MIDNA_FAKE_NEEDS=<n>` keeps only that many of
-    /// its needs-you items.
+    /// its needs-you items; `MIDNA_FAKE_MONITOR=<minutes>` gives its first agent terminal a
+    /// monitor grant ending that many minutes from now (`0`: no end).
     pub fn local() -> Self {
         let b = FakeBackend::new();
         if let Some(n) = crate::dev::var("MIDNA_FAKE_NEEDS").ok().and_then(|v| v.parse::<usize>().ok()) {
             b.st.lock().unwrap().needs.truncate(n);
+        }
+        if let Some(mins) = crate::dev::var("MIDNA_FAKE_MONITOR").ok().and_then(|v| v.parse::<i64>().ok()) {
+            let now = midna_proto::time::now_unix();
+            if let Some(x) = b.st.lock().unwrap().sessions.iter_mut().find(|x| x.agent.is_some()) {
+                let until = (mins > 0).then(|| midna_proto::time::format_unix(now + mins * 60));
+                x.monitor_grant = Some(midna_proto::MonitorGrant { scope: Default::default(), granted_at: midna_proto::time::format_unix(now), until });
+            }
         }
         b
     }
@@ -1189,6 +1197,25 @@ impl Backend for FakeBackend {
                 }
                 st.emit("session.background", Some(&id), json!({ "background": on }));
                 json!({"id": id})
+            }
+            "session.monitor_grant" | "session.monitor_revoke" => {
+                let id = p("id").unwrap_or_default();
+                let grant = (method == "session.monitor_grant").then(|| midna_proto::MonitorGrant {
+                    scope: params.get("scope").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+                    granted_at: midna_proto::time::format_unix(midna_proto::time::now_unix()),
+                    until: p("until"),
+                });
+                let Some(x) = st.sessions.iter_mut().find(|x| x.id == id) else {
+                    return Err(anyhow::anyhow!("no terminal {id}"));
+                };
+                let old = std::mem::replace(&mut x.monitor_grant, grant.clone());
+                let out = serde_json::to_value(&*x).unwrap_or_default();
+                match grant {
+                    Some(g) => st.emit("session.monitor_granted", Some(&id), json!({"monitor_grant": g, "replaced": old.is_some()})),
+                    None if old.is_some() => st.emit("session.monitor_revoked", Some(&id), json!({"monitor_grant": old})),
+                    None => {}
+                }
+                out
             }
             "session.restart" => {
                 let id = p("id").unwrap_or_default();

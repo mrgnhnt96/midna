@@ -1,0 +1,8 @@
+{
+  "section": "the monitor grant (grant, show, revoke)",
+  "concepts": [
+    { "id": "a", "label": "Popover + chip", "position": "Grant in a small popover (scope buttons, until chips or a typed time) opened from the row's right-click or the ⋯ menu; a live grant is a chip with time left on the row's name line, and clicking the chip revokes it (Undo toast)", "screen": "a/screen.html" },
+    { "id": "b", "label": "Menu + its own line", "position": "Grant straight from a 'Monitor other tabs' submenu on the row's right-click (and ⋯): pick what it answers, then a duration, no dialog; a live grant gets its own line under the row with a Revoke button that's always there", "screen": "b/screen.html" },
+    { "id": "c", "label": "Palette + status line", "position": "Grant from ⌘K by typing like the CLI ('monitor 2am', 'monitor 8h prompts'); a live grant reads on the row's second line (eye + time left) with Revoke on hover there, and a pill in the tab's own header while it's on screen", "screen": "c/screen.html" }
+  ]
+}

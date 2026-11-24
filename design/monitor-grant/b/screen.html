@@ -1,0 +1,166 @@
+<template id="uh-screen">
+<style>
+:host { color-scheme: light dark; }
+[data-screen] {
+  /* Midna Twilight (dark) / Midna Daylight (light), from midna-proto themes.rs */
+  --bg: light-dark(#E6E9EF, #0F1117);
+  --panel: light-dark(#F5F6F8, #151821);
+  --raised: light-dark(#FFFFFF, #1D2130);
+  --line: light-dark(#D3D8E0, #282D3B);
+  --fg: light-dark(#151922, #E4E7EE);
+  --dim: light-dark(#535D6E, #9AA2B3);
+  --accent: light-dark(#6237A0, #B79AE8);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-fg: light-dark(#FFFFFF, #15111C);
+  --need: light-dark(#9A5300, #F2A93B);
+  --ok: light-dark(#1B7346, #4CC38A);
+  --work: light-dark(#2758B8, #6EA2FF);
+  --term: light-dark(#FCFCFD, #0B0D12);
+  height: 100%; overflow: hidden;
+  font: 400 0.8125rem/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  color: var(--fg); background: var(--bg);
+}
+button { font: inherit; color: inherit; background: none; border: 0; margin: 0; padding: 0; cursor: pointer; text-align: start; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+svg { flex: none; display: block; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.app { position: relative; height: 100%; display: grid; grid-template-columns: 264px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 26px; }
+@container screen (width < 900px) { .app { grid-template-columns: 220px minmax(0, 1fr); } }
+.sb { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); padding-top: 34px; }
+.hd { display: flex; align-items: center; height: 30px; padding: 0 14px; margin-top: 8px; }
+.gcap { font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+/* A terminal row, as ui/sidebar.rs draws it: 12px dot column, name, agent icon; second line under the name. */
+.row { position: relative; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 14px; }
+.row:hover { background: color-mix(in srgb, var(--raised) 50%, transparent); }
+.row.on { background: var(--raised); }
+.row.on::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.l1 { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.l1 .dc { width: 12px; flex: none; display: flex; align-items: center; justify-content: center; }
+.l1 .nm { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l1 .ag { flex: none; width: 14px; text-align: center; color: var(--dim); font: 600 0.75rem ui-monospace, monospace; }
+.l2 { padding-left: 21px; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l2.work { color: var(--work); } .l2.need { color: var(--need); } .l2.dim { color: var(--dim); }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.work { background: var(--work); } .dot.idle { border: 1.5px solid var(--dim); } .dot.ok { background: var(--ok); } .dot.need { background: var(--need); }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--term); }
+.top { flex: none; height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.top b { font-size: 0.9375rem; }
+.top .ag { color: var(--dim); font: 600 0.75rem ui-monospace, monospace; }
+.top .tools { margin-left: auto; display: flex; gap: 2px; align-items: center; }
+.tool { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 6px; color: var(--dim); }
+.tool:hover, .tool.open { background: var(--raised); }
+.term { flex: 1; min-height: 0; overflow: hidden; padding: 14px 18px; font: 400 0.8125rem/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; }
+.term .d { color: var(--dim); } .term .a { color: var(--accent); }
+.status { grid-column: 1 / 3; display: flex; align-items: center; gap: 16px; padding: 0 12px; border-top: 1px solid var(--line); background: var(--bg); color: var(--dim); font-size: 0.75rem; }
+.status .r { margin-left: auto; }
+/* menus, as ui/sidebar.rs menu_box / menu_item draw them */
+.menu { min-width: 220px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35); display: flex; flex-direction: column; z-index: 5; }
+.mi { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 7px; }
+.mi:hover, .mi.hi { background: var(--accent-soft); }
+.mi .k { margin-left: auto; font-size: 0.71875rem; color: var(--dim); }
+.mi.off { color: var(--dim); opacity: .7; }
+.msep { height: 1px; margin: 4px 0; background: var(--line); }
+.mcap { padding: 6px 10px 2px; font-size: 0.6875rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.toast { position: absolute; left: 280px; bottom: 40px; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); box-shadow: 0 12px 32px rgba(0,0,0,.35); }
+.toast .u { color: var(--accent); font-weight: 600; padding: 4px 8px; border-radius: 6px; }
+.toast .u:hover { background: var(--accent-soft); }
+.note { position: absolute; right: 16px; bottom: 40px; max-width: 300px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--dim); font-size: 0.75rem; background: var(--bg); }
+.eye { width: 12px; height: 12px; }
+.sub { position: absolute; z-index: 6; }
+.mi .chev { margin-left: auto; color: var(--dim); }
+.mi .ck { width: 12px; color: var(--accent); }
+.l3 { display: flex; align-items: center; gap: 6px; padding-left: 21px; font-size: 0.75rem; color: var(--accent); min-width: 0; }
+.l3 .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.l3.soon { color: var(--need); }
+.l3 .rv { flex: none; height: 24px; padding: 0 8px; margin: -4px -6px -4px 0; border-radius: 6px; color: var(--dim); font-weight: 600; }
+.l3 .rv:hover, .l3 .rv:focus-visible { background: var(--accent-soft); color: var(--fg); }
+.rowwrap { position: relative; }
+
+</style>
+
+<section data-screen="grant" data-title="1 · Granting a monitor tab">
+  <div class="app">
+    <nav class="sb" aria-label="Sidebar">
+      <div class="hd"><span class="gcap">midna</span></div>
+      <button class="row on" aria-current="true" data-slot="g-monitor-row"><span class="l1"><span class="dc"><span class="dot idle"></span></span><span class="nm">monitor</span><span class="ag">✳</span></span></button>
+      <button class="row"><span class="l1"><span class="dc"><span class="dot work"></span></span><span class="nm">fix login redirect</span><span class="ag">✳</span></span><span class="l2 work">working · 12m</span></button>
+      <button class="row"><span class="l1"><span class="dc"><span class="dot need"></span></span><span class="nm">migrate sessions table</span><span class="ag">✳</span></span><span class="l2 need">Allow `cargo test -p midnad`? · 3m</span></button>
+      <div class="hd"><span class="gcap">api</span></div>
+      <button class="row"><span class="l1"><span class="dc"><span class="dot ok"></span></span><span class="nm">server</span><span class="ag">&gt;_</span></span></button>
+      <div data-slot="g-side"></div>
+    </nav>
+    <div class="main">
+      <div class="top"><span class="dot idle"></span><b>monitor</b><span class="ag">✳</span><span data-slot="g-pill"></span>
+        <span class="tools"><span class="tool" title="Split">◫</span><span class="tool" title="Pop out">⧉</span><span class="tool" title="Restart">↻</span><span class="tool" data-slot="g-more" title="More">⋯</span></span></div>
+      <div class="term"><span class="a">❯</span> keep an eye on the other tabs tonight. approve test runs and
+  builds, deny anything that deletes files or pushes.
+
+<span class="d">⏺ Watching 3 tabs. I can't answer their permission prompts
+  yet: midna says this tab needs a monitor grant from you.</span>
+</div>
+    </div>
+    <div class="status"><span>● midnad · 4 terminals</span><span>Policy auto</span><span class="r">⌘K commands · ⌘J next</span></div>
+    <div data-slot="g-over"></div>
+  </div>
+</section>
+
+<section data-screen="live" data-title="2 · A live grant on its row">
+  <div class="app">
+    <nav class="sb" aria-label="Sidebar">
+      <div class="hd"><span class="gcap">midna</span></div>
+      <div data-slot="l-monitor-row"></div>
+      <button class="row on" aria-current="true"><span class="l1"><span class="dc"><span class="dot work"></span></span><span class="nm">fix login redirect</span><span class="ag">✳</span></span><span class="l2 work">working · 12m</span></button>
+      <button class="row"><span class="l1"><span class="dc"><span class="dot work"></span></span><span class="nm">migrate sessions table</span><span class="ag">✳</span></span><span class="l2 work">working · 1m</span></button>
+      <div class="hd"><span class="gcap">api</span></div>
+      <button class="row"><span class="l1"><span class="dc"><span class="dot ok"></span></span><span class="nm">server</span><span class="ag">&gt;_</span></span></button>
+    </nav>
+    <div class="main">
+      <div class="top"><span class="dot work"></span><b>fix login redirect</b><span class="ag">✳</span>
+        <span class="tools"><span class="tool">◫</span><span class="tool">⧉</span><span class="tool">↻</span><span class="tool">⋯</span></span></div>
+      <div class="term"><span class="d">⏺ Bash(cargo test -p web auth::)</span>
+<span class="d">  ⎿  Approved by <b>monitor</b> (monitor grant) · 9:41 PM</span>
+<span class="d">     running 14 tests … ok</span>
+</div>
+    </div>
+    <div class="status"><span>● midnad · 4 terminals</span><span>Policy auto</span><span class="r">⌘K commands · ⌘J next</span></div>
+    <div data-slot="l-over"></div>
+  </div>
+</section>
+</template>
+<script>
+window.ultrahandSetup = function (canvas) {
+  var root = canvas.root || document;
+  var O = {
+  'g-over': function () {
+    return '<div class="menu" style="position:absolute;left:24px;top:94px;min-width:210px"><button class="mi">Rename</button><button class="mi">Move to background</button><button class="mi hi">Monitor other tabs<span class="chev">›</span></button><div class="msep"></div><button class="mi">Close terminal</button></div>' +
+      '<div class="menu sub" style="left:238px;top:150px;min-width:230px" role="menu">' +
+      '<div class="mcap">It answers</div>' +
+      '<button class="mi" role="menuitemradio" aria-checked="true"><span class="ck">✓</span>Prompts and approvals</button>' +
+      '<button class="mi" role="menuitemradio" aria-checked="false"><span class="ck"></span>Prompts only</button>' +
+      '<button class="mi" role="menuitemradio" aria-checked="false"><span class="ck"></span>Approvals only</button>' +
+      '<div class="msep"></div><div class="mcap">Grant</div>' +
+      '<button class="mi">For 1 hour<span class="k">until 10:08 PM</span></button>' +
+      '<button class="mi hi">For 4 hours<span class="k">until 1:08 AM</span></button>' +
+      '<button class="mi">Until 8 AM<span class="k">11h</span></button>' +
+      '<button class="mi">Until I revoke it</button>' +
+      '<button class="mi">Until a time…</button></div>';
+  },
+  'l-monitor-row': function () {
+    var eye = '<svg class="eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+    function line(cls, txt) { return '<span class="l3 ' + cls + '">' + eye + '<span class="t">' + txt + '</span><button class="rv" aria-label="Revoke monitor grant">Revoke</button></span>'; }
+    return '<div class="row rowwrap"><span class="l1"><span class="dc"><span class="dot idle"></span></span><span class="nm">monitor</span><span class="ag">✳</span></span>' +
+      '<span data-show-state="live">' + line('', '4h 52m · prompts + approvals') + '</span>' +
+      '<span data-show-state="soon">' + line('soon', '8m left · prompts + approvals') + '</span>' +
+      '<span data-show-state="noend">' + line('', 'no end · prompts + approvals') + '</span>' +
+      '</div>';
+  },
+  'l-over': function () {
+    return '<div class="toast" data-show-state="revoked" role="status">monitor can no longer answer other tabs<button class="u">Undo</button></div>';
+  }
+};
+  function fill(name, html) { root.querySelectorAll('[data-slot="' + name + '"]').forEach(function (el) { if (html != null) el.outerHTML = html; }); }
+  var keys = ['g-monitor-row', 'g-side', 'g-pill', 'g-more', 'g-over', 'l-monitor-row', 'l-over'];
+  keys.forEach(function (k) { if (O[k]) fill(k, O[k]()); });
+  if (O.setup) O.setup(root, canvas);
+};
+</script>

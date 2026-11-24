@@ -154,6 +154,8 @@ pub struct Session {
     /// Something has happened in it (a key, paste or input, or it opened with a command or
     /// prompt): its sidebar ✕ asks before closing it.
     pub touched: bool,
+    /// Its agent may answer other terminals' prompts and approvals (`ui::monitor`).
+    pub monitor_grant: Option<midna_proto::MonitorGrant>,
 }
 
 /// Lenient copy of `midna_proto::CustomStatus` (only what the GUI shows).

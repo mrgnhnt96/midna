@@ -738,6 +738,25 @@ pub fn build(s: &Snapshot) -> Vec<Command> {
                 .kw("background foreground hide unhide tuck away bg")
                 .cli(cli),
         );
+        let now = midna_proto::time::now_unix();
+        if let Some(g) = crate::ui::monitor::live(x, now) {
+            out.push(
+                Command::new(format!("monitor-revoke:{}", x.id), CmdIcon::Monitor, format!("Revoke {}'s monitor grant", x.name), Run::Rpc { method: "session.monitor_revoke".into(), params: json!({"id": x.id}) })
+                    .sub(format!("{pname} · it answers {}", crate::ui::monitor::line_text(g, now).0))
+                    .kw("monitor grant stop end revoke")
+                    .cli(format!("midna monitor revoke {}", x.id)),
+            );
+        } else if x.agent.is_some() {
+            out.push(
+                Command::new(format!("monitor:{}", x.id), CmdIcon::Monitor, format!("Let {} answer other tabs…", x.name), Run::Prefill { text: format!("monitor {} ", x.name) })
+                    .sub(format!("{pname} · its agent approves or denies other tabs' prompts until a time you pick"))
+                    .kw("monitor grant watch answer approve prompts approvals overnight")
+                    .cli(format!("midna monitor grant {} --until <time>", x.id)),
+            );
+        }
+        if let Some(c) = out.last_mut().filter(|c| c.icon == CmdIcon::Monitor) {
+            c.human_only = true;
+        }
         out.extend(restart_commands(x, &pname));
         let busy = matches!(x.status.state, StatusState::Working | StatusState::NeedsYou);
         let mut r = Command::new(format!("replace:{}", x.id), CmdIcon::Restart, format!("Replace {} with a new session", x.name), Run::Replace { session: x.id.clone() })
@@ -1339,6 +1358,96 @@ pub fn path_command(query: &str, home: &str, projects: &[Project]) -> Option<Com
     Some(Command::new(format!("project.open:{path}"), CmdIcon::Project, title, Run::OpenProject { path: Some(path.clone()) }).sub(path).cli(format!("midna project add {q}")))
 }
 
+/// "monitor 2am", "monitor reviewer 8h prompts", "monitor revoke": monitor grant rows for the
+/// terminal named (by its name, or the selected one when no name is typed). A time of day or a
+/// length sets when it ends; "prompts" or "approvals" what it answers. Granting is for agent
+/// terminals only; a live grant offers Revoke. Empty when the query isn't one of these.
+pub fn monitor_rows(query: &str, sessions: &[Session], selected: Option<&str>, now: i64, offset: i64) -> Vec<Command> {
+    use crate::ui::monitor::{clock_at, live, line_text, parse_until, scope_label, span};
+    use midna_proto::MonitorScope;
+    let q = query.trim_start();
+    let Some(rest) = q.get(..8).filter(|p| p.eq_ignore_ascii_case("monitor ")).map(|_| &q[8..]) else {
+        return vec![];
+    };
+    let (mut scope, mut until, mut revoke, mut name) = (None, None, false, vec![]);
+    for word in rest.split_whitespace() {
+        match word.to_ascii_lowercase().as_str() {
+            "prompts" | "prompt" => scope = Some(MonitorScope::Prompts),
+            "approvals" | "approval" => scope = Some(MonitorScope::Approvals),
+            "revoke" => revoke = true,
+            "until" | "for" => {}
+            w => match parse_until(w, now, offset) {
+                Some(t) => until = Some((t, w.to_string())),
+                None => name.push(word),
+            },
+        }
+    }
+    let name = name.join(" ").to_lowercase();
+    let target = if name.is_empty() {
+        sessions.iter().find(|x| Some(x.id.as_str()) == selected)
+    } else {
+        sessions.iter().find(|x| x.name.to_lowercase() == name).or_else(|| sessions.iter().find(|x| x.name.to_lowercase().contains(&name)))
+    };
+    let Some(x) = target else {
+        return vec![];
+    };
+    let mut out = vec![];
+    if let Some(g) = live(x, now) {
+        out.push(
+            Command::new(format!("monitor-revoke:{}", x.id), CmdIcon::Monitor, format!("Revoke {}'s monitor grant", x.name), Run::Rpc { method: "session.monitor_revoke".into(), params: json!({"id": x.id}) })
+                .sub(format!("it answers {}", line_text(g, now).0))
+                .cli(format!("midna monitor revoke {}", x.id)),
+        );
+    }
+    if revoke || x.agent.is_none() {
+        return out.into_iter().map(|c| Command { human_only: true, ..c }).collect();
+    }
+    let what = |sc: MonitorScope| match sc {
+        MonitorScope::All => "other tabs".to_string(),
+        sc => format!("other tabs' {}", scope_label(sc)),
+    };
+    let row = |sc: MonitorScope, end: Option<(i64, String)>, when: String, sub: String| {
+        let flag = match &end {
+            Some((_, w)) if crate::ui::monitor::length(w).is_some() => format!(" --for {w}"),
+            Some((_, w)) => format!(" --until {w}"),
+            None => String::new(),
+        };
+        let scope_flag = if sc == MonitorScope::All { String::new() } else { format!(" --scope {}", sc.as_str()) };
+        let t = end.as_ref().map(|(t, _)| *t);
+        Command::new(
+            format!("monitor:{}:{}:{}", x.id, sc.as_str(), t.unwrap_or(0)),
+            CmdIcon::Monitor,
+            format!("Let {} answer {} {when}", x.name, what(sc)),
+            Run::Rpc { method: "session.monitor_grant".into(), params: crate::ui::monitor::grant_params(&x.id, sc, t) },
+        )
+        .sub(sub)
+        .kw("monitor grant watch answer approve prompts approvals")
+        .cli(format!("midna monitor grant {}{flag}{scope_flag}", x.id))
+    };
+    match until {
+        Some((t, word)) => {
+            let scopes = match scope {
+                Some(sc) => vec![sc],
+                None => vec![MonitorScope::All, MonitorScope::Prompts, MonitorScope::Approvals],
+            };
+            for sc in scopes {
+                out.push(row(sc, Some((t, word.clone())), format!("until {}", clock_at(t, now, offset)), format!("{} · {}", scope_label(sc), span(t - now))));
+            }
+        }
+        None => {
+            let sc = scope.unwrap_or_default();
+            for (h, word) in [(1, "1h"), (4, "4h")] {
+                let t = now + h * 3600;
+                let label = if h == 1 { "for 1 hour".to_string() } else { format!("for {h} hours") };
+                out.push(row(sc, Some((t, word.into())), label, format!("{} · until {}", scope_label(sc), clock_at(t, now, offset))));
+            }
+        }
+    }
+    let sc = scope.unwrap_or_default();
+    out.push(row(sc, None, "until you revoke it".into(), format!("{} · no end", scope_label(sc))));
+    out.into_iter().map(|c| Command { human_only: true, ..c }).collect()
+}
+
 /// ⌘K query prefix for picking a `projects.roots` folder ("Add project folder…").
 pub const FOLDER_PREFIX: &str = "Project folder: ";
 
@@ -1444,6 +1553,64 @@ mod tests {
 
     fn titles<'a>(hits: &[Hit<'a>]) -> Vec<&'a str> {
         hits.iter().map(|h| h.cmd.title.as_str()).collect()
+    }
+
+    // 2026-11-23T22:30:00Z
+    const NOW: i64 = 1_795_473_000;
+
+    fn monitor_sessions() -> Vec<Session> {
+        let agent = |id: &str, name: &str| Session { id: id.into(), name: name.into(), agent: Some(AgentKind::Claude), ..Default::default() };
+        let mut granted = agent("s3", "reviewer");
+        granted.monitor_grant = Some(midna_proto::MonitorGrant { scope: midna_proto::MonitorScope::Prompts, granted_at: "2026-11-23T22:00:00Z".into(), until: Some("2026-11-24T02:00:00Z".into()) });
+        vec![agent("s1", "monitor"), Session { id: "s2".into(), name: "server".into(), ..Default::default() }, granted]
+    }
+
+    fn rows(q: &str, selected: Option<&str>) -> Vec<Command> {
+        monitor_rows(q, &monitor_sessions(), selected, NOW, 0)
+    }
+
+    #[test]
+    fn monitor_with_a_time_offers_each_scope_until_then() {
+        let got = rows("monitor 2am", Some("s1"));
+        let t: Vec<&str> = got.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(t, [
+            "Let monitor answer other tabs until 2:00 AM",
+            "Let monitor answer other tabs' prompts until 2:00 AM",
+            "Let monitor answer other tabs' approvals until 2:00 AM",
+            "Let monitor answer other tabs until you revoke it",
+        ]);
+        assert!(got.iter().all(|c| c.human_only));
+        assert_eq!(got[0].sub, "prompts + approvals · 3h 30m");
+        assert_eq!(got[0].cli.as_deref(), Some("midna monitor grant s1 --until 2am"));
+        assert_eq!(got[1].cli.as_deref(), Some("midna monitor grant s1 --until 2am --scope prompts"));
+        assert_eq!(got[0].run, Some(Run::Rpc { method: "session.monitor_grant".into(), params: json!({"id": "s1", "scope": "all", "until": "2026-11-24T02:00:00Z"}) }));
+        assert_eq!(got[3].run, Some(Run::Rpc { method: "session.monitor_grant".into(), params: json!({"id": "s1", "scope": "all"}) }));
+    }
+
+    #[test]
+    fn monitor_names_a_terminal_and_a_scope_in_any_order() {
+        let got = rows("Monitor approvals 8h MONITOR", Some("s2"));
+        assert_eq!(got[0].title, "Let monitor answer other tabs' approvals until 6:30 AM");
+        assert_eq!(got[0].cli.as_deref(), Some("midna monitor grant s1 --for 8h --scope approvals"));
+        assert_eq!(got.len(), 2);
+        // No time typed: an hour, four, or no end.
+        let t: Vec<String> = rows("monitor mon", None).into_iter().map(|c| c.title).collect();
+        assert_eq!(t, ["Let monitor answer other tabs for 1 hour", "Let monitor answer other tabs for 4 hours", "Let monitor answer other tabs until you revoke it"]);
+    }
+
+    #[test]
+    fn monitor_offers_revoke_for_a_live_grant_and_nothing_for_a_shell() {
+        let got = rows("monitor reviewer revoke", None);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].title, "Revoke reviewer's monitor grant");
+        assert_eq!(got[0].sub, "it answers 3h 30m · prompts");
+        assert_eq!(got[0].run, Some(Run::Rpc { method: "session.monitor_revoke".into(), params: json!({"id": "s3"}) }));
+        // Without "revoke" it can also be granted again.
+        assert_eq!(rows("monitor reviewer 1h", None)[0].title, "Revoke reviewer's monitor grant");
+        assert!(rows("monitor server 2am", None).is_empty());
+        assert!(rows("monitor nobody 2am", None).is_empty());
+        assert!(rows("monitoring 2am", Some("s1")).is_empty());
+        assert!(rows("monitor 2am", None).is_empty());
     }
 
     #[test]

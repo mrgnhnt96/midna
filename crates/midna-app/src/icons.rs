@@ -51,6 +51,8 @@ pub enum Icon {
     /// This Mac: a laptop (the needs-you list's header, beside another Mac's display).
     Laptop,
     Check,
+    /// A monitor grant: the terminal may answer other terminals' prompts.
+    Eye,
     Cross,
     Plus,
     Search,
@@ -159,6 +161,7 @@ impl Icon {
             Icon::MacOff => "icons/mac-off.svg",
             Icon::Laptop => "icons/laptop.svg",
             Icon::Check => "icons/check.svg",
+            Icon::Eye => "icons/eye.svg",
             Icon::Cross => "icons/cross.svg",
             Icon::Plus => "icons/plus.svg",
             Icon::Search => "icons/search.svg",
@@ -225,6 +228,7 @@ impl Icon {
             "bell-off" | "bell_off" | "mute" => Icon::BellOff,
             "lock" => Icon::Lock,
             "check" => Icon::Check,
+            "eye" => Icon::Eye,
             "cross" | "x" => Icon::Cross,
             "restart" | "refresh" => Icon::Restart,
             "branch" => Icon::Branch,
@@ -410,6 +414,9 @@ fn source(path: &str) -> Option<&'static str> {
         }
         "icons/check.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>"##
+        }
+        "icons/eye.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>"##
         }
         "icons/cross.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>"##

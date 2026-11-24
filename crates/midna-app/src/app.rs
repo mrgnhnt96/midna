@@ -75,6 +75,10 @@ pub enum Menu {
     FooterAdd,
     /// The Mac switcher under the sidebar's name plate (`ui/mac_switcher.rs`, ⌃⌘M).
     Macs,
+    /// A terminal row's right-click menu (`ui/monitor.rs`).
+    Row(String),
+    /// That menu with its "Monitor other tabs" submenu open, and what the grant will answer.
+    RowMonitor(String, midna_proto::MonitorScope),
 }
 
 /// What to re-fetch after an event. Coalesced and run together.
