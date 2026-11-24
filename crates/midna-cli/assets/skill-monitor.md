@@ -12,9 +12,12 @@ the grant's scope, or an agent tab sitting idle, done, exited or failed (finishe
 every `monitor.check_secs` (default 30). Don't run your own watch loop or Monitor: handle the
 note, end your turn, and the next one comes. When the grant ends, a note says so.
 
-The human's own limits come first. `monitor.rules` is what they wrote about what a monitor may
-and may not do ("everything except Slack messages sent straight to a person"); it is in the
-briefing and in every note. Leave what it rules out for the human: don't answer it, don't deny it.
+The human's own limits come first: the monitor rules, a markdown file in midna's home
+(`monitor-rules.md`) saying what a monitor may and may not do ("everything except Slack messages
+sent straight to a person"). It is in the briefing and in every note. Leave what it rules out for
+the human: don't answer it, don't deny it. When the human asks, keep the file for them:
+`midna monitor rules` lists it, `midna monitor rules add "<rule>"` appends one, `midna monitor
+rules remove <n|text>` takes one out, and `midna monitor rules path` prints the file to edit.
 
 With a grant you may:
 

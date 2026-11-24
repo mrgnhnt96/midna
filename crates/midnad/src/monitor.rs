@@ -16,8 +16,9 @@
 //!   working before the note is typed.
 //! - revoked or expired: a note that it ended, and the waiting note is dropped.
 //!
-//! The human's own limits (`monitor.rules`, free text) go in the briefing and in every note, so
-//! they survive the agent compacting its context. With `monitor.approve_human_only` on, the
+//! The human's own limits (`monitor-rules.md` in midna's home, a markdown file the human or any
+//! agent edits, `midna monitor rules add|remove`) go in the briefing and in every note, so they
+//! survive the agent compacting its context. With `monitor.approve_human_only` on, the
 //! grant also covers approvals that confirm another agent's human-only call (see
 //! [`deferred_refusal`]).
 //!
@@ -31,18 +32,22 @@ use std::time::{Duration, Instant};
 /// First line of the note that gathers what other terminals need.
 pub const NOTE_HEAD: &str = "[midna monitor] Other tabs need a look:";
 const NOTE_FOOT: &str = "Handle each the way your monitor briefing says, then end your turn: midna sends the next note.";
-/// The human's say over what a monitor does, read from settings when a briefing or note is written.
+/// The file in midna's home that holds the human's rules for monitors (markdown, usually a list).
+pub const RULES_FILE: &str = "monitor-rules.md";
+
+/// The human's say over what a monitor does, read when a briefing or note is written.
 #[derive(Clone, Debug, Default)]
 pub struct Limits {
-    /// `monitor.rules`: what the monitor may and may not do, in the human's words.
+    /// `monitor-rules.md`: what the monitor may and may not do, in the human's words.
     pub rules: String,
     /// `monitor.approve_human_only`: it may approve approvals that confirm a human-only call.
     pub human_only: bool,
 }
 
 impl Limits {
-    pub fn read(state: &crate::state::State) -> Limits {
-        Limits { rules: state.setting_str("monitor.rules").trim().to_string(), human_only: state.setting_bool("monitor.approve_human_only") }
+    pub fn read(d: &Daemon) -> Limits {
+        let rules = std::fs::read_to_string(d.cfg.home.join(RULES_FILE)).unwrap_or_default().trim().to_string();
+        Limits { rules, human_only: d.core().state.setting_bool("monitor.approve_human_only") }
     }
 }
 
@@ -197,15 +202,16 @@ pub fn note(lines: &[&str], limits: &Limits) -> String {
     format!("{NOTE_HEAD}\n{}\n{rules}{NOTE_FOOT}", lines.join("\n"))
 }
 
-/// The human's rules as one line of a note or the briefing (None without any).
+/// The human's rules for a note or the briefing (None without any): the file as it is, between a
+/// line that says what it is and one that says what to do with what it rules out.
 fn rules_line(limits: &Limits) -> Option<String> {
     let r = limits.rules.as_str();
-    (!r.is_empty()).then(|| format!("The human's rules for you, ahead of everything else here: {r} What they rule out, leave for the human: don't answer or deny it."))
+    (!r.is_empty()).then(|| format!("The human's rules for you, ahead of everything else here (`midna monitor rules`):\n{r}\nWhat they rule out, leave for the human: don't answer or deny it."))
 }
 
 /// Rewrite `m`'s waiting note to hold what it wants and wasn't told yet.
 fn sync_note(d: &Daemon, m: &str, want: Vec<(String, String)>) {
-    let limits = Limits::read(&d.core().state);
+    let limits = Limits::read(d);
     let mut watches = d.monitor.watch.lock().unwrap_or_else(|e| e.into_inner());
     let w = watches.entry(m.to_string()).or_default();
     // The last note went out (or the human removed it): its keys were told.
@@ -276,10 +282,8 @@ fn granted(d: &Daemon, m: &str) {
     }
     // A new or changed grant starts over: the briefing goes first, then a fresh note.
     drop_note(d, m);
-    let (every, limits) = {
-        let core = d.core();
-        (core.state.setting_i64("monitor.check_secs"), Limits::read(&core.state))
-    };
+    let every = d.core().state.setting_i64("monitor.check_secs");
+    let limits = Limits::read(d);
     let _ = queue(d, m, briefing(&grant, every, &limits));
     check(d);
 }
@@ -359,7 +363,7 @@ mod tests {
     fn the_briefing_carries_the_humans_rules_and_human_only_approvals() {
         let limits = Limits { rules: "everything except Slack DMs".into(), human_only: true };
         let b = briefing(&grant(MonitorScope::All, None), 30, &limits);
-        assert!(b.contains("- The human's rules for you, ahead of everything else here: everything except Slack DMs What they rule out"), "{b}");
+        assert!(b.contains("- The human's rules for you, ahead of everything else here (`midna monitor rules`):\neverything except Slack DMs\nWhat they rule out"), "{b}");
         assert!(b.contains("confirm another agent's human-only action") && b.contains("anything about monitor grants"), "{b}");
         // a prompts-only grant answers no approvals, human-only or not
         let b = briefing(&grant(MonitorScope::Prompts, None), 30, &limits);
@@ -370,7 +374,7 @@ mod tests {
     fn a_note_has_its_head_lines_and_foot() {
         let n = note(&["- `n_1` a", "- b"], &Limits::default());
         assert_eq!(n, format!("{NOTE_HEAD}\n- `n_1` a\n- b\n{NOTE_FOOT}"));
-        let n = note(&["- b"], &Limits { rules: "no Slack DMs".into(), human_only: false });
-        assert!(n.starts_with(&format!("{NOTE_HEAD}\n- b\nThe human's rules for you, ahead of everything else here: no Slack DMs ")) && n.ends_with(NOTE_FOOT), "{n}");
+        let n = note(&["- b"], &Limits { rules: "- no Slack DMs\n- no force pushes".into(), human_only: false });
+        assert!(n.starts_with(&format!("{NOTE_HEAD}\n- b\nThe human's rules for you, ahead of everything else here (`midna monitor rules`):\n- no Slack DMs\n- no force pushes\nWhat they")) && n.ends_with(NOTE_FOOT), "{n}");
     }
 }
