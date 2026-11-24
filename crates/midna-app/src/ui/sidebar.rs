@@ -996,7 +996,7 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
     let lit = selected && m.screen != Screen::Summary;
     let hl = m.close_anim.highlight(&s.id, lit);
     let own = lit && hl == crate::ui::close_anim::Highlight::Own;
-    let (armed, hover_id) = (m.row_close.looks_armed(&s.id), s.id.clone());
+    let (armed, hover_id, menu_id) = (m.row_close.looks_armed(&s.id), s.id.clone(), s.id.clone());
 
     div()
         .id(SharedString::from(format!("row-{}", s.id)))
@@ -1039,6 +1039,13 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                 m.select_only(id.clone(), w, cx);
             }
         }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |m, ev: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                crate::ui::monitor::open_menu(m, &menu_id, ev.position, cx);
+            }),
+        )
         .group(ROW_GROUP)
         .on_hover(cx.listener(move |m, over: &bool, _, cx| crate::ui::row_close::hover(m, &hover_id, *over, cx)))
         .when_some(look.sweep, |d, b| d.overflow_hidden().child(crate::ui::need_anim::band_el(t, b)))
@@ -1091,7 +1098,9 @@ fn row(m: &MainWindow, s: &Session, group: &str, t: &Theme, compact: bool, cx: &
                     .child(div().min_w_0().truncate().child(text)),
             )
         })
+        .children(crate::ui::monitor::row_line(s, t, cx))
         .children(crate::ui::row_close::line(m, s, t, cx))
+        .children(crate::ui::monitor::row_menu(m, s, t, cx))
 }
 
 /// `host`'s split, as a row tucked under it (design A on the Midna Splits canvas): a `└`,
