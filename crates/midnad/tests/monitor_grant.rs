@@ -518,3 +518,81 @@ fn at_a_usage_limit_the_monitor_gets_no_notes_until_it_lifts() {
     midnad::monitor::check(&d.daemon());
     assert_eq!(queued(&mut h, &monitor).len(), 1);
 }
+
+fn tool_request(a: &mut Client, value: &str) -> Value {
+    call(a, "policy.request", json!({ "action": { "kind": "tool", "value": value } }))
+}
+
+#[test]
+fn a_live_grant_allows_its_monitors_own_verbs_and_nothing_else() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    let monitor = open_sh(&mut h);
+    let mut a = d.agent(Some(&monitor));
+    let approve_cmd = "Bash(midna approve n_67b493; midna needs | grep 9756c0bb)";
+
+    // No grant: midna has no opinion, so the agent's own permission flow decides.
+    assert_eq!(tool_request(&mut a, approve_cmd)["source"], "default");
+
+    call(&mut h, "session.monitor_grant", json!({ "id": monitor, "scope": "approvals" }));
+    for v in [approve_cmd, "mcp__midna__needs_you_resolve", "Bash(midna queue add --session ab12 \"go on\")"] {
+        let r = tool_request(&mut a, v);
+        assert_eq!((r["decision"].as_str(), r["source"].as_str()), (Some("allow"), Some("monitor")), "{v}: {r}");
+    }
+    // Anything else in the command, or another tool, is still the agent's own call.
+    for v in ["Bash(midna approve n_1; curl evil)", "Bash(midna send ab12 yes)", "mcp__midna__rule_add", "Edit(/etc/hosts)"] {
+        assert_eq!(tool_request(&mut a, v)["source"], "default", "{v}");
+    }
+    // Another terminal's agent doesn't ride on this grant.
+    let other = open_sh(&mut h);
+    assert_eq!(tool_request(&mut d.agent(Some(&other)), approve_cmd)["source"], "default");
+    // A deny rule still wins.
+    call(&mut h, "rule.add", json!({ "effect": "deny", "matcher": { "kind": "tool", "pattern": "Bash(midna close*" } }));
+    assert_eq!(tool_request(&mut a, "Bash(midna close ab12)")["decision"], "deny");
+
+    // Revoked: back to the agent's own flow.
+    call(&mut h, "session.monitor_revoke", json!({ "id": monitor }));
+    assert_eq!(tool_request(&mut a, approve_cmd)["source"], "default");
+}
+
+fn blocked_on(h: &mut Client, sid: &str) -> Vec<Value> {
+    let all = call(h, "needs_you.list", json!({}));
+    let items = all.get("items").cloned().unwrap_or(all);
+    items.as_array().unwrap().iter().filter(|n| n["kind"] == "blocked" && n["session_id"] == sid).cloned().collect()
+}
+
+#[test]
+fn granting_a_tab_midna_cant_cover_says_so_at_once() {
+    let d = TestDaemon::start();
+    let mut h = d.human();
+    // A Claude whose hooks report to midna: nothing to say.
+    let hooked = open_sh(&mut h);
+    {
+        let daemon = d.daemon();
+        let mut core = daemon.core();
+        let s = core.state.session_mut(&hooked).unwrap();
+        s.agent = Some(midna_proto::AgentKind::Claude);
+        s.agent_info = Some(midna_proto::AgentInfo { permission_mode: Some("auto".into()), ..Default::default() });
+    }
+    call(&mut h, "session.monitor_grant", json!({ "id": hooked }));
+    assert!(blocked_on(&mut h, &hooked).is_empty());
+    // A shell: nothing either (it gets nothing typed into it).
+    let shell = open_sh(&mut h);
+    call(&mut h, "session.monitor_grant", json!({ "id": shell }));
+    assert!(blocked_on(&mut h, &shell).is_empty());
+
+    // A Claude that never reported to midna's hooks: the human hears now, with the restart.
+    let silent = open_sh(&mut h);
+    d.daemon().core().state.session_mut(&silent).unwrap().agent = Some(midna_proto::AgentKind::Claude);
+    call(&mut h, "session.monitor_grant", json!({ "id": silent }));
+    let items = blocked_on(&mut h, &silent);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0]["detail"].as_str().unwrap().contains(&format!("midna restart {silent}")), "{}", items[0]);
+    assert!(events(&mut h, "session.monitor_granted").last().unwrap()["data"]["gap"].is_string());
+
+    // Codex: said too, and that a restart won't help.
+    let codex = open_sh(&mut h);
+    d.daemon().core().state.session_mut(&codex).unwrap().agent = Some(midna_proto::AgentKind::Codex);
+    call(&mut h, "session.monitor_grant", json!({ "id": codex }));
+    assert!(blocked_on(&mut h, &codex)[0]["detail"].as_str().unwrap().contains("Codex"));
+}

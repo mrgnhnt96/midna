@@ -921,6 +921,7 @@ impl RulesView {
                 Some(rule) => format!("{} · {}", rule.matcher.pattern, scope_label(n, &rule.scope)),
                 None if source == "default" => "no rule matched · policy.default".into(),
                 None if source == "launch" => "an ask rule matched · launched with --allowedTools".into(),
+                None if source == "monitor" => "a monitor's own midna verb · its monitor grant allows it".into(),
                 None => source.to_string(),
             };
             div()
