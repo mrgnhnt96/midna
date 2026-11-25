@@ -120,6 +120,9 @@ pub struct TerminalView {
     backend: Arc<dyn Backend>,
     sink: Arc<FrameSink>,
     stream: StreamSlot,
+    /// Credits for frames applied before the stream they came on was stored (its reader starts
+    /// inside `backend.attach`); sent once it is, or midnad holds every later frame.
+    owed: u32,
     status: StreamStatus,
     grid: Arc<Vec<RowData>>,
     cols: u16,
@@ -480,6 +483,7 @@ impl TerminalView {
             backend,
             sink,
             stream: Rc::new(RefCell::new(None)),
+            owed: 0,
             status: StreamStatus::Attaching,
             grid: Arc::new(vec![]),
             cols: 0,
@@ -573,6 +577,8 @@ impl TerminalView {
 
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.status = StreamStatus::Attaching;
+        // A new stream starts with its own credit; what the old one was owed goes with it.
+        self.owed = 0;
         let backend = self.backend.clone();
         let sink = self.sink.clone();
         let sid = self.session_id.clone();
@@ -600,6 +606,7 @@ impl TerminalView {
                         if c > 0 && (c, r) != (cols, rows) {
                             stream.resize(c, r, cw, ch);
                         }
+                        give_credits(Some(&*stream), &mut t.owed, 0);
                         *t.stream.borrow_mut() = Some(stream);
                         t.status = StreamStatus::Live;
                         t.reported_focus = None;
@@ -815,11 +822,8 @@ impl TerminalView {
         }
         // Give back a credit for every stream frame this one folded in, or a drive link's
         // window of frames in flight would shrink each time two arrived between paints.
-        if let Some(s) = self.stream() {
-            for _ in 0..credits.max(1) {
-                s.want();
-            }
-        }
+        let stream = self.stream();
+        give_credits(stream.as_deref(), &mut self.owed, credits.max(1));
     }
 
     /// Ask the daemon whether the full-screen app just started is Claude Code or Codex.
@@ -3424,10 +3428,51 @@ fn escaped_path(p: &std::path::Path) -> String {
     out
 }
 
+/// Gives `n` credits back on `stream`, with any `owed` from before it was stored, or holds
+/// them in `owed` while there is no stream yet.
+fn give_credits(stream: Option<&dyn TermStream>, owed: &mut u32, n: u32) {
+    let Some(s) = stream else {
+        *owed += n;
+        return;
+    };
+    for _ in 0..std::mem::take(owed) + n {
+        s.want();
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{caps_text, editor_command, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text, there_editor_command};
+    use super::{caps_text, give_credits, editor_command, escaped_path, key_msg, link_span, not_running_detail, on_update_notice, other_text, there_editor_command};
     use serde_json::json;
+
+    #[derive(Default)]
+    struct Wants(std::sync::atomic::AtomicU32);
+
+    impl crate::backend::TermStream for Wants {
+        fn want(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn resize(&self, _: u16, _: u16, _: u32, _: u32) {}
+        fn input(&self, _: &[u8]) {}
+        fn send(&self, _: &midna_proto::frame::ClientMsg) {}
+        fn close(&self) {}
+    }
+
+    /// The first frame can be applied before attach stores its stream; its credit still has to
+    /// reach midnad, or every later frame waits for a want that never comes.
+    #[test]
+    fn credits_for_frames_applied_before_the_stream_is_stored_are_sent_once_it_is() {
+        let stream = Wants::default();
+        let wants = || stream.0.load(std::sync::atomic::Ordering::SeqCst);
+        let mut owed = 0;
+        give_credits(None, &mut owed, 1);
+        give_credits(None, &mut owed, 2);
+        assert_eq!(owed, 3);
+        give_credits(Some(&stream), &mut owed, 0);
+        assert_eq!((wants(), owed), (3, 0));
+        give_credits(Some(&stream), &mut owed, 1);
+        assert_eq!((wants(), owed), (4, 0));
+    }
 
     #[test]
     fn this_macs_editor_opens_at_the_line() {
